@@ -5,6 +5,7 @@ import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { conversationsRoutes } from "./modules/conversations/conversations.routes.js";
+import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 
 export interface CreateAppOptions {
@@ -41,6 +42,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     role: request.talk.role
   }));
   await app.register(realtimeRoutes);
+  await app.register(evolutionRoutes, { webhookSecret: env.EVOLUTION_WEBHOOK_SECRET });
   await app.register(conversationsRoutes);
 
   return app;
