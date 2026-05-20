@@ -1,8 +1,10 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import type { AppEnv } from "./env.js";
+import { authContextPlugin } from "./plugins/auth-context.js";
 
 export interface CreateAppOptions {
+  authEnabled?: boolean;
   logger?: boolean;
 }
 
@@ -13,7 +15,18 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     origin: env.CORS_ORIGINS.split(",").map((origin) => origin.trim())
   });
 
+  if (options.authEnabled !== false) {
+    await app.register(authContextPlugin, {
+      accountApiUrl: env.PRYMEIRA_ACCOUNT_API_URL,
+      productKey: env.PRYMEIRA_PRODUCT_KEY
+    });
+  }
+
   app.get("/health", async () => ({ ok: true, product: env.PRYMEIRA_PRODUCT_KEY }));
+  app.get("/me", async (request) => ({
+    workspaceId: request.talk.workspaceId,
+    role: request.talk.role
+  }));
 
   return app;
 }
