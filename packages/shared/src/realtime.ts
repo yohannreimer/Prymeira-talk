@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { conversationSchema, messageSchema, messageStatusSchema } from "./domain";
+import { conversationSchema, messageSchema, messageStatusSchema } from "./domain.js";
 
 export const realtimeEventSchema = z
   .discriminatedUnion("type", [

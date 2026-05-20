@@ -1,4 +1,4 @@
-import type { UserRole } from "@prymeira-talk/shared/src/domain.js";
+import type { UserRole } from "@prymeira-talk/shared";
 
 export type Permission =
   | "conversation.read"
