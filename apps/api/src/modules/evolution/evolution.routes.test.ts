@@ -18,7 +18,11 @@ function createMockPrisma(overrides: {
   $transaction?: ReturnType<typeof vi.fn>;
   channel?: { findUnique?: ReturnType<typeof vi.fn> };
   contact?: { upsert?: ReturnType<typeof vi.fn> };
-  conversation?: { upsert?: ReturnType<typeof vi.fn>; update?: ReturnType<typeof vi.fn> };
+  conversation?: {
+    upsert?: ReturnType<typeof vi.fn>;
+    update?: ReturnType<typeof vi.fn>;
+    updateMany?: ReturnType<typeof vi.fn>;
+  };
   message?: {
     create?: ReturnType<typeof vi.fn>;
   };
@@ -61,6 +65,11 @@ function createMockPrisma(overrides: {
           channelId: "channel_1",
           contactId: "contact_1",
           lastMessageAt: null
+        }),
+      updateMany:
+        overrides.conversation?.updateMany ??
+        vi.fn().mockResolvedValue({
+          count: 1
         })
     },
     message: {
@@ -285,6 +294,7 @@ describe("Evolution webhook routes", () => {
         })
       });
       expect(prisma.conversation.update).not.toHaveBeenCalled();
+      expect(prisma.conversation.updateMany).not.toHaveBeenCalled();
       expect(publish).not.toHaveBeenCalled();
     } finally {
       await app.close();
@@ -320,6 +330,7 @@ describe("Evolution webhook routes", () => {
         })
       });
       expect(prisma.conversation.update).not.toHaveBeenCalled();
+      expect(prisma.conversation.updateMany).not.toHaveBeenCalled();
       expect(publish).not.toHaveBeenCalled();
     } finally {
       await app.close();
@@ -366,6 +377,17 @@ describe("Evolution webhook routes", () => {
         },
         data: {
           unreadCount: { increment: 1 }
+        }
+      });
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          OR: [{ lastMessageAt: null }, { lastMessageAt: { lte: incomingMessageAt } }]
+        },
+        data: {
+          lastMessageAt: incomingMessageAt,
+          lastMessagePreview: "Oi"
         }
       });
       expect(publish).toHaveBeenCalledOnce();
@@ -430,9 +452,18 @@ describe("Evolution webhook routes", () => {
           }
         },
         data: {
-          lastMessageAt: timestampDate,
-          lastMessagePreview: "Oi",
           unreadCount: { increment: 1 }
+        }
+      });
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          OR: [{ lastMessageAt: null }, { lastMessageAt: { lte: timestampDate } }]
+        },
+        data: {
+          lastMessageAt: timestampDate,
+          lastMessagePreview: "Oi"
         }
       });
 

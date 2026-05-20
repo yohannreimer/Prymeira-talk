@@ -159,19 +159,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           }
         });
 
-        const shouldUpdatePreview =
-          !conversation.lastMessageAt || receivedAt >= conversation.lastMessageAt;
-        const conversationUpdateData = {
-          ...(shouldUpdatePreview
-            ? {
-                lastMessageAt: receivedAt,
-                lastMessagePreview: messageBody
-              }
-            : {}),
-          ...(payload.data.key.fromMe ? {} : { unreadCount: { increment: 1 } })
-        };
-
-        if (Object.keys(conversationUpdateData).length > 0) {
+        if (!payload.data.key.fromMe) {
           await tx.conversation.update({
             where: {
               workspaceId_id: {
@@ -179,9 +167,23 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
                 id: conversation.id
               }
             },
-            data: conversationUpdateData
+            data: {
+              unreadCount: { increment: 1 }
+            }
           });
         }
+
+        await tx.conversation.updateMany({
+          where: {
+            id: conversation.id,
+            workspaceId,
+            OR: [{ lastMessageAt: null }, { lastMessageAt: { lte: receivedAt } }]
+          },
+          data: {
+            lastMessageAt: receivedAt,
+            lastMessagePreview: messageBody
+          }
+        });
 
         return { kind: "created" as const, message };
       });
