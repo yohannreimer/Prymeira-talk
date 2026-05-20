@@ -4,7 +4,7 @@ import type { FastifyRequest } from "fastify";
 import { z } from "zod";
 
 const workspaceAccessSchema = z.object({
-  allowed: z.literal(true),
+  allowed: z.boolean(),
   product_key: z.string(),
   status: z.string(),
   plan: z.string().optional(),
@@ -20,9 +20,49 @@ declare module "fastify" {
     talk: {
       workspaceId: string;
       role: "owner" | "manager" | "agent";
-      clerkToken: string;
     };
   }
+}
+
+type RequireProductAccess = typeof requireProductAccess;
+type Fetch = typeof fetch;
+
+export interface AuthContextPluginOptions {
+  accountApiUrl: string;
+  productKey: string;
+  requireProductAccess?: RequireProductAccess;
+  fetch?: Fetch;
+}
+
+class AuthBoundaryError extends Error {
+  statusCode: number;
+
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.name = "AuthBoundaryError";
+    this.statusCode = statusCode;
+  }
+}
+
+function authError(statusCode: number, message: string) {
+  return new AuthBoundaryError(statusCode, message);
+}
+
+function readErrorStatusCode(error: unknown) {
+  if (typeof error !== "object" || error === null || !("statusCode" in error)) {
+    return null;
+  }
+
+  const statusCode = Number(error.statusCode);
+  return Number.isFinite(statusCode) ? statusCode : null;
+}
+
+function readPathname(request: FastifyRequest) {
+  return new URL(request.url, "http://localhost").pathname;
+}
+
+function isPublicPath(pathname: string) {
+  return pathname === "/health" || pathname === "/webhooks/evolution" || pathname.startsWith("/webhooks/evolution/");
 }
 
 function readBearerToken(request: FastifyRequest) {
@@ -31,8 +71,9 @@ function readBearerToken(request: FastifyRequest) {
     return header.slice("Bearer ".length);
   }
 
-  const query = request.query as { token?: string } | undefined;
-  return query?.token ?? null;
+  // Browser WebSocket handshakes cannot send Authorization headers, so query
+  // token support remains until websocket routes can scope this fallback.
+  return new URL(request.url, "http://localhost").searchParams.get("token");
 }
 
 function normalizeRole(role: string | undefined): "owner" | "manager" | "agent" {
@@ -45,18 +86,27 @@ async function resolveWorkspaceAccess(input: {
   accountApiUrl: string;
   productKey: string;
   clerkToken: string;
+  fetch: Fetch;
 }) {
-  const response = await fetch(`${input.accountApiUrl.replace(/\/$/, "")}/me/products`, {
-    headers: {
-      Authorization: `Bearer ${input.clerkToken}`
-    }
-  });
+  const response = await input
+    .fetch(`${input.accountApiUrl.replace(/\/$/, "")}/me/products`, {
+      headers: {
+        Authorization: `Bearer ${input.clerkToken}`
+      }
+    })
+    .catch(() => {
+      throw authError(502, "Unable to resolve workspace access.");
+    });
 
   if (!response.ok) {
-    throw new Error(`Unable to resolve workspace access: ${response.status}`);
+    if (response.status >= 500) {
+      throw authError(502, "Unable to resolve workspace access.");
+    }
+
+    throw authError(403, "Workspace access denied.");
   }
 
-  const data = z
+  const data = await z
     .object({
       workspace: z.object({
         id: z.string().min(1),
@@ -66,17 +116,28 @@ async function resolveWorkspaceAccess(input: {
         z.object({
           product_key: z.string(),
           allowed: z.boolean(),
-          workspace_id: z.string().min(1),
+          workspace_id: z.string().min(1).optional(),
           workspace_role: z.string().optional(),
           product_role: z.string().optional()
         })
       )
     })
-    .parse(await response.json());
+    .parseAsync(
+      await response.json().catch(() => {
+        throw authError(502, "Invalid workspace access response.");
+      })
+    )
+    .catch(() => {
+      throw authError(502, "Invalid workspace access response.");
+    });
 
   const product = data.products.find((item) => item.product_key === input.productKey);
   if (!product?.allowed) {
-    throw new Error("Product access denied.");
+    throw authError(403, "Product access denied.");
+  }
+
+  if (!product.workspace_id) {
+    throw authError(403, "Workspace access denied.");
   }
 
   return {
@@ -86,30 +147,51 @@ async function resolveWorkspaceAccess(input: {
 }
 
 export const authContextPlugin = fp(
-  async (app, options: { accountApiUrl: string; productKey: string }) => {
+  async (app, options: AuthContextPluginOptions) => {
     app.decorateRequest("talk");
+    const requireAccess = options.requireProductAccess ?? requireProductAccess;
+    const fetchProducts = options.fetch ?? fetch;
 
-    app.addHook("preHandler", async (request) => {
-      if (request.url === "/health" || request.url.startsWith("/webhooks/evolution")) {
+    app.addHook("onRequest", async (request) => {
+      const pathname = readPathname(request);
+      if (isPublicPath(pathname)) {
         return;
       }
 
       const clerkToken = readBearerToken(request);
-      const access = await requireProductAccess(options.productKey, {
+      if (!clerkToken) {
+        throw authError(401, "Missing bearer token.");
+      }
+
+      const access = await requireAccess(options.productKey, {
         accountApiUrl: options.accountApiUrl,
         clerkToken
+      }).catch((error: unknown) => {
+        const statusCode = readErrorStatusCode(error);
+
+        if (statusCode === null || statusCode >= 500) {
+          throw authError(502, "Unable to validate product access.");
+        }
+
+        throw authError(403, "Product access denied.");
       });
-      workspaceAccessSchema.parse(access);
+      const parsedAccess = await workspaceAccessSchema.parseAsync(access).catch(() => {
+        throw authError(502, "Invalid product access response.");
+      });
+      if (!parsedAccess.allowed || parsedAccess.product_key !== options.productKey) {
+        throw authError(403, "Product access denied.");
+      }
+
       const workspaceAccess = await resolveWorkspaceAccess({
         accountApiUrl: options.accountApiUrl,
         productKey: options.productKey,
-        clerkToken: clerkToken!
+        clerkToken,
+        fetch: fetchProducts
       });
 
       request.talk = {
         workspaceId: workspaceAccess.workspaceId,
-        role: workspaceAccess.role,
-        clerkToken: clerkToken!
+        role: workspaceAccess.role
       };
     });
   }

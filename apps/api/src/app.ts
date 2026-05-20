@@ -2,10 +2,13 @@ import cors from "@fastify/cors";
 import Fastify from "fastify";
 import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
+import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 
 export interface CreateAppOptions {
   authEnabled?: boolean;
+  fetch?: AuthContextPluginOptions["fetch"];
   logger?: boolean;
+  requireProductAccess?: AuthContextPluginOptions["requireProductAccess"];
 }
 
 export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
@@ -18,7 +21,9 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   if (options.authEnabled !== false) {
     await app.register(authContextPlugin, {
       accountApiUrl: env.PRYMEIRA_ACCOUNT_API_URL,
-      productKey: env.PRYMEIRA_PRODUCT_KEY
+      productKey: env.PRYMEIRA_PRODUCT_KEY,
+      fetch: options.fetch,
+      requireProductAccess: options.requireProductAccess
     });
   }
 

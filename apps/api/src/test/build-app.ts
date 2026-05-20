@@ -1,9 +1,10 @@
 import { createApp } from "../app.js";
+import type { CreateAppOptions } from "../app.js";
 import type { AppEnv } from "../env.js";
 
 export async function buildApp(
   overrides: Partial<AppEnv> = {},
-  options: { authEnabled?: boolean; logger?: boolean } = {}
+  options: CreateAppOptions = {}
 ) {
   return createApp(
     {
