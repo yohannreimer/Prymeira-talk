@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0 --port 5176",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.61.6",

@@ -1,7 +1,8 @@
 import { ClerkProvider, SignedIn, SignedOut, SignInButton } from "@clerk/clerk-react";
 import type { PropsWithChildren } from "react";
 
-const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+const configuredPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+const publishableKey = configuredPublishableKey?.endsWith("_replace_me") ? undefined : configuredPublishableKey;
 
 export function AuthProvider({ children }: PropsWithChildren) {
   if (!publishableKey) {

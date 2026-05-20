@@ -18,8 +18,6 @@ pnpm install
 docker compose -f docker-compose.dev.yml up -d
 ```
 
-Note: this scaffold commit only creates root tooling. The following commands become active after `apps/api` and `apps/web` are added by the foundation plan.
-
 4. Generate Prisma client and run migrations:
 
 ```sh
@@ -39,3 +37,29 @@ Local URLs:
 - Web: `http://localhost:5176`
 
 Auth rule: Clerk authenticates, Prymeira Account authorizes `product_key=talk`, Prymeira Talk enforces workspace data boundaries in the API.
+
+## Foundation Verification
+
+The current foundation slice has been verified locally with:
+
+```sh
+pnpm install
+pnpm test
+pnpm typecheck
+pnpm build
+pnpm --filter @prymeira-talk/api test
+pnpm --filter @prymeira-talk/web typecheck
+pnpm --filter @prymeira-talk/web build
+```
+
+The web package accepts an empty Vitest suite during this first shell phase; UI tests should be added as interactive flows land.
+
+For local database verification:
+
+```sh
+docker compose -f docker-compose.dev.yml up -d
+pnpm prisma:generate
+pnpm --filter @prymeira-talk/api prisma migrate dev --name init
+```
+
+Production-grade tenant resolution depends on Prymeira Account returning a `workspace_id` for users entitled to `product_key=talk`. Prymeira Talk treats the API as the tenant boundary and filters workspace data server-side.
