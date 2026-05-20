@@ -1,5 +1,6 @@
 import websocket from "@fastify/websocket";
 import type { FastifyPluginAsync } from "fastify";
+import fp from "fastify-plugin";
 import { createRealtimeHub } from "./realtime-hub.js";
 
 declare module "fastify" {
@@ -8,7 +9,7 @@ declare module "fastify" {
   }
 }
 
-export const realtimeRoutes: FastifyPluginAsync = async (app) => {
+const realtimeRoutesPlugin: FastifyPluginAsync = async (app) => {
   await app.register(websocket);
 
   const hub = createRealtimeHub();
@@ -19,3 +20,7 @@ export const realtimeRoutes: FastifyPluginAsync = async (app) => {
     socket.on("close", removeClient);
   });
 };
+
+export const realtimeRoutes = fp(realtimeRoutesPlugin, {
+  name: "realtime-routes"
+});

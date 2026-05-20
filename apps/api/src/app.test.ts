@@ -15,6 +15,16 @@ describe("app", () => {
     }
   });
 
+  it("exposes realtime hub on the root app after registration", async () => {
+    const app = await buildApp({}, { authEnabled: false, prismaEnabled: false });
+
+    try {
+      expect(app.realtime.publish).toEqual(expect.any(Function));
+    } finally {
+      await app.close();
+    }
+  });
+
   it("skips auth for health requests with a query string", async () => {
     const requireProductAccess = vi.fn();
     const fetchProducts = vi.fn();
