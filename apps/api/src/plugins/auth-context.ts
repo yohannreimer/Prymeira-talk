@@ -49,11 +49,11 @@ function authError(statusCode: number, message: string) {
 }
 
 function readErrorStatusCode(error: unknown) {
-  if (typeof error !== "object" || error === null || !("statusCode" in error)) {
+  if (typeof error !== "object" || error === null) {
     return null;
   }
 
-  const statusCode = Number(error.statusCode);
+  const statusCode = "statusCode" in error ? Number(error.statusCode) : "status" in error ? Number(error.status) : null;
   return Number.isFinite(statusCode) ? statusCode : null;
 }
 
@@ -65,14 +65,18 @@ function isPublicPath(pathname: string) {
   return pathname === "/health" || pathname === "/webhooks/evolution" || pathname.startsWith("/webhooks/evolution/");
 }
 
-function readBearerToken(request: FastifyRequest) {
+function readBearerToken(request: FastifyRequest, pathname: string) {
   const header = request.headers.authorization;
   if (header?.startsWith("Bearer ")) {
     return header.slice("Bearer ".length);
   }
 
   // Browser WebSocket handshakes cannot send Authorization headers, so query
-  // token support remains until websocket routes can scope this fallback.
+  // token support is scoped to the realtime handshake path.
+  if (pathname !== "/realtime") {
+    return null;
+  }
+
   return new URL(request.url, "http://localhost").searchParams.get("token");
 }
 
@@ -116,7 +120,7 @@ async function resolveWorkspaceAccess(input: {
         z.object({
           product_key: z.string(),
           allowed: z.boolean(),
-          workspace_id: z.string().min(1).optional(),
+          workspace_id: z.string().optional(),
           workspace_role: z.string().optional(),
           product_role: z.string().optional()
         })
@@ -158,7 +162,7 @@ export const authContextPlugin = fp(
         return;
       }
 
-      const clerkToken = readBearerToken(request);
+      const clerkToken = readBearerToken(request, pathname);
       if (!clerkToken) {
         throw authError(401, "Missing bearer token.");
       }
@@ -171,6 +175,10 @@ export const authContextPlugin = fp(
 
         if (statusCode === null || statusCode >= 500) {
           throw authError(502, "Unable to validate product access.");
+        }
+
+        if (statusCode === 401) {
+          throw authError(401, "Missing or invalid bearer token.");
         }
 
         throw authError(403, "Product access denied.");
