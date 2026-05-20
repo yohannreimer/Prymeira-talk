@@ -1,9 +1,17 @@
 import type { PrismaClient } from "@prisma/client";
 import type { ConversationDto, MessageDto } from "@prymeira-talk/shared";
 
-type PrismaLike = Pick<PrismaClient, "conversation" | "message">;
-
 type DateLike = Date | string;
+
+export class ConversationNotFoundError extends Error {
+  code = "CONVERSATION_NOT_FOUND" as const;
+  statusCode = 404 as const;
+
+  constructor() {
+    super("Conversation not found.");
+    this.name = "ConversationNotFoundError";
+  }
+}
 
 interface ConversationRecord {
   id: string;
@@ -31,6 +39,20 @@ interface MessageRecord {
   status: MessageDto["status"];
   sentByUserId?: string | null;
   createdAt: DateLike;
+}
+
+type ConversationFindManyArgs = Parameters<PrismaClient["conversation"]["findMany"]>[0];
+type ConversationFindUniqueArgs = Parameters<PrismaClient["conversation"]["findUnique"]>[0];
+type MessageCreateArgs = Parameters<PrismaClient["message"]["create"]>[0];
+
+export interface PrismaLike {
+  conversation: {
+    findMany(args: ConversationFindManyArgs): Promise<ConversationRecord[]>;
+    findUnique(args: ConversationFindUniqueArgs): Promise<{ id: string } | null>;
+  };
+  message: {
+    create(args: MessageCreateArgs): Promise<MessageRecord>;
+  };
 }
 
 function toIsoString(value: DateLike) {
@@ -87,6 +109,15 @@ export function createConversationsService(prisma: PrismaLike) {
       body: string;
       sentByUserId: string | null;
     }): Promise<MessageDto> {
+      const conversation = await prisma.conversation.findUnique({
+        where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+        select: { id: true }
+      });
+
+      if (!conversation) {
+        throw new ConversationNotFoundError();
+      }
+
       const message = await prisma.message.create({
         data: {
           workspaceId: input.workspaceId,

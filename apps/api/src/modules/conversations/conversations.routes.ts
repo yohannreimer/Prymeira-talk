@@ -1,9 +1,12 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { createConversationsService } from "./conversations.service.js";
+import {
+  ConversationNotFoundError,
+  createConversationsService
+} from "./conversations.service.js";
 
-const createMessageParamsSchema = z.object({
-  conversationId: z.string().min(1)
+export const createMessageParamsSchema = z.object({
+  conversationId: z.string().uuid()
 });
 
 const createMessageBodySchema = z.object({
@@ -30,8 +33,20 @@ export const conversationsRoutes: FastifyPluginAsync = async (app) => {
       conversationId: params.data.conversationId,
       body: body.data.body,
       sentByUserId: null
+    }).catch((error: unknown) => {
+      if (error instanceof ConversationNotFoundError) {
+        return null;
+      }
+
+      throw error;
     });
 
-    return reply.send(message);
+    if (!message) {
+      return reply
+        .code(404)
+        .send({ code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
+    }
+
+    return reply.code(201).send(message);
   });
 };
