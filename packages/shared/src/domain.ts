@@ -4,11 +4,16 @@ export const userRoleSchema = z.enum(["owner", "manager", "agent"]);
 export type UserRole = z.infer<typeof userRoleSchema>;
 
 export const conversationStatusSchema = z.enum(["open", "pending", "closed"]);
+export type ConversationStatus = z.infer<typeof conversationStatusSchema>;
 export const conversationPrioritySchema = z.enum(["low", "normal", "high"]);
+export type ConversationPriority = z.infer<typeof conversationPrioritySchema>;
 
 export const messageDirectionSchema = z.enum(["inbound", "outbound"]);
+export type MessageDirection = z.infer<typeof messageDirectionSchema>;
 export const messageTypeSchema = z.enum(["text", "image", "audio", "file", "template", "system", "internal_note"]);
+export type MessageType = z.infer<typeof messageTypeSchema>;
 export const messageStatusSchema = z.enum(["pending", "sent", "delivered", "read", "failed"]);
+export type MessageStatus = z.infer<typeof messageStatusSchema>;
 
 export const conversationSchema = z.object({
   id: z.string().min(1),
@@ -29,13 +34,13 @@ export const messageSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
   conversationId: z.string().min(1),
-  providerMessageId: z.string().nullable().optional(),
+  providerMessageId: z.string().nullable(),
   direction: messageDirectionSchema,
   type: messageTypeSchema,
   body: z.string().nullable(),
-  mediaUrl: z.string().url().nullable().optional(),
+  mediaUrl: z.string().url().nullable(),
   status: messageStatusSchema,
-  sentByUserId: z.string().nullable().optional(),
+  sentByUserId: z.string().nullable(),
   createdAt: z.string().datetime()
 });
 export type MessageDto = z.infer<typeof messageSchema>;
