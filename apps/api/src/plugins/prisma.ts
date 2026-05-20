@@ -7,8 +7,19 @@ declare module "fastify" {
   }
 }
 
-export const prismaPlugin = fp(async (app) => {
-  const prisma = new PrismaClient();
+export interface PrismaPluginOptions {
+  databaseUrl: string;
+}
+
+export const prismaPlugin = fp<PrismaPluginOptions>(async (app, options) => {
+  const prisma = new PrismaClient({
+    datasources: {
+      db: {
+        url: options.databaseUrl
+      }
+    }
+  });
+
   app.decorate("prisma", prisma);
   app.addHook("onClose", async () => {
     await prisma.$disconnect();

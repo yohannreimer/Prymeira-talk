@@ -21,7 +21,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   });
 
   if (options.prismaEnabled !== false) {
-    await app.register(prismaPlugin);
+    await app.register(prismaPlugin, { databaseUrl: env.DATABASE_URL });
   }
 
   if (options.authEnabled !== false) {

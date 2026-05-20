@@ -8,7 +8,7 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "prisma": "prisma"
+    "prisma": "dotenv -e ../../.env -- prisma"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
@@ -22,6 +22,7 @@
     "zod": "^4.1.12"
   },
   "devDependencies": {
+    "dotenv-cli": "^8.0.0",
     "prisma": "^6.19.0",
     "tsx": "^4.21.0",
     "vitest": "^4.0.18"

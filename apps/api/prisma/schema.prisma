@@ -81,8 +81,10 @@ model UserProfile {
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
-  sentMessages Message[]
+  assignedConversations Conversation[] @relation("AssignedUserConversations")
+  sentMessages          Message[]      @relation("UserSentMessages")
 
+  @@unique([workspaceId, id])
   @@unique([workspaceId, clerkUserId])
   @@index([workspaceId, role])
   @@map("user_profiles")
@@ -102,6 +104,7 @@ model Channel {
 
   conversations Conversation[]
 
+  @@unique([workspaceId, id])
   @@unique([workspaceId, provider, providerKey])
   @@index([workspaceId, status])
   @@map("channels")
@@ -123,7 +126,10 @@ model Contact {
 
   conversations Conversation[]
 
+  @@unique([workspaceId, id])
   @@unique([workspaceId, phone])
+  @@unique([workspaceId, atomicCrmContactId])
+  @@unique([workspaceId, atomicCrmLeadId])
   @@index([workspaceId, name])
   @@map("contacts")
 }
@@ -138,6 +144,7 @@ model Department {
 
   conversations Conversation[]
 
+  @@unique([workspaceId, id])
   @@unique([workspaceId, name])
   @@map("departments")
 }
@@ -157,12 +164,14 @@ model Conversation {
   createdAt          DateTime             @default(now()) @map("created_at")
   updatedAt          DateTime             @updatedAt @map("updated_at")
 
-  channel    Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  contact    Contact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  department Department?        @relation(fields: [departmentId], references: [id], onDelete: SetNull)
-  messages   Message[]
-  tags       ConversationTag[]
+  assignedUser UserProfile?      @relation("AssignedUserConversations", fields: [workspaceId, assignedUserId], references: [workspaceId, id], onDelete: NoAction)
+  channel      Channel           @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  contact      Contact           @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  department   Department?        @relation(fields: [workspaceId, departmentId], references: [workspaceId, id], onDelete: NoAction)
+  messages     Message[]
+  tags         ConversationTag[]
 
+  @@unique([workspaceId, id])
   @@unique([workspaceId, channelId, contactId])
   @@index([workspaceId, status, lastMessageAt])
   @@index([workspaceId, assignedUserId])
@@ -185,8 +194,8 @@ model Message {
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
 
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  sentBy       UserProfile? @relation(fields: [sentByUserId], references: [id], onDelete: SetNull)
+  conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  sentBy       UserProfile? @relation("UserSentMessages", fields: [workspaceId, sentByUserId], references: [workspaceId, id], onDelete: NoAction)
 
   @@unique([workspaceId, providerEventId])
   @@unique([workspaceId, providerMessageId])
@@ -204,18 +213,21 @@ model Tag {
 
   conversations ConversationTag[]
 
+  @@unique([workspaceId, id])
   @@unique([workspaceId, name])
   @@map("tags")
 }
 
 model ConversationTag {
+  workspaceId    String   @map("workspace_id")
   conversationId String   @map("conversation_id") @db.Uuid
   tagId          String   @map("tag_id") @db.Uuid
   createdAt      DateTime @default(now()) @map("created_at")
 
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  tag          Tag          @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  tag          Tag          @relation(fields: [workspaceId, tagId], references: [workspaceId, id], onDelete: Cascade)
 
-  @@id([conversationId, tagId])
+  @@id([workspaceId, conversationId, tagId])
+  @@index([workspaceId, tagId])
   @@map("conversation_tags")
 }
