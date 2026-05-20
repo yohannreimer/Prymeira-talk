@@ -66,6 +66,7 @@ input:disabled {
 .talk-shell {
   display: grid;
   grid-template-columns: 72px minmax(280px, 360px) minmax(420px, 1fr) minmax(260px, 320px);
+  height: 100vh;
   min-height: 100vh;
   overflow: hidden;
 }
@@ -118,7 +119,8 @@ input:disabled {
 .conversation-list,
 .chat-panel,
 .contact-panel {
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -209,7 +211,9 @@ input:disabled {
 
 .conversation-items {
   display: grid;
+  flex: 1;
   gap: 8px;
+  min-height: 0;
   overflow-y: auto;
   padding: 0 12px 18px;
 }
@@ -419,6 +423,45 @@ input:disabled {
   font-size: 0.93rem;
 }
 
+.crm-ready-panel {
+  display: grid;
+  gap: 12px;
+  margin: 0 24px 24px;
+  border: 1px solid #dfe7e1;
+  border-radius: 8px;
+  background: #f5f8f5;
+  padding: 14px;
+}
+
+.crm-ready-panel h3,
+.crm-ready-panel p {
+  margin: 0;
+}
+
+.crm-ready-panel h3 {
+  color: #1f312b;
+  font-size: 0.98rem;
+}
+
+.crm-ready-panel p:not(.eyebrow) {
+  color: #64756d;
+  font-size: 0.84rem;
+}
+
+.crm-ready-panel button {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #d5ded8;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #65756e;
+  padding: 8px 10px;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
 @media (max-width: 1100px) {
   .talk-shell {
     grid-template-columns: 64px minmax(280px, 340px) minmax(360px, 1fr);
@@ -433,6 +476,17 @@ input:disabled {
   .talk-shell {
     grid-template-columns: 56px minmax(0, 1fr);
     overflow: visible;
+  }
+
+  .app-rail {
+    gap: 16px;
+    padding: 14px 6px;
+  }
+
+  .rail-logo,
+  .rail-button {
+    width: 40px;
+    height: 40px;
   }
 
   .chat-panel {

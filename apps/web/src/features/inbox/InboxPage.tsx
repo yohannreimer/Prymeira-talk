@@ -1,6 +1,6 @@
 import { useAuth } from "@clerk/clerk-react";
 import type { ConversationDto, RealtimeEvent } from "@prymeira-talk/shared";
-import { Bot, Inbox, MessageSquare, Settings, Users } from "lucide-react";
+import { Bot, Inbox, Link2, MessageSquare, Settings, Users } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGetConversations } from "../../app/api";
 import { useRealtimeEvents } from "./useRealtimeEvents";
@@ -249,6 +249,21 @@ export function InboxPage() {
             <dd>{selectedConversation?.channelId ?? "-"}</dd>
           </div>
         </dl>
+        <section className="crm-ready-panel" aria-label="Integracao com Atomic CRM">
+          <div>
+            <p className="eyebrow">Atomic CRM</p>
+            <h3>{selectedConversation ? "Sem vinculo no Atomic CRM" : "Aguardando contato"}</h3>
+            <p>
+              {selectedConversation
+                ? "O Talk segue standalone; este espaco fica pronto para vincular lead ou cliente."
+                : "Selecione uma conversa para preparar o vinculo futuro."}
+            </p>
+          </div>
+          <button disabled type="button">
+            <Link2 size={16} aria-hidden="true" />
+            Vincular depois
+          </button>
+        </section>
       </aside>
     </main>
   );
