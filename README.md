@@ -18,6 +18,8 @@ pnpm install
 docker compose -f docker-compose.dev.yml up -d
 ```
 
+Note: this scaffold commit only creates root tooling. The following commands become active after `apps/api` and `apps/web` are added by the foundation plan.
+
 4. Generate Prisma client and run migrations:
 
 ```sh
