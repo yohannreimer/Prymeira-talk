@@ -50,7 +50,8 @@ function createMockPrisma(overrides: {
           id: "conv_1",
           workspaceId: "workspace_a",
           channelId: "channel_1",
-          contactId: "contact_1"
+          contactId: "contact_1",
+          lastMessageAt: null
         }),
       update:
         overrides.conversation?.update ??
@@ -58,7 +59,8 @@ function createMockPrisma(overrides: {
           id: "conv_1",
           workspaceId: "workspace_a",
           channelId: "channel_1",
-          contactId: "contact_1"
+          contactId: "contact_1",
+          lastMessageAt: null
         })
     },
     message: {
@@ -123,6 +125,13 @@ describe("Evolution webhook routes", () => {
       isUniqueConstraintError({
         code: "P2002",
         meta: { target: ["workspace_id", "provider_message_id"] }
+      })
+    ).toBe(true);
+
+    expect(
+      isUniqueConstraintError({
+        code: "P2002",
+        meta: { target: ["workspace_id", "provider_event_id"] }
       })
     ).toBe(true);
 
@@ -277,6 +286,89 @@ describe("Evolution webhook routes", () => {
       });
       expect(prisma.conversation.update).not.toHaveBeenCalled();
       expect(publish).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns ok duplicate without unread increments or publish for duplicate provider events", async () => {
+    const duplicateError = {
+      code: "P2002",
+      meta: { target: ["workspace_id", "provider_event_id"] }
+    };
+    const prisma = createMockPrisma({
+      message: {
+        create: vi.fn().mockRejectedValue(duplicateError)
+      }
+    });
+    const { app, publish } = await buildEvolutionApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: validWebhookBody
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true, duplicate: true });
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          workspaceId: "workspace_a",
+          providerEventId: "messages.upsert:client-one:provider_msg_1"
+        })
+      });
+      expect(prisma.conversation.update).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("increments unread without regressing preview when an older inbound message arrives", async () => {
+    const currentLastMessageAt = new Date("2026-05-21T12:00:00.000Z");
+    const incomingMessageAt = new Date(validWebhookBody.data.messageTimestamp * 1000);
+    const prisma = createMockPrisma({
+      conversation: {
+        upsert: vi.fn().mockResolvedValue({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          lastMessageAt: currentLastMessageAt
+        })
+      }
+    });
+    const { app, publish } = await buildEvolutionApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: validWebhookBody
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true });
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          createdAt: incomingMessageAt
+        })
+      });
+      expect(prisma.conversation.update).toHaveBeenCalledWith({
+        where: {
+          workspaceId_id: {
+            workspaceId: "workspace_a",
+            id: "conv_1"
+          }
+        },
+        data: {
+          unreadCount: { increment: 1 }
+        }
+      });
+      expect(publish).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }

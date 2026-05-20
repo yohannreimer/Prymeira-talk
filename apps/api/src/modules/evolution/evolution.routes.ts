@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { evolutionWebhookEnvelopeSchema, evolutionWebhookSchema } from "./evolution.schemas.js";
 
@@ -30,10 +30,10 @@ function hasValidWebhookSecret(header: string | string[] | undefined, expectedSe
     return false;
   }
 
-  const actual = Buffer.from(actualSecret);
-  const expected = Buffer.from(expectedSecret);
+  const actual = createHash("sha256").update(actualSecret).digest();
+  const expected = createHash("sha256").update(expectedSecret).digest();
 
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
+  return timingSafeEqual(actual, expected);
 }
 
 export function isUniqueConstraintError(error: unknown) {
@@ -54,7 +54,11 @@ export function isUniqueConstraintError(error: unknown) {
       : [];
 
   return targetFields.some(
-    (field) => field.includes("providerMessageId") || field.includes("provider_message_id")
+    (field) =>
+      field.includes("providerMessageId") ||
+      field.includes("provider_message_id") ||
+      field.includes("providerEventId") ||
+      field.includes("provider_event_id")
   );
 }
 
@@ -155,21 +159,29 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           }
         });
 
+        const shouldUpdatePreview =
+          !conversation.lastMessageAt || receivedAt >= conversation.lastMessageAt;
         const conversationUpdateData = {
-          lastMessageAt: receivedAt,
-          lastMessagePreview: messageBody,
+          ...(shouldUpdatePreview
+            ? {
+                lastMessageAt: receivedAt,
+                lastMessagePreview: messageBody
+              }
+            : {}),
           ...(payload.data.key.fromMe ? {} : { unreadCount: { increment: 1 } })
         };
 
-        await tx.conversation.update({
-          where: {
-            workspaceId_id: {
-              workspaceId,
-              id: conversation.id
-            }
-          },
-          data: conversationUpdateData
-        });
+        if (Object.keys(conversationUpdateData).length > 0) {
+          await tx.conversation.update({
+            where: {
+              workspaceId_id: {
+                workspaceId,
+                id: conversation.id
+              }
+            },
+            data: conversationUpdateData
+          });
+        }
 
         return { kind: "created" as const, message };
       });
