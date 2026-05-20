@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import { evolutionWebhookEnvelopeSchema, evolutionWebhookSchema } from "./evolution.schemas.js";
 
 export interface EvolutionRoutesOptions {
@@ -185,30 +186,36 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           }
         });
 
-        return { kind: "created" as const, message };
+        const updatedConversation = await tx.conversation.findUnique({
+          where: {
+            workspaceId_id: {
+              workspaceId,
+              id: conversation.id
+            }
+          }
+        });
+
+        if (!updatedConversation) {
+          throw new Error("Conversation disappeared during Evolution webhook ingestion.");
+        }
+
+        return { kind: "created" as const, message, conversation: updatedConversation };
       });
 
       if (transactionResult.kind === "channel_not_found") {
         return reply.code(404).send({ ok: false, error: "channel_not_found" });
       }
 
-      const { message } = transactionResult;
+      const { message, conversation } = transactionResult;
       app.realtime.publish({
         type: "message.created",
         workspaceId,
-        payload: {
-          id: message.id,
-          workspaceId: message.workspaceId,
-          conversationId: message.conversationId,
-          providerMessageId: message.providerMessageId ?? null,
-          direction: message.direction,
-          type: message.type,
-          body: message.body,
-          mediaUrl: message.mediaUrl ?? null,
-          status: message.status,
-          sentByUserId: message.sentByUserId ?? null,
-          createdAt: message.createdAt.toISOString()
-        }
+        payload: toMessageDto(message)
+      });
+      app.realtime.publish({
+        type: "conversation.updated",
+        workspaceId,
+        payload: toConversationDto(conversation)
       });
 
       return { ok: true };

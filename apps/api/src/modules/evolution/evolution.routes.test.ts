@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { messageSchema } from "@prymeira-talk/shared";
+import { conversationSchema, messageSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
 import { evolutionRoutes, isUniqueConstraintError } from "./evolution.routes.js";
 import { evolutionWebhookEnvelopeSchema, evolutionWebhookSchema } from "./evolution.schemas.js";
@@ -19,6 +19,7 @@ function createMockPrisma(overrides: {
   channel?: { findUnique?: ReturnType<typeof vi.fn> };
   contact?: { upsert?: ReturnType<typeof vi.fn> };
   conversation?: {
+    findUnique?: ReturnType<typeof vi.fn>;
     upsert?: ReturnType<typeof vi.fn>;
     update?: ReturnType<typeof vi.fn>;
     updateMany?: ReturnType<typeof vi.fn>;
@@ -48,6 +49,21 @@ function createMockPrisma(overrides: {
         })
     },
     conversation: {
+      findUnique:
+        overrides.conversation?.findUnique ??
+        vi.fn().mockResolvedValue({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          status: "open",
+          assignedUserId: null,
+          departmentId: null,
+          lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+          lastMessagePreview: "Oi",
+          unreadCount: 1,
+          priority: "normal"
+        }),
       upsert:
         overrides.conversation?.upsert ??
         vi.fn().mockResolvedValue({
@@ -342,6 +358,19 @@ describe("Evolution webhook routes", () => {
     const incomingMessageAt = new Date(validWebhookBody.data.messageTimestamp * 1000);
     const prisma = createMockPrisma({
       conversation: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          status: "open",
+          assignedUserId: null,
+          departmentId: null,
+          lastMessageAt: currentLastMessageAt,
+          lastMessagePreview: "Mensagem mais nova",
+          unreadCount: 4,
+          priority: "normal"
+        }),
         upsert: vi.fn().mockResolvedValue({
           id: "conv_1",
           workspaceId: "workspace_a",
@@ -390,7 +419,18 @@ describe("Evolution webhook routes", () => {
           lastMessagePreview: "Oi"
         }
       });
-      expect(publish).toHaveBeenCalledOnce();
+      expect(publish).toHaveBeenCalledTimes(2);
+      expect(publish).toHaveBeenNthCalledWith(2, {
+        type: "conversation.updated",
+        workspaceId: "workspace_a",
+        payload: expect.objectContaining({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          lastMessageAt: currentLastMessageAt.toISOString(),
+          lastMessagePreview: "Mensagem mais nova",
+          unreadCount: 4
+        })
+      });
     } finally {
       await app.close();
     }
@@ -467,7 +507,8 @@ describe("Evolution webhook routes", () => {
         }
       });
 
-      expect(publish).toHaveBeenCalledWith({
+      expect(publish).toHaveBeenCalledTimes(2);
+      expect(publish).toHaveBeenNthCalledWith(1, {
         type: "message.created",
         workspaceId: "workspace_a",
         payload: expect.objectContaining({
@@ -479,9 +520,24 @@ describe("Evolution webhook routes", () => {
           sentByUserId: null
         })
       });
+      expect(publish).toHaveBeenNthCalledWith(2, {
+        type: "conversation.updated",
+        workspaceId: "workspace_a",
+        payload: expect.objectContaining({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          lastMessageAt: "2026-05-20T12:00:00.000Z",
+          lastMessagePreview: "Oi",
+          unreadCount: 1
+        })
+      });
 
-      const event = publish.mock.calls[0][0];
-      expect(messageSchema.parse(event.payload)).toEqual(event.payload);
+      const messageEvent = publish.mock.calls[0][0];
+      const conversationEvent = publish.mock.calls[1][0];
+      expect(messageSchema.parse(messageEvent.payload)).toEqual(messageEvent.payload);
+      expect(conversationSchema.parse(conversationEvent.payload)).toEqual(conversationEvent.payload);
+      expect(realtimeEventSchema.parse(messageEvent)).toEqual(messageEvent);
+      expect(realtimeEventSchema.parse(conversationEvent)).toEqual(conversationEvent);
     } finally {
       await app.close();
     }

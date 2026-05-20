@@ -43,12 +43,14 @@ interface MessageRecord {
 
 type ConversationFindManyArgs = Parameters<PrismaClient["conversation"]["findMany"]>[0];
 type ConversationFindUniqueArgs = Parameters<PrismaClient["conversation"]["findUnique"]>[0];
+type ConversationUpdateArgs = Parameters<PrismaClient["conversation"]["update"]>[0];
 type MessageCreateArgs = Parameters<PrismaClient["message"]["create"]>[0];
 
 export interface PrismaLike {
   conversation: {
     findMany(args: ConversationFindManyArgs): Promise<ConversationRecord[]>;
     findUnique(args: ConversationFindUniqueArgs): Promise<{ id: string } | null>;
+    update(args: ConversationUpdateArgs): Promise<ConversationRecord>;
   };
   message: {
     create(args: MessageCreateArgs): Promise<MessageRecord>;
@@ -108,7 +110,7 @@ export function createConversationsService(prisma: PrismaLike) {
       conversationId: string;
       body: string;
       sentByUserId: string | null;
-    }): Promise<MessageDto> {
+    }): Promise<{ message: MessageDto; conversation: ConversationDto }> {
       const conversation = await prisma.conversation.findUnique({
         where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
         select: { id: true }
@@ -130,7 +132,19 @@ export function createConversationsService(prisma: PrismaLike) {
         }
       });
 
-      return toMessageDto(message);
+      const updatedConversation = await prisma.conversation.update({
+        where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+        data: {
+          lastMessageAt:
+            message.createdAt instanceof Date ? message.createdAt : new Date(message.createdAt),
+          lastMessagePreview: input.body
+        }
+      });
+
+      return {
+        message: toMessageDto(message),
+        conversation: toConversationDto(updatedConversation)
+      };
     }
   };
 }

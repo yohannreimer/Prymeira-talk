@@ -28,7 +28,7 @@ export const conversationsRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "Invalid conversation message request." });
     }
 
-    const message = await service.createPendingOutboundMessage({
+    const result = await service.createPendingOutboundMessage({
       workspaceId: request.talk.workspaceId,
       conversationId: params.data.conversationId,
       body: body.data.body,
@@ -41,12 +41,23 @@ export const conversationsRoutes: FastifyPluginAsync = async (app) => {
       throw error;
     });
 
-    if (!message) {
+    if (!result) {
       return reply
         .code(404)
         .send({ code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
     }
 
-    return reply.code(201).send(message);
+    app.realtime.publish({
+      type: "message.created",
+      workspaceId: request.talk.workspaceId,
+      payload: result.message
+    });
+    app.realtime.publish({
+      type: "conversation.updated",
+      workspaceId: request.talk.workspaceId,
+      payload: result.conversation
+    });
+
+    return reply.code(201).send(result.message);
   });
 };
