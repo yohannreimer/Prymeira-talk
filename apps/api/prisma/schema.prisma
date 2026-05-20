@@ -1,0 +1,221 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  owner
+  manager
+  agent
+}
+
+enum ChannelProvider {
+  evolution
+}
+
+enum ChannelStatus {
+  disconnected
+  connecting
+  connected
+  failed
+}
+
+enum ConversationStatus {
+  open
+  pending
+  closed
+}
+
+enum ConversationPriority {
+  low
+  normal
+  high
+}
+
+enum MessageDirection {
+  inbound
+  outbound
+}
+
+enum MessageType {
+  text
+  image
+  audio
+  file
+  template
+  system
+  internal_note
+}
+
+enum MessageStatus {
+  pending
+  sent
+  delivered
+  read
+  failed
+}
+
+model WorkspaceMirror {
+  workspaceId String   @id @map("workspace_id")
+  name        String?
+  plan        String?
+  limits      Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("workspace_mirrors")
+}
+
+model UserProfile {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @map("workspace_id")
+  clerkUserId   String   @map("clerk_user_id")
+  role          UserRole @default(agent)
+  displayName   String   @map("display_name")
+  avatarUrl     String?  @map("avatar_url")
+  presenceState String   @default("offline") @map("presence_state")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  sentMessages Message[]
+
+  @@unique([workspaceId, clerkUserId])
+  @@index([workspaceId, role])
+  @@map("user_profiles")
+}
+
+model Channel {
+  id              String        @id @default(uuid()) @db.Uuid
+  workspaceId     String        @map("workspace_id")
+  provider        ChannelProvider
+  providerKey     String        @map("provider_key")
+  phoneNumber     String?       @map("phone_number")
+  displayName     String?       @map("display_name")
+  status          ChannelStatus @default(disconnected)
+  encryptedConfig Json          @default("{}") @map("encrypted_config")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  conversations Conversation[]
+
+  @@unique([workspaceId, provider, providerKey])
+  @@index([workspaceId, status])
+  @@map("channels")
+}
+
+model Contact {
+  id                 String   @id @default(uuid()) @db.Uuid
+  workspaceId        String   @map("workspace_id")
+  name               String?
+  phone              String
+  email              String?
+  company            String?
+  avatarUrl          String?  @map("avatar_url")
+  customFields       Json     @default("{}") @map("custom_fields")
+  atomicCrmContactId String?  @map("atomic_crm_contact_id")
+  atomicCrmLeadId    String?  @map("atomic_crm_lead_id")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  conversations Conversation[]
+
+  @@unique([workspaceId, phone])
+  @@index([workspaceId, name])
+  @@map("contacts")
+}
+
+model Department {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspaceId  String   @map("workspace_id")
+  name         String
+  routingOrder Int      @default(0) @map("routing_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  conversations Conversation[]
+
+  @@unique([workspaceId, name])
+  @@map("departments")
+}
+
+model Conversation {
+  id                 String               @id @default(uuid()) @db.Uuid
+  workspaceId        String               @map("workspace_id")
+  channelId          String               @map("channel_id") @db.Uuid
+  contactId          String               @map("contact_id") @db.Uuid
+  status             ConversationStatus   @default(open)
+  assignedUserId     String?              @map("assigned_user_id") @db.Uuid
+  departmentId       String?              @map("department_id") @db.Uuid
+  lastMessageAt      DateTime?            @map("last_message_at")
+  lastMessagePreview String?              @map("last_message_preview")
+  unreadCount        Int                  @default(0) @map("unread_count")
+  priority           ConversationPriority @default(normal)
+  createdAt          DateTime             @default(now()) @map("created_at")
+  updatedAt          DateTime             @updatedAt @map("updated_at")
+
+  channel    Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  contact    Contact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  department Department?        @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  messages   Message[]
+  tags       ConversationTag[]
+
+  @@unique([workspaceId, channelId, contactId])
+  @@index([workspaceId, status, lastMessageAt])
+  @@index([workspaceId, assignedUserId])
+  @@map("conversations")
+}
+
+model Message {
+  id                String           @id @default(uuid()) @db.Uuid
+  workspaceId       String           @map("workspace_id")
+  conversationId    String           @map("conversation_id") @db.Uuid
+  providerMessageId String?          @map("provider_message_id")
+  providerEventId   String?          @map("provider_event_id")
+  direction         MessageDirection
+  type              MessageType
+  body              String?
+  mediaUrl          String?          @map("media_url")
+  metadata          Json             @default("{}")
+  status            MessageStatus    @default(pending)
+  sentByUserId      String?          @map("sent_by_user_id") @db.Uuid
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sentBy       UserProfile? @relation(fields: [sentByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, providerEventId])
+  @@unique([workspaceId, providerMessageId])
+  @@index([workspaceId, conversationId, createdAt])
+  @@map("messages")
+}
+
+model Tag {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  name        String
+  color       String
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  conversations ConversationTag[]
+
+  @@unique([workspaceId, name])
+  @@map("tags")
+}
+
+model ConversationTag {
+  conversationId String   @map("conversation_id") @db.Uuid
+  tagId          String   @map("tag_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tag          Tag          @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, tagId])
+  @@map("conversation_tags")
+}

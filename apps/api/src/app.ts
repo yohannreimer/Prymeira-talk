@@ -3,11 +3,13 @@ import Fastify from "fastify";
 import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
+import { prismaPlugin } from "./plugins/prisma.js";
 
 export interface CreateAppOptions {
   authEnabled?: boolean;
   fetch?: AuthContextPluginOptions["fetch"];
   logger?: boolean;
+  prismaEnabled?: boolean;
   requireProductAccess?: AuthContextPluginOptions["requireProductAccess"];
 }
 
@@ -17,6 +19,10 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(cors, {
     origin: env.CORS_ORIGINS.split(",").map((origin) => origin.trim())
   });
+
+  if (options.prismaEnabled !== false) {
+    await app.register(prismaPlugin);
+  }
 
   if (options.authEnabled !== false) {
     await app.register(authContextPlugin, {

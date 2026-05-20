@@ -18,6 +18,6 @@ export async function buildApp(
       EVOLUTION_WEBHOOK_SECRET: "test_secret",
       ...overrides
     },
-    { authEnabled: false, logger: false, ...options }
+    { authEnabled: false, logger: false, prismaEnabled: false, ...options }
   );
 }
