@@ -4,6 +4,7 @@ import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
+import { conversationsRoutes } from "./modules/conversations/conversations.routes.js";
 
 export interface CreateAppOptions {
   authEnabled?: boolean;
@@ -38,6 +39,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     workspaceId: request.talk.workspaceId,
     role: request.talk.role
   }));
+  await app.register(conversationsRoutes);
 
   return app;
 }
