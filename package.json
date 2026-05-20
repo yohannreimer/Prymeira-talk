@@ -1,0 +1,21 @@
+{
+  "name": "prymeira-talk",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --parallel dev",
+    "dev:api": "pnpm --filter @prymeira-talk/api dev",
+    "dev:web": "pnpm --filter @prymeira-talk/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "prisma:generate": "pnpm --filter @prymeira-talk/api prisma generate",
+    "prisma:migrate": "pnpm --filter @prymeira-talk/api prisma migrate dev"
+  },
+  "devDependencies": {
+    "@types/node": "^22.16.5",
+    "typescript": "^5.8.3"
+  },
+  "packageManager": "pnpm@10.0.0"
+}
