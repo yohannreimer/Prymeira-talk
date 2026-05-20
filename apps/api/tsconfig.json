@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "moduleResolution": "NodeNext",
+    "module": "NodeNext"
+  },
+  "include": ["src", "prisma"]
+}
