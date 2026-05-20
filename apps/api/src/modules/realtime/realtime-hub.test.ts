@@ -88,4 +88,24 @@ describe("realtime hub", () => {
     expect(healthyClient.send).toHaveBeenCalledTimes(1);
     expect(hub.clientCount("workspace_a")).toBe(1);
   });
+
+  it("ignores stale cleanup callbacks after a workspace receives a new client set", () => {
+    const hub = createRealtimeHub();
+    const closedClient = { send: vi.fn(), readyState: 3 };
+    const openClient = { send: vi.fn(), readyState: 1 };
+
+    const cleanupClosedClient = hub.addClient("workspace_a", closedClient);
+    hub.publish(conversationUpdatedEvent("workspace_a"));
+
+    expect(hub.clientCount("workspace_a")).toBe(0);
+
+    hub.addClient("workspace_a", openClient);
+    cleanupClosedClient();
+
+    expect(hub.clientCount("workspace_a")).toBe(1);
+
+    hub.publish(conversationUpdatedEvent("workspace_a"));
+
+    expect(openClient.send).toHaveBeenCalledTimes(1);
+  });
 });

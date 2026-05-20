@@ -13,7 +13,7 @@ export function createRealtimeHub() {
 
   function removeClient(workspaceId: string, clients: Set<WebSocketLike>, client: WebSocketLike) {
     clients.delete(client);
-    if (clients.size === 0) {
+    if (clients.size === 0 && clientsByWorkspace.get(workspaceId) === clients) {
       clientsByWorkspace.delete(workspaceId);
     }
   }
