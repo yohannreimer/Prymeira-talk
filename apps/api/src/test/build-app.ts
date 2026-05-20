@@ -12,5 +12,5 @@ export async function buildApp(overrides: Partial<AppEnv> = {}) {
     CLERK_SECRET_KEY: "sk_test_replace_me",
     EVOLUTION_WEBHOOK_SECRET: "test_secret",
     ...overrides
-  });
+  }, { logger: false });
 }

@@ -32,6 +32,9 @@ importers:
       '@prymeira/auth':
         specifier: file:../../../Prymeira Account/packages/auth
         version: file:../Prymeira Account/packages/auth
+      dotenv:
+        specifier: ^16.6.1
+        version: 16.6.1
       fastify:
         specifier: ^5.6.2
         version: 5.8.5
