@@ -1,8 +1,12 @@
 import { z } from "zod";
 
-export const evolutionWebhookSchema = z.object({
+export const evolutionWebhookEnvelopeSchema = z.object({
   event: z.string().min(1),
   instance: z.string().min(1),
+  data: z.unknown().optional()
+});
+
+export const evolutionWebhookSchema = evolutionWebhookEnvelopeSchema.extend({
   data: z
     .object({
       key: z.object({
@@ -21,4 +25,5 @@ export const evolutionWebhookSchema = z.object({
     .passthrough()
 });
 
+export type EvolutionWebhookEnvelope = z.infer<typeof evolutionWebhookEnvelopeSchema>;
 export type EvolutionWebhookPayload = z.infer<typeof evolutionWebhookSchema>;
