@@ -27,7 +27,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -794,14 +795,23 @@ select:disabled {
   align-items: start;
 }
 
+.campaigns-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.65fr) minmax(360px, 1fr) minmax(340px, 0.9fr);
+  gap: 16px;
+  align-items: start;
+}
+
 .automation-rule-list,
 .automation-run-list,
-.automation-actions-editor {
+.automation-actions-editor,
+.campaign-list {
   display: grid;
   gap: 10px;
 }
 
-.automation-rule-card {
+.automation-rule-card,
+.campaign-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 7px 12px;
@@ -812,31 +822,37 @@ select:disabled {
   text-align: left;
 }
 
-.automation-rule-card.is-selected {
+.automation-rule-card.is-selected,
+.campaign-card.is-selected {
   border-color: #24564a;
   box-shadow: inset 3px 0 0 #24564a;
 }
 
-.automation-rule-card strong {
+.automation-rule-card strong,
+.campaign-card strong {
   min-width: 0;
   color: #1f342d;
   font-size: 0.96rem;
 }
 
 .automation-rule-card small,
-.automation-rule-card em {
+.automation-rule-card em,
+.campaign-card small,
+.campaign-card em {
   grid-column: 1 / -1;
   color: #65756e;
   font-size: 0.82rem;
   font-style: normal;
 }
 
-.automation-rule-card .status-pill {
+.automation-rule-card .status-pill,
+.campaign-card .status-pill {
   grid-column: 2;
   grid-row: 1;
 }
 
-.automation-editor {
+.automation-editor,
+.campaign-editor {
   align-content: start;
 }
 
@@ -851,7 +867,8 @@ select:disabled {
 }
 
 .form-field input,
-.form-field select {
+.form-field select,
+.form-field textarea {
   min-width: 0;
   width: 100%;
   border: 1px solid #d3ddd6;
@@ -862,11 +879,68 @@ select:disabled {
   font-weight: 600;
 }
 
+.form-field textarea {
+  resize: vertical;
+  min-height: 140px;
+  line-height: 1.45;
+}
+
 .form-field input:focus,
-.form-field select:focus {
+.form-field select:focus,
+.form-field textarea:focus {
   border-color: #24564a;
   box-shadow: 0 0 0 3px rgba(36, 86, 74, 0.16);
   outline: 0;
+}
+
+.campaign-audience-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 0.48fr);
+  gap: 10px;
+}
+
+.message-preview,
+.audience-preview {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #dbe4de;
+  border-radius: 8px;
+  background: #f7faf7;
+  padding: 12px;
+}
+
+.message-preview div {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #24564a;
+}
+
+.message-preview strong,
+.audience-preview strong {
+  color: #1f342d;
+  font-size: 0.9rem;
+}
+
+.message-preview p,
+.audience-preview p {
+  margin: 0;
+  color: #42584f;
+  font-size: 0.9rem;
+}
+
+.audience-preview span {
+  color: #65756e;
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.campaign-editor-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .automation-actions-editor {
@@ -927,6 +1001,42 @@ select:disabled {
   color: #1f342d;
   font-size: 0.92rem;
   text-transform: capitalize;
+}
+
+.recipient-table {
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid #dbe4de;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.recipient-table-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.9fr) minmax(100px, 0.6fr) minmax(160px, 1.4fr);
+  gap: 10px;
+  border-top: 1px solid #e1e8e3;
+  padding: 10px 12px;
+  color: #40564d;
+  font-size: 0.84rem;
+}
+
+.recipient-table-row:first-child {
+  border-top: 0;
+}
+
+.recipient-table-row.is-header {
+  background: #f7faf7;
+  color: #65756e;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.recipient-table-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .automation-run-list span,
@@ -1244,9 +1354,29 @@ select:disabled {
   color: #765b17;
 }
 
+.status-draft {
+  background: #e2e6e3;
+  color: #5f6c66;
+}
+
+.status-scheduled {
+  background: #dce8f3;
+  color: #2f5e86;
+}
+
+.status-sending {
+  background: #f1e7cf;
+  color: #765b17;
+}
+
 .status-closed {
   background: #e2e6e3;
   color: #5f6c66;
+}
+
+.status-completed {
+  background: #dcebe4;
+  color: #276051;
 }
 
 .status-connected {
@@ -1628,6 +1758,7 @@ select:disabled {
   .split-panel,
   .channels-grid,
   .automation-grid,
+  .campaigns-grid,
   .contacts-layout {
     grid-template-columns: 1fr;
   }
@@ -1702,12 +1833,16 @@ select:disabled {
   .data-list div,
   .workflow-list article,
   .channel-card,
-  .automation-rule-card {
+  .automation-rule-card,
+  .campaign-card,
+  .campaign-audience-grid,
+  .recipient-table-row {
     grid-template-columns: 1fr;
   }
 
   .channel-card .status-pill,
-  .automation-rule-card .status-pill {
+  .automation-rule-card .status-pill,
+  .campaign-card .status-pill {
     justify-self: start;
     grid-column: auto;
     grid-row: auto;

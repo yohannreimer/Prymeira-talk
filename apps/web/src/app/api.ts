@@ -122,6 +122,52 @@ export interface AutomationRunDto {
   updatedAt: string;
 }
 
+export type CampaignStatus = "draft" | "scheduled" | "sending" | "completed" | "failed";
+
+export interface CampaignAudienceDto {
+  type: "board";
+  boardId: string;
+  stageId?: string;
+}
+
+export interface CampaignDto {
+  id: string;
+  workspaceId: string;
+  name: string;
+  status: CampaignStatus;
+  audience: CampaignAudienceDto;
+  messageBody: string;
+  scheduledAt: string | null;
+  mode: "simulated" | "real";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CampaignAudienceContactDto {
+  contactId: string;
+  name: string | null;
+  phone: string;
+}
+
+export interface CampaignRecipientDto {
+  id: string;
+  workspaceId: string;
+  campaignId: string;
+  contactId: string;
+  status: string;
+  result: unknown;
+  createdAt: string;
+  updatedAt: string;
+  contactName: string | null;
+  contactPhone: string | null;
+}
+
+export interface CampaignSendResultDto {
+  mode: "simulated";
+  result: "sent_simulated";
+  recipientsCreated: number;
+}
+
 async function getRequiredToken(getToken: () => Promise<string | null>) {
   const token = await getToken();
 
@@ -244,6 +290,74 @@ function parseAutomationRun(data: unknown): AutomationRunDto {
     result: payload.result ?? {},
     createdAt: payload.createdAt,
     updatedAt: payload.updatedAt
+  };
+}
+
+function parseCampaignAudience(data: unknown): CampaignAudienceDto {
+  const payload = data as {
+    type?: unknown;
+    boardId?: unknown;
+    stageId?: unknown;
+  };
+
+  return {
+    type: "board",
+    boardId: typeof payload.boardId === "string" ? payload.boardId : "",
+    ...(typeof payload.stageId === "string" ? { stageId: payload.stageId } : {})
+  };
+}
+
+function parseCampaign(data: unknown): CampaignDto {
+  const payload = data as CampaignDto;
+
+  return {
+    id: payload.id,
+    workspaceId: payload.workspaceId,
+    name: payload.name,
+    status: payload.status,
+    audience: parseCampaignAudience(payload.audience),
+    messageBody: payload.messageBody,
+    scheduledAt: payload.scheduledAt,
+    mode: payload.mode === "real" ? "real" : "simulated",
+    createdAt: payload.createdAt,
+    updatedAt: payload.updatedAt
+  };
+}
+
+function parseCampaignAudienceContact(data: unknown): CampaignAudienceContactDto {
+  const payload = data as CampaignAudienceContactDto;
+
+  return {
+    contactId: payload.contactId,
+    name: payload.name ?? null,
+    phone: payload.phone
+  };
+}
+
+function parseCampaignRecipient(data: unknown): CampaignRecipientDto {
+  const payload = data as CampaignRecipientDto;
+
+  return {
+    id: payload.id,
+    workspaceId: payload.workspaceId,
+    campaignId: payload.campaignId,
+    contactId: payload.contactId,
+    status: payload.status,
+    result: payload.result ?? {},
+    createdAt: payload.createdAt,
+    updatedAt: payload.updatedAt,
+    contactName: payload.contactName ?? null,
+    contactPhone: payload.contactPhone ?? null
+  };
+}
+
+function parseCampaignSendResult(data: unknown): CampaignSendResultDto {
+  const payload = data as CampaignSendResultDto;
+
+  return {
+    mode: "simulated",
+    result: "sent_simulated",
+    recipientsCreated: Number(payload.recipientsCreated ?? 0)
   };
 }
 
@@ -785,6 +899,145 @@ export async function apiGetAutomationRuns(
 
   const data = await response.json();
   return Array.isArray(data) ? data.map(parseAutomationRun) : [];
+}
+
+export async function apiGetCampaigns(
+  getToken: () => Promise<string | null>
+): Promise<CampaignDto[]> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/campaigns`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load campaigns: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return Array.isArray(data) ? data.map(parseCampaign) : [];
+}
+
+export async function apiCreateCampaign(
+  getToken: () => Promise<string | null>,
+  body: {
+    name: string;
+    audience: CampaignAudienceDto;
+    messageBody: string;
+    scheduledAt?: string | null;
+  }
+): Promise<CampaignDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/campaigns`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to create campaign: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return parseCampaign(data);
+}
+
+export async function apiUpdateCampaign(
+  getToken: () => Promise<string | null>,
+  campaignId: string,
+  body: Partial<{
+    name: string;
+    status: CampaignStatus;
+    audience: CampaignAudienceDto;
+    messageBody: string;
+    scheduledAt: string | null;
+  }>
+): Promise<CampaignDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/campaigns/${campaignId}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to update campaign: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return parseCampaign(data);
+}
+
+export async function apiResolveCampaignAudience(
+  getToken: () => Promise<string | null>,
+  campaignId: string
+): Promise<CampaignAudienceContactDto[]> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/campaigns/${campaignId}/resolve-audience`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to resolve campaign audience: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return Array.isArray(data) ? data.map(parseCampaignAudienceContact) : [];
+}
+
+export async function apiSendCampaignSimulated(
+  getToken: () => Promise<string | null>,
+  campaignId: string
+): Promise<CampaignSendResultDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/campaigns/${campaignId}/send-simulated`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to send simulated campaign: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return parseCampaignSendResult(data);
+}
+
+export async function apiGetCampaignRecipients(
+  getToken: () => Promise<string | null>,
+  campaignId: string
+): Promise<CampaignRecipientDto[]> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/campaigns/${campaignId}/recipients`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load campaign recipients: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return Array.isArray(data) ? data.map(parseCampaignRecipient) : [];
 }
 
 export function buildRealtimeUrl(token: string) {
