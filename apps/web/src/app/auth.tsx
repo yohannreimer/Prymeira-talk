@@ -3,6 +3,7 @@ import type { PropsWithChildren } from "react";
 
 const configuredPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 const publishableKey = configuredPublishableKey?.endsWith("_replace_me") ? undefined : configuredPublishableKey;
+const localAuthBypass = import.meta.env.VITE_LOCAL_AUTH_BYPASS === "true";
 
 export function AuthProvider({ children }: PropsWithChildren) {
   if (!publishableKey) {
@@ -13,6 +14,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
 }
 
 export function AuthGate({ children }: PropsWithChildren) {
+  if (localAuthBypass) {
+    return <>{children}</>;
+  }
+
   return (
     <>
       <SignedIn>{children}</SignedIn>

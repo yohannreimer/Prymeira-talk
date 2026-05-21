@@ -22,6 +22,7 @@ import {
 } from "@prymeira-talk/shared";
 
 const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:3002";
+const localAuthBypass = import.meta.env.VITE_LOCAL_AUTH_BYPASS === "true";
 
 export interface ContactBoardWithStagesDto extends ContactBoardDto {
   stages: ContactBoardStageDto[];
@@ -170,6 +171,10 @@ export interface CampaignSendResultDto {
 
 async function getRequiredToken(getToken: () => Promise<string | null>) {
   const token = await getToken();
+
+  if (!token && localAuthBypass) {
+    return "local-dev-bypass";
+  }
 
   if (!token) {
     throw new Error("Missing Clerk auth token.");
