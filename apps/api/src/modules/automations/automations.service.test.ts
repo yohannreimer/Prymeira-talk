@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import type { UserRole } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
 import { automationsRoutes } from "./automations.routes.js";
 import { createAutomationsService } from "./automations.service.js";
@@ -74,12 +75,17 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
   } as MockPrisma & PrismaLike;
 }
 
-async function buildAutomationsApp(prisma = createMockPrisma()) {
+async function buildAutomationsApp(input: {
+  prisma?: MockPrisma & PrismaLike;
+  role?: UserRole;
+} = {}) {
   const app = Fastify({ logger: false });
+  const prisma = input.prisma ?? createMockPrisma();
+  const role = input.role ?? "manager";
 
   app.decorate("prisma", prisma as never);
   app.addHook("preHandler", async (request) => {
-    request.talk = { workspaceId: "workspace_a", role: "agent" };
+    request.talk = { workspaceId: "workspace_a", role };
   });
   await app.register(automationsRoutes);
 
@@ -170,7 +176,7 @@ describe("automations service", () => {
 
 describe("automations routes", () => {
   it("creates a completed simulated run from POST /automations/:automationId/test", async () => {
-    const { app } = await buildAutomationsApp();
+    const { app } = await buildAutomationsApp({ role: "manager" });
 
     try {
       const response = await app.inject({
@@ -200,4 +206,82 @@ describe("automations routes", () => {
       await app.close();
     }
   });
+
+  it.each([
+    {
+      method: "POST" as const,
+      url: "/automations",
+      payload: {
+        name: "Boas-vindas local",
+        trigger: "message.received",
+        actions: [{ type: "send_message", label: "Enviar saudacao" }]
+      }
+    },
+    {
+      method: "PATCH" as const,
+      url: `/automations/${automationId}`,
+      payload: { status: "enabled" }
+    },
+    {
+      method: "POST" as const,
+      url: `/automations/${automationId}/test`,
+      payload: { eventKey: "message.received:test-event" }
+    }
+  ])("returns 403 for agents on $method $url", async ({ method, url, payload }) => {
+    const { app, prisma } = await buildAutomationsApp({ role: "agent" });
+
+    try {
+      const response = await app.inject({
+        method,
+        url,
+        payload
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        code: "AUTOMATION_MANAGE_FORBIDDEN",
+        error: "Automation management permission required."
+      });
+      expect(prisma.automationRule.create).not.toHaveBeenCalled();
+      expect(prisma.automationRule.update).not.toHaveBeenCalled();
+      expect(prisma.automationRun.upsert).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each(["manager", "owner"] as const)(
+    "allows %s to create, update, and test automations",
+    async (role) => {
+      const { app } = await buildAutomationsApp({ role });
+
+      try {
+        const createResponse = await app.inject({
+          method: "POST",
+          url: "/automations",
+          payload: {
+            name: "Boas-vindas local",
+            trigger: "message.received",
+            actions: [{ type: "send_message", label: "Enviar saudacao" }]
+          }
+        });
+        const patchResponse = await app.inject({
+          method: "PATCH",
+          url: `/automations/${automationId}`,
+          payload: { status: "enabled" }
+        });
+        const testResponse = await app.inject({
+          method: "POST",
+          url: `/automations/${automationId}/test`,
+          payload: { eventKey: "message.received:test-event" }
+        });
+
+        expect(createResponse.statusCode).toBe(201);
+        expect(patchResponse.statusCode).toBe(200);
+        expect(testResponse.statusCode).toBe(200);
+      } finally {
+        await app.close();
+      }
+    }
+  );
 });

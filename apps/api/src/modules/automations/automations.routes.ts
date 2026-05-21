@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
+import { canPerform } from "../access/roles.js";
 import { AutomationsServiceError, createAutomationsService } from "./automations.service.js";
 import type { PrismaLike } from "./automations.service.js";
 
@@ -68,6 +69,21 @@ function handleAutomationsError(reply: FastifyReply, error: unknown) {
   throw error;
 }
 
+function requireAutomationManage(
+  role: Parameters<typeof canPerform>[0],
+  reply: FastifyReply
+) {
+  if (canPerform(role, "automation.manage")) {
+    return true;
+  }
+
+  reply.code(403).send({
+    code: "AUTOMATION_MANAGE_FORBIDDEN",
+    error: "Automation management permission required."
+  });
+  return false;
+}
+
 export const automationsRoutes: FastifyPluginAsync = async (app) => {
   const service = createAutomationsService(app.prisma as unknown as PrismaLike);
 
@@ -76,6 +92,10 @@ export const automationsRoutes: FastifyPluginAsync = async (app) => {
   );
 
   app.post("/automations", async (request, reply) => {
+    if (!requireAutomationManage(request.talk.role, reply)) {
+      return reply;
+    }
+
     const body = createAutomationBodySchema.safeParse(request.body);
 
     if (!body.success) {
@@ -95,6 +115,10 @@ export const automationsRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.patch("/automations/:automationId", async (request, reply) => {
+    if (!requireAutomationManage(request.talk.role, reply)) {
+      return reply;
+    }
+
     const params = automationParamsSchema.safeParse(request.params);
     const body = updateAutomationBodySchema.safeParse(request.body);
 
@@ -114,6 +138,10 @@ export const automationsRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post("/automations/:automationId/test", async (request, reply) => {
+    if (!requireAutomationManage(request.talk.role, reply)) {
+      return reply;
+    }
+
     const params = automationParamsSchema.safeParse(request.params);
     const body = testAutomationBodySchema.safeParse(request.body);
 
