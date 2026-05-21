@@ -1305,6 +1305,7 @@ select:disabled {
   grid-template-columns: minmax(320px, 0.58fr) minmax(420px, 1fr);
   gap: 16px;
   align-items: start;
+  padding: 0 18px 18px;
 }
 
 .module-form {
@@ -1336,7 +1337,7 @@ select:disabled {
   min-width: 620px;
   border-top: 1px solid var(--color-border-subtle);
   padding: 11px 12px;
-  color: #40564d;
+  color: var(--color-text-primary);
   font-size: 0.86rem;
 }
 
@@ -1346,10 +1347,11 @@ select:disabled {
 
 .ops-table-row.is-header {
   background: var(--color-surface-subtle);
-  color: #65756e;
+  color: var(--color-text-muted);
   font-size: 0.72rem;
-  font-weight: 900;
+  font-weight: 600;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .ops-table-row > span {
@@ -1370,7 +1372,7 @@ select:disabled {
 .ops-table-row small {
   min-width: 0;
   overflow: hidden;
-  color: #6f8078;
+  color: var(--color-text-secondary);
   font-size: 0.76rem;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1392,6 +1394,31 @@ select:disabled {
 .campaign-list {
   display: grid;
   gap: 10px;
+}
+
+.team-dept-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: 12px;
+}
+
+.team-dept-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  transition: background var(--transition-fast);
+}
+
+.team-dept-row:hover {
+  background: var(--color-brand-50);
 }
 
 .automation-rule-list {

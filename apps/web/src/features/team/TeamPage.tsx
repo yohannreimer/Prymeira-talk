@@ -50,7 +50,7 @@ export function TeamPage() {
       setUsers(nextUsers);
       setDepartments(nextDepartments);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar equipe.");
+      setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar equipe.");
     } finally {
       setIsLoading(false);
     }
@@ -76,7 +76,7 @@ export function TeamPage() {
       setRoutingOrder("0");
       setNotice("Fila criada para o workspace atual.");
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Nao foi possivel criar fila.");
+      setError(saveError instanceof Error ? saveError.message : "Não foi possível criar fila.");
     } finally {
       setIsSaving(false);
     }
@@ -91,7 +91,7 @@ export function TeamPage() {
       setUsers((current) => current.map((item) => (item.id === user.id ? user : item)));
       setNotice("Role atualizado.");
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Nao foi possivel atualizar role.");
+      setError(saveError instanceof Error ? saveError.message : "Não foi possível atualizar role.");
     }
   }
 
@@ -102,19 +102,20 @@ export function TeamPage() {
           <p className="eyebrow">Prymeira Talk</p>
           <h1>Equipe</h1>
         </div>
-        <span className="status-pill status-open">{isLoading ? "Carregando" : `${users.length} usuarios`}</span>
+        <div className="module-header-actions">
+          <span className={`status-badge status-badge--${isLoading ? "waiting" : "open"}`}>
+            {isLoading ? "Carregando" : `${users.length} usuários`}
+          </span>
+          <span className="status-badge status-badge--bot">
+            <ShieldCheck size={12} />
+            Tenant scoped
+          </span>
+          <button className="secondary-button" type="button" onClick={() => void loadTeam()}>
+            <RefreshCw size={14} />
+            Atualizar
+          </button>
+        </div>
       </header>
-
-      <div className="module-actions">
-        <button className="primary-button" type="button" onClick={() => void loadTeam()}>
-          <RefreshCw size={16} />
-          Atualizar
-        </button>
-        <span className="status-pill status-connected">
-          <ShieldCheck size={14} />
-          Tenant scoped
-        </span>
-      </div>
 
       {error ? <p className="error-note">{error}</p> : null}
       {notice ? <p className="success-note">{notice}</p> : null}
@@ -122,20 +123,22 @@ export function TeamPage() {
       <div className="ops-grid">
         <div className="module-panel">
           <div className="panel-title-row">
-            <h2>Usuarios</h2>
+            <h2>Usuários</h2>
             <span>{users.length} registros</span>
           </div>
-          <div className="ops-table team-table" role="table">
+          <div className="ops-table" role="table">
             <div className="ops-table-row is-header" role="row">
               <span>Nome</span>
-              <span>Presenca</span>
+              <span>Presença</span>
               <span>Role</span>
             </div>
             {users.length === 0 ? (
-              <div className="empty-panel">
-                <Users size={28} />
-                <h3>Nenhum usuario</h3>
-                <p>Os usuarios aparecem quando entram no workspace.</p>
+              <div className="empty-state" style={{ padding: "24px" }}>
+                <div className="empty-state-icon">
+                  <Users size={24} />
+                </div>
+                <h3>Nenhum usuário</h3>
+                <p>Os usuários aparecem quando entram no workspace.</p>
               </div>
             ) : null}
             {users.map((user) => (
@@ -144,7 +147,11 @@ export function TeamPage() {
                   <strong>{user.displayName}</strong>
                   <small>{user.clerkUserId}</small>
                 </span>
-                <span>{presenceLabel(user.presenceState)}</span>
+                <span>
+                  <span className={`status-badge status-badge--${user.presenceState === "online" ? "open" : user.presenceState === "busy" ? "waiting" : "closed"}`}>
+                    {presenceLabel(user.presenceState)}
+                  </span>
+                </span>
                 <span>
                   <select
                     value={user.role}
@@ -193,13 +200,14 @@ export function TeamPage() {
             </button>
           </form>
 
-          <div className="data-list">
-            {departments.length === 0 ? <p className="list-note">Nenhuma fila criada.</p> : null}
+          <div className="team-dept-list">
+            {departments.length === 0 ? (
+              <p className="list-note">Nenhuma fila criada.</p>
+            ) : null}
             {departments.map((department) => (
-              <div key={department.id}>
+              <div key={department.id} className="team-dept-row">
                 <strong>{department.name}</strong>
-                <span>Ordem {department.routingOrder}</span>
-                <em>{department.workspaceId}</em>
+                <span className="status-badge status-badge--closed">Ordem {department.routingOrder}</span>
               </div>
             ))}
           </div>
