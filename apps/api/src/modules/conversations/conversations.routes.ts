@@ -167,6 +167,14 @@ export const conversationsRoutes: FastifyPluginAsync = async (app) => {
       payload: result.conversation
     });
 
+    if (result.boardMembership) {
+      app.realtime.publish({
+        type: "board_membership.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: result.boardMembership
+      });
+    }
+
     return result;
   });
 

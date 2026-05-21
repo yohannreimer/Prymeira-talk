@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
-import type { ConversationDto, MessageDto } from "@prymeira-talk/shared";
+import type { ContactBoardMembershipDto, ConversationDto, MessageDto } from "@prymeira-talk/shared";
 
 type DateLike = Date | string;
 
@@ -178,6 +178,7 @@ type ConversationAction =
 export interface ConversationActionResultDto {
   conversation: ConversationDto;
   context: ContactContextDto;
+  boardMembership?: ContactBoardMembershipDto;
   aiSuggestion?: string;
   crmAction?: {
     id: string;
@@ -304,6 +305,18 @@ function toPrimaryBoardStageDto(
     stageId: record.stageId,
     stageName: record.stage?.name ?? "Etapa",
     stageColor: record.stage?.color ?? "#24564a"
+  };
+}
+
+function toBoardMembershipDto(record: BoardMembershipRecord): ContactBoardMembershipDto {
+  return {
+    id: record.id,
+    workspaceId: record.workspaceId,
+    contactId: record.contactId,
+    boardId: record.boardId,
+    stageId: record.stageId,
+    isPrimary: record.isPrimary,
+    updatedAt: toIsoString(record.updatedAt)
   };
 }
 
@@ -500,6 +513,7 @@ export function createConversationsService(prisma: PrismaLike) {
       let conversation = await findConversation(input);
       let aiSuggestion: string | undefined;
       let crmAction: ConversationActionResultDto["crmAction"];
+      let boardMembership: ContactBoardMembershipDto | undefined;
 
       if (input.action === "add_note") {
         const user = await resolveCurrentUser(input);
@@ -582,7 +596,7 @@ export function createConversationsService(prisma: PrismaLike) {
           throw new ConversationActionError("BOARD_STAGE_NOT_FOUND", "Board stage not found.");
         }
 
-        await prisma.$transaction(async (tx) => {
+        const updatedMembership = (await prisma.$transaction(async (tx) => {
           await tx.contactBoardMembership.updateMany({
             where: {
               workspaceId: input.workspaceId,
@@ -592,7 +606,7 @@ export function createConversationsService(prisma: PrismaLike) {
             data: { isPrimary: false }
           });
 
-          await tx.contactBoardMembership.upsert({
+          return tx.contactBoardMembership.upsert({
             where: {
               workspaceId_contactId_boardId: {
                 workspaceId: input.workspaceId,
@@ -616,7 +630,8 @@ export function createConversationsService(prisma: PrismaLike) {
               stage: { select: { name: true, color: true } }
             }
           });
-        });
+        })) as BoardMembershipRecord;
+        boardMembership = toBoardMembershipDto(updatedMembership);
       }
 
       if (input.action === "request_ai_suggestion") {
@@ -663,6 +678,7 @@ export function createConversationsService(prisma: PrismaLike) {
       return {
         conversation: toConversationDto(conversation),
         context: await buildContactContext(conversation),
+        ...(boardMembership ? { boardMembership } : {}),
         ...(aiSuggestion ? { aiSuggestion } : {}),
         ...(crmAction ? { crmAction } : {})
       };

@@ -877,6 +877,87 @@ describe("conversation routes", () => {
     }
   });
 
+  it("publishes board membership updates when changing a board stage from atendimento", async () => {
+    const prisma = createMockPrisma();
+    const publish = vi.fn();
+    const app = Fastify({ logger: false });
+    const requestedStageId = "00000000-0000-4000-8000-000000000002";
+
+    prisma.contactBoardStage.findFirst.mockResolvedValueOnce({
+      id: requestedStageId,
+      workspaceId: "workspace_a",
+      boardId: "board_1",
+      name: "Qualificado",
+      color: "#d29b44",
+      order: 1,
+      board: { name: "Pipeline" }
+    });
+    prisma.contactBoardMembership.upsert.mockResolvedValueOnce({
+      id: "membership_1",
+      workspaceId: "workspace_a",
+      contactId: "contact_1",
+      boardId: "board_1",
+      stageId: requestedStageId,
+      isPrimary: true,
+      updatedAt: new Date("2026-05-20T12:15:00.000Z"),
+      board: { name: "Pipeline" },
+      stage: { name: "Qualificado", color: "#d29b44" }
+    });
+
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => {
+      request.talk = { workspaceId: "workspace_a", role: "agent" };
+    });
+    await app.register(conversationsRoutes);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/conversations/00000000-0000-4000-8000-000000000001/actions",
+        payload: {
+          action: "change_primary_board_stage",
+          stageId: requestedStageId
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          boardMembership: expect.objectContaining({
+            id: "membership_1",
+            workspaceId: "workspace_a",
+            contactId: "contact_1",
+            boardId: "board_1",
+            stageId: requestedStageId,
+            isPrimary: true
+          })
+        })
+      );
+      expect(publish).toHaveBeenCalledTimes(2);
+      expect(publish).toHaveBeenNthCalledWith(1, {
+        type: "conversation.updated",
+        workspaceId: "workspace_a",
+        payload: expect.objectContaining({ id: "conv_1" })
+      });
+      expect(publish).toHaveBeenNthCalledWith(2, {
+        type: "board_membership.updated",
+        workspaceId: "workspace_a",
+        payload: expect.objectContaining({
+          id: "membership_1",
+          workspaceId: "workspace_a",
+          contactId: "contact_1",
+          stageId: requestedStageId
+        })
+      });
+      for (const [event] of publish.mock.calls) {
+        expect(realtimeEventSchema.parse(event)).toEqual(event);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns a controlled error when assigning without a current Clerk subject", async () => {
     const prisma = createMockPrisma();
     const publish = vi.fn();
