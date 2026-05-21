@@ -35,6 +35,7 @@ type MockPrisma = {
   };
   department: {
     findMany: ReturnType<typeof vi.fn<PrismaLike["department"]["findMany"]>>;
+    findFirst: ReturnType<typeof vi.fn<PrismaLike["department"]["findFirst"]>>;
   };
   userProfile: {
     findFirst: ReturnType<typeof vi.fn<PrismaLike["userProfile"]["findFirst"]>>;
@@ -219,7 +220,12 @@ function createMockPrisma(overrides: {
     department: {
       findMany: vi.fn<PrismaLike["department"]["findMany"]>().mockResolvedValue([
         { id: "department_1", workspaceId: "workspace_a", name: "Vendas" }
-      ])
+      ]),
+      findFirst: vi.fn<PrismaLike["department"]["findFirst"]>().mockResolvedValue({
+        id: "department_1",
+        workspaceId: "workspace_a",
+        name: "Vendas"
+      })
     },
     userProfile: {
       findFirst: vi.fn<PrismaLike["userProfile"]["findFirst"]>().mockResolvedValue({
@@ -459,7 +465,8 @@ describe("conversations service", () => {
       workspaceId: "workspace_a",
       conversationId: "conv_1",
       action: "add_note",
-      body: "Cliente pediu retorno"
+      body: "Cliente pediu retorno",
+      currentClerkUserId: "clerk_user_1"
     });
 
     expect(prisma.contactNote.create).toHaveBeenCalledWith(
@@ -468,11 +475,67 @@ describe("conversations service", () => {
           workspaceId: "workspace_a",
           contactId: "contact_1",
           conversationId: "conv_1",
-          body: "Cliente pediu retorno"
+          body: "Cliente pediu retorno",
+          createdById: "user_1"
         })
       })
     );
     expect(result.context.notes[0]?.body).toBe("Cliente pediu retorno");
+  });
+
+  it("rejects contact notes without a current user identity", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+
+    const error = await service
+      .runConversationAction({
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        action: "add_note",
+        body: "Cliente pediu retorno",
+        currentClerkUserId: null
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ConversationActionError);
+    expect(error).toMatchObject({ code: "CURRENT_USER_REQUIRED" });
+    expect(prisma.contactNote.create).not.toHaveBeenCalled();
+  });
+
+  it("creates contact notes as the current user even when another agent owns the conversation", async () => {
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        status: "open",
+        assignedUserId: "other_user",
+        departmentId: null,
+        lastMessageAt: null,
+        lastMessagePreview: null,
+        unreadCount: 0,
+        priority: "normal",
+        tags: []
+      })
+    });
+    const service = createConversationsService(prisma);
+
+    await service.runConversationAction({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      action: "add_note",
+      body: "Nota do atendente atual",
+      currentClerkUserId: "clerk_user_1"
+    });
+
+    expect(prisma.contactNote.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          createdById: "user_1"
+        })
+      })
+    );
   });
 
   it("updates assignment, department, priority and board stage through quick actions", async () => {
@@ -564,6 +627,25 @@ describe("conversations service", () => {
     expect(prisma.userProfile.findFirst).toHaveBeenCalledWith({
       where: { workspaceId: "workspace_a", clerkUserId: "missing_clerk_user" }
     });
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects department changes when the department is missing in the workspace", async () => {
+    const prisma = createMockPrisma();
+    prisma.department.findFirst.mockResolvedValueOnce(null);
+    const service = createConversationsService(prisma);
+
+    const error = await service
+      .runConversationAction({
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        action: "change_department",
+        departmentId: "missing_department"
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ConversationActionError);
+    expect(error).toMatchObject({ code: "DEPARTMENT_NOT_FOUND" });
     expect(prisma.conversation.update).not.toHaveBeenCalled();
   });
 

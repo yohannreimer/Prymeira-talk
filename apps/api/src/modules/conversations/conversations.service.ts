@@ -16,6 +16,7 @@ export class ConversationNotFoundError extends Error {
 type ConversationActionErrorCode =
   | "CURRENT_USER_REQUIRED"
   | "CURRENT_USER_NOT_FOUND"
+  | "DEPARTMENT_NOT_FOUND"
   | "BOARD_STAGE_NOT_FOUND";
 
 export class ConversationActionError extends Error {
@@ -196,6 +197,7 @@ type BoardMembershipUpdateArgs = Parameters<PrismaClient["contactBoardMembership
 type BoardStageFindManyArgs = Parameters<PrismaClient["contactBoardStage"]["findMany"]>[0];
 type BoardStageFindFirstArgs = Parameters<PrismaClient["contactBoardStage"]["findFirst"]>[0];
 type DepartmentFindManyArgs = Parameters<PrismaClient["department"]["findMany"]>[0];
+type DepartmentFindFirstArgs = Parameters<PrismaClient["department"]["findFirst"]>[0];
 type UserProfileFindFirstArgs = Parameters<PrismaClient["userProfile"]["findFirst"]>[0];
 type AiActionLogCreateArgs = Parameters<PrismaClient["aiActionLog"]["create"]>[0];
 type CrmSyncActionCreateArgs = Parameters<PrismaClient["crmSyncAction"]["create"]>[0];
@@ -226,6 +228,7 @@ export interface PrismaLike {
   };
   department: {
     findMany(args: DepartmentFindManyArgs): Promise<DepartmentRecord[]>;
+    findFirst(args: DepartmentFindFirstArgs): Promise<DepartmentRecord | null>;
   };
   userProfile: {
     findFirst(args: UserProfileFindFirstArgs): Promise<UserProfileRecord | null>;
@@ -394,6 +397,34 @@ export function createConversationsService(prisma: PrismaLike) {
     };
   }
 
+  async function resolveCurrentUser(input: {
+    workspaceId: string;
+    currentClerkUserId?: string | null;
+  }): Promise<UserProfileRecord> {
+    if (!input.currentClerkUserId) {
+      throw new ConversationActionError(
+        "CURRENT_USER_REQUIRED",
+        "Current user identity is required for assignment."
+      );
+    }
+
+    const user = await prisma.userProfile.findFirst({
+      where: {
+        workspaceId: input.workspaceId,
+        clerkUserId: input.currentClerkUserId
+      }
+    });
+
+    if (!user) {
+      throw new ConversationActionError(
+        "CURRENT_USER_NOT_FOUND",
+        "Current user profile was not found in this workspace."
+      );
+    }
+
+    return user;
+  }
+
   return {
     async listConversations(input: { workspaceId: string }): Promise<ConversationDto[]> {
       const conversations = await prisma.conversation.findMany({
@@ -471,13 +502,15 @@ export function createConversationsService(prisma: PrismaLike) {
       let crmAction: ConversationActionResultDto["crmAction"];
 
       if (input.action === "add_note") {
+        const user = await resolveCurrentUser(input);
+
         await prisma.contactNote.create({
           data: {
             workspaceId: input.workspaceId,
             contactId: conversation.contactId,
             conversationId: input.conversationId,
             body: input.body.trim(),
-            createdById: conversation.assignedUserId
+            createdById: user.id
           },
           include: {
             createdBy: { select: { displayName: true } }
@@ -486,26 +519,7 @@ export function createConversationsService(prisma: PrismaLike) {
       }
 
       if (input.action === "assign_current_user") {
-        if (!input.currentClerkUserId) {
-          throw new ConversationActionError(
-            "CURRENT_USER_REQUIRED",
-            "Current user identity is required for assignment."
-          );
-        }
-
-        const user = await prisma.userProfile.findFirst({
-          where: {
-            workspaceId: input.workspaceId,
-            clerkUserId: input.currentClerkUserId
-          }
-        });
-
-        if (!user) {
-          throw new ConversationActionError(
-            "CURRENT_USER_NOT_FOUND",
-            "Current user profile was not found in this workspace."
-          );
-        }
+        const user = await resolveCurrentUser(input);
 
         conversation = await prisma.conversation.update({
           where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
@@ -521,6 +535,16 @@ export function createConversationsService(prisma: PrismaLike) {
       }
 
       if (input.action === "change_department") {
+        if (input.departmentId) {
+          const department = await prisma.department.findFirst({
+            where: { workspaceId: input.workspaceId, id: input.departmentId }
+          });
+
+          if (!department) {
+            throw new ConversationActionError("DEPARTMENT_NOT_FOUND", "Department not found.");
+          }
+        }
+
         conversation = await prisma.conversation.update({
           where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
           data: { departmentId: input.departmentId },

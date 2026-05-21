@@ -2,7 +2,7 @@ import { useAuth } from "@clerk/clerk-react";
 import type { ConversationDto, MessageDto, RealtimeEvent } from "@prymeira-talk/shared";
 import { Bot, Link2, MessageSquare, Send, StickyNote, UserCheck } from "lucide-react";
 import type { FormEvent } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiCreateConversationMessage,
   apiGetConversationContext,
@@ -88,6 +88,11 @@ export function InboxPage() {
   const [isRunningAction, setIsRunningAction] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
   const [crmStatus, setCrmStatus] = useState<string | null>(null);
+  const selectedConversationIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    selectedConversationIdRef.current = selectedConversationId;
+  }, [selectedConversationId]);
 
   useEffect(() => {
     let isMounted = true;
@@ -202,7 +207,7 @@ export function InboxPage() {
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "message.created") {
       setMessages((current) => {
-        if (event.payload.conversationId !== selectedConversationId) return current;
+        if (event.payload.conversationId !== selectedConversationIdRef.current) return current;
         if (current.some((message) => message.id === event.payload.id)) return current;
         return [...current, event.payload];
       });
@@ -214,7 +219,7 @@ export function InboxPage() {
     setConversations((current) => upsertConversation(current, event.payload));
 
     setSelectedConversationId((current) => current ?? event.payload.id);
-  }, [selectedConversationId]);
+  }, []);
 
   useRealtimeEvents({
     token,
@@ -234,23 +239,31 @@ export function InboxPage() {
 
     if (!selectedConversationId || !token || !draft.trim()) return;
 
+    const targetConversationId = selectedConversationId;
+    const messageBody = draft.trim();
     setIsSending(true);
     setMessageError(null);
 
     try {
       const createdMessage = await apiCreateConversationMessage(
-        selectedConversationId,
-        draft.trim(),
+        targetConversationId,
+        messageBody,
         async () => token
       );
 
       setMessages((current) => {
+        if (
+          selectedConversationIdRef.current !== targetConversationId ||
+          createdMessage.conversationId !== targetConversationId
+        ) {
+          return current;
+        }
         if (current.some((message) => message.id === createdMessage.id)) return current;
         return [...current, createdMessage];
       });
       setConversations((current) =>
         current.map((conversation) =>
-          conversation.id === selectedConversationId
+          conversation.id === targetConversationId
             ? {
                 ...conversation,
                 lastMessageAt: createdMessage.createdAt,
@@ -259,9 +272,13 @@ export function InboxPage() {
             : conversation
         )
       );
-      setDraft("");
+      if (selectedConversationIdRef.current === targetConversationId) {
+        setDraft("");
+      }
     } catch (sendError) {
-      setMessageError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar a mensagem.");
+      if (selectedConversationIdRef.current === targetConversationId) {
+        setMessageError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar a mensagem.");
+      }
     } finally {
       setIsSending(false);
     }
@@ -270,24 +287,33 @@ export function InboxPage() {
   async function runAction(body: ConversationActionBody) {
     if (!selectedConversationId || !token) return null;
 
+    const targetConversationId = selectedConversationId;
     setIsRunningAction(true);
     setContextError(null);
 
     try {
-      const result = await apiRunConversationAction(selectedConversationId, body, async () => token);
-      applyActionResult(result);
+      const result = await apiRunConversationAction(targetConversationId, body, async () => token);
+      applyActionResult(result, targetConversationId);
       return result;
     } catch (actionError) {
-      setContextError(actionError instanceof Error ? actionError.message : "Nao foi possivel executar a acao.");
+      if (selectedConversationIdRef.current === targetConversationId) {
+        setContextError(actionError instanceof Error ? actionError.message : "Nao foi possivel executar a acao.");
+      }
       return null;
     } finally {
       setIsRunningAction(false);
     }
   }
 
-  function applyActionResult(result: ConversationActionResultDto) {
+  function applyActionResult(result: ConversationActionResultDto, targetConversationId: string) {
     setConversations((current) => upsertConversation(current, result.conversation));
-    setSelectedConversationId(result.conversation.id);
+    if (
+      selectedConversationIdRef.current !== targetConversationId ||
+      result.conversation.id !== targetConversationId
+    ) {
+      return;
+    }
+
     setContactContext(result.context);
     if (result.aiSuggestion) {
       setAiSuggestion(result.aiSuggestion);
@@ -495,7 +521,11 @@ export function InboxPage() {
               placeholder="Adicionar nota"
               value={noteDraft}
             />
-            <button disabled={!selectedConversation || !noteDraft.trim() || isRunningAction} type="submit">
+            <button
+              aria-label="Adicionar nota"
+              disabled={!selectedConversation || !noteDraft.trim() || isRunningAction}
+              type="submit"
+            >
               <StickyNote size={15} aria-hidden="true" />
             </button>
           </form>
