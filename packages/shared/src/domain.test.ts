@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { conversationSchema, messageSchema } from "./domain";
+import {
+  contactBoardMembershipSchema,
+  contactBoardSchema,
+  contactBoardStageSchema,
+  contactSchema,
+  conversationSchema,
+  integrationModeSchema,
+  messageSchema,
+  suiteModuleSchema
+} from "./domain.js";
 import { realtimeEventSchema } from "./realtime";
 
 describe("domain schemas", () => {
@@ -138,5 +147,66 @@ describe("domain schemas", () => {
     });
 
     expect(parsed.workspaceId).toBe("workspace_1");
+  });
+
+  it("validates suite module keys", () => {
+    expect(suiteModuleSchema.parse("atendimento")).toBe("atendimento");
+    expect(() => suiteModuleSchema.parse("pipeline")).toThrow();
+  });
+
+  it("validates contact board membership with primary flag", () => {
+    expect(
+      contactBoardMembershipSchema.parse({
+        id: "membership_1",
+        workspaceId: "workspace_1",
+        contactId: "contact_1",
+        boardId: "board_1",
+        stageId: "stage_1",
+        isPrimary: true,
+        updatedAt: "2026-05-21T00:00:00.000Z"
+      }).isPrimary
+    ).toBe(true);
+  });
+
+  it("validates contact board and stages", () => {
+    expect(
+      contactBoardSchema.parse({
+        id: "board_1",
+        workspaceId: "workspace_1",
+        name: "Pre-vendas",
+        description: null,
+        createdAt: "2026-05-21T00:00:00.000Z"
+      }).name
+    ).toBe("Pre-vendas");
+
+    expect(
+      contactBoardStageSchema.parse({
+        id: "stage_1",
+        workspaceId: "workspace_1",
+        boardId: "board_1",
+        name: "Proposta enviada",
+        color: "#DFF3EA",
+        order: 2
+      }).order
+    ).toBe(2);
+  });
+
+  it("validates contacts and integration mode", () => {
+    expect(
+      contactSchema.parse({
+        id: "contact_1",
+        workspaceId: "workspace_1",
+        name: "Joao Martins",
+        phone: "+5551999999999",
+        email: null,
+        company: null,
+        atomicCrmContactId: null,
+        atomicCrmLeadId: null,
+        createdAt: "2026-05-21T00:00:00.000Z",
+        updatedAt: "2026-05-21T00:00:00.000Z"
+      }).phone
+    ).toBe("+5551999999999");
+
+    expect(integrationModeSchema.parse("simulated")).toBe("simulated");
   });
 });
