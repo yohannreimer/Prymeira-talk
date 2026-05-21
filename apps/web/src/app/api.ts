@@ -2,9 +2,17 @@ import {
   contactBoardMembershipSchema,
   contactBoardSchema,
   contactBoardStageSchema,
+  channelOperationResultSchema,
+  channelQrResultSchema,
+  channelSchema,
+  channelTestInboundResultSchema,
   contactSchema,
   conversationSchema,
   messageSchema,
+  type ChannelDto,
+  type ChannelOperationResultDto,
+  type ChannelQrResultDto,
+  type ChannelTestInboundResultDto,
   type ContactBoardDto,
   type ContactBoardMembershipDto,
   type ContactBoardStageDto,
@@ -270,6 +278,138 @@ export async function apiMoveBoardMembership(
 
   const data = await response.json();
   return parseBoardContactCard(data);
+}
+
+export async function apiGetChannels(
+  getToken: () => Promise<string | null>
+): Promise<ChannelDto[]> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/channels`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load channels: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return channelSchema.array().parse(data);
+}
+
+export async function apiCreateChannel(
+  getToken: () => Promise<string | null>,
+  body: {
+    displayName: string;
+    providerKey?: string;
+    phoneNumber?: string;
+  }
+): Promise<ChannelDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/channels`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to create channel: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return channelSchema.parse(data);
+}
+
+export async function apiStartChannelQr(
+  getToken: () => Promise<string | null>,
+  channelId: string
+): Promise<ChannelQrResultDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/channels/${channelId}/qr`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to start channel QR: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return channelQrResultSchema.parse(data);
+}
+
+export async function apiReconnectChannel(
+  getToken: () => Promise<string | null>,
+  channelId: string
+): Promise<ChannelOperationResultDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/channels/${channelId}/reconnect`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to reconnect channel: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return channelOperationResultSchema.parse(data);
+}
+
+export async function apiDisconnectChannel(
+  getToken: () => Promise<string | null>,
+  channelId: string
+): Promise<ChannelOperationResultDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/channels/${channelId}/disconnect`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to disconnect channel: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return channelOperationResultSchema.parse(data);
+}
+
+export async function apiCreateTestInbound(
+  getToken: () => Promise<string | null>,
+  channelId: string
+): Promise<ChannelTestInboundResultDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/channels/${channelId}/test-inbound`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({})
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to create test inbound message: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return channelTestInboundResultSchema.parse(data);
 }
 
 export async function apiGetConversationMessages(

@@ -1,0 +1,221 @@
+import Fastify from "fastify";
+import { describe, expect, it, vi } from "vitest";
+import { createChannelsService } from "./channels.service.js";
+import type { PrismaLike } from "./channels.service.js";
+import { channelsRoutes } from "./channels.routes.js";
+
+type MockPrisma = {
+  channel: {
+    findMany: any;
+    findFirst: any;
+    create: any;
+    update: any;
+  };
+  integrationConfig: {
+    findUnique: any;
+  };
+  contact: {
+    upsert: any;
+  };
+  conversation: {
+    upsert: any;
+    update: any;
+  };
+  message: {
+    create: any;
+  };
+};
+
+const channelId = "00000000-0000-4000-8000-000000000001";
+const contactId = "00000000-0000-4000-8000-000000000002";
+const conversationId = "00000000-0000-4000-8000-000000000003";
+
+const baseChannel = {
+  id: channelId,
+  workspaceId: "workspace_a",
+  provider: "evolution" as const,
+  providerKey: "demo-evolution",
+  phoneNumber: "+55 47 99999-0000",
+  displayName: "WhatsApp Comercial",
+  status: "disconnected" as const,
+  encryptedConfig: {},
+  createdAt: new Date("2026-05-20T10:00:00.000Z"),
+  updatedAt: new Date("2026-05-20T10:00:00.000Z")
+};
+
+function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & PrismaLike {
+  return {
+    channel: {
+      findMany:
+        overrides.channel?.findMany ??
+        vi.fn().mockResolvedValue([baseChannel]),
+      findFirst:
+        overrides.channel?.findFirst ??
+        vi.fn().mockResolvedValue(baseChannel),
+      create:
+        overrides.channel?.create ??
+        vi.fn().mockResolvedValue(baseChannel),
+      update:
+        overrides.channel?.update ??
+        vi.fn().mockImplementation(async (args) => {
+          const status =
+            typeof args.data.status === "string" ? args.data.status : baseChannel.status;
+
+          return {
+            ...baseChannel,
+            status,
+            updatedAt: new Date("2026-05-20T10:05:00.000Z")
+          };
+        })
+    },
+    integrationConfig: {
+      findUnique:
+        overrides.integrationConfig?.findUnique ??
+        vi.fn().mockResolvedValue(null)
+    },
+    contact: {
+      upsert:
+        overrides.contact?.upsert ??
+        vi.fn().mockResolvedValue({ id: contactId })
+    },
+    conversation: {
+      upsert:
+        overrides.conversation?.upsert ??
+        vi.fn().mockResolvedValue({
+          id: conversationId
+        }),
+      update:
+        overrides.conversation?.update ??
+        vi.fn().mockResolvedValue({
+          id: conversationId
+        })
+    },
+    message: {
+      create:
+        overrides.message?.create ??
+        vi.fn().mockResolvedValue({
+          id: "00000000-0000-4000-8000-000000000004"
+        })
+    }
+  } as MockPrisma & PrismaLike;
+}
+
+async function buildChannelsApp(prisma = createMockPrisma()) {
+  const app = Fastify({ logger: false });
+
+  app.decorate("prisma", prisma as never);
+  app.addHook("preHandler", async (request) => {
+    request.talk = { workspaceId: "workspace_a", role: "agent" };
+  });
+  await app.register(channelsRoutes);
+
+  return { app, prisma };
+}
+
+describe("channels service", () => {
+  it("starts a simulated QR session and persists the connecting status", async () => {
+    const prisma = createMockPrisma();
+    const service = createChannelsService(prisma);
+
+    const result = await service.startQrSession({
+      workspaceId: "workspace_a",
+      channelId
+    });
+
+    expect(prisma.integrationConfig.findUnique).toHaveBeenCalledWith({
+      where: {
+        workspaceId_provider: {
+          workspaceId: "workspace_a",
+          provider: "evolution"
+        }
+      }
+    });
+    expect(prisma.channel.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: channelId
+        }
+      },
+      data: { status: "connecting" }
+    });
+    expect(result.mode).toBe("simulated");
+    expect(result.qrCode).toContain("prymeira-talk-demo");
+    expect(result.qr.payload).toContain("prymeira-talk-demo");
+    expect(result.channel.status).toBe("connecting");
+  });
+
+  it("disconnects a channel in simulated mode when no real Evolution config exists", async () => {
+    const prisma = createMockPrisma();
+    const service = createChannelsService(prisma);
+
+    const result = await service.disconnectChannel({
+      workspaceId: "workspace_a",
+      channelId
+    });
+
+    expect(prisma.channel.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: channelId
+        }
+      },
+      data: { status: "disconnected" }
+    });
+    expect(result.mode).toBe("simulated");
+    expect(result.channel.status).toBe("disconnected");
+  });
+
+  it("reconnects a simulated channel by moving it back to connecting", async () => {
+    const prisma = createMockPrisma();
+    const service = createChannelsService(prisma);
+
+    const result = await service.reconnectChannel({
+      workspaceId: "workspace_a",
+      channelId
+    });
+
+    expect(prisma.channel.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: channelId
+        }
+      },
+      data: { status: "connecting" }
+    });
+    expect(result.mode).toBe("simulated");
+    expect(result.channel.status).toBe("connecting");
+  });
+});
+
+describe("channels routes", () => {
+  it("returns the simulated QR payload from POST /channels/:channelId/qr", async () => {
+    const { app } = await buildChannelsApp();
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/channels/${channelId}/qr`
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          mode: "simulated",
+          qrCode: expect.stringContaining("prymeira-talk-demo"),
+          qr: expect.objectContaining({
+            payload: expect.stringContaining("prymeira-talk-demo")
+          }),
+          channel: expect.objectContaining({
+            id: channelId,
+            status: "connecting"
+          })
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+});

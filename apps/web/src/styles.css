@@ -60,6 +60,9 @@ select:disabled {
 }
 
 .primary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   border: 0;
   border-radius: 8px;
   background: #24564a;
@@ -69,6 +72,9 @@ select:disabled {
 }
 
 .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   border: 1px solid #cfdbd4;
   border-radius: 8px;
   background: #ffffff;
@@ -647,6 +653,140 @@ select:disabled {
   grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
 }
 
+.channels-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.42fr);
+  gap: 16px;
+}
+
+.channel-card-list {
+  display: grid;
+  gap: 10px;
+}
+
+.channel-card {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto;
+  align-items: center;
+  gap: 8px 14px;
+  border: 1px solid #dbe4de;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 14px;
+  text-align: left;
+}
+
+.channel-card.is-selected {
+  border-color: #24564a;
+  box-shadow: inset 3px 0 0 #24564a;
+}
+
+.channel-card strong {
+  color: #1f342d;
+  font-size: 0.98rem;
+}
+
+.channel-card small,
+.channel-card em {
+  color: #65756e;
+  font-size: 0.82rem;
+  font-style: normal;
+}
+
+.channel-card .status-pill {
+  justify-self: end;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.channel-empty {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  border: 1px dashed #cbd8d1;
+  border-radius: 8px;
+  padding: 24px;
+  color: #60736a;
+  text-align: center;
+}
+
+.channel-empty strong {
+  color: #243b33;
+}
+
+.channel-qr-panel {
+  align-content: start;
+}
+
+.qr-box {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  gap: 14px;
+  border: 1px solid #d7e2db;
+  border-radius: 8px;
+  background: #f7faf7;
+  color: #24564a;
+  padding: 18px;
+  text-align: center;
+}
+
+.qr-box code {
+  max-width: 100%;
+  color: #243b33;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.setup-checklist {
+  display: grid;
+  gap: 10px;
+}
+
+.setup-checklist div,
+.channel-health-row {
+  display: grid;
+  gap: 10px;
+}
+
+.setup-checklist div {
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  color: #314840;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.setup-checklist svg {
+  color: #24564a;
+}
+
+.channel-health-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.channel-health-row div {
+  border: 1px solid #dbe4de;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.channel-health-row span {
+  display: block;
+  color: #63746d;
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.channel-health-row strong {
+  color: #1f342d;
+  font-size: 1.45rem;
+}
+
 .panel-title-row {
   display: flex;
   align-items: center;
@@ -958,6 +1098,26 @@ select:disabled {
   color: #5f6c66;
 }
 
+.status-connected {
+  background: #dcebe4;
+  color: #276051;
+}
+
+.status-connecting {
+  background: #dce8f3;
+  color: #2f5e86;
+}
+
+.status-disconnected {
+  background: #e2e6e3;
+  color: #5f6c66;
+}
+
+.status-failed {
+  background: #f5ded9;
+  color: #9f332d;
+}
+
 .chat-empty-state {
   display: grid;
   place-items: center;
@@ -1148,6 +1308,7 @@ select:disabled {
 
   .metric-grid,
   .split-panel,
+  .channels-grid,
   .contacts-layout {
     grid-template-columns: 1fr;
   }
@@ -1220,7 +1381,14 @@ select:disabled {
   }
 
   .data-list div,
-  .workflow-list article {
+  .workflow-list article,
+  .channel-card {
     grid-template-columns: 1fr;
+  }
+
+  .channel-card .status-pill {
+    justify-self: start;
+    grid-column: auto;
+    grid-row: auto;
   }
 }

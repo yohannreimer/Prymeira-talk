@@ -20,6 +20,44 @@ export type SuiteModule = z.infer<typeof suiteModuleSchema>;
 export const integrationModeSchema = z.enum(["simulated", "real"]);
 export type IntegrationMode = z.infer<typeof integrationModeSchema>;
 
+export const channelProviderSchema = z.enum(["evolution"]);
+export type ChannelProvider = z.infer<typeof channelProviderSchema>;
+export const channelStatusSchema = z.enum(["disconnected", "connecting", "connected", "failed"]);
+export type ChannelStatus = z.infer<typeof channelStatusSchema>;
+
+export const channelSchema = z.object({
+  id: z.string().min(1),
+  workspaceId: z.string().min(1),
+  provider: channelProviderSchema,
+  providerKey: z.string().min(1),
+  phoneNumber: z.string().nullable(),
+  displayName: z.string().nullable(),
+  status: channelStatusSchema,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+export type ChannelDto = z.infer<typeof channelSchema>;
+
+export const channelOperationResultSchema = z.object({
+  mode: integrationModeSchema,
+  channel: channelSchema
+});
+export type ChannelOperationResultDto = z.infer<typeof channelOperationResultSchema>;
+
+export const channelQrResultSchema = channelOperationResultSchema.extend({
+  qrCode: z.string().min(1),
+  qr: z.object({
+    payload: z.string().min(1),
+    expiresAt: z.string().datetime()
+  })
+});
+export type ChannelQrResultDto = z.infer<typeof channelQrResultSchema>;
+
+export const channelTestInboundResultSchema = channelOperationResultSchema.extend({
+  messageId: z.string().min(1)
+});
+export type ChannelTestInboundResultDto = z.infer<typeof channelTestInboundResultSchema>;
+
 export const conversationStatusSchema = z.enum(["open", "pending", "closed"]);
 export type ConversationStatus = z.infer<typeof conversationStatusSchema>;
 export const conversationPrioritySchema = z.enum(["low", "normal", "high"]);
