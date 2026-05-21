@@ -1,9 +1,11 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import {
+  ConversationActionError,
   ConversationNotFoundError,
   createConversationsService
 } from "./conversations.service.js";
+import type { PrismaLike } from "./conversations.service.js";
 
 export const createMessageParamsSchema = z.object({
   conversationId: z.string().uuid()
@@ -64,7 +66,7 @@ function readCurrentClerkUserId(authorizationHeader: string | undefined) {
 }
 
 export const conversationsRoutes: FastifyPluginAsync = async (app) => {
-  const service = createConversationsService(app.prisma);
+  const service = createConversationsService(app.prisma as unknown as PrismaLike);
 
   app.get("/conversations", async (request) =>
     service.listConversations({ workspaceId: request.talk.workspaceId })
@@ -142,6 +144,10 @@ export const conversationsRoutes: FastifyPluginAsync = async (app) => {
         return null;
       }
 
+      if (error instanceof ConversationActionError) {
+        return error;
+      }
+
       throw error;
     });
 
@@ -149,6 +155,10 @@ export const conversationsRoutes: FastifyPluginAsync = async (app) => {
       return reply
         .code(404)
         .send({ code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
+    }
+
+    if (result instanceof ConversationActionError) {
+      return reply.code(result.statusCode).send({ code: result.code, error: result.message });
     }
 
     app.realtime.publish({

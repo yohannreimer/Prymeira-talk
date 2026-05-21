@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { conversationSchema, messageSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import {
+  ConversationActionError,
   ConversationNotFoundError,
   createConversationsService
 } from "./conversations.service.js";
@@ -25,6 +26,8 @@ type MockPrisma = {
   contactBoardMembership: {
     findFirst: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["findFirst"]>>;
     update: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["update"]>>;
+    updateMany: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["updateMany"]>>;
+    upsert: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["upsert"]>>;
   };
   contactBoardStage: {
     findMany: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["findMany"]>>;
@@ -42,6 +45,7 @@ type MockPrisma = {
   crmSyncAction: {
     create: ReturnType<typeof vi.fn<PrismaLike["crmSyncAction"]["create"]>>;
   };
+  $transaction: ReturnType<typeof vi.fn<PrismaLike["$transaction"]>>;
 };
 
 function createMockPrisma(overrides: {
@@ -52,7 +56,8 @@ function createMockPrisma(overrides: {
   findMessages?: MockPrisma["message"]["findMany"];
   findNotes?: MockPrisma["contactNote"]["findMany"];
 } = {}): MockPrisma {
-  return {
+  let result: MockPrisma;
+  result = {
     conversation: {
       findMany: overrides.findMany ?? vi.fn<PrismaLike["conversation"]["findMany"]>().mockResolvedValue([]),
       findUnique:
@@ -166,6 +171,18 @@ function createMockPrisma(overrides: {
         updatedAt: new Date("2026-05-20T12:15:00.000Z"),
         board: { name: "Pipeline" },
         stage: { name: "Qualificado", color: "#d29b44" }
+      }),
+      updateMany: vi.fn<PrismaLike["contactBoardMembership"]["updateMany"]>().mockResolvedValue({ count: 1 }),
+      upsert: vi.fn<PrismaLike["contactBoardMembership"]["upsert"]>().mockResolvedValue({
+        id: "membership_1",
+        workspaceId: "workspace_a",
+        contactId: "contact_1",
+        boardId: "board_1",
+        stageId: "stage_2",
+        isPrimary: true,
+        updatedAt: new Date("2026-05-20T12:15:00.000Z"),
+        board: { name: "Pipeline" },
+        stage: { name: "Qualificado", color: "#d29b44" }
       })
     },
     contactBoardStage: {
@@ -222,8 +239,13 @@ function createMockPrisma(overrides: {
         id: "crm_1",
         status: "queued"
       })
-    }
+    },
+    $transaction: vi.fn<PrismaLike["$transaction"]>(async (callback) =>
+      callback(result)
+    )
   };
+
+  return result;
 }
 
 describe("conversations service", () => {
@@ -460,7 +482,8 @@ describe("conversations service", () => {
     await service.runConversationAction({
       workspaceId: "workspace_a",
       conversationId: "conv_1",
-      action: "assign_current_user"
+      action: "assign_current_user",
+      currentClerkUserId: "clerk_user_1"
     });
     await service.runConversationAction({
       workspaceId: "workspace_a",
@@ -496,9 +519,95 @@ describe("conversations service", () => {
         data: expect.objectContaining({ priority: "high" })
       })
     );
-    expect(prisma.contactBoardMembership.update).toHaveBeenCalledWith(
+    expect(prisma.contactBoardMembership.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ stageId: "stage_2", isPrimary: true })
+        update: expect.objectContaining({ stageId: "stage_2", isPrimary: true })
+      })
+    );
+  });
+
+  it("rejects assigning without a current user identity", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+
+    const error = await service
+      .runConversationAction({
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        action: "assign_current_user",
+        currentClerkUserId: null
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ConversationActionError);
+    expect(error).toMatchObject({ code: "CURRENT_USER_REQUIRED" });
+    expect(prisma.userProfile.findFirst).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects assigning when the current Clerk user has no workspace profile", async () => {
+    const prisma = createMockPrisma();
+    prisma.userProfile.findFirst.mockResolvedValueOnce(null);
+    const service = createConversationsService(prisma);
+
+    const error = await service
+      .runConversationAction({
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        action: "assign_current_user",
+        currentClerkUserId: "missing_clerk_user"
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ConversationActionError);
+    expect(error).toMatchObject({ code: "CURRENT_USER_NOT_FOUND" });
+    expect(prisma.userProfile.findFirst).toHaveBeenCalledWith({
+      where: { workspaceId: "workspace_a", clerkUserId: "missing_clerk_user" }
+    });
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+
+  it("changes primary board stage in a transaction and creates missing memberships", async () => {
+    const prisma = createMockPrisma();
+    prisma.contactBoardMembership.findFirst.mockResolvedValueOnce(null);
+    const service = createConversationsService(prisma);
+
+    await service.runConversationAction({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      action: "change_primary_board_stage",
+      stageId: "stage_2"
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.contactBoardMembership.updateMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        contactId: "contact_1",
+        isPrimary: true
+      },
+      data: { isPrimary: false }
+    });
+    expect(prisma.contactBoardMembership.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          workspaceId_contactId_boardId: {
+            workspaceId: "workspace_a",
+            contactId: "contact_1",
+            boardId: "board_1"
+          }
+        },
+        create: expect.objectContaining({
+          workspaceId: "workspace_a",
+          contactId: "contact_1",
+          boardId: "board_1",
+          stageId: "stage_2",
+          isPrimary: true
+        }),
+        update: expect.objectContaining({
+          stageId: "stage_2",
+          isPrimary: true
+        })
       })
     );
   });
@@ -681,6 +790,36 @@ describe("conversation routes", () => {
         workspaceId: "workspace_a",
         payload: expect.objectContaining({ id: "conv_1" })
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns a controlled error when assigning without a current Clerk subject", async () => {
+    const prisma = createMockPrisma();
+    const publish = vi.fn();
+    const app = Fastify({ logger: false });
+
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => {
+      request.talk = { workspaceId: "workspace_a", role: "agent" };
+    });
+    await app.register(conversationsRoutes);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/conversations/00000000-0000-4000-8000-000000000001/actions",
+        payload: { action: "assign_current_user" }
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        code: "CURRENT_USER_REQUIRED",
+        error: "Current user identity is required for assignment."
+      });
+      expect(publish).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

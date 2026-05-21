@@ -13,6 +13,23 @@ export class ConversationNotFoundError extends Error {
   }
 }
 
+type ConversationActionErrorCode =
+  | "CURRENT_USER_REQUIRED"
+  | "CURRENT_USER_NOT_FOUND"
+  | "BOARD_STAGE_NOT_FOUND";
+
+export class ConversationActionError extends Error {
+  statusCode = 409 as const;
+
+  constructor(
+    public code: ConversationActionErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.name = "ConversationActionError";
+  }
+}
+
 interface ConversationRecord {
   id: string;
   workspaceId: string;
@@ -200,6 +217,8 @@ export interface PrismaLike {
   contactBoardMembership: {
     findFirst(args: BoardMembershipFindFirstArgs): Promise<BoardMembershipRecord | null>;
     update(args: BoardMembershipUpdateArgs): Promise<BoardMembershipRecord>;
+    updateMany(args: unknown): Promise<{ count: number }>;
+    upsert(args: unknown): Promise<BoardMembershipRecord>;
   };
   contactBoardStage: {
     findMany(args: BoardStageFindManyArgs): Promise<BoardStageRecord[]>;
@@ -217,6 +236,7 @@ export interface PrismaLike {
   crmSyncAction: {
     create(args: CrmSyncActionCreateArgs): Promise<{ id: string; status: string }>;
   };
+  $transaction(callback: (tx: PrismaLike) => Promise<unknown>): Promise<unknown>;
 }
 
 function toIsoString(value: DateLike) {
@@ -466,27 +486,38 @@ export function createConversationsService(prisma: PrismaLike) {
       }
 
       if (input.action === "assign_current_user") {
+        if (!input.currentClerkUserId) {
+          throw new ConversationActionError(
+            "CURRENT_USER_REQUIRED",
+            "Current user identity is required for assignment."
+          );
+        }
+
         const user = await prisma.userProfile.findFirst({
           where: {
             workspaceId: input.workspaceId,
-            ...(input.currentClerkUserId ? { clerkUserId: input.currentClerkUserId } : {})
-          },
-          orderBy: { createdAt: "asc" }
+            clerkUserId: input.currentClerkUserId
+          }
         });
 
-        if (user) {
-          conversation = await prisma.conversation.update({
-            where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
-            data: { assignedUserId: user.id },
-            include: {
-              assignedUser: { select: { displayName: true } },
-              channel: { select: { displayName: true, phoneNumber: true } },
-              contact: { select: { name: true, phone: true } },
-              department: { select: { name: true } },
-              tags: { include: { tag: true } }
-            }
-          });
+        if (!user) {
+          throw new ConversationActionError(
+            "CURRENT_USER_NOT_FOUND",
+            "Current user profile was not found in this workspace."
+          );
         }
+
+        conversation = await prisma.conversation.update({
+          where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+          data: { assignedUserId: user.id },
+          include: {
+            assignedUser: { select: { displayName: true } },
+            channel: { select: { displayName: true, phoneNumber: true } },
+            contact: { select: { name: true, phone: true } },
+            department: { select: { name: true } },
+            tags: { include: { tag: true } }
+          }
+        });
       }
 
       if (input.action === "change_department") {
@@ -523,38 +554,45 @@ export function createConversationsService(prisma: PrismaLike) {
           include: { board: { select: { name: true } } }
         });
 
-        if (stage) {
-          const membership = await prisma.contactBoardMembership.findFirst({
+        if (!stage) {
+          throw new ConversationActionError("BOARD_STAGE_NOT_FOUND", "Board stage not found.");
+        }
+
+        await prisma.$transaction(async (tx) => {
+          await tx.contactBoardMembership.updateMany({
             where: {
               workspaceId: input.workspaceId,
               contactId: conversation.contactId,
-              boardId: stage.boardId
+              isPrimary: true
+            },
+            data: { isPrimary: false }
+          });
+
+          await tx.contactBoardMembership.upsert({
+            where: {
+              workspaceId_contactId_boardId: {
+                workspaceId: input.workspaceId,
+                contactId: conversation.contactId,
+                boardId: stage.boardId
+              }
+            },
+            create: {
+              workspaceId: input.workspaceId,
+              contactId: conversation.contactId,
+              boardId: stage.boardId,
+              stageId: input.stageId,
+              isPrimary: true
+            },
+            update: {
+              stageId: input.stageId,
+              isPrimary: true
             },
             include: {
               board: { select: { name: true } },
               stage: { select: { name: true, color: true } }
             }
           });
-
-          if (membership) {
-            await prisma.contactBoardMembership.update({
-              where: {
-                workspaceId_id: {
-                  workspaceId: input.workspaceId,
-                  id: membership.id
-                }
-              },
-              data: {
-                stageId: input.stageId,
-                isPrimary: true
-              },
-              include: {
-                board: { select: { name: true } },
-                stage: { select: { name: true, color: true } }
-              }
-            });
-          }
-        }
+        });
       }
 
       if (input.action === "request_ai_suggestion") {
