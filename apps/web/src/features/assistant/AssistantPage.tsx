@@ -9,7 +9,7 @@ import {
 } from "../../app/api";
 
 function actionLabel(actionType: string) {
-  return actionType === "suggested_reply" ? "Sugestao de resposta" : "Resumo";
+  return actionType === "suggested_reply" ? "Sugestão de resposta" : "Resumo";
 }
 
 function resultPreview(action: AssistantActionDto) {
@@ -36,7 +36,7 @@ export function AssistantPage() {
     try {
       setActions(await apiGetAssistantActions(getToken));
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar acoes de IA.");
+      setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar ações de IA.");
     } finally {
       setIsLoading(false);
     }
@@ -65,7 +65,7 @@ export function AssistantPage() {
       setActions((current) => [action, ...current]);
       setNotice(`${actionLabel(action.actionType)} criada em modo ${action.mode}.`);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Nao foi possivel criar acao de IA.");
+      setError(saveError instanceof Error ? saveError.message : "Não foi possível criar ação de IA.");
     } finally {
       setIsSaving(false);
     }
@@ -78,18 +78,17 @@ export function AssistantPage() {
           <p className="eyebrow">Prymeira Talk</p>
           <h1>IA</h1>
         </div>
-        <span className="status-pill status-pending">
-          <FlaskConical size={14} />
-          Modo simulado
-        </span>
+        <div className="module-header-actions">
+          <span className="status-badge status-badge--bot">
+            <FlaskConical size={12} />
+            Modo simulado
+          </span>
+          <button className="secondary-button" type="button" onClick={() => void loadActions()}>
+            <RefreshCw size={14} />
+            Atualizar
+          </button>
+        </div>
       </header>
-
-      <div className="module-actions">
-        <button className="primary-button" type="button" onClick={() => void loadActions()}>
-          <RefreshCw size={16} />
-          Atualizar
-        </button>
-      </div>
 
       {error ? <p className="error-note">{error}</p> : null}
       {notice ? <p className="success-note">{notice}</p> : null}
@@ -97,14 +96,14 @@ export function AssistantPage() {
       <div className="ops-grid">
         <form className="module-panel module-form" onSubmit={(event) => void createAction(event)}>
           <div className="panel-title-row">
-            <h2>Nova acao</h2>
-            <span>Simulada</span>
+            <h2>Nova ação</h2>
+            <span className="status-badge status-badge--bot">Simulada</span>
           </div>
           <label className="form-field">
             Tipo
             <select value={actionType} onChange={(event) => setActionType(event.target.value as AssistantActionType)}>
               <option value="summary">Resumo</option>
-              <option value="suggested_reply">Sugestao de resposta</option>
+              <option value="suggested_reply">Sugestão de resposta</option>
             </select>
           </label>
           <label className="form-field">
@@ -128,22 +127,26 @@ export function AssistantPage() {
         <div className="module-panel">
           <div className="panel-title-row">
             <h2>Logs de IA</h2>
-            <span>{isLoading ? "Carregando" : `${actions.length} acoes`}</span>
+            <span>{isLoading ? "Carregando" : `${actions.length} ações`}</span>
           </div>
-          <div className="data-list">
-            {actions.length === 0 ? (
-              <div className="empty-panel">
-                <Bot size={28} />
-                <h3>Nenhum log</h3>
-                <p>Execute uma acao para gravar o primeiro resultado simulado.</p>
+          {actions.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">
+                <Bot size={24} />
               </div>
-            ) : null}
+              <h3>Nenhum log</h3>
+              <p>Execute uma ação para gravar o primeiro resultado simulado.</p>
+            </div>
+          ) : null}
+          <div className="assistant-log-list">
             {actions.map((action) => (
-              <div key={action.id}>
-                <strong>{actionLabel(action.actionType)}</strong>
-                <span>{action.mode}</span>
-                <em>{resultPreview(action)}</em>
-              </div>
+              <article key={action.id} className="assistant-log-card">
+                <div className="assistant-log-header">
+                  <span className="status-badge status-badge--bot">{actionLabel(action.actionType)}</span>
+                  <span className="status-badge status-badge--closed">{action.mode}</span>
+                </div>
+                <p className="assistant-log-result">{resultPreview(action)}</p>
+              </article>
             ))}
           </div>
         </div>

@@ -1421,6 +1421,38 @@ select:disabled {
   background: var(--color-brand-50);
 }
 
+.assistant-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.assistant-log-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle);
+}
+
+.assistant-log-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.assistant-log-result {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
 .automation-rule-list {
   display: flex;
   flex-direction: column;
