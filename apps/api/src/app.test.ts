@@ -15,6 +15,27 @@ describe("app", () => {
     }
   });
 
+  it("allows browser preflight requests for PATCH endpoints", async () => {
+    const app = await buildApp({}, { authEnabled: false, prismaEnabled: false });
+
+    try {
+      const response = await app.inject({
+        method: "OPTIONS",
+        url: "/board-memberships/membership_1",
+        headers: {
+          origin: "http://localhost:5176",
+          "access-control-request-method": "PATCH",
+          "access-control-request-headers": "authorization,content-type"
+        }
+      });
+
+      expect(response.statusCode).toBe(204);
+      expect(response.headers["access-control-allow-methods"]).toContain("PATCH");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("exposes realtime hub on the root app after registration", async () => {
     const app = await buildApp({}, { authEnabled: false, prismaEnabled: false });
 

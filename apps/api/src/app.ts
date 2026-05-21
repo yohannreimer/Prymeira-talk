@@ -22,6 +22,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   const app = Fastify({ logger: options.logger ?? true });
 
   await app.register(cors, {
+    methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
     origin: env.CORS_ORIGINS.split(",").map((origin) => origin.trim())
   });
 
