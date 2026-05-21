@@ -464,7 +464,7 @@ export function InboxPage() {
             </h2>
           </div>
           {selectedConversation ? (
-            <span className={`status-pill status-${selectedConversation.status}`}>
+            <span className={`status-badge status-badge--${selectedConversation.status}`}>
               {statusLabel(selectedConversation.status)}
             </span>
           ) : null}
@@ -495,8 +495,10 @@ export function InboxPage() {
             ))}
           </div>
         ) : (
-          <div className="chat-empty-state">
-            <MessageSquare size={34} aria-hidden="true" />
+          <div className="empty-state">
+            <div className="empty-state-icon">
+              <MessageSquare size={28} aria-hidden="true" />
+            </div>
             <h3>Nenhuma conversa selecionada</h3>
             <p>Escolha uma conversa na fila para acompanhar o atendimento.</p>
           </div>

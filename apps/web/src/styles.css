@@ -294,16 +294,49 @@ select:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  border-bottom: 1px solid #d7e0da;
-  padding-bottom: 18px;
+  gap: 12px;
+  padding: 12px 18px;
+  background: var(--color-surface-subtle);
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
 }
 
 .module-header h1 {
   margin: 0;
-  color: #1b2d27;
-  font-size: 1.75rem;
-  line-height: 1.1;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  line-height: 1.2;
+}
+
+.module-tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: 12px;
+}
+
+.module-tab {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.module-tab:hover {
+  background: var(--color-border-subtle);
+  color: var(--color-text-primary);
+}
+
+.module-tab.is-active {
+  background: var(--color-surface-card);
+  color: var(--color-brand-600);
+  font-weight: 600;
+  box-shadow: var(--shadow-card);
 }
 
 .module-actions {
@@ -1616,6 +1649,51 @@ select:disabled {
   color: #276051;
 }
 
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.status-badge::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.status-badge--open {
+  background: var(--color-status-open-bg);
+  color: var(--color-status-open-text);
+}
+.status-badge--open::before { background: var(--color-status-open-dot); }
+
+.status-badge--pending,
+.status-badge--waiting {
+  background: var(--color-status-waiting-bg);
+  color: var(--color-status-waiting-text);
+}
+.status-badge--pending::before,
+.status-badge--waiting::before { background: var(--color-status-waiting-dot); }
+
+.status-badge--closed {
+  background: var(--color-status-closed-bg);
+  color: var(--color-status-closed-text);
+}
+.status-badge--closed::before { background: var(--color-status-closed-dot); }
+
+.status-badge--bot {
+  background: var(--color-status-bot-bg);
+  color: var(--color-status-bot-text);
+}
+.status-badge--bot::before { background: var(--color-status-bot-dot); }
+
 .queue-summary {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1881,6 +1959,43 @@ select:disabled {
 .chat-empty-state p {
   max-width: 420px;
   margin: 0;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.empty-state-icon {
+  display: flex;
+  width: 64px;
+  height: 64px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  background: var(--color-brand-50);
+  color: var(--color-brand-600);
+  flex-shrink: 0;
+}
+
+.empty-state h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.empty-state p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+  max-width: 220px;
 }
 
 .message-thread {
