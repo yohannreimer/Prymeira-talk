@@ -1594,23 +1594,13 @@ select:disabled {
   height: 40px;
   border-radius: var(--radius-full);
   background: var(--color-brand-600);
-  color: #ffffff;
+  color: var(--color-surface-card);
   font-size: 13px;
   font-weight: 700;
   align-items: center;
   justify-content: center;
 }
 
-.conv-online-dot {
-  position: absolute;
-  bottom: 0;
-  right: 0;
-  width: 10px;
-  height: 10px;
-  border-radius: var(--radius-full);
-  background: var(--color-status-open-dot);
-  border: 2px solid var(--color-surface-card);
-}
 
 .conversation-content {
   flex: 1;
@@ -1676,7 +1666,7 @@ select:disabled {
   padding: 0 4px;
   border-radius: var(--radius-full);
   background: var(--color-brand-600);
-  color: #ffffff;
+  color: var(--color-surface-card);
   font-size: 10px;
   font-weight: 600;
 }

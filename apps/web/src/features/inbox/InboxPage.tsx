@@ -415,6 +415,7 @@ export function InboxPage() {
           ) : null}
           {conversations.map((conversation) => (
             <button
+              aria-label={`Abrir conversa com ${contactDisplayName(conversation)}`}
               className={[
                 "conversation-card",
                 conversation.id === selectedConversationId ? "is-selected" : ""
@@ -427,10 +428,6 @@ export function InboxPage() {
                 <span className="conversation-avatar" aria-hidden="true">
                   {conversation.contactId.slice(0, 2).toUpperCase()}
                 </span>
-                <span
-                  className="conv-online-dot"
-                  aria-hidden="true"
-                />
               </div>
               <span className="conversation-content">
                 <span className="conversation-row">
