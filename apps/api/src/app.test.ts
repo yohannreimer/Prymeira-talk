@@ -64,6 +64,34 @@ describe("app", () => {
     }
   });
 
+  it("uses explicit local auth bypass after a bearer token is present", async () => {
+    const requireProductAccess = vi.fn();
+    const fetchProducts = vi.fn();
+    const app = await buildApp(
+      {
+        PRYMEIRA_LOCAL_AUTH_BYPASS: true,
+        PRYMEIRA_LOCAL_WORKSPACE_ID: "local_test_workspace",
+        PRYMEIRA_LOCAL_ROLE: "owner"
+      },
+      { authEnabled: true, requireProductAccess, fetch: fetchProducts }
+    );
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/me",
+        headers: { authorization: "Bearer clerk-token" }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ workspaceId: "local_test_workspace", role: "owner" });
+      expect(requireProductAccess).not.toHaveBeenCalled();
+      expect(fetchProducts).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns 403 when product access is denied", async () => {
     const app = await buildApp(
       {},

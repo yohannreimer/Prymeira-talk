@@ -30,6 +30,10 @@ type Fetch = typeof fetch;
 export interface AuthContextPluginOptions {
   accountApiUrl: string;
   productKey: string;
+  localAuthBypass?: {
+    workspaceId: string;
+    role: "owner" | "manager" | "agent";
+  };
   requireProductAccess?: RequireProductAccess;
   fetch?: Fetch;
 }
@@ -165,6 +169,14 @@ export const authContextPlugin = fp(
       const clerkToken = readBearerToken(request, pathname);
       if (!clerkToken) {
         throw authError(401, "Missing bearer token.");
+      }
+
+      if (options.localAuthBypass) {
+        request.talk = {
+          workspaceId: options.localAuthBypass.workspaceId,
+          role: options.localAuthBypass.role
+        };
+        return;
       }
 
       const access = await requireAccess(options.productKey, {

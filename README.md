@@ -63,3 +63,13 @@ pnpm --filter @prymeira-talk/api prisma migrate dev --name init
 ```
 
 Production-grade tenant resolution depends on Prymeira Account returning a `workspace_id` for users entitled to `product_key=talk`. Prymeira Talk treats the API as the tenant boundary and filters workspace data server-side.
+
+For local UI testing without a running Prymeira Account backend, keep Clerk enabled and set:
+
+```sh
+PRYMEIRA_LOCAL_AUTH_BYPASS=true
+PRYMEIRA_LOCAL_WORKSPACE_ID=local_workspace
+PRYMEIRA_LOCAL_ROLE=owner
+```
+
+This bypass still requires a Clerk bearer token and should stay disabled outside local development.

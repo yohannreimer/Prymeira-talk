@@ -31,6 +31,12 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     await app.register(authContextPlugin, {
       accountApiUrl: env.PRYMEIRA_ACCOUNT_API_URL,
       productKey: env.PRYMEIRA_PRODUCT_KEY,
+      localAuthBypass: env.PRYMEIRA_LOCAL_AUTH_BYPASS
+        ? {
+            workspaceId: env.PRYMEIRA_LOCAL_WORKSPACE_ID,
+            role: env.PRYMEIRA_LOCAL_ROLE
+          }
+        : undefined,
       fetch: options.fetch,
       requireProductAccess: options.requireProductAccess
     });
