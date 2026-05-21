@@ -1879,38 +1879,125 @@ select:disabled {
 }
 
 .composer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  border-top: 1px solid #dbe3dd;
-  background: #f8faf7;
-  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-card);
+  flex-shrink: 0;
 }
 
-.composer input,
-.composer button {
-  border: 1px solid #d3ddd6;
-  border-radius: 8px;
-  padding: 12px 14px;
-}
-
-.composer input {
-  min-width: 0;
-  background: #ffffff;
-}
-
-.composer button {
-  display: inline-flex;
+.composer-toolbar {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  background: #24564a;
-  color: #ffffff;
-  font-weight: 800;
+  gap: 2px;
+  padding: 6px 12px 0;
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
-.composer button:disabled {
-  background: #e2e9e4;
-  color: #62736c;
+.composer-tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.composer-tool:hover:not(:disabled) {
+  background: var(--color-surface-subtle);
+  color: var(--color-text-primary);
+}
+
+.composer-tool:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.composer-tool-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--color-border-subtle);
+  margin: 0 4px;
+}
+
+.composer-tool-spacer {
+  flex: 1;
+}
+
+.composer-quick-replies {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-brand-600);
+  background: var(--color-brand-50);
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.composer-quick-replies:hover:not(:disabled) {
+  background: var(--color-brand-100);
+}
+
+.composer-quick-replies:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.composer-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.composer-textarea {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  resize: none;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  background: transparent;
+  font-family: var(--font-family);
+  line-height: 1.5;
+  max-height: calc(4 * 1.5 * 13px);
+  overflow-y: auto;
+}
+
+.composer-textarea::placeholder {
+  color: var(--color-text-muted);
+}
+
+.composer-send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-brand-600);
+  color: var(--color-surface-card);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--transition-fast);
+}
+
+.composer-send:hover:not(:disabled) {
+  background: var(--color-brand-700);
+}
+
+.composer-send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .contact-panel {

@@ -503,18 +503,50 @@ export function InboxPage() {
         )}
 
         <form className="composer" aria-label="Compositor de mensagem" onSubmit={handleSendMessage}>
-          <input
-            aria-label="Mensagem"
-            disabled={!selectedConversation || isSending}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder="Escreva uma mensagem"
-            type="text"
-            value={draft}
-          />
-          <button disabled={!selectedConversation || !draft.trim() || isSending} type="submit">
-            <Send size={16} aria-hidden="true" />
-            {isSending ? "Enviando" : "Enviar"}
-          </button>
+          <div className="composer-toolbar" aria-label="Ferramentas de formatação">
+            <button type="button" className="composer-tool" aria-label="Negrito" disabled={!selectedConversation}>
+              <strong>B</strong>
+            </button>
+            <button type="button" className="composer-tool" aria-label="Itálico" disabled={!selectedConversation}>
+              <em>I</em>
+            </button>
+            <span className="composer-tool-divider" aria-hidden="true" />
+            <button type="button" className="composer-tool" aria-label="Emoji" disabled={!selectedConversation}>
+              😊
+            </button>
+            <button type="button" className="composer-tool" aria-label="Anexo" disabled={!selectedConversation}>
+              📎
+            </button>
+            <span className="composer-tool-spacer" aria-hidden="true" />
+            <button type="button" className="composer-quick-replies" disabled={!selectedConversation}>
+              Respostas rápidas
+            </button>
+          </div>
+          <div className="composer-input-row">
+            <textarea
+              aria-label="Mensagem"
+              className="composer-textarea"
+              disabled={!selectedConversation || isSending}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
+              placeholder="Escreva uma mensagem..."
+              rows={1}
+              value={draft}
+            />
+            <button
+              className="composer-send"
+              disabled={!selectedConversation || !draft.trim() || isSending}
+              type="submit"
+              aria-label="Enviar mensagem"
+            >
+              →
+            </button>
+          </div>
         </form>
       </section>
 
