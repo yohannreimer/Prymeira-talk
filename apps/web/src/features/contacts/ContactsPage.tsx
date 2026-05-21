@@ -62,6 +62,13 @@ function toFormState(contact: ContactDto): ContactFormState {
   };
 }
 
+export function updateDrawerContactAfterSave(
+  drawerContact: ContactDto | null,
+  savedContact: ContactDto
+) {
+  return drawerContact?.id === savedContact.id ? savedContact : drawerContact;
+}
+
 export function ContactsPage() {
   const { getToken } = useTalkAuth();
   const [contacts, setContacts] = useState<ContactDto[]>([]);
@@ -266,6 +273,7 @@ export function ContactsPage() {
     (event: RealtimeEvent) => {
       if (event.type === "contact.updated") {
         setContacts((current) => mergeContact(current, event.payload));
+        setDrawerContact((current) => updateDrawerContactAfterSave(current, event.payload));
         refreshContactsFromRealtime();
 
         if (
@@ -394,6 +402,7 @@ export function ContactsPage() {
     try {
       const contact = await apiUpdateContact(getToken, selectedContact.id, editForm);
       setContacts((current) => mergeContact(current, contact));
+      setDrawerContact((current) => updateDrawerContactAfterSave(current, contact));
       setSelectedContactId(contact.id);
       setSaveMessage("Contato atualizado.");
     } catch (updateError) {
