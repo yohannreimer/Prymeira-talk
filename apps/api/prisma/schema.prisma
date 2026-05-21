@@ -59,6 +59,24 @@ enum MessageStatus {
   failed
 }
 
+enum IntegrationMode {
+  simulated
+  real
+}
+
+enum AutomationStatus {
+  enabled
+  disabled
+}
+
+enum CampaignStatus {
+  draft
+  scheduled
+  sending
+  completed
+  failed
+}
+
 model WorkspaceMirror {
   workspaceId String   @id @map("workspace_id")
   name        String?
@@ -91,16 +109,16 @@ model UserProfile {
 }
 
 model Channel {
-  id              String        @id @default(uuid()) @db.Uuid
-  workspaceId     String        @map("workspace_id")
+  id              String          @id @default(uuid()) @db.Uuid
+  workspaceId     String          @map("workspace_id")
   provider        ChannelProvider
-  providerKey     String        @map("provider_key")
-  phoneNumber     String?       @map("phone_number")
-  displayName     String?       @map("display_name")
-  status          ChannelStatus @default(disconnected)
-  encryptedConfig Json          @default("{}") @map("encrypted_config")
-  createdAt       DateTime      @default(now()) @map("created_at")
-  updatedAt       DateTime      @updatedAt @map("updated_at")
+  providerKey     String          @map("provider_key")
+  phoneNumber     String?         @map("phone_number")
+  displayName     String?         @map("display_name")
+  status          ChannelStatus   @default(disconnected)
+  encryptedConfig Json            @default("{}") @map("encrypted_config")
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
 
   conversations Conversation[]
 
@@ -124,7 +142,10 @@ model Contact {
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
-  conversations Conversation[]
+  conversations      Conversation[]
+  boardMemberships   ContactBoardMembership[]
+  notes              ContactNote[]
+  campaignRecipients CampaignRecipient[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, phone])
@@ -167,7 +188,7 @@ model Conversation {
   assignedUser UserProfile?      @relation("AssignedUserConversations", fields: [workspaceId, assignedUserId], references: [workspaceId, id], onDelete: NoAction)
   channel      Channel           @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
   contact      Contact           @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
-  department   Department?        @relation(fields: [workspaceId, departmentId], references: [workspaceId, id], onDelete: NoAction)
+  department   Department?       @relation(fields: [workspaceId, departmentId], references: [workspaceId, id], onDelete: NoAction)
   messages     Message[]
   tags         ConversationTag[]
 
@@ -230,4 +251,217 @@ model ConversationTag {
   @@id([workspaceId, conversationId, tagId])
   @@index([workspaceId, tagId])
   @@map("conversation_tags")
+}
+
+model ContactBoard {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  stages      ContactBoardStage[]
+  memberships ContactBoardMembership[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, name])
+  @@map("contact_boards")
+}
+
+model ContactBoardStage {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  boardId     String   @map("board_id") @db.Uuid
+  name        String
+  color       String
+  order       Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  board       ContactBoard             @relation(fields: [workspaceId, boardId], references: [workspaceId, id], onDelete: Cascade)
+  memberships ContactBoardMembership[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, boardId, name])
+  @@index([workspaceId, boardId, order])
+  @@map("contact_board_stages")
+}
+
+model ContactBoardMembership {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  contactId   String   @map("contact_id") @db.Uuid
+  boardId     String   @map("board_id") @db.Uuid
+  stageId     String   @map("stage_id") @db.Uuid
+  isPrimary   Boolean  @default(false) @map("is_primary")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  contact Contact           @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  board   ContactBoard      @relation(fields: [workspaceId, boardId], references: [workspaceId, id], onDelete: Cascade)
+  stage   ContactBoardStage @relation(fields: [workspaceId, stageId], references: [workspaceId, id], onDelete: Restrict)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, contactId, boardId])
+  @@index([workspaceId, contactId, isPrimary])
+  @@index([workspaceId, boardId, stageId])
+  @@map("contact_board_memberships")
+}
+
+model ContactNote {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id")
+  contactId      String   @map("contact_id") @db.Uuid
+  conversationId String?  @map("conversation_id") @db.Uuid
+  body           String
+  createdById    String?  @map("created_by_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  contact Contact @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, contactId, createdAt])
+  @@map("contact_notes")
+}
+
+model AutomationRule {
+  id          String           @id @default(uuid()) @db.Uuid
+  workspaceId String           @map("workspace_id")
+  name        String
+  status      AutomationStatus @default(disabled)
+  trigger     String
+  conditions  Json             @default("{}")
+  actions     Json             @default("[]")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  runs AutomationRun[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, status])
+  @@map("automation_rules")
+}
+
+model AutomationRun {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  ruleId      String   @map("rule_id") @db.Uuid
+  eventKey    String   @map("event_key")
+  status      String
+  input       Json     @default("{}")
+  result      Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  rule AutomationRule @relation(fields: [workspaceId, ruleId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, ruleId, eventKey])
+  @@index([workspaceId, createdAt])
+  @@map("automation_runs")
+}
+
+model Campaign {
+  id          String          @id @default(uuid()) @db.Uuid
+  workspaceId String          @map("workspace_id")
+  name        String
+  status      CampaignStatus  @default(draft)
+  audience    Json            @default("{}")
+  messageBody String          @map("message_body")
+  scheduledAt DateTime?       @map("scheduled_at")
+  mode        IntegrationMode @default(simulated)
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  recipients CampaignRecipient[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, status])
+  @@map("campaigns")
+}
+
+model CampaignRecipient {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  campaignId  String   @map("campaign_id") @db.Uuid
+  contactId   String   @map("contact_id") @db.Uuid
+  status      String
+  result      Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  campaign Campaign @relation(fields: [workspaceId, campaignId], references: [workspaceId, id], onDelete: Cascade)
+  contact  Contact  @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, campaignId, contactId])
+  @@index([workspaceId, campaignId, status])
+  @@map("campaign_recipients")
+}
+
+model AiActionLog {
+  id             String          @id @default(uuid()) @db.Uuid
+  workspaceId    String          @map("workspace_id")
+  conversationId String?         @map("conversation_id") @db.Uuid
+  contactId      String?         @map("contact_id") @db.Uuid
+  userId         String?         @map("user_id") @db.Uuid
+  actionType     String          @map("action_type")
+  mode           IntegrationMode @default(simulated)
+  input          Json            @default("{}")
+  result         Json            @default("{}")
+  status         String
+  createdAt      DateTime        @default(now()) @map("created_at")
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, createdAt])
+  @@map("ai_action_logs")
+}
+
+model CrmSyncAction {
+  id          String          @id @default(uuid()) @db.Uuid
+  workspaceId String          @map("workspace_id")
+  contactId   String?         @map("contact_id") @db.Uuid
+  actionType  String          @map("action_type")
+  mode        IntegrationMode @default(simulated)
+  status      String
+  payload     Json            @default("{}")
+  result      Json            @default("{}")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, contactId])
+  @@index([workspaceId, createdAt])
+  @@map("crm_sync_actions")
+}
+
+model IntegrationConfig {
+  id          String          @id @default(uuid()) @db.Uuid
+  workspaceId String          @map("workspace_id")
+  provider    String
+  mode        IntegrationMode @default(simulated)
+  status      String
+  settings    Json            @default("{}")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, provider])
+  @@map("integration_configs")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  actorUserId String?  @map("actor_user_id") @db.Uuid
+  action      String
+  targetType  String   @map("target_type")
+  targetId    String?  @map("target_id")
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, createdAt])
+  @@map("audit_logs")
 }

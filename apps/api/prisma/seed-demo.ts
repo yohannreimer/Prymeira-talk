@@ -43,6 +43,20 @@ const tags = [
   { id: "40000000-0000-4000-8000-000000000003", name: "Suporte", color: "#4f6f9f" }
 ];
 
+const preSalesBoard = {
+  id: "70000000-0000-4000-8000-000000000001",
+  name: "Pre-vendas",
+  description: "Board principal para contatos comerciais."
+};
+
+const preSalesStages = [
+  { id: "71000000-0000-4000-8000-000000000001", name: "Novo", order: 0, color: "#E8F1FF" },
+  { id: "71000000-0000-4000-8000-000000000002", name: "Qualificado", order: 1, color: "#E7F6ED" },
+  { id: "71000000-0000-4000-8000-000000000003", name: "Proposta enviada", order: 2, color: "#FFF3D9" },
+  { id: "71000000-0000-4000-8000-000000000004", name: "Follow-up", order: 3, color: "#F3E8FF" },
+  { id: "71000000-0000-4000-8000-000000000005", name: "Ganho", order: 4, color: "#DFF3EA" }
+];
+
 const demoConversations = [
   {
     conversationId: "50000000-0000-4000-8000-000000000001",
@@ -211,6 +225,40 @@ async function main() {
     });
   }
 
+  const board = await prisma.contactBoard.upsert({
+    where: { workspaceId_name: { workspaceId, name: preSalesBoard.name } },
+    update: {
+      description: preSalesBoard.description
+    },
+    create: {
+      ...preSalesBoard,
+      workspaceId
+    }
+  });
+
+  const stageByOrder = new Map<number, string>();
+  for (const stage of preSalesStages) {
+    const persistedStage = await prisma.contactBoardStage.upsert({
+      where: {
+        workspaceId_boardId_name: {
+          workspaceId,
+          boardId: board.id,
+          name: stage.name
+        }
+      },
+      update: {
+        color: stage.color,
+        order: stage.order
+      },
+      create: {
+        ...stage,
+        workspaceId,
+        boardId: board.id
+      }
+    });
+    stageByOrder.set(stage.order, persistedStage.id);
+  }
+
   for (const item of demoConversations) {
     await prisma.contact.upsert({
       where: { workspaceId_phone: { workspaceId, phone: item.phone } },
@@ -226,6 +274,30 @@ async function main() {
         company: item.company
       }
     });
+
+    const stageId = stageByOrder.get(Math.min(stageByOrder.size - 1, item.tags.length + item.unreadCount));
+    if (stageId) {
+      await prisma.contactBoardMembership.upsert({
+        where: {
+          workspaceId_contactId_boardId: {
+            workspaceId,
+            contactId: item.contactId,
+            boardId: board.id
+          }
+        },
+        update: {
+          stageId,
+          isPrimary: true
+        },
+        create: {
+          workspaceId,
+          contactId: item.contactId,
+          boardId: board.id,
+          stageId,
+          isPrimary: true
+        }
+      });
+    }
 
     await prisma.conversation.upsert({
       where: {
