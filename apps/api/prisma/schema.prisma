@@ -283,6 +283,7 @@ model ContactBoardStage {
   memberships ContactBoardMembership[]
 
   @@unique([workspaceId, id])
+  @@unique([workspaceId, boardId, id])
   @@unique([workspaceId, boardId, name])
   @@index([workspaceId, boardId, order])
   @@map("contact_board_stages")
@@ -300,7 +301,7 @@ model ContactBoardMembership {
 
   contact Contact           @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
   board   ContactBoard      @relation(fields: [workspaceId, boardId], references: [workspaceId, id], onDelete: Cascade)
-  stage   ContactBoardStage @relation(fields: [workspaceId, stageId], references: [workspaceId, id], onDelete: Restrict)
+  stage   ContactBoardStage @relation(fields: [workspaceId, boardId, stageId], references: [workspaceId, boardId, id], onDelete: Restrict)
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, contactId, boardId])
