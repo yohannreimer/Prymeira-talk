@@ -1,15 +1,66 @@
 :root {
-  color: #1e2a25;
-  background: #eef2ed;
-  font-family:
-    "Aptos",
-    "Segoe UI",
-    system-ui,
-    -apple-system,
-    sans-serif;
-  font-synthesis: none;
-  line-height: 1.5;
-  text-rendering: optimizeLegibility;
+  /* Brand */
+  --color-brand-600: #24564a;
+  --color-brand-700: #1f4f44;
+  --color-brand-50:  #eef5f2;
+  --color-brand-100: #d4e8e0;
+
+  /* Surface */
+  --color-surface-page:   #eef2ed;
+  --color-surface-card:   #ffffff;
+  --color-surface-subtle: #f7faf8;
+  --color-surface-rail:   #1f2f2a;
+
+  /* Text */
+  --color-text-primary:   #1e2a25;
+  --color-text-secondary: #6d7d75;
+  --color-text-muted:     #9bb0a6;
+  --color-text-on-dark:   #c5d7cf;
+
+  /* Border */
+  --color-border:        #dbe3dc;
+  --color-border-subtle: #eef2ed;
+
+  /* Status */
+  --color-status-open-bg:      #dcfce7;
+  --color-status-open-text:    #15803d;
+  --color-status-open-dot:     #22c55e;
+  --color-status-waiting-bg:   #fef3c7;
+  --color-status-waiting-text: #92400e;
+  --color-status-waiting-dot:  #f59e0b;
+  --color-status-closed-bg:    #f1f5f9;
+  --color-status-closed-text:  #64748b;
+  --color-status-closed-dot:   #94a3b8;
+  --color-status-bot-bg:       #ede9fe;
+  --color-status-bot-text:     #5b21b6;
+  --color-status-bot-dot:      #8b5cf6;
+
+  /* Radius */
+  --radius-sm:   6px;
+  --radius-md:   8px;
+  --radius-lg:   10px;
+  --radius-xl:   12px;
+  --radius-full: 9999px;
+
+  /* Shadow */
+  --shadow-card:       0 1px 4px rgba(36, 86, 74, 0.07);
+  --shadow-card-hover: 0 2px 8px rgba(36, 86, 74, 0.12);
+  --shadow-drawer:    -4px 0 20px rgba(36, 86, 74, 0.15);
+
+  /* Motion */
+  --transition-fast: 150ms ease;
+  --transition-base: 200ms ease;
+
+  /* Typography */
+  --font-family: 'Inter', system-ui, sans-serif;
+
+  /* Global defaults */
+  color:            var(--color-text-primary);
+  background:       var(--color-surface-page);
+  font-family:      var(--font-family);
+  font-synthesis:   none;
+  line-height:      1.5;
+  text-rendering:   optimizeLegibility;
 }
 
 * {
