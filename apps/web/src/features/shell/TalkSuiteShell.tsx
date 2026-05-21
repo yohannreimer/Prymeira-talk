@@ -26,6 +26,18 @@ function buildModuleUrl(moduleKey: TalkModuleKey) {
 export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
   const [activeModule, setActiveModule] = useState<TalkModuleKey>(readModuleFromUrl);
 
+  const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(() => {
+    return localStorage.getItem("sidebar-expanded") === "true";
+  });
+
+  function toggleSidebar() {
+    setSidebarExpanded((prev) => {
+      const next = !prev;
+      localStorage.setItem("sidebar-expanded", String(next));
+      return next;
+    });
+  }
+
   useEffect(() => {
     const currentModuleParam = new URLSearchParams(window.location.search).get(moduleParamName);
 
@@ -50,11 +62,20 @@ export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
   }
 
   return (
-    <main className="talk-suite-shell">
+    <main className={`talk-suite-shell${sidebarExpanded ? " sidebar-expanded" : ""}`}>
       <aside className="app-rail" aria-label="Navegacao principal">
         <div className="rail-logo">
           <Bot size={22} aria-hidden="true" />
         </div>
+        <button
+          className="rail-pin"
+          onClick={toggleSidebar}
+          title={sidebarExpanded ? "Recolher menu" : "Expandir menu"}
+          type="button"
+          aria-label={sidebarExpanded ? "Recolher menu" : "Expandir menu"}
+        >
+          {sidebarExpanded ? "←" : "→"}
+        </button>
         <nav className="rail-nav" aria-label="Modulos">
           {talkModules.map(({ key, label, Icon }) => (
             <button
@@ -69,10 +90,11 @@ export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
                 .join(" ")}
               key={key}
               onClick={() => handleModuleClick(key)}
-              title={label}
+              title={sidebarExpanded ? undefined : label}
               type="button"
             >
               <Icon size={20} aria-hidden="true" />
+              <span className="rail-label">{label}</span>
             </button>
           ))}
         </nav>
