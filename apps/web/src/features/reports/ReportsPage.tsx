@@ -98,7 +98,7 @@ function BreakdownTable(input: { title: string; rows: ReportMetricDto[] }) {
       </div>
       <div className="report-table" role="table">
         <div className="report-table-row is-header" role="row">
-          <span>Dimensao</span>
+          <span>Dimensão</span>
           <span>Total</span>
           <span>Share</span>
         </div>
@@ -140,7 +140,7 @@ export function ReportsPage() {
       const nextOverview = await apiGetReportsOverview(getToken);
       setOverview(nextOverview);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar relatorios.");
+      setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar relatórios.");
     } finally {
       setIsLoading(false);
     }
@@ -161,7 +161,7 @@ export function ReportsPage() {
         }
       } catch (loadError) {
         if (isMounted) {
-          setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar relatorios.");
+          setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar relatórios.");
         }
       } finally {
         if (isMounted) {
@@ -191,40 +191,40 @@ export function ReportsPage() {
   const cards = overview?.cards ?? [];
 
   return (
-    <section className="module-page" aria-label="Relatorios">
+    <section className="module-page" aria-label="Relatórios">
       <header className="module-header">
         <div>
           <p className="eyebrow">Prymeira Talk</p>
-          <h1>Relatorios</h1>
+          <h1>Relatórios</h1>
         </div>
-        <span className="status-pill status-open">{isLoading ? "Carregando" : "Dados locais"}</span>
+        <div className="module-header-actions">
+          <span className={`status-badge status-badge--${isLoading ? "waiting" : "open"}`}>
+            {isLoading ? "Carregando" : "Atualizado"}
+          </span>
+          <button className="secondary-button" type="button" onClick={() => void loadOverview()}>
+            <RefreshCw size={14} />
+            Atualizar
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={!overview}
+            onClick={() => exportRows("reports-cards", cards)}
+          >
+            <Download size={14} />
+            Exportar CSV
+          </button>
+        </div>
       </header>
-
-      <div className="module-actions">
-        <button className="primary-button" type="button" onClick={() => void loadOverview()}>
-          <RefreshCw size={16} />
-          Atualizar
-        </button>
-        <button
-          className="secondary-button"
-          type="button"
-          disabled={!overview}
-          onClick={() => exportRows("reports-cards", cards)}
-        >
-          <Download size={16} />
-          Exportar CSV
-        </button>
-      </div>
 
       {error ? <p className="error-note">{error}</p> : null}
 
-      <div className="metric-grid report-metric-grid" aria-label="Indicadores">
+      <div className="contacts-stats-row" aria-label="Indicadores">
         {(cards.length > 0 ? cards : loadingCards).map((card) => (
-          <article key={card.key} className="metric-card report-metric-card">
-            <span>{card.label}</span>
+          <div key={card.key} className="contacts-stat">
             <strong>{formatNumber(card.value)}</strong>
-            <p>{card.helper ?? "Total consolidado"}</p>
-          </article>
+            <span>{card.label}</span>
+          </div>
         ))}
       </div>
 
@@ -251,9 +251,9 @@ export function ReportsPage() {
         />
       </div>
 
-      <div className="module-panel">
+      <div className="module-panel reports-timeline-panel">
         <div className="panel-title-row">
-          <h2>Serie temporal</h2>
+          <h2>Série temporal</h2>
           <span>{overview?.timeSeries.length ?? 0} pontos</span>
         </div>
         <div className="report-timeline">

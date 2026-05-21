@@ -375,6 +375,13 @@ select:disabled {
   gap: 10px;
 }
 
+.module-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .contacts-page {
   gap: 16px;
 }
@@ -497,7 +504,7 @@ select:disabled {
   display: flex;
   align-items: center;
   gap: 1px;
-  padding: 0 8px;
+  padding: 0 18px;
 }
 
 .contacts-stat {
@@ -991,7 +998,7 @@ select:disabled {
 .workflow-list p,
 .data-list em {
   margin: 0;
-  color: #5d6f66;
+  color: var(--color-text-secondary);
   font-size: 0.9rem;
   font-style: normal;
 }
@@ -1765,13 +1772,18 @@ select:disabled {
 }
 
 .report-metric-card {
-  min-height: 118px;
+  min-height: unset;
 }
 
 .reports-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+  padding: 0 18px;
+}
+
+.reports-timeline-panel {
+  margin: 0 18px;
 }
 
 .report-bar-list,
@@ -1790,9 +1802,9 @@ select:disabled {
 .report-bar-row span,
 .report-timeline-row span {
   min-width: 0;
-  color: #354a41;
-  font-size: 0.86rem;
-  font-weight: 800;
+  color: var(--color-text-primary);
+  font-size: 0.82rem;
+  font-weight: 500;
   overflow-wrap: anywhere;
 }
 
@@ -1807,10 +1819,10 @@ select:disabled {
 .report-timeline-row em {
   display: block;
   grid-column: 1 / -1;
-  height: 10px;
+  height: 8px;
   overflow: hidden;
   border-radius: 999px;
-  background: #e4ece7;
+  background: var(--color-brand-50);
 }
 
 .report-bar-row i,
@@ -1818,7 +1830,7 @@ select:disabled {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #24564a, #d29b44);
+  background: linear-gradient(90deg, var(--color-brand-600), var(--color-brand-100));
 }
 
 .report-timeline-row {
@@ -1846,7 +1858,7 @@ select:disabled {
   gap: 10px;
   border-top: 1px solid var(--color-border-subtle);
   padding: 10px 12px;
-  color: #40564d;
+  color: var(--color-text-primary);
   font-size: 0.84rem;
 }
 
@@ -1856,10 +1868,11 @@ select:disabled {
 
 .report-table-row.is-header {
   background: var(--color-surface-subtle);
-  color: #65756e;
+  color: var(--color-text-muted);
   font-size: 0.72rem;
-  font-weight: 900;
+  font-weight: 600;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .report-table-row span {
