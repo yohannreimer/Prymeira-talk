@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/clerk-react";
-import { CalendarClock, Eye, FlaskConical, Play, Plus, Save, Send } from "lucide-react";
+import { CalendarClock, Eye, Play, Plus, Save, Send } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   apiCreateCampaign,
@@ -71,11 +71,6 @@ function formatDateTime(value: string | null) {
 
 function previewMessage(messageBody: string, name = "Ana", phone = "+5511999990001") {
   return messageBody.replaceAll("{{name}}", name).replaceAll("{{phone}}", phone);
-}
-
-function recipientPreview(recipient: CampaignRecipientDto) {
-  const result = recipient.result as { messagePreview?: unknown };
-  return typeof result.messagePreview === "string" ? result.messagePreview : "Preview nao gravado";
 }
 
 function statusLabel(status: CampaignDto["status"]) {
@@ -319,194 +314,207 @@ export function CampaignsPage() {
           <p className="eyebrow">Prymeira Talk</p>
           <h1>Disparos</h1>
         </div>
-        <span className="status-pill status-pending">Envio simulado</span>
-      </header>
-
-      <div className="module-actions">
         <button className="primary-button" type="button" onClick={createDraft}>
           <Plus size={16} aria-hidden="true" />
           Novo disparo
         </button>
-        <button
-          className="secondary-button"
-          type="button"
-          onClick={sendSimulation}
-          disabled={isSaving || !canUseSavedCampaign}
-        >
-          <Play size={16} aria-hidden="true" />
-          {hasUnsavedChanges ? "Salve para simular" : "Simular envio"}
-        </button>
+      </header>
+
+      <div className="contacts-stats-row" aria-label="Resumo de disparos">
+        <span className="contacts-stat">
+          <strong>{campaigns.length}</strong>
+          <span>Campanhas</span>
+        </span>
+        <span className="contacts-stat">
+          <strong>{scheduledCount}</strong>
+          <span>Agendadas</span>
+        </span>
+        <span className="contacts-stat">
+          <strong>{completedCount}</strong>
+          <span>Concluídas</span>
+        </span>
       </div>
 
-      {error ? <p className="error-note">{error}</p> : null}
-      {notice ? <p className="list-note">{notice}</p> : null}
+      {error ? <p className="error-note" style={{ margin: '0 8px' }}>{error}</p> : null}
+      {notice ? <p className="list-note" style={{ margin: '0 8px' }}>{notice}</p> : null}
       {hasUnsavedChanges ? (
-        <p className="list-note">Salve as alteracoes antes de resolver audiencia ou simular envio.</p>
+        <p className="list-note" style={{ margin: '0 8px' }}>Salve as alterações antes de resolver audiência ou simular envio.</p>
       ) : null}
 
-      <div className="metric-grid" aria-label="Resumo de disparos">
-        <article className="metric-card"><span>Campanhas</span><strong>{campaigns.length}</strong><p>{simulatedCount} em modo simulado.</p></article>
-        <article className="metric-card"><span>Agendadas</span><strong>{scheduledCount}</strong><p>Com horario salvo para teste.</p></article>
-        <article className="metric-card"><span>Concluidas</span><strong>{completedCount}</strong><p>Com recipients simulados gravados.</p></article>
-      </div>
-
-      <div className="campaigns-grid">
-        <div className="module-panel">
+      <div className="campaigns-layout">
+        {/* Left — campaign list */}
+        <div className="module-panel campaigns-list-panel">
           <div className="panel-title-row">
             <h2>Campanhas</h2>
-            <span>{isLoading ? "Carregando" : `${campaigns.length} itens`}</span>
+            <span>{isLoading ? 'Carregando' : `${campaigns.length} itens`}</span>
           </div>
+
+          {!isLoading && campaigns.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">
+                <Send size={28} aria-hidden="true" />
+              </div>
+              <h3>Nenhum disparo criado</h3>
+              <p>Crie um rascunho para testar disparos em modo simulado.</p>
+            </div>
+          ) : null}
 
           <div className="campaign-list">
             {campaigns.map((campaign) => (
               <button
-                className={`campaign-card ${campaign.id === selectedCampaignId ? "is-selected" : ""}`}
+                className={`campaign-card ${campaign.id === selectedCampaignId ? 'is-selected' : ''}`}
                 key={campaign.id}
-                type="button"
                 onClick={() => setSelectedCampaignId(campaign.id)}
+                type="button"
               >
-                <span className={`status-pill status-${campaign.status}`}>{statusLabel(campaign.status)}</span>
-                <strong>{campaign.name}</strong>
-                <small>{formatDateTime(campaign.scheduledAt)}</small>
-                <em>{campaign.mode === "simulated" ? "Modo simulado" : "Modo real"}</em>
+                <span className={`status-badge status-badge--${
+                  campaign.status === 'completed' ? 'open' :
+                  campaign.status === 'scheduled' || campaign.status === 'sending' ? 'waiting' : 'closed'
+                }`}>
+                  {statusLabel(campaign.status)}
+                </span>
+                <span className="campaign-card-info">
+                  <strong>{campaign.name}</strong>
+                  <small>{formatDateTime(campaign.scheduledAt)}</small>
+                </span>
               </button>
             ))}
-
-            {!isLoading && campaigns.length === 0 ? (
-              <div className="channel-empty">
-                <Send size={22} aria-hidden="true" />
-                <strong>Nenhuma campanha criada</strong>
-                <span>Crie um rascunho para testar disparos em modo simulado.</span>
-              </div>
-            ) : null}
           </div>
         </div>
 
-        <form className="module-panel campaign-editor" onSubmit={saveCampaign}>
-          <div className="panel-title-row">
-            <h2>Rascunho</h2>
-            <span>{selectedCampaign ? "Campanha salva" : "Novo disparo"}</span>
-          </div>
-
-          <label className="form-field">
-            <span>Nome</span>
-            <input
-              value={form.name}
-              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-              required
-            />
-          </label>
-
-          <div className="campaign-audience-grid">
-            <label className="form-field">
-              <span>Board de audiencia</span>
-              <select
-                value={form.boardId}
-                onChange={(event) => setForm((current) => ({ ...current, boardId: event.target.value, stageId: "" }))}
-                required
-              >
-                {boards.map((board) => (
-                  <option key={board.id} value={board.id}>{board.name}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="form-field">
-              <span>Etapa opcional</span>
-              <select
-                value={form.stageId}
-                onChange={(event) => setForm((current) => ({ ...current, stageId: event.target.value }))}
-              >
-                <option value="">Todas</option>
-                {selectedBoard?.stages.map((stage) => (
-                  <option key={stage.id} value={stage.id}>{stage.name}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <label className="form-field">
-            <span>Mensagem</span>
-            <textarea
-              value={form.messageBody}
-              onChange={(event) => setForm((current) => ({ ...current, messageBody: event.target.value }))}
-              required
-              rows={6}
-            />
-          </label>
-
-          <label className="form-field">
-            <span>Agendamento</span>
-            <input
-              type="datetime-local"
-              value={form.scheduledAt}
-              onChange={(event) => setForm((current) => ({ ...current, scheduledAt: event.target.value }))}
-            />
-          </label>
-
-          <div className="message-preview">
-            <div>
-              <Eye size={18} aria-hidden="true" />
-              <strong>Preview</strong>
-            </div>
-            <p>{previewMessage(form.messageBody)}</p>
-          </div>
-
-          <div className="campaign-editor-footer">
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={resolveAudience}
-              disabled={isSaving || !canUseSavedCampaign}
-            >
-              <CalendarClock size={16} aria-hidden="true" />
-              {hasUnsavedChanges ? "Salve para resolver" : "Resolver audiencia"}
-            </button>
-            <button className="primary-button" type="submit" disabled={isSaving || !form.boardId}>
-              <Save size={16} aria-hidden="true" />
-              Salvar
-            </button>
-          </div>
-        </form>
-
-        <aside className="module-panel campaign-results">
-          <div className="panel-title-row">
-            <h2>Resultados</h2>
-            <span>{isRecipientsLoading ? "Carregando" : `${recipients.length} recipients`}</span>
-          </div>
-
-          <div className="local-runner-note">
-            <FlaskConical size={18} aria-hidden="true" />
-            <span>Modo simulado: nenhum WhatsApp real e enviado; recipients recebem sent_simulated.</span>
-          </div>
-
-          {audiencePreview.length > 0 ? (
-            <div className="audience-preview">
-              <strong>Audiencia resolvida</strong>
-              <span>{audiencePreview.length} contatos</span>
-              <p>{audiencePreview.slice(0, 3).map((contact) => contact.name ?? contact.phone).join(", ")}</p>
-            </div>
-          ) : null}
-
-          <div className="recipient-table" role="table" aria-label="Resultados de recipients">
-            <div className="recipient-table-row is-header" role="row">
-              <span role="columnheader">Contato</span>
-              <span role="columnheader">Status</span>
-              <span role="columnheader">Preview</span>
-            </div>
-            {recipients.map((recipient) => (
-              <div className="recipient-table-row" role="row" key={recipient.id}>
-                <span role="cell">{recipient.contactName ?? recipient.contactPhone ?? recipient.contactId}</span>
-                <span role="cell">{recipient.status}</span>
-                <span role="cell">{recipientPreview(recipient)}</span>
+        {/* Right — editor + results */}
+        <div className="campaigns-editor-col">
+          <form className="module-panel campaign-editor" onSubmit={saveCampaign}>
+            <div className="panel-title-row">
+              <h2>{selectedCampaign ? 'Editar disparo' : 'Novo rascunho'}</h2>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  className="secondary-button"
+                  disabled={isSaving || !canUseSavedCampaign}
+                  onClick={sendSimulation}
+                  type="button"
+                >
+                  <Play size={14} aria-hidden="true" />
+                  {hasUnsavedChanges ? 'Salve para simular' : 'Simular envio'}
+                </button>
+                <button className="primary-button" disabled={isSaving || !form.boardId} type="submit">
+                  <Save size={14} aria-hidden="true" />
+                  Salvar
+                </button>
               </div>
-            ))}
-          </div>
+            </div>
 
-          {!isRecipientsLoading && recipients.length === 0 ? (
-            <p className="list-note">Sem recipients simulados para esta campanha.</p>
+            <label className="form-field">
+              <span>Nome</span>
+              <input
+                onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                required
+                value={form.name}
+              />
+            </label>
+
+            <div className="campaign-audience-grid">
+              <label className="form-field">
+                <span>Board de audiência</span>
+                <select
+                  onChange={(event) => setForm((current) => ({ ...current, boardId: event.target.value, stageId: '' }))}
+                  required
+                  value={form.boardId}
+                >
+                  {boards.map((board) => (
+                    <option key={board.id} value={board.id}>{board.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Etapa opcional</span>
+                <select
+                  onChange={(event) => setForm((current) => ({ ...current, stageId: event.target.value }))}
+                  value={form.stageId}
+                >
+                  <option value="">Todas</option>
+                  {selectedBoard?.stages.map((stage) => (
+                    <option key={stage.id} value={stage.id}>{stage.name}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <label className="form-field">
+              <span>Mensagem</span>
+              <textarea
+                onChange={(event) => setForm((current) => ({ ...current, messageBody: event.target.value }))}
+                required
+                rows={5}
+                value={form.messageBody}
+              />
+            </label>
+
+            <label className="form-field">
+              <span>Agendamento</span>
+              <input
+                onChange={(event) => setForm((current) => ({ ...current, scheduledAt: event.target.value }))}
+                type="datetime-local"
+                value={form.scheduledAt}
+              />
+            </label>
+
+            <div className="message-preview">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                <Eye size={14} aria-hidden="true" />
+                <strong style={{ fontSize: '11px', color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Preview</strong>
+              </div>
+              <p style={{ fontSize: '13px', color: 'var(--color-text-primary)', margin: 0 }}>{previewMessage(form.messageBody)}</p>
+            </div>
+
+            <div className="campaign-editor-footer">
+              <button
+                className="secondary-button"
+                disabled={isSaving || !canUseSavedCampaign}
+                onClick={resolveAudience}
+                type="button"
+              >
+                <CalendarClock size={14} aria-hidden="true" />
+                {hasUnsavedChanges ? 'Salve para resolver' : 'Resolver audiência'}
+              </button>
+            </div>
+          </form>
+
+          {/* Results section */}
+          {(audiencePreview.length > 0 || recipients.length > 0 || isRecipientsLoading) ? (
+            <div className="module-panel campaign-results">
+              <div className="panel-title-row">
+                <h2>Resultados</h2>
+                <span>{isRecipientsLoading ? 'Carregando' : `${recipients.length} recipients`}</span>
+              </div>
+
+              {audiencePreview.length > 0 ? (
+                <div className="audience-preview">
+                  <strong>Audiência resolvida</strong>
+                  <span>{audiencePreview.length} contatos</span>
+                  <p>{audiencePreview.slice(0, 3).map((contact) => contact.name ?? contact.phone).join(', ')}</p>
+                </div>
+              ) : null}
+
+              {recipients.length > 0 ? (
+                <div className="recipient-table" role="table" aria-label="Resultados de recipients">
+                  <div className="recipient-table-row is-header" role="row">
+                    <span role="columnheader">Contato</span>
+                    <span role="columnheader">Status</span>
+                  </div>
+                  {recipients.map((recipient) => (
+                    <div className="recipient-table-row" role="row" key={recipient.id}>
+                      <span role="cell">{recipient.contactName ?? recipient.contactPhone ?? recipient.contactId}</span>
+                      <span role="cell">{recipient.status}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                !isRecipientsLoading ? <p className="list-note">Sem recipients para esta campanha.</p> : null
+              )}
+            </div>
           ) : null}
-        </aside>
+        </div>
       </div>
     </section>
   );
