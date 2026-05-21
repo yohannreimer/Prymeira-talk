@@ -37,6 +37,59 @@ export interface BoardContactsDto {
   memberships: BoardContactCardDto[];
 }
 
+export interface ContactContextDto {
+  primaryBoardStage: {
+    membershipId: string;
+    boardId: string;
+    boardName: string;
+    stageId: string;
+    stageName: string;
+    stageColor: string;
+  } | null;
+  tags: Array<{
+    id: string;
+    name: string;
+    color: string;
+  }>;
+  notes: Array<{
+    id: string;
+    body: string;
+    createdAt: string;
+    createdByName: string | null;
+  }>;
+  departments: Array<{
+    id: string;
+    name: string;
+  }>;
+  boardStages: Array<{
+    id: string;
+    boardId: string;
+    boardName: string;
+    name: string;
+    color: string;
+    order: number;
+  }>;
+}
+
+export type ConversationActionBody =
+  | { action: "add_note"; body: string }
+  | { action: "assign_current_user" }
+  | { action: "change_department"; departmentId: string | null }
+  | { action: "change_priority"; priority: ConversationDto["priority"] }
+  | { action: "change_primary_board_stage"; stageId: string }
+  | { action: "request_ai_suggestion" }
+  | { action: "create_crm_note" };
+
+export interface ConversationActionResultDto {
+  conversation: ConversationDto;
+  context: ContactContextDto;
+  aiSuggestion?: string;
+  crmAction?: {
+    id: string;
+    status: string;
+  };
+}
+
 async function getRequiredToken(getToken: () => Promise<string | null>) {
   const token = await getToken();
 
@@ -82,6 +135,35 @@ function parseBoardContacts(data: unknown): BoardContactsDto {
     memberships: Array.isArray(payload.memberships)
       ? payload.memberships.map(parseBoardContactCard)
       : []
+  };
+}
+
+function parseContactContext(data: unknown): ContactContextDto {
+  const payload = data as ContactContextDto;
+
+  return {
+    primaryBoardStage: payload.primaryBoardStage ?? null,
+    tags: Array.isArray(payload.tags) ? payload.tags : [],
+    notes: Array.isArray(payload.notes) ? payload.notes : [],
+    departments: Array.isArray(payload.departments) ? payload.departments : [],
+    boardStages: Array.isArray(payload.boardStages) ? payload.boardStages : []
+  };
+}
+
+function parseConversationActionResult(data: unknown): ConversationActionResultDto {
+  const payload = data as {
+    conversation?: unknown;
+    context?: unknown;
+    aiSuggestion?: unknown;
+    crmAction?: unknown;
+  };
+  const crmAction = payload.crmAction as ConversationActionResultDto["crmAction"] | undefined;
+
+  return {
+    conversation: conversationSchema.parse(payload.conversation),
+    context: parseContactContext(payload.context),
+    ...(typeof payload.aiSuggestion === "string" ? { aiSuggestion: payload.aiSuggestion } : {}),
+    ...(crmAction ? { crmAction } : {})
   };
 }
 
@@ -430,6 +512,74 @@ export async function apiGetConversationMessages(
 
   const data = await response.json();
   return messageSchema.array().parse(data);
+}
+
+export async function apiCreateConversationMessage(
+  conversationId: string,
+  body: string,
+  getToken: () => Promise<string | null>
+): Promise<MessageDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/conversations/${conversationId}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ body })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to send message: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return messageSchema.parse(data);
+}
+
+export async function apiGetConversationContext(
+  conversationId: string,
+  getToken: () => Promise<string | null>
+): Promise<ContactContextDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/conversations/${conversationId}/context`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load contact context: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return parseContactContext(data);
+}
+
+export async function apiRunConversationAction(
+  conversationId: string,
+  body: ConversationActionBody,
+  getToken: () => Promise<string | null>
+): Promise<ConversationActionResultDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/conversations/${conversationId}/actions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to run conversation action: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return parseConversationActionResult(data);
 }
 
 export function buildRealtimeUrl(token: string) {

@@ -13,6 +13,56 @@ const createMessageBodySchema = z.object({
   body: z.string().min(1).max(4000)
 });
 
+const conversationPrioritySchema = z.enum(["low", "normal", "high"]);
+
+const conversationActionBodySchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("add_note"),
+    body: z.string().trim().min(1).max(1200)
+  }),
+  z.object({
+    action: z.literal("assign_current_user")
+  }),
+  z.object({
+    action: z.literal("change_department"),
+    departmentId: z.string().uuid().nullable()
+  }),
+  z.object({
+    action: z.literal("change_priority"),
+    priority: conversationPrioritySchema
+  }),
+  z.object({
+    action: z.literal("change_primary_board_stage"),
+    stageId: z.string().uuid()
+  }),
+  z.object({
+    action: z.literal("request_ai_suggestion")
+  }),
+  z.object({
+    action: z.literal("create_crm_note")
+  })
+]);
+
+function readCurrentClerkUserId(authorizationHeader: string | undefined) {
+  const token = authorizationHeader?.startsWith("Bearer ")
+    ? authorizationHeader.slice("Bearer ".length)
+    : null;
+  const payload = token?.split(".")[1];
+
+  if (!payload) return null;
+
+  try {
+    const normalizedPayload = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = JSON.parse(Buffer.from(normalizedPayload, "base64").toString("utf8")) as {
+      sub?: unknown;
+    };
+
+    return typeof decoded.sub === "string" ? decoded.sub : null;
+  } catch {
+    return null;
+  }
+}
+
 export const conversationsRoutes: FastifyPluginAsync = async (app) => {
   const service = createConversationsService(app.prisma);
 
@@ -45,6 +95,69 @@ export const conversationsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     return messages;
+  });
+
+  app.get("/conversations/:conversationId/context", async (request, reply) => {
+    const params = createMessageParamsSchema.safeParse(request.params);
+
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid conversation context request." });
+    }
+
+    const context = await service.getContactContext({
+      workspaceId: request.talk.workspaceId,
+      conversationId: params.data.conversationId
+    }).catch((error: unknown) => {
+      if (error instanceof ConversationNotFoundError) {
+        return null;
+      }
+
+      throw error;
+    });
+
+    if (!context) {
+      return reply
+        .code(404)
+        .send({ code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
+    }
+
+    return context;
+  });
+
+  app.post("/conversations/:conversationId/actions", async (request, reply) => {
+    const params = createMessageParamsSchema.safeParse(request.params);
+    const body = conversationActionBodySchema.safeParse(request.body);
+
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid conversation action request." });
+    }
+
+    const result = await service.runConversationAction({
+      workspaceId: request.talk.workspaceId,
+      conversationId: params.data.conversationId,
+      currentClerkUserId: readCurrentClerkUserId(request.headers.authorization),
+      ...body.data
+    }).catch((error: unknown) => {
+      if (error instanceof ConversationNotFoundError) {
+        return null;
+      }
+
+      throw error;
+    });
+
+    if (!result) {
+      return reply
+        .code(404)
+        .send({ code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
+    }
+
+    app.realtime.publish({
+      type: "conversation.updated",
+      workspaceId: request.talk.workspaceId,
+      payload: result.conversation
+    });
+
+    return result;
   });
 
   app.post("/conversations/:conversationId/messages", async (request, reply) => {

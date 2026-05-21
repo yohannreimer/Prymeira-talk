@@ -1,8 +1,18 @@
 import { useAuth } from "@clerk/clerk-react";
 import type { ConversationDto, MessageDto, RealtimeEvent } from "@prymeira-talk/shared";
-import { Link2, MessageSquare } from "lucide-react";
+import { Bot, Link2, MessageSquare, Send, StickyNote, UserCheck } from "lucide-react";
+import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { apiGetConversationMessages, apiGetConversations } from "../../app/api";
+import {
+  apiCreateConversationMessage,
+  apiGetConversationContext,
+  apiGetConversationMessages,
+  apiGetConversations,
+  apiRunConversationAction,
+  type ContactContextDto,
+  type ConversationActionBody,
+  type ConversationActionResultDto
+} from "../../app/api";
 import { useRealtimeEvents } from "./useRealtimeEvents";
 
 function formatTime(value: string | null) {
@@ -45,6 +55,20 @@ function contactDisplayName(conversation: ConversationDto) {
   return conversation.contactName ?? `Contato ${conversation.contactId.slice(0, 8)}`;
 }
 
+function formatNoteDate(value: string) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
+function upsertConversation(list: ConversationDto[], conversation: ConversationDto) {
+  const withoutUpdated = list.filter((item) => item.id !== conversation.id);
+  return [conversation, ...withoutUpdated];
+}
+
 export function InboxPage() {
   const { getToken } = useAuth();
   const [token, setToken] = useState<string | null>(null);
@@ -53,8 +77,17 @@ export function InboxPage() {
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [contactContext, setContactContext] = useState<ContactContextDto | null>(null);
+  const [isLoadingContext, setIsLoadingContext] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [messageError, setMessageError] = useState<string | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [noteDraft, setNoteDraft] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [isRunningAction, setIsRunningAction] = useState(false);
+  const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
+  const [crmStatus, setCrmStatus] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -129,6 +162,43 @@ export function InboxPage() {
     };
   }, [selectedConversationId, token]);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadContext() {
+      if (!selectedConversationId || !token) {
+        setContactContext(null);
+        return;
+      }
+
+      setIsLoadingContext(true);
+      setContextError(null);
+      setAiSuggestion(null);
+      setCrmStatus(null);
+
+      try {
+        const nextContext = await apiGetConversationContext(selectedConversationId, async () => token);
+
+        if (!isMounted) return;
+
+        setContactContext(nextContext);
+      } catch (loadError) {
+        if (!isMounted) return;
+        setContextError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar contexto.");
+      } finally {
+        if (isMounted) {
+          setIsLoadingContext(false);
+        }
+      }
+    }
+
+    void loadContext();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedConversationId, token]);
+
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "message.created") {
       setMessages((current) => {
@@ -141,10 +211,7 @@ export function InboxPage() {
 
     if (event.type !== "conversation.updated") return;
 
-    setConversations((current) => {
-      const withoutUpdated = current.filter((conversation) => conversation.id !== event.payload.id);
-      return [event.payload, ...withoutUpdated];
-    });
+    setConversations((current) => upsertConversation(current, event.payload));
 
     setSelectedConversationId((current) => current ?? event.payload.id);
   }, [selectedConversationId]);
@@ -161,6 +228,85 @@ export function InboxPage() {
 
   const openCount = conversations.filter((conversation) => conversation.status === "open").length;
   const unreadCount = conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
+
+  async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedConversationId || !token || !draft.trim()) return;
+
+    setIsSending(true);
+    setMessageError(null);
+
+    try {
+      const createdMessage = await apiCreateConversationMessage(
+        selectedConversationId,
+        draft.trim(),
+        async () => token
+      );
+
+      setMessages((current) => {
+        if (current.some((message) => message.id === createdMessage.id)) return current;
+        return [...current, createdMessage];
+      });
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.id === selectedConversationId
+            ? {
+                ...conversation,
+                lastMessageAt: createdMessage.createdAt,
+                lastMessagePreview: createdMessage.body
+              }
+            : conversation
+        )
+      );
+      setDraft("");
+    } catch (sendError) {
+      setMessageError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar a mensagem.");
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  async function runAction(body: ConversationActionBody) {
+    if (!selectedConversationId || !token) return null;
+
+    setIsRunningAction(true);
+    setContextError(null);
+
+    try {
+      const result = await apiRunConversationAction(selectedConversationId, body, async () => token);
+      applyActionResult(result);
+      return result;
+    } catch (actionError) {
+      setContextError(actionError instanceof Error ? actionError.message : "Nao foi possivel executar a acao.");
+      return null;
+    } finally {
+      setIsRunningAction(false);
+    }
+  }
+
+  function applyActionResult(result: ConversationActionResultDto) {
+    setConversations((current) => upsertConversation(current, result.conversation));
+    setSelectedConversationId(result.conversation.id);
+    setContactContext(result.context);
+    if (result.aiSuggestion) {
+      setAiSuggestion(result.aiSuggestion);
+    }
+    if (result.crmAction) {
+      setCrmStatus(`Nota simulada enviada ao CRM (${result.crmAction.status}).`);
+    }
+  }
+
+  async function handleAddNote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!noteDraft.trim()) return;
+
+    const result = await runAction({ action: "add_note", body: noteDraft.trim() });
+    if (result) {
+      setNoteDraft("");
+    }
+  }
 
   return (
     <section className="talk-workspace talk-workspace-atendimento" aria-label="Atendimento">
@@ -271,15 +417,18 @@ export function InboxPage() {
           </div>
         )}
 
-        <form className="composer" aria-label="Compositor de mensagem">
+        <form className="composer" aria-label="Compositor de mensagem" onSubmit={handleSendMessage}>
           <input
             aria-label="Mensagem"
-            disabled
+            disabled={!selectedConversation || isSending}
+            onChange={(event) => setDraft(event.target.value)}
             placeholder="Escreva uma mensagem"
             type="text"
+            value={draft}
           />
-          <button disabled type="button">
-            Enviar
+          <button disabled={!selectedConversation || !draft.trim() || isSending} type="submit">
+            <Send size={16} aria-hidden="true" />
+            {isSending ? "Enviando" : "Enviar"}
           </button>
         </form>
       </section>
@@ -311,20 +460,150 @@ export function InboxPage() {
             <dd>{selectedConversation?.channelName ?? selectedConversation?.channelId ?? "-"}</dd>
           </div>
         </dl>
-        <section className="crm-ready-panel" aria-label="Integracao com Atomic CRM">
-          <div>
-            <p className="eyebrow">Atomic CRM</p>
-            <h3>{selectedConversation ? "Sem vinculo no Atomic CRM" : "Aguardando contato"}</h3>
-            <p>
-              {selectedConversation
-                ? "O Talk segue standalone; este espaco fica pronto para vincular lead ou cliente."
-                : "Selecione uma conversa para preparar o vinculo futuro."}
-            </p>
+        <section className="contact-context-panel" aria-label="Contexto do contato">
+          <div className="context-panel-head">
+            <div>
+              <p className="eyebrow">Contexto</p>
+              <h3>
+                {contactContext?.primaryBoardStage
+                  ? contactContext.primaryBoardStage.stageName
+                  : "Sem etapa principal"}
+              </h3>
+            </div>
+            {isLoadingContext ? <span>Carregando</span> : null}
           </div>
-          <button disabled type="button">
-            <Link2 size={16} aria-hidden="true" />
-            Vincular depois
-          </button>
+
+          {contextError ? <p className="error-note compact">{contextError}</p> : null}
+
+          <div className="tag-row" aria-label="Tags">
+            {contactContext?.tags.length ? (
+              contactContext.tags.map((tag) => (
+                <span key={tag.id} style={{ borderColor: tag.color }}>
+                  {tag.name}
+                </span>
+              ))
+            ) : (
+              <span>Sem tags</span>
+            )}
+          </div>
+
+          <form className="quick-note-form" onSubmit={handleAddNote}>
+            <input
+              aria-label="Nova nota"
+              disabled={!selectedConversation || isRunningAction}
+              onChange={(event) => setNoteDraft(event.target.value)}
+              placeholder="Adicionar nota"
+              value={noteDraft}
+            />
+            <button disabled={!selectedConversation || !noteDraft.trim() || isRunningAction} type="submit">
+              <StickyNote size={15} aria-hidden="true" />
+            </button>
+          </form>
+
+          <div className="quick-actions">
+            <button
+              disabled={!selectedConversation || isRunningAction}
+              onClick={() => void runAction({ action: "assign_current_user" })}
+              type="button"
+            >
+              <UserCheck size={15} aria-hidden="true" />
+              Assumir
+            </button>
+            <button
+              disabled={!selectedConversation || isRunningAction}
+              onClick={() => void runAction({ action: "request_ai_suggestion" })}
+              type="button"
+            >
+              <Bot size={15} aria-hidden="true" />
+              IA
+            </button>
+            <button
+              disabled={!selectedConversation || isRunningAction}
+              onClick={() => void runAction({ action: "create_crm_note" })}
+              type="button"
+            >
+              <Link2 size={15} aria-hidden="true" />
+              CRM
+            </button>
+          </div>
+
+          <label className="context-field">
+            <span>Departamento</span>
+            <select
+              disabled={!selectedConversation || isRunningAction}
+              onChange={(event) =>
+                void runAction({
+                  action: "change_department",
+                  departmentId: event.target.value || null
+                })
+              }
+              value={selectedConversation?.departmentId ?? ""}
+            >
+              <option value="">Fila geral</option>
+              {contactContext?.departments.map((department) => (
+                <option key={department.id} value={department.id}>
+                  {department.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="context-field">
+            <span>Prioridade</span>
+            <select
+              disabled={!selectedConversation || isRunningAction}
+              onChange={(event) =>
+                void runAction({
+                  action: "change_priority",
+                  priority: event.target.value as ConversationDto["priority"]
+                })
+              }
+              value={selectedConversation?.priority ?? "normal"}
+            >
+              <option value="low">Baixa</option>
+              <option value="normal">Normal</option>
+              <option value="high">Alta</option>
+            </select>
+          </label>
+
+          <label className="context-field">
+            <span>Etapa</span>
+            <select
+              disabled={!selectedConversation || !contactContext?.boardStages.length || isRunningAction}
+              onChange={(event) =>
+                void runAction({
+                  action: "change_primary_board_stage",
+                  stageId: event.target.value
+                })
+              }
+              value={contactContext?.primaryBoardStage?.stageId ?? ""}
+            >
+              <option disabled={Boolean(contactContext?.boardStages.length)} value="">
+                Sem etapa
+              </option>
+              {contactContext?.boardStages.map((stage) => (
+                <option key={stage.id} value={stage.id}>
+                  {stage.boardName} / {stage.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {aiSuggestion ? <p className="assistant-suggestion">{aiSuggestion}</p> : null}
+          {crmStatus ? <p className="success-note compact">{crmStatus}</p> : null}
+
+          <div className="notes-list" aria-label="Notas do contato">
+            {contactContext?.notes.length ? (
+              contactContext.notes.map((note) => (
+                <article key={note.id}>
+                  <p>{note.body}</p>
+                  <time>{formatNoteDate(note.createdAt)}</time>
+                </article>
+              ))
+            ) : (
+              <p className="list-note compact">Sem notas recentes.</p>
+            )}
+          </div>
         </section>
       </aside>
     </section>
