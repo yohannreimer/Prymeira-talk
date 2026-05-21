@@ -59,6 +59,7 @@ type ConversationFindManyArgs = Parameters<PrismaClient["conversation"]["findMan
 type ConversationFindUniqueArgs = Parameters<PrismaClient["conversation"]["findUnique"]>[0];
 type ConversationUpdateArgs = Parameters<PrismaClient["conversation"]["update"]>[0];
 type MessageCreateArgs = Parameters<PrismaClient["message"]["create"]>[0];
+type MessageFindManyArgs = Parameters<PrismaClient["message"]["findMany"]>[0];
 
 export interface PrismaLike {
   conversation: {
@@ -68,6 +69,7 @@ export interface PrismaLike {
   };
   message: {
     create(args: MessageCreateArgs): Promise<MessageRecord>;
+    findMany(args: MessageFindManyArgs): Promise<MessageRecord[]>;
   };
 }
 
@@ -170,6 +172,31 @@ export function createConversationsService(prisma: PrismaLike) {
         message: toMessageDto(message),
         conversation: toConversationDto(updatedConversation)
       };
+    },
+
+    async listMessages(input: {
+      workspaceId: string;
+      conversationId: string;
+    }): Promise<MessageDto[]> {
+      const conversation = await prisma.conversation.findUnique({
+        where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+        select: { id: true }
+      });
+
+      if (!conversation) {
+        throw new ConversationNotFoundError();
+      }
+
+      const messages = await prisma.message.findMany({
+        where: {
+          workspaceId: input.workspaceId,
+          conversationId: input.conversationId
+        },
+        orderBy: { createdAt: "asc" },
+        take: 100
+      });
+
+      return messages.map(toMessageDto);
     }
   };
 }

@@ -1,8 +1,8 @@
 import { useAuth } from "@clerk/clerk-react";
-import type { ConversationDto, RealtimeEvent } from "@prymeira-talk/shared";
+import type { ConversationDto, MessageDto, RealtimeEvent } from "@prymeira-talk/shared";
 import { Bot, Inbox, Link2, MessageSquare, Settings, Users } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { apiGetConversations } from "../../app/api";
+import { apiGetConversationMessages, apiGetConversations } from "../../app/api";
 import { useRealtimeEvents } from "./useRealtimeEvents";
 
 type ActiveSection = "inbox" | "conversations" | "contacts" | "settings";
@@ -10,6 +10,13 @@ type ActiveSection = "inbox" | "conversations" | "contacts" | "settings";
 function formatTime(value: string | null) {
   if (!value) return "Sem mensagens";
 
+  return new Intl.DateTimeFormat("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
+function formatMessageTime(value: string) {
   return new Intl.DateTimeFormat("pt-BR", {
     hour: "2-digit",
     minute: "2-digit"
@@ -56,9 +63,12 @@ export function InboxPage() {
   const [activeSection, setActiveSection] = useState<ActiveSection>("inbox");
   const [token, setToken] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationDto[]>([]);
+  const [messages, setMessages] = useState<MessageDto[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [messageError, setMessageError] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -98,7 +108,51 @@ export function InboxPage() {
     };
   }, [getToken]);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadMessages() {
+      if (!selectedConversationId || !token) {
+        setMessages([]);
+        return;
+      }
+
+      setIsLoadingMessages(true);
+      setMessageError(null);
+
+      try {
+        const nextMessages = await apiGetConversationMessages(selectedConversationId, async () => token);
+
+        if (!isMounted) return;
+
+        setMessages(nextMessages);
+      } catch (loadError) {
+        if (!isMounted) return;
+        setMessageError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar mensagens.");
+      } finally {
+        if (isMounted) {
+          setIsLoadingMessages(false);
+        }
+      }
+    }
+
+    void loadMessages();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedConversationId, token]);
+
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
+    if (event.type === "message.created") {
+      setMessages((current) => {
+        if (event.payload.conversationId !== selectedConversationId) return current;
+        if (current.some((message) => message.id === event.payload.id)) return current;
+        return [...current, event.payload];
+      });
+      return;
+    }
+
     if (event.type !== "conversation.updated") return;
 
     setConversations((current) => {
@@ -107,7 +161,7 @@ export function InboxPage() {
     });
 
     setSelectedConversationId((current) => current ?? event.payload.id);
-  }, []);
+  }, [selectedConversationId]);
 
   useRealtimeEvents({
     token,
@@ -327,33 +381,52 @@ export function InboxPage() {
           ) : null}
         </header>
 
-        <div className="chat-empty-state">
-          {activeSection === "settings" ? (
-            <Settings size={34} aria-hidden="true" />
-          ) : activeSection === "contacts" ? (
-            <Users size={34} aria-hidden="true" />
-          ) : (
-            <MessageSquare size={34} aria-hidden="true" />
-          )}
-          <h3>
-            {activeSection === "settings"
-              ? "Ambiente pronto para testes"
-              : activeSection === "contacts"
-                ? "Nenhum contato selecionado"
-                : selectedConversation
-                  ? "Historico pronto para carregar"
+        {selectedConversation && isConversationSurface ? (
+          <div className="message-thread" aria-label="Historico da conversa">
+            {isLoadingMessages ? <p className="thread-note">Carregando mensagens...</p> : null}
+            {messageError ? <p className="error-note">{messageError}</p> : null}
+            {!isLoadingMessages && messages.length === 0 ? (
+              <p className="thread-note">Ainda nao ha mensagens nesta conversa.</p>
+            ) : null}
+            {messages.map((message) => (
+              <article
+                className={
+                  message.direction === "outbound"
+                    ? "message-bubble is-outbound"
+                    : "message-bubble is-inbound"
+                }
+                key={message.id}
+              >
+                <p>{message.body ?? "Mensagem sem texto."}</p>
+                <time>{formatMessageTime(message.createdAt)}</time>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="chat-empty-state">
+            {activeSection === "settings" ? (
+              <Settings size={34} aria-hidden="true" />
+            ) : activeSection === "contacts" ? (
+              <Users size={34} aria-hidden="true" />
+            ) : (
+              <MessageSquare size={34} aria-hidden="true" />
+            )}
+            <h3>
+              {activeSection === "settings"
+                ? "Ambiente pronto para testes"
+                : activeSection === "contacts"
+                  ? "Nenhum contato selecionado"
                   : "Nenhuma conversa selecionada"}
-          </h3>
-          <p>
-            {activeSection === "settings"
-              ? "Clerk esta ativo e o acesso local usa workspace de desenvolvimento."
-              : activeSection === "contacts"
-                ? "Os contatos aparecem conforme as conversas chegarem pelo WhatsApp."
-                : selectedConversation
-                  ? "A lista em tempo real ja esta conectada. O proximo passo e ligar as mensagens desta conversa."
+            </h3>
+            <p>
+              {activeSection === "settings"
+                ? "Clerk esta ativo e o acesso local usa workspace de desenvolvimento."
+                : activeSection === "contacts"
+                  ? "Os contatos aparecem conforme as conversas chegarem pelo WhatsApp."
                   : "Escolha uma conversa na fila para acompanhar o atendimento."}
-          </p>
-        </div>
+            </p>
+          </div>
+        )}
 
         <form className="composer" aria-label="Compositor de mensagem">
           <input

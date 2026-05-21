@@ -398,6 +398,52 @@ input:disabled {
   margin: 0;
 }
 
+.message-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 28px;
+}
+
+.thread-note {
+  align-self: center;
+  margin: auto;
+  color: #697a72;
+}
+
+.message-bubble {
+  display: grid;
+  gap: 6px;
+  max-width: min(620px, 72%);
+  border: 1px solid #dbe5df;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.message-bubble p {
+  margin: 0;
+  color: #22342e;
+}
+
+.message-bubble time {
+  color: #71827a;
+  font-size: 0.72rem;
+  justify-self: end;
+}
+
+.message-bubble.is-outbound {
+  align-self: flex-end;
+  border-color: #cfe2d9;
+  background: #dff0e8;
+}
+
+.message-bubble.is-inbound {
+  align-self: flex-start;
+}
+
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

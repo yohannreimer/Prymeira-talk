@@ -14,17 +14,19 @@ type MockPrisma = {
     findUnique: ReturnType<typeof vi.fn<PrismaLike["conversation"]["findUnique"]>>;
     update: ReturnType<typeof vi.fn<PrismaLike["conversation"]["update"]>>;
   };
-  message: {
-    create: ReturnType<typeof vi.fn<PrismaLike["message"]["create"]>>;
-  };
-};
+	  message: {
+	    create: ReturnType<typeof vi.fn<PrismaLike["message"]["create"]>>;
+	    findMany: ReturnType<typeof vi.fn<PrismaLike["message"]["findMany"]>>;
+	  };
+	};
 
 function createMockPrisma(overrides: {
   findMany?: MockPrisma["conversation"]["findMany"];
   findUnique?: MockPrisma["conversation"]["findUnique"];
-  update?: MockPrisma["conversation"]["update"];
-  create?: MockPrisma["message"]["create"];
-} = {}): MockPrisma {
+	  update?: MockPrisma["conversation"]["update"];
+	  create?: MockPrisma["message"]["create"];
+	  findMessages?: MockPrisma["message"]["findMany"];
+	} = {}): MockPrisma {
   return {
     conversation: {
       findMany: overrides.findMany ?? vi.fn<PrismaLike["conversation"]["findMany"]>().mockResolvedValue([]),
@@ -48,9 +50,9 @@ function createMockPrisma(overrides: {
         })
     },
     message: {
-      create:
-        overrides.create ??
-        vi.fn<PrismaLike["message"]["create"]>().mockResolvedValue({
+	      create:
+	        overrides.create ??
+	        vi.fn<PrismaLike["message"]["create"]>().mockResolvedValue({
           id: "msg_1",
           workspaceId: "workspace_a",
           conversationId: "conv_1",
@@ -59,10 +61,27 @@ function createMockPrisma(overrides: {
           body: "Oi",
           status: "pending",
           createdAt: new Date("2026-05-20T12:00:00.000Z")
-        })
-    }
-  };
-}
+	        }),
+	      findMany:
+	        overrides.findMessages ??
+	        vi.fn<PrismaLike["message"]["findMany"]>().mockResolvedValue([
+	          {
+	            id: "msg_1",
+	            workspaceId: "workspace_a",
+	            conversationId: "conv_1",
+	            providerMessageId: null,
+	            direction: "inbound",
+	            type: "text",
+	            body: "Oi",
+	            mediaUrl: null,
+	            status: "delivered",
+	            sentByUserId: null,
+	            createdAt: new Date("2026-05-20T12:00:00.000Z")
+	          }
+	        ])
+	    }
+	  };
+	}
 
 describe("conversations service", () => {
   it("filters conversations by workspace id", async () => {
@@ -164,7 +183,7 @@ describe("conversations service", () => {
     expect(prisma.conversation.update).not.toHaveBeenCalled();
   });
 
-  it("returns messages that parse as shared message DTOs", async () => {
+	  it("returns messages that parse as shared message DTOs", async () => {
     const prisma = createMockPrisma();
     const service = createConversationsService(prisma);
 
@@ -183,11 +202,52 @@ describe("conversations service", () => {
         sentByUserId: null
       })
     );
-  });
-});
+	  });
+
+	  it("lists messages inside the caller workspace conversation", async () => {
+	    const prisma = createMockPrisma();
+	    const service = createConversationsService(prisma);
+
+	    const messages = await service.listMessages({
+	      workspaceId: "workspace_a",
+	      conversationId: "conv_1"
+	    });
+
+	    expect(prisma.conversation.findUnique).toHaveBeenCalledWith({
+	      where: { workspaceId_id: { workspaceId: "workspace_a", id: "conv_1" } },
+	      select: { id: true }
+	    });
+	    expect(prisma.message.findMany).toHaveBeenCalledWith({
+	      where: {
+	        workspaceId: "workspace_a",
+	        conversationId: "conv_1"
+	      },
+	      orderBy: { createdAt: "asc" },
+	      take: 100
+	    });
+	    expect(messageSchema.array().parse(messages)).toEqual(messages);
+	  });
+
+	  it("rejects message listing for missing conversations", async () => {
+	    const prisma = createMockPrisma({
+	      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue(null)
+	    });
+	    const service = createConversationsService(prisma);
+
+	    const error = await service
+	      .listMessages({
+	        workspaceId: "workspace_a",
+	        conversationId: "conv_1"
+	      })
+	      .catch((caught: unknown) => caught);
+
+	    expect(error).toBeInstanceOf(ConversationNotFoundError);
+	    expect(prisma.message.findMany).not.toHaveBeenCalled();
+	  });
+	});
 
 describe("conversation routes", () => {
-  it("returns outbound messages and publishes message plus conversation updates once", async () => {
+	  it("returns outbound messages and publishes message plus conversation updates once", async () => {
     const prisma = createMockPrisma();
     const publish = vi.fn();
     const app = Fastify({ logger: false });
@@ -234,8 +294,34 @@ describe("conversation routes", () => {
     } finally {
       await app.close();
     }
-  });
-});
+	  });
+
+	  it("returns messages for a workspace conversation", async () => {
+	    const prisma = createMockPrisma();
+	    const publish = vi.fn();
+	    const app = Fastify({ logger: false });
+
+	    app.decorate("prisma", prisma as never);
+	    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+	    app.addHook("preHandler", async (request) => {
+	      request.talk = { workspaceId: "workspace_a", role: "agent" };
+	    });
+	    await app.register(conversationsRoutes);
+
+	    try {
+	      const response = await app.inject({
+	        method: "GET",
+	        url: "/conversations/00000000-0000-4000-8000-000000000001/messages"
+	      });
+
+	      expect(response.statusCode).toBe(200);
+	      expect(messageSchema.array().parse(response.json())).toEqual(response.json());
+	      expect(publish).not.toHaveBeenCalled();
+	    } finally {
+	      await app.close();
+	    }
+	  });
+	});
 
 describe("conversation route schemas", () => {
   it("requires conversation ids to be UUIDs", () => {

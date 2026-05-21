@@ -20,6 +20,33 @@ export const conversationsRoutes: FastifyPluginAsync = async (app) => {
     service.listConversations({ workspaceId: request.talk.workspaceId })
   );
 
+  app.get("/conversations/:conversationId/messages", async (request, reply) => {
+    const params = createMessageParamsSchema.safeParse(request.params);
+
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid conversation message request." });
+    }
+
+    const messages = await service.listMessages({
+      workspaceId: request.talk.workspaceId,
+      conversationId: params.data.conversationId
+    }).catch((error: unknown) => {
+      if (error instanceof ConversationNotFoundError) {
+        return null;
+      }
+
+      throw error;
+    });
+
+    if (!messages) {
+      return reply
+        .code(404)
+        .send({ code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
+    }
+
+    return messages;
+  });
+
   app.post("/conversations/:conversationId/messages", async (request, reply) => {
     const params = createMessageParamsSchema.safeParse(request.params);
     const body = createMessageBodySchema.safeParse(request.body);
