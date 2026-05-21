@@ -83,6 +83,15 @@ export function ContactsPage() {
   const [addContactId, setAddContactId] = useState("");
   const [addStageId, setAddStageId] = useState("");
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
+  const [drawerContact, setDrawerContact] = useState<ContactDto | null>(null);
+
+  function openDrawer(contact: ContactDto) {
+    setDrawerContact(contact);
+  }
+
+  function closeDrawer() {
+    setDrawerContact(null);
+  }
 
   useEffect(() => {
     let isMounted = true;
@@ -562,7 +571,7 @@ export function ContactsPage() {
                         : "contacts-row"
                     }
                     key={contact.id}
-                    onClick={() => setSelectedContactId(contact.id)}
+                    onClick={() => { setSelectedContactId(contact.id); openDrawer(contact); }}
                     role="row"
                     type="button"
                   >
@@ -833,6 +842,68 @@ export function ContactsPage() {
           </form>
         </aside>
       </div>
+      {/* Drawer de contato */}
+      {drawerContact ? (
+        <>
+          <div
+            className="contact-drawer-overlay"
+            onClick={closeDrawer}
+            aria-hidden="true"
+          />
+          <aside
+            className="contact-drawer is-open"
+            aria-label="Detalhes do contato"
+          >
+            <header className="contact-drawer-header">
+              <span className="context-card-title">Contato</span>
+              <button
+                className="drawer-close"
+                onClick={closeDrawer}
+                type="button"
+                aria-label="Fechar"
+              >
+                ✕
+              </button>
+            </header>
+            <div className="contact-drawer-body">
+              {/* Card identidade */}
+              <div className="context-card context-card--identity">
+                <div className="context-identity-avatar" aria-hidden="true">
+                  {initials(drawerContact)}
+                </div>
+                <div>
+                  <div className="context-identity-name">{contactName(drawerContact)}</div>
+                  {drawerContact.company ? (
+                    <div className="context-identity-sub">{drawerContact.company}</div>
+                  ) : null}
+                </div>
+              </div>
+              {/* Card detalhes */}
+              <div className="context-card">
+                <div className="context-card-title">Detalhes</div>
+                <dl className="context-rows">
+                  <div className="context-row">
+                    <dt>Telefone</dt>
+                    <dd>{drawerContact.phone}</dd>
+                  </div>
+                  {drawerContact.email ? (
+                    <div className="context-row">
+                      <dt>Email</dt>
+                      <dd>{drawerContact.email}</dd>
+                    </div>
+                  ) : null}
+                  {drawerContact.company ? (
+                    <div className="context-row">
+                      <dt>Empresa</dt>
+                      <dd>{drawerContact.company}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+              </div>
+            </div>
+          </aside>
+        </>
+      ) : null}
     </section>
   );
 }
