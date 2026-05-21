@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { createAssistantService } from "./assistant.service.js";
+import { AssistantServiceError, createAssistantService } from "./assistant.service.js";
 import type { PrismaLike } from "./assistant.service.js";
 
 const uuidSchema = z.string().uuid();
@@ -12,6 +12,14 @@ const createAssistantActionBodySchema = z.object({
   contactId: uuidSchema.nullable().optional(),
   input: z.record(z.string(), z.unknown()).optional()
 });
+
+function handleAssistantError(reply: import("fastify").FastifyReply, error: unknown) {
+  if (error instanceof AssistantServiceError) {
+    return reply.code(404).send({ code: error.code, error: error.message });
+  }
+
+  throw error;
+}
 
 export const assistantRoutes: FastifyPluginAsync = async (app) => {
   const service = createAssistantService(app.prisma as unknown as PrismaLike);
@@ -26,12 +34,16 @@ export const assistantRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "Invalid assistant action request." });
     }
 
-    const action = await service.createAction({
-      workspaceId: request.talk.workspaceId,
-      ...body.data,
-      input: body.data.input as Prisma.InputJsonValue | undefined
-    });
+    try {
+      const action = await service.createAction({
+        workspaceId: request.talk.workspaceId,
+        ...body.data,
+        input: body.data.input as Prisma.InputJsonValue | undefined
+      });
 
-    return reply.code(201).send(action);
+      return reply.code(201).send(action);
+    } catch (error) {
+      return handleAssistantError(reply, error);
+    }
   });
 };

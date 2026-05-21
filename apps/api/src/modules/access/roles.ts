@@ -7,6 +7,7 @@ export type Permission =
   | "tag.manage"
   | "automation.manage"
   | "campaign.manage"
+  | "crm.manage"
   | "workspace.manage";
 
 const permissionsByRole: Record<UserRole, Set<Permission>> = {
@@ -17,6 +18,7 @@ const permissionsByRole: Record<UserRole, Set<Permission>> = {
     "tag.manage",
     "automation.manage",
     "campaign.manage",
+    "crm.manage",
     "workspace.manage"
   ]),
   manager: new Set([
@@ -25,7 +27,8 @@ const permissionsByRole: Record<UserRole, Set<Permission>> = {
     "conversation.assign",
     "tag.manage",
     "automation.manage",
-    "campaign.manage"
+    "campaign.manage",
+    "crm.manage"
   ]),
   agent: new Set(["conversation.read", "conversation.reply"])
 };

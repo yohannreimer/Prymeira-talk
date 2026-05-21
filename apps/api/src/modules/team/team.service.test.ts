@@ -8,6 +8,7 @@ import type { PrismaLike } from "./team.service.js";
 type MockPrisma = {
   userProfile: {
     findMany: any;
+    findFirst: any;
     update: any;
   };
   department: {
@@ -58,6 +59,7 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
   return {
     userProfile: {
       findMany: overrides.userProfile?.findMany ?? vi.fn().mockResolvedValue(baseUsers),
+      findFirst: overrides.userProfile?.findFirst ?? vi.fn().mockResolvedValue(baseUsers[0]),
       update:
         overrides.userProfile?.update ??
         vi.fn().mockImplementation(async (args) => ({
@@ -183,6 +185,55 @@ describe("team routes", () => {
       expect(response.json()).toEqual({
         code: "TEAM_MANAGE_FORBIDDEN",
         error: "Team management permission required."
+      });
+      expect(prisma.userProfile.update).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects owner promotion when caller is a manager", async () => {
+    const { app, prisma } = await buildTeamApp({ role: "manager" });
+
+    try {
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/team/users/${userId}`,
+        payload: { role: "owner" }
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        code: "TEAM_OWNER_ROLE_FORBIDDEN",
+        error: "Only owners can assign or edit owner roles."
+      });
+      expect(prisma.userProfile.update).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects owner edits when caller is a manager", async () => {
+    const prisma = createMockPrisma({
+      userProfile: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue({ ...baseUsers[0], role: "owner" }),
+        update: vi.fn()
+      }
+    });
+    const { app } = await buildTeamApp({ role: "manager", prisma });
+
+    try {
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/team/users/${userId}`,
+        payload: { role: "agent" }
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        code: "TEAM_OWNER_ROLE_FORBIDDEN",
+        error: "Only owners can assign or edit owner roles."
       });
       expect(prisma.userProfile.update).not.toHaveBeenCalled();
     } finally {

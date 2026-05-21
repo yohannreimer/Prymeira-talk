@@ -17,12 +17,22 @@ interface CrmSyncActionRecord {
 
 type CrmSyncActionCreateArgs = Parameters<PrismaClient["crmSyncAction"]["create"]>[0];
 type CrmSyncActionFindManyArgs = Parameters<PrismaClient["crmSyncAction"]["findMany"]>[0];
+type ContactFindUniqueArgs = Parameters<PrismaClient["contact"]["findUnique"]>[0];
 
 export interface PrismaLike {
+  contact: {
+    findUnique(args: ContactFindUniqueArgs): Promise<{ id: string; workspaceId: string } | null>;
+  };
   crmSyncAction: {
     create(args: CrmSyncActionCreateArgs): Promise<CrmSyncActionRecord>;
     findMany(args: CrmSyncActionFindManyArgs): Promise<CrmSyncActionRecord[]>;
   };
+}
+
+export class CrmServiceError extends Error {
+  constructor(public code: "CRM_CONTACT_NOT_FOUND", message: string) {
+    super(message);
+  }
 }
 
 export interface CrmSyncActionDto {
@@ -58,6 +68,25 @@ function toActionDto(record: CrmSyncActionRecord): CrmSyncActionDto {
 }
 
 export function createCrmService(prisma: PrismaLike) {
+  const ensureContactInWorkspace = async (input: { workspaceId: string; contactId: string }) => {
+    const contact = await prisma.contact.findUnique({
+      where: {
+        workspaceId_id: {
+          workspaceId: input.workspaceId,
+          id: input.contactId
+        }
+      },
+      select: {
+        id: true,
+        workspaceId: true
+      }
+    });
+
+    if (!contact) {
+      throw new CrmServiceError("CRM_CONTACT_NOT_FOUND", "CRM contact not found.");
+    }
+  };
+
   const createSimulatedAction = async (input: {
     workspaceId: string;
     contactId?: string | null;
@@ -102,6 +131,8 @@ export function createCrmService(prisma: PrismaLike) {
       contactId: string;
       atomicCrmContactId?: string;
     }): Promise<CrmSyncActionDto> {
+      await ensureContactInWorkspace(input);
+
       return createSimulatedAction({
         workspaceId: input.workspaceId,
         contactId: input.contactId,
@@ -123,6 +154,8 @@ export function createCrmService(prisma: PrismaLike) {
       contactId: string;
       title: string;
     }): Promise<CrmSyncActionDto> {
+      await ensureContactInWorkspace(input);
+
       return createSimulatedAction({
         workspaceId: input.workspaceId,
         contactId: input.contactId,
@@ -144,6 +177,8 @@ export function createCrmService(prisma: PrismaLike) {
       contactId: string;
       body: string;
     }): Promise<CrmSyncActionDto> {
+      await ensureContactInWorkspace(input);
+
       return createSimulatedAction({
         workspaceId: input.workspaceId,
         contactId: input.contactId,

@@ -9,6 +9,12 @@ type MockPrisma = {
     create: any;
     findMany: any;
   };
+  conversation: {
+    findUnique: any;
+  };
+  contact: {
+    findUnique: any;
+  };
 };
 
 const actionId = "00000000-0000-4000-8000-000000000401";
@@ -39,6 +45,16 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
           ...args.data
         })),
       findMany: overrides.aiActionLog?.findMany ?? vi.fn().mockResolvedValue([baseAction])
+    },
+    conversation: {
+      findUnique:
+        overrides.conversation?.findUnique ??
+        vi.fn().mockResolvedValue({ id: conversationId, workspaceId: "workspace_a" })
+    },
+    contact: {
+      findUnique:
+        overrides.contact?.findUnique ??
+        vi.fn().mockResolvedValue({ id: contactId, workspaceId: "workspace_a" })
     }
   } as MockPrisma & PrismaLike;
 }
@@ -100,6 +116,46 @@ describe("assistant service", () => {
         })
       })
     );
+    expect(prisma.conversation.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          workspaceId_id: {
+            workspaceId: "workspace_a",
+            id: conversationId
+          }
+        }
+      })
+    );
+    expect(prisma.contact.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          workspaceId_id: {
+            workspaceId: "workspace_a",
+            id: contactId
+          }
+        }
+      })
+    );
+  });
+
+  it("rejects action logs for references outside the current workspace", async () => {
+    const prisma = createMockPrisma({
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue(null)
+      }
+    });
+    const service = createAssistantService(prisma);
+
+    await expect(
+      service.createAction({
+        workspaceId: "workspace_a",
+        actionType: "summary",
+        conversationId,
+        contactId,
+        input: { transcript: "Cliente quer saber preco." }
+      })
+    ).rejects.toMatchObject({ code: "ASSISTANT_CONVERSATION_NOT_FOUND" });
+    expect(prisma.aiActionLog.create).not.toHaveBeenCalled();
   });
 });
 
@@ -130,6 +186,37 @@ describe("assistant routes", () => {
           })
         })
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 404 when assistant action references a contact outside workspace", async () => {
+    const prisma = createMockPrisma({
+      contact: {
+        findUnique: vi.fn().mockResolvedValue(null)
+      }
+    });
+    const { app } = await buildAssistantApp({ prisma });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/assistant/actions",
+        payload: {
+          actionType: "suggested_reply",
+          conversationId,
+          contactId,
+          input: { lastMessage: "Quanto custa?" }
+        }
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({
+        code: "ASSISTANT_CONTACT_NOT_FOUND",
+        error: "Assistant contact not found."
+      });
+      expect(prisma.aiActionLog.create).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

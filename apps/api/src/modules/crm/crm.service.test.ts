@@ -1,10 +1,14 @@
 import Fastify from "fastify";
+import type { UserRole } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
 import { crmRoutes } from "./crm.routes.js";
 import { createCrmService } from "./crm.service.js";
 import type { PrismaLike } from "./crm.service.js";
 
 type MockPrisma = {
+  contact: {
+    findUnique: any;
+  };
   crmSyncAction: {
     create: any;
     findMany: any;
@@ -29,6 +33,11 @@ const baseAction = {
 
 function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & PrismaLike {
   return {
+    contact: {
+      findUnique:
+        overrides.contact?.findUnique ??
+        vi.fn().mockResolvedValue({ id: contactId, workspaceId: "workspace_a" })
+    },
     crmSyncAction: {
       create:
         overrides.crmSyncAction?.create ??
@@ -41,13 +50,17 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
   } as MockPrisma & PrismaLike;
 }
 
-async function buildCrmApp(input: { prisma?: MockPrisma & PrismaLike } = {}) {
+async function buildCrmApp(input: {
+  prisma?: MockPrisma & PrismaLike;
+  role?: UserRole;
+} = {}) {
   const app = Fastify({ logger: false });
   const prisma = input.prisma ?? createMockPrisma();
+  const role = input.role ?? "manager";
 
   app.decorate("prisma", prisma as never);
   app.addHook("preHandler", async (request) => {
-    request.talk = { workspaceId: "workspace_a", role: "manager" };
+    request.talk = { workspaceId: "workspace_a", role };
   });
   await app.register(crmRoutes);
 
@@ -76,6 +89,16 @@ describe("crm service", () => {
           mode: "simulated",
           linked: true
         })
+      })
+    );
+    expect(prisma.contact.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          workspaceId_id: {
+            workspaceId: "workspace_a",
+            id: contactId
+          }
+        }
       })
     );
   });
@@ -121,6 +144,24 @@ describe("crm service", () => {
       })
     );
   });
+
+  it("rejects simulated actions for contacts outside the current workspace", async () => {
+    const prisma = createMockPrisma({
+      contact: {
+        findUnique: vi.fn().mockResolvedValue(null)
+      }
+    });
+    const service = createCrmService(prisma);
+
+    await expect(
+      service.createLead({
+        workspaceId: "workspace_a",
+        contactId,
+        title: "Novo lead Talk"
+      })
+    ).rejects.toMatchObject({ code: "CRM_CONTACT_NOT_FOUND" });
+    expect(prisma.crmSyncAction.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("crm routes", () => {
@@ -145,6 +186,59 @@ describe("crm routes", () => {
           status: "completed"
         })
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects CRM mutations when caller is an agent", async () => {
+    const { app, prisma } = await buildCrmApp({ role: "agent" });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/crm/create-lead",
+        payload: {
+          contactId,
+          title: "Novo lead Talk"
+        }
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        code: "CRM_MANAGE_FORBIDDEN",
+        error: "CRM management permission required."
+      });
+      expect(prisma.crmSyncAction.create).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 404 when CRM mutation references a contact outside workspace", async () => {
+    const prisma = createMockPrisma({
+      contact: {
+        findUnique: vi.fn().mockResolvedValue(null)
+      }
+    });
+    const { app } = await buildCrmApp({ prisma });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/crm/create-lead",
+        payload: {
+          contactId,
+          title: "Novo lead Talk"
+        }
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({
+        code: "CRM_CONTACT_NOT_FOUND",
+        error: "CRM contact not found."
+      });
+      expect(prisma.crmSyncAction.create).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

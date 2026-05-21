@@ -25,6 +25,7 @@ interface DepartmentRecord {
 }
 
 type UserFindManyArgs = Parameters<PrismaClient["userProfile"]["findMany"]>[0];
+type UserFindFirstArgs = Parameters<PrismaClient["userProfile"]["findFirst"]>[0];
 type UserUpdateArgs = Parameters<PrismaClient["userProfile"]["update"]>[0];
 type DepartmentFindManyArgs = Parameters<PrismaClient["department"]["findMany"]>[0];
 type DepartmentCreateArgs = Parameters<PrismaClient["department"]["create"]>[0];
@@ -32,12 +33,22 @@ type DepartmentCreateArgs = Parameters<PrismaClient["department"]["create"]>[0];
 export interface PrismaLike {
   userProfile: {
     findMany(args: UserFindManyArgs): Promise<UserProfileRecord[]>;
+    findFirst(args: UserFindFirstArgs): Promise<UserProfileRecord | null>;
     update(args: UserUpdateArgs): Promise<UserProfileRecord>;
   };
   department: {
     findMany(args: DepartmentFindManyArgs): Promise<DepartmentRecord[]>;
     create(args: DepartmentCreateArgs): Promise<DepartmentRecord>;
   };
+}
+
+export class TeamServiceError extends Error {
+  constructor(
+    public code: "TEAM_USER_NOT_FOUND" | "TEAM_OWNER_ROLE_FORBIDDEN",
+    message: string
+  ) {
+    super(message);
+  }
 }
 
 export interface TeamUserDto {
@@ -132,7 +143,29 @@ export function createTeamService(prisma: PrismaLike) {
       workspaceId: string;
       userId: string;
       role: UserRole;
+      callerRole: UserRole;
     }): Promise<TeamUserDto> {
+      const targetUser = await prisma.userProfile.findFirst({
+        where: {
+          workspaceId: input.workspaceId,
+          id: input.userId
+        }
+      });
+
+      if (!targetUser) {
+        throw new TeamServiceError("TEAM_USER_NOT_FOUND", "Team user not found.");
+      }
+
+      if (
+        input.callerRole !== "owner" &&
+        (input.role === "owner" || targetUser.role === "owner")
+      ) {
+        throw new TeamServiceError(
+          "TEAM_OWNER_ROLE_FORBIDDEN",
+          "Only owners can assign or edit owner roles."
+        );
+      }
+
       const user = await prisma.userProfile.update({
         where: {
           workspaceId_id: {

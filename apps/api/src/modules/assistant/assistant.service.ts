@@ -19,11 +19,19 @@ interface AiActionRecord {
 
 type AiActionCreateArgs = Parameters<PrismaClient["aiActionLog"]["create"]>[0];
 type AiActionFindManyArgs = Parameters<PrismaClient["aiActionLog"]["findMany"]>[0];
+type ConversationFindUniqueArgs = Parameters<PrismaClient["conversation"]["findUnique"]>[0];
+type ContactFindUniqueArgs = Parameters<PrismaClient["contact"]["findUnique"]>[0];
 
 export interface PrismaLike {
   aiActionLog: {
     create(args: AiActionCreateArgs): Promise<AiActionRecord>;
     findMany(args: AiActionFindManyArgs): Promise<AiActionRecord[]>;
+  };
+  conversation: {
+    findUnique(args: ConversationFindUniqueArgs): Promise<{ id: string; workspaceId: string } | null>;
+  };
+  contact: {
+    findUnique(args: ContactFindUniqueArgs): Promise<{ id: string; workspaceId: string } | null>;
   };
 }
 
@@ -39,6 +47,15 @@ export interface AssistantActionDto {
   result: Prisma.JsonValue;
   status: string;
   createdAt: string;
+}
+
+export class AssistantServiceError extends Error {
+  constructor(
+    public code: "ASSISTANT_CONVERSATION_NOT_FOUND" | "ASSISTANT_CONTACT_NOT_FOUND",
+    message: string
+  ) {
+    super(message);
+  }
 }
 
 function toIsoString(value: DateLike) {
@@ -91,6 +108,56 @@ function buildResult(actionType: AssistantActionType, input: unknown) {
 }
 
 export function createAssistantService(prisma: PrismaLike) {
+  const ensureReferencesInWorkspace = async (input: {
+    workspaceId: string;
+    conversationId?: string | null;
+    contactId?: string | null;
+  }) => {
+    if (input.conversationId) {
+      const conversation = await prisma.conversation.findUnique({
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: input.conversationId
+          }
+        },
+        select: {
+          id: true,
+          workspaceId: true
+        }
+      });
+
+      if (!conversation) {
+        throw new AssistantServiceError(
+          "ASSISTANT_CONVERSATION_NOT_FOUND",
+          "Assistant conversation not found."
+        );
+      }
+    }
+
+    if (input.contactId) {
+      const contact = await prisma.contact.findUnique({
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: input.contactId
+          }
+        },
+        select: {
+          id: true,
+          workspaceId: true
+        }
+      });
+
+      if (!contact) {
+        throw new AssistantServiceError(
+          "ASSISTANT_CONTACT_NOT_FOUND",
+          "Assistant contact not found."
+        );
+      }
+    }
+  };
+
   return {
     async createAction(input: {
       workspaceId: string;
@@ -99,6 +166,8 @@ export function createAssistantService(prisma: PrismaLike) {
       contactId?: string | null;
       input?: Prisma.InputJsonValue;
     }): Promise<AssistantActionDto> {
+      await ensureReferencesInWorkspace(input);
+
       const actionInput = input.input ?? {};
       const action = await prisma.aiActionLog.create({
         data: {

@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
-import { createTeamService } from "./team.service.js";
+import { createTeamService, TeamServiceError } from "./team.service.js";
 import type { PrismaLike } from "./team.service.js";
 
 const uuidParamSchema = z.string().uuid();
@@ -44,6 +44,20 @@ function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
 }
 
 function handleTeamError(reply: FastifyReply, error: unknown) {
+  if (error instanceof TeamServiceError) {
+    const statusCode =
+      error.code === "TEAM_USER_NOT_FOUND"
+        ? 404
+        : error.code === "TEAM_OWNER_ROLE_FORBIDDEN"
+          ? 403
+          : 400;
+
+    return reply.code(statusCode).send({
+      code: error.code,
+      error: error.message
+    });
+  }
+
   if (isPrismaKnownRequestErrorCode(error, "P2025")) {
     return reply.code(404).send({
       code: "TEAM_USER_NOT_FOUND",
@@ -109,7 +123,8 @@ export const teamRoutes: FastifyPluginAsync = async (app) => {
       return await service.updateUserRole({
         workspaceId: request.talk.workspaceId,
         userId: params.data.userId,
-        role: body.data.role
+        role: body.data.role,
+        callerRole: request.talk.role
       });
     } catch (error) {
       return handleTeamError(reply, error);
