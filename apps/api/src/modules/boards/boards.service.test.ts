@@ -10,6 +10,7 @@ import type { PrismaLike } from "./boards.service.js";
 import { boardsRoutes } from "./boards.routes.js";
 
 type MockPrisma = {
+  $transaction: PrismaLike["$transaction"] & ReturnType<typeof vi.fn>;
   contactBoard: {
     findMany: ReturnType<typeof vi.fn<PrismaLike["contactBoard"]["findMany"]>>;
     create: ReturnType<typeof vi.fn<PrismaLike["contactBoard"]["create"]>>;
@@ -97,8 +98,16 @@ const baseMembership = {
   contact: baseContact
 };
 
-function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma {
-  return {
+function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & PrismaLike {
+  let prisma: MockPrisma & PrismaLike;
+  const transaction = vi.fn(
+    <T,>(callback: Parameters<PrismaLike["$transaction"]>[0]) => callback(prisma)
+  ) as PrismaLike["$transaction"] & ReturnType<typeof vi.fn>;
+
+  prisma = {
+    $transaction:
+      overrides.$transaction ??
+      transaction,
     contactBoard: {
       findMany:
         overrides.contactBoard?.findMany ??
@@ -161,7 +170,9 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma {
           id: contactId
         })
     }
-  };
+  } as MockPrisma & PrismaLike;
+
+  return prisma;
 }
 
 async function buildBoardsApp(prisma = createMockPrisma()) {
@@ -227,7 +238,7 @@ describe("boards service", () => {
     expect(result.memberships[0]?.contact.name).toBe("Ana Silva");
   });
 
-  it("validates stage ownership and unsets prior primary membership before adding a primary contact", async () => {
+  it("validates stage ownership and updates primary state inside one transaction when adding a primary contact", async () => {
     const prisma = createMockPrisma();
     const service = createBoardsService(prisma);
 
@@ -239,6 +250,7 @@ describe("boards service", () => {
       isPrimary: true
     });
 
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(prisma.contactBoardStage.findFirst).toHaveBeenCalledWith({
       where: { workspaceId: "workspace_a", boardId, id: stageId }
     });
@@ -274,6 +286,34 @@ describe("boards service", () => {
         stageId,
         isPrimary: true
       },
+      include: { contact: true }
+    });
+  });
+
+  it("updates primary state inside one transaction when moving and making a membership primary", async () => {
+    const prisma = createMockPrisma();
+    const service = createBoardsService(prisma);
+
+    await service.moveContactToStage({
+      workspaceId: "workspace_a",
+      membershipId,
+      stageId: nextStageId,
+      isPrimary: true
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.contactBoardMembership.updateMany).toHaveBeenCalledWith({
+      where: { workspaceId: "workspace_a", contactId, isPrimary: true },
+      data: { isPrimary: false }
+    });
+    expect(prisma.contactBoardMembership.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: membershipId
+        }
+      },
+      data: { stageId: nextStageId, isPrimary: true },
       include: { contact: true }
     });
   });

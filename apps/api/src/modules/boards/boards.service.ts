@@ -58,7 +58,7 @@ type MembershipUpdateArgs = Parameters<PrismaClient["contactBoardMembership"]["u
 type MembershipUpdateManyArgs = Parameters<PrismaClient["contactBoardMembership"]["updateMany"]>[0];
 type ContactFindUniqueArgs = Parameters<PrismaClient["contact"]["findUnique"]>[0];
 
-export interface PrismaLike {
+interface BoardPersistenceLike {
   contactBoard: {
     findMany(args: BoardFindManyArgs): Promise<BoardWithStagesRecord[]>;
     create(args: BoardCreateArgs): Promise<BoardRecord>;
@@ -78,6 +78,10 @@ export interface PrismaLike {
   contact: {
     findUnique(args: ContactFindUniqueArgs): Promise<{ id: string } | null>;
   };
+}
+
+export interface PrismaLike extends BoardPersistenceLike {
+  $transaction<T>(callback: (tx: BoardPersistenceLike) => Promise<T>): Promise<T>;
 }
 
 export interface ContactBoardWithStagesDto extends ContactBoardDto {
@@ -295,38 +299,43 @@ export function createBoardsService(prisma: PrismaLike) {
 
       const isPrimary = input.isPrimary ?? false;
 
-      if (isPrimary) {
-        await prisma.contactBoardMembership.updateMany({
+      const upsertMembership = (client: BoardPersistenceLike) =>
+        client.contactBoardMembership.upsert({
           where: {
-            workspaceId: input.workspaceId,
-            contactId: input.contactId,
-            isPrimary: true
+            workspaceId_contactId_boardId: {
+              workspaceId: input.workspaceId,
+              contactId: input.contactId,
+              boardId: input.boardId
+            }
           },
-          data: { isPrimary: false }
-        });
-      }
-
-      const membership = await prisma.contactBoardMembership.upsert({
-        where: {
-          workspaceId_contactId_boardId: {
+          create: {
             workspaceId: input.workspaceId,
             contactId: input.contactId,
-            boardId: input.boardId
-          }
-        },
-        create: {
-          workspaceId: input.workspaceId,
-          contactId: input.contactId,
-          boardId: input.boardId,
-          stageId: input.stageId,
-          isPrimary
-        },
-        update: {
-          stageId: input.stageId,
-          isPrimary
-        },
-        include: { contact: true }
-      });
+            boardId: input.boardId,
+            stageId: input.stageId,
+            isPrimary
+          },
+          update: {
+            stageId: input.stageId,
+            isPrimary
+          },
+          include: { contact: true }
+        });
+
+      const membership = isPrimary
+        ? await prisma.$transaction(async (tx) => {
+            await tx.contactBoardMembership.updateMany({
+              where: {
+                workspaceId: input.workspaceId,
+                contactId: input.contactId,
+                isPrimary: true
+              },
+              data: { isPrimary: false }
+            });
+
+            return upsertMembership(tx);
+          })
+        : await upsertMembership(prisma);
 
       return toBoardContactCardDto(membership);
     },
@@ -358,30 +367,36 @@ export function createBoardsService(prisma: PrismaLike) {
         throw new BoardsServiceError("STAGE_NOT_FOUND", "Stage not found.");
       }
 
-      if (input.isPrimary === true) {
-        await prisma.contactBoardMembership.updateMany({
+      const updateMembership = (client: BoardPersistenceLike) =>
+        client.contactBoardMembership.update({
           where: {
-            workspaceId: input.workspaceId,
-            contactId: currentMembership.contactId,
-            isPrimary: true
+            workspaceId_id: {
+              workspaceId: input.workspaceId,
+              id: input.membershipId
+            }
           },
-          data: { isPrimary: false }
+          data:
+            input.isPrimary === undefined
+              ? { stageId: input.stageId }
+              : { stageId: input.stageId, isPrimary: input.isPrimary },
+          include: { contact: true }
         });
-      }
 
-      const membership = await prisma.contactBoardMembership.update({
-        where: {
-          workspaceId_id: {
-            workspaceId: input.workspaceId,
-            id: input.membershipId
-          }
-        },
-        data:
-          input.isPrimary === undefined
-            ? { stageId: input.stageId }
-            : { stageId: input.stageId, isPrimary: input.isPrimary },
-        include: { contact: true }
-      });
+      const membership =
+        input.isPrimary === true
+          ? await prisma.$transaction(async (tx) => {
+              await tx.contactBoardMembership.updateMany({
+                where: {
+                  workspaceId: input.workspaceId,
+                  contactId: currentMembership.contactId,
+                  isPrimary: true
+                },
+                data: { isPrimary: false }
+              });
+
+              return updateMembership(tx);
+            })
+          : await updateMembership(prisma);
 
       return toBoardContactCardDto(membership);
     }

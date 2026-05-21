@@ -175,6 +175,9 @@ export function ContactsPage() {
 
     let isMounted = true;
     const boardIdToLoad = selectedBoardId;
+    setBoardContacts(null);
+    setAddContactId("");
+    setAddStageId("");
 
     async function loadBoardContacts() {
       setIsBoardLoading(true);
@@ -210,14 +213,32 @@ export function ContactsPage() {
     return Date.now() - updatedAt < 7 * 24 * 60 * 60 * 1000;
   }).length;
   const selectedBoard = boards.find((board) => board.id === selectedBoardId) ?? null;
-  const boardStages = boardContacts?.stages ?? selectedBoard?.stages ?? [];
+  const loadedBoardContacts =
+    boardContacts?.board.id === selectedBoardId ? boardContacts : null;
+  const boardStages = loadedBoardContacts?.stages ?? selectedBoard?.stages ?? [];
+  const loadedBoardStages = loadedBoardContacts?.stages ?? [];
+  const selectedStageBelongsToLoadedBoard = loadedBoardStages.some(
+    (stage) => stage.id === addStageId
+  );
+  const canSubmitBoardAdd =
+    Boolean(loadedBoardContacts) &&
+    !isBoardLoading &&
+    !isBoardSaving &&
+    Boolean(addContactId) &&
+    selectedStageBelongsToLoadedBoard;
   const boardContactIds = useMemo(
-    () => new Set(boardContacts?.memberships.map((membership) => membership.contactId) ?? []),
-    [boardContacts]
+    () =>
+      new Set(
+        loadedBoardContacts?.memberships.map((membership) => membership.contactId) ?? []
+      ),
+    [loadedBoardContacts]
   );
   const availableBoardContacts = useMemo(
-    () => contacts.filter((contact) => !boardContactIds.has(contact.id)),
-    [boardContactIds, contacts]
+    () =>
+      loadedBoardContacts
+        ? contacts.filter((contact) => !boardContactIds.has(contact.id))
+        : [],
+    [boardContactIds, contacts, loadedBoardContacts]
   );
   const membershipsByStage = useMemo(() => {
     const grouped = new Map<string, BoardContactCardDto[]>();
@@ -226,14 +247,14 @@ export function ContactsPage() {
       grouped.set(stage.id, []);
     }
 
-    for (const membership of boardContacts?.memberships ?? []) {
+    for (const membership of loadedBoardContacts?.memberships ?? []) {
       const memberships = grouped.get(membership.stageId) ?? [];
       memberships.push(membership);
       grouped.set(membership.stageId, memberships);
     }
 
     return grouped;
-  }, [boardContacts, boardStages]);
+  }, [loadedBoardContacts, boardStages]);
 
   useEffect(() => {
     setAddContactId((current) =>
@@ -290,21 +311,23 @@ export function ContactsPage() {
 
   async function handleAddContactToBoard(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selectedBoardId || !addContactId || !addStageId) return;
+    if (!loadedBoardContacts || !canSubmitBoardAdd) return;
+
+    const boardIdToUpdate = loadedBoardContacts.board.id;
 
     setIsBoardSaving(true);
     setBoardError(null);
     setSaveMessage(null);
 
     try {
-      const membership = await apiAddContactToBoard(getToken, selectedBoardId, {
+      const membership = await apiAddContactToBoard(getToken, boardIdToUpdate, {
         contactId: addContactId,
         stageId: addStageId,
         isPrimary: true
       });
 
       setBoardContacts((current) =>
-        current
+        current?.board.id === membership.boardId
           ? {
               ...current,
               memberships: [
@@ -324,6 +347,8 @@ export function ContactsPage() {
   }
 
   async function handleMoveMembership(membership: BoardContactCardDto, direction: -1 | 1) {
+    if (!loadedBoardContacts || membership.boardId !== loadedBoardContacts.board.id) return;
+
     const currentStageIndex = boardStages.findIndex((stage) => stage.id === membership.stageId);
     const nextStage = boardStages[currentStageIndex + direction];
 
@@ -339,7 +364,7 @@ export function ContactsPage() {
       });
 
       setBoardContacts((current) =>
-        current
+        current?.board.id === nextMembership.boardId
           ? {
               ...current,
               memberships: current.memberships.map((entry) =>
@@ -497,7 +522,12 @@ export function ContactsPage() {
                     <label>
                       Contato
                       <select
-                        disabled={availableBoardContacts.length === 0 || isBoardSaving}
+                        disabled={
+                          !loadedBoardContacts ||
+                          availableBoardContacts.length === 0 ||
+                          isBoardLoading ||
+                          isBoardSaving
+                        }
                         onChange={(event) => setAddContactId(event.target.value)}
                         value={addContactId}
                       >
@@ -511,11 +541,16 @@ export function ContactsPage() {
                     <label>
                       Etapa
                       <select
-                        disabled={boardStages.length === 0 || isBoardSaving}
+                        disabled={
+                          !loadedBoardContacts ||
+                          loadedBoardStages.length === 0 ||
+                          isBoardLoading ||
+                          isBoardSaving
+                        }
                         onChange={(event) => setAddStageId(event.target.value)}
                         value={addStageId}
                       >
-                        {boardStages.map((stage) => (
+                        {loadedBoardStages.map((stage) => (
                           <option key={stage.id} value={stage.id}>
                             {stage.name}
                           </option>
@@ -524,7 +559,7 @@ export function ContactsPage() {
                     </label>
                     <button
                       className="secondary-button icon-button-label"
-                      disabled={!addContactId || !addStageId || isBoardSaving}
+                      disabled={!canSubmitBoardAdd}
                       type="submit"
                     >
                       <Plus size={16} aria-hidden="true" />
@@ -580,7 +615,7 @@ export function ContactsPage() {
                                 <div className="board-card-actions" aria-label="Mover contato">
                                   <button
                                     aria-label="Mover para etapa anterior"
-                                    disabled={stageIndex === 0 || isBoardSaving}
+                                    disabled={stageIndex === 0 || isBoardLoading || isBoardSaving}
                                     onClick={() => void handleMoveMembership(membership, -1)}
                                     type="button"
                                   >
@@ -588,7 +623,11 @@ export function ContactsPage() {
                                   </button>
                                   <button
                                     aria-label="Mover para proxima etapa"
-                                    disabled={stageIndex === boardStages.length - 1 || isBoardSaving}
+                                    disabled={
+                                      stageIndex === boardStages.length - 1 ||
+                                      isBoardLoading ||
+                                      isBoardSaving
+                                    }
                                     onClick={() => void handleMoveMembership(membership, 1)}
                                     type="button"
                                   >
