@@ -28,6 +28,16 @@ function metricWidth(value: number, maxValue: number) {
   return `${Math.max(6, Math.round((value / maxValue) * 100))}%`;
 }
 
+function escapeCsvCell(value: string | number) {
+  const text = String(value);
+
+  if (!/[",\n\r]/.test(text)) {
+    return text;
+  }
+
+  return `"${text.replaceAll("\"", "\"\"")}"`;
+}
+
 const loadingCards: ReportMetricDto[] = ["conversations", "messages", "campaigns", "automations"].map((key) => ({
   key,
   label: "Carregando",
@@ -35,8 +45,8 @@ const loadingCards: ReportMetricDto[] = ["conversations", "messages", "campaigns
 }));
 
 function exportRows(title: string, rows: ReportMetricDto[]) {
-  const header = "label,value";
-  const body = rows.map((row) => `${row.label},${row.value}`).join("\n");
+  const header = ["label", "value"].map(escapeCsvCell).join(",");
+  const body = rows.map((row) => [row.label, row.value].map(escapeCsvCell).join(",")).join("\n");
   const blob = new Blob([`${header}\n${body}`], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");

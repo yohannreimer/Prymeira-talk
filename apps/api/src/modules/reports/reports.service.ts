@@ -24,7 +24,7 @@ interface ConversationBreakdownRecord {
   status: ConversationStatus;
   createdAt: Date | string;
   department: { name: string } | null;
-  channel: { displayName: string | null; providerKey: string } | null;
+  channel: { id: string; displayName: string | null; providerKey: string } | null;
   tags: Array<{
     tag: {
       name: string;
@@ -208,6 +208,7 @@ export function createReportsService(prisma: PrismaLike) {
             },
             channel: {
               select: {
+                id: true,
                 displayName: true,
                 providerKey: true
               }
@@ -287,7 +288,7 @@ export function createReportsService(prisma: PrismaLike) {
 
         const channelLabel =
           conversation.channel?.displayName ?? conversation.channel?.providerKey ?? "Sem canal";
-        incrementBreakdown(channels, channelLabel, channelLabel);
+        incrementBreakdown(channels, conversation.channel?.id ?? "unassigned", channelLabel);
 
         for (const tag of conversation.tags) {
           incrementBreakdown(tags, tag.tag.name, tag.tag.name);

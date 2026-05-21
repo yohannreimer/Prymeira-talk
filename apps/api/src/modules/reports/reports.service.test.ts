@@ -46,7 +46,11 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
             status: "open",
             createdAt: new Date("2026-05-20T10:00:00.000Z"),
             department: { name: "Vendas" },
-            channel: { displayName: "WhatsApp matriz", providerKey: "matriz" },
+            channel: {
+              id: "00000000-0000-4000-8000-000000000101",
+              displayName: "WhatsApp matriz",
+              providerKey: "matriz"
+            },
             tags: [{ tag: { name: "VIP", color: "#24564a" } }]
           },
           {
@@ -54,7 +58,11 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
             status: "closed",
             createdAt: new Date("2026-05-21T11:00:00.000Z"),
             department: null,
-            channel: { displayName: null, providerKey: "suporte" },
+            channel: {
+              id: "00000000-0000-4000-8000-000000000102",
+              displayName: null,
+              providerKey: "suporte"
+            },
             tags: []
           }
         ])
@@ -138,8 +146,12 @@ describe("reports service", () => {
       { key: "unassigned", label: "Sem departamento", value: 1 }
     ]);
     expect(overview.breakdowns.channels).toEqual([
-      { key: "WhatsApp matriz", label: "WhatsApp matriz", value: 1 },
-      { key: "suporte", label: "suporte", value: 1 }
+      {
+        key: "00000000-0000-4000-8000-000000000101",
+        label: "WhatsApp matriz",
+        value: 1
+      },
+      { key: "00000000-0000-4000-8000-000000000102", label: "suporte", value: 1 }
     ]);
     expect(overview.breakdowns.tags).toEqual([{ key: "VIP", label: "VIP", value: 1 }]);
     expect(overview.timeSeries).toEqual([
@@ -168,6 +180,51 @@ describe("reports service", () => {
     expect(prisma.automationRun.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({ where: { workspaceId } })
     );
+  });
+
+  it("keeps channels with duplicated labels as separate breakdown rows", async () => {
+    const firstChannelId = "00000000-0000-4000-8000-000000000301";
+    const secondChannelId = "00000000-0000-4000-8000-000000000302";
+    const prisma = createMockPrisma({
+      conversation: {
+        count: vi.fn().mockResolvedValue(2),
+        groupBy: vi.fn().mockResolvedValue([{ status: "open", _count: { _all: 2 } }]),
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "conversation_1",
+            status: "open",
+            createdAt: new Date("2026-05-20T10:00:00.000Z"),
+            department: null,
+            channel: {
+              id: firstChannelId,
+              displayName: "Comercial",
+              providerKey: "comercial-1"
+            },
+            tags: []
+          },
+          {
+            id: "conversation_2",
+            status: "open",
+            createdAt: new Date("2026-05-20T11:00:00.000Z"),
+            department: null,
+            channel: {
+              id: secondChannelId,
+              displayName: "Comercial",
+              providerKey: "comercial-2"
+            },
+            tags: []
+          }
+        ])
+      }
+    });
+    const service = createReportsService(prisma);
+
+    const overview = await service.getOverview({ workspaceId });
+
+    expect(overview.breakdowns.channels).toEqual([
+      { key: firstChannelId, label: "Comercial", value: 1 },
+      { key: secondChannelId, label: "Comercial", value: 1 }
+    ]);
   });
 });
 
