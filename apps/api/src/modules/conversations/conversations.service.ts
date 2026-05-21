@@ -18,6 +18,20 @@ interface ConversationRecord {
   workspaceId: string;
   channelId: string;
   contactId: string;
+  contact?: {
+    name: string | null;
+    phone: string;
+  } | null;
+  channel?: {
+    displayName: string | null;
+    phoneNumber: string | null;
+  } | null;
+  department?: {
+    name: string;
+  } | null;
+  assignedUser?: {
+    displayName: string;
+  } | null;
   status: ConversationDto["status"];
   assignedUserId: string | null;
   departmentId: string | null;
@@ -67,6 +81,11 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
     workspaceId: record.workspaceId,
     channelId: record.channelId,
     contactId: record.contactId,
+    contactName: record.contact?.name ?? null,
+    contactPhone: record.contact?.phone ?? null,
+    channelName: record.channel?.displayName ?? record.channel?.phoneNumber ?? null,
+    departmentName: record.department?.name ?? null,
+    assignedUserName: record.assignedUser?.displayName ?? null,
     status: record.status,
     assignedUserId: record.assignedUserId,
     departmentId: record.departmentId,
@@ -98,6 +117,12 @@ export function createConversationsService(prisma: PrismaLike) {
     async listConversations(input: { workspaceId: string }): Promise<ConversationDto[]> {
       const conversations = await prisma.conversation.findMany({
         where: { workspaceId: input.workspaceId },
+        include: {
+          assignedUser: { select: { displayName: true } },
+          channel: { select: { displayName: true, phoneNumber: true } },
+          contact: { select: { name: true, phone: true } },
+          department: { select: { name: true } }
+        },
         orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
         take: 50
       });

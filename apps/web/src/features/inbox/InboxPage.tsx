@@ -36,6 +36,10 @@ function priorityLabel(priority: ConversationDto["priority"]) {
   return labels[priority];
 }
 
+function contactDisplayName(conversation: ConversationDto) {
+  return conversation.contactName ?? `Contato ${conversation.contactId.slice(0, 8)}`;
+}
+
 function sectionTitle(section: ActiveSection) {
   const titles: Record<ActiveSection, string> = {
     inbox: "Inbox",
@@ -217,7 +221,7 @@ export function InboxPage() {
                   </span>
                   <span className="conversation-content">
                     <span className="conversation-row">
-                      <strong>Contato {conversation.contactId.slice(0, 8)}</strong>
+                      <strong>{contactDisplayName(conversation)}</strong>
                       <time>{formatTime(conversation.lastMessageAt)}</time>
                     </span>
                     <span className="conversation-preview">
@@ -226,6 +230,7 @@ export function InboxPage() {
                     <span className="conversation-meta">
                       <span>{statusLabel(conversation.status)}</span>
                       <span>{priorityLabel(conversation.priority)}</span>
+                      {conversation.departmentName ? <span>{conversation.departmentName}</span> : null}
                       {conversation.unreadCount > 0 ? <b>{conversation.unreadCount}</b> : null}
                     </span>
                   </span>
@@ -265,9 +270,11 @@ export function InboxPage() {
                   </span>
                   <span className="conversation-content">
                     <span className="conversation-row">
-                      <strong>Contato {conversation.contactId.slice(0, 8)}</strong>
+                      <strong>{contactDisplayName(conversation)}</strong>
                     </span>
-                    <span className="conversation-preview">Origem WhatsApp</span>
+                    <span className="conversation-preview">
+                      {conversation.contactPhone ?? "Origem WhatsApp"}
+                    </span>
                   </span>
                 </button>
               ))
@@ -309,7 +316,7 @@ export function InboxPage() {
                 : activeSection === "contacts"
                   ? "Base de contatos"
                   : selectedConversation
-                    ? `Contato ${selectedConversation.contactId.slice(0, 8)}`
+                    ? contactDisplayName(selectedConversation)
                     : "Selecione uma conversa"}
             </h2>
           </div>
@@ -368,7 +375,7 @@ export function InboxPage() {
             {activeSection === "settings"
               ? "Local"
               : selectedConversation
-                ? selectedConversation.contactId.slice(0, 12)
+                ? contactDisplayName(selectedConversation)
                 : "Sem selecao"}
           </h2>
         </header>
@@ -400,16 +407,16 @@ export function InboxPage() {
             <dd>
               {activeSection === "settings"
                 ? "Clerk + bypass local"
-                : selectedConversation?.departmentId ?? "Nao atribuido"}
+                : selectedConversation?.departmentName ?? "Nao atribuido"}
             </dd>
           </div>
           <div>
             <dt>Responsavel</dt>
-            <dd>{selectedConversation?.assignedUserId ?? "Fila geral"}</dd>
+            <dd>{selectedConversation?.assignedUserName ?? "Fila geral"}</dd>
           </div>
           <div>
             <dt>Canal</dt>
-            <dd>{selectedConversation?.channelId ?? "-"}</dd>
+            <dd>{selectedConversation?.channelName ?? selectedConversation?.channelId ?? "-"}</dd>
           </div>
         </dl>
         <section className="crm-ready-panel" aria-label="Integracao com Atomic CRM">

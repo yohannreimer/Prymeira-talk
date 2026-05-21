@@ -8,7 +8,8 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "prisma": "dotenv -e ../../.env -- prisma"
+    "prisma": "dotenv -e ../../.env -- prisma",
+    "seed:demo": "dotenv -e ../../.env -- tsx prisma/seed-demo.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
