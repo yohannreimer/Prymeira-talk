@@ -5,14 +5,18 @@ import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { automationsRoutes } from "./modules/automations/automations.routes.js";
+import { assistantRoutes } from "./modules/assistant/assistant.routes.js";
 import { boardsRoutes } from "./modules/boards/boards.routes.js";
 import { campaignsRoutes } from "./modules/campaigns/campaigns.routes.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
 import { contactsRoutes } from "./modules/contacts/contacts.routes.js";
 import { conversationsRoutes } from "./modules/conversations/conversations.routes.js";
+import { crmRoutes } from "./modules/crm/crm.routes.js";
 import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 import { reportsRoutes } from "./modules/reports/reports.routes.js";
+import { settingsRoutes } from "./modules/settings/settings.routes.js";
+import { teamRoutes } from "./modules/team/team.routes.js";
 
 export interface CreateAppOptions {
   authEnabled?: boolean;
@@ -63,6 +67,10 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(automationsRoutes);
   await app.register(campaignsRoutes);
   await app.register(reportsRoutes);
+  await app.register(teamRoutes);
+  await app.register(assistantRoutes);
+  await app.register(crmRoutes);
+  await app.register(settingsRoutes);
 
   return app;
 }

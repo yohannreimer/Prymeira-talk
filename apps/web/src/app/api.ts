@@ -197,6 +197,95 @@ export interface ReportsOverviewDto {
   };
 }
 
+export type TeamUserRole = "owner" | "manager" | "agent";
+export type IntegrationModeDto = "simulated" | "real";
+
+export interface TeamUserDto {
+  id: string;
+  workspaceId: string;
+  clerkUserId: string;
+  role: TeamUserRole;
+  displayName: string;
+  avatarUrl: string | null;
+  presenceState: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeamDepartmentDto {
+  id: string;
+  workspaceId: string;
+  name: string;
+  routingOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AssistantActionType = "summary" | "suggested_reply";
+
+export interface AssistantActionDto {
+  id: string;
+  workspaceId: string;
+  conversationId: string | null;
+  contactId: string | null;
+  userId: string | null;
+  actionType: AssistantActionType | string;
+  mode: IntegrationModeDto;
+  input: unknown;
+  result: unknown;
+  status: string;
+  createdAt: string;
+}
+
+export interface CrmSyncActionDto {
+  id: string;
+  workspaceId: string;
+  contactId: string | null;
+  actionType: string;
+  mode: IntegrationModeDto;
+  status: string;
+  payload: unknown;
+  result: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceSettingsDto {
+  workspaceId: string;
+  name: string | null;
+  plan: string | null;
+  limits: unknown;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface IntegrationConfigDto {
+  id: string;
+  workspaceId: string;
+  provider: string;
+  mode: IntegrationModeDto;
+  status: string;
+  settings: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SettingsDto {
+  workspace: WorkspaceSettingsDto;
+  integrations: IntegrationConfigDto[];
+}
+
+export interface AuditLogDto {
+  id: string;
+  workspaceId: string;
+  actorUserId: string | null;
+  action: string;
+  targetType: string;
+  targetId: string | null;
+  metadata: unknown;
+  createdAt: string;
+}
+
 async function getRequiredToken(getToken: () => Promise<string | null>) {
   const token = await getToken();
 
@@ -451,6 +540,144 @@ function parseReportsOverview(data: unknown): ReportsOverviewDto {
         : []
     }
   };
+}
+
+function parseTeamUser(data: unknown): TeamUserDto {
+  const payload = data as TeamUserDto;
+
+  return {
+    id: String(payload.id ?? ""),
+    workspaceId: String(payload.workspaceId ?? ""),
+    clerkUserId: String(payload.clerkUserId ?? ""),
+    role: payload.role === "owner" || payload.role === "manager" ? payload.role : "agent",
+    displayName: String(payload.displayName ?? ""),
+    avatarUrl: typeof payload.avatarUrl === "string" ? payload.avatarUrl : null,
+    presenceState: String(payload.presenceState ?? "offline"),
+    createdAt: String(payload.createdAt ?? ""),
+    updatedAt: String(payload.updatedAt ?? "")
+  };
+}
+
+function parseTeamDepartment(data: unknown): TeamDepartmentDto {
+  const payload = data as TeamDepartmentDto;
+
+  return {
+    id: String(payload.id ?? ""),
+    workspaceId: String(payload.workspaceId ?? ""),
+    name: String(payload.name ?? ""),
+    routingOrder: Number(payload.routingOrder ?? 0),
+    createdAt: String(payload.createdAt ?? ""),
+    updatedAt: String(payload.updatedAt ?? "")
+  };
+}
+
+function parseAssistantAction(data: unknown): AssistantActionDto {
+  const payload = data as AssistantActionDto;
+
+  return {
+    id: String(payload.id ?? ""),
+    workspaceId: String(payload.workspaceId ?? ""),
+    conversationId: typeof payload.conversationId === "string" ? payload.conversationId : null,
+    contactId: typeof payload.contactId === "string" ? payload.contactId : null,
+    userId: typeof payload.userId === "string" ? payload.userId : null,
+    actionType: String(payload.actionType ?? ""),
+    mode: payload.mode === "real" ? "real" : "simulated",
+    input: payload.input ?? {},
+    result: payload.result ?? {},
+    status: String(payload.status ?? ""),
+    createdAt: String(payload.createdAt ?? "")
+  };
+}
+
+function parseCrmSyncAction(data: unknown): CrmSyncActionDto {
+  const payload = data as CrmSyncActionDto;
+
+  return {
+    id: String(payload.id ?? ""),
+    workspaceId: String(payload.workspaceId ?? ""),
+    contactId: typeof payload.contactId === "string" ? payload.contactId : null,
+    actionType: String(payload.actionType ?? ""),
+    mode: payload.mode === "real" ? "real" : "simulated",
+    status: String(payload.status ?? ""),
+    payload: payload.payload ?? {},
+    result: payload.result ?? {},
+    createdAt: String(payload.createdAt ?? ""),
+    updatedAt: String(payload.updatedAt ?? "")
+  };
+}
+
+function parseIntegrationConfig(data: unknown): IntegrationConfigDto {
+  const payload = data as IntegrationConfigDto;
+
+  return {
+    id: String(payload.id ?? ""),
+    workspaceId: String(payload.workspaceId ?? ""),
+    provider: String(payload.provider ?? ""),
+    mode: payload.mode === "real" ? "real" : "simulated",
+    status: String(payload.status ?? ""),
+    settings: payload.settings ?? {},
+    createdAt: String(payload.createdAt ?? ""),
+    updatedAt: String(payload.updatedAt ?? "")
+  };
+}
+
+function parseSettings(data: unknown): SettingsDto {
+  const payload = data as SettingsDto;
+  const workspace = payload.workspace ?? ({} as WorkspaceSettingsDto);
+
+  return {
+    workspace: {
+      workspaceId: String(workspace.workspaceId ?? ""),
+      name: typeof workspace.name === "string" ? workspace.name : null,
+      plan: typeof workspace.plan === "string" ? workspace.plan : null,
+      limits: workspace.limits ?? {},
+      createdAt: typeof workspace.createdAt === "string" ? workspace.createdAt : null,
+      updatedAt: typeof workspace.updatedAt === "string" ? workspace.updatedAt : null
+    },
+    integrations: Array.isArray(payload.integrations)
+      ? payload.integrations.map(parseIntegrationConfig)
+      : []
+  };
+}
+
+function parseAuditLog(data: unknown): AuditLogDto {
+  const payload = data as AuditLogDto;
+
+  return {
+    id: String(payload.id ?? ""),
+    workspaceId: String(payload.workspaceId ?? ""),
+    actorUserId: typeof payload.actorUserId === "string" ? payload.actorUserId : null,
+    action: String(payload.action ?? ""),
+    targetType: String(payload.targetType ?? ""),
+    targetId: typeof payload.targetId === "string" ? payload.targetId : null,
+    metadata: payload.metadata ?? {},
+    createdAt: String(payload.createdAt ?? "")
+  };
+}
+
+async function fetchJson<T>(
+  getToken: () => Promise<string | null>,
+  path: string,
+  options: RequestInit,
+  parse: (data: unknown) => T,
+  errorLabel: string
+): Promise<T> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...options.headers
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`${errorLabel}: ${response.status}`);
+  }
+
+  return parse(await response.json());
 }
 
 export async function apiGetConversations(
@@ -1149,6 +1376,213 @@ export async function apiGetReportsOverview(
 
   const data = await response.json();
   return parseReportsOverview(data);
+}
+
+export async function apiGetTeamUsers(
+  getToken: () => Promise<string | null>
+): Promise<TeamUserDto[]> {
+  return fetchJson(
+    getToken,
+    "/team/users",
+    {},
+    (data) => (Array.isArray(data) ? data.map(parseTeamUser) : []),
+    "Failed to load team users"
+  );
+}
+
+export async function apiGetTeamDepartments(
+  getToken: () => Promise<string | null>
+): Promise<TeamDepartmentDto[]> {
+  return fetchJson(
+    getToken,
+    "/team/departments",
+    {},
+    (data) => (Array.isArray(data) ? data.map(parseTeamDepartment) : []),
+    "Failed to load team departments"
+  );
+}
+
+export async function apiCreateTeamDepartment(
+  getToken: () => Promise<string | null>,
+  body: {
+    name: string;
+    routingOrder?: number;
+  }
+): Promise<TeamDepartmentDto> {
+  return fetchJson(
+    getToken,
+    "/team/departments",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseTeamDepartment,
+    "Failed to create team department"
+  );
+}
+
+export async function apiUpdateTeamUserRole(
+  getToken: () => Promise<string | null>,
+  userId: string,
+  body: {
+    role: TeamUserRole;
+  }
+): Promise<TeamUserDto> {
+  return fetchJson(
+    getToken,
+    `/team/users/${userId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    },
+    parseTeamUser,
+    "Failed to update team user role"
+  );
+}
+
+export async function apiGetAssistantActions(
+  getToken: () => Promise<string | null>
+): Promise<AssistantActionDto[]> {
+  return fetchJson(
+    getToken,
+    "/assistant/actions",
+    {},
+    (data) => (Array.isArray(data) ? data.map(parseAssistantAction) : []),
+    "Failed to load assistant actions"
+  );
+}
+
+export async function apiCreateAssistantAction(
+  getToken: () => Promise<string | null>,
+  body: {
+    actionType: AssistantActionType;
+    conversationId?: string | null;
+    contactId?: string | null;
+    input?: Record<string, unknown>;
+  }
+): Promise<AssistantActionDto> {
+  return fetchJson(
+    getToken,
+    "/assistant/actions",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseAssistantAction,
+    "Failed to create assistant action"
+  );
+}
+
+export async function apiGetCrmSyncActions(
+  getToken: () => Promise<string | null>,
+  contactId?: string
+): Promise<CrmSyncActionDto[]> {
+  const path = contactId
+    ? `/crm/sync-actions?contactId=${encodeURIComponent(contactId)}`
+    : "/crm/sync-actions";
+
+  return fetchJson(
+    getToken,
+    path,
+    {},
+    (data) => (Array.isArray(data) ? data.map(parseCrmSyncAction) : []),
+    "Failed to load CRM sync actions"
+  );
+}
+
+export async function apiLinkCrmContact(
+  getToken: () => Promise<string | null>,
+  body: {
+    contactId: string;
+    atomicCrmContactId?: string;
+  }
+): Promise<CrmSyncActionDto> {
+  return fetchJson(
+    getToken,
+    "/crm/link-contact",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseCrmSyncAction,
+    "Failed to link CRM contact"
+  );
+}
+
+export async function apiCreateCrmLead(
+  getToken: () => Promise<string | null>,
+  body: {
+    contactId: string;
+    title: string;
+  }
+): Promise<CrmSyncActionDto> {
+  return fetchJson(
+    getToken,
+    "/crm/create-lead",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseCrmSyncAction,
+    "Failed to create CRM lead"
+  );
+}
+
+export async function apiCreateCrmNote(
+  getToken: () => Promise<string | null>,
+  body: {
+    contactId: string;
+    body: string;
+  }
+): Promise<CrmSyncActionDto> {
+  return fetchJson(
+    getToken,
+    "/crm/create-note",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseCrmSyncAction,
+    "Failed to create CRM note"
+  );
+}
+
+export async function apiGetSettings(
+  getToken: () => Promise<string | null>
+): Promise<SettingsDto> {
+  return fetchJson(getToken, "/settings", {}, parseSettings, "Failed to load settings");
+}
+
+export async function apiUpdateSettings(
+  getToken: () => Promise<string | null>,
+  body: {
+    provider: string;
+    mode: IntegrationModeDto;
+    settings?: Record<string, unknown>;
+  }
+): Promise<SettingsDto> {
+  return fetchJson(
+    getToken,
+    "/settings",
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    },
+    parseSettings,
+    "Failed to update settings"
+  );
+}
+
+export async function apiGetAuditLog(
+  getToken: () => Promise<string | null>
+): Promise<AuditLogDto[]> {
+  return fetchJson(
+    getToken,
+    "/settings/audit-log",
+    {},
+    (data) => (Array.isArray(data) ? data.map(parseAuditLog) : []),
+    "Failed to load audit log"
+  );
 }
 
 export function buildRealtimeUrl(token: string) {

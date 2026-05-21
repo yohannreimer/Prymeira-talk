@@ -813,6 +813,93 @@ select:disabled {
   align-items: start;
 }
 
+.ops-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.58fr) minmax(420px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.module-form {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.compact-form {
+  border-top: 1px solid #e1e8e3;
+  padding-top: 14px;
+}
+
+.ops-table {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid #dbe4de;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.ops-table-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(110px, 0.45fr) minmax(180px, 0.7fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 620px;
+  border-top: 1px solid #e1e8e3;
+  padding: 11px 12px;
+  color: #40564d;
+  font-size: 0.86rem;
+}
+
+.ops-table-row:first-child {
+  border-top: 0;
+}
+
+.ops-table-row.is-header {
+  background: #f7faf7;
+  color: #65756e;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.ops-table-row > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+.ops-table-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #20342e;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ops-table-row small {
+  min-width: 0;
+  overflow: hidden;
+  color: #6f8078;
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ops-table-row select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #d3ddd6;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #20342e;
+  padding: 8px 10px;
+  font-weight: 800;
+}
+
 .automation-rule-list,
 .automation-run-list,
 .automation-actions-editor,
@@ -1305,6 +1392,9 @@ select:disabled {
 
 .live-indicator,
 .status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border-radius: 999px;
   padding: 6px 10px;
   font-size: 0.78rem;
@@ -1877,6 +1967,7 @@ select:disabled {
   .channels-grid,
   .automation-grid,
   .campaigns-grid,
+  .ops-grid,
   .reports-grid,
   .contacts-layout {
     grid-template-columns: 1fr;
@@ -1952,11 +2043,12 @@ select:disabled {
   .data-list div,
   .workflow-list article,
   .channel-card,
-  .automation-rule-card,
-  .campaign-card,
-  .campaign-audience-grid,
-  .recipient-table-row,
-  .report-table-row {
+    .automation-rule-card,
+    .campaign-card,
+    .campaign-audience-grid,
+    .recipient-table-row,
+    .ops-table-row,
+    .report-table-row {
     grid-template-columns: 1fr;
   }
 
