@@ -4,6 +4,7 @@ import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
+import { automationsRoutes } from "./modules/automations/automations.routes.js";
 import { boardsRoutes } from "./modules/boards/boards.routes.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
 import { contactsRoutes } from "./modules/contacts/contacts.routes.js";
@@ -57,6 +58,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(contactsRoutes);
   await app.register(boardsRoutes);
   await app.register(channelsRoutes);
+  await app.register(automationsRoutes);
 
   return app;
 }

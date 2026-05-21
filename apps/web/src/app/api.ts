@@ -90,6 +90,38 @@ export interface ConversationActionResultDto {
   };
 }
 
+export type AutomationStatus = "enabled" | "disabled";
+
+export interface AutomationActionDto {
+  type: string;
+  label?: string;
+  config?: Record<string, unknown>;
+}
+
+export interface AutomationRuleDto {
+  id: string;
+  workspaceId: string;
+  name: string;
+  status: AutomationStatus;
+  trigger: string;
+  conditions: unknown;
+  actions: AutomationActionDto[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AutomationRunDto {
+  id: string;
+  workspaceId: string;
+  ruleId: string;
+  eventKey: string;
+  status: string;
+  input: unknown;
+  result: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
 async function getRequiredToken(getToken: () => Promise<string | null>) {
   const token = await getToken();
 
@@ -164,6 +196,54 @@ function parseConversationActionResult(data: unknown): ConversationActionResultD
     context: parseContactContext(payload.context),
     ...(typeof payload.aiSuggestion === "string" ? { aiSuggestion: payload.aiSuggestion } : {}),
     ...(crmAction ? { crmAction } : {})
+  };
+}
+
+function parseAutomationAction(data: unknown): AutomationActionDto {
+  const payload = data as {
+    type?: unknown;
+    label?: unknown;
+    config?: unknown;
+  };
+
+  return {
+    type: typeof payload.type === "string" ? payload.type : "local_action",
+    ...(typeof payload.label === "string" ? { label: payload.label } : {}),
+    ...(payload.config && typeof payload.config === "object"
+      ? { config: payload.config as Record<string, unknown> }
+      : {})
+  };
+}
+
+function parseAutomationRule(data: unknown): AutomationRuleDto {
+  const payload = data as AutomationRuleDto;
+
+  return {
+    id: payload.id,
+    workspaceId: payload.workspaceId,
+    name: payload.name,
+    status: payload.status === "enabled" ? "enabled" : "disabled",
+    trigger: payload.trigger,
+    conditions: payload.conditions ?? {},
+    actions: Array.isArray(payload.actions) ? payload.actions.map(parseAutomationAction) : [],
+    createdAt: payload.createdAt,
+    updatedAt: payload.updatedAt
+  };
+}
+
+function parseAutomationRun(data: unknown): AutomationRunDto {
+  const payload = data as AutomationRunDto;
+
+  return {
+    id: payload.id,
+    workspaceId: payload.workspaceId,
+    ruleId: payload.ruleId,
+    eventKey: payload.eventKey,
+    status: payload.status,
+    input: payload.input ?? {},
+    result: payload.result ?? {},
+    createdAt: payload.createdAt,
+    updatedAt: payload.updatedAt
   };
 }
 
@@ -580,6 +660,131 @@ export async function apiRunConversationAction(
 
   const data = await response.json();
   return parseConversationActionResult(data);
+}
+
+export async function apiGetAutomations(
+  getToken: () => Promise<string | null>
+): Promise<AutomationRuleDto[]> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/automations`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load automations: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return Array.isArray(data) ? data.map(parseAutomationRule) : [];
+}
+
+export async function apiCreateAutomation(
+  getToken: () => Promise<string | null>,
+  body: {
+    name: string;
+    status?: AutomationStatus;
+    trigger: string;
+    conditions?: Record<string, unknown>;
+    actions?: AutomationActionDto[];
+  }
+): Promise<AutomationRuleDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/automations`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to create automation: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return parseAutomationRule(data);
+}
+
+export async function apiUpdateAutomation(
+  getToken: () => Promise<string | null>,
+  automationId: string,
+  body: Partial<{
+    name: string;
+    status: AutomationStatus;
+    trigger: string;
+    conditions: Record<string, unknown>;
+    actions: AutomationActionDto[];
+  }>
+): Promise<AutomationRuleDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/automations/${automationId}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to update automation: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return parseAutomationRule(data);
+}
+
+export async function apiTestAutomation(
+  getToken: () => Promise<string | null>,
+  automationId: string,
+  body: {
+    eventKey?: string;
+    input?: Record<string, unknown>;
+  } = {}
+): Promise<AutomationRunDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/automations/${automationId}/test`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to test automation: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return parseAutomationRun(data);
+}
+
+export async function apiGetAutomationRuns(
+  getToken: () => Promise<string | null>,
+  automationId: string
+): Promise<AutomationRunDto[]> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/automations/${automationId}/runs`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load automation runs: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return Array.isArray(data) ? data.map(parseAutomationRun) : [];
 }
 
 export function buildRealtimeUrl(token: string) {
