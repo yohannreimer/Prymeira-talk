@@ -479,15 +479,18 @@ export function InboxPage() {
             ) : null}
             {messages.map((message) => (
               <article
-                className={
-                  message.direction === "outbound"
-                    ? "message-bubble is-outbound"
-                    : "message-bubble is-inbound"
-                }
+                className={`message-bubble ${message.direction === "outbound" ? "is-outbound" : "is-inbound"}`}
                 key={message.id}
               >
-                <p>{message.body ?? "Mensagem sem texto."}</p>
-                <time>{formatMessageTime(message.createdAt)}</time>
+                {message.direction === "inbound" ? (
+                  <span className="msg-avatar" aria-hidden="true">
+                    {selectedConversation?.contactId.slice(0, 2).toUpperCase() ?? "??"}
+                  </span>
+                ) : null}
+                <div className="msg-bubble-body">
+                  <p>{message.body ?? "Mensagem sem texto."}</p>
+                  <time>{formatMessageTime(message.createdAt)}</time>
+                </div>
               </article>
             ))}
           </div>
