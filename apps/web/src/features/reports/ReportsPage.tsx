@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-react";
+import { useTalkAuth } from "../../app/auth";
 import { Download, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -127,7 +127,7 @@ function BreakdownTable(input: { title: string; rows: ReportMetricDto[] }) {
 }
 
 export function ReportsPage() {
-  const { getToken } = useAuth();
+  const { getToken } = useTalkAuth();
   const [overview, setOverview] = useState<ReportsOverviewDto | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

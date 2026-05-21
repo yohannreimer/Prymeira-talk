@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-react";
+import { useTalkAuth } from "../../app/auth";
 import { Plus, Save, ToggleLeft, ToggleRight, Zap } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
@@ -77,7 +77,7 @@ function toFormState(automation: AutomationRuleDto): AutomationFormState {
 }
 
 export function AutomationsPage() {
-  const { getToken } = useAuth();
+  const { getToken } = useTalkAuth();
   const [automations, setAutomations] = useState<AutomationRuleDto[]>([]);
   const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
   const [form, setForm] = useState<AutomationFormState>(emptyForm);

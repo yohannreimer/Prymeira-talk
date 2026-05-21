@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-react";
+import { useTalkAuth } from "../../app/auth";
 import { Bot, FlaskConical, Play, RefreshCw } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import {
@@ -18,7 +18,7 @@ function resultPreview(action: AssistantActionDto) {
 }
 
 export function AssistantPage() {
-  const { getToken } = useAuth();
+  const { getToken } = useTalkAuth();
   const [actions, setActions] = useState<AssistantActionDto[]>([]);
   const [actionType, setActionType] = useState<AssistantActionType>("summary");
   const [conversationId, setConversationId] = useState("");

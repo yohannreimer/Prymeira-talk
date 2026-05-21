@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-react";
+import { useTalkAuth } from "../../app/auth";
 import type { ContactDto, RealtimeEvent } from "@prymeira-talk/shared";
 import { ChevronLeft, ChevronRight, Columns3, Pencil, Plus, Save, Search, Users } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
@@ -63,7 +63,7 @@ function toFormState(contact: ContactDto): ContactFormState {
 }
 
 export function ContactsPage() {
-  const { getToken } = useAuth();
+  const { getToken } = useTalkAuth();
   const [contacts, setContacts] = useState<ContactDto[]>([]);
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("list");

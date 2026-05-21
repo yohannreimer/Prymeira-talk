@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-react";
+import { useTalkAuth } from "../../app/auth";
 import { Plus, RefreshCw, ShieldCheck, Users } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import {
@@ -28,7 +28,7 @@ function presenceLabel(value: string) {
 }
 
 export function TeamPage() {
-  const { getToken } = useAuth();
+  const { getToken } = useTalkAuth();
   const [users, setUsers] = useState<TeamUserDto[]>([]);
   const [departments, setDepartments] = useState<TeamDepartmentDto[]>([]);
   const [departmentName, setDepartmentName] = useState("");

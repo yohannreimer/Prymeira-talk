@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-react";
+import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto, ChannelQrResultDto, RealtimeEvent } from "@prymeira-talk/shared";
 import { CheckCircle2, Link2, MessageCircle, PlugZap, QrCode, RefreshCw, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -29,7 +29,7 @@ function mergeChannel(channels: ChannelDto[], channel: ChannelDto) {
 }
 
 export function ChannelsPage() {
-  const { getToken } = useAuth();
+  const { getToken } = useTalkAuth();
   const [channels, setChannels] = useState<ChannelDto[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [qrResult, setQrResult] = useState<ChannelQrResultDto | null>(null);

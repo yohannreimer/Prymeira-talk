@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-react";
+import { useTalkAuth } from "../../app/auth";
 import { FlaskConical, Link2, Plus, RefreshCw, StickyNote } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import {
@@ -20,7 +20,7 @@ function actionLabel(actionType: string) {
 }
 
 export function CrmPage() {
-  const { getToken } = useAuth();
+  const { getToken } = useTalkAuth();
   const [actions, setActions] = useState<CrmSyncActionDto[]>([]);
   const [contactId, setContactId] = useState("");
   const [atomicCrmContactId, setAtomicCrmContactId] = useState("crm_demo_123");

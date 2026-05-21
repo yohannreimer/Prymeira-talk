@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-react";
+import { useTalkAuth } from "../../app/auth";
 import type { ConversationDto, MessageDto, RealtimeEvent } from "@prymeira-talk/shared";
 import { Bot, Link2, MessageSquare, Send, StickyNote, UserCheck } from "lucide-react";
 import type { FormEvent } from "react";
@@ -70,7 +70,7 @@ function upsertConversation(list: ConversationDto[], conversation: ConversationD
 }
 
 export function InboxPage() {
-  const { getToken } = useAuth();
+  const { getToken } = useTalkAuth();
   const [token, setToken] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationDto[]>([]);
   const [messages, setMessages] = useState<MessageDto[]>([]);

@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-react";
+import { useTalkAuth } from "../../app/auth";
 import { CalendarClock, Eye, Play, Plus, Save, Send } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
@@ -86,7 +86,7 @@ function statusLabel(status: CampaignDto["status"]) {
 }
 
 export function CampaignsPage() {
-  const { getToken } = useAuth();
+  const { getToken } = useTalkAuth();
   const [campaigns, setCampaigns] = useState<CampaignDto[]>([]);
   const [boards, setBoards] = useState<ContactBoardWithStagesDto[]>([]);
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);

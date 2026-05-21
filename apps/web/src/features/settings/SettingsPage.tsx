@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-react";
+import { useTalkAuth } from "../../app/auth";
 import { RefreshCw, Save, Settings2 } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import {
@@ -11,7 +11,7 @@ import {
 } from "../../app/api";
 
 export function SettingsPage() {
-  const { getToken } = useAuth();
+  const { getToken } = useTalkAuth();
   const [settings, setSettings] = useState<SettingsDto | null>(null);
   const [auditLog, setAuditLog] = useState<AuditLogDto[]>([]);
   const [provider, setProvider] = useState("atomic_crm");
