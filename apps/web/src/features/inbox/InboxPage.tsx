@@ -551,76 +551,89 @@ export function InboxPage() {
       </section>
 
       <aside className="contact-panel" aria-label="Detalhes do contato">
-        <header>
-          <p className="eyebrow">Contato</p>
-          <h2>{selectedConversation ? contactDisplayName(selectedConversation) : "Sem selecao"}</h2>
-        </header>
-        <dl className="detail-list">
-          <div>
-            <dt>Status</dt>
-            <dd>{selectedConversation ? statusLabel(selectedConversation.status) : "-"}</dd>
+        {/* Card identidade */}
+        <div className="context-card context-card--identity">
+          <div className="context-identity-avatar" aria-hidden="true">
+            {selectedConversation
+              ? selectedConversation.contactId.slice(0, 2).toUpperCase()
+              : "?"}
           </div>
           <div>
-            <dt>Prioridade</dt>
-            <dd>{selectedConversation ? priorityLabel(selectedConversation.priority) : "-"}</dd>
-          </div>
-          <div>
-            <dt>Departamento</dt>
-            <dd>{selectedConversation?.departmentName ?? "Nao atribuido"}</dd>
-          </div>
-          <div>
-            <dt>Responsavel</dt>
-            <dd>{selectedConversation?.assignedUserName ?? "Fila geral"}</dd>
-          </div>
-          <div>
-            <dt>Canal</dt>
-            <dd>{selectedConversation?.channelName ?? selectedConversation?.channelId ?? "-"}</dd>
-          </div>
-        </dl>
-        <section className="contact-context-panel" aria-label="Contexto do contato">
-          <div className="context-panel-head">
-            <div>
-              <p className="eyebrow">Contexto</p>
-              <h3>
-                {contactContext?.primaryBoardStage
-                  ? contactContext.primaryBoardStage.stageName
-                  : "Sem etapa principal"}
-              </h3>
+            <div className="context-identity-name">
+              {selectedConversation
+                ? contactDisplayName(selectedConversation)
+                : "Nenhuma conversa"}
             </div>
-            {isLoadingContext ? <span>Carregando</span> : null}
+            {selectedConversation?.channelName ? (
+              <div className="context-identity-sub">{selectedConversation.channelName}</div>
+            ) : null}
           </div>
+        </div>
 
-          {contextError ? <p className="error-note compact">{contextError}</p> : null}
+        {/* Card detalhes */}
+        <div className="context-card">
+          <div className="context-card-title">Detalhes</div>
+          <dl className="context-rows">
+            <div className="context-row">
+              <dt>Status</dt>
+              <dd>{selectedConversation ? statusLabel(selectedConversation.status) : "—"}</dd>
+            </div>
+            <div className="context-row">
+              <dt>Prioridade</dt>
+              <dd>{selectedConversation ? priorityLabel(selectedConversation.priority) : "—"}</dd>
+            </div>
+            <div className="context-row">
+              <dt>Departamento</dt>
+              <dd>{selectedConversation?.departmentName ?? "Não atribuído"}</dd>
+            </div>
+            <div className="context-row">
+              <dt>Responsável</dt>
+              <dd>{selectedConversation?.assignedUserName ?? "Fila geral"}</dd>
+            </div>
+          </dl>
+        </div>
 
-          <div className="tag-row" aria-label="Tags">
+        {/* Card tags */}
+        <div className="context-card">
+          <div className="context-card-title">Tags</div>
+          <div className="tag-row">
             {contactContext?.tags.length ? (
               contactContext.tags.map((tag) => (
-                <span key={tag.id} style={{ borderColor: tag.color }}>
+                <span key={tag.id} className="context-tag" style={{ borderColor: tag.color }}>
                   {tag.name}
                 </span>
               ))
             ) : (
-              <span>Sem tags</span>
+              <span className="context-empty-label">Sem tags</span>
             )}
           </div>
+        </div>
 
+        {/* Card notas */}
+        <div className="context-card">
+          <div className="context-card-title">Notas internas</div>
+          {contextError ? <p className="error-note compact">{contextError}</p> : null}
           <form className="quick-note-form" onSubmit={handleAddNote}>
             <input
               aria-label="Nova nota"
               disabled={!selectedConversation || isRunningAction}
               onChange={(event) => setNoteDraft(event.target.value)}
-              placeholder="Adicionar nota"
+              placeholder="Adicionar nota..."
               value={noteDraft}
             />
             <button
-              aria-label="Adicionar nota"
+              aria-label="Salvar nota"
               disabled={!selectedConversation || !noteDraft.trim() || isRunningAction}
               type="submit"
             >
               <StickyNote size={15} aria-hidden="true" />
             </button>
           </form>
+        </div>
 
+        {/* Card ações */}
+        <div className="context-card">
+          <div className="context-card-title">Ações rápidas</div>
           <div className="quick-actions">
             <button
               disabled={!selectedConversation || isRunningAction}
@@ -638,94 +651,14 @@ export function InboxPage() {
               <Bot size={15} aria-hidden="true" />
               IA
             </button>
-            <button
-              disabled={!selectedConversation || isRunningAction}
-              onClick={() => void runAction({ action: "create_crm_note" })}
-              type="button"
-            >
-              <Link2 size={15} aria-hidden="true" />
-              CRM
-            </button>
           </div>
-
-          <label className="context-field">
-            <span>Departamento</span>
-            <select
-              disabled={!selectedConversation || isRunningAction}
-              onChange={(event) =>
-                void runAction({
-                  action: "change_department",
-                  departmentId: event.target.value || null
-                })
-              }
-              value={selectedConversation?.departmentId ?? ""}
-            >
-              <option value="">Fila geral</option>
-              {contactContext?.departments.map((department) => (
-                <option key={department.id} value={department.id}>
-                  {department.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="context-field">
-            <span>Prioridade</span>
-            <select
-              disabled={!selectedConversation || isRunningAction}
-              onChange={(event) =>
-                void runAction({
-                  action: "change_priority",
-                  priority: event.target.value as ConversationDto["priority"]
-                })
-              }
-              value={selectedConversation?.priority ?? "normal"}
-            >
-              <option value="low">Baixa</option>
-              <option value="normal">Normal</option>
-              <option value="high">Alta</option>
-            </select>
-          </label>
-
-          <label className="context-field">
-            <span>Etapa</span>
-            <select
-              disabled={!selectedConversation || !contactContext?.boardStages.length || isRunningAction}
-              onChange={(event) =>
-                void runAction({
-                  action: "change_primary_board_stage",
-                  stageId: event.target.value
-                })
-              }
-              value={contactContext?.primaryBoardStage?.stageId ?? ""}
-            >
-              <option disabled={Boolean(contactContext?.boardStages.length)} value="">
-                Sem etapa
-              </option>
-              {contactContext?.boardStages.map((stage) => (
-                <option key={stage.id} value={stage.id}>
-                  {stage.boardName} / {stage.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {aiSuggestion ? <p className="assistant-suggestion">{aiSuggestion}</p> : null}
-          {crmStatus ? <p className="success-note compact">{crmStatus}</p> : null}
-
-          <div className="notes-list" aria-label="Notas do contato">
-            {contactContext?.notes.length ? (
-              contactContext.notes.map((note) => (
-                <article key={note.id}>
-                  <p>{note.body}</p>
-                  <time>{formatNoteDate(note.createdAt)}</time>
-                </article>
-              ))
-            ) : (
-              <p className="list-note compact">Sem notas recentes.</p>
-            )}
-          </div>
-        </section>
+          {aiSuggestion ? (
+            <div className="ai-suggestion">{aiSuggestion}</div>
+          ) : null}
+          {crmStatus ? (
+            <p className="crm-status">{crmStatus}</p>
+          ) : null}
+        </div>
       </aside>
     </section>
   );
