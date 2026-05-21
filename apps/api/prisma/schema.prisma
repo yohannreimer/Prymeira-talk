@@ -101,6 +101,7 @@ model UserProfile {
 
   assignedConversations Conversation[] @relation("AssignedUserConversations")
   sentMessages          Message[]      @relation("UserSentMessages")
+  contactNotes          ContactNote[]  @relation("ContactNoteCreatedBy")
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, clerkUserId])
@@ -191,6 +192,7 @@ model Conversation {
   department   Department?       @relation(fields: [workspaceId, departmentId], references: [workspaceId, id], onDelete: NoAction)
   messages     Message[]
   tags         ConversationTag[]
+  contactNotes ContactNote[]     @relation("ContactNoteConversation")
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, channelId, contactId])
@@ -319,7 +321,9 @@ model ContactNote {
   createdById    String?  @map("created_by_id") @db.Uuid
   createdAt      DateTime @default(now()) @map("created_at")
 
-  contact Contact @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  contact      Contact       @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  conversation Conversation? @relation("ContactNoteConversation", fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: NoAction)
+  createdBy    UserProfile?  @relation("ContactNoteCreatedBy", fields: [workspaceId, createdById], references: [workspaceId, id], onDelete: NoAction)
 
   @@unique([workspaceId, id])
   @@index([workspaceId, contactId, createdAt])
