@@ -1,14 +1,53 @@
 import { Bot } from "lucide-react";
 import type { ReactNode } from "react";
-import { useState } from "react";
-import { talkModules, type TalkModuleKey } from "./moduleRegistry";
+import { useEffect, useState } from "react";
+import { isTalkModuleKey, talkModules, type TalkModuleKey } from "./moduleRegistry";
 
 type TalkSuiteShellProps = {
   renderModule: (moduleKey: TalkModuleKey) => ReactNode;
 };
 
+const defaultModule: TalkModuleKey = "atendimento";
+const moduleParamName = "module";
+
+function readModuleFromUrl() {
+  if (typeof window === "undefined") return defaultModule;
+
+  const moduleParam = new URLSearchParams(window.location.search).get(moduleParamName);
+  return isTalkModuleKey(moduleParam) ? moduleParam : defaultModule;
+}
+
+function buildModuleUrl(moduleKey: TalkModuleKey) {
+  const url = new URL(window.location.href);
+  url.searchParams.set(moduleParamName, moduleKey);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
-  const [activeModule, setActiveModule] = useState<TalkModuleKey>("atendimento");
+  const [activeModule, setActiveModule] = useState<TalkModuleKey>(readModuleFromUrl);
+
+  useEffect(() => {
+    const currentModuleParam = new URLSearchParams(window.location.search).get(moduleParamName);
+
+    if (!isTalkModuleKey(currentModuleParam)) {
+      window.history.replaceState({ module: activeModule }, "", buildModuleUrl(activeModule));
+    }
+
+    function handlePopState() {
+      setActiveModule(readModuleFromUrl());
+    }
+
+    window.addEventListener("popstate", handlePopState);
+
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [activeModule]);
+
+  function handleModuleClick(moduleKey: TalkModuleKey) {
+    window.history.pushState({ module: moduleKey }, "", buildModuleUrl(moduleKey));
+    setActiveModule(moduleKey);
+  }
 
   return (
     <main className="talk-suite-shell">
@@ -29,7 +68,7 @@ export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
                 .filter(Boolean)
                 .join(" ")}
               key={key}
-              onClick={() => setActiveModule(key)}
+              onClick={() => handleModuleClick(key)}
               title={label}
               type="button"
             >

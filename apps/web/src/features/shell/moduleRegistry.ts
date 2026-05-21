@@ -82,3 +82,7 @@ export const talkModules: TalkModule[] = [
     Icon: Settings
   }
 ];
+
+export function isTalkModuleKey(value: string | null): value is TalkModuleKey {
+  return talkModules.some((module) => module.key === value);
+}
