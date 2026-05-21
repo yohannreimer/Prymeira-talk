@@ -38,6 +38,7 @@ export function ChannelsPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
+  const [qrDrawerOpen, setQrDrawerOpen] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -152,6 +153,7 @@ export function ChannelsPage() {
   }
 
   async function startQr() {
+    setQrDrawerOpen(true);
     await runChannelAction(async (channel) => {
       const result = await apiStartChannelQr(getToken, channel.id);
       setQrResult(result);
@@ -159,19 +161,35 @@ export function ChannelsPage() {
     }, "Sessao QR iniciada.");
   }
 
-  async function reconnect() {
-    await runChannelAction(async (channel) => {
+  async function reconnectChannel(channel: ChannelDto) {
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
       const result = await apiReconnectChannel(getToken, channel.id);
-      return result.channel;
-    }, "Reconexao solicitada.");
+      setChannels((current) => mergeChannel(current, result.channel));
+      setNotice("Reconexao solicitada.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao reconectar.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
-  async function disconnect() {
-    await runChannelAction(async (channel) => {
+  async function disconnectChannel(channel: ChannelDto) {
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
       const result = await apiDisconnectChannel(getToken, channel.id);
+      setChannels((current) => mergeChannel(current, result.channel));
       setQrResult((current) => (current?.channel.id === channel.id ? null : current));
-      return result.channel;
-    }, "Canal desconectado.");
+      setNotice("Canal desconectado.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao desconectar.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   async function testInbound() {
@@ -184,112 +202,167 @@ export function ChannelsPage() {
   return (
     <section className="module-page" aria-label="Canais">
       <header className="module-header">
-        <div>
-          <p className="eyebrow">Prymeira Talk</p>
-          <h1>Canais</h1>
-        </div>
-        <span className="status-pill status-pending">
-          {simulatedModeActive ? "Modo simulado" : "Evolution API"}
-        </span>
-      </header>
-
-      <div className="module-actions">
-        <button className="primary-button" type="button" onClick={startQr} disabled={isSaving}>
-          <QrCode size={16} aria-hidden="true" />
-          Conectar canal
-        </button>
-        <button className="secondary-button" type="button" onClick={reconnect} disabled={isSaving || !selectedChannel}>
-          <RefreshCw size={16} aria-hidden="true" />
-          Reconectar
-        </button>
-        <button className="secondary-button" type="button" onClick={disconnect} disabled={isSaving || !selectedChannel}>
-          <WifiOff size={16} aria-hidden="true" />
-          Desconectar
-        </button>
-        <button className="secondary-button" type="button" onClick={testInbound} disabled={isSaving || !selectedChannel}>
-          <MessageCircle size={16} aria-hidden="true" />
-          Teste inbound
-        </button>
-      </div>
-
-      {error ? <p className="error-note">{error}</p> : null}
-      {notice ? <p className="list-note">{notice}</p> : null}
-
-      <div className="channels-grid">
-        <div className="module-panel">
-          <div className="panel-title-row">
-            <h2>Conexoes</h2>
-            <span>{isLoading ? "Carregando" : `${channels.length} canais`}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div>
+            <p className="eyebrow">Prymeira Talk</p>
+            <h1>Canais</h1>
           </div>
-
-          <div className="channel-card-list">
-            {channels.map((channel) => (
-              <button
-                className={`channel-card ${channel.id === selectedChannelId ? "is-selected" : ""}`}
-                key={channel.id}
-                type="button"
-                onClick={() => {
-                  setSelectedChannelId(channel.id);
-                  setQrResult((current) => (current?.channel.id === channel.id ? current : null));
-                }}
-              >
-                <span className={`status-pill status-${channel.status}`}>
-                  {statusLabels[channel.status]}
-                </span>
-                <strong>{channelTitle(channel)}</strong>
-                <small>{channel.provider === "evolution" ? "Evolution API" : channel.provider}</small>
-                <em>{channel.phoneNumber ?? channel.providerKey}</em>
-              </button>
-            ))}
-
-            {!isLoading && channels.length === 0 ? (
-              <div className="channel-empty">
-                <PlugZap size={22} aria-hidden="true" />
-                <strong>Nenhum canal criado</strong>
-                <span>Use Conectar canal para criar uma sessao demo com QR simulado.</span>
-              </div>
+          <div className="channels-health-chips" aria-label="Status dos canais">
+            <span className="status-badge status-badge--open">
+              {connectedCount} conectado{connectedCount !== 1 ? 's' : ''}
+            </span>
+            {connectingCount > 0 ? (
+              <span className="status-badge status-badge--waiting">
+                {connectingCount} conectando
+              </span>
             ) : null}
           </div>
         </div>
+        <button
+          className="primary-button"
+          disabled={isSaving}
+          onClick={() => { void startQr(); }}
+          type="button"
+        >
+          <QrCode size={16} aria-hidden="true" />
+          Conectar canal
+        </button>
+      </header>
 
-        <aside className="module-panel channel-qr-panel">
-          <div className="panel-title-row">
-            <h2>QR Code</h2>
-            {simulatedModeActive ? <span>Modo simulado</span> : <span>Aguardando</span>}
-          </div>
+      {error ? <p className="error-note" style={{ margin: '0 16px' }}>{error}</p> : null}
+      {notice ? <p className="list-note" style={{ margin: '0 16px' }}>{notice}</p> : null}
 
-          <div className="qr-box" aria-label="Payload do QR Code">
-            <QrCode size={42} aria-hidden="true" />
-            <code>{qrResult?.qrCode ?? "Clique em Conectar canal para gerar o payload QR."}</code>
+      <div className="channels-list-wrap">
+        {isLoading ? (
+          <p className="list-note">Carregando canais...</p>
+        ) : channels.length === 0 ? (
+          <div className="empty-state">
+            <div className="empty-state-icon">
+              <PlugZap size={28} aria-hidden="true" />
+            </div>
+            <h3>Nenhum canal conectado</h3>
+            <p>Clique em "Conectar canal" para criar uma sessão demo com QR simulado.</p>
           </div>
-
-          <div className="setup-checklist" aria-label="Checklist de setup">
-            <div>
-              <CheckCircle2 size={18} aria-hidden="true" />
-              <span>Workspace autenticado</span>
-            </div>
-            <div>
-              <CheckCircle2 size={18} aria-hidden="true" />
-              <span>{selectedChannel ? "Canal selecionado" : "Criar canal demo"}</span>
-            </div>
-            <div>
-              <Link2 size={18} aria-hidden="true" />
-              <span>{qrResult ? "Sessao QR pronta" : "Iniciar sessao QR"}</span>
-            </div>
+        ) : (
+          <div className="channel-card-list" role="list">
+            {channels.map((channel) => (
+              <article
+                className={`channel-row-card ${channel.id === selectedChannelId ? 'is-selected' : ''}`}
+                key={channel.id}
+                role="listitem"
+              >
+                <button
+                  className="channel-row-main"
+                  onClick={() => {
+                    setSelectedChannelId(channel.id);
+                    setQrResult((current) => (current?.channel.id === channel.id ? current : null));
+                  }}
+                  type="button"
+                >
+                  <span className={`status-badge status-badge--${channel.status === 'connected' ? 'open' : channel.status === 'connecting' ? 'waiting' : 'closed'}`}>
+                    {statusLabels[channel.status]}
+                  </span>
+                  <span className="channel-row-info">
+                    <strong>{channelTitle(channel)}</strong>
+                    <small>{channel.provider === 'evolution' ? 'Evolution API' : channel.provider}</small>
+                  </span>
+                  <span className="channel-row-phone">
+                    {channel.phoneNumber ?? channel.providerKey}
+                  </span>
+                </button>
+                <div className="channel-row-actions">
+                  <button
+                    className="secondary-button"
+                    disabled={isSaving}
+                    onClick={() => { void reconnectChannel(channel); }}
+                    type="button"
+                  >
+                    <RefreshCw size={14} aria-hidden="true" />
+                    Reconectar
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={isSaving}
+                    onClick={() => { void disconnectChannel(channel); }}
+                    type="button"
+                  >
+                    <WifiOff size={14} aria-hidden="true" />
+                    Desconectar
+                  </button>
+                </div>
+              </article>
+            ))}
           </div>
-
-          <div className="channel-health-row">
-            <div>
-              <span>Conectados</span>
-              <strong>{connectedCount}</strong>
-            </div>
-            <div>
-              <span>Conectando</span>
-              <strong>{connectingCount}</strong>
-            </div>
-          </div>
-        </aside>
+        )}
       </div>
+
+      {/* QR Drawer */}
+      {qrDrawerOpen ? (
+        <>
+          <div
+            className="contact-drawer-overlay"
+            onClick={() => setQrDrawerOpen(false)}
+            aria-hidden="true"
+          />
+          <aside className="contact-drawer is-open" aria-label="Conectar canal via QR">
+            <header className="contact-drawer-header">
+              <span className="context-card-title">Conectar via QR</span>
+              <button
+                className="drawer-close"
+                onClick={() => setQrDrawerOpen(false)}
+                type="button"
+                aria-label="Fechar"
+              >
+                ✕
+              </button>
+            </header>
+            <div className="contact-drawer-body">
+              <div className="context-card">
+                <div className="context-card-title">Payload QR</div>
+                <div className="qr-box" aria-label="Payload do QR Code">
+                  <QrCode size={36} aria-hidden="true" />
+                  <code>{qrResult?.qrCode ?? 'Gerando sessão QR...'}</code>
+                </div>
+              </div>
+              <div className="context-card">
+                <div className="context-card-title">Checklist</div>
+                <div className="setup-checklist" aria-label="Checklist de setup">
+                  <div>
+                    <CheckCircle2 size={16} aria-hidden="true" />
+                    <span>Workspace autenticado</span>
+                  </div>
+                  <div>
+                    <CheckCircle2 size={16} aria-hidden="true" />
+                    <span>{selectedChannel ? 'Canal selecionado' : 'Canal será criado automaticamente'}</span>
+                  </div>
+                  <div>
+                    <Link2 size={16} aria-hidden="true" />
+                    <span>{qrResult ? 'Sessão QR pronta — escaneie o QR no WhatsApp' : 'Iniciando sessão QR...'}</span>
+                  </div>
+                </div>
+              </div>
+              {simulatedModeActive ? (
+                <div className="context-card">
+                  <div className="context-card-title">Modo simulado ativo</div>
+                  <p style={{ fontSize: '12px', color: 'var(--color-text-muted)', margin: 0 }}>
+                    Este canal está em modo simulado — mensagens de teste são aceitas sem WhatsApp real.
+                  </p>
+                  <button
+                    className="secondary-button"
+                    disabled={isSaving}
+                    onClick={() => void testInbound()}
+                    type="button"
+                    style={{ marginTop: '4px' }}
+                  >
+                    <MessageCircle size={14} aria-hidden="true" />
+                    Enviar mensagem de teste
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </aside>
+        </>
+      ) : null}
     </section>
   );
 }
