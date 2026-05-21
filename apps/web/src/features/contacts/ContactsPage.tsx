@@ -84,6 +84,7 @@ export function ContactsPage() {
   const [addStageId, setAddStageId] = useState("");
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
   const [drawerContact, setDrawerContact] = useState<ContactDto | null>(null);
+  const [createDrawerOpen, setCreateDrawerOpen] = useState(false);
 
   function openDrawer(contact: ContactDto) {
     setDrawerContact(contact);
@@ -481,7 +482,14 @@ export function ContactsPage() {
           <p className="eyebrow">Prymeira Talk</p>
           <h1>Contatos</h1>
         </div>
-        <span className="status-pill status-open">Base unificada</span>
+        <button
+          className="primary-button"
+          onClick={() => setCreateDrawerOpen(true)}
+          type="button"
+        >
+          <Plus size={16} aria-hidden="true" />
+          Novo contato
+        </button>
       </header>
 
       <div className="contacts-toolbar">
@@ -515,27 +523,22 @@ export function ContactsPage() {
         </div>
       </div>
 
-      <div className="metric-grid" aria-label="Resumo de contatos">
-        <article className="metric-card">
-          <span>Total</span>
+      <div className="contacts-stats-row" aria-label="Resumo de contatos">
+        <span className="contacts-stat">
           <strong>{contacts.length}</strong>
-          <p>Contatos locais carregados para este workspace.</p>
-        </article>
-        <article className="metric-card">
-          <span>Com email</span>
+          <span>Total</span>
+        </span>
+        <span className="contacts-stat">
           <strong>{contactsWithEmail}</strong>
-          <p>Prontos para segmentacao multicanal.</p>
-        </article>
-        <article className="metric-card">
-          <span>Atualizados</span>
+          <span>Com email</span>
+        </span>
+        <span className="contacts-stat">
           <strong>{recentlyUpdated}</strong>
-          <p>Registros alterados nos ultimos 7 dias.</p>
-        </article>
+          <span>Atualizados (7d)</span>
+        </span>
       </div>
 
-      <div className="contacts-layout">
-        <div className="contacts-main">
-          <section className="module-panel">
+      <section className="module-panel" style={{ margin: '0 8px 8px', borderRadius: 'var(--radius-lg)' }}>
             <div className="panel-title-row">
               <h2>{viewMode === "list" ? "Lista de contatos" : "Board de contatos"}</h2>
               <span>{contactsWithCompany} com empresa</span>
@@ -738,110 +741,6 @@ export function ContactsPage() {
               </div>
             ) : null}
           </section>
-        </div>
-
-        <aside className="contacts-side">
-          <form className="contact-form" onSubmit={handleCreateContact}>
-            <div className="panel-title-row">
-              <h2>Novo contato</h2>
-              <Plus size={18} aria-hidden="true" />
-            </div>
-            <label>
-              Nome
-              <input
-                onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))}
-                placeholder="Nome do contato"
-                type="text"
-                value={createForm.name}
-              />
-            </label>
-            <label>
-              Telefone
-              <input
-                onChange={(event) => setCreateForm((current) => ({ ...current, phone: event.target.value }))}
-                placeholder="+5511999990000"
-                required
-                type="tel"
-                value={createForm.phone}
-              />
-            </label>
-            <label>
-              Email
-              <input
-                onChange={(event) => setCreateForm((current) => ({ ...current, email: event.target.value }))}
-                placeholder="nome@empresa.com"
-                type="email"
-                value={createForm.email}
-              />
-            </label>
-            <label>
-              Empresa
-              <input
-                onChange={(event) => setCreateForm((current) => ({ ...current, company: event.target.value }))}
-                placeholder="Empresa"
-                type="text"
-                value={createForm.company}
-              />
-            </label>
-            <button className="primary-button icon-button-label" disabled={isSaving} type="submit">
-              <Plus size={16} aria-hidden="true" />
-              Criar contato
-            </button>
-          </form>
-
-          <form className="contact-form" onSubmit={handleUpdateContact}>
-            <div className="panel-title-row">
-              <h2>Editar contato</h2>
-              <Save size={18} aria-hidden="true" />
-            </div>
-            <label>
-              Nome
-              <input
-                disabled={!selectedContact}
-                onChange={(event) => setEditForm((current) => ({ ...current, name: event.target.value }))}
-                type="text"
-                value={editForm.name}
-              />
-            </label>
-            <label>
-              Telefone
-              <input
-                disabled={!selectedContact}
-                onChange={(event) => setEditForm((current) => ({ ...current, phone: event.target.value }))}
-                required
-                type="tel"
-                value={editForm.phone}
-              />
-            </label>
-            <label>
-              Email
-              <input
-                disabled={!selectedContact}
-                onChange={(event) => setEditForm((current) => ({ ...current, email: event.target.value }))}
-                type="email"
-                value={editForm.email}
-              />
-            </label>
-            <label>
-              Empresa
-              <input
-                disabled={!selectedContact}
-                onChange={(event) => setEditForm((current) => ({ ...current, company: event.target.value }))}
-                type="text"
-                value={editForm.company}
-              />
-            </label>
-            <button
-              className="secondary-button icon-button-label"
-              disabled={!selectedContact || isSaving}
-              type="submit"
-            >
-              <Save size={16} aria-hidden="true" />
-              Salvar edicao
-            </button>
-          </form>
-        </aside>
-      </div>
       {/* Drawer de contato */}
       {drawerContact ? (
         <>
@@ -899,6 +798,140 @@ export function ContactsPage() {
                     </div>
                   ) : null}
                 </dl>
+              </div>
+              {/* Card editar */}
+              <div className="context-card">
+                <div className="context-card-title">Editar contato</div>
+                <form className="drawer-edit-form" onSubmit={handleUpdateContact}>
+                  <label className="drawer-field">
+                    <span>Nome</span>
+                    <input
+                      onChange={(event) => setEditForm((current) => ({ ...current, name: event.target.value }))}
+                      placeholder="Nome do contato"
+                      type="text"
+                      value={editForm.name}
+                    />
+                  </label>
+                  <label className="drawer-field">
+                    <span>Telefone</span>
+                    <input
+                      onChange={(event) => setEditForm((current) => ({ ...current, phone: event.target.value }))}
+                      placeholder="+5511999990000"
+                      required
+                      type="tel"
+                      value={editForm.phone}
+                    />
+                  </label>
+                  <label className="drawer-field">
+                    <span>Email</span>
+                    <input
+                      onChange={(event) => setEditForm((current) => ({ ...current, email: event.target.value }))}
+                      placeholder="nome@empresa.com"
+                      type="email"
+                      value={editForm.email}
+                    />
+                  </label>
+                  <label className="drawer-field">
+                    <span>Empresa</span>
+                    <input
+                      onChange={(event) => setEditForm((current) => ({ ...current, company: event.target.value }))}
+                      placeholder="Empresa"
+                      type="text"
+                      value={editForm.company}
+                    />
+                  </label>
+                  {saveMessage ? <p className="success-note compact">{saveMessage}</p> : null}
+                  {error ? <p className="error-note compact">{error}</p> : null}
+                  <button
+                    className="primary-button"
+                    disabled={isSaving}
+                    type="submit"
+                    style={{ width: '100%', justifyContent: 'center' }}
+                  >
+                    <Save size={15} aria-hidden="true" />
+                    Salvar
+                  </button>
+                </form>
+              </div>
+            </div>
+          </aside>
+        </>
+      ) : null}
+      {/* Drawer criar contato */}
+      {createDrawerOpen ? (
+        <>
+          <div
+            className="contact-drawer-overlay"
+            onClick={() => { setCreateDrawerOpen(false); }}
+            aria-hidden="true"
+          />
+          <aside
+            className="contact-drawer is-open"
+            aria-label="Novo contato"
+          >
+            <header className="contact-drawer-header">
+              <span className="context-card-title">Novo contato</span>
+              <button
+                className="drawer-close"
+                onClick={() => setCreateDrawerOpen(false)}
+                type="button"
+                aria-label="Fechar"
+              >
+                ✕
+              </button>
+            </header>
+            <div className="contact-drawer-body">
+              <div className="context-card">
+                <form className="drawer-edit-form" onSubmit={(e) => { void handleCreateContact(e).then(() => setCreateDrawerOpen(false)); }}>
+                  <label className="drawer-field">
+                    <span>Nome</span>
+                    <input
+                      onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))}
+                      placeholder="Nome do contato"
+                      type="text"
+                      value={createForm.name}
+                    />
+                  </label>
+                  <label className="drawer-field">
+                    <span>Telefone</span>
+                    <input
+                      onChange={(event) => setCreateForm((current) => ({ ...current, phone: event.target.value }))}
+                      placeholder="+5511999990000"
+                      required
+                      type="tel"
+                      value={createForm.phone}
+                    />
+                  </label>
+                  <label className="drawer-field">
+                    <span>Email</span>
+                    <input
+                      onChange={(event) => setCreateForm((current) => ({ ...current, email: event.target.value }))}
+                      placeholder="nome@empresa.com"
+                      type="email"
+                      value={createForm.email}
+                    />
+                  </label>
+                  <label className="drawer-field">
+                    <span>Empresa</span>
+                    <input
+                      onChange={(event) => setCreateForm((current) => ({ ...current, company: event.target.value }))}
+                      placeholder="Empresa"
+                      type="text"
+                      value={createForm.company}
+                    />
+                  </label>
+                  {saveMessage ? <p className="success-note compact">{saveMessage}</p> : null}
+                  {error ? <p className="error-note compact">{error}</p> : null}
+                  <button
+                    className="primary-button"
+                    disabled={isSaving}
+                    type="submit"
+                    style={{ width: '100%', justifyContent: 'center' }}
+                  >
+                    <Plus size={15} aria-hidden="true" />
+                    Criar contato
+                  </button>
+                </form>
               </div>
             </div>
           </aside>
