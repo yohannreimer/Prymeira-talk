@@ -194,6 +194,22 @@ function buildMessagePreview(messageBody: string, contact: RecipientContactRecor
     .replaceAll("{{phone}}", contact.phone);
 }
 
+function deriveStatusFromSchedule(input: {
+  explicitStatus?: CampaignStatus;
+  scheduledAt?: string | null;
+  currentStatus: CampaignStatus;
+}) {
+  if (input.explicitStatus || input.scheduledAt === undefined) {
+    return input.explicitStatus;
+  }
+
+  if (input.scheduledAt) {
+    return input.currentStatus === "draft" ? "scheduled" : input.currentStatus;
+  }
+
+  return input.currentStatus === "scheduled" ? "draft" : input.currentStatus;
+}
+
 export function createCampaignsService(prisma: PrismaLike) {
   const findCampaignForWorkspace = async (input: {
     workspaceId: string;
@@ -298,7 +314,7 @@ export function createCampaignsService(prisma: PrismaLike) {
         scheduledAt: string | null;
       }>;
     }): Promise<CampaignDto> {
-      await findCampaignForWorkspace(input);
+      const currentCampaign = await findCampaignForWorkspace(input);
 
       const campaign = await prisma.campaign.update({
         where: {
@@ -309,7 +325,11 @@ export function createCampaignsService(prisma: PrismaLike) {
         },
         data: withoutUndefined({
           name: normalizeOptional(input.data.name),
-          status: input.data.status,
+          status: deriveStatusFromSchedule({
+            explicitStatus: input.data.status,
+            scheduledAt: input.data.scheduledAt,
+            currentStatus: currentCampaign.status
+          }),
           audience: input.data.audience,
           messageBody: normalizeOptional(input.data.messageBody),
           scheduledAt:

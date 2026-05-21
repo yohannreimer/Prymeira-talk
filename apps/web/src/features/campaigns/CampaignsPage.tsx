@@ -158,6 +158,24 @@ export function CampaignsPage() {
     [boards, form.boardId]
   );
 
+  const hasUnsavedChanges = useMemo(() => {
+    if (!selectedCampaign) {
+      return false;
+    }
+
+    const savedForm = toFormState(selectedCampaign);
+
+    return (
+      form.name !== savedForm.name ||
+      form.boardId !== savedForm.boardId ||
+      form.stageId !== savedForm.stageId ||
+      form.messageBody !== savedForm.messageBody ||
+      form.scheduledAt !== savedForm.scheduledAt
+    );
+  }, [form, selectedCampaign]);
+
+  const canUseSavedCampaign = Boolean(selectedCampaign) && !hasUnsavedChanges;
+
   useEffect(() => {
     if (selectedCampaign) {
       setForm(toFormState(selectedCampaign));
@@ -313,15 +331,18 @@ export function CampaignsPage() {
           className="secondary-button"
           type="button"
           onClick={sendSimulation}
-          disabled={isSaving || !selectedCampaign}
+          disabled={isSaving || !canUseSavedCampaign}
         >
           <Play size={16} aria-hidden="true" />
-          Simular envio
+          {hasUnsavedChanges ? "Salve para simular" : "Simular envio"}
         </button>
       </div>
 
       {error ? <p className="error-note">{error}</p> : null}
       {notice ? <p className="list-note">{notice}</p> : null}
+      {hasUnsavedChanges ? (
+        <p className="list-note">Salve as alteracoes antes de resolver audiencia ou simular envio.</p>
+      ) : null}
 
       <div className="metric-grid" aria-label="Resumo de disparos">
         <article className="metric-card"><span>Campanhas</span><strong>{campaigns.length}</strong><p>{simulatedCount} em modo simulado.</p></article>
@@ -436,10 +457,10 @@ export function CampaignsPage() {
               className="secondary-button"
               type="button"
               onClick={resolveAudience}
-              disabled={isSaving || !selectedCampaign}
+              disabled={isSaving || !canUseSavedCampaign}
             >
               <CalendarClock size={16} aria-hidden="true" />
-              Resolver audiencia
+              {hasUnsavedChanges ? "Salve para resolver" : "Resolver audiencia"}
             </button>
             <button className="primary-button" type="submit" disabled={isSaving || !form.boardId}>
               <Save size={16} aria-hidden="true" />

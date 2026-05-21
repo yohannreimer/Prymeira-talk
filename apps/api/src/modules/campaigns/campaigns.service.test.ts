@@ -221,6 +221,87 @@ describe("campaigns service", () => {
     ).rejects.toMatchObject({ code: "CAMPAIGN_NOT_FOUND" });
     expect(prisma.contactBoardMembership.findMany).not.toHaveBeenCalled();
   });
+
+  it("derives scheduled status when updating a campaign schedule without explicit status", async () => {
+    const prisma = createMockPrisma();
+    const service = createCampaignsService(prisma);
+
+    await service.updateCampaign({
+      workspaceId: "workspace_a",
+      campaignId,
+      data: {
+        scheduledAt: "2026-05-22T12:00:00.000Z"
+      }
+    });
+
+    expect(prisma.campaign.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          scheduledAt: new Date("2026-05-22T12:00:00.000Z"),
+          status: "scheduled"
+        })
+      })
+    );
+  });
+
+  it("keeps completed campaign status when editing an empty schedule without explicit status", async () => {
+    const prisma = createMockPrisma({
+      campaign: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue({ ...baseCampaign, status: "completed" }),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({ ...baseCampaign, status: "completed" })
+      }
+    });
+    const service = createCampaignsService(prisma);
+
+    await service.updateCampaign({
+      workspaceId: "workspace_a",
+      campaignId,
+      data: {
+        name: "Reativacao editada",
+        scheduledAt: null
+      }
+    });
+
+    expect(prisma.campaign.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          scheduledAt: null,
+          status: "completed"
+        })
+      })
+    );
+  });
+
+  it("returns scheduled campaigns to draft when clearing schedule without explicit status", async () => {
+    const prisma = createMockPrisma({
+      campaign: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue({ ...baseCampaign, status: "scheduled" }),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({ ...baseCampaign, status: "draft" })
+      }
+    });
+    const service = createCampaignsService(prisma);
+
+    await service.updateCampaign({
+      workspaceId: "workspace_a",
+      campaignId,
+      data: {
+        scheduledAt: null
+      }
+    });
+
+    expect(prisma.campaign.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          scheduledAt: null,
+          status: "draft"
+        })
+      })
+    );
+  });
 });
 
 describe("campaigns routes", () => {
