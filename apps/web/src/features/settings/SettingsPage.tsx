@@ -38,7 +38,7 @@ export function SettingsPage() {
         setMode(firstIntegration.mode);
       }
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar ajustes.");
+      setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar ajustes.");
     } finally {
       setIsLoading(false);
     }
@@ -58,9 +58,9 @@ export function SettingsPage() {
       const nextSettings = await apiUpdateSettings(getToken, { provider, mode });
       setSettings(nextSettings);
       setAuditLog(await apiGetAuditLog(getToken));
-      setNotice("Modo de integracao atualizado e auditado.");
+      setNotice("Modo de integração atualizado e auditado.");
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Nao foi possivel salvar ajustes.");
+      setError(saveError instanceof Error ? saveError.message : "Não foi possível salvar ajustes.");
     } finally {
       setIsSaving(false);
     }
@@ -73,17 +73,16 @@ export function SettingsPage() {
           <p className="eyebrow">Prymeira Talk</p>
           <h1>Ajustes</h1>
         </div>
-        <span className="status-pill status-open">
-          {isLoading ? "Carregando" : settings?.workspace.workspaceId ?? "Workspace"}
-        </span>
+        <div className="module-header-actions">
+          <span className={`status-badge status-badge--${isLoading ? "waiting" : "open"}`}>
+            {isLoading ? "Carregando" : (settings?.workspace.workspaceId ?? "Workspace")}
+          </span>
+          <button className="secondary-button" type="button" onClick={() => void loadSettings()}>
+            <RefreshCw size={14} />
+            Atualizar
+          </button>
+        </div>
       </header>
-
-      <div className="module-actions">
-        <button className="primary-button" type="button" onClick={() => void loadSettings()}>
-          <RefreshCw size={16} />
-          Atualizar
-        </button>
-      </div>
 
       {error ? <p className="error-note">{error}</p> : null}
       {notice ? <p className="success-note">{notice}</p> : null}
@@ -92,30 +91,40 @@ export function SettingsPage() {
         <div className="module-panel">
           <div className="panel-title-row">
             <h2>Workspace</h2>
-            <span>{settings?.workspace.plan ?? "Sem plano"}</span>
+            {settings ? (
+              <span className="status-badge status-badge--open">{settings.workspace.plan ?? "Free"}</span>
+            ) : null}
           </div>
+
           {settings ? (
-            <div className="data-list">
-              <div>
-                <strong>{settings.workspace.name ?? "Workspace sem nome"}</strong>
-                <span>ID</span>
-                <em>{settings.workspace.workspaceId}</em>
+            <div className="settings-info-rows">
+              <div className="settings-info-row">
+                <span>Nome</span>
+                <strong>{settings.workspace.name ?? "Sem nome"}</strong>
               </div>
-              <div>
-                <strong>Integracoes</strong>
-                <span>{settings.integrations.length}</span>
-                <em>Configuracoes por provider.</em>
+              <div className="settings-info-row">
+                <span>ID</span>
+                <strong className="settings-info-mono">{settings.workspace.workspaceId}</strong>
+              </div>
+              <div className="settings-info-row">
+                <span>Integrações</span>
+                <strong>{settings.integrations.length}</strong>
               </div>
             </div>
           ) : (
-            <div className="empty-panel">
-              <Settings2 size={28} />
+            <div className="empty-state">
+              <div className="empty-state-icon">
+                <Settings2 size={24} />
+              </div>
               <h3>Nenhum ajuste carregado</h3>
               <p>Atualize para consultar o workspace.</p>
             </div>
           )}
 
-          <form className="module-form" onSubmit={(event) => void saveSettings(event)}>
+          <form className="module-form compact-form" onSubmit={(event) => void saveSettings(event)}>
+            <div className="panel-title-row" style={{ paddingBottom: 0 }}>
+              <h2>Integração</h2>
+            </div>
             <label className="form-field">
               Provider
               <input value={provider} onChange={(event) => setProvider(event.target.value)} required />
@@ -139,13 +148,15 @@ export function SettingsPage() {
             <h2>Audit log</h2>
             <span>{auditLog.length} eventos</span>
           </div>
-          <div className="data-list">
-            {auditLog.length === 0 ? <p className="list-note">Nenhum evento de auditoria.</p> : null}
+          {auditLog.length === 0 ? (
+            <p className="list-note">Nenhum evento de auditoria.</p>
+          ) : null}
+          <div className="audit-log-list">
             {auditLog.map((entry) => (
-              <div key={entry.id}>
+              <div key={entry.id} className="audit-log-row">
+                <span className="status-badge status-badge--closed">{entry.targetType}</span>
                 <strong>{entry.action}</strong>
-                <span>{entry.targetType}</span>
-                <em>{entry.targetId ?? entry.workspaceId}</em>
+                <span className="audit-log-target">{entry.targetId ?? entry.workspaceId}</span>
               </div>
             ))}
           </div>
