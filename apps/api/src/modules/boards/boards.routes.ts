@@ -162,6 +162,12 @@ export const boardsRoutes: FastifyPluginAsync = async (app) => {
         ...body.data
       });
 
+      app.realtime.publish({
+        type: "board_membership.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: membership
+      });
+
       return reply.code(201).send(membership);
     } catch (error) {
       return handleBoardsError(reply, error);
@@ -177,11 +183,19 @@ export const boardsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      return await service.moveContactToStage({
+      const membership = await service.moveContactToStage({
         workspaceId: request.talk.workspaceId,
         membershipId: params.data.membershipId,
         ...body.data
       });
+
+      app.realtime.publish({
+        type: "board_membership.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: membership
+      });
+
+      return membership;
     } catch (error) {
       return handleBoardsError(reply, error);
     }

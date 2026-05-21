@@ -271,6 +271,13 @@ export function createCampaignsService(prisma: PrismaLike) {
   };
 
   return {
+    async getCampaign(input: {
+      workspaceId: string;
+      campaignId: string;
+    }): Promise<CampaignDto> {
+      return toCampaignDto(await findCampaignForWorkspace(input));
+    },
+
     async listCampaigns(input: { workspaceId: string }): Promise<CampaignDto[]> {
       const campaigns = await prisma.campaign.findMany({
         where: { workspaceId: input.workspaceId },

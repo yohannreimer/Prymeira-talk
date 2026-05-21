@@ -2,7 +2,8 @@ import Fastify from "fastify";
 import {
   contactBoardMembershipSchema,
   contactBoardSchema,
-  contactBoardStageSchema
+  contactBoardStageSchema,
+  realtimeEventSchema
 } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createBoardsService } from "./boards.service.js";
@@ -177,14 +178,16 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
 
 async function buildBoardsApp(prisma = createMockPrisma()) {
   const app = Fastify({ logger: false });
+  const publish = vi.fn();
 
   app.decorate("prisma", prisma as never);
+  app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
   app.addHook("preHandler", async (request) => {
     request.talk = { workspaceId: "workspace_a", role: "agent" };
   });
   await app.register(boardsRoutes);
 
-  return { app, prisma };
+  return { app, prisma, publish };
 }
 
 const aggregateBoardSchema = contactBoardSchema.extend({
@@ -397,7 +400,7 @@ describe("boards service", () => {
 
 describe("boards routes", () => {
   it("returns board DTOs with stages", async () => {
-    const { app } = await buildBoardsApp();
+    const { app, publish } = await buildBoardsApp();
 
     try {
       const response = await app.inject({
@@ -413,7 +416,7 @@ describe("boards routes", () => {
   });
 
   it("creates board memberships", async () => {
-    const { app } = await buildBoardsApp();
+    const { app, publish } = await buildBoardsApp();
 
     try {
       const response = await app.inject({
@@ -430,13 +433,18 @@ describe("boards routes", () => {
       const body = response.json();
       contactBoardMembershipSchema.parse(body);
       expect(body.contact.name).toBe("Ana Silva");
+      expect(realtimeEventSchema.parse(publish.mock.calls[0]?.[0])).toEqual({
+        type: "board_membership.updated",
+        workspaceId: "workspace_a",
+        payload: contactBoardMembershipSchema.parse(body)
+      });
     } finally {
       await app.close();
     }
   });
 
   it("moves board memberships", async () => {
-    const { app, prisma } = await buildBoardsApp();
+    const { app, prisma, publish } = await buildBoardsApp();
 
     try {
       const response = await app.inject({
@@ -452,6 +460,11 @@ describe("boards routes", () => {
         expect.objectContaining({ stageId: nextStageId })
       );
       expect(prisma.contactBoardMembership.update).toHaveBeenCalled();
+      expect(realtimeEventSchema.parse(publish.mock.calls[0]?.[0])).toEqual({
+        type: "board_membership.updated",
+        workspaceId: "workspace_a",
+        payload: contactBoardMembershipSchema.parse(response.json())
+      });
     } finally {
       await app.close();
     }

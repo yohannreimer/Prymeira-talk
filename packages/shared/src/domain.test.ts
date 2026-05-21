@@ -40,6 +40,41 @@ describe("domain schemas", () => {
     createdAt: "2026-05-20T12:00:00.000Z"
   };
 
+  const validContact = {
+    id: "contact_1",
+    workspaceId: "workspace_1",
+    name: "Joao Martins",
+    phone: "+5551999999999",
+    email: null,
+    company: null,
+    atomicCrmContactId: null,
+    atomicCrmLeadId: null,
+    createdAt: "2026-05-21T00:00:00.000Z",
+    updatedAt: "2026-05-21T00:00:00.000Z"
+  };
+
+  const validBoardMembership = {
+    id: "membership_1",
+    workspaceId: "workspace_1",
+    contactId: "contact_1",
+    boardId: "board_1",
+    stageId: "stage_1",
+    isPrimary: true,
+    updatedAt: "2026-05-21T00:00:00.000Z"
+  };
+
+  const validChannel = {
+    id: "channel_1",
+    workspaceId: "workspace_1",
+    provider: "evolution",
+    providerKey: "demo-evolution",
+    phoneNumber: "+5551999999999",
+    displayName: "WhatsApp Demo",
+    status: "connecting",
+    createdAt: "2026-05-21T00:00:00.000Z",
+    updatedAt: "2026-05-21T00:00:00.000Z"
+  };
+
   it("accepts a tenant-owned open conversation", () => {
     const parsed = conversationSchema.parse(validConversation);
 
@@ -147,6 +182,87 @@ describe("domain schemas", () => {
     });
 
     expect(parsed.workspaceId).toBe("workspace_1");
+  });
+
+  it("accepts suite module realtime events", () => {
+    expect(
+      realtimeEventSchema.parse({
+        type: "contact.updated",
+        workspaceId: "workspace_1",
+        payload: validContact
+      }).type
+    ).toBe("contact.updated");
+
+    expect(
+      realtimeEventSchema.parse({
+        type: "board_membership.updated",
+        workspaceId: "workspace_1",
+        payload: validBoardMembership
+      }).type
+    ).toBe("board_membership.updated");
+
+    expect(
+      realtimeEventSchema.parse({
+        type: "channel.updated",
+        workspaceId: "workspace_1",
+        payload: validChannel
+      }).type
+    ).toBe("channel.updated");
+
+    expect(
+      realtimeEventSchema.parse({
+        type: "automation_run.created",
+        workspaceId: "workspace_1",
+        payload: {
+          id: "run_1",
+          workspaceId: "workspace_1",
+          ruleId: "rule_1",
+          eventKey: "manual_test",
+          status: "completed",
+          input: {},
+          result: {},
+          createdAt: "2026-05-21T00:00:00.000Z",
+          updatedAt: "2026-05-21T00:00:00.000Z"
+        }
+      }).type
+    ).toBe("automation_run.created");
+
+    expect(
+      realtimeEventSchema.parse({
+        type: "campaign.updated",
+        workspaceId: "workspace_1",
+        payload: {
+          id: "campaign_1",
+          workspaceId: "workspace_1",
+          name: "Maio",
+          status: "completed",
+          audience: { type: "board", boardId: "board_1" },
+          messageBody: "Oi {{name}}",
+          scheduledAt: null,
+          mode: "simulated",
+          createdAt: "2026-05-21T00:00:00.000Z",
+          updatedAt: "2026-05-21T00:00:00.000Z"
+        }
+      }).type
+    ).toBe("campaign.updated");
+  });
+
+  it("rejects suite module events when envelope and payload workspaces differ", () => {
+    expect(() =>
+      realtimeEventSchema.parse({
+        type: "contact.updated",
+        workspaceId: "workspace_2",
+        payload: validContact
+      })
+    ).toThrow("Payload workspaceId must match event workspaceId");
+
+    expect(() =>
+      realtimeEventSchema.parse({
+        type: "board_membership.updated",
+        workspaceId: "workspace_2",
+        payload: validBoardMembership
+      })
+    ).toThrow("Payload workspaceId must match event workspaceId");
   });
 
   it("validates suite module keys", () => {

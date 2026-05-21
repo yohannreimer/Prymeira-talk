@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import type { UserRole } from "@prymeira-talk/shared";
+import { realtimeEventSchema, type UserRole } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
 import { automationsRoutes } from "./automations.routes.js";
 import { createAutomationsService } from "./automations.service.js";
@@ -82,14 +82,16 @@ async function buildAutomationsApp(input: {
   const app = Fastify({ logger: false });
   const prisma = input.prisma ?? createMockPrisma();
   const role = input.role ?? "manager";
+  const publish = vi.fn();
 
   app.decorate("prisma", prisma as never);
+  app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
   app.addHook("preHandler", async (request) => {
     request.talk = { workspaceId: "workspace_a", role };
   });
   await app.register(automationsRoutes);
 
-  return { app, prisma };
+  return { app, prisma, publish };
 }
 
 describe("automations service", () => {
@@ -176,7 +178,7 @@ describe("automations service", () => {
 
 describe("automations routes", () => {
   it("creates a completed simulated run from POST /automations/:automationId/test", async () => {
-    const { app } = await buildAutomationsApp({ role: "manager" });
+    const { app, publish } = await buildAutomationsApp({ role: "manager" });
 
     try {
       const response = await app.inject({
@@ -202,6 +204,11 @@ describe("automations routes", () => {
           })
         })
       );
+      expect(realtimeEventSchema.parse(publish.mock.calls[0]?.[0])).toEqual({
+        type: "automation_run.created",
+        workspaceId: "workspace_a",
+        payload: response.json()
+      });
     } finally {
       await app.close();
     }

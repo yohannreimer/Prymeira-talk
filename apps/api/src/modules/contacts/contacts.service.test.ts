@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { contactSchema } from "@prymeira-talk/shared";
+import { contactSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createContactsService } from "./contacts.service.js";
 import type { PrismaLike } from "./contacts.service.js";
@@ -55,14 +55,16 @@ function createMockPrisma(
 
 async function buildContactsApp(prisma = createMockPrisma()) {
   const app = Fastify({ logger: false });
+  const publish = vi.fn();
 
   app.decorate("prisma", prisma as never);
+  app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
   app.addHook("preHandler", async (request) => {
     request.talk = { workspaceId: "workspace_a", role: "agent" };
   });
   await app.register(contactsRoutes);
 
-  return { app, prisma };
+  return { app, prisma, publish };
 }
 
 describe("contacts service", () => {
@@ -204,6 +206,32 @@ describe("contacts routes", () => {
     }
   });
 
+  it("publishes contact.updated for created contacts in the caller workspace", async () => {
+    const { app, publish } = await buildContactsApp();
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/contacts",
+        payload: {
+          name: "Ana Silva",
+          phone: "+5511999990000"
+        }
+      });
+
+      expect(response.statusCode).toBe(201);
+      const event = publish.mock.calls[0]?.[0];
+      expect(realtimeEventSchema.parse(event)).toEqual(event);
+      expect(event).toEqual({
+        type: "contact.updated",
+        workspaceId: "workspace_a",
+        payload: contactSchema.parse(response.json())
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns conflict when create uses a duplicate phone in the workspace", async () => {
     const prisma = createMockPrisma({
       create: vi.fn<PrismaLike["contact"]["create"]>().mockRejectedValue({ code: "P2002" })
@@ -231,7 +259,7 @@ describe("contacts routes", () => {
   });
 
   it("returns updated contacts from patch requests", async () => {
-    const { app, prisma } = await buildContactsApp();
+    const { app, prisma, publish } = await buildContactsApp();
 
     try {
       const response = await app.inject({
@@ -252,6 +280,11 @@ describe("contacts routes", () => {
           }
         })
       );
+      expect(realtimeEventSchema.parse(publish.mock.calls[0]?.[0])).toEqual({
+        type: "contact.updated",
+        workspaceId: "workspace_a",
+        payload: contactSchema.parse(response.json())
+      });
     } finally {
       await app.close();
     }

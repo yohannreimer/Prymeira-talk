@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-react";
-import type { ContactDto } from "@prymeira-talk/shared";
+import type { ContactDto, RealtimeEvent } from "@prymeira-talk/shared";
 import { ChevronLeft, ChevronRight, Columns3, Pencil, Plus, Save, Search, Users } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   apiAddContactToBoard,
   apiCreateContact,
@@ -14,6 +14,7 @@ import {
   type BoardContactsDto,
   type ContactBoardWithStagesDto
 } from "../../app/api";
+import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
 
 type ViewMode = "list" | "board";
 
@@ -81,6 +82,23 @@ export function ContactsPage() {
   const [boardError, setBoardError] = useState<string | null>(null);
   const [addContactId, setAddContactId] = useState("");
   const [addStageId, setAddStageId] = useState("");
+  const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    void getToken()
+      .then((token) => {
+        if (isMounted) {
+          setRealtimeToken(token);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [getToken]);
 
   useEffect(() => {
     let isMounted = true;
@@ -205,6 +223,72 @@ export function ContactsPage() {
       isMounted = false;
     };
   }, [getToken, selectedBoardId, viewMode]);
+
+  const refreshContactsFromRealtime = useCallback(() => {
+    void apiGetContacts(getToken, search)
+      .then((nextContacts) => {
+        setContacts(nextContacts);
+        setSelectedContactId((current) =>
+          nextContacts.some((contact) => contact.id === current)
+            ? current
+            : nextContacts[0]?.id ?? null
+        );
+      })
+      .catch(() => undefined);
+  }, [getToken, search]);
+
+  const refreshBoardFromRealtime = useCallback(
+    (boardId: string) => {
+      void apiGetBoardContacts(getToken, boardId)
+        .then((nextBoardContacts) => {
+          setBoardContacts((current) =>
+            selectedBoardId === boardId || current?.board.id === boardId
+              ? nextBoardContacts
+              : current
+          );
+        })
+        .catch(() => undefined);
+    },
+    [getToken, selectedBoardId]
+  );
+
+  const handleRealtimeEvent = useCallback(
+    (event: RealtimeEvent) => {
+      if (event.type === "contact.updated") {
+        setContacts((current) => mergeContact(current, event.payload));
+        refreshContactsFromRealtime();
+
+        if (
+          viewMode === "board" &&
+          selectedBoardId &&
+          boardContacts?.memberships.some((membership) => membership.contactId === event.payload.id)
+        ) {
+          refreshBoardFromRealtime(selectedBoardId);
+        }
+        return;
+      }
+
+      if (
+        event.type === "board_membership.updated" &&
+        viewMode === "board" &&
+        event.payload.boardId === selectedBoardId
+      ) {
+        refreshBoardFromRealtime(event.payload.boardId);
+      }
+    },
+    [
+      boardContacts?.memberships,
+      refreshBoardFromRealtime,
+      refreshContactsFromRealtime,
+      selectedBoardId,
+      viewMode
+    ]
+  );
+
+  useRealtimeEvents({
+    token: realtimeToken,
+    onEvent: handleRealtimeEvent
+  });
 
   const contactsWithEmail = contacts.filter((contact) => contact.email).length;
   const contactsWithCompany = contacts.filter((contact) => contact.company).length;

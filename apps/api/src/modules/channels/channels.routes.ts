@@ -73,6 +73,12 @@ export const channelsRoutes: FastifyPluginAsync = async (app) => {
         ...body.data
       });
 
+      app.realtime.publish({
+        type: "channel.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: channel
+      });
+
       return reply.code(201).send(channel);
     } catch (error) {
       return handleChannelsError(reply, error);
@@ -87,10 +93,18 @@ export const channelsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      return await service.startQrSession({
+      const result = await service.startQrSession({
         workspaceId: request.talk.workspaceId,
         channelId: params.data.channelId
       });
+
+      app.realtime.publish({
+        type: "channel.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: result.channel
+      });
+
+      return result;
     } catch (error) {
       return handleChannelsError(reply, error);
     }
@@ -104,10 +118,18 @@ export const channelsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      return await service.reconnectChannel({
+      const result = await service.reconnectChannel({
         workspaceId: request.talk.workspaceId,
         channelId: params.data.channelId
       });
+
+      app.realtime.publish({
+        type: "channel.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: result.channel
+      });
+
+      return result;
     } catch (error) {
       return handleChannelsError(reply, error);
     }
@@ -121,10 +143,18 @@ export const channelsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      return await service.disconnectChannel({
+      const result = await service.disconnectChannel({
         workspaceId: request.talk.workspaceId,
         channelId: params.data.channelId
       });
+
+      app.realtime.publish({
+        type: "channel.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: result.channel
+      });
+
+      return result;
     } catch (error) {
       return handleChannelsError(reply, error);
     }
@@ -139,11 +169,19 @@ export const channelsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      return await service.createTestInbound({
+      const result = await service.createTestInbound({
         workspaceId: request.talk.workspaceId,
         channelId: params.data.channelId,
         ...body.data
       });
+
+      app.realtime.publish({
+        type: "channel.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: result.channel
+      });
+
+      return result;
     } catch (error) {
       return handleChannelsError(reply, error);
     }

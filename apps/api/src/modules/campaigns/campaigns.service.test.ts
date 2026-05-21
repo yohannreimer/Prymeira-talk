@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import type { UserRole } from "@prymeira-talk/shared";
+import { realtimeEventSchema, type UserRole } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
 import { campaignsRoutes } from "./campaigns.routes.js";
 import { createCampaignsService } from "./campaigns.service.js";
@@ -150,14 +150,16 @@ async function buildCampaignsApp(input: {
   const app = Fastify({ logger: false });
   const prisma = input.prisma ?? createMockPrisma();
   const role = input.role ?? "manager";
+  const publish = vi.fn();
 
   app.decorate("prisma", prisma as never);
+  app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
   app.addHook("preHandler", async (request) => {
     request.talk = { workspaceId: "workspace_a", role };
   });
   await app.register(campaignsRoutes);
 
-  return { app, prisma };
+  return { app, prisma, publish };
 }
 
 describe("campaigns service", () => {
@@ -306,7 +308,26 @@ describe("campaigns service", () => {
 
 describe("campaigns routes", () => {
   it("sends a simulated campaign from POST /campaigns/:campaignId/send-simulated", async () => {
-    const { app } = await buildCampaignsApp();
+    const prisma = createMockPrisma({
+      campaign: {
+        findMany: vi.fn(),
+        findFirst: vi
+          .fn()
+          .mockResolvedValueOnce(baseCampaign)
+          .mockResolvedValueOnce({
+            ...baseCampaign,
+            status: "completed",
+            updatedAt: new Date("2026-05-21T12:05:00.000Z")
+          }),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({
+          ...baseCampaign,
+          status: "completed",
+          updatedAt: new Date("2026-05-21T12:05:00.000Z")
+        })
+      }
+    });
+    const { app, publish } = await buildCampaignsApp({ prisma });
 
     try {
       const response = await app.inject({
@@ -319,6 +340,15 @@ describe("campaigns routes", () => {
         mode: "simulated",
         result: "sent_simulated",
         recipientsCreated: 2
+      });
+      expect(realtimeEventSchema.parse(publish.mock.calls[0]?.[0])).toEqual({
+        type: "campaign.updated",
+        workspaceId: "workspace_a",
+        payload: expect.objectContaining({
+          id: campaignId,
+          workspaceId: "workspace_a",
+          status: "completed"
+        })
       });
     } finally {
       await app.close();

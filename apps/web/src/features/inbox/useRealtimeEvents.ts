@@ -9,9 +9,15 @@ export function useRealtimeEvents(input: {
   const { token, onEvent } = input;
 
   useEffect(() => {
-    if (!token) return;
+    let realtimeUrl: string;
 
-    const socket = new WebSocket(buildRealtimeUrl(token));
+    try {
+      realtimeUrl = buildRealtimeUrl(token);
+    } catch {
+      return;
+    }
+
+    const socket = new WebSocket(realtimeUrl);
     socket.onmessage = (message) => {
       const event = realtimeEventSchema.parse(JSON.parse(message.data));
       onEvent(event);

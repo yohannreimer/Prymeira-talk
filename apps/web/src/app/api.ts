@@ -1585,10 +1585,16 @@ export async function apiGetAuditLog(
   );
 }
 
-export function buildRealtimeUrl(token: string) {
+export function buildRealtimeUrl(token: string | null) {
+  const realtimeToken = token ?? (localAuthBypass ? "local-dev-bypass" : null);
+
+  if (!realtimeToken) {
+    throw new Error("Missing realtime auth token.");
+  }
+
   const url = new URL(apiUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = "/realtime";
-  url.searchParams.set("token", token);
+  url.searchParams.set("token", realtimeToken);
   return url.toString();
 }

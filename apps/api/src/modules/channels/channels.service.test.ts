@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { channelSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createChannelsService } from "./channels.service.js";
 import type { PrismaLike } from "./channels.service.js";
@@ -102,14 +103,16 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
 
 async function buildChannelsApp(prisma = createMockPrisma()) {
   const app = Fastify({ logger: false });
+  const publish = vi.fn();
 
   app.decorate("prisma", prisma as never);
+  app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
   app.addHook("preHandler", async (request) => {
     request.talk = { workspaceId: "workspace_a", role: "agent" };
   });
   await app.register(channelsRoutes);
 
-  return { app, prisma };
+  return { app, prisma, publish };
 }
 
 describe("channels service", () => {
@@ -192,7 +195,7 @@ describe("channels service", () => {
 
 describe("channels routes", () => {
   it("returns the simulated QR payload from POST /channels/:channelId/qr", async () => {
-    const { app } = await buildChannelsApp();
+    const { app, publish } = await buildChannelsApp();
 
     try {
       const response = await app.inject({
@@ -214,6 +217,13 @@ describe("channels routes", () => {
           })
         })
       );
+      const event = publish.mock.calls[0]?.[0];
+      expect(realtimeEventSchema.parse(event)).toEqual(event);
+      expect(event).toEqual({
+        type: "channel.updated",
+        workspaceId: "workspace_a",
+        payload: channelSchema.parse(response.json().channel)
+      });
     } finally {
       await app.close();
     }

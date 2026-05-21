@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-react";
-import type { ChannelDto, ChannelQrResultDto } from "@prymeira-talk/shared";
+import type { ChannelDto, ChannelQrResultDto, RealtimeEvent } from "@prymeira-talk/shared";
 import { CheckCircle2, Link2, MessageCircle, PlugZap, QrCode, RefreshCw, WifiOff } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   apiCreateChannel,
   apiCreateTestInbound,
@@ -10,6 +10,7 @@ import {
   apiReconnectChannel,
   apiStartChannelQr
 } from "../../app/api";
+import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
 
 const statusLabels: Record<ChannelDto["status"], string> = {
   disconnected: "Desconectado",
@@ -36,6 +37,23 @@ export function ChannelsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    void getToken()
+      .then((token) => {
+        if (isMounted) {
+          setRealtimeToken(token);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [getToken]);
 
   useEffect(() => {
     let isMounted = true;
@@ -71,6 +89,23 @@ export function ChannelsPage() {
       isMounted = false;
     };
   }, [getToken]);
+
+  const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
+    if (event.type !== "channel.updated") return;
+
+    setChannels((current) => mergeChannel(current, event.payload));
+    setSelectedChannelId((current) => current ?? event.payload.id);
+    setQrResult((current) =>
+      current?.channel.id === event.payload.id
+        ? { ...current, channel: event.payload }
+        : current
+    );
+  }, []);
+
+  useRealtimeEvents({
+    token: realtimeToken,
+    onEvent: handleRealtimeEvent
+  });
 
   const selectedChannel = useMemo(
     () => channels.find((channel) => channel.id === selectedChannelId) ?? null,

@@ -91,6 +91,12 @@ export const contactsRoutes: FastifyPluginAsync = async (app) => {
       return sendPhoneConflict(reply);
     }
 
+    app.realtime.publish({
+      type: "contact.updated",
+      workspaceId: request.talk.workspaceId,
+      payload: contact
+    });
+
     return reply.code(201).send(contact);
   });
 
@@ -127,6 +133,12 @@ export const contactsRoutes: FastifyPluginAsync = async (app) => {
     if ("status" in contact && contact.status === "conflict") {
       return sendPhoneConflict(reply);
     }
+
+    app.realtime.publish({
+      type: "contact.updated",
+      workspaceId: request.talk.workspaceId,
+      payload: contact
+    });
 
     return contact;
   });

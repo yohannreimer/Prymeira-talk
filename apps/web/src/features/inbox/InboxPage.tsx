@@ -89,10 +89,20 @@ export function InboxPage() {
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
   const [crmStatus, setCrmStatus] = useState<string | null>(null);
   const selectedConversationIdRef = useRef<string | null>(null);
+  const conversationsRef = useRef<ConversationDto[]>([]);
+  const tokenRef = useRef<string | null>(null);
 
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
   }, [selectedConversationId]);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
+  useEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
 
   useEffect(() => {
     let isMounted = true;
@@ -103,11 +113,6 @@ export function InboxPage() {
 
       try {
         const authToken = await getToken();
-
-        if (!authToken) {
-          throw new Error("Sessao sem token de autenticacao.");
-        }
-
         const nextConversations = await apiGetConversations(async () => authToken);
 
         if (!isMounted) return;
@@ -204,6 +209,16 @@ export function InboxPage() {
     };
   }, [selectedConversationId, token]);
 
+  const refreshSelectedContext = useCallback((targetConversationId: string) => {
+    void apiGetConversationContext(targetConversationId, async () => tokenRef.current)
+      .then((nextContext) => {
+        if (selectedConversationIdRef.current === targetConversationId) {
+          setContactContext(nextContext);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "message.created") {
       setMessages((current) => {
@@ -214,12 +229,47 @@ export function InboxPage() {
       return;
     }
 
+    if (event.type === "contact.updated") {
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.contactId === event.payload.id
+            ? {
+                ...conversation,
+                contactName: event.payload.name,
+                contactPhone: event.payload.phone
+              }
+            : conversation
+        )
+      );
+
+      const selectedConversation = conversationsRef.current.find(
+        (conversation) => conversation.id === selectedConversationIdRef.current
+      );
+      if (selectedConversation?.contactId === event.payload.id && selectedConversationIdRef.current) {
+        refreshSelectedContext(selectedConversationIdRef.current);
+      }
+      return;
+    }
+
+    if (event.type === "board_membership.updated") {
+      const selectedConversation = conversationsRef.current.find(
+        (conversation) => conversation.id === selectedConversationIdRef.current
+      );
+      if (
+        selectedConversation?.contactId === event.payload.contactId &&
+        selectedConversationIdRef.current
+      ) {
+        refreshSelectedContext(selectedConversationIdRef.current);
+      }
+      return;
+    }
+
     if (event.type !== "conversation.updated") return;
 
     setConversations((current) => upsertConversation(current, event.payload));
 
     setSelectedConversationId((current) => current ?? event.payload.id);
-  }, []);
+  }, [refreshSelectedContext]);
 
   useRealtimeEvents({
     token,

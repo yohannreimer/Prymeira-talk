@@ -101,6 +101,12 @@ export const campaignsRoutes: FastifyPluginAsync = async (app) => {
         ...body.data
       });
 
+      app.realtime.publish({
+        type: "campaign.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: campaign
+      });
+
       return reply.code(201).send(campaign);
     } catch (error) {
       return handleCampaignsError(reply, error);
@@ -120,11 +126,19 @@ export const campaignsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      return await service.updateCampaign({
+      const campaign = await service.updateCampaign({
         workspaceId: request.talk.workspaceId,
         campaignId: params.data.campaignId,
         data: body.data
       });
+
+      app.realtime.publish({
+        type: "campaign.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: campaign
+      });
+
+      return campaign;
     } catch (error) {
       return handleCampaignsError(reply, error);
     }
@@ -159,10 +173,22 @@ export const campaignsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      return await service.sendSimulated({
+      const result = await service.sendSimulated({
         workspaceId: request.talk.workspaceId,
         campaignId: params.data.campaignId
       });
+      const campaign = await service.getCampaign({
+        workspaceId: request.talk.workspaceId,
+        campaignId: params.data.campaignId
+      });
+
+      app.realtime.publish({
+        type: "campaign.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: campaign
+      });
+
+      return result;
     } catch (error) {
       return handleCampaignsError(reply, error);
     }

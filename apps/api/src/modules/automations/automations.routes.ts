@@ -150,12 +150,20 @@ export const automationsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      return await service.testAutomation({
+      const run = await service.testAutomation({
         workspaceId: request.talk.workspaceId,
         automationId: params.data.automationId,
         eventKey: body.data?.eventKey,
         input: body.data?.input
       });
+
+      app.realtime.publish({
+        type: "automation_run.created",
+        workspaceId: request.talk.workspaceId,
+        payload: run
+      });
+
+      return run;
     } catch (error) {
       return handleAutomationsError(reply, error);
     }
