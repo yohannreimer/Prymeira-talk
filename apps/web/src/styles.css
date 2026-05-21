@@ -84,6 +84,17 @@ select:disabled {
   font-weight: 800;
 }
 
+.icon-button {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid #cfdbd4;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #314840;
+}
+
 .talk-suite-shell {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
@@ -1142,6 +1153,113 @@ select:disabled {
   background: linear-gradient(90deg, #24564a, #d29b44);
 }
 
+.report-metric-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.report-metric-card {
+  min-height: 118px;
+}
+
+.reports-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.report-bar-list,
+.report-timeline {
+  display: grid;
+  gap: 12px;
+}
+
+.report-bar-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(64px, auto);
+  gap: 7px 12px;
+  align-items: center;
+}
+
+.report-bar-row span,
+.report-timeline-row span {
+  min-width: 0;
+  color: #354a41;
+  font-size: 0.86rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.report-bar-row strong,
+.report-timeline-row strong {
+  color: #21352e;
+  font-size: 0.88rem;
+  text-align: right;
+}
+
+.report-bar-row em,
+.report-timeline-row em {
+  display: block;
+  grid-column: 1 / -1;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e4ece7;
+}
+
+.report-bar-row i,
+.report-timeline-row i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #24564a, #d29b44);
+}
+
+.report-timeline-row {
+  display: grid;
+  grid-template-columns: minmax(78px, 0.2fr) minmax(160px, 1fr) minmax(56px, auto);
+  align-items: center;
+  gap: 10px;
+}
+
+.report-timeline-row em {
+  grid-column: auto;
+}
+
+.report-table {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid #dbe4de;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.report-table-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(64px, 0.28fr) minmax(64px, 0.28fr);
+  gap: 10px;
+  border-top: 1px solid #e1e8e3;
+  padding: 10px 12px;
+  color: #40564d;
+  font-size: 0.84rem;
+}
+
+.report-table-row:first-child {
+  border-top: 0;
+}
+
+.report-table-row.is-header {
+  background: #f7faf7;
+  color: #65756e;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.report-table-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .conversation-list,
 .chat-panel,
 .contact-panel {
@@ -1759,6 +1877,7 @@ select:disabled {
   .channels-grid,
   .automation-grid,
   .campaigns-grid,
+  .reports-grid,
   .contacts-layout {
     grid-template-columns: 1fr;
   }
@@ -1836,8 +1955,13 @@ select:disabled {
   .automation-rule-card,
   .campaign-card,
   .campaign-audience-grid,
-  .recipient-table-row {
+  .recipient-table-row,
+  .report-table-row {
     grid-template-columns: 1fr;
+  }
+
+  .report-timeline-row {
+    grid-template-columns: minmax(70px, 0.3fr) minmax(0, 1fr) minmax(48px, auto);
   }
 
   .channel-card .status-pill,

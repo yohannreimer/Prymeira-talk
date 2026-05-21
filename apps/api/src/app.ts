@@ -12,6 +12,7 @@ import { contactsRoutes } from "./modules/contacts/contacts.routes.js";
 import { conversationsRoutes } from "./modules/conversations/conversations.routes.js";
 import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
+import { reportsRoutes } from "./modules/reports/reports.routes.js";
 
 export interface CreateAppOptions {
   authEnabled?: boolean;
@@ -61,6 +62,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(channelsRoutes);
   await app.register(automationsRoutes);
   await app.register(campaignsRoutes);
+  await app.register(reportsRoutes);
 
   return app;
 }

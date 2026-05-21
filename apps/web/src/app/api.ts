@@ -169,6 +169,34 @@ export interface CampaignSendResultDto {
   recipientsCreated: number;
 }
 
+export interface ReportMetricDto {
+  key: string;
+  label: string;
+  value: number;
+  helper?: string;
+}
+
+export interface ReportTimeSeriesPointDto {
+  date: string;
+  conversations: number;
+  inboundMessages: number;
+  outboundMessages: number;
+}
+
+export interface ReportsOverviewDto {
+  cards: ReportMetricDto[];
+  conversationsByStatus: ReportMetricDto[];
+  messagesByDirection: ReportMetricDto[];
+  campaignResults: ReportMetricDto[];
+  automationRuns: ReportMetricDto[];
+  timeSeries: ReportTimeSeriesPointDto[];
+  breakdowns: {
+    departments: ReportMetricDto[];
+    tags: ReportMetricDto[];
+    channels: ReportMetricDto[];
+  };
+}
+
 async function getRequiredToken(getToken: () => Promise<string | null>) {
   const token = await getToken();
 
@@ -363,6 +391,65 @@ function parseCampaignSendResult(data: unknown): CampaignSendResultDto {
     mode: "simulated",
     result: "sent_simulated",
     recipientsCreated: Number(payload.recipientsCreated ?? 0)
+  };
+}
+
+function parseReportMetric(data: unknown): ReportMetricDto {
+  const payload = data as ReportMetricDto;
+
+  return {
+    key: String(payload.key ?? ""),
+    label: String(payload.label ?? payload.key ?? ""),
+    value: Number(payload.value ?? 0),
+    ...(typeof payload.helper === "string" ? { helper: payload.helper } : {})
+  };
+}
+
+function parseReportTimeSeriesPoint(data: unknown): ReportTimeSeriesPointDto {
+  const payload = data as ReportTimeSeriesPointDto;
+
+  return {
+    date: String(payload.date ?? ""),
+    conversations: Number(payload.conversations ?? 0),
+    inboundMessages: Number(payload.inboundMessages ?? 0),
+    outboundMessages: Number(payload.outboundMessages ?? 0)
+  };
+}
+
+function parseReportsOverview(data: unknown): ReportsOverviewDto {
+  const payload = data as ReportsOverviewDto;
+  const breakdowns = payload.breakdowns ?? {
+    departments: [],
+    tags: [],
+    channels: []
+  };
+
+  return {
+    cards: Array.isArray(payload.cards) ? payload.cards.map(parseReportMetric) : [],
+    conversationsByStatus: Array.isArray(payload.conversationsByStatus)
+      ? payload.conversationsByStatus.map(parseReportMetric)
+      : [],
+    messagesByDirection: Array.isArray(payload.messagesByDirection)
+      ? payload.messagesByDirection.map(parseReportMetric)
+      : [],
+    campaignResults: Array.isArray(payload.campaignResults)
+      ? payload.campaignResults.map(parseReportMetric)
+      : [],
+    automationRuns: Array.isArray(payload.automationRuns)
+      ? payload.automationRuns.map(parseReportMetric)
+      : [],
+    timeSeries: Array.isArray(payload.timeSeries)
+      ? payload.timeSeries.map(parseReportTimeSeriesPoint)
+      : [],
+    breakdowns: {
+      departments: Array.isArray(breakdowns.departments)
+        ? breakdowns.departments.map(parseReportMetric)
+        : [],
+      tags: Array.isArray(breakdowns.tags) ? breakdowns.tags.map(parseReportMetric) : [],
+      channels: Array.isArray(breakdowns.channels)
+        ? breakdowns.channels.map(parseReportMetric)
+        : []
+    }
   };
 }
 
@@ -1043,6 +1130,25 @@ export async function apiGetCampaignRecipients(
 
   const data = await response.json();
   return Array.isArray(data) ? data.map(parseCampaignRecipient) : [];
+}
+
+export async function apiGetReportsOverview(
+  getToken: () => Promise<string | null>
+): Promise<ReportsOverviewDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/reports/overview`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load reports overview: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return parseReportsOverview(data);
 }
 
 export function buildRealtimeUrl(token: string) {
