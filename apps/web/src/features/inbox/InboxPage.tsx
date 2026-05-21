@@ -415,31 +415,40 @@ export function InboxPage() {
           ) : null}
           {conversations.map((conversation) => (
             <button
-              className={
-                conversation.id === selectedConversationId
-                  ? "conversation-card is-selected"
-                  : "conversation-card"
-              }
+              className={[
+                "conversation-card",
+                conversation.id === selectedConversationId ? "is-selected" : ""
+              ].filter(Boolean).join(" ")}
               key={conversation.id}
               onClick={() => setSelectedConversationId(conversation.id)}
               type="button"
             >
-              <span className="conversation-avatar" aria-hidden="true">
-                {conversation.contactId.slice(0, 2).toUpperCase()}
-              </span>
+              <div className="conv-avatar-wrap">
+                <span className="conversation-avatar" aria-hidden="true">
+                  {conversation.contactId.slice(0, 2).toUpperCase()}
+                </span>
+                <span
+                  className="conv-online-dot"
+                  aria-hidden="true"
+                />
+              </div>
               <span className="conversation-content">
                 <span className="conversation-row">
-                  <strong>{contactDisplayName(conversation)}</strong>
-                  <time>{formatTime(conversation.lastMessageAt)}</time>
+                  <span className="conv-name-wrap">
+                    <strong>{contactDisplayName(conversation)}</strong>
+                    {conversation.departmentName ? (
+                      <span className="conv-dept-tag">{conversation.departmentName}</span>
+                    ) : null}
+                  </span>
+                  <span className="conv-meta-right">
+                    <time className="conv-time">{formatTime(conversation.lastMessageAt)}</time>
+                    {conversation.unreadCount > 0 ? (
+                      <span className="conv-unread-badge">{conversation.unreadCount}</span>
+                    ) : null}
+                  </span>
                 </span>
                 <span className="conversation-preview">
-                  {conversation.lastMessagePreview ?? "Conversa iniciada sem mensagem recente."}
-                </span>
-                <span className="conversation-meta">
-                  <span>{statusLabel(conversation.status)}</span>
-                  <span>{priorityLabel(conversation.priority)}</span>
-                  {conversation.departmentName ? <span>{conversation.departmentName}</span> : null}
-                  {conversation.unreadCount > 0 ? <b>{conversation.unreadCount}</b> : null}
+                  {conversation.lastMessagePreview ?? "Conversa iniciada."}
                 </span>
               </span>
             </button>
