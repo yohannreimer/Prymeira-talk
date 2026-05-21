@@ -215,6 +215,11 @@ input:disabled {
   padding: 12px 0;
 }
 
+.search-field:focus-within {
+  border-color: #24564a;
+  box-shadow: 0 0 0 3px rgba(36, 86, 74, 0.18);
+}
+
 .segmented-control {
   display: inline-flex;
   border: 1px solid #cfdbd4;

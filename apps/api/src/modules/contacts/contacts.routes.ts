@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { createContactsService } from "./contacts.service.js";
 
@@ -35,13 +35,22 @@ const updateContactBodySchema = z
     message: "At least one field is required"
   });
 
-function isNotFoundError(error: unknown) {
+function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
   return (
     typeof error === "object" &&
     error !== null &&
     "code" in error &&
-    error.code === "P2025"
+    error.code === code
   );
+}
+
+function sendPhoneConflict(reply: FastifyReply) {
+  return reply
+    .code(409)
+    .send({
+      code: "CONTACT_PHONE_CONFLICT",
+      error: "A contact with this phone already exists."
+    });
 }
 
 export const contactsRoutes: FastifyPluginAsync = async (app) => {
@@ -70,7 +79,17 @@ export const contactsRoutes: FastifyPluginAsync = async (app) => {
     const contact = await service.createContact({
       workspaceId: request.talk.workspaceId,
       ...body.data
+    }).catch((error: unknown) => {
+      if (isPrismaKnownRequestErrorCode(error, "P2002")) {
+        return null;
+      }
+
+      throw error;
     });
+
+    if (!contact) {
+      return sendPhoneConflict(reply);
+    }
 
     return reply.code(201).send(contact);
   });
@@ -88,17 +107,25 @@ export const contactsRoutes: FastifyPluginAsync = async (app) => {
       contactId: params.data.contactId,
       ...body.data
     }).catch((error: unknown) => {
-      if (isNotFoundError(error)) {
-        return null;
+      if (isPrismaKnownRequestErrorCode(error, "P2025")) {
+        return { status: "not_found" as const };
+      }
+
+      if (isPrismaKnownRequestErrorCode(error, "P2002")) {
+        return { status: "conflict" as const };
       }
 
       throw error;
     });
 
-    if (!contact) {
+    if ("status" in contact && contact.status === "not_found") {
       return reply
         .code(404)
         .send({ code: "CONTACT_NOT_FOUND", error: "Contact not found." });
+    }
+
+    if ("status" in contact && contact.status === "conflict") {
+      return sendPhoneConflict(reply);
     }
 
     return contact;

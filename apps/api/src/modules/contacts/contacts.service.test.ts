@@ -204,6 +204,32 @@ describe("contacts routes", () => {
     }
   });
 
+  it("returns conflict when create uses a duplicate phone in the workspace", async () => {
+    const prisma = createMockPrisma({
+      create: vi.fn<PrismaLike["contact"]["create"]>().mockRejectedValue({ code: "P2002" })
+    });
+    const { app } = await buildContactsApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/contacts",
+        payload: {
+          name: "Ana Silva",
+          phone: "+5511999990000"
+        }
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        code: "CONTACT_PHONE_CONFLICT",
+        error: "A contact with this phone already exists."
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns updated contacts from patch requests", async () => {
     const { app, prisma } = await buildContactsApp();
 
@@ -248,6 +274,29 @@ describe("contacts routes", () => {
       expect(response.json()).toEqual({
         code: "CONTACT_NOT_FOUND",
         error: "Contact not found."
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns conflict when patch uses a duplicate phone in the workspace", async () => {
+    const prisma = createMockPrisma({
+      update: vi.fn<PrismaLike["contact"]["update"]>().mockRejectedValue({ code: "P2002" })
+    });
+    const { app } = await buildContactsApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/contacts/${baseContact.id}`,
+        payload: { phone: "+5511999990000" }
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        code: "CONTACT_PHONE_CONFLICT",
+        error: "A contact with this phone already exists."
       });
     } finally {
       await app.close();
