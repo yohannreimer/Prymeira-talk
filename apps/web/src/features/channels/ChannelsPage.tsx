@@ -1,6 +1,7 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto, ChannelQrResultDto, RealtimeEvent } from "@prymeira-talk/shared";
 import { CheckCircle2, Link2, MessageCircle, PlugZap, QrCode, RefreshCw, WifiOff } from "lucide-react";
+import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   apiCreateChannel,
@@ -11,7 +12,7 @@ import {
   apiStartChannelQr
 } from "../../app/api";
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
-import { getQrImageSrc } from "./qr-display";
+import { getQrDisplaySource } from "./qr-display";
 
 const statusLabels: Record<ChannelDto["status"], string> = {
   disconnected: "Desconectado",
@@ -43,6 +44,8 @@ export function ChannelsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
   const [qrDrawerOpen, setQrDrawerOpen] = useState(false);
+  const [generatedQrImageSrc, setGeneratedQrImageSrc] = useState<string | null>(null);
+  const [qrRenderError, setQrRenderError] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -133,8 +136,50 @@ export function ChannelsPage() {
     () => channels.find((channel) => channel.id === selectedChannelId) ?? null,
     [channels, selectedChannelId]
   );
+  const qrDisplaySource = useMemo(() => getQrDisplaySource(qrResult?.qrCode), [qrResult?.qrCode]);
+  const qrPayload = qrDisplaySource?.kind === "payload" ? qrDisplaySource.payload : null;
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    setQrRenderError(null);
+
+    if (!qrPayload) {
+      setGeneratedQrImageSrc(null);
+      return () => {
+        isCancelled = true;
+      };
+    }
+
+    setGeneratedQrImageSrc(null);
+
+    void QRCode.toDataURL(qrPayload, {
+      errorCorrectionLevel: "M",
+      margin: 3,
+      scale: 9,
+      color: {
+        dark: "#13291f",
+        light: "#ffffff"
+      }
+    })
+      .then((dataUrl) => {
+        if (!isCancelled) {
+          setGeneratedQrImageSrc(dataUrl);
+        }
+      })
+      .catch(() => {
+        if (!isCancelled) {
+          setQrRenderError("Nao foi possivel renderizar o QR recebido.");
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [qrPayload]);
+
   const simulatedModeActive = qrResult?.mode === "simulated";
-  const qrImageSrc = getQrImageSrc(qrResult?.qrCode);
+  const qrImageSrc = qrDisplaySource?.kind === "image" ? qrDisplaySource.src : generatedQrImageSrc;
   const connectedCount = channels.filter((channel) => channel.status === "connected").length;
   const connectingCount = channels.filter((channel) => channel.status === "connecting").length;
 
@@ -354,6 +399,13 @@ export function ChannelsPage() {
                       className="qr-image"
                       src={qrImageSrc}
                     />
+                  ) : qrPayload ? (
+                    <>
+                      <QrCode size={36} aria-hidden="true" />
+                      <span className="qr-status-note">
+                        {qrRenderError ?? 'Gerando QR visivel...'}
+                      </span>
+                    </>
                   ) : (
                     <>
                       <QrCode size={36} aria-hidden="true" />

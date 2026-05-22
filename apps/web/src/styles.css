@@ -1106,29 +1106,35 @@ select:disabled {
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  padding: 16px;
+  padding: 18px;
   background: var(--color-surface-subtle);
   border-radius: var(--radius-md);
   text-align: center;
   color: var(--color-brand-600);
+  min-height: 360px;
+  justify-content: center;
+}
+
+.qr-box code,
+.qr-status-note {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+  font-family: "SFMono-Regular", Consolas, monospace;
 }
 
 .qr-box code {
-  font-size: 10px;
-  color: var(--color-text-muted);
   word-break: break-all;
-  line-height: 1.5;
   max-height: 80px;
   overflow-y: auto;
-  font-family: "SFMono-Regular", Consolas, monospace;
 }
 
 .qr-image {
   display: block;
-  width: min(100%, 320px);
+  width: min(100%, 360px);
   aspect-ratio: 1;
   object-fit: contain;
-  padding: 12px;
+  padding: 14px;
   background: #fff;
   border: 1px solid rgba(36, 59, 51, 0.12);
   border-radius: var(--radius-sm);

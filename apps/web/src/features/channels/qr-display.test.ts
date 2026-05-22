@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getQrImageSrc } from "./qr-display";
+import { getQrDisplaySource, getQrImageSrc } from "./qr-display";
 
 describe("QR display helpers", () => {
   it("uses Evolution image data URLs directly", () => {
@@ -16,5 +16,12 @@ describe("QR display helpers", () => {
 
   it("leaves textual QR payloads for fallback rendering", () => {
     expect(getQrImageSrc("2@qr-payload")).toBeNull();
+  });
+
+  it("classifies textual QR payloads for generated QR rendering", () => {
+    expect(getQrDisplaySource("2@qr-payload")).toEqual({
+      kind: "payload",
+      payload: "2@qr-payload"
+    });
   });
 });
