@@ -1,14 +1,15 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto, ChannelQrResultDto, RealtimeEvent } from "@prymeira-talk/shared";
-import { CheckCircle2, Link2, MessageCircle, PlugZap, QrCode, RefreshCw, WifiOff } from "lucide-react";
+import { CheckCircle2, Link2, MessageCircle, PlugZap, QrCode, RefreshCw, Trash2, WifiOff } from "lucide-react";
 import QRCode from "qrcode";
+import type * as React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   apiCreateChannel,
   apiCreateTestInbound,
+  apiDeleteChannel,
   apiDisconnectChannel,
   apiGetChannels,
-  apiReconnectChannel,
   apiStartChannelQr
 } from "../../app/api";
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
@@ -43,6 +44,8 @@ export function ChannelsPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
+  const [createDrawerOpen, setCreateDrawerOpen] = useState(false);
+  const [newChannelName, setNewChannelName] = useState("");
   const [qrDrawerOpen, setQrDrawerOpen] = useState(false);
   const [generatedQrImageSrc, setGeneratedQrImageSrc] = useState<string | null>(null);
   const [qrRenderError, setQrRenderError] = useState<string | null>(null);
@@ -183,57 +186,50 @@ export function ChannelsPage() {
   const connectedCount = channels.filter((channel) => channel.status === "connected").length;
   const connectingCount = channels.filter((channel) => channel.status === "connecting").length;
 
-  async function ensureChannel() {
-    if (selectedChannel) {
-      return selectedChannel;
+  async function createChannelAndStartQr(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const displayName = newChannelName.trim();
+    if (!displayName) {
+      setError("Informe um nome para o canal.");
+      return;
     }
 
-    const channel = await apiCreateChannel(getToken, {
-      displayName: "WhatsApp"
-    });
-    setChannels((current) => mergeChannel(current, channel));
-    setSelectedChannelId(channel.id);
-    return channel;
-  }
-
-  async function runChannelAction(
-    action: (channel: ChannelDto) => Promise<ChannelDto>,
-    successMessage: string
-  ) {
     setIsSaving(true);
     setError(null);
     setNotice(null);
+    setQrDrawerOpen(true);
 
     try {
-      const channel = await ensureChannel();
-      const updatedChannel = await action(channel);
-      setChannels((current) => mergeChannel(current, updatedChannel));
-      setSelectedChannelId(updatedChannel.id);
-      setNotice(successMessage);
+      const channel = await apiCreateChannel(getToken, { displayName });
+      setChannels((current) => mergeChannel(current, channel));
+      setSelectedChannelId(channel.id);
+
+      const result = await apiStartChannelQr(getToken, channel.id);
+      setQrResult(result);
+      setChannels((current) => mergeChannel(current, result.channel));
+      setCreateDrawerOpen(false);
+      setNewChannelName("");
+      setNotice("Sessao QR iniciada.");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Nao foi possivel atualizar o canal.");
+      setError(actionError instanceof Error ? actionError.message : "Nao foi possivel criar o canal.");
     } finally {
       setIsSaving(false);
     }
-  }
-
-  async function startQr() {
-    setQrDrawerOpen(true);
-    await runChannelAction(async (channel) => {
-      const result = await apiStartChannelQr(getToken, channel.id);
-      setQrResult(result);
-      return result.channel;
-    }, "Sessao QR iniciada.");
   }
 
   async function reconnectChannel(channel: ChannelDto) {
     setIsSaving(true);
     setError(null);
     setNotice(null);
+    setSelectedChannelId(channel.id);
+    setQrDrawerOpen(true);
+
     try {
-      const result = await apiReconnectChannel(getToken, channel.id);
+      const result = await apiStartChannelQr(getToken, channel.id);
+      setQrResult(result);
       setChannels((current) => mergeChannel(current, result.channel));
-      setNotice("Reconexao solicitada.");
+      setNotice("QR de reconexao iniciado.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao reconectar.");
     } finally {
@@ -257,11 +253,47 @@ export function ChannelsPage() {
     }
   }
 
+  async function deleteChannel(channel: ChannelDto) {
+    const confirmed = window.confirm(`Apagar o canal "${channelTitle(channel)}"? Esta acao remove as conversas ligadas a este canal.`);
+    if (!confirmed) return;
+
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      await apiDeleteChannel(getToken, channel.id);
+      setChannels((current) => current.filter((item) => item.id !== channel.id));
+      setSelectedChannelId((current) => (current === channel.id ? null : current));
+      setQrResult((current) => (current?.channel.id === channel.id ? null : current));
+      setNotice("Canal apagado.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao apagar canal.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   async function testInbound() {
-    await runChannelAction(async (channel) => {
-      const result = await apiCreateTestInbound(getToken, channel.id);
-      return result.channel;
-    }, "Mensagem inbound de teste enviada para a fila.");
+    if (!selectedChannel) {
+      setError("Selecione um canal para enviar mensagem de teste.");
+      return;
+    }
+
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const result = await apiCreateTestInbound(getToken, selectedChannel.id);
+      setChannels((current) => mergeChannel(current, result.channel));
+      setSelectedChannelId(result.channel.id);
+      setNotice("Mensagem inbound de teste enviada para a fila.");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Nao foi possivel atualizar o canal.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   return (
@@ -286,11 +318,15 @@ export function ChannelsPage() {
         <button
           className="primary-button"
           disabled={isSaving}
-          onClick={() => { void startQr(); }}
+          onClick={() => {
+            setCreateDrawerOpen(true);
+            setError(null);
+            setNotice(null);
+          }}
           type="button"
         >
           <QrCode size={16} aria-hidden="true" />
-          Conectar canal
+          Novo canal
         </button>
       </header>
 
@@ -314,7 +350,7 @@ export function ChannelsPage() {
               <PlugZap size={28} aria-hidden="true" />
             </div>
             <h3>Nenhum canal conectado</h3>
-            <p>Clique em "Conectar canal" para iniciar uma sessão Evolution conforme o modo ativo.</p>
+            <p>Clique em "Novo canal" para iniciar uma sessão Evolution conforme o modo ativo.</p>
           </div>
         ) : (
           <div className="channel-card-list" role="list">
@@ -340,7 +376,7 @@ export function ChannelsPage() {
                     <small>{channel.provider === 'evolution' ? 'Evolution API' : channel.provider}</small>
                   </span>
                   <span className="channel-row-phone">
-                    {channel.phoneNumber ?? channel.providerKey}
+                    {channel.phoneNumber ?? "Numero ainda nao identificado"}
                   </span>
                 </button>
                 <div className="channel-row-actions">
@@ -362,12 +398,61 @@ export function ChannelsPage() {
                     <WifiOff size={14} aria-hidden="true" />
                     Desconectar
                   </button>
+                  <button
+                    className="secondary-button danger-button"
+                    disabled={isSaving}
+                    onClick={() => { void deleteChannel(channel); }}
+                    type="button"
+                  >
+                    <Trash2 size={14} aria-hidden="true" />
+                    Apagar
+                  </button>
                 </div>
               </article>
             ))}
           </div>
         )}
       </div>
+
+      {createDrawerOpen ? (
+        <>
+          <div
+            className="contact-drawer-overlay"
+            onClick={() => setCreateDrawerOpen(false)}
+            aria-hidden="true"
+          />
+          <aside className="contact-drawer is-open" aria-label="Novo canal WhatsApp">
+            <header className="contact-drawer-header">
+              <span className="context-card-title">Novo canal</span>
+              <button
+                className="drawer-close"
+                onClick={() => setCreateDrawerOpen(false)}
+                type="button"
+                aria-label="Fechar"
+              >
+                ✕
+              </button>
+            </header>
+            <form className="contact-drawer-body" onSubmit={createChannelAndStartQr}>
+              <div className="context-card">
+                <label className="field-label" htmlFor="channel-name">Nome do canal</label>
+                <input
+                  className="text-input"
+                  id="channel-name"
+                  maxLength={160}
+                  onChange={(event) => setNewChannelName(event.target.value)}
+                  placeholder="Comercial, Suporte, Cliente Ana..."
+                  value={newChannelName}
+                />
+              </div>
+              <button className="primary-button" disabled={isSaving || !newChannelName.trim()} type="submit">
+                <QrCode size={16} aria-hidden="true" />
+                Gerar QR
+              </button>
+            </form>
+          </aside>
+        </>
+      ) : null}
 
       {/* QR Drawer */}
       {qrDrawerOpen ? (
@@ -423,7 +508,7 @@ export function ChannelsPage() {
                   </div>
                   <div>
                     <CheckCircle2 size={16} aria-hidden="true" />
-                    <span>{selectedChannel ? 'Canal selecionado' : 'Canal será criado automaticamente'}</span>
+                    <span>{selectedChannel ? 'Canal selecionado' : 'Selecione um canal'}</span>
                   </div>
                   <div>
                     <Link2 size={16} aria-hidden="true" />
