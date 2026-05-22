@@ -1,7 +1,12 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
+import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { ChannelsServiceError, createChannelsService } from "./channels.service.js";
 import type { PrismaLike } from "./channels.service.js";
+
+interface ChannelsRoutesOptions {
+  evolution?: EvolutionRuntime;
+}
 
 const uuidParamSchema = z.string().uuid();
 
@@ -53,8 +58,10 @@ function handleChannelsError(reply: FastifyReply, error: unknown) {
   throw error;
 }
 
-export const channelsRoutes: FastifyPluginAsync = async (app) => {
-  const service = createChannelsService(app.prisma as unknown as PrismaLike);
+export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (app, options) => {
+  const service = createChannelsService(app.prisma as unknown as PrismaLike, {
+    evolution: options.evolution
+  });
 
   app.get("/channels", async (request) =>
     service.listChannels({ workspaceId: request.talk.workspaceId })

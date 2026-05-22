@@ -11,6 +11,7 @@ import { campaignsRoutes } from "./modules/campaigns/campaigns.routes.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
 import { contactsRoutes } from "./modules/contacts/contacts.routes.js";
 import { conversationsRoutes } from "./modules/conversations/conversations.routes.js";
+import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js";
 import { crmRoutes } from "./modules/crm/crm.routes.js";
 import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
@@ -58,12 +59,22 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     workspaceId: request.talk.workspaceId,
     role: request.talk.role
   }));
+
+  const evolutionRuntime = createEvolutionRuntime({
+    mode: env.EVOLUTION_MODE,
+    publicTalkUrl: env.PUBLIC_TALK_URL,
+    localTalkUrl: env.LOCAL_TALK_URL,
+    apiBaseUrl: env.EVOLUTION_API_BASE_URL,
+    apiKey: env.EVOLUTION_API_KEY,
+    webhookSecret: env.EVOLUTION_WEBHOOK_SECRET
+  });
+
   await app.register(realtimeRoutes);
   await app.register(evolutionRoutes, { webhookSecret: env.EVOLUTION_WEBHOOK_SECRET });
-  await app.register(conversationsRoutes);
+  await app.register(conversationsRoutes, { evolution: evolutionRuntime });
   await app.register(contactsRoutes);
   await app.register(boardsRoutes);
-  await app.register(channelsRoutes);
+  await app.register(channelsRoutes, { evolution: evolutionRuntime });
   await app.register(automationsRoutes);
   await app.register(campaignsRoutes);
   await app.register(reportsRoutes);

@@ -4,6 +4,7 @@ import type {
   ChannelQrResultDto,
   IntegrationMode
 } from "@prymeira-talk/shared";
+import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 
 type DateLike = Date | string;
 
@@ -104,6 +105,10 @@ export interface PrismaLike {
   };
 }
 
+interface ChannelsServiceOptions {
+  evolution?: EvolutionRuntime;
+}
+
 export class ChannelsServiceError extends Error {
   constructor(
     public code: "CHANNEL_NOT_FOUND",
@@ -163,7 +168,10 @@ function demoQrExpiresAt() {
   return new Date("2030-01-01T00:00:00.000Z").toISOString();
 }
 
-export function createChannelsService(prisma: PrismaLike) {
+export function createChannelsService(
+  prisma: PrismaLike,
+  _options: ChannelsServiceOptions = {}
+) {
   const resolveMode = async (workspaceId: string): Promise<IntegrationMode> => {
     const config = await prisma.integrationConfig.findUnique({
       where: {

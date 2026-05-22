@@ -1,11 +1,16 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import {
   ConversationActionError,
   ConversationNotFoundError,
   createConversationsService
 } from "./conversations.service.js";
 import type { PrismaLike } from "./conversations.service.js";
+
+interface ConversationsRoutesOptions {
+  evolution?: EvolutionRuntime;
+}
 
 export const createMessageParamsSchema = z.object({
   conversationId: z.string().uuid()
@@ -65,8 +70,13 @@ function readCurrentClerkUserId(authorizationHeader: string | undefined) {
   }
 }
 
-export const conversationsRoutes: FastifyPluginAsync = async (app) => {
-  const service = createConversationsService(app.prisma as unknown as PrismaLike);
+export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions> = async (
+  app,
+  options
+) => {
+  const service = createConversationsService(app.prisma as unknown as PrismaLike, {
+    evolution: options.evolution
+  });
 
   app.get("/conversations", async (request) =>
     service.listConversations({ workspaceId: request.talk.workspaceId })

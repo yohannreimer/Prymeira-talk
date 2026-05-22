@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import type { ContactBoardMembershipDto, ConversationDto, MessageDto } from "@prymeira-talk/shared";
+import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 
 type DateLike = Date | string;
 
@@ -243,6 +244,10 @@ export interface PrismaLike {
   $transaction(callback: (tx: PrismaLike) => Promise<unknown>): Promise<unknown>;
 }
 
+interface ConversationsServiceOptions {
+  evolution?: EvolutionRuntime;
+}
+
 function toIsoString(value: DateLike) {
   return value instanceof Date ? value.toISOString() : value;
 }
@@ -339,7 +344,10 @@ function assertConversationRecord(
   }
 }
 
-export function createConversationsService(prisma: PrismaLike) {
+export function createConversationsService(
+  prisma: PrismaLike,
+  _options: ConversationsServiceOptions = {}
+) {
   async function findConversation(input: {
     workspaceId: string;
     conversationId: string;
