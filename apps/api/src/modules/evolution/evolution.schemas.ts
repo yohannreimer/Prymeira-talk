@@ -25,5 +25,16 @@ export const evolutionWebhookSchema = evolutionWebhookEnvelopeSchema.extend({
     .passthrough()
 });
 
+export const evolutionConnectionUpdateSchema = evolutionWebhookEnvelopeSchema.extend({
+  data: z
+    .object({
+      state: z.string().optional(),
+      status: z.string().optional()
+    })
+    .passthrough()
+    .optional()
+});
+
 export type EvolutionWebhookEnvelope = z.infer<typeof evolutionWebhookEnvelopeSchema>;
 export type EvolutionWebhookPayload = z.infer<typeof evolutionWebhookSchema>;
+export type EvolutionConnectionUpdatePayload = z.infer<typeof evolutionConnectionUpdateSchema>;

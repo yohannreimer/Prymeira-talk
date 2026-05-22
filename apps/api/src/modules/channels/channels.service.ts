@@ -126,7 +126,7 @@ function toIsoString(value: DateLike) {
   return value instanceof Date ? value.toISOString() : value;
 }
 
-function toChannelDto(record: ChannelRecord): ChannelDto {
+export function toChannelDto(record: ChannelRecord): ChannelDto {
   return {
     id: record.id,
     workspaceId: record.workspaceId,

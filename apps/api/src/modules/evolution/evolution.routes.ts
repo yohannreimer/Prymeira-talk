@@ -1,8 +1,14 @@
 import type { FastifyPluginAsync } from "fastify";
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { ChannelDto } from "@prymeira-talk/shared";
 import { z } from "zod";
+import { toChannelDto } from "../channels/channels.service.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
-import { evolutionWebhookEnvelopeSchema, evolutionWebhookSchema } from "./evolution.schemas.js";
+import {
+  evolutionConnectionUpdateSchema,
+  evolutionWebhookEnvelopeSchema,
+  evolutionWebhookSchema
+} from "./evolution.schemas.js";
 
 export interface EvolutionRoutesOptions {
   webhookSecret: string;
@@ -35,6 +41,17 @@ function hasValidWebhookSecret(header: string | string[] | undefined, expectedSe
   const expected = createHash("sha256").update(expectedSecret).digest();
 
   return timingSafeEqual(actual, expected);
+}
+
+function normalizeEvolutionEvent(event: string) {
+  return event.toLowerCase().replace(/_/g, ".");
+}
+
+function mapConnectionState(state: string | undefined): ChannelDto["status"] {
+  if (state === "open" || state === "connected") return "connected";
+  if (state === "connecting") return "connecting";
+  if (state === "close" || state === "closed" || state === "disconnected") return "disconnected";
+  return "failed";
 }
 
 export function isUniqueConstraintError(error: unknown) {
@@ -79,7 +96,37 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
       return reply.code(400).send({ ok: false, error: "invalid_webhook_payload" });
     }
 
-    if (envelope.data.event !== "messages.upsert") {
+    const normalizedEvent = normalizeEvolutionEvent(envelope.data.event);
+    const workspaceId = params.data.workspaceId;
+
+    if (normalizedEvent === "connection.update") {
+      const body = evolutionConnectionUpdateSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply.code(400).send({ ok: false, error: "invalid_webhook_payload" });
+      }
+
+      const state = body.data.data?.state ?? body.data.data?.status;
+      const channel = await app.prisma.channel.update({
+        where: {
+          workspaceId_provider_providerKey: {
+            workspaceId,
+            provider: "evolution",
+            providerKey: body.data.instance
+          }
+        },
+        data: { status: mapConnectionState(state) }
+      });
+
+      app.realtime.publish({
+        type: "channel.updated",
+        workspaceId,
+        payload: toChannelDto(channel)
+      });
+
+      return { ok: true };
+    }
+
+    if (normalizedEvent !== "messages.upsert") {
       return { ok: true, ignored: true };
     }
 
@@ -89,7 +136,6 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
     }
 
     const payload = body.data;
-    const workspaceId = params.data.workspaceId;
     const phone = extractPhone(payload.data.key.remoteJid);
     const messageBody = payload.data.message?.conversation ?? null;
     const receivedAt =

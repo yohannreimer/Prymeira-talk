@@ -16,7 +16,7 @@ const validWebhookBody = {
 
 function createMockPrisma(overrides: {
   $transaction?: ReturnType<typeof vi.fn>;
-  channel?: { findUnique?: ReturnType<typeof vi.fn> };
+  channel?: { findUnique?: ReturnType<typeof vi.fn>; update?: ReturnType<typeof vi.fn> };
   contact?: { upsert?: ReturnType<typeof vi.fn> };
   conversation?: {
     findUnique?: ReturnType<typeof vi.fn>;
@@ -35,8 +35,26 @@ function createMockPrisma(overrides: {
         vi.fn().mockResolvedValue({
           id: "channel_1",
           workspaceId: "workspace_a",
-          provider: "evolution",
-          providerKey: "client-one"
+          provider: "evolution" as const,
+          providerKey: "client-one",
+          phoneNumber: null,
+          displayName: "Client One",
+          status: "connecting" as const,
+          createdAt: new Date("2026-05-20T10:00:00.000Z"),
+          updatedAt: new Date("2026-05-20T10:00:00.000Z")
+        }),
+      update:
+        overrides.channel?.update ??
+        vi.fn().mockResolvedValue({
+          id: "channel_1",
+          workspaceId: "workspace_a",
+          provider: "evolution" as const,
+          providerKey: "client-one",
+          phoneNumber: null,
+          displayName: "Client One",
+          status: "connected" as const,
+          createdAt: new Date("2026-05-20T10:00:00.000Z"),
+          updatedAt: new Date("2026-05-20T12:00:00.000Z")
         })
     },
     contact: {
@@ -206,28 +224,52 @@ describe("Evolution webhook routes", () => {
     }
   });
 
-  it("ignores non-message events without touching Prisma", async () => {
-    const { app, prisma } = await buildEvolutionApp();
+  it("updates a channel and publishes realtime for uppercase connection updates", async () => {
+    const { app, prisma, publish } = await buildEvolutionApp();
 
     try {
       const response = await app.inject({
         method: "POST",
         url: "/webhooks/evolution/workspace_a",
         headers: { "x-prymeira-talk-secret": "top_secret" },
-        payload: { ...validWebhookBody, event: "connection.update" }
+        payload: {
+          event: "CONNECTION_UPDATE",
+          instance: "client-one",
+          data: { state: "open" }
+        }
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ ok: true, ignored: true });
+      expect(response.json()).toEqual({ ok: true });
+      expect(prisma.channel.update).toHaveBeenCalledWith({
+        where: {
+          workspaceId_provider_providerKey: {
+            workspaceId: "workspace_a",
+            provider: "evolution",
+            providerKey: "client-one"
+          }
+        },
+        data: { status: "connected" }
+      });
       expect(prisma.channel.findUnique).not.toHaveBeenCalled();
       expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(publish).toHaveBeenCalledWith({
+        type: "channel.updated",
+        workspaceId: "workspace_a",
+        payload: expect.objectContaining({
+          id: "channel_1",
+          workspaceId: "workspace_a",
+          providerKey: "client-one",
+          status: "connected"
+        })
+      });
     } finally {
       await app.close();
     }
   });
 
-  it("ignores non-message events before parsing message-shaped data", async () => {
-    const { app, prisma } = await buildEvolutionApp();
+  it("updates a channel for lowercase connection updates before parsing message-shaped data", async () => {
+    const { app, prisma, publish } = await buildEvolutionApp();
 
     try {
       const response = await app.inject({
@@ -242,8 +284,49 @@ describe("Evolution webhook routes", () => {
       });
 
       expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true });
+      expect(prisma.channel.update).toHaveBeenCalledWith({
+        where: {
+          workspaceId_provider_providerKey: {
+            workspaceId: "workspace_a",
+            provider: "evolution",
+            providerKey: "client-one"
+          }
+        },
+        data: { status: "connected" }
+      });
+      expect(prisma.channel.findUnique).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "channel.updated",
+          workspaceId: "workspace_a"
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("ignores unknown non-message events without touching Prisma", async () => {
+    const { app, prisma } = await buildEvolutionApp();
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          event: "qrcode.updated",
+          instance: "client-one",
+          data: { qrcode: "abc" }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ ok: true, ignored: true });
       expect(prisma.channel.findUnique).not.toHaveBeenCalled();
+      expect(prisma.channel.update).not.toHaveBeenCalled();
       expect(prisma.$transaction).not.toHaveBeenCalled();
     } finally {
       await app.close();
