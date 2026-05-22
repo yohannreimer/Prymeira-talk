@@ -19,6 +19,9 @@ const statusLabels: Record<ChannelDto["status"], string> = {
   failed: "Falhou"
 };
 
+const publicWebhookUrl = "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace";
+const localWebhookUrl = "http://localhost:3002/webhooks/evolution/local_workspace";
+
 function channelTitle(channel: ChannelDto) {
   return channel.displayName ?? channel.phoneNumber ?? channel.providerKey;
 }
@@ -232,6 +235,14 @@ export function ChannelsPage() {
       {error ? <p className="error-note" style={{ margin: '0 16px' }}>{error}</p> : null}
       {notice ? <p className="list-note" style={{ margin: '0 16px' }}>{notice}</p> : null}
 
+      <div className="channel-technical-strip">
+        <span className="status-badge status-badge--bot">
+          Evolution {qrResult?.mode === "real" ? "Real" : "Simulado"}
+        </span>
+        <code>{publicWebhookUrl}</code>
+        <code>{localWebhookUrl}</code>
+      </div>
+
       <div className="channels-list-wrap">
         {isLoading ? (
           <p className="list-note">Carregando canais...</p>
@@ -241,7 +252,7 @@ export function ChannelsPage() {
               <PlugZap size={28} aria-hidden="true" />
             </div>
             <h3>Nenhum canal conectado</h3>
-            <p>Clique em "Conectar canal" para criar uma sessão demo com QR simulado.</p>
+            <p>Clique em "Conectar canal" para iniciar uma sessão Evolution conforme o modo ativo.</p>
           </div>
         ) : (
           <div className="channel-card-list" role="list">

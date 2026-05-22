@@ -49,7 +49,34 @@ VITE_LOCAL_AUTH_BYPASS=true
 
 The API bypass accepts any bearer token, including the local websocket token `local-dev-bypass`. Keep it disabled outside local development.
 
-Evolution runs in controlled simulated mode unless a real active integration config is present. In simulated mode the Channels page can create a demo Evolution channel, generate a deterministic QR payload, reconnect/disconnect the channel, and create a test inbound message for Atendimento without external provider credentials.
+Evolution runs in controlled simulated mode by default. Real Evolution mode is enabled only at runtime with `EVOLUTION_MODE=real`, a valid `EVOLUTION_API_BASE_URL`, and `EVOLUTION_API_KEY`; local simulated mode can still create a demo Evolution channel, generate a deterministic QR payload, reconnect/disconnect the channel, and create a test inbound message for Atendimento without external provider credentials.
+
+## Real Evolution Minimum Operation
+
+Only WhatsApp channel setup and Atendimento messaging use real Evolution when real mode is active. Non-WhatsApp modules remain simulated for this minimum operation slice.
+
+Set runtime env values through deployment secrets or local env:
+
+```env
+PUBLIC_TALK_URL=https://talk.prymeiradigital.com.br
+LOCAL_TALK_URL=http://localhost:3002
+EVOLUTION_MODE=real
+EVOLUTION_API_BASE_URL=https://wsapi.yrdnegocios.com.br
+EVOLUTION_API_KEY=<set in deployment secret>
+EVOLUTION_WEBHOOK_SECRET=<set in deployment secret>
+```
+
+Cloudflare DNS:
+
+- `CNAME talk -> manager01.prymeiradigital.com.br`
+- Proxy status: DNS only
+
+Configure the Evolution instance webhook URLs exactly as:
+
+- Public: `https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace`
+- Local: `http://localhost:3002/webhooks/evolution/local_workspace`
+
+Do not commit the Evolution API key or webhook secret. Store both as deployment secrets.
 
 ## Suite Verification Checklist
 
