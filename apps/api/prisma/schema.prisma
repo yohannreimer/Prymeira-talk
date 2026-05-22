@@ -322,7 +322,7 @@ model ContactNote {
   createdAt      DateTime @default(now()) @map("created_at")
 
   contact      Contact       @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
-  conversation Conversation? @relation("ContactNoteConversation", fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: NoAction)
+  conversation Conversation? @relation("ContactNoteConversation", fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: SetNull)
   createdBy    UserProfile?  @relation("ContactNoteCreatedBy", fields: [workspaceId, createdById], references: [workspaceId, id], onDelete: NoAction)
 
   @@unique([workspaceId, id])
