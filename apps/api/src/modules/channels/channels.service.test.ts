@@ -324,6 +324,46 @@ describe("channels service", () => {
     expect(prisma.channel.update).not.toHaveBeenCalled();
   });
 
+  it("explains Evolution license activation failures before starting QR", async () => {
+    const createInstance = vi.fn().mockRejectedValue(
+      new EvolutionClientError(503, {
+        error: "service not activated",
+        code: "LICENSE_REQUIRED",
+        register_url: "https://wsapi.yrdnegocios.com.br/manager/login"
+      })
+    );
+    const prisma = createMockPrisma();
+    const service = createChannelsService(prisma, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "webhook-secret",
+        publicWebhookUrl: () =>
+          "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+        localWebhookUrl: () =>
+          "http://localhost:3002/webhooks/evolution/workspace_a",
+        client: { createInstance, connectInstance: vi.fn(), setWebhook: vi.fn(), sendText: vi.fn() }
+      }
+    });
+
+    const error = await service
+      .startQrSession({
+        workspaceId: "workspace_a",
+        channelId
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ChannelsServiceError);
+    expect(error).toMatchObject({
+      code: "EVOLUTION_LICENSE_REQUIRED",
+      statusCode: 503
+    });
+    if (!(error instanceof Error)) {
+      throw new Error("Expected an Error instance.");
+    }
+    expect(error.message).toContain("ativacao da licenca");
+    expect(prisma.channel.update).not.toHaveBeenCalled();
+  });
+
   it("starts a simulated QR session and persists the connecting status", async () => {
     const prisma = createMockPrisma();
     const service = createChannelsService(prisma);

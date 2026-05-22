@@ -177,6 +177,13 @@ export function isEvolutionInstanceNameInUseError(error: unknown): error is Evol
   );
 }
 
+export function isEvolutionLicenseRequiredError(error: unknown): error is EvolutionClientError {
+  return (
+    error instanceof EvolutionClientError &&
+    collectStrings(error.responseBody).some((message) => message === "LICENSE_REQUIRED")
+  );
+}
+
 function webhookPayload(webhookUrl: string, webhookSecret: string) {
   return {
     url: webhookUrl,

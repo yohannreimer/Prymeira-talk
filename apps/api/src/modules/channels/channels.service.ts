@@ -4,7 +4,10 @@ import type {
   ChannelQrResultDto,
   IntegrationMode
 } from "@prymeira-talk/shared";
-import { isEvolutionInstanceNameInUseError } from "../evolution/evolution.client.js";
+import {
+  isEvolutionInstanceNameInUseError,
+  isEvolutionLicenseRequiredError
+} from "../evolution/evolution.client.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 
 type DateLike = Date | string;
@@ -114,7 +117,7 @@ export class ChannelsServiceError extends Error {
   statusCode: number;
 
   constructor(
-    public code: "CHANNEL_NOT_FOUND" | "EVOLUTION_QR_UNAVAILABLE",
+    public code: "CHANNEL_NOT_FOUND" | "EVOLUTION_LICENSE_REQUIRED" | "EVOLUTION_QR_UNAVAILABLE",
     message: string,
     statusCode = 404
   ) {
@@ -270,26 +273,41 @@ export function createChannelsService(
         }
 
         const webhookUrl = evolution.publicWebhookUrl(input.workspaceId);
-        const instance = await client
-          .createInstance({
-            instanceName: existingChannel.providerKey,
+        let instance;
+
+        try {
+          instance = await client
+            .createInstance({
+              instanceName: existingChannel.providerKey,
+              webhookUrl,
+              webhookSecret: evolution.webhookSecret
+            })
+            .catch((error: unknown) => {
+              if (!isEvolutionInstanceNameInUseError(error)) {
+                throw error;
+              }
+
+              return client.connectInstance({
+                instanceName: existingChannel.providerKey
+              });
+            });
+
+          await client.setWebhook({
+            instanceName: instance.instanceName,
             webhookUrl,
             webhookSecret: evolution.webhookSecret
-          })
-          .catch((error: unknown) => {
-            if (!isEvolutionInstanceNameInUseError(error)) {
-              throw error;
-            }
-
-            return client.connectInstance({
-              instanceName: existingChannel.providerKey
-            });
           });
-        await client.setWebhook({
-          instanceName: instance.instanceName,
-          webhookUrl,
-          webhookSecret: evolution.webhookSecret
-        });
+        } catch (error) {
+          if (isEvolutionLicenseRequiredError(error)) {
+            throw new ChannelsServiceError(
+              "EVOLUTION_LICENSE_REQUIRED",
+              "Evolution API 2.4.0+ exige ativacao da licenca antes de criar sessoes WhatsApp. Ative a instancia no Evolution Manager ou configure a licenca no container da Evolution e tente novamente.",
+              503
+            );
+          }
+
+          throw error;
+        }
 
         if (!instance.qrCode) {
           throw new ChannelsServiceError(

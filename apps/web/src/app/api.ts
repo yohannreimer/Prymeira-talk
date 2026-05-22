@@ -675,10 +675,28 @@ async function fetchJson<T>(
   });
 
   if (!response.ok) {
-    throw new Error(`${errorLabel}: ${response.status}`);
+    throw new Error(await readApiErrorMessage(response, errorLabel));
   }
 
   return parse(await response.json());
+}
+
+export async function readApiErrorMessage(response: Response, fallbackLabel: string) {
+  try {
+    const data = await response.clone().json() as unknown;
+
+    if (data && typeof data === "object" && "error" in data) {
+      const error = (data as { error?: unknown }).error;
+
+      if (typeof error === "string" && error.trim().length > 0) {
+        return error;
+      }
+    }
+  } catch {
+    // Non-JSON error bodies fall back to the HTTP status message.
+  }
+
+  return `${fallbackLabel}: ${response.status}`;
 }
 
 export async function apiGetConversations(
@@ -936,7 +954,7 @@ export async function apiStartChannelQr(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to start channel QR: ${response.status}`);
+    throw new Error(await readApiErrorMessage(response, "Failed to start channel QR"));
   }
 
   const data = await response.json();
