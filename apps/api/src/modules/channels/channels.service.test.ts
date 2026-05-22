@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { channelSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
 import { ChannelsServiceError, createChannelsService } from "./channels.service.js";
+import { EvolutionClientError } from "../evolution/evolution.client.js";
 import type { PrismaLike } from "./channels.service.js";
 import { channelsRoutes } from "./channels.routes.js";
 
@@ -139,7 +140,7 @@ describe("channels service", () => {
           "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
         localWebhookUrl: () =>
           "http://localhost:3002/webhooks/evolution/workspace_a",
-        client: { createInstance, setWebhook, sendText: vi.fn() }
+        client: { createInstance, connectInstance: vi.fn(), setWebhook, sendText: vi.fn() }
       }
     });
 
@@ -189,7 +190,7 @@ describe("channels service", () => {
           "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
         localWebhookUrl: () =>
           "http://localhost:3002/webhooks/evolution/workspace_a",
-        client: { createInstance, setWebhook, sendText: vi.fn() }
+        client: { createInstance, connectInstance: vi.fn(), setWebhook, sendText: vi.fn() }
       }
     });
 
@@ -238,6 +239,57 @@ describe("channels service", () => {
     );
   });
 
+  it("connects an existing Evolution instance when QR creation finds a reused provider key", async () => {
+    const createInstance = vi.fn().mockRejectedValue(
+      new EvolutionClientError(403, {
+        status: 403,
+        error: "Forbidden",
+        response: {
+          message: [`This name "${baseChannel.providerKey}" is already in use.`]
+        }
+      })
+    );
+    const connectInstance = vi.fn().mockResolvedValue({
+      instanceName: baseChannel.providerKey,
+      qrCode: "2@existing-real-qr",
+      raw: {}
+    });
+    const setWebhook = vi.fn().mockResolvedValue({ raw: {} });
+    const prisma = createMockPrisma();
+    const service = createChannelsService(prisma, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "webhook-secret",
+        publicWebhookUrl: () =>
+          "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+        localWebhookUrl: () =>
+          "http://localhost:3002/webhooks/evolution/workspace_a",
+        client: { createInstance, connectInstance, setWebhook, sendText: vi.fn() }
+      }
+    });
+
+    const result = await service.startQrSession({
+      workspaceId: "workspace_a",
+      channelId
+    });
+
+    expect(connectInstance).toHaveBeenCalledWith({
+      instanceName: baseChannel.providerKey
+    });
+    expect(setWebhook).toHaveBeenCalledWith({
+      instanceName: baseChannel.providerKey,
+      webhookUrl: "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+      webhookSecret: "webhook-secret"
+    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        mode: "real",
+        qrCode: "2@existing-real-qr",
+        channel: expect.objectContaining({ status: "connecting" })
+      })
+    );
+  });
+
   it("rejects real QR sessions when Evolution does not return a QR code", async () => {
     const createInstance = vi.fn().mockResolvedValue({
       instanceName: baseChannel.providerKey,
@@ -253,7 +305,7 @@ describe("channels service", () => {
           "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
         localWebhookUrl: () =>
           "http://localhost:3002/webhooks/evolution/workspace_a",
-        client: { createInstance, setWebhook: vi.fn(), sendText: vi.fn() }
+        client: { createInstance, connectInstance: vi.fn(), setWebhook: vi.fn(), sendText: vi.fn() }
       }
     });
 

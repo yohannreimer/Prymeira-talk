@@ -46,6 +46,16 @@ export interface CreateInstanceResult {
   raw: unknown;
 }
 
+export interface ConnectInstanceInput {
+  instanceName: string;
+}
+
+export interface ConnectInstanceResult {
+  instanceName: string;
+  qrCode: string | null;
+  raw: unknown;
+}
+
 export interface SetWebhookInput {
   instanceName: string;
   webhookUrl: string;
@@ -69,6 +79,7 @@ export interface SendTextResult {
 
 export interface EvolutionClient {
   createInstance(input: CreateInstanceInput): Promise<CreateInstanceResult>;
+  connectInstance(input: ConnectInstanceInput): Promise<ConnectInstanceResult>;
   setWebhook(input: SetWebhookInput): Promise<SetWebhookResult>;
   sendText(input: SendTextInput): Promise<SendTextResult>;
 }
@@ -142,6 +153,30 @@ function extractInstanceName(body: unknown, fallback: string): string {
   return getString(getRecord(body, "instance"), "instanceName") ?? fallback;
 }
 
+function collectStrings(value: unknown): string[] {
+  if (typeof value === "string") {
+    return [value];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap(collectStrings);
+  }
+
+  if (isRecord(value)) {
+    return Object.values(value).flatMap(collectStrings);
+  }
+
+  return [];
+}
+
+export function isEvolutionInstanceNameInUseError(error: unknown): error is EvolutionClientError {
+  return (
+    error instanceof EvolutionClientError &&
+    error.statusCode === 403 &&
+    collectStrings(error.responseBody).some((message) => /already in use/i.test(message))
+  );
+}
+
 function webhookPayload(webhookUrl: string, webhookSecret: string) {
   return {
     url: webhookUrl,
@@ -206,6 +241,22 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     return responseBody;
   }
 
+  async function get(path: string) {
+    const response = await fetchImpl(`${baseUrl}${path}`, {
+      method: "GET",
+      headers: {
+        apikey: options.apiKey
+      }
+    });
+    const responseBody = sanitizeResponseBody(await parseResponseBody(response));
+
+    if (!response.ok) {
+      throw new EvolutionClientError(response.status, responseBody);
+    }
+
+    return responseBody;
+  }
+
   return {
     async createInstance(input) {
       const responseBody = await post("/instance/create", {
@@ -214,6 +265,16 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
         qrcode: true,
         webhook: webhookPayload(input.webhookUrl, input.webhookSecret)
       });
+
+      return {
+        instanceName: extractInstanceName(responseBody, input.instanceName),
+        qrCode: extractQrCode(responseBody),
+        raw: responseBody
+      };
+    },
+
+    async connectInstance(input) {
+      const responseBody = await get(`/instance/connect/${encodeURIComponent(input.instanceName)}`);
 
       return {
         instanceName: extractInstanceName(responseBody, input.instanceName),

@@ -229,6 +229,38 @@ describe("Evolution client", () => {
     );
   });
 
+  it("connects an existing instance and returns its QR code", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({
+        code: "2@existing-qr",
+        count: 1
+      })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    const result = await client.connectInstance({
+      instanceName: "talk-local_workspace-abc"
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://wsapi.yrdnegocios.com.br/instance/connect/talk-local_workspace-abc",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({ apikey: "secret-key" })
+      })
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        instanceName: "talk-local_workspace-abc",
+        qrCode: "2@existing-qr"
+      })
+    );
+  });
+
   it("redacts secret fields from successful raw responses", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       createJsonResponse({

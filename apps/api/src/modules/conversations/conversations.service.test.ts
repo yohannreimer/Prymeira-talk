@@ -387,6 +387,7 @@ describe("conversations service", () => {
         localWebhookUrl: vi.fn(),
         client: {
           createInstance: vi.fn(),
+          connectInstance: vi.fn(),
           setWebhook: vi.fn(),
           sendText
         }
@@ -429,6 +430,7 @@ describe("conversations service", () => {
         localWebhookUrl: vi.fn(),
         client: {
           createInstance: vi.fn(),
+          connectInstance: vi.fn(),
           setWebhook: vi.fn(),
           sendText
         }
@@ -933,7 +935,12 @@ describe("conversation routes", () => {
         webhookSecret: "secret",
         publicWebhookUrl: vi.fn(),
         localWebhookUrl: vi.fn(),
-        client: { createInstance: vi.fn(), setWebhook: vi.fn(), sendText: vi.fn() }
+        client: {
+          createInstance: vi.fn(),
+          connectInstance: vi.fn(),
+          setWebhook: vi.fn(),
+          sendText: vi.fn()
+        }
       }
     });
 
@@ -982,7 +989,7 @@ describe("conversation routes", () => {
         webhookSecret: "secret",
         publicWebhookUrl: vi.fn(),
         localWebhookUrl: vi.fn(),
-        client: { createInstance: vi.fn(), setWebhook: vi.fn(), sendText }
+        client: { createInstance: vi.fn(), connectInstance: vi.fn(), setWebhook: vi.fn(), sendText }
       }
     });
 

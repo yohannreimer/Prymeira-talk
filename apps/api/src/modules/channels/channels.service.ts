@@ -4,6 +4,7 @@ import type {
   ChannelQrResultDto,
   IntegrationMode
 } from "@prymeira-talk/shared";
+import { isEvolutionInstanceNameInUseError } from "../evolution/evolution.client.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 
 type DateLike = Date | string;
@@ -253,7 +254,10 @@ export function createChannelsService(
       workspaceId: string;
       channelId: string;
     }): Promise<ChannelQrResultDto> {
-      if (options.evolution?.mode === "real" && options.evolution.client) {
+      const evolution = options.evolution;
+      const client = evolution?.client;
+
+      if (evolution?.mode === "real" && client) {
         const existingChannel = await prisma.channel.findFirst({
           where: {
             workspaceId: input.workspaceId,
@@ -265,16 +269,26 @@ export function createChannelsService(
           throw new ChannelsServiceError("CHANNEL_NOT_FOUND", "Channel not found.");
         }
 
-        const webhookUrl = options.evolution.publicWebhookUrl(input.workspaceId);
-        const instance = await options.evolution.client.createInstance({
-          instanceName: existingChannel.providerKey,
-          webhookUrl,
-          webhookSecret: options.evolution.webhookSecret
-        });
-        await options.evolution.client.setWebhook({
+        const webhookUrl = evolution.publicWebhookUrl(input.workspaceId);
+        const instance = await client
+          .createInstance({
+            instanceName: existingChannel.providerKey,
+            webhookUrl,
+            webhookSecret: evolution.webhookSecret
+          })
+          .catch((error: unknown) => {
+            if (!isEvolutionInstanceNameInUseError(error)) {
+              throw error;
+            }
+
+            return client.connectInstance({
+              instanceName: existingChannel.providerKey
+            });
+          });
+        await client.setWebhook({
           instanceName: instance.instanceName,
           webhookUrl,
-          webhookSecret: options.evolution.webhookSecret
+          webhookSecret: evolution.webhookSecret
         });
 
         if (!instance.qrCode) {
