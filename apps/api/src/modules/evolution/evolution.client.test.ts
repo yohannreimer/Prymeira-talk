@@ -215,14 +215,16 @@ describe("Evolution client", () => {
     );
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual(
       expect.objectContaining({
-        enabled: true,
-        url: "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace",
-        webhookByEvents: false,
-        webhookBase64: true,
-        headers: expect.objectContaining({
-          "x-prymeira-talk-secret": "webhook-secret"
-        }),
-        events: expect.arrayContaining(["CONNECTION_UPDATE", "MESSAGES_UPSERT"])
+        webhook: expect.objectContaining({
+          enabled: true,
+          url: "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace",
+          webhookByEvents: false,
+          webhookBase64: true,
+          headers: expect.objectContaining({
+            "x-prymeira-talk-secret": "webhook-secret"
+          }),
+          events: expect.arrayContaining(["CONNECTION_UPDATE", "MESSAGES_UPSERT"])
+        })
       })
     );
   });

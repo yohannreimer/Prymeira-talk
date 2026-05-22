@@ -157,15 +157,17 @@ function webhookPayload(webhookUrl: string, webhookSecret: string) {
 
 function setWebhookPayload(webhookUrl: string, webhookSecret: string) {
   return {
-    enabled: true,
-    url: webhookUrl,
-    webhookByEvents: false,
-    webhookBase64: true,
-    headers: {
-      "x-prymeira-talk-secret": webhookSecret,
-      "Content-Type": "application/json"
-    },
-    events: EVOLUTION_EVENTS
+    webhook: {
+      enabled: true,
+      url: webhookUrl,
+      webhookByEvents: false,
+      webhookBase64: true,
+      headers: {
+        "x-prymeira-talk-secret": webhookSecret,
+        "Content-Type": "application/json"
+      },
+      events: EVOLUTION_EVENTS
+    }
   };
 }
 
