@@ -121,6 +121,7 @@ describe("app", () => {
         requireProductAccess: vi.fn(async () => ({
           allowed: false,
           product_key: "talk",
+          workspace_id: "workspace_1",
           status: "disabled",
           reason: "denied"
         })),
@@ -185,7 +186,8 @@ describe("app", () => {
     }
   });
 
-  it("returns workspace id and role from allowed account products", async () => {
+  it("returns workspace id and role from an allowed access decision", async () => {
+    const fetchAccess = vi.fn();
     const app = await buildApp(
       {},
       {
@@ -193,25 +195,12 @@ describe("app", () => {
         requireProductAccess: vi.fn(async () => ({
           allowed: true,
           product_key: "talk",
+          workspace_id: "workspace_1",
+          product_role: "manager",
           status: "active",
           reason: "allowed"
         })),
-        fetch: vi.fn(async () =>
-          new Response(
-            JSON.stringify({
-              workspace: { id: "workspace_1", role: "agent" },
-              products: [
-                {
-                  product_key: "talk",
-                  allowed: true,
-                  workspace_id: "workspace_1",
-                  product_role: "manager"
-                }
-              ]
-            }),
-            { status: 200 }
-          )
-        )
+        fetch: fetchAccess
       }
     );
 
@@ -224,12 +213,52 @@ describe("app", () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "manager" });
+      expect(fetchAccess).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
   });
 
-  it("returns 403 when account products do not include Talk", async () => {
+  it("validates product access through Account access-check by default", async () => {
+    const fetchAccess = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          allowed: true,
+          product_key: "talk",
+          workspace_id: "workspace_1",
+          workspace_role: "owner",
+          status: "active",
+          reason: "allowed"
+        }),
+        { status: 200 }
+      )
+    );
+    const app = await buildApp(
+      {},
+      {
+        authEnabled: true,
+        fetch: fetchAccess
+      }
+    );
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/me",
+        headers: { authorization: "Bearer clerk-token" }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "owner" });
+      expect(fetchAccess).toHaveBeenCalledWith("http://localhost:3001/access-check?product_key=talk", {
+        headers: { Authorization: "Bearer clerk-token" }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 403 when product access omits the workspace id", async () => {
     const app = await buildApp(
       {},
       {
@@ -239,22 +268,7 @@ describe("app", () => {
           product_key: "talk",
           status: "active",
           reason: "allowed"
-        })),
-        fetch: vi.fn(async () =>
-          new Response(
-            JSON.stringify({
-              workspace: { id: "workspace_1", role: "owner" },
-              products: [
-                {
-                  product_key: "operis",
-                  allowed: true,
-                  workspace_id: "workspace_1"
-                }
-              ]
-            }),
-            { status: 200 }
-          )
-        )
+        }))
       }
     );
 
@@ -271,7 +285,7 @@ describe("app", () => {
     }
   });
 
-  it("returns 403 when account products omit the Talk workspace id", async () => {
+  it("returns 403 when product access includes an empty workspace id", async () => {
     const app = await buildApp(
       {},
       {
@@ -279,24 +293,11 @@ describe("app", () => {
         requireProductAccess: vi.fn(async () => ({
           allowed: true,
           product_key: "talk",
+          workspace_id: "",
+          product_role: "owner",
           status: "active",
           reason: "allowed"
-        })),
-        fetch: vi.fn(async () =>
-          new Response(
-            JSON.stringify({
-              workspace: { id: "workspace_1", role: "owner" },
-              products: [
-                {
-                  product_key: "talk",
-                  allowed: true,
-                  product_role: "owner"
-                }
-              ]
-            }),
-            { status: 200 }
-          )
-        )
+        }))
       }
     );
 
@@ -313,60 +314,11 @@ describe("app", () => {
     }
   });
 
-  it("returns 403 when account products include an empty Talk workspace id", async () => {
+  it("returns 502 when access-check returns an upstream failure", async () => {
     const app = await buildApp(
       {},
       {
         authEnabled: true,
-        requireProductAccess: vi.fn(async () => ({
-          allowed: true,
-          product_key: "talk",
-          status: "active",
-          reason: "allowed"
-        })),
-        fetch: vi.fn(async () =>
-          new Response(
-            JSON.stringify({
-              workspace: { id: "workspace_1", role: "owner" },
-              products: [
-                {
-                  product_key: "talk",
-                  allowed: true,
-                  workspace_id: "",
-                  product_role: "owner"
-                }
-              ]
-            }),
-            { status: 200 }
-          )
-        )
-      }
-    );
-
-    try {
-      const response = await app.inject({
-        method: "GET",
-        url: "/me",
-        headers: { authorization: "Bearer clerk-token" }
-      });
-
-      expect(response.statusCode).toBe(403);
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("returns 502 when account products returns an upstream failure", async () => {
-    const app = await buildApp(
-      {},
-      {
-        authEnabled: true,
-        requireProductAccess: vi.fn(async () => ({
-          allowed: true,
-          product_key: "talk",
-          status: "active",
-          reason: "allowed"
-        })),
         fetch: vi.fn(async () => new Response("Account unavailable", { status: 500 }))
       }
     );

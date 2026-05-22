@@ -9,7 +9,7 @@ const workspaceAccessSchema = z.object({
   plan: z.string().optional(),
   limits: z.record(z.string(), z.unknown()).optional(),
   reason: z.string(),
-  workspace_id: z.string().min(1).optional(),
+  workspace_id: z.string().optional(),
   workspace_role: z.string().optional(),
   product_role: z.string().optional()
 });
@@ -92,84 +92,43 @@ function normalizeRole(role: string | undefined): "owner" | "manager" | "agent" 
   return "agent";
 }
 
-async function resolveWorkspaceAccess(input: {
-  accountApiUrl: string;
-  productKey: string;
-  clerkToken: string;
-  fetch: Fetch;
-}) {
-  const response = await input
-    .fetch(`${input.accountApiUrl.replace(/\/$/, "")}/me/products`, {
+async function defaultRequireProductAccess(
+  productKey: string,
+  options: { accountApiUrl: string; clerkToken: string },
+  fetchAccess: Fetch = fetch
+) {
+  const response = await fetchAccess(
+    `${options.accountApiUrl.replace(/\/$/, "")}/access-check?product_key=${encodeURIComponent(productKey)}`,
+    {
       headers: {
-        Authorization: `Bearer ${input.clerkToken}`
+        Authorization: `Bearer ${options.clerkToken}`
       }
-    })
-    .catch(() => {
-      throw authError(502, "Unable to resolve workspace access.");
-    });
+    }
+  ).catch(() => {
+    throw authError(502, "Unable to validate product access.");
+  });
 
   if (!response.ok) {
-    if (response.status >= 500) {
-      throw authError(502, "Unable to resolve workspace access.");
+    if (response.status === 401) {
+      throw authError(401, "Missing or invalid bearer token.");
     }
 
-    throw authError(403, "Workspace access denied.");
+    throw authError(502, "Unable to validate product access.");
   }
 
-  const data = await z
-    .object({
-      workspace: z.object({
-        id: z.string().min(1),
-        role: z.string().optional()
-      }),
-      products: z.array(
-        z.object({
-          product_key: z.string(),
-          allowed: z.boolean(),
-          workspace_id: z.string().optional(),
-          workspace_role: z.string().optional(),
-          product_role: z.string().optional()
-        })
-      )
-    })
-    .parseAsync(
-      await response.json().catch(() => {
-        throw authError(502, "Invalid workspace access response.");
-      })
-    )
-    .catch(() => {
-      throw authError(502, "Invalid workspace access response.");
-    });
-
-  const product = data.products.find((item) => item.product_key === input.productKey);
-  if (!product?.allowed) {
-    throw authError(403, "Product access denied.");
-  }
-
-  if (!product.workspace_id) {
-    throw authError(403, "Workspace access denied.");
-  }
-
-  return {
-    workspaceId: product.workspace_id,
-    role: normalizeRole(product.product_role ?? product.workspace_role ?? data.workspace.role)
-  };
-}
-
-async function defaultRequireProductAccess(productKey: string) {
-  return {
-    allowed: true,
-    product_key: productKey,
-    status: "active",
-    reason: "validated_by_account_products"
-  };
+  return response.json().catch(() => {
+    throw authError(502, "Invalid product access response.");
+  });
 }
 
 export const authContextPlugin = fp(
   async (app, options: AuthContextPluginOptions) => {
     app.decorateRequest("talk");
-    const requireAccess = options.requireProductAccess ?? defaultRequireProductAccess;
-    const fetchProducts = options.fetch ?? fetch;
+    const fetchAccess = options.fetch ?? fetch;
+    const requireAccess =
+      options.requireProductAccess ??
+      ((productKey: string, input: { accountApiUrl: string; clerkToken: string }) =>
+        defaultRequireProductAccess(productKey, input, fetchAccess));
 
     app.addHook("onRequest", async (request) => {
       const pathname = readPathname(request);
@@ -213,16 +172,13 @@ export const authContextPlugin = fp(
         throw authError(403, "Product access denied.");
       }
 
-      const workspaceAccess = await resolveWorkspaceAccess({
-        accountApiUrl: options.accountApiUrl,
-        productKey: options.productKey,
-        clerkToken,
-        fetch: fetchProducts
-      });
+      if (!parsedAccess.workspace_id) {
+        throw authError(403, "Workspace access denied.");
+      }
 
       request.talk = {
-        workspaceId: workspaceAccess.workspaceId,
-        role: workspaceAccess.role
+        workspaceId: parsedAccess.workspace_id,
+        role: normalizeRole(parsedAccess.product_role ?? parsedAccess.workspace_role)
       };
     });
   }
