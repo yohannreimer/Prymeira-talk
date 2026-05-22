@@ -11,6 +11,7 @@ import {
   apiStartChannelQr
 } from "../../app/api";
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
+import { getQrImageSrc } from "./qr-display";
 
 const statusLabels: Record<ChannelDto["status"], string> = {
   disconnected: "Desconectado",
@@ -133,6 +134,7 @@ export function ChannelsPage() {
     [channels, selectedChannelId]
   );
   const simulatedModeActive = qrResult?.mode === "simulated";
+  const qrImageSrc = getQrImageSrc(qrResult?.qrCode);
   const connectedCount = channels.filter((channel) => channel.status === "connected").length;
   const connectingCount = channels.filter((channel) => channel.status === "connecting").length;
 
@@ -346,8 +348,18 @@ export function ChannelsPage() {
               <div className="context-card">
                 <div className="context-card-title">Payload QR</div>
                 <div className="qr-box" aria-label="Payload do QR Code">
-                  <QrCode size={36} aria-hidden="true" />
-                  <code>{qrResult?.qrCode ?? 'Gerando sessão QR...'}</code>
+                  {qrImageSrc ? (
+                    <img
+                      alt="QR Code para conectar o WhatsApp"
+                      className="qr-image"
+                      src={qrImageSrc}
+                    />
+                  ) : (
+                    <>
+                      <QrCode size={36} aria-hidden="true" />
+                      <code>{qrResult?.qrCode ?? 'Gerando sessão QR...'}</code>
+                    </>
+                  )}
                 </div>
               </div>
               <div className="context-card">
