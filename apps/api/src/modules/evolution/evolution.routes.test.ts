@@ -26,6 +26,7 @@ function createMockPrisma(overrides: {
   };
   message?: {
     create?: ReturnType<typeof vi.fn>;
+    update?: ReturnType<typeof vi.fn>;
   };
 } = {}) {
   const prisma = {
@@ -115,6 +116,21 @@ function createMockPrisma(overrides: {
           conversationId: "conv_1",
           providerMessageId: "provider_msg_1",
           direction: "inbound",
+          type: "text",
+          body: "Oi",
+          mediaUrl: null,
+          status: "delivered",
+          sentByUserId: null,
+          createdAt: new Date("2026-05-20T12:00:00.000Z")
+        }),
+      update:
+        overrides.message?.update ??
+        vi.fn().mockResolvedValue({
+          id: "msg_1",
+          workspaceId: "workspace_a",
+          conversationId: "conv_1",
+          providerMessageId: "provider_msg_1",
+          direction: "outbound",
           type: "text",
           body: "Oi",
           mediaUrl: null,
@@ -308,6 +324,101 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it("returns channel_not_found for orphaned connection updates", async () => {
+    const prisma = createMockPrisma({
+      channel: {
+        update: vi.fn().mockRejectedValue({ code: "P2025" })
+      }
+    });
+    const { app, publish } = await buildEvolutionApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          event: "CONNECTION_UPDATE",
+          instance: "orphaned-instance",
+          data: { state: "open" }
+        }
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ ok: false, error: "channel_not_found" });
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("updates message status from Evolution message update events", async () => {
+    const { app, prisma, publish } = await buildEvolutionApp();
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          event: "MESSAGES_UPDATE",
+          instance: "client-one",
+          data: {
+            key: { id: "provider_msg_1" },
+            status: "delivered"
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true });
+      expect(prisma.message.update).toHaveBeenCalledWith({
+        where: {
+          workspaceId_providerMessageId: {
+            workspaceId: "workspace_a",
+            providerMessageId: "provider_msg_1"
+          }
+        },
+        data: { status: "delivered" }
+      });
+      expect(publish).toHaveBeenCalledWith({
+        type: "message.status_changed",
+        workspaceId: "workspace_a",
+        payload: {
+          messageId: "msg_1",
+          status: "delivered"
+        }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts QR code update events without parsing message-shaped data", async () => {
+    const { app, prisma } = await buildEvolutionApp();
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          event: "QRCODE_UPDATED",
+          instance: "client-one",
+          data: { qrcode: "abc" }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true });
+      expect(prisma.channel.findUnique).not.toHaveBeenCalled();
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("ignores unknown non-message events without touching Prisma", async () => {
     const { app, prisma } = await buildEvolutionApp();
 
@@ -317,7 +428,7 @@ describe("Evolution webhook routes", () => {
         url: "/webhooks/evolution/workspace_a",
         headers: { "x-prymeira-talk-secret": "top_secret" },
         payload: {
-          event: "qrcode.updated",
+          event: "foo.event",
           instance: "client-one",
           data: { qrcode: "abc" }
         }

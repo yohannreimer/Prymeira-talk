@@ -1,9 +1,11 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { EvolutionClientError } from "../evolution/evolution.client.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import {
   ConversationActionError,
   ConversationNotFoundError,
+  OutboundMessageValidationError,
   createConversationsService
 } from "./conversations.service.js";
 import type { PrismaLike } from "./conversations.service.js";
@@ -206,6 +208,10 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
         return null;
       }
 
+      if (error instanceof OutboundMessageValidationError || error instanceof EvolutionClientError) {
+        return error;
+      }
+
       throw error;
     });
 
@@ -213,6 +219,17 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       return reply
         .code(404)
         .send({ code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
+    }
+
+    if (result instanceof OutboundMessageValidationError) {
+      return reply.code(result.statusCode).send({ code: result.code, error: result.message });
+    }
+
+    if (result instanceof EvolutionClientError) {
+      return reply.code(502).send({
+        code: "EVOLUTION_SEND_FAILED",
+        error: "Evolution did not accept the outbound message."
+      });
     }
 
     app.realtime.publish({

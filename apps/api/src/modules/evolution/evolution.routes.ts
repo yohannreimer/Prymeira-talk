@@ -1,11 +1,12 @@
 import type { FastifyPluginAsync } from "fastify";
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { ChannelDto } from "@prymeira-talk/shared";
+import type { ChannelDto, MessageDto } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { toChannelDto } from "../channels/channels.service.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import {
   evolutionConnectionUpdateSchema,
+  evolutionMessageStatusUpdateSchema,
   evolutionWebhookEnvelopeSchema,
   evolutionWebhookSchema
 } from "./evolution.schemas.js";
@@ -52,6 +53,25 @@ function mapConnectionState(state: string | undefined): ChannelDto["status"] {
   if (state === "connecting") return "connecting";
   if (state === "close" || state === "closed" || state === "disconnected") return "disconnected";
   return "failed";
+}
+
+function mapEvolutionMessageStatus(status: string | number | undefined): MessageDto["status"] | null {
+  const normalized = String(status ?? "").toLowerCase();
+  if (["read", "played"].includes(normalized) || normalized === "4") return "read";
+  if (["delivered", "delivery_ack"].includes(normalized) || normalized === "3") return "delivered";
+  if (["sent", "server_ack", "sended"].includes(normalized) || normalized === "2") return "sent";
+  if (["pending", "queued"].includes(normalized) || normalized === "1") return "pending";
+  if (["failed", "error"].includes(normalized)) return "failed";
+  return null;
+}
+
+function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
+  );
 }
 
 export function isUniqueConstraintError(error: unknown) {
@@ -115,12 +135,71 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           }
         },
         data: { status: mapConnectionState(state) }
+      }).catch((error: unknown) => {
+        if (isPrismaKnownRequestErrorCode(error, "P2025")) {
+          return null;
+        }
+
+        throw error;
       });
+
+      if (!channel) {
+        return reply.code(404).send({ ok: false, error: "channel_not_found" });
+      }
 
       app.realtime.publish({
         type: "channel.updated",
         workspaceId,
         payload: toChannelDto(channel)
+      });
+
+      return { ok: true };
+    }
+
+    if (normalizedEvent === "qrcode.updated") {
+      return { ok: true };
+    }
+
+    if (normalizedEvent === "messages.update" || normalizedEvent === "send.message") {
+      const body = evolutionMessageStatusUpdateSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply.code(400).send({ ok: false, error: "invalid_webhook_payload" });
+      }
+
+      const providerMessageId = body.data.data?.key?.id ?? body.data.data?.messageId ?? body.data.data?.id;
+      const status = mapEvolutionMessageStatus(body.data.data?.status);
+
+      if (!providerMessageId || !status) {
+        return { ok: true, ignored: true };
+      }
+
+      const message = await app.prisma.message.update({
+        where: {
+          workspaceId_providerMessageId: {
+            workspaceId,
+            providerMessageId
+          }
+        },
+        data: { status }
+      }).catch((error: unknown) => {
+        if (isPrismaKnownRequestErrorCode(error, "P2025")) {
+          return null;
+        }
+
+        throw error;
+      });
+
+      if (!message) {
+        return { ok: true, ignored: true };
+      }
+
+      app.realtime.publish({
+        type: "message.status_changed",
+        workspaceId,
+        payload: {
+          messageId: message.id,
+          status: message.status
+        }
       });
 
       return { ok: true };

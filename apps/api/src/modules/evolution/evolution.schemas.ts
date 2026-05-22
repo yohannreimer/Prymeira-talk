@@ -35,6 +35,24 @@ export const evolutionConnectionUpdateSchema = evolutionWebhookEnvelopeSchema.ex
     .optional()
 });
 
+export const evolutionMessageStatusUpdateSchema = evolutionWebhookEnvelopeSchema.extend({
+  data: z
+    .object({
+      id: z.string().min(1).optional(),
+      messageId: z.string().min(1).optional(),
+      status: z.union([z.string(), z.number()]).optional(),
+      key: z
+        .object({
+          id: z.string().min(1).optional()
+        })
+        .passthrough()
+        .optional()
+    })
+    .passthrough()
+    .optional()
+});
+
 export type EvolutionWebhookEnvelope = z.infer<typeof evolutionWebhookEnvelopeSchema>;
 export type EvolutionWebhookPayload = z.infer<typeof evolutionWebhookSchema>;
 export type EvolutionConnectionUpdatePayload = z.infer<typeof evolutionConnectionUpdateSchema>;
+export type EvolutionMessageStatusUpdatePayload = z.infer<typeof evolutionMessageStatusUpdateSchema>;

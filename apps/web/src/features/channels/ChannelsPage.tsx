@@ -125,9 +125,7 @@ export function ChannelsPage() {
     }
 
     const channel = await apiCreateChannel(getToken, {
-      displayName: "WhatsApp Demo",
-      providerKey: "demo-evolution",
-      phoneNumber: "+55 47 99999-0000"
+      displayName: "WhatsApp"
     });
     setChannels((current) => mergeChannel(current, channel));
     setSelectedChannelId(channel.id);

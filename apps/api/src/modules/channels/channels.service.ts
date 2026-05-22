@@ -110,11 +110,16 @@ interface ChannelsServiceOptions {
 }
 
 export class ChannelsServiceError extends Error {
+  statusCode: number;
+
   constructor(
-    public code: "CHANNEL_NOT_FOUND",
-    message: string
+    public code: "CHANNEL_NOT_FOUND" | "EVOLUTION_QR_UNAVAILABLE",
+    message: string,
+    statusCode = 404
   ) {
     super(message);
+    this.name = "ChannelsServiceError";
+    this.statusCode = statusCode;
   }
 }
 
@@ -225,39 +230,11 @@ export function createChannelsService(
       providerKey?: string;
       phoneNumber?: string;
     }): Promise<ChannelDto> {
-      if (options.evolution?.mode === "real" && options.evolution.client) {
-        const instanceName =
-          normalizeOptional(input.providerKey) ?? createInstanceName(input.workspaceId);
-        const webhookUrl = options.evolution.publicWebhookUrl(input.workspaceId);
-        const instance = await options.evolution.client.createInstance({
-          instanceName,
-          webhookUrl,
-          webhookSecret: options.evolution.webhookSecret
-        });
-
-        await options.evolution.client.setWebhook({
-          instanceName: instance.instanceName,
-          webhookUrl,
-          webhookSecret: options.evolution.webhookSecret
-        });
-
-        const channel = await prisma.channel.create({
-          data: {
-            workspaceId: input.workspaceId,
-            provider: "evolution",
-            providerKey: instance.instanceName,
-            displayName: input.displayName.trim(),
-            phoneNumber: normalizeOptional(input.phoneNumber) ?? null,
-            status: "connecting"
-          }
-        });
-
-        return toChannelDto(channel);
-      }
-
       const providerKey =
         normalizeOptional(input.providerKey) ??
-        `demo-evolution-${Date.now().toString(36)}`;
+        (options.evolution?.mode === "real" && options.evolution.client
+          ? createInstanceName(input.workspaceId)
+          : `demo-evolution-${Date.now().toString(36)}`);
       const channel = await prisma.channel.create({
         data: {
           workspaceId: input.workspaceId,
@@ -294,18 +271,31 @@ export function createChannelsService(
           webhookUrl,
           webhookSecret: options.evolution.webhookSecret
         });
+        await options.evolution.client.setWebhook({
+          instanceName: instance.instanceName,
+          webhookUrl,
+          webhookSecret: options.evolution.webhookSecret
+        });
+
+        if (!instance.qrCode) {
+          throw new ChannelsServiceError(
+            "EVOLUTION_QR_UNAVAILABLE",
+            "Evolution did not return a QR code for this channel.",
+            502
+          );
+        }
+
         const channel = await updateChannelStatus({
           ...input,
           status: "connecting"
         });
-        const payload = instance.qrCode ?? "";
 
         return {
           mode: "real",
           channel: toChannelDto(channel),
-          qrCode: payload,
+          qrCode: instance.qrCode,
           qr: {
-            payload,
+            payload: instance.qrCode,
             expiresAt: realQrExpiresAt()
           }
         };

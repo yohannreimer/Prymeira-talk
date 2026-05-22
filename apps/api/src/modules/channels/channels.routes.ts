@@ -38,7 +38,7 @@ function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
 
 function handleChannelsError(reply: FastifyReply, error: unknown) {
   if (error instanceof ChannelsServiceError) {
-    return reply.code(404).send({ code: error.code, error: error.message });
+    return reply.code(error.statusCode).send({ code: error.code, error: error.message });
   }
 
   if (isPrismaKnownRequestErrorCode(error, "P2025")) {

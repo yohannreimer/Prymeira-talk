@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { conversationSchema, messageSchema, realtimeEventSchema } from "@prymeira-talk/shared";
+import { EvolutionClientError } from "../evolution/evolution.client.js";
 import {
   ConversationActionError,
   ConversationNotFoundError,
@@ -902,6 +903,103 @@ describe("conversation routes", () => {
       for (const [event] of publish.mock.calls) {
         expect(realtimeEventSchema.parse(event)).toEqual(event);
       }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("maps outbound validation errors to a 400 response", async () => {
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        channel: { provider: "evolution", providerKey: "talk-workspace_a-abc" },
+        contact: { phone: "" }
+      })
+    });
+    const publish = vi.fn();
+    const app = Fastify({ logger: false });
+
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => {
+      request.talk = { workspaceId: "workspace_a", role: "agent" };
+    });
+    await app.register(conversationsRoutes, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "secret",
+        publicWebhookUrl: vi.fn(),
+        localWebhookUrl: vi.fn(),
+        client: { createInstance: vi.fn(), setWebhook: vi.fn(), sendText: vi.fn() }
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/conversations/00000000-0000-4000-8000-000000000001/messages",
+        payload: { body: "Oi" }
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        code: "OUTBOUND_CONTACT_PHONE_REQUIRED",
+        error: "Contact phone is required to send an Evolution message."
+      });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("maps Evolution provider send failures to a 502 response", async () => {
+    const sendText = vi.fn().mockRejectedValue(new EvolutionClientError(503, { error: "down" }));
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        channel: { provider: "evolution", providerKey: "talk-workspace_a-abc" },
+        contact: { phone: "5547999990000" }
+      })
+    });
+    const publish = vi.fn();
+    const app = Fastify({ logger: false });
+
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => {
+      request.talk = { workspaceId: "workspace_a", role: "agent" };
+    });
+    await app.register(conversationsRoutes, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "secret",
+        publicWebhookUrl: vi.fn(),
+        localWebhookUrl: vi.fn(),
+        client: { createInstance: vi.fn(), setWebhook: vi.fn(), sendText }
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/conversations/00000000-0000-4000-8000-000000000001/messages",
+        payload: { body: "Oi" }
+      });
+
+      expect(response.statusCode).toBe(502);
+      expect(response.json()).toEqual({
+        code: "EVOLUTION_SEND_FAILED",
+        error: "Evolution did not accept the outbound message."
+      });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
