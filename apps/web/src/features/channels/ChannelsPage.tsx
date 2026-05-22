@@ -277,6 +277,10 @@ export function ChannelsPage() {
 
     try {
       const channel = await apiCreateChannel(getToken, { displayName });
+      if (deletedChannelIdsRef.current.has(channel.id)) {
+        return;
+      }
+
       setChannels((current) => mergeChannel(current, channel));
       setSelectedChannelId(channel.id);
 
