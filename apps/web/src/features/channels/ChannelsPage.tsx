@@ -34,6 +34,10 @@ function mergeChannel(channels: ChannelDto[], channel: ChannelDto) {
   return [channel, ...withoutChannel];
 }
 
+function filterDeletedChannels(channels: ChannelDto[], deletedChannelIds: Set<string>) {
+  return channels.filter((channel) => !deletedChannelIds.has(channel.id));
+}
+
 function getSelectedChannelIdAfterDelete(
   channels: ChannelDto[],
   deletedChannelId: string,
@@ -105,11 +109,13 @@ export function ChannelsPage() {
 
         if (!isMounted) return;
 
-        setChannels(nextChannels);
+        const availableChannels = filterDeletedChannels(nextChannels, deletedChannelIdsRef.current);
+
+        setChannels(availableChannels);
         setSelectedChannelId((current) =>
-          nextChannels.some((channel) => channel.id === current)
+          availableChannels.some((channel) => channel.id === current)
             ? current
-            : nextChannels[0]?.id ?? null
+            : availableChannels[0]?.id ?? null
         );
       } catch (loadError) {
         if (!isMounted) return;
@@ -275,6 +281,10 @@ export function ChannelsPage() {
       setSelectedChannelId(channel.id);
 
       const result = await apiStartChannelQr(getToken, channel.id);
+      if (deletedChannelIdsRef.current.has(result.channel.id)) {
+        return;
+      }
+
       setQrResult(result);
       setChannels((current) => mergeChannel(current, result.channel));
       setCreateDrawerOpen(false);
@@ -298,6 +308,10 @@ export function ChannelsPage() {
 
     try {
       const result = await apiStartChannelQr(getToken, channel.id);
+      if (deletedChannelIdsRef.current.has(result.channel.id)) {
+        return;
+      }
+
       setQrResult(result);
       setChannels((current) => mergeChannel(current, result.channel));
       setQrDrawerOpen(true);
@@ -315,6 +329,10 @@ export function ChannelsPage() {
     setNotice(null);
     try {
       const result = await apiDisconnectChannel(getToken, channel.id);
+      if (deletedChannelIdsRef.current.has(result.channel.id)) {
+        return;
+      }
+
       setChannels((current) => mergeChannel(current, result.channel));
       setQrResult((current) => (current?.channel.id === channel.id ? null : current));
       setNotice("Canal desconectado.");
@@ -368,6 +386,10 @@ export function ChannelsPage() {
 
     try {
       const result = await apiCreateTestInbound(getToken, selectedChannel.id);
+      if (deletedChannelIdsRef.current.has(result.channel.id)) {
+        return;
+      }
+
       setChannels((current) => mergeChannel(current, result.channel));
       setSelectedChannelId(result.channel.id);
       setNotice("Mensagem inbound de teste enviada para a fila.");
