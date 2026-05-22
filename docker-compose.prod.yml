@@ -66,6 +66,10 @@ services:
 
   prymeira_talk_web:
     image: ghcr.io/${GHCR_OWNER:-yohannreimer}/prymeira-talk-web:${IMAGE_TAG:-latest}
+    environment:
+      VITE_API_URL: https://talk.prymeiradigital.com.br/api
+      VITE_LOCAL_AUTH_BYPASS: "false"
+      VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
     networks:
       - network_swarm_public
       - prymeira_talk_internal

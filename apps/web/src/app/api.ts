@@ -20,9 +20,10 @@ import {
   type ConversationDto,
   type MessageDto
 } from "@prymeira-talk/shared";
+import { readConfigValue } from "./runtime-config";
 
-const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:3002";
-const localAuthBypass = import.meta.env.VITE_LOCAL_AUTH_BYPASS === "true";
+const apiUrl = readConfigValue("VITE_API_URL") ?? "http://localhost:3002";
+const localAuthBypass = readConfigValue("VITE_LOCAL_AUTH_BYPASS") === "true";
 
 export interface ContactBoardWithStagesDto extends ContactBoardDto {
   stages: ContactBoardStageDto[];

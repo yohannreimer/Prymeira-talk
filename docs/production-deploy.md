@@ -36,27 +36,16 @@ Fixed production URLs in `docker-compose.prod.yml`:
 - Public Evolution webhook: `https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace`
 - Product key in Prymeira Account: `talk`
 
-## Build And Push Images
+## Automatic Image Publish
 
-Build and push the images before deploying the Portainer stack:
+The repository publishes Docker images automatically with GitHub Actions on every push to the deployment branch. The workflow creates:
 
-```sh
-git clone https://github.com/yohannreimer/Prymeira-talk.git
-cd Prymeira-talk
-
-docker buildx build --platform linux/amd64 \
-  -f apps/api/Dockerfile \
-  -t ghcr.io/yohannreimer/prymeira-talk-api:latest \
-  --push .
-
-docker buildx build --platform linux/amd64 \
-  -f apps/web/Dockerfile \
-  --build-arg VITE_API_URL=https://talk.prymeiradigital.com.br/api \
-  --build-arg VITE_LOCAL_AUTH_BYPASS=false \
-  --build-arg VITE_CLERK_PUBLISHABLE_KEY=<Clerk publishable key> \
-  -t ghcr.io/yohannreimer/prymeira-talk-web:latest \
-  --push .
+```txt
+ghcr.io/yohannreimer/prymeira-talk-api:latest
+ghcr.io/yohannreimer/prymeira-talk-web:latest
 ```
+
+Wait until the `Publish Docker images` action finishes successfully before updating the Portainer stack. The frontend image reads `VITE_CLERK_PUBLISHABLE_KEY` from the Portainer stack environment at container startup.
 
 ## Deploy With Portainer
 
