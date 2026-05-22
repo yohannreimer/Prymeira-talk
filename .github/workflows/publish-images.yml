@@ -55,6 +55,3 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image }}:${{ github.sha }}
-          build-args: |
-            VITE_API_URL=https://talk.prymeiradigital.com.br/api
-            VITE_LOCAL_AUTH_BYPASS=false
