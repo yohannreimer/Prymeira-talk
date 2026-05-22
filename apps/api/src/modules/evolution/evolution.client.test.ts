@@ -50,6 +50,24 @@ describe("createEvolutionRuntime", () => {
     expect(runtime.mode).toBe("simulated");
     expect(runtime.client).toBeNull();
   });
+
+  it("encodes workspace ids in webhook URLs", () => {
+    const runtime = createEvolutionRuntime({
+      mode: "simulated",
+      publicTalkUrl: "https://talk.prymeiradigital.com.br",
+      localTalkUrl: "http://localhost:3002",
+      apiBaseUrl: undefined,
+      apiKey: undefined,
+      webhookSecret: "replace_me"
+    });
+
+    expect(runtime.publicWebhookUrl("workspace with/slash")).toBe(
+      "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace%20with%2Fslash"
+    );
+    expect(runtime.localWebhookUrl("workspace with/slash")).toBe(
+      "http://localhost:3002/webhooks/evolution/workspace%20with%2Fslash"
+    );
+  });
 });
 
 function createJsonResponse(body: unknown, status = 200) {
@@ -107,6 +125,28 @@ describe("Evolution client", () => {
     expect(result.qrCode).toBe("2@qr-code");
   });
 
+  it("uses the provider returned instance name when create instance includes one", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({
+        instance: { instanceName: "provider-instance-name" },
+        qrcode: { code: "2@qr-code" }
+      })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    const result = await client.createInstance({
+      instanceName: "requested-instance-name",
+      webhookUrl: "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace",
+      webhookSecret: "webhook-secret"
+    });
+
+    expect(result.instanceName).toBe("provider-instance-name");
+  });
+
   it("returns null when create instance response has no QR string", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       createJsonResponse({
@@ -155,6 +195,76 @@ describe("Evolution client", () => {
     expect(result.providerMessageId).toBe("provider_msg_1");
   });
 
+  it("sets an instance webhook with the expected provider payload", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse({ ok: true }));
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    await client.setWebhook({
+      instanceName: "talk-local_workspace-abc",
+      webhookUrl: "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace",
+      webhookSecret: "webhook-secret"
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://wsapi.yrdnegocios.com.br/webhook/set/talk-local_workspace-abc",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual(
+      expect.objectContaining({
+        enabled: true,
+        url: "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace",
+        webhookByEvents: false,
+        webhookBase64: true,
+        headers: expect.objectContaining({
+          "x-prymeira-talk-secret": "webhook-secret"
+        }),
+        events: expect.arrayContaining(["CONNECTION_UPDATE", "MESSAGES_UPSERT"])
+      })
+    );
+  });
+
+  it("redacts secret fields from successful raw responses", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({
+        key: { id: "provider_msg_1" },
+        hash: { apikey: "provider-api-key" },
+        nested: [
+          {
+            authorization: "Bearer provider-token",
+            profile: { password: "provider-password", displayName: "Agent" }
+          }
+        ]
+      })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    const result = await client.sendText({
+      instanceName: "talk-local_workspace-abc",
+      number: "5547999990000",
+      text: "Oi"
+    });
+
+    expect(result.raw).toEqual({
+      key: { id: "provider_msg_1" },
+      hash: { apikey: "[redacted]" },
+      nested: [
+        {
+          authorization: "[redacted]",
+          profile: { password: "[redacted]", displayName: "Agent" }
+        }
+      ]
+    });
+    expect(result.providerMessageId).toBe("provider_msg_1");
+  });
+
   it("returns null when send text response has no provider message id string", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       createJsonResponse({ key: { id: 123 }, message: { key: {} } })
@@ -174,8 +284,17 @@ describe("Evolution client", () => {
     expect(result.providerMessageId).toBeNull();
   });
 
-  it("throws an EvolutionClientError when Evolution returns a non-2xx response", async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse({ error: "nope" }, 401));
+  it("throws an EvolutionClientError with a redacted response body when Evolution returns a non-2xx response", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse(
+        {
+          error: "nope",
+          hash: { api_key: "provider-api-key" },
+          access_token: "provider-access-token"
+        },
+        401
+      )
+    );
     const client = createEvolutionClient({
       baseUrl: "https://wsapi.yrdnegocios.com.br",
       apiKey: "secret-key",
@@ -191,7 +310,11 @@ describe("Evolution client", () => {
     await expect(promise).rejects.toMatchObject({
       name: "EvolutionClientError",
       statusCode: 401,
-      responseBody: { error: "nope" }
+      responseBody: {
+        error: "nope",
+        hash: { api_key: "[redacted]" },
+        access_token: "[redacted]"
+      }
     });
     await expect(promise).rejects.toBeInstanceOf(EvolutionClientError);
   });

@@ -18,6 +18,9 @@ export async function buildApp(
       PRYMEIRA_LOCAL_ROLE: "owner",
       PRYMEIRA_PRODUCT_KEY: "talk",
       CLERK_SECRET_KEY: "sk_test_replace_me",
+      PUBLIC_TALK_URL: "https://talk.prymeiradigital.com.br",
+      LOCAL_TALK_URL: "http://localhost:3002",
+      EVOLUTION_MODE: "simulated",
       EVOLUTION_WEBHOOK_SECRET: "test_secret",
       ...overrides
     },

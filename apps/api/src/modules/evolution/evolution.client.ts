@@ -6,6 +6,16 @@ const EVOLUTION_EVENTS = [
   "SEND_MESSAGE"
 ] as const;
 
+const SECRET_RESPONSE_KEYS = new Set([
+  "apikey",
+  "api_key",
+  "authorization",
+  "token",
+  "access_token",
+  "secret",
+  "password"
+]);
+
 export class EvolutionClientError extends Error {
   readonly statusCode: number;
   readonly responseBody: unknown;
@@ -85,6 +95,23 @@ function getString(value: unknown, key: string): string | undefined {
   return typeof child === "string" ? child : undefined;
 }
 
+function sanitizeResponseBody(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeResponseBody(item));
+  }
+
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [
+      key,
+      SECRET_RESPONSE_KEYS.has(key.toLowerCase()) ? "[redacted]" : sanitizeResponseBody(child)
+    ])
+  );
+}
+
 function extractQrCode(body: unknown): string | null {
   const qrcode = getRecord(body, "qrcode");
 
@@ -109,6 +136,10 @@ function extractProviderMessageId(body: unknown): string | null {
     getString(body, "id") ??
     null
   );
+}
+
+function extractInstanceName(body: unknown, fallback: string): string {
+  return getString(getRecord(body, "instance"), "instanceName") ?? fallback;
 }
 
 function webhookPayload(webhookUrl: string, webhookSecret: string) {
@@ -164,7 +195,7 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       },
       body: JSON.stringify(body)
     });
-    const responseBody = await parseResponseBody(response);
+    const responseBody = sanitizeResponseBody(await parseResponseBody(response));
 
     if (!response.ok) {
       throw new EvolutionClientError(response.status, responseBody);
@@ -183,7 +214,7 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       });
 
       return {
-        instanceName: input.instanceName,
+        instanceName: extractInstanceName(responseBody, input.instanceName),
         qrCode: extractQrCode(responseBody),
         raw: responseBody
       };

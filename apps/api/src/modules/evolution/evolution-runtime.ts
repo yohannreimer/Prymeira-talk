@@ -19,7 +19,7 @@ export interface EvolutionRuntime {
 }
 
 function webhookUrl(baseUrl: string, workspaceId: string) {
-  return `${baseUrl.replace(/\/$/, "")}/webhooks/evolution/${workspaceId}`;
+  return `${baseUrl.replace(/\/$/, "")}/webhooks/evolution/${encodeURIComponent(workspaceId)}`;
 }
 
 export function createEvolutionRuntime(input: EvolutionRuntimeInput): EvolutionRuntime {

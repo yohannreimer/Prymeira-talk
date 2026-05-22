@@ -32,16 +32,7 @@ export const envSchema = z.object({
   EVOLUTION_WEBHOOK_SECRET: z.string().min(1)
 });
 
-type ParsedAppEnv = z.infer<typeof envSchema>;
-type DefaultedEvolutionEnvKeys =
-  | "PUBLIC_TALK_URL"
-  | "LOCAL_TALK_URL"
-  | "EVOLUTION_MODE"
-  | "EVOLUTION_API_BASE_URL"
-  | "EVOLUTION_API_KEY";
-
-export type AppEnv = Omit<ParsedAppEnv, DefaultedEvolutionEnvKeys> &
-  Partial<Pick<ParsedAppEnv, DefaultedEvolutionEnvKeys>>;
+export type AppEnv = z.infer<typeof envSchema>;
 
 export function readEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
   return envSchema.parse(input);
