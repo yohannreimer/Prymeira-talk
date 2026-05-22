@@ -1,7 +1,24 @@
 import { useTalkAuth } from "../../app/auth";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  closestCorners,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type { ContactDto, RealtimeEvent } from "@prymeira-talk/shared";
 import { ChevronLeft, ChevronRight, Columns3, Pencil, Plus, Save, Search, Users } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   apiAddContactToBoard,
   apiCreateContact,
@@ -69,6 +86,60 @@ export function updateDrawerContactAfterSave(
   return drawerContact?.id === savedContact.id ? savedContact : drawerContact;
 }
 
+export function resolveBoardDragMove(
+  membershipId: string,
+  targetStageId: string,
+  memberships: Array<{ membershipId: string; stageId: string }>
+) {
+  const membership = memberships.find((entry) => entry.membershipId === membershipId);
+
+  if (!membership || membership.stageId === targetStageId) {
+    return null;
+  }
+
+  return {
+    membershipId,
+    stageId: targetStageId
+  };
+}
+
+function BoardStageDropZone(props: {
+  stageId: string;
+  children: ReactNode;
+}) {
+  const { isOver, setNodeRef } = useDroppable({ id: props.stageId });
+
+  return (
+    <div ref={setNodeRef} className={`board-card-list ${isOver ? "is-drop-target" : ""}`}>
+      {props.children}
+    </div>
+  );
+}
+
+function SortableBoardContact(props: {
+  membership: BoardContactCardDto;
+  children: ReactNode;
+}) {
+  const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
+    id: props.membership.id
+  });
+
+  return (
+    <article
+      ref={setNodeRef}
+      className={`board-contact ${isDragging ? "is-dragging" : ""}`}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition
+      }}
+      {...attributes}
+      {...listeners}
+    >
+      {props.children}
+    </article>
+  );
+}
+
 export function ContactsPage() {
   const { getToken } = useTalkAuth();
   const [contacts, setContacts] = useState<ContactDto[]>([]);
@@ -92,6 +163,8 @@ export function ContactsPage() {
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
   const [drawerContact, setDrawerContact] = useState<ContactDto | null>(null);
   const [createDrawerOpen, setCreateDrawerOpen] = useState(false);
+  const [activeBoardMembershipId, setActiveBoardMembershipId] = useState<string | null>(null);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
 
   function openDrawer(contact: ContactDto) {
     setDrawerContact(contact);
@@ -357,6 +430,13 @@ export function ContactsPage() {
 
     return grouped;
   }, [loadedBoardContacts, boardStages]);
+  const activeBoardMembership = useMemo(
+    () =>
+      loadedBoardContacts?.memberships.find(
+        (membership) => membership.id === activeBoardMembershipId
+      ) ?? null,
+    [activeBoardMembershipId, loadedBoardContacts]
+  );
 
   useEffect(() => {
     setAddContactId((current) =>
@@ -449,13 +529,14 @@ export function ContactsPage() {
     }
   }
 
-  async function handleMoveMembership(membership: BoardContactCardDto, direction: -1 | 1) {
-    if (!loadedBoardContacts || membership.boardId !== loadedBoardContacts.board.id) return;
-
-    const currentStageIndex = boardStages.findIndex((stage) => stage.id === membership.stageId);
-    const nextStage = boardStages[currentStageIndex + direction];
-
-    if (!nextStage) return;
+  async function handleMoveMembershipToStage(membership: BoardContactCardDto, stageId: string) {
+    if (
+      !loadedBoardContacts ||
+      membership.boardId !== loadedBoardContacts.board.id ||
+      membership.stageId === stageId
+    ) {
+      return;
+    }
 
     setIsBoardSaving(true);
     setBoardError(null);
@@ -463,7 +544,7 @@ export function ContactsPage() {
 
     try {
       const nextMembership = await apiMoveBoardMembership(getToken, membership.id, {
-        stageId: nextStage.id
+        stageId
       });
 
       setBoardContacts((current) =>
@@ -481,6 +562,51 @@ export function ContactsPage() {
       setBoardError(moveError instanceof Error ? moveError.message : "Nao foi possivel mover no board.");
     } finally {
       setIsBoardSaving(false);
+    }
+  }
+
+  async function handleMoveMembership(membership: BoardContactCardDto, direction: -1 | 1) {
+    const currentStageIndex = boardStages.findIndex((stage) => stage.id === membership.stageId);
+    const nextStage = boardStages[currentStageIndex + direction];
+
+    if (!nextStage) return;
+
+    await handleMoveMembershipToStage(membership, nextStage.id);
+  }
+
+  function handleBoardDragStart(event: DragStartEvent) {
+    setActiveBoardMembershipId(String(event.active.id));
+  }
+
+  async function handleBoardDragEnd(event: DragEndEvent) {
+    setActiveBoardMembershipId(null);
+
+    if (!loadedBoardContacts || !event.over) return;
+
+    const overId = String(event.over.id);
+    const targetStageId = boardStages.some((stage) => stage.id === overId)
+      ? overId
+      : loadedBoardContacts.memberships.find((membership) => membership.id === overId)?.stageId;
+
+    if (!targetStageId) return;
+
+    const move = resolveBoardDragMove(
+      String(event.active.id),
+      targetStageId,
+      loadedBoardContacts.memberships.map((membership) => ({
+        membershipId: membership.id,
+        stageId: membership.stageId
+      }))
+    );
+
+    if (!move) return;
+
+    const membership = loadedBoardContacts.memberships.find(
+      (entry) => entry.id === move.membershipId
+    );
+
+    if (membership) {
+      await handleMoveMembershipToStage(membership, move.stageId);
     }
   }
 
@@ -692,60 +818,82 @@ export function ContactsPage() {
                 ) : null}
 
                 {boardStages.length > 0 ? (
-                  <div className="contacts-board" aria-label="Board de contatos">
-                    {boardStages.map((stage, stageIndex) => {
-                      const memberships = membershipsByStage.get(stage.id) ?? [];
+                  <DndContext
+                    collisionDetection={closestCorners}
+                    onDragEnd={(event) => void handleBoardDragEnd(event)}
+                    onDragStart={handleBoardDragStart}
+                    sensors={sensors}
+                  >
+                    <div className="contacts-board" aria-label="Board de contatos">
+                      {boardStages.map((stage, stageIndex) => {
+                        const memberships = membershipsByStage.get(stage.id) ?? [];
 
-                      return (
-                        <section className="board-column" key={stage.id}>
-                          <header>
-                            <span className="stage-color" style={{ backgroundColor: stage.color }} aria-hidden="true" />
-                            <strong>{stage.name}</strong>
-                            <span>{memberships.length}</span>
-                          </header>
-                          <div className="board-card-list">
-                            {memberships.length === 0 ? (
-                              <p className="board-empty-note">Sem contatos nesta etapa.</p>
-                            ) : null}
-                            {memberships.map((membership) => (
-                              <article className="board-contact" key={membership.id}>
-                                <button
-                                  className="board-contact-body"
-                                  onClick={() => setSelectedContactId(membership.contactId)}
-                                  type="button"
-                                >
-                                  <strong>{contactName(membership.contact)}</strong>
-                                  <span>{membership.contact.company ?? membership.contact.phone}</span>
-                                </button>
-                                <div className="board-card-actions" aria-label="Mover contato">
-                                  <button
-                                    aria-label="Mover para etapa anterior"
-                                    disabled={stageIndex === 0 || isBoardLoading || isBoardSaving}
-                                    onClick={() => void handleMoveMembership(membership, -1)}
-                                    type="button"
-                                  >
-                                    <ChevronLeft size={16} aria-hidden="true" />
-                                  </button>
-                                  <button
-                                    aria-label="Mover para proxima etapa"
-                                    disabled={
-                                      stageIndex === boardStages.length - 1 ||
-                                      isBoardLoading ||
-                                      isBoardSaving
-                                    }
-                                    onClick={() => void handleMoveMembership(membership, 1)}
-                                    type="button"
-                                  >
-                                    <ChevronRight size={16} aria-hidden="true" />
-                                  </button>
-                                </div>
-                              </article>
-                            ))}
-                          </div>
-                        </section>
-                      );
-                    })}
-                  </div>
+                        return (
+                          <section className="board-column" key={stage.id}>
+                            <header>
+                              <span className="stage-color" style={{ backgroundColor: stage.color }} aria-hidden="true" />
+                              <strong>{stage.name}</strong>
+                              <span>{memberships.length}</span>
+                            </header>
+                            <SortableContext
+                              items={memberships.map((membership) => membership.id)}
+                              strategy={verticalListSortingStrategy}
+                            >
+                              <BoardStageDropZone stageId={stage.id}>
+                                {memberships.length === 0 ? (
+                                  <p className="board-empty-note">Sem contatos nesta etapa.</p>
+                                ) : null}
+                                {memberships.map((membership) => (
+                                  <SortableBoardContact key={membership.id} membership={membership}>
+                                    <button
+                                      className="board-contact-body"
+                                      onClick={() => setSelectedContactId(membership.contactId)}
+                                      type="button"
+                                    >
+                                      <strong>{contactName(membership.contact)}</strong>
+                                      <span>{membership.contact.company ?? membership.contact.phone}</span>
+                                    </button>
+                                    <div className="board-card-actions" aria-label="Mover contato">
+                                      <button
+                                        aria-label="Mover para etapa anterior"
+                                        disabled={stageIndex === 0 || isBoardLoading || isBoardSaving}
+                                        onClick={() => void handleMoveMembership(membership, -1)}
+                                        type="button"
+                                      >
+                                        <ChevronLeft size={16} aria-hidden="true" />
+                                      </button>
+                                      <button
+                                        aria-label="Mover para proxima etapa"
+                                        disabled={
+                                          stageIndex === boardStages.length - 1 ||
+                                          isBoardLoading ||
+                                          isBoardSaving
+                                        }
+                                        onClick={() => void handleMoveMembership(membership, 1)}
+                                        type="button"
+                                      >
+                                        <ChevronRight size={16} aria-hidden="true" />
+                                      </button>
+                                    </div>
+                                  </SortableBoardContact>
+                                ))}
+                              </BoardStageDropZone>
+                            </SortableContext>
+                          </section>
+                        );
+                      })}
+                    </div>
+                    <DragOverlay>
+                      {activeBoardMembership ? (
+                        <article className="board-contact board-contact-overlay">
+                          <strong>{contactName(activeBoardMembership.contact)}</strong>
+                          <span>
+                            {activeBoardMembership.contact.company ?? activeBoardMembership.contact.phone}
+                          </span>
+                        </article>
+                      ) : null}
+                    </DragOverlay>
+                  </DndContext>
                 ) : null}
               </div>
             ) : null}

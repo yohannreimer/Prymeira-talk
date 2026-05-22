@@ -126,8 +126,8 @@ export function TeamPage() {
             <h2>Usuários</h2>
             <span>{users.length} registros</span>
           </div>
-          <div className="ops-table" role="table">
-            <div className="ops-table-row is-header" role="row">
+          <div className="ops-table team-users-table" role="table">
+            <div className="ops-table-row team-user-row is-header" role="row">
               <span>Nome</span>
               <span>Presença</span>
               <span>Role</span>
@@ -142,17 +142,20 @@ export function TeamPage() {
               </div>
             ) : null}
             {users.map((user) => (
-              <div key={user.id} className="ops-table-row" role="row">
-                <span>
+              <div key={user.id} className="ops-table-row team-user-row" role="row">
+                <span className="team-user-cell team-user-name-cell">
+                  <em>Usuário</em>
                   <strong>{user.displayName}</strong>
                   <small>{user.clerkUserId}</small>
                 </span>
-                <span>
+                <span className="team-user-cell">
+                  <em>Presença</em>
                   <span className={`status-badge status-badge--${user.presenceState === "online" ? "open" : user.presenceState === "busy" ? "waiting" : "closed"}`}>
                     {presenceLabel(user.presenceState)}
                   </span>
                 </span>
-                <span>
+                <span className="team-user-cell team-role-cell">
+                  <em>Role</em>
                   <select
                     value={user.role}
                     aria-label={`Role de ${user.displayName}`}

@@ -1,6 +1,6 @@
 import type { ContactDto } from "@prymeira-talk/shared";
 import { describe, expect, it } from "vitest";
-import { updateDrawerContactAfterSave } from "./ContactsPage";
+import { resolveBoardDragMove, updateDrawerContactAfterSave } from "./ContactsPage";
 
 const baseContact: ContactDto = {
   id: "contact-1",
@@ -35,5 +35,28 @@ describe("updateDrawerContactAfterSave", () => {
     };
 
     expect(updateDrawerContactAfterSave(otherContact, baseContact)).toBe(otherContact);
+  });
+});
+
+describe("resolveBoardDragMove", () => {
+  it("returns null when dropping a membership in the same stage", () => {
+    expect(resolveBoardDragMove("membership-1", "stage-1", [
+      { membershipId: "membership-1", stageId: "stage-1" }
+    ])).toBeNull();
+  });
+
+  it("returns the membership and target stage for a cross-stage drop", () => {
+    expect(resolveBoardDragMove("membership-1", "stage-2", [
+      { membershipId: "membership-1", stageId: "stage-1" }
+    ])).toEqual({
+      membershipId: "membership-1",
+      stageId: "stage-2"
+    });
+  });
+
+  it("returns null for an unknown membership", () => {
+    expect(resolveBoardDragMove("missing", "stage-2", [
+      { membershipId: "membership-1", stageId: "stage-1" }
+    ])).toBeNull();
   });
 });

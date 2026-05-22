@@ -3,10 +3,13 @@ import { Plus, Save, ToggleLeft, ToggleRight, Zap } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   apiCreateAutomation,
+  apiGetAutomationRuns,
   apiGetAutomations,
+  apiTestAutomation,
   apiUpdateAutomation,
   type AutomationActionDto,
-  type AutomationRuleDto
+  type AutomationRuleDto,
+  type AutomationRunDto
 } from "../../app/api";
 
 const triggerOptions = [
@@ -47,6 +50,17 @@ function mergeAutomation(
   return [automation, ...withoutAutomation];
 }
 
+export function defaultAutomationEventKey(trigger: string, automationId: string) {
+  return `${trigger}:manual-test:${automationId}`;
+}
+
+export function mergeAutomationRun(
+  runs: AutomationRunDto[],
+  run: AutomationRunDto
+) {
+  return [run, ...runs.filter((current) => current.id !== run.id)];
+}
+
 function conditionSummary(conditions: unknown) {
   if (
     typeof conditions === "object" &&
@@ -62,6 +76,15 @@ function conditionSummary(conditions: unknown) {
 
 function actionLabel(action: AutomationActionDto) {
   return action.label ?? actionOptions.find((option) => option.value === action.type)?.label ?? action.type;
+}
+
+function formatAutomationRunDate(value: string) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(value));
 }
 
 function toFormState(automation: AutomationRuleDto): AutomationFormState {
@@ -81,6 +104,10 @@ export function AutomationsPage() {
   const [automations, setAutomations] = useState<AutomationRuleDto[]>([]);
   const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
   const [form, setForm] = useState<AutomationFormState>(emptyForm);
+  const [runs, setRuns] = useState<AutomationRunDto[]>([]);
+  const [isRunsLoading, setIsRunsLoading] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [runEventKey, setRunEventKey] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -133,6 +160,45 @@ export function AutomationsPage() {
       setForm(emptyForm);
     }
   }, [selectedAutomation]);
+
+  useEffect(() => {
+    if (!selectedAutomation) {
+      setRuns([]);
+      setRunEventKey("");
+      return;
+    }
+
+    let isMounted = true;
+    setRunEventKey(defaultAutomationEventKey(selectedAutomation.trigger, selectedAutomation.id));
+
+    async function loadRuns() {
+      if (!selectedAutomation) return;
+
+      setIsRunsLoading(true);
+
+      try {
+        const nextRuns = await apiGetAutomationRuns(getToken, selectedAutomation.id);
+
+        if (isMounted) {
+          setRuns(nextRuns);
+        }
+      } catch (loadError) {
+        if (isMounted) {
+          setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar historico.");
+        }
+      } finally {
+        if (isMounted) {
+          setIsRunsLoading(false);
+        }
+      }
+    }
+
+    void loadRuns();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [getToken, selectedAutomation]);
 
   const enabledCount = automations.filter((automation) => automation.status === "enabled").length;
 
@@ -194,6 +260,32 @@ export function AutomationsPage() {
       setError(toggleError instanceof Error ? toggleError.message : "Nao foi possivel alterar status.");
     } finally {
       setIsSaving(false);
+    }
+  }
+
+  async function testSelectedAutomation() {
+    if (!selectedAutomation) return;
+
+    setIsTesting(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const run = await apiTestAutomation(getToken, selectedAutomation.id, {
+        eventKey:
+          runEventKey || defaultAutomationEventKey(selectedAutomation.trigger, selectedAutomation.id),
+        input: {
+          source: "manual_test",
+          trigger: selectedAutomation.trigger
+        }
+      });
+
+      setRuns((current) => mergeAutomationRun(current, run));
+      setNotice("Teste local concluido pelo runner.");
+    } catch (testError) {
+      setError(testError instanceof Error ? testError.message : "Nao foi possivel testar automacao.");
+    } finally {
+      setIsTesting(false);
     }
   }
 
@@ -339,6 +431,47 @@ export function AutomationsPage() {
             </button>
           </div>
         </form>
+
+        <aside className="module-panel automation-runs-panel">
+          <div className="panel-title-row">
+            <h2>Teste & histórico</h2>
+            <span>{isRunsLoading ? "Carregando" : `${runs.length} runs`}</span>
+          </div>
+
+          <label className="form-field">
+            <span>Event key</span>
+            <input
+              disabled={!selectedAutomation || isTesting}
+              onChange={(event) => setRunEventKey(event.target.value)}
+              value={runEventKey}
+            />
+          </label>
+
+          <button
+            className="secondary-button icon-button-label"
+            disabled={!selectedAutomation || isTesting}
+            onClick={() => void testSelectedAutomation()}
+            type="button"
+          >
+            <Zap size={15} aria-hidden="true" />
+            {isTesting ? "Testando" : "Testar agora"}
+          </button>
+
+          <div className="automation-run-list">
+            {runs.length === 0 && !isRunsLoading ? (
+              <p className="list-note">Nenhum teste executado.</p>
+            ) : null}
+            {runs.map((run) => (
+              <article className="automation-run-card" key={run.id}>
+                <span className={`status-badge status-badge--${run.status === "completed" ? "open" : "waiting"}`}>
+                  {run.status}
+                </span>
+                <strong>{run.eventKey}</strong>
+                <small>{formatAutomationRunDate(run.updatedAt)}</small>
+              </article>
+            ))}
+          </div>
+        </aside>
       </div>
     </section>
   );

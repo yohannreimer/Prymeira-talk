@@ -789,6 +789,16 @@ select:disabled {
   display: grid;
   align-content: start;
   gap: 10px;
+  min-height: 88px;
+  padding: 8px;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  transition: background var(--transition-fast), outline-color var(--transition-fast);
+}
+
+.board-card-list.is-drop-target {
+  background: var(--color-brand-50);
+  outline: 1px dashed var(--color-brand-600);
+  outline-offset: -4px;
 }
 
 .board-contact {
@@ -801,6 +811,7 @@ select:disabled {
   color: var(--color-text-primary);
   text-align: left;
   cursor: pointer;
+  touch-action: manipulation;
   transition: background var(--transition-fast);
 }
 
@@ -810,6 +821,18 @@ select:disabled {
 
 .board-contact:hover {
   background: var(--color-surface-subtle);
+}
+
+.board-contact.is-dragging {
+  opacity: 0.45;
+}
+
+.board-contact-overlay {
+  width: 240px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  box-shadow: var(--shadow-floating);
 }
 
 .board-contact-body {
@@ -1218,7 +1241,7 @@ select:disabled {
 
 .automations-layout {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: 280px minmax(360px, 1fr) minmax(280px, 0.75fr);
   gap: 8px;
   padding: 0 8px 8px;
   min-height: 0;
@@ -1226,6 +1249,41 @@ select:disabled {
 
 .automations-list-panel {
   overflow-y: auto;
+}
+
+.automation-runs-panel {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.automation-run-card {
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle);
+}
+
+.automation-run-card strong,
+.automation-run-card small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-run-card strong {
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.automation-run-card small {
+  color: var(--color-text-muted);
+  font-size: 11px;
 }
 
 .campaigns-layout {
@@ -1387,6 +1445,19 @@ select:disabled {
   color: var(--color-text-primary);
   padding: 8px 10px;
   font-weight: 800;
+}
+
+.team-users-table .team-user-row {
+  grid-template-columns: minmax(220px, 1.15fr) minmax(120px, 0.45fr) minmax(170px, 0.55fr);
+  min-width: 0;
+}
+
+.team-user-cell em {
+  display: none;
+}
+
+.team-role-cell select {
+  min-width: 132px;
 }
 
 .automation-run-list,
@@ -2956,6 +3027,40 @@ select:disabled {
     .ops-table-row,
     .report-table-row {
     grid-template-columns: 1fr;
+  }
+
+  .team-users-table {
+    border: 0;
+    background: transparent;
+    gap: 10px;
+    overflow: visible;
+  }
+
+  .team-users-table .team-user-row.is-header {
+    display: none;
+  }
+
+  .team-users-table .team-user-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    min-width: 0;
+    gap: 10px;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-card);
+  }
+
+  .team-user-cell em {
+    display: block;
+    color: var(--color-text-muted);
+    font-size: 0.68rem;
+    font-style: normal;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  .team-role-cell select {
+    min-width: 0;
   }
 
   .report-timeline-row {
