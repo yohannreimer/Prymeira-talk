@@ -940,6 +940,35 @@ export async function apiCreateChannel(
   return channelSchema.parse(data);
 }
 
+export interface DeleteChannelResultDto {
+  ok: boolean;
+  channelId: string;
+}
+
+export async function apiDeleteChannel(
+  getToken: () => Promise<string | null>,
+  channelId: string
+): Promise<DeleteChannelResultDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/channels/${channelId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(await readApiErrorMessage(response, "Failed to delete channel"));
+  }
+
+  const data = await response.json() as { ok?: unknown; channelId?: unknown };
+  return {
+    ok: data.ok === true,
+    channelId: String(data.channelId ?? "")
+  };
+}
+
 export async function apiStartChannelQr(
   getToken: () => Promise<string | null>,
   channelId: string

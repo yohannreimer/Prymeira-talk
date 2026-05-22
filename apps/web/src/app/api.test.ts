@@ -34,3 +34,32 @@ describe("readApiErrorMessage", () => {
     );
   });
 });
+
+describe("apiDeleteChannel", () => {
+  it("sends DELETE to the channel endpoint", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, channelId: "channel-1" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+    );
+    vi.resetModules();
+
+    const { apiDeleteChannel } = await import("./api");
+    await expect(apiDeleteChannel(async () => null, "channel-1")).resolves.toEqual({
+      ok: true,
+      channelId: "channel-1"
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:3002/channels/channel-1",
+      expect.objectContaining({
+        method: "DELETE"
+      })
+    );
+  });
+});
