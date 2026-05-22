@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   ChannelDto,
   ChannelOperationResultDto,
@@ -52,6 +53,9 @@ export interface PrismaLike {
     update(args: {
       where: { workspaceId_id: { workspaceId: string; id: string } };
       data: { status: ChannelDto["status"] };
+    }): Promise<ChannelRecord>;
+    delete(args: {
+      where: { workspaceId_id: { workspaceId: string; id: string } };
     }): Promise<ChannelRecord>;
   };
   integrationConfig: {
@@ -181,8 +185,21 @@ function realQrExpiresAt() {
   return new Date(Date.now() + 5 * 60 * 1000).toISOString();
 }
 
+function slugPart(value: string) {
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "workspace"
+  );
+}
+
 function createInstanceName(workspaceId: string) {
-  return `talk-${workspaceId}-${Date.now().toString(36)}`;
+  const suffix = randomUUID().slice(0, 8);
+
+  return `talk-${slugPart(workspaceId)}-${Date.now().toString(36)}-${suffix}`;
 }
 
 export function createChannelsService(
@@ -380,6 +397,22 @@ export function createChannelsService(
         mode,
         channel: toChannelDto(channel)
       };
+    },
+
+    async deleteChannel(input: {
+      workspaceId: string;
+      channelId: string;
+    }): Promise<{ channelId: string }> {
+      await prisma.channel.delete({
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: input.channelId
+          }
+        }
+      });
+
+      return { channelId: input.channelId };
     },
 
     async createTestInbound(input: {

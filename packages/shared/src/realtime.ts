@@ -48,6 +48,14 @@ const channelUpdatedEventSchema = z.object({
   payload: channelSchema
 });
 
+const channelDeletedEventSchema = z.object({
+  type: z.literal("channel.deleted"),
+  workspaceId: z.string().min(1),
+  payload: z.object({
+    channelId: z.string().min(1)
+  })
+});
+
 const channelQrUpdatedEventSchema = z.object({
   type: z.literal("channel.qr_updated"),
   workspaceId: z.string().min(1),
@@ -103,6 +111,7 @@ export const realtimeEventSchema = z
     contactUpdatedEventSchema,
     boardMembershipUpdatedEventSchema,
     channelUpdatedEventSchema,
+    channelDeletedEventSchema,
     channelQrUpdatedEventSchema,
     automationRunCreatedEventSchema,
     campaignUpdatedEventSchema

@@ -12,6 +12,7 @@ type MockPrisma = {
     findFirst: any;
     create: any;
     update: any;
+    delete: any;
   };
   integrationConfig: {
     findUnique: any;
@@ -68,7 +69,10 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
             status,
             updatedAt: new Date("2026-05-20T10:05:00.000Z")
           };
-        })
+        }),
+      delete:
+        overrides.channel?.delete ??
+        vi.fn().mockResolvedValue(baseChannel)
     },
     integrationConfig: {
       findUnique:
@@ -172,6 +176,46 @@ describe("channels service", () => {
         status: "disconnected"
       })
     );
+  });
+
+  it("generates a different provider key for each new real channel", async () => {
+    const prisma = createMockPrisma();
+    const createdProviderKeys: string[] = [];
+    prisma.channel.create = vi.fn().mockImplementation(async (args) => {
+      createdProviderKeys.push(args.data.providerKey);
+      return {
+        ...baseChannel,
+        ...args.data,
+        id: `00000000-0000-4000-8000-00000000000${createdProviderKeys.length}`,
+        createdAt: new Date("2026-05-20T10:00:00.000Z"),
+        updatedAt: new Date("2026-05-20T10:00:00.000Z")
+      };
+    });
+
+    const service = createChannelsService(prisma, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "webhook-secret",
+        publicWebhookUrl: () =>
+          "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+        localWebhookUrl: () =>
+          "http://localhost:3002/webhooks/evolution/workspace_a",
+        client: {
+          createInstance: vi.fn(),
+          connectInstance: vi.fn(),
+          setWebhook: vi.fn(),
+          sendText: vi.fn()
+        }
+      }
+    });
+
+    await service.createChannel({ workspaceId: "workspace_a", displayName: "Comercial" });
+    await service.createChannel({ workspaceId: "workspace_a", displayName: "Suporte" });
+
+    expect(createdProviderKeys).toHaveLength(2);
+    expect(createdProviderKeys[0]).not.toBe(createdProviderKeys[1]);
+    expect(createdProviderKeys[0]).toMatch(/^talk-workspace-a-/);
+    expect(createdProviderKeys[1]).toMatch(/^talk-workspace-a-/);
   });
 
   it("starts a real QR session for an existing Evolution channel", async () => {
@@ -471,6 +515,41 @@ describe("channels routes", () => {
         type: "channel.updated",
         workspaceId: "workspace_a",
         payload: channelSchema.parse(response.json().channel)
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("deletes a workspace channel and publishes a channel deleted event", async () => {
+    const prisma = createMockPrisma();
+    const { app, publish } = await buildChannelsApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "DELETE",
+        url: `/channels/${channelId}`
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true, channelId });
+      expect(prisma.channel.delete).toHaveBeenCalledWith({
+        where: {
+          workspaceId_id: {
+            workspaceId: "workspace_a",
+            id: channelId
+          }
+        }
+      });
+      expect(realtimeEventSchema.parse(publish.mock.calls[0]?.[0])).toEqual({
+        type: "channel.deleted",
+        workspaceId: "workspace_a",
+        payload: { channelId }
+      });
+      expect(publish).toHaveBeenCalledWith({
+        type: "channel.deleted",
+        workspaceId: "workspace_a",
+        payload: { channelId }
       });
     } finally {
       await app.close();

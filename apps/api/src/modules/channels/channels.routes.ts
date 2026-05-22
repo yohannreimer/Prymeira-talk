@@ -167,6 +167,31 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
     }
   });
 
+  app.delete("/channels/:channelId", async (request, reply) => {
+    const params = channelParamsSchema.safeParse(request.params);
+
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid channel request." });
+    }
+
+    try {
+      const result = await service.deleteChannel({
+        workspaceId: request.talk.workspaceId,
+        channelId: params.data.channelId
+      });
+
+      app.realtime.publish({
+        type: "channel.deleted",
+        workspaceId: request.talk.workspaceId,
+        payload: { channelId: result.channelId }
+      });
+
+      return { ok: true, channelId: result.channelId };
+    } catch (error) {
+      return handleChannelsError(reply, error);
+    }
+  });
+
   app.post("/channels/:channelId/test-inbound", async (request, reply) => {
     const params = channelParamsSchema.safeParse(request.params);
     const body = testInboundBodySchema.safeParse(request.body);
