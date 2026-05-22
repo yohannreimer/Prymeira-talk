@@ -302,7 +302,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
 
     const payload = body.data;
     const phone = extractPhone(payload.data.key.remoteJid);
-    const pushName = extractPushName(request.body);
+    const pushName = payload.data.key.fromMe ? null : extractPushName(request.body);
     const messageBody = payload.data.message?.conversation ?? null;
     const receivedAt =
       typeof payload.data.messageTimestamp === "number"
@@ -326,16 +326,6 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           return { kind: "channel_not_found" as const };
         }
 
-        const existingContact = await tx.contact.findUnique({
-          where: {
-            workspaceId_phone: {
-              workspaceId,
-              phone
-            }
-          },
-          select: { id: true, name: true }
-        });
-
         const contact = await tx.contact.upsert({
           where: {
             workspaceId_phone: {
@@ -348,8 +338,19 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             phone,
             ...(pushName ? { name: pushName } : {})
           },
-          update: !existingContact?.name && pushName ? { name: pushName } : {}
+          update: {}
         });
+
+        if (pushName) {
+          await tx.contact.updateMany({
+            where: {
+              workspaceId,
+              phone,
+              name: null
+            },
+            data: { name: pushName }
+          });
+        }
 
         const conversation = await tx.conversation.upsert({
           where: {
