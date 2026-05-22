@@ -48,6 +48,16 @@ const channelUpdatedEventSchema = z.object({
   payload: channelSchema
 });
 
+const channelQrUpdatedEventSchema = z.object({
+  type: z.literal("channel.qr_updated"),
+  workspaceId: z.string().min(1),
+  payload: z.object({
+    channelId: z.string().min(1),
+    qrCode: z.string().min(1),
+    expiresAt: z.string().datetime()
+  })
+});
+
 const automationRunSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
@@ -93,6 +103,7 @@ export const realtimeEventSchema = z
     contactUpdatedEventSchema,
     boardMembershipUpdatedEventSchema,
     channelUpdatedEventSchema,
+    channelQrUpdatedEventSchema,
     automationRunCreatedEventSchema,
     campaignUpdatedEventSchema
   ])

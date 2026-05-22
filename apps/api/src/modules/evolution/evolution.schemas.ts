@@ -52,7 +52,20 @@ export const evolutionMessageStatusUpdateSchema = evolutionWebhookEnvelopeSchema
     .optional()
 });
 
+export const evolutionQrUpdateSchema = evolutionWebhookEnvelopeSchema.extend({
+  data: z
+    .object({
+      qrcode: z.unknown().optional(),
+      qrCode: z.string().min(1).optional(),
+      code: z.string().min(1).optional(),
+      base64: z.string().min(1).optional()
+    })
+    .passthrough()
+    .optional()
+});
+
 export type EvolutionWebhookEnvelope = z.infer<typeof evolutionWebhookEnvelopeSchema>;
 export type EvolutionWebhookPayload = z.infer<typeof evolutionWebhookSchema>;
 export type EvolutionConnectionUpdatePayload = z.infer<typeof evolutionConnectionUpdateSchema>;
 export type EvolutionMessageStatusUpdatePayload = z.infer<typeof evolutionMessageStatusUpdateSchema>;
+export type EvolutionQrUpdatePayload = z.infer<typeof evolutionQrUpdateSchema>;

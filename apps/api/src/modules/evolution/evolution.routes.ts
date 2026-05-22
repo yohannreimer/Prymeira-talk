@@ -7,6 +7,7 @@ import { toConversationDto, toMessageDto } from "../conversations/conversations.
 import {
   evolutionConnectionUpdateSchema,
   evolutionMessageStatusUpdateSchema,
+  evolutionQrUpdateSchema,
   evolutionWebhookEnvelopeSchema,
   evolutionWebhookSchema
 } from "./evolution.schemas.js";
@@ -63,6 +64,34 @@ function mapEvolutionMessageStatus(status: string | number | undefined): Message
   if (["pending", "queued"].includes(normalized) || normalized === "1") return "pending";
   if (["failed", "error"].includes(normalized)) return "failed";
   return null;
+}
+
+function readStringPath(data: unknown, path: string[]) {
+  let current = data;
+
+  for (const segment of path) {
+    if (!current || typeof current !== "object" || !(segment in current)) {
+      return null;
+    }
+
+    current = (current as Record<string, unknown>)[segment];
+  }
+
+  return typeof current === "string" && current.length > 0 ? current : null;
+}
+
+function extractQrCode(data: unknown) {
+  return (
+    readStringPath(data, ["qrcode", "code"]) ??
+    readStringPath(data, ["qrcode", "base64"]) ??
+    readStringPath(data, ["qrCode"]) ??
+    readStringPath(data, ["code"]) ??
+    readStringPath(data, ["base64"])
+  );
+}
+
+function qrExpiresAt() {
+  return new Date(Date.now() + 5 * 60_000).toISOString();
 }
 
 function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
@@ -157,6 +186,52 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
     }
 
     if (normalizedEvent === "qrcode.updated") {
+      const body = evolutionQrUpdateSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply.code(400).send({ ok: false, error: "invalid_webhook_payload" });
+      }
+
+      const qrCode = extractQrCode(body.data.data);
+      if (!qrCode) {
+        return { ok: true, ignored: true };
+      }
+
+      const channel = await app.prisma.channel.update({
+        where: {
+          workspaceId_provider_providerKey: {
+            workspaceId,
+            provider: "evolution",
+            providerKey: body.data.instance
+          }
+        },
+        data: { status: "connecting" }
+      }).catch((error: unknown) => {
+        if (isPrismaKnownRequestErrorCode(error, "P2025")) {
+          return null;
+        }
+
+        throw error;
+      });
+
+      if (!channel) {
+        return reply.code(404).send({ ok: false, error: "channel_not_found" });
+      }
+
+      app.realtime.publish({
+        type: "channel.updated",
+        workspaceId,
+        payload: toChannelDto(channel)
+      });
+      app.realtime.publish({
+        type: "channel.qr_updated",
+        workspaceId,
+        payload: {
+          channelId: channel.id,
+          qrCode,
+          expiresAt: qrExpiresAt()
+        }
+      });
+
       return { ok: true };
     }
 

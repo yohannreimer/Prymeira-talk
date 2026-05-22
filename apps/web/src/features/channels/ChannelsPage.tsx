@@ -95,6 +95,23 @@ export function ChannelsPage() {
   }, [getToken]);
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
+    if (event.type === "channel.qr_updated") {
+      setQrResult((current) =>
+        current?.channel.id === event.payload.channelId
+          ? {
+              ...current,
+              mode: "real",
+              qrCode: event.payload.qrCode,
+              qr: {
+                payload: event.payload.qrCode,
+                expiresAt: event.payload.expiresAt
+              }
+            }
+          : current
+      );
+      return;
+    }
+
     if (event.type !== "channel.updated") return;
 
     setChannels((current) => mergeChannel(current, event.payload));

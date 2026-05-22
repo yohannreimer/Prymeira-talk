@@ -394,8 +394,8 @@ describe("Evolution webhook routes", () => {
     }
   });
 
-  it("accepts QR code update events without parsing message-shaped data", async () => {
-    const { app, prisma } = await buildEvolutionApp();
+  it("publishes QR code update events without parsing message-shaped data", async () => {
+    const { app, prisma, publish } = await buildEvolutionApp();
 
     try {
       const response = await app.inject({
@@ -405,15 +405,34 @@ describe("Evolution webhook routes", () => {
         payload: {
           event: "QRCODE_UPDATED",
           instance: "client-one",
-          data: { qrcode: "abc" }
+          data: { qrcode: { code: "2@qr-code" } }
         }
       });
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ ok: true });
+      expect(prisma.channel.update).toHaveBeenCalledWith({
+        where: {
+          workspaceId_provider_providerKey: {
+            workspaceId: "workspace_a",
+            provider: "evolution",
+            providerKey: "client-one"
+          }
+        },
+        data: { status: "connecting" }
+      });
       expect(prisma.channel.findUnique).not.toHaveBeenCalled();
       expect(prisma.message.create).not.toHaveBeenCalled();
       expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(publish).toHaveBeenCalledWith({
+        type: "channel.qr_updated",
+        workspaceId: "workspace_a",
+        payload: {
+          channelId: "channel_1",
+          qrCode: "2@qr-code",
+          expiresAt: expect.any(String)
+        }
+      });
     } finally {
       await app.close();
     }

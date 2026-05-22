@@ -211,6 +211,18 @@ describe("domain schemas", () => {
 
     expect(
       realtimeEventSchema.parse({
+        type: "channel.qr_updated",
+        workspaceId: "workspace_1",
+        payload: {
+          channelId: "channel_1",
+          qrCode: "2@qr-code",
+          expiresAt: "2026-05-20T12:05:00.000Z"
+        }
+      }).type
+    ).toBe("channel.qr_updated");
+
+    expect(
+      realtimeEventSchema.parse({
         type: "automation_run.created",
         workspaceId: "workspace_1",
         payload: {
