@@ -13,6 +13,11 @@ import {
   type ConversationActionBody,
   type ConversationActionResultDto
 } from "../../app/api";
+import {
+  contactDisplayName,
+  filterConversationsByChannel,
+  getChannelFilterOptions
+} from "./conversation-display";
 import { useRealtimeEvents } from "./useRealtimeEvents";
 
 function formatTime(value: string | null) {
@@ -51,10 +56,6 @@ function priorityLabel(priority: ConversationDto["priority"]) {
   return labels[priority];
 }
 
-function contactDisplayName(conversation: ConversationDto) {
-  return conversation.contactName ?? `Contato ${conversation.contactId.slice(0, 8)}`;
-}
-
 function formatNoteDate(value: string) {
   return new Intl.DateTimeFormat("pt-BR", {
     day: "2-digit",
@@ -84,6 +85,7 @@ export function InboxPage() {
   const [contextError, setContextError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
+  const [selectedChannelFilter, setSelectedChannelFilter] = useState("all");
   const [isSending, setIsSending] = useState(false);
   const [isRunningAction, setIsRunningAction] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
@@ -276,6 +278,21 @@ export function InboxPage() {
     onEvent: handleRealtimeEvent
   });
 
+  const channelFilterOptions = useMemo(() => getChannelFilterOptions(conversations), [conversations]);
+  const visibleConversations = useMemo(
+    () => filterConversationsByChannel(conversations, selectedChannelFilter),
+    [conversations, selectedChannelFilter]
+  );
+
+  useEffect(() => {
+    if (
+      selectedChannelFilter !== "all" &&
+      !channelFilterOptions.some((option) => option.id === selectedChannelFilter)
+    ) {
+      setSelectedChannelFilter("all");
+    }
+  }, [channelFilterOptions, selectedChannelFilter]);
+
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
     [conversations, selectedConversationId]
@@ -406,14 +423,35 @@ export function InboxPage() {
           </div>
         </div>
 
+        <div className="channel-filter-row" aria-label="Filtrar por canal">
+          {channelFilterOptions.map((option) => (
+            <button
+              className={[
+                "channel-filter-chip",
+                option.id === selectedChannelFilter ? "is-active" : ""
+              ].filter(Boolean).join(" ")}
+              key={option.id}
+              onClick={() => setSelectedChannelFilter(option.id)}
+              type="button"
+              aria-pressed={option.id === selectedChannelFilter}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+
         {isLoading ? <p className="list-note">Carregando conversas...</p> : null}
         {error ? <p className="error-note">{error}</p> : null}
 
         <div className="conversation-items">
-          {!isLoading && conversations.length === 0 ? (
-            <p className="list-note">Nenhuma conversa encontrada.</p>
+          {!isLoading && visibleConversations.length === 0 ? (
+            <p className="list-note">
+              {selectedChannelFilter === "all"
+                ? "Nenhuma conversa encontrada."
+                : "Nenhuma conversa encontrada para este canal."}
+            </p>
           ) : null}
-          {conversations.map((conversation) => (
+          {visibleConversations.map((conversation) => (
             <button
               aria-label={`Abrir conversa com ${contactDisplayName(conversation)}`}
               className={[
@@ -443,6 +481,9 @@ export function InboxPage() {
                       <span className="conv-unread-badge">{conversation.unreadCount}</span>
                     ) : null}
                   </span>
+                </span>
+                <span className="conversation-channel-origin">
+                  via {conversation.channelName ?? "Canal sem nome"}
                 </span>
                 <span className="conversation-preview">
                   {conversation.lastMessagePreview ?? "Conversa iniciada."}
