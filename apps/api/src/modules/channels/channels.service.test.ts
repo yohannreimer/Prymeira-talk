@@ -116,6 +116,133 @@ async function buildChannelsApp(prisma = createMockPrisma()) {
 }
 
 describe("channels service", () => {
+  it("creates a real Evolution channel instance and stores it as connecting", async () => {
+    const createInstance = vi.fn().mockResolvedValue({
+      instanceName: "evolution-workspace-a",
+      qrCode: "1@real-qr",
+      raw: {}
+    });
+    const setWebhook = vi.fn().mockResolvedValue({ raw: {} });
+    const prisma = createMockPrisma();
+    prisma.channel.create = vi.fn().mockImplementation(async (args) => ({
+      ...baseChannel,
+      ...args.data,
+      id: channelId,
+      createdAt: new Date("2026-05-20T10:00:00.000Z"),
+      updatedAt: new Date("2026-05-20T10:00:00.000Z")
+    }));
+    const service = createChannelsService(prisma, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "webhook-secret",
+        publicWebhookUrl: () =>
+          "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+        localWebhookUrl: () =>
+          "http://localhost:3002/webhooks/evolution/workspace_a",
+        client: { createInstance, setWebhook, sendText: vi.fn() }
+      }
+    });
+
+    const result = await service.createChannel({
+      workspaceId: "workspace_a",
+      displayName: " WhatsApp Comercial ",
+      providerKey: " requested-instance ",
+      phoneNumber: " +55 47 99999-0000 "
+    });
+
+    const webhookInput = {
+      instanceName: "requested-instance",
+      webhookUrl: "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+      webhookSecret: "webhook-secret"
+    };
+    expect(createInstance).toHaveBeenCalledWith(webhookInput);
+    expect(setWebhook).toHaveBeenCalledWith({
+      ...webhookInput,
+      instanceName: "evolution-workspace-a"
+    });
+    expect(createInstance.mock.invocationCallOrder[0]).toBeLessThan(
+      setWebhook.mock.invocationCallOrder[0]
+    );
+    expect(prisma.channel.create).toHaveBeenCalledWith({
+      data: {
+        workspaceId: "workspace_a",
+        provider: "evolution",
+        providerKey: "evolution-workspace-a",
+        displayName: "WhatsApp Comercial",
+        phoneNumber: "+55 47 99999-0000",
+        status: "connecting"
+      }
+    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        provider: "evolution",
+        providerKey: "evolution-workspace-a",
+        displayName: "WhatsApp Comercial",
+        phoneNumber: "+55 47 99999-0000",
+        status: "connecting"
+      })
+    );
+  });
+
+  it("starts a real QR session for an existing Evolution channel", async () => {
+    const createInstance = vi.fn().mockResolvedValue({
+      instanceName: baseChannel.providerKey,
+      qrCode: "2@real-qr",
+      raw: {}
+    });
+    const prisma = createMockPrisma();
+    const service = createChannelsService(prisma, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "webhook-secret",
+        publicWebhookUrl: () =>
+          "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+        localWebhookUrl: () =>
+          "http://localhost:3002/webhooks/evolution/workspace_a",
+        client: { createInstance, setWebhook: vi.fn(), sendText: vi.fn() }
+      }
+    });
+
+    const result = await service.startQrSession({
+      workspaceId: "workspace_a",
+      channelId
+    });
+
+    expect(prisma.channel.findFirst).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        id: channelId
+      }
+    });
+    expect(createInstance).toHaveBeenCalledWith({
+      instanceName: baseChannel.providerKey,
+      webhookUrl: "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+      webhookSecret: "webhook-secret"
+    });
+    expect(prisma.channel.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: channelId
+        }
+      },
+      data: { status: "connecting" }
+    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        mode: "real",
+        qrCode: "2@real-qr",
+        qr: expect.objectContaining({
+          payload: "2@real-qr"
+        }),
+        channel: expect.objectContaining({
+          id: channelId,
+          status: "connecting"
+        })
+      })
+    );
+  });
+
   it("starts a simulated QR session and persists the connecting status", async () => {
     const prisma = createMockPrisma();
     const service = createChannelsService(prisma);

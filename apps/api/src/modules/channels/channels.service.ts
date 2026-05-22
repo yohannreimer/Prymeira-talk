@@ -168,9 +168,17 @@ function demoQrExpiresAt() {
   return new Date("2030-01-01T00:00:00.000Z").toISOString();
 }
 
+function realQrExpiresAt() {
+  return new Date(Date.now() + 5 * 60 * 1000).toISOString();
+}
+
+function createInstanceName(workspaceId: string) {
+  return `talk-${workspaceId}-${Date.now().toString(36)}`;
+}
+
 export function createChannelsService(
   prisma: PrismaLike,
-  _options: ChannelsServiceOptions = {}
+  options: ChannelsServiceOptions = {}
 ) {
   const resolveMode = async (workspaceId: string): Promise<IntegrationMode> => {
     const config = await prisma.integrationConfig.findUnique({
@@ -217,6 +225,36 @@ export function createChannelsService(
       providerKey?: string;
       phoneNumber?: string;
     }): Promise<ChannelDto> {
+      if (options.evolution?.mode === "real" && options.evolution.client) {
+        const instanceName =
+          normalizeOptional(input.providerKey) ?? createInstanceName(input.workspaceId);
+        const webhookUrl = options.evolution.publicWebhookUrl(input.workspaceId);
+        const instance = await options.evolution.client.createInstance({
+          instanceName,
+          webhookUrl,
+          webhookSecret: options.evolution.webhookSecret
+        });
+
+        await options.evolution.client.setWebhook({
+          instanceName: instance.instanceName,
+          webhookUrl,
+          webhookSecret: options.evolution.webhookSecret
+        });
+
+        const channel = await prisma.channel.create({
+          data: {
+            workspaceId: input.workspaceId,
+            provider: "evolution",
+            providerKey: instance.instanceName,
+            displayName: input.displayName.trim(),
+            phoneNumber: normalizeOptional(input.phoneNumber) ?? null,
+            status: "connecting"
+          }
+        });
+
+        return toChannelDto(channel);
+      }
+
       const providerKey =
         normalizeOptional(input.providerKey) ??
         `demo-evolution-${Date.now().toString(36)}`;
@@ -238,6 +276,41 @@ export function createChannelsService(
       workspaceId: string;
       channelId: string;
     }): Promise<ChannelQrResultDto> {
+      if (options.evolution?.mode === "real" && options.evolution.client) {
+        const existingChannel = await prisma.channel.findFirst({
+          where: {
+            workspaceId: input.workspaceId,
+            id: input.channelId
+          }
+        });
+
+        if (!existingChannel) {
+          throw new ChannelsServiceError("CHANNEL_NOT_FOUND", "Channel not found.");
+        }
+
+        const webhookUrl = options.evolution.publicWebhookUrl(input.workspaceId);
+        const instance = await options.evolution.client.createInstance({
+          instanceName: existingChannel.providerKey,
+          webhookUrl,
+          webhookSecret: options.evolution.webhookSecret
+        });
+        const channel = await updateChannelStatus({
+          ...input,
+          status: "connecting"
+        });
+        const payload = instance.qrCode ?? "";
+
+        return {
+          mode: "real",
+          channel: toChannelDto(channel),
+          qrCode: payload,
+          qr: {
+            payload,
+            expiresAt: realQrExpiresAt()
+          }
+        };
+      }
+
       const mode = await resolveMode(input.workspaceId);
       const channel = await updateChannelStatus({
         ...input,
