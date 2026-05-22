@@ -1594,7 +1594,7 @@ export function buildRealtimeUrl(token: string | null) {
 
   const url = new URL(apiUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.pathname = "/realtime";
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/realtime`;
   url.searchParams.set("token", realtimeToken);
   return url.toString();
 }

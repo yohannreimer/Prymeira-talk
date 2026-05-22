@@ -1,0 +1,102 @@
+services:
+  talk_postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-prymeira_talk}
+      POSTGRES_USER: ${POSTGRES_USER:-prymeira_talk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - prymeira_talk_postgres:/var/lib/postgresql/data
+    networks:
+      - talk_internal
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+
+  talk_api:
+    image: ${TALK_API_IMAGE:-ghcr.io/yohannreimer/prymeira-talk-api:latest}
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: 3002
+      DATABASE_URL: postgresql://${POSTGRES_USER:-prymeira_talk}:${POSTGRES_PASSWORD}@talk_postgres:5432/${POSTGRES_DB:-prymeira_talk}
+      CORS_ORIGINS: https://talk.prymeiradigital.com.br
+      PRYMEIRA_ACCOUNT_API_URL: https://hub.prymeiradigital.com.br/api
+      PRYMEIRA_LOCAL_AUTH_BYPASS: "false"
+      PRYMEIRA_LOCAL_WORKSPACE_ID: local_workspace
+      PRYMEIRA_LOCAL_ROLE: owner
+      PRYMEIRA_PRODUCT_KEY: talk
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+      PUBLIC_TALK_URL: https://talk.prymeiradigital.com.br
+      LOCAL_TALK_URL: http://talk_api:3002
+      EVOLUTION_MODE: real
+      EVOLUTION_API_BASE_URL: https://wsapi.yrdnegocios.com.br
+      EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
+      EVOLUTION_WEBHOOK_SECRET: ${EVOLUTION_WEBHOOK_SECRET}
+    networks:
+      - talk_internal
+      - network_swarm_public
+    depends_on:
+      - talk_postgres
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.prymeira_talk_api.rule=Host(`talk.prymeiradigital.com.br`) && (PathPrefix(`/api`) || PathPrefix(`/webhooks/evolution`))
+        - traefik.http.routers.prymeira_talk_api.entrypoints=websecure
+        - traefik.http.routers.prymeira_talk_api.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.prymeira_talk_api.priority=20
+        - traefik.http.routers.prymeira_talk_api.service=prymeira_talk_api
+        - traefik.http.routers.prymeira_talk_api.middlewares=prymeira_talk_api_strip
+        - traefik.http.middlewares.prymeira_talk_api_strip.stripprefix.prefixes=/api
+        - traefik.http.services.prymeira_talk_api.loadbalancer.server.port=3002
+        - traefik.http.services.prymeira_talk_api.loadbalancer.passHostHeader=true
+
+  talk_web:
+    image: ${TALK_WEB_IMAGE:-ghcr.io/yohannreimer/prymeira-talk-web:latest}
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: https://talk.prymeiradigital.com.br/api
+        VITE_LOCAL_AUTH_BYPASS: "false"
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
+    networks:
+      - network_swarm_public
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.prymeira_talk_web.rule=Host(`talk.prymeiradigital.com.br`)
+        - traefik.http.routers.prymeira_talk_web.entrypoints=websecure
+        - traefik.http.routers.prymeira_talk_web.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.prymeira_talk_web.priority=1
+        - traefik.http.routers.prymeira_talk_web.service=prymeira_talk_web
+        - traefik.http.services.prymeira_talk_web.loadbalancer.server.port=80
+        - traefik.http.services.prymeira_talk_web.loadbalancer.passHostHeader=true
+
+volumes:
+  prymeira_talk_postgres:
+
+networks:
+  talk_internal:
+    driver: overlay
+  network_swarm_public:
+    external: true
+    name: network_swarm_public

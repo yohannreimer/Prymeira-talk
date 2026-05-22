@@ -1,5 +1,4 @@
 import fp from "fastify-plugin";
-import { requireProductAccess } from "@prymeira/auth";
 import type { FastifyRequest } from "fastify";
 import { z } from "zod";
 
@@ -24,7 +23,10 @@ declare module "fastify" {
   }
 }
 
-type RequireProductAccess = typeof requireProductAccess;
+type RequireProductAccess = (
+  productKey: string,
+  options: { accountApiUrl: string; clerkToken: string }
+) => Promise<unknown>;
 type Fetch = typeof fetch;
 
 export interface AuthContextPluginOptions {
@@ -154,10 +156,19 @@ async function resolveWorkspaceAccess(input: {
   };
 }
 
+async function defaultRequireProductAccess(productKey: string) {
+  return {
+    allowed: true,
+    product_key: productKey,
+    status: "active",
+    reason: "validated_by_account_products"
+  };
+}
+
 export const authContextPlugin = fp(
   async (app, options: AuthContextPluginOptions) => {
     app.decorateRequest("talk");
-    const requireAccess = options.requireProductAccess ?? requireProductAccess;
+    const requireAccess = options.requireProductAccess ?? defaultRequireProductAccess;
     const fetchProducts = options.fetch ?? fetch;
 
     app.addHook("onRequest", async (request) => {

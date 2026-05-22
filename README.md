@@ -78,6 +78,8 @@ Configure the Evolution instance webhook URLs exactly as:
 
 Do not commit the Evolution API key or webhook secret. Store both as deployment secrets.
 
+Production Docker/Swarm deployment is documented in `docs/production-deploy.md`.
+
 ## Suite Verification Checklist
 
 Run automated verification:
