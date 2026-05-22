@@ -445,11 +445,7 @@ export function InboxPage() {
 
         <div className="conversation-items">
           {!isLoading && visibleConversations.length === 0 ? (
-            <p className="list-note">
-              {selectedChannelFilter === "all"
-                ? "Nenhuma conversa encontrada."
-                : "Nenhuma conversa encontrada para este canal."}
-            </p>
+            <p className="list-note">Nenhuma conversa encontrada para este canal.</p>
           ) : null}
           {visibleConversations.map((conversation) => (
             <button
