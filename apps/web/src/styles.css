@@ -110,7 +110,7 @@ select:disabled {
   border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 0 12px;
-  color: var(--color-text);
+  color: var(--color-text-primary);
   background: #fff;
   font: inherit;
 }

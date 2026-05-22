@@ -3,7 +3,7 @@ import type { ChannelDto, ChannelQrResultDto, RealtimeEvent } from "@prymeira-ta
 import { CheckCircle2, Link2, MessageCircle, PlugZap, QrCode, RefreshCw, Trash2, WifiOff } from "lucide-react";
 import QRCode from "qrcode";
 import type * as React from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiCreateChannel,
   apiCreateTestInbound,
@@ -34,11 +34,38 @@ function mergeChannel(channels: ChannelDto[], channel: ChannelDto) {
   return [channel, ...withoutChannel];
 }
 
+function getSelectedChannelIdAfterDelete(
+  channels: ChannelDto[],
+  deletedChannelId: string,
+  selectedChannelId: string | null
+) {
+  if (selectedChannelId !== deletedChannelId && channels.some((channel) => channel.id === selectedChannelId)) {
+    return selectedChannelId;
+  }
+
+  const deletedIndex = channels.findIndex((channel) => channel.id === deletedChannelId);
+  const remainingChannels = channels.filter((channel) => channel.id !== deletedChannelId);
+
+  if (remainingChannels.length === 0) {
+    return null;
+  }
+
+  if (deletedIndex >= 0 && deletedIndex < remainingChannels.length) {
+    return remainingChannels[deletedIndex].id;
+  }
+
+  return remainingChannels[remainingChannels.length - 1]?.id ?? null;
+}
+
 export function ChannelsPage() {
   const { getToken } = useTalkAuth();
   const [channels, setChannels] = useState<ChannelDto[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
   const [qrResult, setQrResult] = useState<ChannelQrResultDto | null>(null);
+  const [deletedChannelIds, setDeletedChannelIds] = useState<Set<string>>(() => new Set());
+  const channelsRef = useRef<ChannelDto[]>([]);
+  const deletedChannelIdsRef = useRef(deletedChannelIds);
+  const qrChannelIdRef = useRef<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,6 +128,27 @@ export function ChannelsPage() {
     };
   }, [getToken]);
 
+  useEffect(() => {
+    channelsRef.current = channels;
+  }, [channels]);
+
+  useEffect(() => {
+    deletedChannelIdsRef.current = deletedChannelIds;
+  }, [deletedChannelIds]);
+
+  useEffect(() => {
+    qrChannelIdRef.current = qrResult?.channel.id ?? null;
+  }, [qrResult?.channel.id]);
+
+  const markChannelDeleted = useCallback((channelId: string) => {
+    setDeletedChannelIds((current) => {
+      const next = new Set(current);
+      next.add(channelId);
+      deletedChannelIdsRef.current = next;
+      return next;
+    });
+  }, []);
+
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "channel.qr_updated") {
       setQrResult((current) =>
@@ -119,7 +167,27 @@ export function ChannelsPage() {
       return;
     }
 
+    if (event.type === "channel.deleted") {
+      const { channelId } = event.payload;
+
+      markChannelDeleted(channelId);
+      setChannels((current) => current.filter((channel) => channel.id !== channelId));
+      setSelectedChannelId((selected) => getSelectedChannelIdAfterDelete(channelsRef.current, channelId, selected));
+      setQrResult((current) => {
+        if (current?.channel.id === channelId) {
+          return null;
+        }
+
+        return current;
+      });
+      if (qrChannelIdRef.current === channelId) {
+        setQrDrawerOpen(false);
+      }
+      return;
+    }
+
     if (event.type !== "channel.updated") return;
+    if (deletedChannelIdsRef.current.has(event.payload.id)) return;
 
     setChannels((current) => mergeChannel(current, event.payload));
     setSelectedChannelId((current) => current ?? event.payload.id);
@@ -128,7 +196,7 @@ export function ChannelsPage() {
         ? { ...current, channel: event.payload }
         : current
     );
-  }, []);
+  }, [markChannelDeleted]);
 
   useRealtimeEvents({
     token: realtimeToken,
@@ -198,7 +266,8 @@ export function ChannelsPage() {
     setIsSaving(true);
     setError(null);
     setNotice(null);
-    setQrDrawerOpen(true);
+    setQrResult(null);
+    setQrDrawerOpen(false);
 
     try {
       const channel = await apiCreateChannel(getToken, { displayName });
@@ -210,6 +279,7 @@ export function ChannelsPage() {
       setChannels((current) => mergeChannel(current, result.channel));
       setCreateDrawerOpen(false);
       setNewChannelName("");
+      setQrDrawerOpen(true);
       setNotice("Sessao QR iniciada.");
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "Nao foi possivel criar o canal.");
@@ -223,12 +293,14 @@ export function ChannelsPage() {
     setError(null);
     setNotice(null);
     setSelectedChannelId(channel.id);
-    setQrDrawerOpen(true);
+    setQrResult(null);
+    setQrDrawerOpen(false);
 
     try {
       const result = await apiStartChannelQr(getToken, channel.id);
       setQrResult(result);
       setChannels((current) => mergeChannel(current, result.channel));
+      setQrDrawerOpen(true);
       setNotice("QR de reconexao iniciado.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao reconectar.");
@@ -263,9 +335,19 @@ export function ChannelsPage() {
 
     try {
       await apiDeleteChannel(getToken, channel.id);
+      markChannelDeleted(channel.id);
       setChannels((current) => current.filter((item) => item.id !== channel.id));
-      setSelectedChannelId((current) => (current === channel.id ? null : current));
-      setQrResult((current) => (current?.channel.id === channel.id ? null : current));
+      setSelectedChannelId((selected) => getSelectedChannelIdAfterDelete(channelsRef.current, channel.id, selected));
+      setQrResult((current) => {
+        if (current?.channel.id === channel.id) {
+          return null;
+        }
+
+        return current;
+      });
+      if (qrChannelIdRef.current === channel.id) {
+        setQrDrawerOpen(false);
+      }
       setNotice("Canal apagado.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao apagar canal.");
@@ -440,6 +522,8 @@ export function ChannelsPage() {
                   className="text-input"
                   id="channel-name"
                   maxLength={160}
+                  name="channelName"
+                  autoComplete="organization-title"
                   onChange={(event) => setNewChannelName(event.target.value)}
                   placeholder="Comercial, Suporte, Cliente Ana..."
                   value={newChannelName}
