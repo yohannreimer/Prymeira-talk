@@ -650,7 +650,7 @@ describe("Evolution webhook routes", () => {
     }
   });
 
-  it("uses Evolution push names for contacts without a local name", async () => {
+  it("uses top-level Evolution push names for contacts without a local name", async () => {
     const contactUpsertMock = vi.fn().mockResolvedValue({
       id: "contact_1",
       workspaceId: "workspace_a",
@@ -673,9 +673,9 @@ describe("Evolution webhook routes", () => {
         payload: {
           event: "MESSAGES_UPSERT",
           instance: "client-one",
+          pushName: "Ana WhatsApp",
           data: {
             key: { id: "provider_msg_ana_1", remoteJid: "5547999990000@s.whatsapp.net", fromMe: false },
-            pushName: "Ana WhatsApp",
             message: { conversation: "Oi" },
             messageTimestamp: 1779300000
           }

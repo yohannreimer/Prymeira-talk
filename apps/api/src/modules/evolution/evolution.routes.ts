@@ -302,7 +302,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
 
     const payload = body.data;
     const phone = extractPhone(payload.data.key.remoteJid);
-    const pushName = extractPushName(payload);
+    const pushName = extractPushName(request.body);
     const messageBody = payload.data.message?.conversation ?? null;
     const receivedAt =
       typeof payload.data.messageTimestamp === "number"
