@@ -31,7 +31,8 @@ export interface CreateInstanceInput {
 }
 
 export interface CreateInstanceResult {
-  qrCode?: string;
+  instanceName: string;
+  qrCode: string | null;
   raw: unknown;
 }
 
@@ -52,7 +53,7 @@ export interface SendTextInput {
 }
 
 export interface SendTextResult {
-  providerMessageId?: string;
+  providerMessageId: string | null;
   raw: unknown;
 }
 
@@ -84,18 +85,19 @@ function getString(value: unknown, key: string): string | undefined {
   return typeof child === "string" ? child : undefined;
 }
 
-function extractQrCode(body: unknown) {
+function extractQrCode(body: unknown): string | null {
   const qrcode = getRecord(body, "qrcode");
 
   return (
     getString(qrcode, "code") ??
     getString(qrcode, "base64") ??
     getString(body, "base64") ??
-    getString(body, "code")
+    getString(body, "code") ??
+    null
   );
 }
 
-function extractProviderMessageId(body: unknown) {
+function extractProviderMessageId(body: unknown): string | null {
   const key = getRecord(body, "key");
   const message = getRecord(body, "message");
   const messageKey = getRecord(message, "key");
@@ -104,7 +106,8 @@ function extractProviderMessageId(body: unknown) {
     getString(key, "id") ??
     getString(messageKey, "id") ??
     getString(body, "messageId") ??
-    getString(body, "id")
+    getString(body, "id") ??
+    null
   );
 }
 
@@ -180,6 +183,7 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       });
 
       return {
+        instanceName: input.instanceName,
         qrCode: extractQrCode(responseBody),
         raw: responseBody
       };
