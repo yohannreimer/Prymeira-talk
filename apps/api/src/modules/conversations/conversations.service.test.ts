@@ -326,8 +326,130 @@ describe("conversations service", () => {
 
     expect(prisma.conversation.findUnique).toHaveBeenCalledWith({
       where: { workspaceId_id: { workspaceId: "workspace_a", id: "conv_1" } },
-      select: { id: true }
+      select: {
+        id: true,
+        channel: { select: { provider: true, providerKey: true } },
+        contact: { select: { phone: true } }
+      }
     });
+  });
+
+  it("sends outbound text through Evolution in real mode", async () => {
+    const sendText = vi.fn().mockResolvedValue({
+      providerMessageId: "provider_msg_1",
+      raw: { key: { id: "provider_msg_1" } }
+    });
+    const prisma = createMockPrisma({
+      findUnique: vi
+        .fn<PrismaLike["conversation"]["findUnique"]>()
+        .mockResolvedValueOnce({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          channel: { provider: "evolution", providerKey: "talk-workspace_a-abc" },
+          contact: { phone: "5547999990000" }
+        })
+        .mockResolvedValue({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          status: "open",
+          assignedUserId: null,
+          departmentId: null,
+          lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+          lastMessagePreview: "Oi real",
+          unreadCount: 0,
+          priority: "normal",
+          tags: []
+        }),
+      create: vi.fn<PrismaLike["message"]["create"]>().mockResolvedValue({
+        id: "msg_1",
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        providerMessageId: "provider_msg_1",
+        direction: "outbound",
+        type: "text",
+        body: "Oi real",
+        mediaUrl: null,
+        status: "sent",
+        sentByUserId: "user_1",
+        createdAt: new Date("2026-05-20T12:00:00.000Z")
+      })
+    });
+    const service = createConversationsService(prisma, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "secret",
+        publicWebhookUrl: vi.fn(),
+        localWebhookUrl: vi.fn(),
+        client: {
+          createInstance: vi.fn(),
+          setWebhook: vi.fn(),
+          sendText
+        }
+      }
+    });
+
+    const result = await service.createPendingOutboundMessage({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      body: "Oi real",
+      sentByUserId: "user_1"
+    });
+
+    expect(sendText).toHaveBeenCalledWith({
+      instanceName: "talk-workspace_a-abc",
+      number: "5547999990000",
+      text: "Oi real"
+    });
+    expect(result.message.status).toBe("sent");
+    expect(result.message.providerMessageId).toBe("provider_msg_1");
+  });
+
+  it("rejects real Evolution outbound messages when the contact phone is blank", async () => {
+    const sendText = vi.fn();
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        channel: { provider: "evolution", providerKey: "talk-workspace_a-abc" },
+        contact: { phone: "   " }
+      })
+    });
+    const service = createConversationsService(prisma, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "secret",
+        publicWebhookUrl: vi.fn(),
+        localWebhookUrl: vi.fn(),
+        client: {
+          createInstance: vi.fn(),
+          setWebhook: vi.fn(),
+          sendText
+        }
+      }
+    });
+
+    const error = await service
+      .createPendingOutboundMessage({
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        body: "Oi real",
+        sentByUserId: "user_1"
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({
+      code: "OUTBOUND_CONTACT_PHONE_REQUIRED",
+      statusCode: 400
+    });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
   });
 
   it("rejects missing conversations without creating a message", async () => {

@@ -32,18 +32,36 @@ export class ConversationActionError extends Error {
   }
 }
 
+type OutboundMessageValidationErrorCode =
+  | "OUTBOUND_CONTACT_PHONE_REQUIRED"
+  | "OUTBOUND_PROVIDER_KEY_REQUIRED";
+
+export class OutboundMessageValidationError extends Error {
+  statusCode = 400 as const;
+
+  constructor(
+    public code: OutboundMessageValidationErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.name = "OutboundMessageValidationError";
+  }
+}
+
 interface ConversationRecord {
   id: string;
   workspaceId: string;
   channelId: string;
   contactId: string;
   contact?: {
-    name: string | null;
-    phone: string;
+    name?: string | null;
+    phone?: string | null;
   } | null;
   channel?: {
-    displayName: string | null;
-    phoneNumber: string | null;
+    displayName?: string | null;
+    phoneNumber?: string | null;
+    provider?: string;
+    providerKey?: string;
   } | null;
   department?: {
     name: string;
@@ -346,7 +364,7 @@ function assertConversationRecord(
 
 export function createConversationsService(
   prisma: PrismaLike,
-  _options: ConversationsServiceOptions = {}
+  options: ConversationsServiceOptions = {}
 ) {
   async function findConversation(input: {
     workspaceId: string;
@@ -471,11 +489,48 @@ export function createConversationsService(
     }): Promise<{ message: MessageDto; conversation: ConversationDto }> {
       const conversation = await prisma.conversation.findUnique({
         where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
-        select: { id: true }
+        select: {
+          id: true,
+          channel: { select: { provider: true, providerKey: true } },
+          contact: { select: { phone: true } }
+        }
       });
 
       if (!conversation) {
         throw new ConversationNotFoundError();
+      }
+
+      let providerSend: Awaited<
+        ReturnType<NonNullable<EvolutionRuntime["client"]>["sendText"]>
+      > | null = null;
+
+      if (
+        options.evolution?.mode === "real" &&
+        options.evolution.client &&
+        conversation.channel?.provider === "evolution"
+      ) {
+        const contactPhone = conversation.contact?.phone?.trim();
+        const providerKey = conversation.channel.providerKey?.trim();
+
+        if (!contactPhone) {
+          throw new OutboundMessageValidationError(
+            "OUTBOUND_CONTACT_PHONE_REQUIRED",
+            "Contact phone is required to send an Evolution message."
+          );
+        }
+
+        if (!providerKey) {
+          throw new OutboundMessageValidationError(
+            "OUTBOUND_PROVIDER_KEY_REQUIRED",
+            "Evolution provider key is required to send a message."
+          );
+        }
+
+        providerSend = await options.evolution.client.sendText({
+          instanceName: providerKey,
+          number: contactPhone,
+          text: input.body
+        });
       }
 
       const message = await prisma.message.create({
@@ -485,7 +540,8 @@ export function createConversationsService(
           direction: "outbound",
           type: "text",
           body: input.body,
-          status: "pending",
+          providerMessageId: providerSend?.providerMessageId ?? undefined,
+          status: providerSend ? "sent" : "pending",
           sentByUserId: input.sentByUserId
         }
       });
