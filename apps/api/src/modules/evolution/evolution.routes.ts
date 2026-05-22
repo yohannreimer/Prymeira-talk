@@ -80,6 +80,17 @@ function readStringPath(data: unknown, path: string[]) {
   return typeof current === "string" && current.length > 0 ? current : null;
 }
 
+function extractPushName(data: unknown) {
+  const candidates = [
+    readStringPath(data, ["pushName"]),
+    readStringPath(data, ["data", "pushName"]),
+    readStringPath(data, ["key", "pushName"]),
+    readStringPath(data, ["data", "key", "pushName"])
+  ];
+
+  return candidates.find((value) => value && value.trim().length > 0)?.trim() ?? null;
+}
+
 function extractQrCode(data: unknown) {
   return (
     readStringPath(data, ["qrcode", "code"]) ??
@@ -291,6 +302,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
 
     const payload = body.data;
     const phone = extractPhone(payload.data.key.remoteJid);
+    const pushName = extractPushName(payload);
     const messageBody = payload.data.message?.conversation ?? null;
     const receivedAt =
       typeof payload.data.messageTimestamp === "number"
@@ -314,6 +326,16 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           return { kind: "channel_not_found" as const };
         }
 
+        const existingContact = await tx.contact.findUnique({
+          where: {
+            workspaceId_phone: {
+              workspaceId,
+              phone
+            }
+          },
+          select: { id: true, name: true }
+        });
+
         const contact = await tx.contact.upsert({
           where: {
             workspaceId_phone: {
@@ -323,9 +345,10 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           },
           create: {
             workspaceId,
-            phone
+            phone,
+            ...(pushName ? { name: pushName } : {})
           },
-          update: {}
+          update: !existingContact?.name && pushName ? { name: pushName } : {}
         });
 
         const conversation = await tx.conversation.upsert({

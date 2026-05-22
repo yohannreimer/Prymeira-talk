@@ -17,7 +17,7 @@ const validWebhookBody = {
 function createMockPrisma(overrides: {
   $transaction?: ReturnType<typeof vi.fn>;
   channel?: { findUnique?: ReturnType<typeof vi.fn>; update?: ReturnType<typeof vi.fn> };
-  contact?: { upsert?: ReturnType<typeof vi.fn> };
+  contact?: { findUnique?: ReturnType<typeof vi.fn>; upsert?: ReturnType<typeof vi.fn> };
   conversation?: {
     findUnique?: ReturnType<typeof vi.fn>;
     upsert?: ReturnType<typeof vi.fn>;
@@ -59,6 +59,7 @@ function createMockPrisma(overrides: {
         })
     },
     contact: {
+      findUnique: overrides.contact?.findUnique ?? vi.fn().mockResolvedValue(null),
       upsert:
         overrides.contact?.upsert ??
         vi.fn().mockResolvedValue({
@@ -644,6 +645,101 @@ describe("Evolution webhook routes", () => {
           unreadCount: 4
         })
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("uses Evolution push names for contacts without a local name", async () => {
+    const contactUpsertMock = vi.fn().mockResolvedValue({
+      id: "contact_1",
+      workspaceId: "workspace_a",
+      phone: "5547999990000",
+      name: "Ana WhatsApp"
+    });
+    const prisma = createMockPrisma({
+      contact: {
+        findUnique: vi.fn().mockResolvedValue({ id: "contact_1", name: null }),
+        upsert: contactUpsertMock
+      }
+    });
+    const { app } = await buildEvolutionApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          event: "MESSAGES_UPSERT",
+          instance: "client-one",
+          data: {
+            key: { id: "provider_msg_ana_1", remoteJid: "5547999990000@s.whatsapp.net", fromMe: false },
+            pushName: "Ana WhatsApp",
+            message: { conversation: "Oi" },
+            messageTimestamp: 1779300000
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(contactUpsertMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            phone: "5547999990000",
+            name: "Ana WhatsApp"
+          }),
+          update: {
+            name: "Ana WhatsApp"
+          }
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps an existing local contact name when Evolution sends a push name", async () => {
+    const contactUpsertMock = vi.fn().mockResolvedValue({
+      id: "contact_1",
+      workspaceId: "workspace_a",
+      phone: "5547999990000",
+      name: "Ana Local"
+    });
+    const prisma = createMockPrisma({
+      contact: {
+        findUnique: vi.fn().mockResolvedValue({ id: "contact_1", name: "Ana Local" }),
+        upsert: contactUpsertMock
+      }
+    });
+    const { app } = await buildEvolutionApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          event: "MESSAGES_UPSERT",
+          instance: "client-one",
+          data: {
+            key: { id: "provider_msg_ana_2", remoteJid: "5547999990000@s.whatsapp.net", fromMe: false },
+            pushName: "Ana WhatsApp",
+            message: { conversation: "Oi" },
+            messageTimestamp: 1779300000
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(contactUpsertMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            name: "Ana WhatsApp"
+          }),
+          update: {}
+        })
+      );
     } finally {
       await app.close();
     }
