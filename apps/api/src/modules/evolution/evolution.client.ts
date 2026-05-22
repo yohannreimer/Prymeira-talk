@@ -1,0 +1,209 @@
+const EVOLUTION_EVENTS = [
+  "QRCODE_UPDATED",
+  "CONNECTION_UPDATE",
+  "MESSAGES_UPSERT",
+  "MESSAGES_UPDATE",
+  "SEND_MESSAGE"
+] as const;
+
+export class EvolutionClientError extends Error {
+  readonly statusCode: number;
+  readonly responseBody: unknown;
+
+  constructor(statusCode: number, responseBody: unknown) {
+    super(`Evolution API request failed with status ${statusCode}`);
+    this.name = "EvolutionClientError";
+    this.statusCode = statusCode;
+    this.responseBody = responseBody;
+  }
+}
+
+export interface CreateEvolutionClientOptions {
+  baseUrl: string;
+  apiKey: string;
+  fetch?: typeof fetch;
+}
+
+export interface CreateInstanceInput {
+  instanceName: string;
+  webhookUrl: string;
+  webhookSecret: string;
+}
+
+export interface CreateInstanceResult {
+  qrCode?: string;
+  raw: unknown;
+}
+
+export interface SetWebhookInput {
+  instanceName: string;
+  webhookUrl: string;
+  webhookSecret: string;
+}
+
+export interface SetWebhookResult {
+  raw: unknown;
+}
+
+export interface SendTextInput {
+  instanceName: string;
+  number: string;
+  text: string;
+}
+
+export interface SendTextResult {
+  providerMessageId?: string;
+  raw: unknown;
+}
+
+export interface EvolutionClient {
+  createInstance(input: CreateInstanceInput): Promise<CreateInstanceResult>;
+  setWebhook(input: SetWebhookInput): Promise<SetWebhookResult>;
+  sendText(input: SendTextInput): Promise<SendTextResult>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getRecord(value: unknown, key: string): Record<string, unknown> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const child = value[key];
+  return isRecord(child) ? child : undefined;
+}
+
+function getString(value: unknown, key: string): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const child = value[key];
+  return typeof child === "string" ? child : undefined;
+}
+
+function extractQrCode(body: unknown) {
+  const qrcode = getRecord(body, "qrcode");
+
+  return (
+    getString(qrcode, "code") ??
+    getString(qrcode, "base64") ??
+    getString(body, "base64") ??
+    getString(body, "code")
+  );
+}
+
+function extractProviderMessageId(body: unknown) {
+  const key = getRecord(body, "key");
+  const message = getRecord(body, "message");
+  const messageKey = getRecord(message, "key");
+
+  return (
+    getString(key, "id") ??
+    getString(messageKey, "id") ??
+    getString(body, "messageId") ??
+    getString(body, "id")
+  );
+}
+
+function webhookPayload(webhookUrl: string, webhookSecret: string) {
+  return {
+    url: webhookUrl,
+    byEvents: false,
+    base64: true,
+    headers: {
+      "x-prymeira-talk-secret": webhookSecret,
+      "Content-Type": "application/json"
+    },
+    events: EVOLUTION_EVENTS
+  };
+}
+
+function setWebhookPayload(webhookUrl: string, webhookSecret: string) {
+  return {
+    enabled: true,
+    url: webhookUrl,
+    webhookByEvents: false,
+    webhookBase64: true,
+    headers: {
+      "x-prymeira-talk-secret": webhookSecret,
+      "Content-Type": "application/json"
+    },
+    events: EVOLUTION_EVENTS
+  };
+}
+
+async function parseResponseBody(response: Response) {
+  const text = await response.text();
+  if (text.trim() === "") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
+}
+
+export function createEvolutionClient(options: CreateEvolutionClientOptions): EvolutionClient {
+  const baseUrl = options.baseUrl.replace(/\/$/, "");
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+
+  async function post(path: string, body: unknown) {
+    const response = await fetchImpl(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: options.apiKey
+      },
+      body: JSON.stringify(body)
+    });
+    const responseBody = await parseResponseBody(response);
+
+    if (!response.ok) {
+      throw new EvolutionClientError(response.status, responseBody);
+    }
+
+    return responseBody;
+  }
+
+  return {
+    async createInstance(input) {
+      const responseBody = await post("/instance/create", {
+        instanceName: input.instanceName,
+        integration: "WHATSAPP-BAILEYS",
+        qrcode: true,
+        webhook: webhookPayload(input.webhookUrl, input.webhookSecret)
+      });
+
+      return {
+        qrCode: extractQrCode(responseBody),
+        raw: responseBody
+      };
+    },
+
+    async setWebhook(input) {
+      const responseBody = await post(
+        `/webhook/set/${encodeURIComponent(input.instanceName)}`,
+        setWebhookPayload(input.webhookUrl, input.webhookSecret)
+      );
+
+      return { raw: responseBody };
+    },
+
+    async sendText(input) {
+      const responseBody = await post(`/message/sendText/${encodeURIComponent(input.instanceName)}`, {
+        number: input.number,
+        text: input.text
+      });
+
+      return {
+        providerMessageId: extractProviderMessageId(responseBody),
+        raw: responseBody
+      };
+    }
+  };
+}
