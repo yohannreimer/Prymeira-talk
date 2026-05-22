@@ -293,9 +293,19 @@ export function InboxPage() {
     }
   }, [channelFilterOptions, selectedChannelFilter]);
 
+  useEffect(() => {
+    setSelectedConversationId((current) => {
+      if (current && visibleConversations.some((conversation) => conversation.id === current)) {
+        return current;
+      }
+
+      return visibleConversations[0]?.id ?? null;
+    });
+  }, [visibleConversations]);
+
   const selectedConversation = useMemo(
-    () => conversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
-    [conversations, selectedConversationId]
+    () => visibleConversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
+    [visibleConversations, selectedConversationId]
   );
 
   const openCount = conversations.filter((conversation) => conversation.status === "open").length;
