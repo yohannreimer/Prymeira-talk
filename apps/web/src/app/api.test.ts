@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-describe("buildRealtimeUrl", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-    vi.resetModules();
-  });
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  vi.resetModules();
+});
 
+describe("buildRealtimeUrl", () => {
   it("preserves the API base path for websocket connections", async () => {
     vi.stubEnv("VITE_API_URL", "https://talk.prymeiradigital.com.br/api");
 
@@ -58,8 +59,31 @@ describe("apiDeleteChannel", () => {
     expect(fetch).toHaveBeenCalledWith(
       "http://localhost:3002/channels/channel-1",
       expect.objectContaining({
-        method: "DELETE"
+        method: "DELETE",
+        headers: expect.objectContaining({
+          Authorization: "Bearer local-dev-bypass"
+        })
       })
+    );
+  });
+
+  it("rejects malformed successful responses", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ ok: false, channelId: "" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+    );
+    vi.resetModules();
+
+    const { apiDeleteChannel } = await import("./api");
+
+    await expect(apiDeleteChannel(async () => null, "channel-1")).rejects.toThrow(
+      "Invalid delete channel response."
     );
   });
 });

@@ -963,9 +963,17 @@ export async function apiDeleteChannel(
   }
 
   const data = await response.json() as { ok?: unknown; channelId?: unknown };
+  if (
+    data.ok !== true ||
+    typeof data.channelId !== "string" ||
+    data.channelId.trim().length === 0
+  ) {
+    throw new Error("Invalid delete channel response.");
+  }
+
   return {
-    ok: data.ok === true,
-    channelId: String(data.channelId ?? "")
+    ok: true,
+    channelId: data.channelId
   };
 }
 
