@@ -152,6 +152,23 @@ describe("automation form helpers", () => {
       actions: boardStageFlow
     });
   });
+
+  it("keeps visual trigger metadata instead of falling back to the form trigger", () => {
+    const scheduledFlow = {
+      version: 1,
+      nodes: [
+        {
+          id: "trigger-schedule-1",
+          type: "trigger_schedule",
+          position: { x: 0, y: 0 },
+          data: { title: "Horario/agendamento", config: {} }
+        }
+      ],
+      edges: []
+    } satisfies AutomationFlowDefinition;
+
+    expect(automationActionsToTrigger(scheduledFlow, "message.received")).toBe("schedule.tick");
+  });
 });
 
 describe("automation API helpers", () => {

@@ -1501,7 +1501,7 @@ select:disabled {
 
 .automations-layout {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr) minmax(260px, 0.42fr);
+  grid-template-columns: 220px minmax(0, 1fr) 230px;
   gap: 8px;
   padding: 0 8px 8px;
   min-height: 0;
@@ -2081,7 +2081,7 @@ select:disabled {
 
 .automation-canvas-shell {
   display: grid;
-  grid-template-columns: 220px minmax(380px, 1fr) 248px;
+  grid-template-columns: minmax(168px, 0.58fr) minmax(300px, 1fr) minmax(198px, 0.68fr);
   gap: 8px;
   min-width: 0;
   min-height: 500px;
@@ -3793,6 +3793,32 @@ select:disabled {
   font-weight: 800;
 }
 
+@media (max-width: 1360px) {
+  .automations-layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .automation-runs-panel {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 1180px) {
+  .automation-canvas-shell {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+  }
+
+  .automation-canvas-surface {
+    min-height: 440px;
+  }
+
+  .automation-block-library,
+  .automation-node-inspector {
+    max-height: 280px;
+  }
+}
+
 @media (max-width: 1100px) {
   .talk-suite-shell:not(.sidebar-expanded) {
     grid-template-columns: 64px minmax(0, 1fr);
@@ -3842,19 +3868,6 @@ select:disabled {
     grid-template-columns: 1fr;
   }
 
-  .automation-canvas-shell {
-    grid-template-columns: minmax(0, 1fr);
-    min-height: 0;
-  }
-
-  .automation-canvas-surface {
-    min-height: 440px;
-  }
-
-  .automation-block-library,
-  .automation-node-inspector {
-    max-height: 280px;
-  }
 }
 
 @media (max-width: 760px) {

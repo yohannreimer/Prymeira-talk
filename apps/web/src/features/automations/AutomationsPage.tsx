@@ -48,8 +48,11 @@ const triggerByBlockType: Partial<Record<AutomationBlockType, string>> = {
   trigger_first_message: "message.received",
   trigger_reengagement: "message.received",
   trigger_keyword: "message.received",
+  trigger_tag_added: "tag.added",
   trigger_board_stage_changed: "board.stage.changed",
-  trigger_conversation_closed: "conversation.closed"
+  trigger_conversation_closed: "conversation.closed",
+  trigger_schedule: "schedule.tick",
+  trigger_webhook: "webhook.received"
 };
 
 const emptyForm: AutomationFormState = {
