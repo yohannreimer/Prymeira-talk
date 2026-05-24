@@ -96,14 +96,97 @@ export function messageDisplayText(message: Pick<MessageDto, "body" | "type">) {
   return labels[message.type];
 }
 
-export function messageMediaLabel(message: Pick<MessageDto, "type">) {
-  const labels: Partial<Record<MessageDto["type"], string>> = {
+export type MessageMediaKind = "image" | "audio" | "video" | "file";
+
+export function messageMediaKind(message: Pick<MessageDto, "mediaUrl" | "type">): MessageMediaKind | null {
+  if (!message.mediaUrl) {
+    return null;
+  }
+
+  if (message.type === "image") {
+    return "image";
+  }
+
+  if (message.type === "audio") {
+    return "audio";
+  }
+
+  if (/\.(mp4|m4v|mov|webm)(\?|#|$)/i.test(message.mediaUrl)) {
+    return "video";
+  }
+
+  return "file";
+}
+
+export function messageMediaLabel(message: Pick<MessageDto, "mediaUrl" | "type">) {
+  const kind = messageMediaKind(message);
+  const labels: Record<MessageMediaKind, string> = {
     image: "Abrir imagem",
     audio: "Abrir audio",
+    video: "Abrir video",
     file: "Abrir arquivo"
   };
 
-  return labels[message.type] ?? "Abrir midia";
+  return kind ? labels[kind] : "Abrir midia";
+}
+
+function MessageMediaPreview(props: { message: MessageDto }) {
+  const { message } = props;
+  const kind = messageMediaKind(message);
+
+  if (!message.mediaUrl || !kind) {
+    return null;
+  }
+
+  if (kind === "image") {
+    return (
+      <a
+        className="message-media-frame"
+        href={message.mediaUrl}
+        rel="noreferrer"
+        target="_blank"
+      >
+        <img alt={messageDisplayText(message)} src={message.mediaUrl} />
+      </a>
+    );
+  }
+
+  if (kind === "audio") {
+    return (
+      <audio
+        className="message-audio-player"
+        controls
+        preload="metadata"
+        src={message.mediaUrl}
+      />
+    );
+  }
+
+  if (kind === "video") {
+    return (
+      <video
+        className="message-video-player"
+        controls
+        preload="metadata"
+        src={message.mediaUrl}
+      />
+    );
+  }
+
+  return (
+    <a
+      className="message-file-card"
+      href={message.mediaUrl}
+      rel="noreferrer"
+      target="_blank"
+    >
+      <Link2 size={16} aria-hidden="true" />
+      <span>
+        <strong>{messageDisplayText(message)}</strong>
+        <small>{messageMediaLabel(message)}</small>
+      </span>
+    </a>
+  );
 }
 
 export function InboxPage() {
@@ -632,17 +715,9 @@ export function InboxPage() {
                   </span>
                 ) : null}
                 <div className="msg-bubble-body">
-                  <p>{messageDisplayText(message)}</p>
-                  {message.mediaUrl ? (
-                    <a
-                      className="message-media-link"
-                      href={message.mediaUrl}
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      <Link2 size={13} aria-hidden="true" />
-                      {messageMediaLabel(message)}
-                    </a>
+                  <MessageMediaPreview message={message} />
+                  {message.body || !message.mediaUrl ? (
+                    <p>{messageDisplayText(message)}</p>
                   ) : null}
                   <time>{formatMessageTime(message.createdAt)}</time>
                 </div>

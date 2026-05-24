@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { messageDisplayText, messageMediaLabel } from "./InboxPage";
+import { messageDisplayText, messageMediaKind, messageMediaLabel } from "./InboxPage";
 
 describe("messageDisplayText", () => {
   it("uses message body when present", () => {
@@ -15,8 +15,19 @@ describe("messageDisplayText", () => {
 
 describe("messageMediaLabel", () => {
   it("names media actions by message type", () => {
-    expect(messageMediaLabel({ type: "image" })).toBe("Abrir imagem");
-    expect(messageMediaLabel({ type: "audio" })).toBe("Abrir audio");
-    expect(messageMediaLabel({ type: "file" })).toBe("Abrir arquivo");
+    expect(messageMediaLabel({ mediaUrl: "https://cdn.test/a.jpg", type: "image" })).toBe("Abrir imagem");
+    expect(messageMediaLabel({ mediaUrl: "https://cdn.test/a.ogg", type: "audio" })).toBe("Abrir audio");
+    expect(messageMediaLabel({ mediaUrl: "https://cdn.test/a.pdf", type: "file" })).toBe("Abrir arquivo");
+    expect(messageMediaLabel({ mediaUrl: "https://cdn.test/a.mp4", type: "file" })).toBe("Abrir video");
+  });
+});
+
+describe("messageMediaKind", () => {
+  it("classifies media that can render inline", () => {
+    expect(messageMediaKind({ mediaUrl: "https://cdn.test/a.webp", type: "image" })).toBe("image");
+    expect(messageMediaKind({ mediaUrl: "https://cdn.test/a.ogg", type: "audio" })).toBe("audio");
+    expect(messageMediaKind({ mediaUrl: "https://cdn.test/a.mp4", type: "file" })).toBe("video");
+    expect(messageMediaKind({ mediaUrl: "https://cdn.test/a.pdf", type: "file" })).toBe("file");
+    expect(messageMediaKind({ mediaUrl: null, type: "image" })).toBeNull();
   });
 });
