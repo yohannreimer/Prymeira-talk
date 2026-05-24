@@ -151,6 +151,13 @@ describe("automations service", () => {
       })
     );
     expect(firstRun.id).toBe(secondRun.id);
+    expect(firstRun.result).toMatchObject({
+      mode: "simulated",
+      runner: "local",
+      actionResults: [
+        { type: "send_message", status: "completed" }
+      ]
+    });
     expect(storedRuns.size).toBe(1);
   });
 
@@ -213,6 +220,25 @@ describe("automations service", () => {
         }
       })
     ).rejects.toMatchObject({ code: "AUTOMATION_INVALID_FLOW" });
+  });
+
+  it("rejects creating an automation with a malformed graph object", async () => {
+    const prisma = createMockPrisma();
+    const service = createAutomationsService(prisma);
+
+    await expect(
+      service.createAutomation({
+        workspaceId: "workspace_a",
+        name: "Fluxo quebrado",
+        trigger: "message.received",
+        actions: {
+          version: 1,
+          nodes: [],
+          edges: [{ id: "edge-1", source: "missing" }]
+        }
+      })
+    ).rejects.toMatchObject({ code: "AUTOMATION_INVALID_FLOW" });
+    expect(prisma.automationRule.create).not.toHaveBeenCalled();
   });
 
   it("simulates graph nodes in manual test runs", async () => {

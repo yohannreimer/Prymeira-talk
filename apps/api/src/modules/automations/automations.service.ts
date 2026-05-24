@@ -140,10 +140,19 @@ function parseFlow(actions: unknown) {
 }
 
 function assertValidFlow(actions: unknown, status: AutomationStatus) {
-  const flow = parseFlow(actions);
-  if (!flow) return;
+  if (actions === undefined || actions === null || Array.isArray(actions)) {
+    return;
+  }
 
-  const validation = validateAutomationFlowForStatus(flow, status);
+  const parsed = automationFlowSchema.safeParse(actions);
+  if (!parsed.success) {
+    throw new AutomationsServiceError(
+      "AUTOMATION_INVALID_FLOW",
+      "Automation flow definition is invalid."
+    );
+  }
+
+  const validation = validateAutomationFlowForStatus(parsed.data, status);
   if (!validation.success) {
     throw new AutomationsServiceError(
       "AUTOMATION_INVALID_FLOW",
