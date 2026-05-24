@@ -1,6 +1,7 @@
 import { useTalkAuth } from "../../app/auth";
 import { Plus, Save, ToggleLeft, ToggleRight, Zap } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { automationFlowSchema, getAutomationBlock, type AutomationBlockType, type AutomationFlowDefinition } from "@prymeira-talk/shared";
 import {
   apiCreateAutomation,
   apiGetAutomationRuns,
@@ -11,6 +12,8 @@ import {
   type AutomationRuleDto,
   type AutomationRunDto
 } from "../../app/api";
+import { AutomationCanvas } from "./AutomationCanvas";
+import { createDefaultAutomationFlow } from "./automationFlow";
 
 const triggerOptions = [
   { value: "message.received", label: "Mensagem recebida" },
@@ -40,6 +43,14 @@ interface AutomationSavePayload {
   conditions: { summary: string };
   actions: AutomationRuleDto["actions"];
 }
+
+const triggerByBlockType: Partial<Record<AutomationBlockType, string>> = {
+  trigger_first_message: "message.received",
+  trigger_reengagement: "message.received",
+  trigger_keyword: "message.received",
+  trigger_board_stage_changed: "board.stage.changed",
+  trigger_conversation_closed: "conversation.closed"
+};
 
 const emptyForm: AutomationFormState = {
   name: "Boas-vindas local",
@@ -94,6 +105,32 @@ function formatAutomationRunDate(value: string) {
   }).format(new Date(value));
 }
 
+export function automationActionsToTrigger(
+  actions: AutomationRuleDto["actions"] | AutomationFlowDefinition | undefined,
+  fallback: string
+) {
+  const parsedFlow = automationFlowSchema.safeParse(actions);
+
+  if (!parsedFlow.success) {
+    return fallback;
+  }
+
+  const triggerNode = parsedFlow.data.nodes.find(
+    (node) => getAutomationBlock(node.type)?.category === "trigger"
+  );
+
+  if (!triggerNode) {
+    return fallback;
+  }
+
+  return triggerByBlockType[triggerNode.type] ?? fallback;
+}
+
+function graphActionsOrDefault(actions: AutomationRuleDto["actions"] | undefined) {
+  const parsedFlow = automationFlowSchema.safeParse(actions);
+  return parsedFlow.success ? parsedFlow.data : createDefaultAutomationFlow();
+}
+
 function toFormState(automation: AutomationRuleDto): AutomationFormState {
   const actions = Array.isArray(automation.actions) ? automation.actions : [];
   const firstAction = actions[0];
@@ -109,15 +146,16 @@ function toFormState(automation: AutomationRuleDto): AutomationFormState {
 
 export function buildAutomationSavePayload(
   form: AutomationFormState,
-  selectedAutomation?: AutomationRuleDto | null
+  selectedAutomation?: AutomationRuleDto | null,
+  canvasActions?: AutomationFlowDefinition
 ): AutomationSavePayload {
-  const actions = Array.isArray(selectedAutomation?.actions)
+  const actions = canvasActions ?? (Array.isArray(selectedAutomation?.actions)
     ? [{ type: form.actionType, label: form.actionLabel }]
-    : selectedAutomation?.actions ?? [{ type: form.actionType, label: form.actionLabel }];
+    : selectedAutomation?.actions ?? [{ type: form.actionType, label: form.actionLabel }]);
 
   return {
     name: form.name,
-    trigger: form.trigger,
+    trigger: automationActionsToTrigger(actions, form.trigger),
     conditions: { summary: form.conditionSummary },
     actions
   };
@@ -127,7 +165,9 @@ export function AutomationsPage() {
   const { getToken } = useTalkAuth();
   const [automations, setAutomations] = useState<AutomationRuleDto[]>([]);
   const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
+  const [draftVersion, setDraftVersion] = useState(0);
   const [form, setForm] = useState<AutomationFormState>(emptyForm);
+  const [flowPayload, setFlowPayload] = useState<AutomationFlowDefinition | null>(null);
   const [runs, setRuns] = useState<AutomationRunDto[]>([]);
   const [isRunsLoading, setIsRunsLoading] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -183,6 +223,7 @@ export function AutomationsPage() {
     } else {
       setForm(emptyForm);
     }
+    setFlowPayload(null);
   }, [selectedAutomation]);
 
   useEffect(() => {
@@ -225,6 +266,15 @@ export function AutomationsPage() {
   }, [getToken, selectedAutomation]);
 
   const enabledCount = automations.filter((automation) => automation.status === "enabled").length;
+  const canvasTrigger = automationActionsToTrigger(
+    flowPayload ?? selectedAutomation?.actions,
+    form.trigger
+  );
+  const canvasTriggerLabel =
+    triggerOptions.find((option) => option.value === canvasTrigger)?.label ?? canvasTrigger;
+  const handleCanvasChange = useCallback((payload: AutomationFlowDefinition) => {
+    setFlowPayload(payload);
+  }, []);
 
   async function saveAutomation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -232,7 +282,11 @@ export function AutomationsPage() {
     setError(null);
     setNotice(null);
 
-    const payload = buildAutomationSavePayload(form, selectedAutomation);
+    const payload = buildAutomationSavePayload(
+      form,
+      selectedAutomation,
+      flowPayload ?? graphActionsOrDefault(selectedAutomation?.actions)
+    );
 
     try {
       const savedAutomation = selectedAutomation
@@ -255,6 +309,8 @@ export function AutomationsPage() {
   async function createDraft() {
     setSelectedAutomationId(null);
     setForm(emptyForm);
+    setFlowPayload(null);
+    setDraftVersion((current) => current + 1);
     setNotice("Rascunho local pronto para edicao.");
   }
 
@@ -398,18 +454,6 @@ export function AutomationsPage() {
           </label>
 
           <label className="form-field">
-            <span>Trigger</span>
-            <select
-              onChange={(event) => setForm((current) => ({ ...current, trigger: event.target.value }))}
-              value={form.trigger}
-            >
-              {triggerOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-
-          <label className="form-field">
             <span>Resumo das condições</span>
             <input
               onChange={(event) => setForm((current) => ({ ...current, conditionSummary: event.target.value }))}
@@ -418,30 +462,16 @@ export function AutomationsPage() {
             />
           </label>
 
-          <div className="automation-actions-editor">
-            <div className="panel-title-row compact">
-              <h3 style={{ fontSize: '12px', fontWeight: 700, margin: 0 }}>Ação</h3>
-            </div>
-            <label className="form-field">
-              <span>Tipo</span>
-              <select
-                onChange={(event) => setForm((current) => ({ ...current, actionType: event.target.value }))}
-                value={form.actionType}
-              >
-                {actionOptions.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="form-field">
-              <span>Descrição</span>
-              <input
-                onChange={(event) => setForm((current) => ({ ...current, actionLabel: event.target.value }))}
-                required
-                value={form.actionLabel}
-              />
-            </label>
+          <div className="automation-flow-summary" aria-label="Resumo do fluxo">
+            <span>Gatilho do canvas</span>
+            <strong>{canvasTriggerLabel}</strong>
           </div>
+
+          <AutomationCanvas
+            key={selectedAutomation?.id ?? `new-automation-${draftVersion}`}
+            onChange={handleCanvasChange}
+            value={selectedAutomation?.actions}
+          />
 
           <div className="automation-editor-footer">
             <button className="primary-button" disabled={isSaving} type="submit">

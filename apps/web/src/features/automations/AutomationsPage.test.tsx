@@ -7,6 +7,7 @@ import {
 } from "../../app/api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  automationActionsToTrigger,
   buildAutomationSavePayload,
   defaultAutomationEventKey,
   mergeAutomationRun
@@ -17,6 +18,7 @@ import {
   flowToAutomationPayload,
   supportedBlockTypes
 } from "./automationFlow";
+import type { AutomationFlowDefinition } from "@prymeira-talk/shared";
 
 const baseRun: AutomationRunDto = {
   id: "run-1",
@@ -115,6 +117,39 @@ describe("automation form helpers", () => {
       trigger: "message.received",
       conditions: { summary: "Condicao editada" },
       actions: graphActions
+    });
+  });
+
+  it("derives the save trigger from the graph trigger node", () => {
+    const boardStageFlow = {
+      version: 1,
+      nodes: [
+        {
+          id: "trigger-board-1",
+          type: "trigger_board_stage_changed",
+          position: { x: 0, y: 0 },
+          data: { title: "Etapa alterada", config: {} }
+        }
+      ],
+      edges: []
+    } satisfies AutomationFlowDefinition;
+
+    expect(automationActionsToTrigger(boardStageFlow, "message.received")).toBe("board.stage.changed");
+    expect(
+      buildAutomationSavePayload(
+        {
+          name: "Board",
+          trigger: "message.received",
+          conditionSummary: "Quando mudar de etapa",
+          actionType: "send_message",
+          actionLabel: "Enviar mensagem"
+        },
+        baseAutomation,
+        boardStageFlow
+      )
+    ).toMatchObject({
+      trigger: "board.stage.changed",
+      actions: boardStageFlow
     });
   });
 });
