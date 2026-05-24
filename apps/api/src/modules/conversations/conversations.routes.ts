@@ -18,9 +18,20 @@ export const createMessageParamsSchema = z.object({
   conversationId: z.string().uuid()
 });
 
-const createMessageBodySchema = z.object({
-  body: z.string().min(1).max(4000)
-});
+const createMessageBodySchema = z
+  .object({
+    body: z.string().trim().min(1).max(4000).optional(),
+    attachment: z
+      .object({
+        fileName: z.string().trim().min(1).max(240),
+        mimetype: z.string().trim().min(1).max(160),
+        mediaUrl: z.string().min(1)
+      })
+      .optional()
+  })
+  .refine((body) => body.body || body.attachment, {
+    message: "Message body or attachment is required."
+  });
 
 const conversationPrioritySchema = z.enum(["low", "normal", "high"]);
 
@@ -243,6 +254,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       workspaceId: request.talk.workspaceId,
       conversationId: params.data.conversationId,
       body: body.data.body,
+      attachment: body.data.attachment,
       sentByUserId: null
     }).catch((error: unknown) => {
       if (error instanceof ConversationNotFoundError) {

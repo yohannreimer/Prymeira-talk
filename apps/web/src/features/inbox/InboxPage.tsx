@@ -1,7 +1,7 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ConversationDto, MessageDto, RealtimeEvent } from "@prymeira-talk/shared";
-import { Bot, Download, MessageSquare, Send, StickyNote, UserCheck, X } from "lucide-react";
-import type { FormEvent } from "react";
+import { Bot, Download, MessageSquare, StickyNote, UserCheck, X } from "lucide-react";
+import type { ChangeEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiCreateConversationMessage,
@@ -78,6 +78,92 @@ function upsertConversation(list: ConversationDto[], conversation: ConversationD
   return [conversation, ...withoutUpdated];
 }
 
+export function insertComposerText(value: string, selectionStart: number, selectionEnd: number, text: string) {
+  return {
+    value: `${value.slice(0, selectionStart)}${text}${value.slice(selectionEnd)}`,
+    selectionStart: selectionStart + text.length,
+    selectionEnd: selectionStart + text.length
+  };
+}
+
+export function applyComposerMarker(
+  value: string,
+  selectionStart: number,
+  selectionEnd: number,
+  marker: "*" | "_"
+) {
+  const selectedText = value.slice(selectionStart, selectionEnd);
+
+  if (selectedText.length === 0) {
+    return {
+      value: `${value.slice(0, selectionStart)}${marker}${marker}${value.slice(selectionEnd)}`,
+      selectionStart: selectionStart + marker.length,
+      selectionEnd: selectionStart + marker.length
+    };
+  }
+
+  return {
+    value: `${value.slice(0, selectionStart)}${marker}${selectedText}${marker}${value.slice(selectionEnd)}`,
+    selectionStart: selectionStart + marker.length,
+    selectionEnd: selectionEnd + marker.length
+  };
+}
+
+const composerEmojis = ["😊", "👍", "🙏", "✅", "🙌", "😉", "👏", "🔥"];
+
+function optimisticMessageId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `optimistic-${crypto.randomUUID()}`;
+  }
+
+  return `optimistic-${Date.now()}`;
+}
+
+function isOptimisticMessage(message: MessageDto) {
+  return message.id.startsWith("optimistic-");
+}
+
+function upsertMessage(list: MessageDto[], message: MessageDto) {
+  const existingIndex = list.findIndex((item) => item.id === message.id);
+
+  if (existingIndex >= 0) {
+    return list.map((item, index) => (index === existingIndex ? message : item));
+  }
+
+  const optimisticIndex = list.findIndex(
+    (item) =>
+      isOptimisticMessage(item) &&
+      item.conversationId === message.conversationId &&
+      item.direction === message.direction &&
+      item.body === message.body &&
+      item.type === message.type &&
+      item.status === "pending"
+  );
+
+  if (optimisticIndex >= 0) {
+    return list.map((item, index) => (index === optimisticIndex ? message : item));
+  }
+
+  return [...list, message];
+}
+
+function fileToDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.addEventListener("load", () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+
+      reject(new Error("Nao foi possivel ler o arquivo."));
+    });
+    reader.addEventListener("error", () => reject(new Error("Nao foi possivel ler o arquivo.")));
+    reader.readAsDataURL(file);
+  });
+}
+
 export function messageDisplayText(message: Pick<MessageDto, "body" | "type">) {
   if (message.body?.trim()) {
     return message.body;
@@ -100,6 +186,13 @@ export type MessageMediaKind = "image" | "audio" | "file";
 
 function isVideoMediaUrl(mediaUrl: string) {
   return /^data:video\//i.test(mediaUrl) || /\.(mp4|m4v|mov|webm)(\?|#|$)/i.test(mediaUrl);
+}
+
+function outboundStatusLabel(message: MessageDto) {
+  if (message.direction !== "outbound") return null;
+  if (message.status === "pending") return "Enviando...";
+  if (message.status === "failed") return "Falhou";
+  return null;
 }
 
 export function messageMediaKind(message: Pick<MessageDto, "mediaUrl" | "type">): MessageMediaKind | null {
@@ -199,13 +292,62 @@ export function InboxPage() {
   const [isRunningAction, setIsRunningAction] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
   const [crmStatus, setCrmStatus] = useState<string | null>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [newMessagesBelow, setNewMessagesBelow] = useState(0);
   const selectedConversationIdRef = useRef<string | null>(null);
   const conversationsRef = useRef<ConversationDto[]>([]);
+  const messageThreadRef = useRef<HTMLDivElement | null>(null);
+  const draftTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const getFreshToken = useCallback(async () => {
     const nextToken = await getToken();
     setToken(nextToken);
     return nextToken;
   }, [getToken]);
+
+  function isMessageThreadNearBottom() {
+    const thread = messageThreadRef.current;
+
+    if (!thread) return true;
+
+    return thread.scrollHeight - thread.scrollTop - thread.clientHeight < 96;
+  }
+
+  function scrollMessageThreadToBottom() {
+    const thread = messageThreadRef.current;
+
+    if (!thread) return;
+
+    thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" });
+    setNewMessagesBelow(0);
+  }
+
+  function setDraftSelection(selectionStart: number, selectionEnd: number) {
+    window.requestAnimationFrame(() => {
+      draftTextAreaRef.current?.focus();
+      draftTextAreaRef.current?.setSelectionRange(selectionStart, selectionEnd);
+    });
+  }
+
+  function applyDraftMarker(marker: "*" | "_") {
+    const textarea = draftTextAreaRef.current;
+    const selectionStart = textarea?.selectionStart ?? draft.length;
+    const selectionEnd = textarea?.selectionEnd ?? draft.length;
+    const nextDraft = applyComposerMarker(draft, selectionStart, selectionEnd, marker);
+
+    setDraft(nextDraft.value);
+    setDraftSelection(nextDraft.selectionStart, nextDraft.selectionEnd);
+  }
+
+  function insertDraftText(text: string) {
+    const textarea = draftTextAreaRef.current;
+    const selectionStart = textarea?.selectionStart ?? draft.length;
+    const selectionEnd = textarea?.selectionEnd ?? draft.length;
+    const nextDraft = insertComposerText(draft, selectionStart, selectionEnd, text);
+
+    setDraft(nextDraft.value);
+    setDraftSelection(nextDraft.selectionStart, nextDraft.selectionEnd);
+  }
 
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
@@ -297,6 +439,8 @@ export function InboxPage() {
         if (!isMounted) return;
 
         setMessages(nextMessages);
+        setNewMessagesBelow(0);
+        window.requestAnimationFrame(scrollMessageThreadToBottom);
       } catch (loadError) {
         if (!isMounted) return;
         setMessageError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar mensagens.");
@@ -363,11 +507,21 @@ export function InboxPage() {
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "message.created") {
+      const isSelectedConversation = event.payload.conversationId === selectedConversationIdRef.current;
+      const shouldStickToBottom = isMessageThreadNearBottom();
+
       setMessages((current) => {
-        if (event.payload.conversationId !== selectedConversationIdRef.current) return current;
-        if (current.some((message) => message.id === event.payload.id)) return current;
-        return [...current, event.payload];
+        if (!isSelectedConversation) return current;
+        return upsertMessage(current, event.payload);
       });
+
+      if (isSelectedConversation) {
+        if (shouldStickToBottom) {
+          window.requestAnimationFrame(scrollMessageThreadToBottom);
+        } else if (event.payload.direction === "inbound") {
+          setNewMessagesBelow((current) => current + 1);
+        }
+      }
       return;
     }
 
@@ -472,13 +626,43 @@ export function InboxPage() {
 
     const targetConversationId = selectedConversationId;
     const messageBody = draft.trim();
+    const optimisticMessage: MessageDto = {
+      id: optimisticMessageId(),
+      workspaceId: selectedConversation?.workspaceId ?? "",
+      conversationId: targetConversationId,
+      providerMessageId: null,
+      direction: "outbound",
+      type: "text",
+      body: messageBody,
+      mediaUrl: null,
+      status: "pending",
+      sentByUserId: null,
+      createdAt: new Date().toISOString()
+    };
+
     setIsSending(true);
     setMessageError(null);
+    setDraft("");
+    setMessages((current) =>
+      selectedConversationIdRef.current === targetConversationId ? [...current, optimisticMessage] : current
+    );
+    setConversations((current) =>
+      current.map((conversation) =>
+        conversation.id === targetConversationId
+          ? {
+              ...conversation,
+              lastMessageAt: optimisticMessage.createdAt,
+              lastMessagePreview: messageBody
+            }
+          : conversation
+      )
+    );
+    window.requestAnimationFrame(scrollMessageThreadToBottom);
 
     try {
       const createdMessage = await apiCreateConversationMessage(
         targetConversationId,
-        messageBody,
+        { body: messageBody },
         getFreshToken
       );
 
@@ -489,8 +673,7 @@ export function InboxPage() {
         ) {
           return current;
         }
-        if (current.some((message) => message.id === createdMessage.id)) return current;
-        return [...current, createdMessage];
+        return upsertMessage(current, createdMessage);
       });
       setConversations((current) =>
         current.map((conversation) =>
@@ -503,12 +686,117 @@ export function InboxPage() {
             : conversation
         )
       );
-      if (selectedConversationIdRef.current === targetConversationId) {
-        setDraft("");
-      }
     } catch (sendError) {
       if (selectedConversationIdRef.current === targetConversationId) {
         setMessageError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar a mensagem.");
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === optimisticMessage.id
+              ? {
+                  ...message,
+                  status: "failed"
+                }
+              : message
+          )
+        );
+        setDraft((current) => (current.trim().length === 0 ? messageBody : current));
+      }
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  async function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file || !selectedConversationId) return;
+
+    const targetConversationId = selectedConversationId;
+    const caption = draft.trim();
+    const mediaUrl = await fileToDataUrl(file).catch((fileError: unknown) => {
+      setMessageError(fileError instanceof Error ? fileError.message : "Nao foi possivel ler o arquivo.");
+      return null;
+    });
+
+    if (!mediaUrl) return;
+
+    const messageType: MessageDto["type"] = file.type.startsWith("image/") ? "image" : "file";
+    const body = caption || file.name;
+    const optimisticMessage: MessageDto = {
+      id: optimisticMessageId(),
+      workspaceId: selectedConversation?.workspaceId ?? "",
+      conversationId: targetConversationId,
+      providerMessageId: null,
+      direction: "outbound",
+      type: messageType,
+      body,
+      mediaUrl,
+      status: "pending",
+      sentByUserId: null,
+      createdAt: new Date().toISOString()
+    };
+
+    setIsSending(true);
+    setMessageError(null);
+    setDraft("");
+    setMessages((current) =>
+      selectedConversationIdRef.current === targetConversationId ? [...current, optimisticMessage] : current
+    );
+    setConversations((current) =>
+      current.map((conversation) =>
+        conversation.id === targetConversationId
+          ? {
+              ...conversation,
+              lastMessageAt: optimisticMessage.createdAt,
+              lastMessagePreview: body
+            }
+          : conversation
+      )
+    );
+    window.requestAnimationFrame(scrollMessageThreadToBottom);
+
+    try {
+      const createdMessage = await apiCreateConversationMessage(
+        targetConversationId,
+        {
+          body: caption || undefined,
+          attachment: {
+            fileName: file.name,
+            mediaUrl,
+            mimetype: file.type || "application/octet-stream"
+          }
+        },
+        getFreshToken
+      );
+
+      setMessages((current) =>
+        selectedConversationIdRef.current === targetConversationId ? upsertMessage(current, createdMessage) : current
+      );
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.id === targetConversationId
+            ? {
+                ...conversation,
+                lastMessageAt: createdMessage.createdAt,
+                lastMessagePreview: createdMessage.body
+              }
+            : conversation
+        )
+      );
+    } catch (sendError) {
+      if (selectedConversationIdRef.current === targetConversationId) {
+        setMessageError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar o arquivo.");
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === optimisticMessage.id
+              ? {
+                  ...message,
+                  status: "failed"
+                }
+              : message
+          )
+        );
       }
     } finally {
       setIsSending(false);
@@ -687,7 +975,16 @@ export function InboxPage() {
         </header>
 
         {selectedConversation ? (
-          <div className="message-thread" aria-label="Historico da conversa">
+          <div
+            className="message-thread"
+            aria-label="Historico da conversa"
+            onScroll={() => {
+              if (isMessageThreadNearBottom()) {
+                setNewMessagesBelow(0);
+              }
+            }}
+            ref={messageThreadRef}
+          >
             {isLoadingMessages ? <p className="thread-note">Carregando mensagens...</p> : null}
             {messageError ? <p className="error-note">{messageError}</p> : null}
             {!isLoadingMessages && messages.length === 0 ? (
@@ -709,9 +1006,19 @@ export function InboxPage() {
                     <p>{messageDisplayText(message)}</p>
                   ) : null}
                   <time>{formatMessageTime(message.createdAt)}</time>
+                  {outboundStatusLabel(message) ? (
+                    <span className={`message-send-state message-send-state--${message.status}`}>
+                      {outboundStatusLabel(message)}
+                    </span>
+                  ) : null}
                 </div>
               </article>
             ))}
+            {newMessagesBelow > 0 ? (
+              <button className="new-messages-pill" onClick={scrollMessageThreadToBottom} type="button">
+                {newMessagesBelow === 1 ? "1 nova mensagem abaixo" : `${newMessagesBelow} novas mensagens abaixo`}
+              </button>
+            ) : null}
           </div>
         ) : (
           <div className="empty-state">
@@ -723,31 +1030,82 @@ export function InboxPage() {
           </div>
         )}
 
-        <form className="composer" aria-label="Compositor de mensagem" onSubmit={handleSendMessage}>
+        <form
+          aria-busy={isSending}
+          className="composer"
+          aria-label="Compositor de mensagem"
+          onSubmit={handleSendMessage}
+        >
           <div className="composer-toolbar" aria-label="Ferramentas de formatação">
-            <button type="button" className="composer-tool" aria-label="Negrito" disabled={!selectedConversation}>
+            <button
+              type="button"
+              className="composer-tool"
+              aria-label="Negrito"
+              disabled={!selectedConversation}
+              onClick={() => applyDraftMarker("*")}
+            >
               <strong>B</strong>
             </button>
-            <button type="button" className="composer-tool" aria-label="Itálico" disabled={!selectedConversation}>
+            <button
+              type="button"
+              className="composer-tool"
+              aria-label="Itálico"
+              disabled={!selectedConversation}
+              onClick={() => applyDraftMarker("_")}
+            >
               <em>I</em>
             </button>
             <span className="composer-tool-divider" aria-hidden="true" />
-            <button type="button" className="composer-tool" aria-label="Emoji" disabled={!selectedConversation}>
+            <button
+              type="button"
+              className="composer-tool"
+              aria-label="Emoji"
+              disabled={!selectedConversation}
+              onClick={() => setShowEmojiPicker((current) => !current)}
+            >
               😊
             </button>
-            <button type="button" className="composer-tool" aria-label="Anexo" disabled={!selectedConversation}>
+            <button
+              type="button"
+              className="composer-tool"
+              aria-label="Anexo"
+              disabled={!selectedConversation}
+              onClick={() => fileInputRef.current?.click()}
+            >
               📎
             </button>
+            <input
+              className="composer-file-input"
+              onChange={handleFileSelected}
+              ref={fileInputRef}
+              type="file"
+            />
             <span className="composer-tool-spacer" aria-hidden="true" />
             <button type="button" className="composer-quick-replies" disabled={!selectedConversation}>
               Respostas rápidas
             </button>
           </div>
+          {showEmojiPicker ? (
+            <div className="composer-emoji-picker" aria-label="Emojis">
+              {composerEmojis.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => {
+                    insertDraftText(emoji);
+                    setShowEmojiPicker(false);
+                  }}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <div className="composer-input-row">
             <textarea
               aria-label="Mensagem"
               className="composer-textarea"
-              disabled={!selectedConversation || isSending}
+              disabled={!selectedConversation}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
@@ -756,12 +1114,13 @@ export function InboxPage() {
                 }
               }}
               placeholder="Escreva uma mensagem..."
+              ref={draftTextAreaRef}
               rows={1}
               value={draft}
             />
             <button
               className="composer-send"
-              disabled={!selectedConversation || !draft.trim() || isSending}
+              disabled={!selectedConversation || !draft.trim()}
               type="submit"
               aria-label="Enviar mensagem"
             >

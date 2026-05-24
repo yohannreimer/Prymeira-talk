@@ -460,7 +460,8 @@ describe("conversations service", () => {
           createInstance: vi.fn(),
           connectInstance: vi.fn(),
           setWebhook: vi.fn(),
-          sendText
+          sendText,
+          sendMedia: vi.fn()
         }
       }
     });
@@ -479,6 +480,91 @@ describe("conversations service", () => {
     });
     expect(result.message.status).toBe("sent");
     expect(result.message.providerMessageId).toBe("provider_msg_1");
+  });
+
+  it("sends outbound media through Evolution in real mode", async () => {
+    const sendMedia = vi.fn().mockResolvedValue({
+      providerMessageId: "provider_media_1",
+      raw: { key: { id: "provider_media_1" } }
+    });
+    const prisma = createMockPrisma({
+      findUnique: vi
+        .fn<PrismaLike["conversation"]["findUnique"]>()
+        .mockResolvedValueOnce({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          channel: { provider: "evolution", providerKey: "talk-workspace_a-abc" },
+          contact: { phone: "5547999990000" }
+        })
+        .mockResolvedValue({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          status: "open",
+          assignedUserId: null,
+          departmentId: null,
+          lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+          lastMessagePreview: "Comprovante",
+          unreadCount: 0,
+          priority: "normal",
+          tags: []
+        }),
+      create: vi.fn<PrismaLike["message"]["create"]>().mockResolvedValue({
+        id: "msg_1",
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        providerMessageId: "provider_media_1",
+        direction: "outbound",
+        type: "image",
+        body: "Comprovante",
+        mediaUrl: "data:image/png;base64,aW1n",
+        status: "sent",
+        sentByUserId: "user_1",
+        createdAt: new Date("2026-05-20T12:00:00.000Z")
+      })
+    });
+    const service = createConversationsService(prisma, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "secret",
+        publicWebhookUrl: vi.fn(),
+        localWebhookUrl: vi.fn(),
+        client: {
+          createInstance: vi.fn(),
+          connectInstance: vi.fn(),
+          setWebhook: vi.fn(),
+          sendText: vi.fn(),
+          sendMedia
+        }
+      }
+    });
+
+    const result = await service.createPendingOutboundMessage({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      body: "Comprovante",
+      attachment: {
+        fileName: "foto.png",
+        mimetype: "image/png",
+        mediaUrl: "data:image/png;base64,aW1n"
+      },
+      sentByUserId: "user_1"
+    });
+
+    expect(sendMedia).toHaveBeenCalledWith({
+      instanceName: "talk-workspace_a-abc",
+      number: "5547999990000",
+      mediatype: "image",
+      mimetype: "image/png",
+      media: "data:image/png;base64,aW1n",
+      fileName: "foto.png",
+      caption: "Comprovante"
+    });
+    expect(result.message.status).toBe("sent");
+    expect(result.message.providerMessageId).toBe("provider_media_1");
   });
 
   it("rejects real Evolution outbound messages when the contact phone is blank", async () => {
@@ -503,7 +589,8 @@ describe("conversations service", () => {
           createInstance: vi.fn(),
           connectInstance: vi.fn(),
           setWebhook: vi.fn(),
-          sendText
+          sendText,
+          sendMedia: vi.fn()
         }
       }
     });
@@ -1099,7 +1186,8 @@ describe("conversation routes", () => {
           createInstance: vi.fn(),
           connectInstance: vi.fn(),
           setWebhook: vi.fn(),
-          sendText: vi.fn()
+          sendText: vi.fn(),
+          sendMedia: vi.fn()
         }
       }
     });
@@ -1149,7 +1237,7 @@ describe("conversation routes", () => {
         webhookSecret: "secret",
         publicWebhookUrl: vi.fn(),
         localWebhookUrl: vi.fn(),
-        client: { createInstance: vi.fn(), connectInstance: vi.fn(), setWebhook: vi.fn(), sendText }
+        client: { createInstance: vi.fn(), connectInstance: vi.fn(), setWebhook: vi.fn(), sendText, sendMedia: vi.fn() }
       }
     });
 

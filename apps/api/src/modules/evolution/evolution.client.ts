@@ -77,11 +77,27 @@ export interface SendTextResult {
   raw: unknown;
 }
 
+export interface SendMediaInput {
+  instanceName: string;
+  number: string;
+  mediatype: "image" | "video" | "document";
+  mimetype: string;
+  media: string;
+  fileName: string;
+  caption?: string;
+}
+
+export interface SendMediaResult {
+  providerMessageId: string | null;
+  raw: unknown;
+}
+
 export interface EvolutionClient {
   createInstance(input: CreateInstanceInput): Promise<CreateInstanceResult>;
   connectInstance(input: ConnectInstanceInput): Promise<ConnectInstanceResult>;
   setWebhook(input: SetWebhookInput): Promise<SetWebhookResult>;
   sendText(input: SendTextInput): Promise<SendTextResult>;
+  sendMedia(input: SendMediaInput): Promise<SendMediaResult>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -303,6 +319,22 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       const responseBody = await post(`/message/sendText/${encodeURIComponent(input.instanceName)}`, {
         number: input.number,
         text: input.text
+      });
+
+      return {
+        providerMessageId: extractProviderMessageId(responseBody),
+        raw: responseBody
+      };
+    },
+
+    async sendMedia(input) {
+      const responseBody = await post(`/message/sendMedia/${encodeURIComponent(input.instanceName)}`, {
+        number: input.number,
+        mediatype: input.mediatype,
+        mimetype: input.mimetype,
+        caption: input.caption ?? "",
+        media: input.media,
+        fileName: input.fileName
       });
 
       return {

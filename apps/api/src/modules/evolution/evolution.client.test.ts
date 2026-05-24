@@ -195,6 +195,41 @@ describe("Evolution client", () => {
     expect(result.providerMessageId).toBe("provider_msg_1");
   });
 
+  it("sends a media message with the expected provider payload", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({ key: { id: "provider_media_1" } })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    const result = await client.sendMedia({
+      instanceName: "talk-local_workspace-abc",
+      number: "5547999990000",
+      mediatype: "image",
+      mimetype: "image/png",
+      media: "data:image/png;base64,aW1n",
+      fileName: "foto.png",
+      caption: "Oi"
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://wsapi.yrdnegocios.com.br/message/sendMedia/talk-local_workspace-abc",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      number: "5547999990000",
+      mediatype: "image",
+      mimetype: "image/png",
+      caption: "Oi",
+      media: "data:image/png;base64,aW1n",
+      fileName: "foto.png"
+    });
+    expect(result.providerMessageId).toBe("provider_media_1");
+  });
+
   it("sets an instance webhook with the expected provider payload", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse({ ok: true }));
     const client = createEvolutionClient({

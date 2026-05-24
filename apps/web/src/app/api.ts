@@ -1324,9 +1324,18 @@ export async function apiGetConversationMessages(
   return messageSchema.array().parse(data);
 }
 
+export interface CreateConversationMessageInput {
+  body?: string;
+  attachment?: {
+    fileName: string;
+    mediaUrl: string;
+    mimetype: string;
+  };
+}
+
 export async function apiCreateConversationMessage(
   conversationId: string,
-  body: string,
+  input: CreateConversationMessageInput,
   getToken: () => Promise<string | null>
 ): Promise<MessageDto> {
   const token = await getRequiredToken(getToken);
@@ -1337,7 +1346,7 @@ export async function apiCreateConversationMessage(
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ body })
+    body: JSON.stringify(input)
   });
 
   if (!response.ok) {

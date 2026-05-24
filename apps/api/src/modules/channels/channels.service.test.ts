@@ -144,7 +144,7 @@ describe("channels service", () => {
           "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
         localWebhookUrl: () =>
           "http://localhost:3002/webhooks/evolution/workspace_a",
-        client: { createInstance, connectInstance: vi.fn(), setWebhook, sendText: vi.fn() }
+        client: { createInstance, connectInstance: vi.fn(), setWebhook, sendText: vi.fn(), sendMedia: vi.fn() }
       }
     });
 
@@ -204,7 +204,8 @@ describe("channels service", () => {
           createInstance: vi.fn(),
           connectInstance: vi.fn(),
           setWebhook: vi.fn(),
-          sendText: vi.fn()
+          sendText: vi.fn(),
+          sendMedia: vi.fn()
         }
       }
     });
@@ -234,7 +235,7 @@ describe("channels service", () => {
           "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
         localWebhookUrl: () =>
           "http://localhost:3002/webhooks/evolution/workspace_a",
-        client: { createInstance, connectInstance: vi.fn(), setWebhook, sendText: vi.fn() }
+        client: { createInstance, connectInstance: vi.fn(), setWebhook, sendText: vi.fn(), sendMedia: vi.fn() }
       }
     });
 
@@ -308,7 +309,7 @@ describe("channels service", () => {
           "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
         localWebhookUrl: () =>
           "http://localhost:3002/webhooks/evolution/workspace_a",
-        client: { createInstance, connectInstance, setWebhook, sendText: vi.fn() }
+        client: { createInstance, connectInstance, setWebhook, sendText: vi.fn(), sendMedia: vi.fn() }
       }
     });
 
@@ -349,7 +350,7 @@ describe("channels service", () => {
           "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
         localWebhookUrl: () =>
           "http://localhost:3002/webhooks/evolution/workspace_a",
-        client: { createInstance, connectInstance: vi.fn(), setWebhook: vi.fn(), sendText: vi.fn() }
+        client: { createInstance, connectInstance: vi.fn(), setWebhook: vi.fn(), sendText: vi.fn(), sendMedia: vi.fn() }
       }
     });
 
@@ -385,7 +386,7 @@ describe("channels service", () => {
           "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
         localWebhookUrl: () =>
           "http://localhost:3002/webhooks/evolution/workspace_a",
-        client: { createInstance, connectInstance: vi.fn(), setWebhook: vi.fn(), sendText: vi.fn() }
+        client: { createInstance, connectInstance: vi.fn(), setWebhook: vi.fn(), sendText: vi.fn(), sendMedia: vi.fn() }
       }
     });
 

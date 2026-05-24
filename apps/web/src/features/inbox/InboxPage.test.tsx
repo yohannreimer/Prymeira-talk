@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { messageDisplayText, messageMediaKind, messageMediaLabel } from "./InboxPage";
+import {
+  applyComposerMarker,
+  insertComposerText,
+  messageDisplayText,
+  messageMediaKind,
+  messageMediaLabel
+} from "./InboxPage";
 
 describe("messageDisplayText", () => {
   it("uses message body when present", () => {
@@ -31,5 +37,31 @@ describe("messageMediaKind", () => {
     expect(messageMediaKind({ mediaUrl: "data:video/mp4;base64,dmZk", type: "file" })).toBe("file");
     expect(messageMediaKind({ mediaUrl: "https://cdn.test/a.pdf", type: "file" })).toBe("file");
     expect(messageMediaKind({ mediaUrl: null, type: "image" })).toBeNull();
+  });
+});
+
+describe("composer formatting helpers", () => {
+  it("wraps only the selected text with the requested WhatsApp marker", () => {
+    expect(applyComposerMarker("oi tudo bem", 3, 7, "*")).toEqual({
+      value: "oi *tudo* bem",
+      selectionStart: 4,
+      selectionEnd: 8
+    });
+  });
+
+  it("inserts paired markers around the cursor when nothing is selected", () => {
+    expect(applyComposerMarker("oi bem", 3, 3, "_")).toEqual({
+      value: "oi __bem",
+      selectionStart: 4,
+      selectionEnd: 4
+    });
+  });
+
+  it("inserts emoji at the current selection", () => {
+    expect(insertComposerText("oi mundo", 3, 8, "😊")).toEqual({
+      value: "oi 😊",
+      selectionStart: 5,
+      selectionEnd: 5
+    });
   });
 });

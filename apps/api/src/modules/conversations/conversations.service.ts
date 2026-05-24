@@ -499,7 +499,12 @@ export function createConversationsService(
     async createPendingOutboundMessage(input: {
       workspaceId: string;
       conversationId: string;
-      body: string;
+      body?: string;
+      attachment?: {
+        fileName: string;
+        mimetype: string;
+        mediaUrl: string;
+      };
       sentByUserId: string | null;
     }): Promise<{ message: MessageDto; conversation: ConversationDto }> {
       const conversation = await prisma.conversation.findUnique({
@@ -515,8 +520,16 @@ export function createConversationsService(
         throw new ConversationNotFoundError();
       }
 
+      const messageBody = input.body?.trim() || input.attachment?.fileName || "";
+      const messageType: MessageDto["type"] = input.attachment
+        ? input.attachment.mimetype.toLowerCase().startsWith("image/")
+          ? "image"
+          : "file"
+        : "text";
+
       let providerSend: Awaited<
-        ReturnType<NonNullable<EvolutionRuntime["client"]>["sendText"]>
+        ReturnType<NonNullable<EvolutionRuntime["client"]>["sendText"]> |
+        ReturnType<NonNullable<EvolutionRuntime["client"]>["sendMedia"]>
       > | null = null;
 
       if (
@@ -541,11 +554,21 @@ export function createConversationsService(
           );
         }
 
-        providerSend = await options.evolution.client.sendText({
-          instanceName: providerKey,
-          number: contactPhone,
-          text: input.body
-        });
+        providerSend = input.attachment
+          ? await options.evolution.client.sendMedia({
+              instanceName: providerKey,
+              number: contactPhone,
+              mediatype: messageType === "image" ? "image" : "document",
+              mimetype: input.attachment.mimetype,
+              media: input.attachment.mediaUrl,
+              fileName: input.attachment.fileName,
+              caption: input.body
+            })
+          : await options.evolution.client.sendText({
+              instanceName: providerKey,
+              number: contactPhone,
+              text: messageBody
+            });
       }
 
       const message = await prisma.message.create({
@@ -553,8 +576,9 @@ export function createConversationsService(
           workspaceId: input.workspaceId,
           conversationId: input.conversationId,
           direction: "outbound",
-          type: "text",
-          body: input.body,
+          type: messageType,
+          body: messageBody,
+          mediaUrl: input.attachment?.mediaUrl,
           providerMessageId: providerSend?.providerMessageId ?? undefined,
           status: providerSend ? "sent" : "pending",
           sentByUserId: input.sentByUserId
@@ -566,7 +590,7 @@ export function createConversationsService(
         data: {
           lastMessageAt:
             message.createdAt instanceof Date ? message.createdAt : new Date(message.createdAt),
-          lastMessagePreview: input.body
+          lastMessagePreview: messageBody
         },
         include: conversationDtoInclude
       });
