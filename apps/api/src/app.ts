@@ -18,6 +18,7 @@ import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 import { reportsRoutes } from "./modules/reports/reports.routes.js";
 import { settingsRoutes } from "./modules/settings/settings.routes.js";
 import { teamRoutes } from "./modules/team/team.routes.js";
+import { quickRepliesRoutes } from "./modules/quick-replies/quick-replies.routes.js";
 
 export interface CreateAppOptions {
   authEnabled?: boolean;
@@ -72,6 +73,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(realtimeRoutes);
   await app.register(evolutionRoutes, { webhookSecret: env.EVOLUTION_WEBHOOK_SECRET });
   await app.register(conversationsRoutes, { evolution: evolutionRuntime });
+  await app.register(quickRepliesRoutes);
   await app.register(contactsRoutes);
   await app.register(boardsRoutes);
   await app.register(channelsRoutes, { evolution: evolutionRuntime });
