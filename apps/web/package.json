@@ -16,6 +16,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@prymeira-talk/shared": "workspace:*",
     "@vitejs/plugin-react": "^4.6.0",
+    "@xyflow/react": "^12.10.2",
     "lucide-react": "^0.542.0",
     "qrcode": "^1.5.4",
     "react": "^19.1.0",

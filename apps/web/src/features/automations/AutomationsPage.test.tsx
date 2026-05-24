@@ -11,6 +11,12 @@ import {
   defaultAutomationEventKey,
   mergeAutomationRun
 } from "./AutomationsPage";
+import {
+  createAutomationNode,
+  createDefaultAutomationFlow,
+  flowToAutomationPayload,
+  supportedBlockTypes
+} from "./automationFlow";
 
 const baseRun: AutomationRunDto = {
   id: "run-1",
@@ -145,5 +151,106 @@ describe("automation API helpers", () => {
 
     const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(requestBody.actions).toEqual(graphActions);
+  });
+});
+
+describe("automation flow helpers", () => {
+  it("creates a default version 1 flow with a first-message trigger", () => {
+    const flow = createDefaultAutomationFlow();
+
+    expect(flow).toMatchObject({
+      version: 1,
+      nodes: [
+        {
+          type: "trigger_first_message",
+          data: { title: "Primeira mensagem", config: {} }
+        }
+      ],
+      edges: []
+    });
+  });
+
+  it("creates node data from the shared block catalog", () => {
+    const node = createAutomationNode("send_message", { x: 100, y: 120 });
+
+    expect(node).toMatchObject({
+      type: "send_message",
+      position: { x: 100, y: 120 },
+      data: {
+        blockType: "send_message",
+        title: "Enviar mensagem",
+        description: "Envia texto pelo WhatsApp.",
+        category: "communication",
+        support: "supported",
+        config: {}
+      }
+    });
+  });
+
+  it("converts React Flow state into the shared automation payload", () => {
+    const trigger = createAutomationNode("trigger_first_message", { x: 80, y: 180 });
+    const message = createAutomationNode("send_message", { x: 320, y: 180 });
+
+    const payload = flowToAutomationPayload(
+      [trigger, message],
+      [
+        {
+          id: "edge-1",
+          source: trigger.id,
+          target: message.id,
+          sourceHandle: "success",
+          targetHandle: "input"
+        }
+      ]
+    );
+
+    expect(payload).toEqual({
+      version: 1,
+      nodes: [
+        {
+          id: trigger.id,
+          type: "trigger_first_message",
+          position: { x: 80, y: 180 },
+          data: { title: "Primeira mensagem", config: {} }
+        },
+        {
+          id: message.id,
+          type: "send_message",
+          position: { x: 320, y: 180 },
+          data: { title: "Enviar mensagem", config: {} }
+        }
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: trigger.id,
+          target: message.id,
+          sourceHandle: "success",
+          targetHandle: "input"
+        }
+      ]
+    });
+  });
+
+  it("omits empty edge handles from the shared automation payload", () => {
+    const trigger = createAutomationNode("trigger_first_message", { x: 80, y: 180 });
+    const message = createAutomationNode("send_message", { x: 320, y: 180 });
+
+    const payload = flowToAutomationPayload(
+      [trigger, message],
+      [{ id: "edge-2", source: trigger.id, target: message.id }]
+    );
+
+    expect(payload.edges[0]).toEqual({
+      id: "edge-2",
+      source: trigger.id,
+      target: message.id
+    });
+  });
+
+  it("returns the shared block catalog", () => {
+    expect(supportedBlockTypes()).toContainEqual(
+      expect.objectContaining({ type: "trigger_first_message", support: "supported" })
+    );
   });
 });
