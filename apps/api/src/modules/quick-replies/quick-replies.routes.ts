@@ -15,6 +15,15 @@ const updateBodySchema = bodySchema.partial().refine((body) => Object.keys(body)
   message: "At least one field is required."
 });
 
+function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
+  );
+}
+
 export const quickRepliesRoutes: FastifyPluginAsync = async (app) => {
   const service = createQuickRepliesService(app.prisma as unknown as PrismaLike);
 
@@ -43,11 +52,22 @@ export const quickRepliesRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "Invalid quick reply request." });
     }
 
-    return service.update({
-      workspaceId: request.talk.workspaceId,
-      id: params.data.quickReplyId,
-      data: body.data
-    });
+    try {
+      return await service.update({
+        workspaceId: request.talk.workspaceId,
+        id: params.data.quickReplyId,
+        data: body.data
+      });
+    } catch (error) {
+      if (isPrismaKnownRequestErrorCode(error, "P2025")) {
+        return reply.code(404).send({
+          code: "QUICK_REPLY_NOT_FOUND",
+          error: "Quick reply not found."
+        });
+      }
+
+      throw error;
+    }
   });
 
   app.delete("/quick-replies/:quickReplyId", async (request, reply) => {
@@ -56,10 +76,21 @@ export const quickRepliesRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "Invalid quick reply request." });
     }
 
-    await service.delete({
-      workspaceId: request.talk.workspaceId,
-      id: params.data.quickReplyId
-    });
+    try {
+      await service.delete({
+        workspaceId: request.talk.workspaceId,
+        id: params.data.quickReplyId
+      });
+    } catch (error) {
+      if (isPrismaKnownRequestErrorCode(error, "P2025")) {
+        return reply.code(404).send({
+          code: "QUICK_REPLY_NOT_FOUND",
+          error: "Quick reply not found."
+        });
+      }
+
+      throw error;
+    }
 
     return reply.code(204).send();
   });
