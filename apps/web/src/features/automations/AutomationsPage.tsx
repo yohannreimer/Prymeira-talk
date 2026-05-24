@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import { Plus, Save, ToggleLeft, ToggleRight, Zap } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type Dispatch, FormEvent, type SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
 import { automationFlowSchema, getAutomationBlock, type AutomationBlockType, type AutomationFlowDefinition } from "@prymeira-talk/shared";
 import {
   apiCreateAutomation,
@@ -43,6 +43,8 @@ interface AutomationSavePayload {
   conditions: { summary: string };
   actions: AutomationRuleDto["actions"];
 }
+
+export type AutomationViewMode = "hub" | "editor" | "focus";
 
 const triggerByBlockType: Partial<Record<AutomationBlockType, string>> = {
   trigger_first_message: "message.received",
@@ -166,6 +168,7 @@ export function buildAutomationSavePayload(
 
 export function AutomationsPage() {
   const { getToken } = useTalkAuth();
+  const [viewMode, setViewMode] = useState<AutomationViewMode>("hub");
   const [automations, setAutomations] = useState<AutomationRuleDto[]>([]);
   const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
   const [draftVersion, setDraftVersion] = useState(0);
@@ -198,6 +201,7 @@ export function AutomationsPage() {
             ? current
             : nextAutomations[0]?.id ?? null
         );
+        setViewMode("hub");
       } catch (loadError) {
         if (!isMounted) return;
         setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar automacoes.");
@@ -279,6 +283,15 @@ export function AutomationsPage() {
     setFlowPayload(payload);
   }, []);
 
+  function openAutomation(automationId: string) {
+    setSelectedAutomationId(automationId);
+    setViewMode("editor");
+  }
+
+  function closeEditor() {
+    setViewMode("hub");
+  }
+
   async function saveAutomation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsSaving(true);
@@ -301,6 +314,7 @@ export function AutomationsPage() {
 
       setAutomations((current) => mergeAutomation(current, savedAutomation));
       setSelectedAutomationId(savedAutomation.id);
+      setViewMode("editor");
       setNotice("Automacao salva no runner local.");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Nao foi possivel salvar automacao.");
@@ -314,6 +328,7 @@ export function AutomationsPage() {
     setForm(emptyForm);
     setFlowPayload(null);
     setDraftVersion((current) => current + 1);
+    setViewMode("editor");
     setNotice("Rascunho local pronto para edicao.");
   }
 
@@ -368,163 +383,344 @@ export function AutomationsPage() {
   }
 
   return (
+    <AutomationsPageView
+      automations={automations}
+      canvasTriggerLabel={canvasTriggerLabel}
+      draftVersion={draftVersion}
+      enabledCount={enabledCount}
+      error={error}
+      form={form}
+      isLoading={isLoading}
+      isRunsLoading={isRunsLoading}
+      isSaving={isSaving}
+      isTesting={isTesting}
+      notice={notice}
+      onBack={closeEditor}
+      onCanvasChange={handleCanvasChange}
+      onCreate={createDraft}
+      onFormChange={setForm}
+      onOpen={openAutomation}
+      onRunEventKeyChange={setRunEventKey}
+      onSave={saveAutomation}
+      onTest={testSelectedAutomation}
+      onToggleAutomation={toggleAutomation}
+      runEventKey={runEventKey}
+      runs={runs}
+      selectedAutomation={selectedAutomation}
+      viewMode={viewMode}
+    />
+  );
+}
+
+interface AutomationsPageViewProps {
+  automations: AutomationRuleDto[];
+  canvasTriggerLabel: string;
+  draftVersion: number;
+  enabledCount: number;
+  error: string | null;
+  form: AutomationFormState;
+  isLoading: boolean;
+  isRunsLoading: boolean;
+  isSaving: boolean;
+  isTesting: boolean;
+  notice: string | null;
+  onBack: () => void;
+  onCanvasChange: (payload: AutomationFlowDefinition) => void;
+  onCreate: () => void;
+  onFormChange: Dispatch<SetStateAction<AutomationFormState>>;
+  onOpen: (automationId: string) => void;
+  onRunEventKeyChange?: Dispatch<SetStateAction<string>>;
+  onSave: (event: FormEvent<HTMLFormElement>) => void;
+  onTest: () => void;
+  onToggleAutomation: (automation: AutomationRuleDto) => void;
+  runEventKey: string;
+  runs: AutomationRunDto[];
+  selectedAutomation: AutomationRuleDto | null;
+  viewMode: AutomationViewMode;
+}
+
+export function AutomationsPageView({
+  automations,
+  canvasTriggerLabel,
+  draftVersion,
+  enabledCount,
+  error,
+  form,
+  isLoading,
+  isRunsLoading,
+  isSaving,
+  isTesting,
+  notice,
+  onBack,
+  onCanvasChange,
+  onCreate,
+  onFormChange,
+  onOpen,
+  onRunEventKeyChange,
+  onSave,
+  onTest,
+  onToggleAutomation,
+  runEventKey,
+  runs,
+  selectedAutomation,
+  viewMode
+}: AutomationsPageViewProps) {
+  const shouldShowEditor = viewMode === "editor" || viewMode === "focus";
+
+  return (
     <section className="module-page automations-page" aria-label="Automacoes">
       <header className="module-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <div>
             <p className="eyebrow">Prymeira Talk</p>
             <h1>Automações</h1>
           </div>
           {automations.length > 0 ? (
             <span className="status-badge status-badge--open">
-              {enabledCount} ativa{enabledCount !== 1 ? 's' : ''}
+              {enabledCount} ativa{enabledCount !== 1 ? "s" : ""}
             </span>
           ) : null}
         </div>
-        <button className="primary-button" type="button" onClick={createDraft}>
+        <button className="primary-button" type="button" onClick={onCreate}>
           <Plus size={16} aria-hidden="true" />
           Criar fluxo
         </button>
       </header>
 
-      {error ? <p className="error-note" style={{ margin: '0 16px' }}>{error}</p> : null}
-      {notice ? <p className="list-note" style={{ margin: '0 16px' }}>{notice}</p> : null}
+      {error ? <p className="error-note" style={{ margin: "0 16px" }}>{error}</p> : null}
+      {notice ? <p className="list-note" style={{ margin: "0 16px" }}>{notice}</p> : null}
 
-      <div className="automations-layout">
-        <div className="module-panel automations-list-panel">
-          <div className="panel-title-row">
-            <h2>Regras</h2>
-            <span>{isLoading ? 'Carregando' : `${automations.length} regras`}</span>
-          </div>
+      {shouldShowEditor ? (
+        <AutomationEditorView
+          canvasTriggerLabel={canvasTriggerLabel}
+          draftVersion={draftVersion}
+          form={form}
+          isRunsLoading={isRunsLoading}
+          isSaving={isSaving}
+          isTesting={isTesting}
+          onBack={onBack}
+          onCanvasChange={onCanvasChange}
+          onFormChange={onFormChange}
+          onRunEventKeyChange={onRunEventKeyChange}
+          onSave={onSave}
+          onTest={onTest}
+          onToggleAutomation={onToggleAutomation}
+          runEventKey={runEventKey}
+          runs={runs}
+          selectedAutomation={selectedAutomation}
+        />
+      ) : (
+        <AutomationHubView
+          automations={automations}
+          isLoading={isLoading}
+          onCreate={onCreate}
+          onOpen={onOpen}
+          selectedAutomation={selectedAutomation}
+        />
+      )}
+    </section>
+  );
+}
 
-          {!isLoading && automations.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-state-icon">
-                <Zap size={28} aria-hidden="true" />
-              </div>
-              <h3>Nenhuma regra criada</h3>
-              <p>Crie um fluxo para automatizar ações na plataforma.</p>
-            </div>
-          ) : null}
+function automationStatusLabel(status: AutomationRuleDto["status"]) {
+  return status === "enabled" ? "Ativa" : "Pausada";
+}
 
-          <div className="automation-rule-list">
-            {automations.map((automation) => (
-              <button
-                className={`automation-rule-card ${automation.id === selectedAutomationId ? 'is-selected' : ''}`}
-                key={automation.id}
-                onClick={() => setSelectedAutomationId(automation.id)}
-                type="button"
-              >
-                <span className={`status-badge status-badge--${automation.status === 'enabled' ? 'open' : 'closed'}`}>
-                  {automation.status === 'enabled' ? 'Ativa' : 'Pausada'}
-                </span>
-                <span className="automation-rule-info">
-                  <strong>{automation.name}</strong>
-                  <small>{triggerOptions.find((option) => option.value === automation.trigger)?.label ?? automation.trigger}</small>
-                </span>
-              </button>
-            ))}
-          </div>
+export function AutomationHubView({
+  automations,
+  isLoading,
+  onCreate,
+  onOpen,
+  selectedAutomation
+}: {
+  automations: AutomationRuleDto[];
+  isLoading: boolean;
+  onCreate: () => void;
+  onOpen: (automationId: string) => void;
+  selectedAutomation: AutomationRuleDto | null;
+}) {
+  return (
+    <div className="automations-layout">
+      <div className="module-panel automations-list-panel">
+        <div className="panel-title-row">
+          <h2>Regras</h2>
+          <span>{isLoading ? "Carregando" : `${automations.length} regras`}</span>
         </div>
 
-        <form className="module-panel automation-editor" onSubmit={saveAutomation}>
-          <div className="panel-title-row">
-            <h2>{selectedAutomation ? 'Editar regra' : 'Novo fluxo'}</h2>
-            {selectedAutomation ? (
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => void toggleAutomation(selectedAutomation)}
-                disabled={isSaving}
-              >
-                {selectedAutomation.status === 'enabled' ? (
-                  <ToggleRight size={15} aria-hidden="true" />
-                ) : (
-                  <ToggleLeft size={15} aria-hidden="true" />
-                )}
-                {selectedAutomation.status === 'enabled' ? 'Desabilitar' : 'Habilitar'}
-              </button>
-            ) : null}
-          </div>
-
-          <label className="form-field">
-            <span>Nome</span>
-            <input
-              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-              required
-              value={form.name}
-            />
-          </label>
-
-          <label className="form-field">
-            <span>Resumo das condições</span>
-            <input
-              onChange={(event) => setForm((current) => ({ ...current, conditionSummary: event.target.value }))}
-              required
-              value={form.conditionSummary}
-            />
-          </label>
-
-          <div className="automation-flow-summary" aria-label="Resumo do fluxo">
-            <span>Gatilho do canvas</span>
-            <strong>{canvasTriggerLabel}</strong>
-          </div>
-
-          <AutomationCanvas
-            key={selectedAutomation?.id ?? `new-automation-${draftVersion}`}
-            onChange={handleCanvasChange}
-            value={selectedAutomation?.actions}
-          />
-
-          <div className="automation-editor-footer">
-            <button className="primary-button" disabled={isSaving} type="submit">
-              <Save size={15} aria-hidden="true" />
-              Salvar
+        {!isLoading && automations.length === 0 ? (
+          <div className="empty-state">
+            <div className="empty-state-icon">
+              <Zap size={28} aria-hidden="true" />
+            </div>
+            <h3>Nenhuma regra criada</h3>
+            <p>Crie um fluxo para automatizar ações na plataforma.</p>
+            <button className="primary-button" type="button" onClick={onCreate}>
+              <Plus size={16} aria-hidden="true" />
+              Criar fluxo
             </button>
           </div>
-        </form>
+        ) : null}
 
-        <aside className="module-panel automation-runs-panel">
-          <div className="panel-title-row">
-            <h2>Teste & histórico</h2>
-            <span>{isRunsLoading ? "Carregando" : `${runs.length} runs`}</span>
-          </div>
-
-          <label className="form-field">
-            <span>Event key</span>
-            <input
-              disabled={!selectedAutomation || isTesting}
-              onChange={(event) => setRunEventKey(event.target.value)}
-              value={runEventKey}
-            />
-          </label>
-
-          <button
-            className="secondary-button icon-button-label"
-            disabled={!selectedAutomation || isTesting}
-            onClick={() => void testSelectedAutomation()}
-            type="button"
-          >
-            <Zap size={15} aria-hidden="true" />
-            {isTesting ? "Testando" : "Testar agora"}
-          </button>
-
-          <div className="automation-run-list">
-            {runs.length === 0 && !isRunsLoading ? (
-              <p className="list-note">Nenhum teste executado.</p>
-            ) : null}
-            {runs.map((run) => (
-              <article className="automation-run-card" key={run.id}>
-                <span className={`status-badge status-badge--${run.status === "completed" ? "open" : "waiting"}`}>
-                  {run.status}
-                </span>
-                <strong>{run.eventKey}</strong>
-                <small>{formatAutomationRunDate(run.updatedAt)}</small>
-              </article>
-            ))}
-          </div>
-        </aside>
+        <div className="automation-rule-list">
+          {automations.map((automation) => (
+            <button
+              className={`automation-rule-card ${automation.id === selectedAutomation?.id ? "is-selected" : ""}`}
+              key={automation.id}
+              onClick={() => onOpen(automation.id)}
+              type="button"
+            >
+              <span className={`status-badge status-badge--${automation.status === "enabled" ? "open" : "closed"}`}>
+                {automationStatusLabel(automation.status)}
+              </span>
+              <span className="automation-rule-info">
+                <strong>{automation.name}</strong>
+                <small>{triggerOptions.find((option) => option.value === automation.trigger)?.label ?? automation.trigger}</small>
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
-    </section>
+    </div>
+  );
+}
+
+export function AutomationEditorView({
+  canvasTriggerLabel,
+  draftVersion,
+  form,
+  isRunsLoading,
+  isSaving,
+  isTesting,
+  onBack,
+  onCanvasChange,
+  onFormChange,
+  onRunEventKeyChange,
+  onSave,
+  onTest,
+  onToggleAutomation,
+  runEventKey,
+  runs,
+  selectedAutomation
+}: {
+  canvasTriggerLabel: string;
+  draftVersion: number;
+  form: AutomationFormState;
+  isRunsLoading: boolean;
+  isSaving: boolean;
+  isTesting: boolean;
+  onBack: () => void;
+  onCanvasChange: (payload: AutomationFlowDefinition) => void;
+  onFormChange: Dispatch<SetStateAction<AutomationFormState>>;
+  onRunEventKeyChange?: Dispatch<SetStateAction<string>>;
+  onSave: (event: FormEvent<HTMLFormElement>) => void;
+  onTest: () => void;
+  onToggleAutomation: (automation: AutomationRuleDto) => void;
+  runEventKey: string;
+  runs: AutomationRunDto[];
+  selectedAutomation: AutomationRuleDto | null;
+}) {
+  return (
+    <div className="automations-layout">
+      <form className="module-panel automation-editor" onSubmit={onSave}>
+        <div className="panel-title-row">
+          <h2>{selectedAutomation ? "Editar fluxo" : "Novo fluxo"}</h2>
+          <button className="secondary-button" type="button" onClick={onBack}>
+            Voltar para automações
+          </button>
+          {selectedAutomation ? (
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void onToggleAutomation(selectedAutomation)}
+              disabled={isSaving}
+            >
+              {selectedAutomation.status === "enabled" ? (
+                <ToggleRight size={15} aria-hidden="true" />
+              ) : (
+                <ToggleLeft size={15} aria-hidden="true" />
+              )}
+              {selectedAutomation.status === "enabled" ? "Desabilitar" : "Habilitar"}
+            </button>
+          ) : null}
+        </div>
+
+        <label className="form-field">
+          <span>Nome</span>
+          <input
+            onChange={(event) => onFormChange((current) => ({ ...current, name: event.target.value }))}
+            required
+            value={form.name}
+          />
+        </label>
+
+        <label className="form-field">
+          <span>Resumo das condições</span>
+          <input
+            onChange={(event) => onFormChange((current) => ({ ...current, conditionSummary: event.target.value }))}
+            required
+            value={form.conditionSummary}
+          />
+        </label>
+
+        <div className="automation-flow-summary" aria-label="Resumo do fluxo">
+          <span>Gatilho do canvas</span>
+          <strong>{canvasTriggerLabel}</strong>
+        </div>
+
+        <AutomationCanvas
+          key={selectedAutomation?.id ?? `new-automation-${draftVersion}`}
+          onChange={onCanvasChange}
+          value={selectedAutomation?.actions}
+        />
+
+        <div className="automation-editor-footer">
+          <button className="primary-button" disabled={isSaving} type="submit">
+            <Save size={15} aria-hidden="true" />
+            Salvar
+          </button>
+        </div>
+      </form>
+
+      <aside className="module-panel automation-runs-panel">
+        <div className="panel-title-row">
+          <h2>Teste & histórico</h2>
+          <span>{isRunsLoading ? "Carregando" : `${runs.length} runs`}</span>
+        </div>
+
+        <label className="form-field">
+          <span>Event key</span>
+          <input
+            disabled={!selectedAutomation || isTesting}
+            onChange={(event) => onRunEventKeyChange?.(event.target.value)}
+            value={runEventKey}
+          />
+        </label>
+
+        <button
+          className="secondary-button icon-button-label"
+          disabled={!selectedAutomation || isTesting}
+          onClick={() => void onTest()}
+          type="button"
+        >
+          <Zap size={15} aria-hidden="true" />
+          {isTesting ? "Testando" : "Testar agora"}
+        </button>
+
+        <div className="automation-run-list">
+          {runs.length === 0 && !isRunsLoading ? (
+            <p className="list-note">Nenhum teste executado.</p>
+          ) : null}
+          {runs.map((run) => (
+            <article className="automation-run-card" key={run.id}>
+              <span className={`status-badge status-badge--${run.status === "completed" ? "open" : "waiting"}`}>
+                {run.status}
+              </span>
+              <strong>{run.eventKey}</strong>
+              <small>{formatAutomationRunDate(run.updatedAt)}</small>
+            </article>
+          ))}
+        </div>
+      </aside>
+    </div>
   );
 }

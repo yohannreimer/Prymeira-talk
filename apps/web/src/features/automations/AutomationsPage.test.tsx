@@ -6,6 +6,7 @@ import {
   type AutomationRunDto
 } from "../../app/api";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { isValidElement, type ReactElement, type ReactNode } from "react";
 import {
   automationActionsToTrigger,
   buildAutomationSavePayload,
@@ -59,7 +60,273 @@ const baseAutomation: AutomationRuleDto = {
 };
 
 afterEach(() => {
+  vi.clearAllMocks();
+  vi.doUnmock("react");
+  vi.doUnmock("../../app/auth");
+  vi.doUnmock("../../app/api");
+  vi.resetModules();
   vi.unstubAllGlobals();
+});
+
+const pureAutomationComponents = new Set([
+  "AutomationsPageView",
+  "AutomationHubView",
+  "AutomationEditorView"
+]);
+
+function expandPureComponents(node: ReactNode): ReactNode {
+  if (Array.isArray(node)) {
+    return node.map(expandPureComponents);
+  }
+
+  if (!isValidElement(node)) {
+    return node;
+  }
+
+  const element = node as ReactElement<{ children?: ReactNode }>;
+  const Component = element.type;
+  const componentName = typeof Component === "function" ? Component.name : "";
+
+  if (typeof Component === "function" && pureAutomationComponents.has(componentName)) {
+    return expandPureComponents((Component as (props: typeof element.props) => ReactNode)(element.props));
+  }
+
+  return {
+    ...element,
+    props: {
+      ...element.props,
+      children: expandPureComponents(element.props.children)
+    }
+  };
+}
+
+function textContent(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") {
+    return "";
+  }
+
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(textContent).join("");
+  }
+
+  if (!isValidElement(node)) {
+    return "";
+  }
+
+  return textContent((node as ReactElement<{ children?: ReactNode }>).props.children);
+}
+
+function findElement(
+  node: ReactNode,
+  predicate: (element: ReactElement<{ children?: ReactNode }>) => boolean
+): ReactElement<{ children?: ReactNode }> | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = findElement(child, predicate);
+
+      if (match) {
+        return match;
+      }
+    }
+
+    return null;
+  }
+
+  if (!isValidElement(node)) {
+    return null;
+  }
+
+  const element = node as ReactElement<{ children?: ReactNode }>;
+
+  if (predicate(element)) {
+    return element;
+  }
+
+  return findElement(element.props.children, predicate);
+}
+
+function hasText(node: ReactNode, matcher: string | RegExp) {
+  const content = textContent(node);
+  return typeof matcher === "string" ? content.includes(matcher) : matcher.test(content);
+}
+
+function findButtonByName(node: ReactNode, matcher: string | RegExp) {
+  return findElement(
+    node,
+    (element) => element.type === "button" && hasText(element.props.children, matcher)
+  );
+}
+
+function clickButton(node: ReactNode, matcher: string | RegExp) {
+  const button = findButtonByName(node, matcher) as ReactElement<{
+    children?: ReactNode;
+    onClick: () => void | Promise<void>;
+  }> | null;
+
+  expect(button).not.toBeNull();
+  return button?.props.onClick();
+}
+
+function depsChanged(previous: readonly unknown[] | undefined, next: readonly unknown[] | undefined) {
+  if (!previous || !next || previous.length !== next.length) {
+    return true;
+  }
+
+  return next.some((value, index) => !Object.is(value, previous[index]));
+}
+
+async function renderAutomationsPageContainer() {
+  let ComponentUnderTest: (() => ReactElement) | null = null;
+  let tree: ReactNode = null;
+  let stateCursor = 0;
+  let effectCursor = 0;
+  let memoCursor = 0;
+  const stateValues: unknown[] = [];
+  const effectDeps: Array<readonly unknown[] | undefined> = [];
+  const memoValues: Array<{ deps: readonly unknown[] | undefined; value: unknown }> = [];
+  const scheduledEffects: Array<() => void | (() => void)> = [];
+
+  function render() {
+    if (!ComponentUnderTest) return;
+    stateCursor = 0;
+    effectCursor = 0;
+    memoCursor = 0;
+    tree = ComponentUnderTest();
+  }
+
+  vi.resetModules();
+  vi.doMock("react", async (importOriginal) => {
+    const original = await importOriginal<typeof import("react")>();
+
+    return {
+      ...original,
+      useCallback: <T extends (...args: unknown[]) => unknown>(callback: T, deps?: readonly unknown[]) =>
+        useMemoMock(() => callback, deps),
+      useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => {
+        const index = effectCursor++;
+
+        if (!depsChanged(effectDeps[index], deps)) {
+          return;
+        }
+
+        effectDeps[index] = deps;
+        scheduledEffects.push(effect);
+      },
+      useMemo: useMemoMock,
+      useState: <T,>(initialValue: T | (() => T)) => {
+        const index = stateCursor++;
+
+        if (!(index in stateValues)) {
+          stateValues[index] =
+            typeof initialValue === "function"
+              ? (initialValue as () => T)()
+              : initialValue;
+        }
+
+        const setValue = (nextValue: T | ((current: T) => T)) => {
+          const currentValue = stateValues[index] as T;
+          const resolvedValue =
+            typeof nextValue === "function"
+              ? (nextValue as (current: T) => T)(currentValue)
+              : nextValue;
+
+          if (Object.is(currentValue, resolvedValue)) {
+            return;
+          }
+
+          stateValues[index] = resolvedValue;
+          render();
+        };
+
+        return [stateValues[index], setValue] as const;
+      }
+    };
+  });
+  const getToken = async () => "token";
+  vi.doMock("../../app/auth", () => ({
+    useTalkAuth: () => ({ getToken })
+  }));
+  vi.doMock("../../app/api", async (importOriginal) => {
+    const original = await importOriginal<typeof import("../../app/api")>();
+
+    return {
+      ...original,
+      apiGetAutomationRuns: vi.fn().mockResolvedValue([]),
+      apiGetAutomations: vi.fn().mockResolvedValue([baseAutomation])
+    };
+  });
+
+  function useMemoMock<T>(factory: () => T, deps?: readonly unknown[]) {
+    const index = memoCursor++;
+    const previous = memoValues[index];
+
+    if (!previous || depsChanged(previous.deps, deps)) {
+      const value = factory();
+      memoValues[index] = { deps, value };
+      return value;
+    }
+
+    return previous.value as T;
+  }
+
+  const imported = await import("./AutomationsPage");
+  ComponentUnderTest = imported.AutomationsPage;
+  render();
+
+  async function settle() {
+    for (let cycle = 0; cycle < 8; cycle += 1) {
+      const effects = scheduledEffects.splice(0);
+      effects.forEach((effect) => effect());
+      await Promise.resolve();
+      await Promise.resolve();
+
+      if (scheduledEffects.length === 0) {
+        break;
+      }
+    }
+  }
+
+  await settle();
+
+  return {
+    get expandedTree() {
+      return expandPureComponents(tree);
+    },
+    settle
+  };
+}
+
+describe("AutomationsPage navigation", () => {
+  it("opens on the hub and enters the editor when a flow is selected", async () => {
+    const page = await renderAutomationsPageContainer();
+
+    expect(findElement(page.expandedTree, (element) => element.type === "h1" && hasText(element, "Automações"))).not.toBeNull();
+    expect(findButtonByName(page.expandedTree, /Boas-vindas/i)).not.toBeNull();
+    expect(hasText(page.expandedTree, "Gatilho do canvas")).toBe(false);
+
+    clickButton(page.expandedTree, /Boas-vindas/i);
+    await page.settle();
+
+    expect(findElement(page.expandedTree, (element) => element.type === "h2" && hasText(element, /Editar fluxo/i))).not.toBeNull();
+    expect(hasText(page.expandedTree, "Gatilho do canvas")).toBe(true);
+    expect(findButtonByName(page.expandedTree, /Voltar para automações/i)).not.toBeNull();
+
+    clickButton(page.expandedTree, /Voltar para automações/i);
+    await page.settle();
+
+    expect(findButtonByName(page.expandedTree, /Boas-vindas/i)).not.toBeNull();
+    expect(hasText(page.expandedTree, "Gatilho do canvas")).toBe(false);
+
+    await clickButton(page.expandedTree, /Criar fluxo/i);
+    await page.settle();
+
+    expect(findElement(page.expandedTree, (element) => element.type === "h2" && hasText(element, /Novo fluxo/i))).not.toBeNull();
+    expect(hasText(page.expandedTree, "Gatilho do canvas")).toBe(true);
+  });
 });
 
 describe("automation run helpers", () => {
