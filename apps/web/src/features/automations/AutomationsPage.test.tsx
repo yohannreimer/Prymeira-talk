@@ -12,6 +12,7 @@ import {
   defaultAutomationEventKey,
   mergeAutomationRun
 } from "./AutomationsPage";
+import { automationCanvasStateFromValue } from "./AutomationCanvas";
 import {
   createAutomationNode,
   createDefaultAutomationFlow,
@@ -304,5 +305,35 @@ describe("automation flow helpers", () => {
     expect(supportedBlockTypes()).toContainEqual(
       expect.objectContaining({ type: "trigger_first_message", support: "supported" })
     );
+  });
+
+  it("imports every legacy action into a graph instead of dropping later actions", () => {
+    const state = automationCanvasStateFromValue([
+      { type: "send_message", label: "Enviar saudacao", config: { text: "Ola" } },
+      { type: "add_tag", label: "Marcar lead", config: { tagName: "Lead" } },
+      { type: "create_crm_note", label: "Registrar nota", config: { note: "Entrada antiga" } }
+    ]);
+
+    expect(state.nodes.map((node) => node.data.blockType)).toEqual([
+      "trigger_first_message",
+      "send_message",
+      "add_tag",
+      "create_internal_note"
+    ]);
+    expect(state.edges).toHaveLength(3);
+    expect(state.nodes[3]?.data.config).toMatchObject({
+      legacyType: "create_crm_note",
+      legacyLabel: "Registrar nota",
+      note: "Entrada antiga"
+    });
+  });
+
+  it("creates node ids that avoid existing persisted graph ids", () => {
+    const node = createAutomationNode("trigger_first_message", { x: 0, y: 0 }, [
+      "trigger_first_message-1",
+      "trigger_first_message-2"
+    ]);
+
+    expect(["trigger_first_message-1", "trigger_first_message-2"]).not.toContain(node.id);
   });
 });

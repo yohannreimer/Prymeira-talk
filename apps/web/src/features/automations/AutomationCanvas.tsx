@@ -47,6 +47,37 @@ const nodeTypes = Object.fromEntries(
   automationBlockCatalog.map((block) => [block.type, AutomationNode])
 ) as NodeTypes;
 
+const legacyActionAliases: Record<string, AutomationBlockType> = {
+  assign_department: "assign_user",
+  create_crm_note: "create_internal_note"
+};
+
+function existingNodeIds(nodes: AutomationCanvasNode[]) {
+  return nodes.map((node) => node.id);
+}
+
+function legacyActionBlockType(action: AutomationActionDto): AutomationBlockType {
+  if (getAutomationBlock(action.type)) {
+    return action.type as AutomationBlockType;
+  }
+
+  return legacyActionAliases[action.type] ?? "log_event";
+}
+
+function legacyActionConfig(action: AutomationActionDto): Record<string, unknown> {
+  const config = { ...(action.config ?? {}) };
+
+  if (action.label) {
+    config.legacyLabel = action.label;
+  }
+
+  if (!getAutomationBlock(action.type) || legacyActionAliases[action.type]) {
+    config.legacyType = action.type;
+  }
+
+  return config;
+}
+
 function canvasNodeFromPayloadNode(node: AutomationFlowDefinition["nodes"][number]): AutomationCanvasNode {
   const block = getAutomationBlock(node.type);
 
@@ -77,37 +108,42 @@ function canvasStateFromFlow(flow: AutomationFlowDefinition): AutomationCanvasSt
 }
 
 function legacyActionToFlow(actions: AutomationActionDto[]): AutomationCanvasState | null {
-  const firstAction = actions.find((action) => getAutomationBlock(action.type));
-
-  if (!firstAction) {
-    return null;
-  }
-
-  const block = getAutomationBlock(firstAction.type);
-
-  if (!block) {
-    return null;
-  }
-
   const triggerNode = createAutomationNode("trigger_first_message", { x: 72, y: 160 });
-  const actionNode = createAutomationNode(block.type, { x: 360, y: 160 });
-  actionNode.data.config = firstAction.config ?? (firstAction.label ? { legacyLabel: firstAction.label } : {});
+  const nodes = [triggerNode];
+  const edges: AutomationCanvasEdge[] = [];
+  let previousNode = triggerNode;
+
+  actions.forEach((action, index) => {
+    const blockType = legacyActionBlockType(action);
+    const actionNode = createAutomationNode(
+      blockType,
+      { x: 360 + index * 280, y: 160 },
+      existingNodeIds(nodes)
+    );
+
+    actionNode.data.config = legacyActionConfig(action);
+    nodes.push(actionNode);
+    edges.push({
+      id: `${previousNode.id}-${actionNode.id}`,
+      source: previousNode.id,
+      target: actionNode.id,
+      sourceHandle: "success",
+      targetHandle: "input"
+    });
+    previousNode = actionNode;
+  });
+
+  if (nodes.length === 1) {
+    return null;
+  }
 
   return {
-    nodes: [triggerNode, actionNode],
-    edges: [
-      {
-        id: `${triggerNode.id}-${actionNode.id}`,
-        source: triggerNode.id,
-        target: actionNode.id,
-        sourceHandle: "success",
-        targetHandle: "input"
-      }
-    ]
+    nodes,
+    edges
   };
 }
 
-function initialCanvasState(value: unknown): AutomationCanvasState {
+export function automationCanvasStateFromValue(value: unknown): AutomationCanvasState {
   const parsedFlow = automationFlowSchema.safeParse(value);
 
   if (parsedFlow.success) {
@@ -126,7 +162,7 @@ function initialCanvasState(value: unknown): AutomationCanvasState {
 }
 
 export function AutomationCanvas({ value, onChange }: AutomationCanvasProps) {
-  const initialState = useMemo(() => initialCanvasState(value), [value]);
+  const initialState = useMemo(() => automationCanvasStateFromValue(value), [value]);
   const [nodes, setNodes] = useState<AutomationCanvasNode[]>(initialState.nodes);
   const [edges, setEdges] = useState<AutomationCanvasEdge[]>(initialState.edges);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialState.nodes[0]?.id ?? null);
@@ -166,7 +202,7 @@ export function AutomationCanvas({ value, onChange }: AutomationCanvasProps) {
       const position = anchorNode
         ? { x: anchorNode.position.x + 280, y: anchorNode.position.y + 24 }
         : { x: 96, y: 160 };
-      const node = createAutomationNode(type, position);
+      const node = createAutomationNode(type, position, existingNodeIds(currentNodes));
 
       setSelectedNodeId(node.id);
       return [...currentNodes, node];

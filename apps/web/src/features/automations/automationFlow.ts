@@ -31,7 +31,8 @@ export function supportedBlockTypes(): AutomationBlockDefinition[] {
 
 export function createAutomationNode(
   type: AutomationBlockType,
-  position: XYPosition
+  position: XYPosition,
+  existingIds: Iterable<string> = []
 ): AutomationCanvasNode {
   const block = getAutomationBlock(type);
 
@@ -39,10 +40,16 @@ export function createAutomationNode(
     throw new Error(`Unknown automation block: ${type}`);
   }
 
-  nextNodeId += 1;
+  const reservedIds = new Set(existingIds);
+  let id = "";
+
+  do {
+    nextNodeId += 1;
+    id = `${type}-${nextNodeId}`;
+  } while (reservedIds.has(id));
 
   return {
-    id: `${type}-${nextNodeId}`,
+    id,
     type: block.type,
     position,
     data: {
