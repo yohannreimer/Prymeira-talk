@@ -3101,6 +3101,78 @@ select:disabled {
   background: var(--color-surface-subtle);
 }
 
+.quick-replies-popover {
+  position: absolute;
+  right: 16px;
+  bottom: 118px;
+  width: min(460px, calc(100vw - 32px));
+  max-height: 520px;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: 0 20px 50px rgba(30, 45, 39, 0.16);
+  padding: 12px;
+  z-index: 20;
+}
+
+.quick-replies-header,
+.quick-reply-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quick-replies-header {
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.quick-replies-search,
+.quick-reply-form input,
+.quick-reply-form textarea {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.quick-replies-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.quick-reply-item {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.quick-reply-insert {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  display: grid;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.quick-reply-insert span {
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-reply-form {
+  display: grid;
+  gap: 8px;
+}
+
 .composer-input-row {
   display: flex;
   align-items: flex-end;

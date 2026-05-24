@@ -306,6 +306,16 @@ export interface AuditLogDto {
   createdAt: string;
 }
 
+export interface QuickReplyDto {
+  id: string;
+  workspaceId: string;
+  title: string;
+  body: string;
+  category: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 async function getRequiredToken(getToken: () => Promise<string | null>) {
   const token = await getToken();
 
@@ -318,6 +328,10 @@ async function getRequiredToken(getToken: () => Promise<string | null>) {
   }
 
   return token;
+}
+
+function asRecord(payload: unknown): Record<string, unknown> {
+  return payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
 }
 
 function parseBoardWithStages(data: unknown): ContactBoardWithStagesDto {
@@ -412,6 +426,19 @@ function parseContactContext(data: unknown): ContactContextDto {
     notes: Array.isArray(payload.notes) ? payload.notes : [],
     departments: Array.isArray(payload.departments) ? payload.departments : [],
     boardStages: Array.isArray(payload.boardStages) ? payload.boardStages : []
+  };
+}
+
+function parseQuickReply(payload: unknown): QuickReplyDto {
+  const record = asRecord(payload);
+  return {
+    id: String(record.id ?? ""),
+    workspaceId: String(record.workspaceId ?? ""),
+    title: String(record.title ?? ""),
+    body: String(record.body ?? ""),
+    category: typeof record.category === "string" ? record.category : null,
+    createdAt: String(record.createdAt ?? ""),
+    updatedAt: String(record.updatedAt ?? "")
   };
 }
 
@@ -1399,6 +1426,65 @@ export async function apiRunConversationAction(
 
   const data = await response.json();
   return parseConversationActionResult(data);
+}
+
+export async function apiGetQuickReplies(getToken: () => Promise<string | null>): Promise<QuickReplyDto[]> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/quick-replies`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to load quick replies: ${response.status}`);
+  }
+  const data = await response.json();
+  return Array.isArray(data) ? data.map(parseQuickReply) : [];
+}
+
+export async function apiCreateQuickReply(
+  getToken: () => Promise<string | null>,
+  body: { title: string; body: string; category?: string | null }
+): Promise<QuickReplyDto> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/quick-replies`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to create quick reply: ${response.status}`);
+  }
+  return parseQuickReply(await response.json());
+}
+
+export async function apiUpdateQuickReply(
+  getToken: () => Promise<string | null>,
+  quickReplyId: string,
+  body: Partial<{ title: string; body: string; category: string | null }>
+): Promise<QuickReplyDto> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/quick-replies/${quickReplyId}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to update quick reply: ${response.status}`);
+  }
+  return parseQuickReply(await response.json());
+}
+
+export async function apiDeleteQuickReply(
+  getToken: () => Promise<string | null>,
+  quickReplyId: string
+): Promise<void> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/quick-replies/${quickReplyId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to delete quick reply: ${response.status}`);
+  }
 }
 
 export async function apiGetAutomations(

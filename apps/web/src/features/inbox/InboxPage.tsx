@@ -4,21 +4,27 @@ import { Bot, Download, MessageSquare, StickyNote, UserCheck, X } from "lucide-r
 import type { ChangeEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  apiCreateQuickReply,
   apiCreateConversationMessage,
+  apiDeleteQuickReply,
   apiGetConversationContext,
   apiGetConversationMessages,
   apiGetConversations,
+  apiGetQuickReplies,
   apiMarkConversationRead,
   apiRunConversationAction,
+  apiUpdateQuickReply,
   type ContactContextDto,
   type ConversationActionBody,
-  type ConversationActionResultDto
+  type ConversationActionResultDto,
+  type QuickReplyDto
 } from "../../app/api";
 import {
   contactDisplayName,
   filterConversationsByChannel,
   getChannelFilterOptions
 } from "./conversation-display";
+import { QuickRepliesPopover } from "./QuickRepliesPopover";
 import { useRealtimeEvents } from "./useRealtimeEvents";
 
 function formatTime(value: string | null) {
@@ -318,6 +324,10 @@ export function InboxPage() {
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
   const [crmStatus, setCrmStatus] = useState<string | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showQuickReplies, setShowQuickReplies] = useState(false);
+  const [quickReplies, setQuickReplies] = useState<QuickReplyDto[]>([]);
+  const [isQuickRepliesLoading, setIsQuickRepliesLoading] = useState(false);
+  const [quickRepliesError, setQuickRepliesError] = useState<string | null>(null);
   const [newMessagesBelow, setNewMessagesBelow] = useState(0);
   const selectedConversationIdRef = useRef<string | null>(null);
   const conversationsRef = useRef<ConversationDto[]>([]);
@@ -394,6 +404,26 @@ export function InboxPage() {
   useEffect(() => {
     resizeDraftTextArea();
   }, [draft]);
+
+  useEffect(() => {
+    if (!showQuickReplies) return;
+    let isMounted = true;
+    setIsQuickRepliesLoading(true);
+    setQuickRepliesError(null);
+    apiGetQuickReplies(getToken)
+      .then((nextReplies) => {
+        if (isMounted) setQuickReplies(nextReplies);
+      })
+      .catch((loadError: unknown) => {
+        if (isMounted) setQuickRepliesError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar mensagens padrao.");
+      })
+      .finally(() => {
+        if (isMounted) setIsQuickRepliesLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [getToken, showQuickReplies]);
 
   useEffect(() => {
     let isMounted = true;
@@ -1133,8 +1163,13 @@ export function InboxPage() {
               type="file"
             />
             <span className="composer-tool-spacer" aria-hidden="true" />
-            <button type="button" className="composer-quick-replies" disabled={!selectedConversation}>
-              Respostas rápidas
+            <button
+              type="button"
+              className="composer-quick-replies"
+              disabled={!selectedConversation}
+              onClick={() => setShowQuickReplies((current) => !current)}
+            >
+              Mensagens padrão
             </button>
           </div>
           {showEmojiPicker ? (
@@ -1152,6 +1187,29 @@ export function InboxPage() {
                 </button>
               ))}
             </div>
+          ) : null}
+          {showQuickReplies ? (
+            <QuickRepliesPopover
+              replies={quickReplies}
+              isLoading={isQuickRepliesLoading}
+              error={quickRepliesError}
+              onInsert={(body) => {
+                insertDraftText(body);
+                setShowQuickReplies(false);
+              }}
+              onCreate={async (input) => {
+                const created = await apiCreateQuickReply(getToken, input);
+                setQuickReplies((current) => [created, ...current]);
+              }}
+              onUpdate={async (id, input) => {
+                const updated = await apiUpdateQuickReply(getToken, id, input);
+                setQuickReplies((current) => current.map((reply) => (reply.id === id ? updated : reply)));
+              }}
+              onDelete={async (id) => {
+                await apiDeleteQuickReply(getToken, id);
+                setQuickReplies((current) => current.filter((reply) => reply.id !== id));
+              }}
+            />
           ) : null}
           <div className="composer-input-row">
             <textarea

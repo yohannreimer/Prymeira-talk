@@ -7,6 +7,7 @@ import {
   messageMediaLabel,
   outboundStatusLabel
 } from "./InboxPage";
+import { quickReplyMatchesQuery } from "./QuickRepliesPopover";
 
 describe("messageDisplayText", () => {
   it("uses message body when present", () => {
@@ -81,5 +82,24 @@ describe("outboundStatusLabel", () => {
 
   it("shows failed outbound messages", () => {
     expect(outboundStatusLabel({ ...outboundMessage, status: "failed" })).toBe("Falhou");
+  });
+});
+
+describe("quick reply helpers", () => {
+  it("matches quick replies by title, body, or category", () => {
+    const reply = {
+      id: "reply-1",
+      workspaceId: "workspace-1",
+      title: "Boas-vindas",
+      body: "Ola, seja bem-vindo",
+      category: "Atendimento",
+      createdAt: "2026-05-24T12:00:00.000Z",
+      updatedAt: "2026-05-24T12:00:00.000Z"
+    };
+
+    expect(quickReplyMatchesQuery(reply, "boas")).toBe(true);
+    expect(quickReplyMatchesQuery(reply, "bem-vindo")).toBe(true);
+    expect(quickReplyMatchesQuery(reply, "atendimento")).toBe(true);
+    expect(quickReplyMatchesQuery(reply, "financeiro")).toBe(false);
   });
 });
