@@ -144,8 +144,8 @@ export const automationEdgeSchema = z.object({
   id: z.string().min(1),
   source: z.string().min(1),
   target: z.string().min(1),
-  sourceHandle: z.string().optional(),
-  targetHandle: z.string().optional()
+  sourceHandle: z.string().nullable().optional(),
+  targetHandle: z.string().nullable().optional()
 });
 export type AutomationEdgeDefinition = z.infer<typeof automationEdgeSchema>;
 
@@ -192,7 +192,14 @@ export function validateAutomationFlowForStatus(
     errors.push("O fluxo precisa ter pelo menos um gatilho.");
   }
 
+  const edgeIds = new Set<string>();
+
   for (const edge of flow.edges) {
+    if (edgeIds.has(edge.id)) {
+      errors.push(`A conexao ${edge.id} esta duplicada.`);
+    }
+    edgeIds.add(edge.id);
+
     if (!ids.has(edge.source)) {
       errors.push(`A conexao ${edge.id} sai de um bloco inexistente.`);
     }

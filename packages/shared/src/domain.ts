@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export * from "./automation-flow";
+export * from "./automation-flow.js";
 
 export const userRoleSchema = z.enum(["owner", "manager", "agent"]);
 export type UserRole = z.infer<typeof userRoleSchema>;

@@ -40,6 +40,38 @@ describe("automation flow contract", () => {
     expect(flow.nodes).toHaveLength(2);
   });
 
+  it("parses nullable edge handles", () => {
+    const flow = automationFlowSchema.parse({
+      version: 1,
+      nodes: [
+        {
+          id: "trigger-1",
+          type: "trigger_first_message",
+          position: { x: 0, y: 0 },
+          data: { title: "Primeira mensagem", config: {} }
+        },
+        {
+          id: "message-1",
+          type: "send_message",
+          position: { x: 260, y: 0 },
+          data: { title: "Enviar mensagem", config: { text: "Ola!" } }
+        }
+      ],
+      edges: [
+        {
+          id: "edge-1",
+          source: "trigger-1",
+          target: "message-1",
+          sourceHandle: null,
+          targetHandle: null
+        }
+      ]
+    });
+
+    expect(flow.edges[0]?.sourceHandle).toBeNull();
+    expect(flow.edges[0]?.targetHandle).toBeNull();
+  });
+
   it("rejects enabled flows that contain coming soon blocks", () => {
     const result = validateAutomationFlowForStatus(
       {
@@ -86,6 +118,58 @@ describe("automation flow contract", () => {
 
     expect(result.success).toBe(false);
     expect(result.errors).toContain("O fluxo precisa ter pelo menos um gatilho.");
+  });
+
+  it("rejects duplicate edge ids", () => {
+    const result = validateAutomationFlowForStatus(
+      {
+        version: 1,
+        nodes: [
+          {
+            id: "trigger-1",
+            type: "trigger_first_message",
+            position: { x: 0, y: 0 },
+            data: { title: "Primeira mensagem", config: {} }
+          },
+          {
+            id: "message-1",
+            type: "send_message",
+            position: { x: 260, y: 0 },
+            data: { title: "Enviar mensagem", config: { text: "Ola!" } }
+          }
+        ],
+        edges: [
+          { id: "edge-1", source: "trigger-1", target: "message-1" },
+          { id: "edge-1", source: "message-1", target: "trigger-1" }
+        ]
+      },
+      "disabled"
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errors).toContain("A conexao edge-1 esta duplicada.");
+  });
+
+  it("rejects edges connected to missing nodes", () => {
+    const result = validateAutomationFlowForStatus(
+      {
+        version: 1,
+        nodes: [
+          {
+            id: "trigger-1",
+            type: "trigger_first_message",
+            position: { x: 0, y: 0 },
+            data: { title: "Primeira mensagem", config: {} }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "missing-source", target: "missing-target" }]
+      },
+      "disabled"
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errors).toContain("A conexao edge-1 sai de um bloco inexistente.");
+    expect(result.errors).toContain("A conexao edge-1 aponta para um bloco inexistente.");
   });
 
   it("keeps block ids unique in the catalog", () => {
