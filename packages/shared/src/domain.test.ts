@@ -107,6 +107,16 @@ describe("domain schemas", () => {
     expect(parsed.sentByUserId).toBeNull();
   });
 
+  it("accepts a message DTO with a base64 data media URL", () => {
+    const parsed = messageSchema.parse({
+      ...validMessage,
+      type: "image",
+      mediaUrl: "data:image/jpeg;base64,aW1hZ2Vt"
+    });
+
+    expect(parsed.mediaUrl).toBe("data:image/jpeg;base64,aW1hZ2Vt");
+  });
+
   it("rejects a message DTO missing providerMessageId", () => {
     const { providerMessageId: _providerMessageId, ...messageWithoutProviderMessageId } = validMessage;
 

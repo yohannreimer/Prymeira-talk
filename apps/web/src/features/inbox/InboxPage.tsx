@@ -111,7 +111,10 @@ export function messageMediaKind(message: Pick<MessageDto, "mediaUrl" | "type">)
     return "audio";
   }
 
-  if (/\.(mp4|m4v|mov|webm)(\?|#|$)/i.test(message.mediaUrl)) {
+  if (
+    /^data:video\//i.test(message.mediaUrl) ||
+    /\.(mp4|m4v|mov|webm)(\?|#|$)/i.test(message.mediaUrl)
+  ) {
     return "video";
   }
 

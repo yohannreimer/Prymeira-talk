@@ -595,6 +595,7 @@ describe("Evolution webhook routes", () => {
           id: "provider_image_1"
         },
         message: {
+          base64: "aW1hZ2Vt",
           imageMessage: {
             caption: "Comprovante",
             mimetype: "image/jpeg",
@@ -618,7 +619,7 @@ describe("Evolution webhook routes", () => {
           providerMessageId: "provider_image_1",
           type: "image",
           body: "Comprovante",
-          mediaUrl: "https://media.example.com/image.jpg"
+          mediaUrl: "data:image/jpeg;base64,aW1hZ2Vt"
         })
       });
       expect(prisma.conversation.updateMany).toHaveBeenCalledWith(
@@ -645,6 +646,7 @@ describe("Evolution webhook routes", () => {
           id: "provider_audio_1"
         },
         message: {
+          base64: "YXVkaW8=",
           audioMessage: {
             mimetype: "audio/ogg",
             url: "https://media.example.com/audio.ogg"
@@ -661,6 +663,7 @@ describe("Evolution webhook routes", () => {
           id: "provider_sticker_1"
         },
         message: {
+          base64: "c3RpY2tlcg==",
           stickerMessage: {
             mimetype: "image/webp",
             url: "https://media.example.com/sticker.webp"
@@ -690,7 +693,7 @@ describe("Evolution webhook routes", () => {
           providerMessageId: "provider_audio_1",
           type: "audio",
           body: "Audio recebido",
-          mediaUrl: "https://media.example.com/audio.ogg"
+          mediaUrl: "data:audio/ogg;base64,YXVkaW8="
         })
       });
       expect(prisma.message.create).toHaveBeenCalledWith({
@@ -698,7 +701,7 @@ describe("Evolution webhook routes", () => {
           providerMessageId: "provider_sticker_1",
           type: "image",
           body: "Figurinha recebida",
-          mediaUrl: "https://media.example.com/sticker.webp"
+          mediaUrl: "data:image/webp;base64,c3RpY2tlcg=="
         })
       });
     } finally {

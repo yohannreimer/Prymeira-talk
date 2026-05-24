@@ -96,6 +96,20 @@ function readFirstStringPath(data: unknown, paths: string[][]) {
   return null;
 }
 
+function hasRecordPath(data: unknown, path: string[]) {
+  let current = data;
+
+  for (const segment of path) {
+    if (current === null || typeof current !== "object" || Array.isArray(current)) {
+      return false;
+    }
+
+    current = (current as Record<string, unknown>)[segment];
+  }
+
+  return current !== null && typeof current === "object" && !Array.isArray(current);
+}
+
 function normalizeMediaUrl(value: string | null) {
   if (!value) return null;
 
@@ -107,6 +121,27 @@ function normalizeMediaUrl(value: string | null) {
   } catch {
     return null;
   }
+}
+
+function normalizeBase64MediaUrl(value: string | null, mimetype: string | null) {
+  if (!value) return null;
+
+  if (value.startsWith("data:")) {
+    return normalizeMediaUrl(value);
+  }
+
+  const compactValue = value.replace(/\s/g, "");
+
+  return compactValue.length > 0
+    ? `data:${mimetype ?? "application/octet-stream"};base64,${compactValue}`
+    : null;
+}
+
+function readMessageBase64(message: unknown, messageKey: string) {
+  return (
+    readStringPath(message, [messageKey, "base64"]) ??
+    (hasRecordPath(message, [messageKey]) ? readStringPath(message, ["base64"]) : null)
+  );
 }
 
 function extractMessageContent(message: unknown): {
@@ -129,13 +164,17 @@ function extractMessageContent(message: unknown): {
     };
   }
 
-  const imageUrl = normalizeMediaUrl(
-    readFirstStringPath(message, [
-      ["imageMessage", "url"],
-      ["imageMessage", "mediaUrl"]
-    ])
-  );
-  if (readStringPath(message, ["imageMessage", "mimetype"]) || imageUrl) {
+  const imageMimetype = readStringPath(message, ["imageMessage", "mimetype"]);
+  const imageDataUrl = normalizeBase64MediaUrl(readMessageBase64(message, "imageMessage"), imageMimetype);
+  const imageUrl =
+    imageDataUrl ??
+    normalizeMediaUrl(
+      readFirstStringPath(message, [
+        ["imageMessage", "url"],
+        ["imageMessage", "mediaUrl"]
+      ])
+    );
+  if (imageMimetype || imageUrl) {
     const caption = readStringPath(message, ["imageMessage", "caption"]);
     const body = caption ?? "Imagem recebida";
 
@@ -147,13 +186,17 @@ function extractMessageContent(message: unknown): {
     };
   }
 
-  const stickerUrl = normalizeMediaUrl(
-    readFirstStringPath(message, [
-      ["stickerMessage", "url"],
-      ["stickerMessage", "mediaUrl"]
-    ])
-  );
-  if (readStringPath(message, ["stickerMessage", "mimetype"]) || stickerUrl) {
+  const stickerMimetype = readStringPath(message, ["stickerMessage", "mimetype"]);
+  const stickerDataUrl = normalizeBase64MediaUrl(readMessageBase64(message, "stickerMessage"), stickerMimetype);
+  const stickerUrl =
+    stickerDataUrl ??
+    normalizeMediaUrl(
+      readFirstStringPath(message, [
+        ["stickerMessage", "url"],
+        ["stickerMessage", "mediaUrl"]
+      ])
+    );
+  if (stickerMimetype || stickerUrl) {
     return {
       type: "image",
       body: "Figurinha recebida",
@@ -162,13 +205,17 @@ function extractMessageContent(message: unknown): {
     };
   }
 
-  const audioUrl = normalizeMediaUrl(
-    readFirstStringPath(message, [
-      ["audioMessage", "url"],
-      ["audioMessage", "mediaUrl"]
-    ])
-  );
-  if (readStringPath(message, ["audioMessage", "mimetype"]) || audioUrl) {
+  const audioMimetype = readStringPath(message, ["audioMessage", "mimetype"]);
+  const audioDataUrl = normalizeBase64MediaUrl(readMessageBase64(message, "audioMessage"), audioMimetype);
+  const audioUrl =
+    audioDataUrl ??
+    normalizeMediaUrl(
+      readFirstStringPath(message, [
+        ["audioMessage", "url"],
+        ["audioMessage", "mediaUrl"]
+      ])
+    );
+  if (audioMimetype || audioUrl) {
     return {
       type: "audio",
       body: "Audio recebido",
@@ -177,19 +224,23 @@ function extractMessageContent(message: unknown): {
     };
   }
 
-  const documentUrl = normalizeMediaUrl(
-    readFirstStringPath(message, [
-      ["documentMessage", "url"],
-      ["documentMessage", "mediaUrl"],
-      ["videoMessage", "url"],
-      ["videoMessage", "mediaUrl"]
-    ])
-  );
-  if (
-    readStringPath(message, ["documentMessage", "mimetype"]) ||
-    readStringPath(message, ["videoMessage", "mimetype"]) ||
-    documentUrl
-  ) {
+  const documentMimetype =
+    readStringPath(message, ["documentMessage", "mimetype"]) ??
+    readStringPath(message, ["videoMessage", "mimetype"]);
+  const documentDataUrl =
+    normalizeBase64MediaUrl(readMessageBase64(message, "documentMessage"), documentMimetype) ??
+    normalizeBase64MediaUrl(readMessageBase64(message, "videoMessage"), documentMimetype);
+  const documentUrl =
+    documentDataUrl ??
+    normalizeMediaUrl(
+      readFirstStringPath(message, [
+        ["documentMessage", "url"],
+        ["documentMessage", "mediaUrl"],
+        ["videoMessage", "url"],
+        ["videoMessage", "mediaUrl"]
+      ])
+    );
+  if (documentMimetype || documentUrl) {
     const body =
       readStringPath(message, ["documentMessage", "fileName"]) ??
       readStringPath(message, ["documentMessage", "caption"]) ??
