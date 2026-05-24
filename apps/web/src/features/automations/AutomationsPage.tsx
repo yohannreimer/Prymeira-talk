@@ -515,7 +515,6 @@ export function AutomationsPageView({
           isLoading={isLoading}
           onCreate={onCreate}
           onOpen={onOpen}
-          selectedAutomation={selectedAutomation}
         />
       )}
     </section>
@@ -523,62 +522,61 @@ export function AutomationsPageView({
 }
 
 function automationStatusLabel(status: AutomationRuleDto["status"]) {
-  return status === "enabled" ? "Ativa" : "Pausada";
+  return status === "enabled" ? "Ativo" : "Pausado";
 }
 
 export function AutomationHubView({
   automations,
   isLoading,
   onCreate,
-  onOpen,
-  selectedAutomation
+  onOpen
 }: {
   automations: AutomationRuleDto[];
   isLoading: boolean;
   onCreate: () => void;
   onOpen: (automationId: string) => void;
-  selectedAutomation: AutomationRuleDto | null;
 }) {
+  if (!isLoading && automations.length === 0) {
+    return (
+      <div className="automation-hub-empty">
+        <div className="empty-state-icon">
+          <Zap size={28} aria-hidden="true" />
+        </div>
+        <h2>Nenhum fluxo criado</h2>
+        <p>Crie o primeiro fluxo para organizar boas-vindas, retornos e automacoes de atendimento.</p>
+        <button className="primary-button" type="button" onClick={onCreate}>
+          <Plus size={16} aria-hidden="true" />
+          Criar fluxo
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="automations-layout">
-      <div className="module-panel automations-list-panel">
-        <div className="panel-title-row">
-          <h2>Regras</h2>
-          <span>{isLoading ? "Carregando" : `${automations.length} regras`}</span>
+    <div className="automation-hub">
+      <div className="automation-hub-toolbar">
+        <div>
+          <h2>Fluxos</h2>
+          <p>{isLoading ? "Carregando automacoes" : `${automations.length} fluxo${automations.length === 1 ? "" : "s"}`}</p>
         </div>
+      </div>
 
-        {!isLoading && automations.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-state-icon">
-              <Zap size={28} aria-hidden="true" />
-            </div>
-            <h3>Nenhuma regra criada</h3>
-            <p>Crie um fluxo para automatizar ações na plataforma.</p>
-            <button className="primary-button" type="button" onClick={onCreate}>
-              <Plus size={16} aria-hidden="true" />
-              Criar fluxo
-            </button>
-          </div>
-        ) : null}
-
-        <div className="automation-rule-list">
-          {automations.map((automation) => (
-            <button
-              className={`automation-rule-card ${automation.id === selectedAutomation?.id ? "is-selected" : ""}`}
-              key={automation.id}
-              onClick={() => onOpen(automation.id)}
-              type="button"
-            >
-              <span className={`status-badge status-badge--${automation.status === "enabled" ? "open" : "closed"}`}>
-                {automationStatusLabel(automation.status)}
-              </span>
-              <span className="automation-rule-info">
-                <strong>{automation.name}</strong>
-                <small>{triggerOptions.find((option) => option.value === automation.trigger)?.label ?? automation.trigger}</small>
-              </span>
-            </button>
-          ))}
-        </div>
+      <div className="automation-flow-grid">
+        {automations.map((automation) => (
+          <button
+            className="automation-flow-card"
+            key={automation.id}
+            onClick={() => onOpen(automation.id)}
+            type="button"
+          >
+            <span className={`status-badge status-badge--${automation.status === "enabled" ? "open" : "closed"}`}>
+              {automationStatusLabel(automation.status)}
+            </span>
+            <strong>{automation.name}</strong>
+            <small>{triggerOptions.find((option) => option.value === automation.trigger)?.label ?? automation.trigger}</small>
+            <em>Abrir editor</em>
+          </button>
+        ))}
       </div>
     </div>
   );

@@ -179,7 +179,11 @@ function depsChanged(previous: readonly unknown[] | undefined, next: readonly un
   return next.some((value, index) => !Object.is(value, previous[index]));
 }
 
-async function renderAutomationsPageContainer() {
+async function renderAutomationsPageContainer({
+  automations = [baseAutomation]
+}: {
+  automations?: AutomationRuleDto[];
+} = {}) {
   let ComponentUnderTest: (() => ReactElement) | null = null;
   let tree: ReactNode = null;
   let stateCursor = 0;
@@ -256,7 +260,7 @@ async function renderAutomationsPageContainer() {
     return {
       ...original,
       apiGetAutomationRuns: vi.fn().mockResolvedValue([]),
-      apiGetAutomations: vi.fn().mockResolvedValue([baseAutomation])
+      apiGetAutomations: vi.fn().mockResolvedValue(automations)
     };
   });
 
@@ -326,6 +330,49 @@ describe("AutomationsPage navigation", () => {
 
     expect(findElement(page.expandedTree, (element) => element.type === "h2" && hasText(element, /Novo fluxo/i))).not.toBeNull();
     expect(hasText(page.expandedTree, "Gatilho do canvas")).toBe(true);
+  });
+
+  it("renders existing automations as flow cards", async () => {
+    const enabledAutomation = {
+      ...baseAutomation,
+      id: "automation-2",
+      name: "Mover para vendas",
+      status: "enabled",
+      trigger: "board.stage.changed"
+    } satisfies AutomationRuleDto;
+    const page = await renderAutomationsPageContainer({
+      automations: [baseAutomation, enabledAutomation]
+    });
+
+    expect(hasText(page.expandedTree, "Fluxos")).toBe(true);
+    expect(hasText(page.expandedTree, "2 fluxos")).toBe(true);
+    expect(hasText(page.expandedTree, "Regras")).toBe(false);
+    expect(hasText(page.expandedTree, "Pausado")).toBe(true);
+    expect(hasText(page.expandedTree, "Ativo")).toBe(true);
+    expect(hasText(page.expandedTree, "Mensagem recebida")).toBe(true);
+    expect(hasText(page.expandedTree, "Etapa do board alterada")).toBe(true);
+    expect(hasText(page.expandedTree, "Abrir editor")).toBe(true);
+    expect(findButtonByName(page.expandedTree, /Mover para vendas/i)).not.toBeNull();
+  });
+
+  it("creates a draft from the empty hub and opens the editor", async () => {
+    const page = await renderAutomationsPageContainer({ automations: [] });
+
+    expect(hasText(page.expandedTree, "Nenhum fluxo criado")).toBe(true);
+    expect(findButtonByName(page.expandedTree, /Criar fluxo/i)).not.toBeNull();
+
+    await clickButton(page.expandedTree, /Criar fluxo/i);
+    await page.settle();
+
+    expect(findElement(page.expandedTree, (element) => element.type === "h2" && hasText(element, /Novo fluxo/i))).not.toBeNull();
+    expect(
+      findElement(
+        page.expandedTree,
+        (element) =>
+          element.type === "input" &&
+          (element.props as { value?: unknown }).value === "Boas-vindas local"
+      )
+    ).not.toBeNull();
   });
 });
 
