@@ -16,7 +16,12 @@ import {
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { ChannelDto, ContactDto, RealtimeEvent } from "@prymeira-talk/shared";
+import type {
+  ChannelDto,
+  ContactBoardStageDto,
+  ContactDto,
+  RealtimeEvent
+} from "@prymeira-talk/shared";
 import {
   ChevronLeft,
   ChevronRight,
@@ -26,18 +31,27 @@ import {
   Plus,
   Save,
   Search,
+  Trash2,
   Users
 } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   apiAddContactToBoard,
+  apiCreateBoard,
+  apiCreateBoardStage,
   apiCreateContact,
+  apiDeleteBoard,
+  apiDeleteBoardStage,
   apiGetBoardContacts,
   apiGetBoards,
   apiGetChannels,
   apiGetContacts,
   apiMoveBoardMembership,
+  apiRemoveBoardMembership,
+  apiReorderBoardStages,
   apiStartContactConversation,
+  apiUpdateBoard,
+  apiUpdateBoardStage,
   apiUpdateContact,
   type BoardContactCardDto,
   type BoardContactsDto,
@@ -54,12 +68,34 @@ interface ContactFormState {
   company: string;
 }
 
+interface BoardFormState {
+  name: string;
+  description: string;
+}
+
+interface StageFormState {
+  name: string;
+  color: string;
+}
+
 const emptyForm: ContactFormState = {
   name: "",
   phone: "",
   email: "",
   company: ""
 };
+
+const emptyBoardForm: BoardFormState = {
+  name: "",
+  description: ""
+};
+
+const emptyStageForm: StageFormState = {
+  name: "",
+  color: "#24564a"
+};
+
+const emptyBoardStages: ContactBoardStageDto[] = [];
 
 function mergeContact(contacts: ContactDto[], contact: ContactDto) {
   const withoutContact = contacts.filter((current) => current.id !== contact.id);
@@ -170,6 +206,10 @@ export function ContactsPage() {
   const [isBoardLoading, setIsBoardLoading] = useState(false);
   const [isBoardSaving, setIsBoardSaving] = useState(false);
   const [boardError, setBoardError] = useState<string | null>(null);
+  const [newBoardForm, setNewBoardForm] = useState<BoardFormState>(emptyBoardForm);
+  const [boardEditForm, setBoardEditForm] = useState<BoardFormState>(emptyBoardForm);
+  const [newStageForm, setNewStageForm] = useState<StageFormState>(emptyStageForm);
+  const [stageEditForms, setStageEditForms] = useState<Record<string, StageFormState>>({});
   const [addContactId, setAddContactId] = useState("");
   const [addStageId, setAddStageId] = useState("");
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
@@ -401,6 +441,14 @@ export function ContactsPage() {
       ) {
         refreshBoardFromRealtime(event.payload.boardId);
       }
+
+      if (
+        event.type === "board_membership.deleted" &&
+        viewMode === "board" &&
+        event.payload.boardId === selectedBoardId
+      ) {
+        refreshBoardFromRealtime(event.payload.boardId);
+      }
     },
     [
       boardContacts?.memberships,
@@ -425,8 +473,8 @@ export function ContactsPage() {
   const selectedBoard = boards.find((board) => board.id === selectedBoardId) ?? null;
   const loadedBoardContacts =
     boardContacts?.board.id === selectedBoardId ? boardContacts : null;
-  const boardStages = loadedBoardContacts?.stages ?? selectedBoard?.stages ?? [];
-  const loadedBoardStages = loadedBoardContacts?.stages ?? [];
+  const boardStages = loadedBoardContacts?.stages ?? selectedBoard?.stages ?? emptyBoardStages;
+  const loadedBoardStages = loadedBoardContacts?.stages ?? emptyBoardStages;
   const selectedStageBelongsToLoadedBoard = loadedBoardStages.some(
     (stage) => stage.id === addStageId
   );
@@ -472,6 +520,31 @@ export function ContactsPage() {
       ) ?? null,
     [activeBoardMembershipId, loadedBoardContacts]
   );
+
+  useEffect(() => {
+    setBoardEditForm(
+      selectedBoard
+        ? {
+            name: selectedBoard.name,
+            description: selectedBoard.description ?? ""
+          }
+        : emptyBoardForm
+    );
+  }, [selectedBoard]);
+
+  useEffect(() => {
+    setStageEditForms(
+      Object.fromEntries(
+        boardStages.map((stage) => [
+          stage.id,
+          {
+            name: stage.name,
+            color: stage.color
+          }
+        ])
+      )
+    );
+  }, [boardStages]);
 
   useEffect(() => {
     setAddContactId((current) =>
@@ -547,6 +620,245 @@ export function ContactsPage() {
       setError(startError instanceof Error ? startError.message : "Nao foi possivel iniciar a conversa.");
     } finally {
       setIsStartingConversation(false);
+    }
+  }
+
+  function replaceBoard(nextBoard: ContactBoardWithStagesDto) {
+    setBoards((current) =>
+      current.some((board) => board.id === nextBoard.id)
+        ? current.map((board) => (board.id === nextBoard.id ? nextBoard : board))
+        : [nextBoard, ...current]
+    );
+  }
+
+  function updateSelectedBoardStages(stages: ContactBoardStageDto[]) {
+    if (!selectedBoardId) return;
+
+    setBoards((current) =>
+      current.map((board) =>
+        board.id === selectedBoardId
+          ? {
+              ...board,
+              stages
+            }
+          : board
+      )
+    );
+    setBoardContacts((current) =>
+      current?.board.id === selectedBoardId
+        ? {
+            ...current,
+            stages
+          }
+        : current
+    );
+  }
+
+  async function handleCreateBoard(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newBoardForm.name.trim();
+
+    if (!name) return;
+
+    setIsBoardSaving(true);
+    setBoardError(null);
+    setSaveMessage(null);
+
+    try {
+      const board = await apiCreateBoard(getToken, {
+        name,
+        description: newBoardForm.description
+      });
+
+      replaceBoard(board);
+      setSelectedBoardId(board.id);
+      setNewBoardForm(emptyBoardForm);
+      setSaveMessage("Board criado.");
+    } catch (createError) {
+      setBoardError(createError instanceof Error ? createError.message : "Nao foi possivel criar o board.");
+    } finally {
+      setIsBoardSaving(false);
+    }
+  }
+
+  async function handleUpdateBoard(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedBoard) return;
+
+    const name = boardEditForm.name.trim();
+    if (!name) return;
+
+    setIsBoardSaving(true);
+    setBoardError(null);
+    setSaveMessage(null);
+
+    try {
+      const board = await apiUpdateBoard(getToken, selectedBoard.id, {
+        name,
+        description: boardEditForm.description
+      });
+
+      replaceBoard(board);
+      setBoardContacts((current) =>
+        current?.board.id === board.id
+          ? {
+              ...current,
+              board
+            }
+          : current
+      );
+      setSaveMessage("Board atualizado.");
+    } catch (updateError) {
+      setBoardError(updateError instanceof Error ? updateError.message : "Nao foi possivel atualizar o board.");
+    } finally {
+      setIsBoardSaving(false);
+    }
+  }
+
+  async function handleDeleteBoard() {
+    if (!selectedBoard) return;
+
+    const shouldDelete = window.confirm(`Apagar o board "${selectedBoard.name}" e seus contatos organizados nele?`);
+    if (!shouldDelete) return;
+
+    setIsBoardSaving(true);
+    setBoardError(null);
+    setSaveMessage(null);
+
+    try {
+      const result = await apiDeleteBoard(getToken, selectedBoard.id);
+      const nextBoards = boards.filter((board) => board.id !== result.boardId);
+
+      setBoards(nextBoards);
+      setSelectedBoardId(nextBoards[0]?.id ?? null);
+      setBoardContacts(null);
+      setSaveMessage("Board apagado.");
+    } catch (deleteError) {
+      setBoardError(deleteError instanceof Error ? deleteError.message : "Nao foi possivel apagar o board.");
+    } finally {
+      setIsBoardSaving(false);
+    }
+  }
+
+  async function handleCreateStage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedBoardId) return;
+
+    const name = newStageForm.name.trim();
+    const color = newStageForm.color.trim();
+
+    if (!name || !color) return;
+
+    setIsBoardSaving(true);
+    setBoardError(null);
+    setSaveMessage(null);
+
+    try {
+      const stage = await apiCreateBoardStage(getToken, selectedBoardId, {
+        name,
+        color,
+        order: boardStages.length
+      });
+      const stages = [...boardStages, stage].sort((left, right) => left.order - right.order);
+
+      updateSelectedBoardStages(stages);
+      setAddStageId(stage.id);
+      setNewStageForm(emptyStageForm);
+      setSaveMessage("Etapa criada.");
+    } catch (createError) {
+      setBoardError(createError instanceof Error ? createError.message : "Nao foi possivel criar a etapa.");
+    } finally {
+      setIsBoardSaving(false);
+    }
+  }
+
+  async function handleUpdateStage(stageId: string) {
+    if (!selectedBoardId) return;
+
+    const form = stageEditForms[stageId];
+    if (!form?.name.trim() || !form.color.trim()) return;
+
+    setIsBoardSaving(true);
+    setBoardError(null);
+    setSaveMessage(null);
+
+    try {
+      const stage = await apiUpdateBoardStage(getToken, selectedBoardId, stageId, {
+        name: form.name,
+        color: form.color
+      });
+      const stages = boardStages.map((currentStage) =>
+        currentStage.id === stage.id ? stage : currentStage
+      );
+
+      updateSelectedBoardStages(stages);
+      setSaveMessage("Etapa atualizada.");
+    } catch (updateError) {
+      setBoardError(updateError instanceof Error ? updateError.message : "Nao foi possivel atualizar a etapa.");
+    } finally {
+      setIsBoardSaving(false);
+    }
+  }
+
+  async function handleDeleteStage(stage: ContactBoardStageDto) {
+    if (!selectedBoardId) return;
+
+    const memberships = membershipsByStage.get(stage.id) ?? [];
+    if (memberships.length > 0) {
+      setBoardError("Mova ou remova os contatos antes de apagar esta etapa.");
+      return;
+    }
+
+    const shouldDelete = window.confirm(`Apagar a etapa "${stage.name}"?`);
+    if (!shouldDelete) return;
+
+    setIsBoardSaving(true);
+    setBoardError(null);
+    setSaveMessage(null);
+
+    try {
+      const result = await apiDeleteBoardStage(getToken, selectedBoardId, stage.id);
+      updateSelectedBoardStages(boardStages.filter((currentStage) => currentStage.id !== result.stageId));
+      setSaveMessage("Etapa apagada.");
+    } catch (deleteError) {
+      setBoardError(deleteError instanceof Error ? deleteError.message : "Nao foi possivel apagar a etapa.");
+    } finally {
+      setIsBoardSaving(false);
+    }
+  }
+
+  async function handleReorderStage(stage: ContactBoardStageDto, direction: -1 | 1) {
+    if (!selectedBoardId) return;
+
+    const currentIndex = boardStages.findIndex((currentStage) => currentStage.id === stage.id);
+    const nextIndex = currentIndex + direction;
+
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= boardStages.length) return;
+
+    const nextStages = [...boardStages];
+    const [movedStage] = nextStages.splice(currentIndex, 1);
+    if (!movedStage) return;
+
+    nextStages.splice(nextIndex, 0, movedStage);
+
+    setIsBoardSaving(true);
+    setBoardError(null);
+    setSaveMessage(null);
+
+    try {
+      const stages = await apiReorderBoardStages(
+        getToken,
+        selectedBoardId,
+        nextStages.map((currentStage) => currentStage.id)
+      );
+
+      updateSelectedBoardStages(stages);
+    } catch (reorderError) {
+      setBoardError(reorderError instanceof Error ? reorderError.message : "Nao foi possivel reordenar etapas.");
+    } finally {
+      setIsBoardSaving(false);
     }
   }
 
@@ -630,6 +942,32 @@ export function ContactsPage() {
     if (!nextStage) return;
 
     await handleMoveMembershipToStage(membership, nextStage.id);
+  }
+
+  async function handleRemoveMembership(membership: BoardContactCardDto) {
+    const shouldRemove = window.confirm(`Remover "${contactName(membership.contact)}" deste board?`);
+    if (!shouldRemove) return;
+
+    setIsBoardSaving(true);
+    setBoardError(null);
+    setSaveMessage(null);
+
+    try {
+      const result = await apiRemoveBoardMembership(getToken, membership.id);
+      setBoardContacts((current) =>
+        current?.board.id === result.boardId
+          ? {
+              ...current,
+              memberships: current.memberships.filter((entry) => entry.id !== result.membershipId)
+            }
+          : current
+      );
+      setSaveMessage("Contato removido do board.");
+    } catch (removeError) {
+      setBoardError(removeError instanceof Error ? removeError.message : "Nao foi possivel remover do board.");
+    } finally {
+      setIsBoardSaving(false);
+    }
   }
 
   function handleBoardDragStart(event: DragStartEvent) {
@@ -791,21 +1129,146 @@ export function ContactsPage() {
 
             {viewMode === "board" ? (
               <div className="board-view">
-                <div className="board-toolbar">
-                  <label>
-                    Board
-                    <select
-                      disabled={isBoardLoading || boards.length === 0}
-                      onChange={(event) => setSelectedBoardId(event.target.value)}
-                      value={selectedBoardId ?? ""}
+                <div className="board-management">
+                  <form className="board-create-form" onSubmit={handleCreateBoard}>
+                    <label>
+                      Novo board
+                      <input
+                        disabled={isBoardSaving}
+                        onChange={(event) =>
+                          setNewBoardForm((current) => ({
+                            ...current,
+                            name: event.target.value
+                          }))
+                        }
+                        placeholder="Ex: Vendas WhatsApp"
+                        value={newBoardForm.name}
+                      />
+                    </label>
+                    <label>
+                      Descricao
+                      <input
+                        disabled={isBoardSaving}
+                        onChange={(event) =>
+                          setNewBoardForm((current) => ({
+                            ...current,
+                            description: event.target.value
+                          }))
+                        }
+                        placeholder="Opcional"
+                        value={newBoardForm.description}
+                      />
+                    </label>
+                    <button
+                      className="secondary-button icon-button-label"
+                      disabled={isBoardSaving || !newBoardForm.name.trim()}
+                      type="submit"
                     >
-                      {boards.map((board) => (
-                        <option key={board.id} value={board.id}>
-                          {board.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                      <Plus size={16} aria-hidden="true" />
+                      Criar board
+                    </button>
+                  </form>
+
+                  <form className="board-edit-form" onSubmit={handleUpdateBoard}>
+                    <label>
+                      Board ativo
+                      <select
+                        disabled={isBoardLoading || boards.length === 0}
+                        onChange={(event) => setSelectedBoardId(event.target.value)}
+                        value={selectedBoardId ?? ""}
+                      >
+                        {boards.map((board) => (
+                          <option key={board.id} value={board.id}>
+                            {board.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Nome
+                      <input
+                        disabled={!selectedBoard || isBoardSaving}
+                        onChange={(event) =>
+                          setBoardEditForm((current) => ({
+                            ...current,
+                            name: event.target.value
+                          }))
+                        }
+                        value={boardEditForm.name}
+                      />
+                    </label>
+                    <label>
+                      Descricao
+                      <input
+                        disabled={!selectedBoard || isBoardSaving}
+                        onChange={(event) =>
+                          setBoardEditForm((current) => ({
+                            ...current,
+                            description: event.target.value
+                          }))
+                        }
+                        value={boardEditForm.description}
+                      />
+                    </label>
+                    <div className="board-management-actions">
+                      <button
+                        className="secondary-button icon-button-label"
+                        disabled={!selectedBoard || isBoardSaving || !boardEditForm.name.trim()}
+                        type="submit"
+                      >
+                        <Save size={16} aria-hidden="true" />
+                        Salvar
+                      </button>
+                      <button
+                        className="secondary-button danger-button icon-button-label"
+                        disabled={!selectedBoard || isBoardSaving}
+                        onClick={() => void handleDeleteBoard()}
+                        type="button"
+                      >
+                        <Trash2 size={16} aria-hidden="true" />
+                        Apagar
+                      </button>
+                    </div>
+                  </form>
+
+                  <form className="board-stage-form" onSubmit={handleCreateStage}>
+                    <label>
+                      Nova etapa
+                      <input
+                        disabled={!selectedBoard || isBoardSaving}
+                        onChange={(event) =>
+                          setNewStageForm((current) => ({
+                            ...current,
+                            name: event.target.value
+                          }))
+                        }
+                        placeholder="Ex: Qualificado"
+                        value={newStageForm.name}
+                      />
+                    </label>
+                    <label>
+                      Cor
+                      <input
+                        disabled={!selectedBoard || isBoardSaving}
+                        onChange={(event) =>
+                          setNewStageForm((current) => ({
+                            ...current,
+                            color: event.target.value
+                          }))
+                        }
+                        type="color"
+                        value={newStageForm.color}
+                      />
+                    </label>
+                    <button
+                      className="secondary-button icon-button-label"
+                      disabled={!selectedBoard || isBoardSaving || !newStageForm.name.trim()}
+                      type="submit"
+                    >
+                      <Plus size={16} aria-hidden="true" />
+                      Criar etapa
+                    </button>
+                  </form>
 
                   <form className="board-add-form" onSubmit={handleAddContactToBoard}>
                     <label>
@@ -852,7 +1315,7 @@ export function ContactsPage() {
                       type="submit"
                     >
                       <Plus size={16} aria-hidden="true" />
-                      Adicionar
+                      Adicionar contato
                     </button>
                   </form>
                 </div>
@@ -863,7 +1326,7 @@ export function ContactsPage() {
                   <div className="empty-panel">
                     <Columns3 size={28} aria-hidden="true" />
                     <h3>Nenhum board encontrado</h3>
-                    <p>Crie um board pela API para organizar contatos em etapas.</p>
+                    <p>Crie o primeiro board acima para organizar contatos em etapas.</p>
                   </div>
                 ) : null}
 
@@ -871,7 +1334,7 @@ export function ContactsPage() {
                   <div className="empty-panel">
                     <Columns3 size={28} aria-hidden="true" />
                     <h3>Board sem etapas</h3>
-                    <p>Adicione etapas pela API para iniciar este fluxo.</p>
+                    <p>Crie a primeira etapa acima para iniciar este fluxo.</p>
                   </div>
                 ) : null}
 
@@ -889,9 +1352,81 @@ export function ContactsPage() {
                         return (
                           <section className="board-column" key={stage.id}>
                             <header>
-                              <span className="stage-color" style={{ backgroundColor: stage.color }} aria-hidden="true" />
-                              <strong>{stage.name}</strong>
+                              <div className="stage-editor">
+                                <input
+                                  aria-label={`Cor da etapa ${stage.name}`}
+                                  disabled={isBoardSaving}
+                                  onChange={(event) =>
+                                    setStageEditForms((current) => ({
+                                      ...current,
+                                      [stage.id]: {
+                                        ...(current[stage.id] ?? {
+                                          name: stage.name,
+                                          color: stage.color
+                                        }),
+                                        color: event.target.value
+                                      }
+                                    }))
+                                  }
+                                  type="color"
+                                  value={stageEditForms[stage.id]?.color ?? stage.color}
+                                />
+                                <input
+                                  aria-label={`Nome da etapa ${stage.name}`}
+                                  disabled={isBoardSaving}
+                                  onChange={(event) =>
+                                    setStageEditForms((current) => ({
+                                      ...current,
+                                      [stage.id]: {
+                                        ...(current[stage.id] ?? {
+                                          name: stage.name,
+                                          color: stage.color
+                                        }),
+                                        name: event.target.value
+                                      }
+                                    }))
+                                  }
+                                  value={stageEditForms[stage.id]?.name ?? stage.name}
+                                />
+                              </div>
                               <span>{memberships.length}</span>
+                              <div className="stage-actions" aria-label={`Acoes da etapa ${stage.name}`}>
+                                <button
+                                  aria-label="Mover etapa para esquerda"
+                                  disabled={stageIndex === 0 || isBoardSaving}
+                                  onClick={() => void handleReorderStage(stage, -1)}
+                                  type="button"
+                                >
+                                  <ChevronLeft size={15} aria-hidden="true" />
+                                </button>
+                                <button
+                                  aria-label="Mover etapa para direita"
+                                  disabled={stageIndex === boardStages.length - 1 || isBoardSaving}
+                                  onClick={() => void handleReorderStage(stage, 1)}
+                                  type="button"
+                                >
+                                  <ChevronRight size={15} aria-hidden="true" />
+                                </button>
+                                <button
+                                  aria-label="Salvar etapa"
+                                  disabled={
+                                    isBoardSaving ||
+                                    !stageEditForms[stage.id]?.name.trim()
+                                  }
+                                  onClick={() => void handleUpdateStage(stage.id)}
+                                  type="button"
+                                >
+                                  <Save size={15} aria-hidden="true" />
+                                </button>
+                                <button
+                                  aria-label="Apagar etapa"
+                                  disabled={isBoardSaving || memberships.length > 0}
+                                  onClick={() => void handleDeleteStage(stage)}
+                                  type="button"
+                                >
+                                  <Trash2 size={15} aria-hidden="true" />
+                                </button>
+                              </div>
                             </header>
                             <SortableContext
                               items={memberships.map((membership) => membership.id)}
@@ -931,6 +1466,14 @@ export function ContactsPage() {
                                         type="button"
                                       >
                                         <ChevronRight size={16} aria-hidden="true" />
+                                      </button>
+                                      <button
+                                        aria-label="Remover do board"
+                                        disabled={isBoardLoading || isBoardSaving}
+                                        onClick={() => void handleRemoveMembership(membership)}
+                                        type="button"
+                                      >
+                                        <Trash2 size={16} aria-hidden="true" />
                                       </button>
                                     </div>
                                   </SortableBoardContact>

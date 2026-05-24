@@ -39,6 +39,23 @@ export interface BoardContactsDto {
   memberships: BoardContactCardDto[];
 }
 
+export interface BoardDeleteResultDto {
+  ok: true;
+  boardId: string;
+}
+
+export interface BoardStageDeleteResultDto {
+  ok: true;
+  stageId: string;
+}
+
+export interface BoardMembershipDeleteResultDto {
+  ok: true;
+  membershipId: string;
+  boardId: string;
+  contactId: string;
+}
+
 export interface ContactContextDto {
   primaryBoardStage: {
     membershipId: string;
@@ -338,6 +355,51 @@ function parseBoardContacts(data: unknown): BoardContactsDto {
     memberships: Array.isArray(payload.memberships)
       ? payload.memberships.map(parseBoardContactCard)
       : []
+  };
+}
+
+function parseBoardDeleteResult(data: unknown): BoardDeleteResultDto {
+  const payload = data as { ok?: unknown; boardId?: unknown };
+
+  if (payload.ok !== true || typeof payload.boardId !== "string") {
+    throw new Error("Invalid board delete response.");
+  }
+
+  return { ok: true, boardId: payload.boardId };
+}
+
+function parseBoardStageDeleteResult(data: unknown): BoardStageDeleteResultDto {
+  const payload = data as { ok?: unknown; stageId?: unknown };
+
+  if (payload.ok !== true || typeof payload.stageId !== "string") {
+    throw new Error("Invalid board stage delete response.");
+  }
+
+  return { ok: true, stageId: payload.stageId };
+}
+
+function parseBoardMembershipDeleteResult(data: unknown): BoardMembershipDeleteResultDto {
+  const payload = data as {
+    ok?: unknown;
+    membershipId?: unknown;
+    boardId?: unknown;
+    contactId?: unknown;
+  };
+
+  if (
+    payload.ok !== true ||
+    typeof payload.membershipId !== "string" ||
+    typeof payload.boardId !== "string" ||
+    typeof payload.contactId !== "string"
+  ) {
+    throw new Error("Invalid board membership delete response.");
+  }
+
+  return {
+    ok: true,
+    membershipId: payload.membershipId,
+    boardId: payload.boardId,
+    contactId: payload.contactId
   };
 }
 
@@ -860,6 +922,58 @@ export async function apiGetBoards(
   return Array.isArray(data) ? data.map(parseBoardWithStages) : [];
 }
 
+export async function apiCreateBoard(
+  getToken: () => Promise<string | null>,
+  body: {
+    name: string;
+    description?: string;
+  }
+): Promise<ContactBoardWithStagesDto> {
+  return fetchJson(
+    getToken,
+    "/boards",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseBoardWithStages,
+    "Failed to create board"
+  );
+}
+
+export async function apiUpdateBoard(
+  getToken: () => Promise<string | null>,
+  boardId: string,
+  body: {
+    name?: string;
+    description?: string;
+  }
+): Promise<ContactBoardWithStagesDto> {
+  return fetchJson(
+    getToken,
+    `/boards/${boardId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    },
+    parseBoardWithStages,
+    "Failed to update board"
+  );
+}
+
+export async function apiDeleteBoard(
+  getToken: () => Promise<string | null>,
+  boardId: string
+): Promise<BoardDeleteResultDto> {
+  return fetchJson(
+    getToken,
+    `/boards/${boardId}`,
+    { method: "DELETE" },
+    parseBoardDeleteResult,
+    "Failed to delete board"
+  );
+}
+
 export async function apiGetBoardContacts(
   getToken: () => Promise<string | null>,
   boardId: string
@@ -878,6 +992,79 @@ export async function apiGetBoardContacts(
 
   const data = await response.json();
   return parseBoardContacts(data);
+}
+
+export async function apiCreateBoardStage(
+  getToken: () => Promise<string | null>,
+  boardId: string,
+  body: {
+    name: string;
+    color: string;
+    order: number;
+  }
+): Promise<ContactBoardStageDto> {
+  return fetchJson(
+    getToken,
+    `/boards/${boardId}/stages`,
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    (data) => contactBoardStageSchema.parse(data),
+    "Failed to create board stage"
+  );
+}
+
+export async function apiUpdateBoardStage(
+  getToken: () => Promise<string | null>,
+  boardId: string,
+  stageId: string,
+  body: {
+    name?: string;
+    color?: string;
+  }
+): Promise<ContactBoardStageDto> {
+  return fetchJson(
+    getToken,
+    `/boards/${boardId}/stages/${stageId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    },
+    (data) => contactBoardStageSchema.parse(data),
+    "Failed to update board stage"
+  );
+}
+
+export async function apiReorderBoardStages(
+  getToken: () => Promise<string | null>,
+  boardId: string,
+  stageIds: string[]
+): Promise<ContactBoardStageDto[]> {
+  return fetchJson(
+    getToken,
+    `/boards/${boardId}/stages/reorder`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ stageIds })
+    },
+    (data) => contactBoardStageSchema.array().parse(data),
+    "Failed to reorder board stages"
+  );
+}
+
+export async function apiDeleteBoardStage(
+  getToken: () => Promise<string | null>,
+  boardId: string,
+  stageId: string
+): Promise<BoardStageDeleteResultDto> {
+  return fetchJson(
+    getToken,
+    `/boards/${boardId}/stages/${stageId}`,
+    { method: "DELETE" },
+    parseBoardStageDeleteResult,
+    "Failed to delete board stage"
+  );
 }
 
 export async function apiAddContactToBoard(
@@ -906,6 +1093,19 @@ export async function apiAddContactToBoard(
 
   const data = await response.json();
   return parseBoardContactCard(data);
+}
+
+export async function apiRemoveBoardMembership(
+  getToken: () => Promise<string | null>,
+  membershipId: string
+): Promise<BoardMembershipDeleteResultDto> {
+  return fetchJson(
+    getToken,
+    `/board-memberships/${membershipId}`,
+    { method: "DELETE" },
+    parseBoardMembershipDeleteResult,
+    "Failed to remove contact from board"
+  );
 }
 
 export async function apiMoveBoardMembership(

@@ -49,13 +49,20 @@ interface MembershipWithContactRecord extends MembershipRecord {
 type BoardFindManyArgs = Parameters<PrismaClient["contactBoard"]["findMany"]>[0];
 type BoardCreateArgs = Parameters<PrismaClient["contactBoard"]["create"]>[0];
 type BoardFindFirstArgs = Parameters<PrismaClient["contactBoard"]["findFirst"]>[0];
+type BoardUpdateArgs = Parameters<PrismaClient["contactBoard"]["update"]>[0];
+type BoardDeleteArgs = Parameters<PrismaClient["contactBoard"]["delete"]>[0];
 type StageCreateArgs = Parameters<PrismaClient["contactBoardStage"]["create"]>[0];
+type StageFindManyArgs = Parameters<PrismaClient["contactBoardStage"]["findMany"]>[0];
 type StageFindFirstArgs = Parameters<PrismaClient["contactBoardStage"]["findFirst"]>[0];
+type StageUpdateArgs = Parameters<PrismaClient["contactBoardStage"]["update"]>[0];
+type StageDeleteArgs = Parameters<PrismaClient["contactBoardStage"]["delete"]>[0];
 type MembershipFindManyArgs = Parameters<PrismaClient["contactBoardMembership"]["findMany"]>[0];
 type MembershipFindFirstArgs = Parameters<PrismaClient["contactBoardMembership"]["findFirst"]>[0];
 type MembershipUpsertArgs = Parameters<PrismaClient["contactBoardMembership"]["upsert"]>[0];
 type MembershipUpdateArgs = Parameters<PrismaClient["contactBoardMembership"]["update"]>[0];
 type MembershipUpdateManyArgs = Parameters<PrismaClient["contactBoardMembership"]["updateMany"]>[0];
+type MembershipDeleteArgs = Parameters<PrismaClient["contactBoardMembership"]["delete"]>[0];
+type MembershipCountArgs = Parameters<PrismaClient["contactBoardMembership"]["count"]>[0];
 type ContactFindUniqueArgs = Parameters<PrismaClient["contact"]["findUnique"]>[0];
 
 interface BoardPersistenceLike {
@@ -63,10 +70,15 @@ interface BoardPersistenceLike {
     findMany(args: BoardFindManyArgs): Promise<BoardWithStagesRecord[]>;
     create(args: BoardCreateArgs): Promise<BoardRecord>;
     findFirst(args: BoardFindFirstArgs): Promise<BoardWithStagesRecord | null>;
+    update(args: BoardUpdateArgs): Promise<BoardWithStagesRecord>;
+    delete(args: BoardDeleteArgs): Promise<BoardRecord>;
   };
   contactBoardStage: {
     create(args: StageCreateArgs): Promise<StageRecord>;
+    findMany(args: StageFindManyArgs): Promise<StageRecord[]>;
     findFirst(args: StageFindFirstArgs): Promise<StageRecord | null>;
+    update(args: StageUpdateArgs): Promise<StageRecord>;
+    delete(args: StageDeleteArgs): Promise<StageRecord>;
   };
   contactBoardMembership: {
     findMany(args: MembershipFindManyArgs): Promise<MembershipWithContactRecord[]>;
@@ -74,6 +86,8 @@ interface BoardPersistenceLike {
     upsert(args: MembershipUpsertArgs): Promise<MembershipWithContactRecord>;
     update(args: MembershipUpdateArgs): Promise<MembershipWithContactRecord>;
     updateMany(args: MembershipUpdateManyArgs): Promise<{ count: number }>;
+    delete(args: MembershipDeleteArgs): Promise<MembershipRecord>;
+    count(args: MembershipCountArgs): Promise<number>;
   };
   contact: {
     findUnique(args: ContactFindUniqueArgs): Promise<{ id: string } | null>;
@@ -98,11 +112,30 @@ export interface BoardContactsDto {
   memberships: BoardContactCardDto[];
 }
 
+export interface BoardDeleteResultDto {
+  ok: true;
+  boardId: string;
+}
+
+export interface BoardStageDeleteResultDto {
+  ok: true;
+  stageId: string;
+}
+
+export interface BoardMembershipDeleteResultDto {
+  ok: true;
+  membershipId: string;
+  boardId: string;
+  contactId: string;
+}
+
 export class BoardsServiceError extends Error {
   constructor(
     public code:
       | "BOARD_NOT_FOUND"
       | "STAGE_NOT_FOUND"
+      | "STAGE_NOT_EMPTY"
+      | "STAGE_ORDER_INVALID"
       | "CONTACT_NOT_FOUND"
       | "MEMBERSHIP_NOT_FOUND",
     message: string
@@ -201,6 +234,69 @@ export function createBoardsService(prisma: PrismaLike) {
       return toBoardDto(board);
     },
 
+    async updateBoard(input: {
+      workspaceId: string;
+      boardId: string;
+      name?: string;
+      description?: string;
+    }): Promise<ContactBoardWithStagesDto> {
+      const data: { name?: string; description?: string | null } = {};
+
+      if (input.name !== undefined) {
+        data.name = input.name.trim();
+      }
+
+      if (input.description !== undefined) {
+        data.description = normalizeOptional(input.description) ?? null;
+      }
+
+      const board = await prisma.contactBoard.update({
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: input.boardId
+          }
+        },
+        data,
+        include: {
+          stages: {
+            orderBy: { order: "asc" }
+          }
+        }
+      });
+
+      return toBoardWithStagesDto(board);
+    },
+
+    async deleteBoard(input: {
+      workspaceId: string;
+      boardId: string;
+    }): Promise<BoardDeleteResultDto> {
+      const board = await prisma.contactBoard.findFirst({
+        where: { workspaceId: input.workspaceId, id: input.boardId },
+        include: {
+          stages: {
+            orderBy: { order: "asc" }
+          }
+        }
+      });
+
+      if (!board) {
+        throw new BoardsServiceError("BOARD_NOT_FOUND", "Board not found.");
+      }
+
+      await prisma.contactBoard.delete({
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: input.boardId
+          }
+        }
+      });
+
+      return { ok: true, boardId: input.boardId };
+    },
+
     async createStage(input: {
       workspaceId: string;
       boardId: string;
@@ -232,6 +328,154 @@ export function createBoardsService(prisma: PrismaLike) {
       });
 
       return toStageDto(stage);
+    },
+
+    async updateStage(input: {
+      workspaceId: string;
+      boardId: string;
+      stageId: string;
+      name?: string;
+      color?: string;
+    }): Promise<ContactBoardStageDto> {
+      const stage = await prisma.contactBoardStage.findFirst({
+        where: {
+          workspaceId: input.workspaceId,
+          boardId: input.boardId,
+          id: input.stageId
+        }
+      });
+
+      if (!stage) {
+        throw new BoardsServiceError("STAGE_NOT_FOUND", "Stage not found.");
+      }
+
+      const data: { name?: string; color?: string } = {};
+
+      if (input.name !== undefined) {
+        data.name = input.name.trim();
+      }
+
+      if (input.color !== undefined) {
+        data.color = input.color.trim();
+      }
+
+      const updatedStage = await prisma.contactBoardStage.update({
+        where: {
+          workspaceId_boardId_id: {
+            workspaceId: input.workspaceId,
+            boardId: input.boardId,
+            id: input.stageId
+          }
+        },
+        data
+      });
+
+      return toStageDto(updatedStage);
+    },
+
+    async reorderStages(input: {
+      workspaceId: string;
+      boardId: string;
+      stageIds: string[];
+    }): Promise<ContactBoardStageDto[]> {
+      const board = await prisma.contactBoard.findFirst({
+        where: { workspaceId: input.workspaceId, id: input.boardId },
+        include: {
+          stages: {
+            orderBy: { order: "asc" }
+          }
+        }
+      });
+
+      if (!board) {
+        throw new BoardsServiceError("BOARD_NOT_FOUND", "Board not found.");
+      }
+
+      const stages = await prisma.contactBoardStage.findMany({
+        where: {
+          workspaceId: input.workspaceId,
+          boardId: input.boardId
+        },
+        orderBy: { order: "asc" }
+      });
+      const expectedStageIds = new Set(stages.map((stage) => stage.id));
+      const requestedStageIds = new Set(input.stageIds);
+
+      if (
+        input.stageIds.length !== stages.length ||
+        requestedStageIds.size !== input.stageIds.length ||
+        input.stageIds.some((stageId) => !expectedStageIds.has(stageId))
+      ) {
+        throw new BoardsServiceError(
+          "STAGE_ORDER_INVALID",
+          "Stage order must include every stage from this board once."
+        );
+      }
+
+      await prisma.$transaction(async (tx) => {
+        for (const [order, stageId] of input.stageIds.entries()) {
+          await tx.contactBoardStage.update({
+            where: {
+              workspaceId_boardId_id: {
+                workspaceId: input.workspaceId,
+                boardId: input.boardId,
+                id: stageId
+              }
+            },
+            data: { order }
+          });
+        }
+      });
+
+      return input.stageIds.map((stageId, order) => ({
+        ...toStageDto(stages.find((stage) => stage.id === stageId) as StageRecord),
+        order
+      }));
+    },
+
+    async deleteStage(input: {
+      workspaceId: string;
+      boardId: string;
+      stageId: string;
+    }): Promise<BoardStageDeleteResultDto> {
+      const stage = await prisma.contactBoardStage.findFirst({
+        where: {
+          workspaceId: input.workspaceId,
+          boardId: input.boardId,
+          id: input.stageId
+        }
+      });
+
+      if (!stage) {
+        throw new BoardsServiceError("STAGE_NOT_FOUND", "Stage not found.");
+      }
+
+      const membershipCount = await prisma.contactBoardMembership.count({
+        where: {
+          workspaceId: input.workspaceId,
+          boardId: input.boardId,
+          stageId: input.stageId
+        }
+      });
+
+      if (membershipCount > 0) {
+        throw new BoardsServiceError(
+          "STAGE_NOT_EMPTY",
+          "Move or remove contacts before deleting this stage."
+        );
+      }
+
+      await prisma.contactBoardStage.delete({
+        where: {
+          workspaceId_boardId_id: {
+            workspaceId: input.workspaceId,
+            boardId: input.boardId,
+            id: input.stageId
+          }
+        }
+      });
+
+      return { ok: true, stageId: input.stageId };
     },
 
     async listBoardContacts(input: {
@@ -399,6 +643,36 @@ export function createBoardsService(prisma: PrismaLike) {
           : await updateMembership(prisma);
 
       return toBoardContactCardDto(membership);
+    },
+
+    async removeContactFromBoard(input: {
+      workspaceId: string;
+      membershipId: string;
+    }): Promise<BoardMembershipDeleteResultDto> {
+      const membership = await prisma.contactBoardMembership.findFirst({
+        where: { workspaceId: input.workspaceId, id: input.membershipId },
+        include: { contact: true }
+      });
+
+      if (!membership) {
+        throw new BoardsServiceError("MEMBERSHIP_NOT_FOUND", "Membership not found.");
+      }
+
+      await prisma.contactBoardMembership.delete({
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: input.membershipId
+          }
+        }
+      });
+
+      return {
+        ok: true,
+        membershipId: input.membershipId,
+        boardId: membership.boardId,
+        contactId: membership.contactId
+      };
     }
   };
 }

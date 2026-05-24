@@ -16,10 +16,15 @@ type MockPrisma = {
     findMany: ReturnType<typeof vi.fn<PrismaLike["contactBoard"]["findMany"]>>;
     create: ReturnType<typeof vi.fn<PrismaLike["contactBoard"]["create"]>>;
     findFirst: ReturnType<typeof vi.fn<PrismaLike["contactBoard"]["findFirst"]>>;
+    update: ReturnType<typeof vi.fn<PrismaLike["contactBoard"]["update"]>>;
+    delete: ReturnType<typeof vi.fn<PrismaLike["contactBoard"]["delete"]>>;
   };
   contactBoardStage: {
     create: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["create"]>>;
+    findMany: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["findMany"]>>;
     findFirst: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["findFirst"]>>;
+    update: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["update"]>>;
+    delete: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["delete"]>>;
   };
   contactBoardMembership: {
     findMany: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["findMany"]>>;
@@ -27,6 +32,8 @@ type MockPrisma = {
     upsert: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["upsert"]>>;
     update: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["update"]>>;
     updateMany: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["updateMany"]>>;
+    delete: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["delete"]>>;
+    count: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["count"]>>;
   };
   contact: {
     findUnique: ReturnType<typeof vi.fn<PrismaLike["contact"]["findUnique"]>>;
@@ -126,15 +133,37 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
         vi.fn<PrismaLike["contactBoard"]["findFirst"]>().mockResolvedValue({
           ...baseBoard,
           stages: baseStages
-        })
+        }),
+      update:
+        overrides.contactBoard?.update ??
+        vi.fn<PrismaLike["contactBoard"]["update"]>().mockResolvedValue({
+          ...baseBoard,
+          name: "Vendas",
+          stages: baseStages
+        }),
+      delete:
+        overrides.contactBoard?.delete ??
+        vi.fn<PrismaLike["contactBoard"]["delete"]>().mockResolvedValue(baseBoard)
     },
     contactBoardStage: {
       create:
         overrides.contactBoardStage?.create ??
         vi.fn<PrismaLike["contactBoardStage"]["create"]>().mockResolvedValue(baseStages[0]),
+      findMany:
+        overrides.contactBoardStage?.findMany ??
+        vi.fn<PrismaLike["contactBoardStage"]["findMany"]>().mockResolvedValue(baseStages),
       findFirst:
         overrides.contactBoardStage?.findFirst ??
-        vi.fn<PrismaLike["contactBoardStage"]["findFirst"]>().mockResolvedValue(baseStages[0])
+        vi.fn<PrismaLike["contactBoardStage"]["findFirst"]>().mockResolvedValue(baseStages[0]),
+      update:
+        overrides.contactBoardStage?.update ??
+        vi.fn<PrismaLike["contactBoardStage"]["update"]>().mockResolvedValue({
+          ...baseStages[0],
+          name: "Atualizada"
+        }),
+      delete:
+        overrides.contactBoardStage?.delete ??
+        vi.fn<PrismaLike["contactBoardStage"]["delete"]>().mockResolvedValue(baseStages[0])
     },
     contactBoardMembership: {
       findMany:
@@ -162,7 +191,15 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
         overrides.contactBoardMembership?.updateMany ??
         vi.fn<PrismaLike["contactBoardMembership"]["updateMany"]>().mockResolvedValue({
           count: 1
-        })
+        }),
+      delete:
+        overrides.contactBoardMembership?.delete ??
+        vi.fn<PrismaLike["contactBoardMembership"]["delete"]>().mockResolvedValue(
+          baseMembership
+        ),
+      count:
+        overrides.contactBoardMembership?.count ??
+        vi.fn<PrismaLike["contactBoardMembership"]["count"]>().mockResolvedValue(0)
     },
     contact: {
       findUnique:
@@ -396,6 +433,202 @@ describe("boards service", () => {
       })
     ).rejects.toMatchObject({ code: "STAGE_NOT_FOUND" });
   });
+
+  it("updates a board through the workspace composite key and returns stages", async () => {
+    const prisma = createMockPrisma();
+    const service = createBoardsService(prisma);
+
+    const board = await service.updateBoard({
+      workspaceId: "workspace_a",
+      boardId,
+      name: "Vendas",
+      description: ""
+    });
+
+    expect(prisma.contactBoard.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: boardId
+        }
+      },
+      data: {
+        name: "Vendas",
+        description: null
+      },
+      include: {
+        stages: {
+          orderBy: { order: "asc" }
+        }
+      }
+    });
+    expect(board.name).toBe("Vendas");
+  });
+
+  it("deletes a workspace board after validating ownership", async () => {
+    const prisma = createMockPrisma();
+    const service = createBoardsService(prisma);
+
+    const result = await service.deleteBoard({
+      workspaceId: "workspace_a",
+      boardId
+    });
+
+    expect(prisma.contactBoard.findFirst).toHaveBeenCalledWith({
+      where: { workspaceId: "workspace_a", id: boardId },
+      include: {
+        stages: {
+          orderBy: { order: "asc" }
+        }
+      }
+    });
+    expect(prisma.contactBoard.delete).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: boardId
+        }
+      }
+    });
+    expect(result).toEqual({ ok: true, boardId });
+  });
+
+  it("updates a stage after validating that it belongs to the board", async () => {
+    const prisma = createMockPrisma();
+    const service = createBoardsService(prisma);
+
+    const stage = await service.updateStage({
+      workspaceId: "workspace_a",
+      boardId,
+      stageId,
+      name: "Em atendimento",
+      color: "#123456"
+    });
+
+    expect(prisma.contactBoardStage.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_boardId_id: {
+          workspaceId: "workspace_a",
+          boardId,
+          id: stageId
+        }
+      },
+      data: {
+        name: "Em atendimento",
+        color: "#123456"
+      }
+    });
+    expect(stage.name).toBe("Atualizada");
+  });
+
+  it("reorders all board stages in one transaction", async () => {
+    const prisma = createMockPrisma();
+    const service = createBoardsService(prisma);
+
+    const stages = await service.reorderStages({
+      workspaceId: "workspace_a",
+      boardId,
+      stageIds: [nextStageId, stageId]
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.contactBoardStage.update).toHaveBeenNthCalledWith(1, {
+      where: {
+        workspaceId_boardId_id: {
+          workspaceId: "workspace_a",
+          boardId,
+          id: nextStageId
+        }
+      },
+      data: { order: 0 }
+    });
+    expect(prisma.contactBoardStage.update).toHaveBeenNthCalledWith(2, {
+      where: {
+        workspaceId_boardId_id: {
+          workspaceId: "workspace_a",
+          boardId,
+          id: stageId
+        }
+      },
+      data: { order: 1 }
+    });
+    expect(stages.map((stage) => stage.id)).toEqual([nextStageId, stageId]);
+  });
+
+  it("rejects stage reorder payloads that do not include every board stage once", async () => {
+    const prisma = createMockPrisma();
+    const service = createBoardsService(prisma);
+
+    await expect(
+      service.reorderStages({
+        workspaceId: "workspace_a",
+        boardId,
+        stageIds: [stageId]
+      })
+    ).rejects.toMatchObject({ code: "STAGE_ORDER_INVALID" });
+  });
+
+  it("deletes empty stages and blocks non-empty stage deletion", async () => {
+    const prisma = createMockPrisma();
+    const service = createBoardsService(prisma);
+
+    await expect(
+      service.deleteStage({
+        workspaceId: "workspace_a",
+        boardId,
+        stageId
+      })
+    ).resolves.toEqual({ ok: true, stageId });
+    expect(prisma.contactBoardStage.delete).toHaveBeenCalledWith({
+      where: {
+        workspaceId_boardId_id: {
+          workspaceId: "workspace_a",
+          boardId,
+          id: stageId
+        }
+      }
+    });
+
+    const nonEmptyPrisma = createMockPrisma({
+      contactBoardMembership: {
+        ...createMockPrisma().contactBoardMembership,
+        count: vi.fn<PrismaLike["contactBoardMembership"]["count"]>().mockResolvedValue(1)
+      }
+    });
+
+    await expect(
+      createBoardsService(nonEmptyPrisma).deleteStage({
+        workspaceId: "workspace_a",
+        boardId,
+        stageId
+      })
+    ).rejects.toMatchObject({ code: "STAGE_NOT_EMPTY" });
+  });
+
+  it("removes a board membership by workspace membership key", async () => {
+    const prisma = createMockPrisma();
+    const service = createBoardsService(prisma);
+
+    const result = await service.removeContactFromBoard({
+      workspaceId: "workspace_a",
+      membershipId
+    });
+
+    expect(prisma.contactBoardMembership.delete).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: membershipId
+        }
+      }
+    });
+    expect(result).toEqual({
+      ok: true,
+      membershipId,
+      boardId,
+      contactId
+    });
+  });
 });
 
 describe("boards routes", () => {
@@ -464,6 +697,86 @@ describe("boards routes", () => {
         type: "board_membership.updated",
         workspaceId: "workspace_a",
         payload: contactBoardMembershipSchema.parse(response.json())
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("updates, reorders, and deletes board records through routes", async () => {
+    const { app, prisma } = await buildBoardsApp();
+
+    try {
+      const updateBoardResponse = await app.inject({
+        method: "PATCH",
+        url: `/boards/${boardId}`,
+        payload: {
+          name: "Vendas"
+        }
+      });
+      expect(updateBoardResponse.statusCode).toBe(200);
+      expect(aggregateBoardSchema.parse(updateBoardResponse.json()).name).toBe("Vendas");
+
+      const updateStageResponse = await app.inject({
+        method: "PATCH",
+        url: `/boards/${boardId}/stages/${stageId}`,
+        payload: {
+          name: "Atualizada",
+          color: "#123456"
+        }
+      });
+      expect(updateStageResponse.statusCode).toBe(200);
+      expect(contactBoardStageSchema.parse(updateStageResponse.json()).name).toBe("Atualizada");
+
+      const reorderResponse = await app.inject({
+        method: "PATCH",
+        url: `/boards/${boardId}/stages/reorder`,
+        payload: {
+          stageIds: [nextStageId, stageId]
+        }
+      });
+      expect(reorderResponse.statusCode).toBe(200);
+      expect(contactBoardStageSchema.array().parse(reorderResponse.json())).toHaveLength(2);
+
+      const deleteStageResponse = await app.inject({
+        method: "DELETE",
+        url: `/boards/${boardId}/stages/${stageId}`
+      });
+      expect(deleteStageResponse.statusCode).toBe(200);
+      expect(deleteStageResponse.json()).toEqual({ ok: true, stageId });
+
+      const deleteBoardResponse = await app.inject({
+        method: "DELETE",
+        url: `/boards/${boardId}`
+      });
+      expect(deleteBoardResponse.statusCode).toBe(200);
+      expect(deleteBoardResponse.json()).toEqual({ ok: true, boardId });
+      expect(prisma.contactBoard.delete).toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("removes board memberships and publishes a deletion event", async () => {
+    const { app, publish } = await buildBoardsApp();
+
+    try {
+      const response = await app.inject({
+        method: "DELETE",
+        url: `/board-memberships/${membershipId}`
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        ok: true,
+        membershipId,
+        boardId,
+        contactId
+      });
+      expect(realtimeEventSchema.parse(publish.mock.calls[0]?.[0])).toEqual({
+        type: "board_membership.deleted",
+        workspaceId: "workspace_a",
+        payload: response.json()
       });
     } finally {
       await app.close();

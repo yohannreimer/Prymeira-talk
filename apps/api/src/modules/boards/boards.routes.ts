@@ -9,6 +9,11 @@ const boardParamsSchema = z.object({
   boardId: uuidParamSchema
 });
 
+const boardStageParamsSchema = z.object({
+  boardId: uuidParamSchema,
+  stageId: uuidParamSchema
+});
+
 const membershipParamsSchema = z.object({
   membershipId: uuidParamSchema
 });
@@ -18,10 +23,32 @@ const createBoardBodySchema = z.object({
   description: z.string().max(500).optional()
 });
 
+const updateBoardBodySchema = z
+  .object({
+    name: z.string().trim().min(1).max(200).optional(),
+    description: z.string().max(500).optional()
+  })
+  .refine((body) => Object.keys(body).length > 0, {
+    message: "At least one field is required"
+  });
+
 const createStageBodySchema = z.object({
   name: z.string().trim().min(1).max(120),
   color: z.string().trim().min(1).max(40),
   order: z.number().int().min(0)
+});
+
+const updateStageBodySchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    color: z.string().trim().min(1).max(40).optional()
+  })
+  .refine((body) => Object.keys(body).length > 0, {
+    message: "At least one field is required"
+  });
+
+const reorderStagesBodySchema = z.object({
+  stageIds: uuidParamSchema.array()
 });
 
 const createMembershipBodySchema = z.object({
@@ -56,6 +83,10 @@ function sendServiceError(reply: FastifyReply, error: BoardsServiceError) {
     error.code === "MEMBERSHIP_NOT_FOUND"
   ) {
     return reply.code(404).send({ code: error.code, error: error.message });
+  }
+
+  if (error.code === "STAGE_NOT_EMPTY" || error.code === "STAGE_ORDER_INVALID") {
+    return reply.code(409).send({ code: error.code, error: error.message });
   }
 
   throw error;
@@ -109,6 +140,42 @@ export const boardsRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.patch("/boards/:boardId", async (request, reply) => {
+    const params = boardParamsSchema.safeParse(request.params);
+    const body = updateBoardBodySchema.safeParse(request.body);
+
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid board request." });
+    }
+
+    try {
+      return await service.updateBoard({
+        workspaceId: request.talk.workspaceId,
+        boardId: params.data.boardId,
+        ...body.data
+      });
+    } catch (error) {
+      return handleBoardsError(reply, error);
+    }
+  });
+
+  app.delete("/boards/:boardId", async (request, reply) => {
+    const params = boardParamsSchema.safeParse(request.params);
+
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid board request." });
+    }
+
+    try {
+      return await service.deleteBoard({
+        workspaceId: request.talk.workspaceId,
+        boardId: params.data.boardId
+      });
+    } catch (error) {
+      return handleBoardsError(reply, error);
+    }
+  });
+
   app.get("/boards/:boardId/contacts", async (request, reply) => {
     const params = boardParamsSchema.safeParse(request.params);
 
@@ -142,6 +209,63 @@ export const boardsRoutes: FastifyPluginAsync = async (app) => {
       });
 
       return reply.code(201).send(stage);
+    } catch (error) {
+      return handleBoardsError(reply, error);
+    }
+  });
+
+  app.patch("/boards/:boardId/stages/reorder", async (request, reply) => {
+    const params = boardParamsSchema.safeParse(request.params);
+    const body = reorderStagesBodySchema.safeParse(request.body);
+
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid board stage reorder request." });
+    }
+
+    try {
+      return await service.reorderStages({
+        workspaceId: request.talk.workspaceId,
+        boardId: params.data.boardId,
+        stageIds: body.data.stageIds
+      });
+    } catch (error) {
+      return handleBoardsError(reply, error);
+    }
+  });
+
+  app.patch("/boards/:boardId/stages/:stageId", async (request, reply) => {
+    const params = boardStageParamsSchema.safeParse(request.params);
+    const body = updateStageBodySchema.safeParse(request.body);
+
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid board stage request." });
+    }
+
+    try {
+      return await service.updateStage({
+        workspaceId: request.talk.workspaceId,
+        boardId: params.data.boardId,
+        stageId: params.data.stageId,
+        ...body.data
+      });
+    } catch (error) {
+      return handleBoardsError(reply, error);
+    }
+  });
+
+  app.delete("/boards/:boardId/stages/:stageId", async (request, reply) => {
+    const params = boardStageParamsSchema.safeParse(request.params);
+
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid board stage request." });
+    }
+
+    try {
+      return await service.deleteStage({
+        workspaceId: request.talk.workspaceId,
+        boardId: params.data.boardId,
+        stageId: params.data.stageId
+      });
     } catch (error) {
       return handleBoardsError(reply, error);
     }
@@ -196,6 +320,31 @@ export const boardsRoutes: FastifyPluginAsync = async (app) => {
       });
 
       return membership;
+    } catch (error) {
+      return handleBoardsError(reply, error);
+    }
+  });
+
+  app.delete("/board-memberships/:membershipId", async (request, reply) => {
+    const params = membershipParamsSchema.safeParse(request.params);
+
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid board membership request." });
+    }
+
+    try {
+      const result = await service.removeContactFromBoard({
+        workspaceId: request.talk.workspaceId,
+        membershipId: params.data.membershipId
+      });
+
+      app.realtime.publish({
+        type: "board_membership.deleted",
+        workspaceId: request.talk.workspaceId,
+        payload: result
+      });
+
+      return result;
     } catch (error) {
       return handleBoardsError(reply, error);
     }

@@ -42,6 +42,17 @@ const boardMembershipUpdatedEventSchema = z.object({
   payload: contactBoardMembershipSchema
 });
 
+const boardMembershipDeletedEventSchema = z.object({
+  type: z.literal("board_membership.deleted"),
+  workspaceId: z.string().min(1),
+  payload: z.object({
+    ok: z.literal(true),
+    membershipId: z.string().min(1),
+    boardId: z.string().min(1),
+    contactId: z.string().min(1)
+  })
+});
+
 const channelUpdatedEventSchema = z.object({
   type: z.literal("channel.updated"),
   workspaceId: z.string().min(1),
@@ -110,6 +121,7 @@ export const realtimeEventSchema = z
     conversationUpdatedEventSchema,
     contactUpdatedEventSchema,
     boardMembershipUpdatedEventSchema,
+    boardMembershipDeletedEventSchema,
     channelUpdatedEventSchema,
     channelDeletedEventSchema,
     channelQrUpdatedEventSchema,
