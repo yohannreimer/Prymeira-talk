@@ -2891,8 +2891,7 @@ select:disabled {
   color: var(--color-surface-card);
 }
 
-.message-media-frame,
-.message-video-player {
+.message-media-frame {
   display: block;
   width: min(280px, 58vw);
   max-height: 320px;
@@ -2912,10 +2911,6 @@ select:disabled {
   width: min(280px, 58vw);
   min-width: 220px;
   height: 40px;
-}
-
-.message-video-player {
-  object-fit: contain;
 }
 
 .message-file-card {

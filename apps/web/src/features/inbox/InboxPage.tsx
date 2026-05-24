@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ConversationDto, MessageDto, RealtimeEvent } from "@prymeira-talk/shared";
-import { Bot, Link2, MessageSquare, Send, StickyNote, UserCheck, X } from "lucide-react";
+import { Bot, Download, MessageSquare, Send, StickyNote, UserCheck, X } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -96,7 +96,11 @@ export function messageDisplayText(message: Pick<MessageDto, "body" | "type">) {
   return labels[message.type];
 }
 
-export type MessageMediaKind = "image" | "audio" | "video" | "file";
+export type MessageMediaKind = "image" | "audio" | "file";
+
+function isVideoMediaUrl(mediaUrl: string) {
+  return /^data:video\//i.test(mediaUrl) || /\.(mp4|m4v|mov|webm)(\?|#|$)/i.test(mediaUrl);
+}
 
 export function messageMediaKind(message: Pick<MessageDto, "mediaUrl" | "type">): MessageMediaKind | null {
   if (!message.mediaUrl) {
@@ -111,13 +115,6 @@ export function messageMediaKind(message: Pick<MessageDto, "mediaUrl" | "type">)
     return "audio";
   }
 
-  if (
-    /^data:video\//i.test(message.mediaUrl) ||
-    /\.(mp4|m4v|mov|webm)(\?|#|$)/i.test(message.mediaUrl)
-  ) {
-    return "video";
-  }
-
   return "file";
 }
 
@@ -125,9 +122,8 @@ export function messageMediaLabel(message: Pick<MessageDto, "mediaUrl" | "type">
   const kind = messageMediaKind(message);
   const labels: Record<MessageMediaKind, string> = {
     image: "Abrir imagem",
-    audio: "Abrir audio",
-    video: "Abrir video",
-    file: "Abrir arquivo"
+    audio: "Reproduzir audio",
+    file: message.mediaUrl && isVideoMediaUrl(message.mediaUrl) ? "Baixar video" : "Baixar arquivo"
   };
 
   return kind ? labels[kind] : "Abrir midia";
@@ -165,25 +161,15 @@ function MessageMediaPreview(props: { message: MessageDto }) {
     );
   }
 
-  if (kind === "video") {
-    return (
-      <video
-        className="message-video-player"
-        controls
-        preload="metadata"
-        src={message.mediaUrl}
-      />
-    );
-  }
-
   return (
     <a
       className="message-file-card"
+      download
       href={message.mediaUrl}
       rel="noreferrer"
       target="_blank"
     >
-      <Link2 size={16} aria-hidden="true" />
+      <Download size={16} aria-hidden="true" />
       <span>
         <strong>{messageDisplayText(message)}</strong>
         <small>{messageMediaLabel(message)}</small>
