@@ -60,6 +60,7 @@ import {
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
 
 type ViewMode = "list" | "board";
+type BoardPanelMode = "create-board" | "edit-board" | "create-stage" | "add-contact" | null;
 
 interface ContactFormState {
   name: string;
@@ -210,6 +211,7 @@ export function ContactsPage() {
   const [boardEditForm, setBoardEditForm] = useState<BoardFormState>(emptyBoardForm);
   const [newStageForm, setNewStageForm] = useState<StageFormState>(emptyStageForm);
   const [stageEditForms, setStageEditForms] = useState<Record<string, StageFormState>>({});
+  const [boardPanelMode, setBoardPanelMode] = useState<BoardPanelMode>(null);
   const [addContactId, setAddContactId] = useState("");
   const [addStageId, setAddStageId] = useState("");
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
@@ -547,6 +549,17 @@ export function ContactsPage() {
   }, [boardStages]);
 
   useEffect(() => {
+    if (viewMode !== "board") {
+      setBoardPanelMode(null);
+      return;
+    }
+
+    if (!isBoardLoading && boards.length === 0) {
+      setBoardPanelMode("create-board");
+    }
+  }, [boards.length, isBoardLoading, viewMode]);
+
+  useEffect(() => {
     setAddContactId((current) =>
       availableBoardContacts.some((contact) => contact.id === current)
         ? current
@@ -673,6 +686,7 @@ export function ContactsPage() {
       replaceBoard(board);
       setSelectedBoardId(board.id);
       setNewBoardForm(emptyBoardForm);
+      setBoardPanelMode(null);
       setSaveMessage("Board criado.");
     } catch (createError) {
       setBoardError(createError instanceof Error ? createError.message : "Nao foi possivel criar o board.");
@@ -708,6 +722,7 @@ export function ContactsPage() {
             }
           : current
       );
+      setBoardPanelMode(null);
       setSaveMessage("Board atualizado.");
     } catch (updateError) {
       setBoardError(updateError instanceof Error ? updateError.message : "Nao foi possivel atualizar o board.");
@@ -733,6 +748,7 @@ export function ContactsPage() {
       setBoards(nextBoards);
       setSelectedBoardId(nextBoards[0]?.id ?? null);
       setBoardContacts(null);
+      setBoardPanelMode(nextBoards.length > 0 ? null : "create-board");
       setSaveMessage("Board apagado.");
     } catch (deleteError) {
       setBoardError(deleteError instanceof Error ? deleteError.message : "Nao foi possivel apagar o board.");
@@ -766,6 +782,7 @@ export function ContactsPage() {
       updateSelectedBoardStages(stages);
       setAddStageId(stage.id);
       setNewStageForm(emptyStageForm);
+      setBoardPanelMode(null);
       setSaveMessage("Etapa criada.");
     } catch (createError) {
       setBoardError(createError instanceof Error ? createError.message : "Nao foi possivel criar a etapa.");
@@ -891,6 +908,7 @@ export function ContactsPage() {
           : current
       );
       setSelectedContactId(membership.contactId);
+      setBoardPanelMode(null);
       setSaveMessage("Contato adicionado ao board.");
     } catch (addError) {
       setBoardError(addError instanceof Error ? addError.message : "Nao foi possivel adicionar ao board.");
@@ -1129,212 +1147,313 @@ export function ContactsPage() {
 
             {viewMode === "board" ? (
               <div className="board-view">
-                <div className="board-management">
-                  <form className="board-create-form" onSubmit={handleCreateBoard}>
-                    <label>
+                <div className="board-command-bar">
+                  <label className="board-active-select">
+                    <span>Board ativo</span>
+                    <select
+                      disabled={isBoardLoading || boards.length === 0}
+                      onChange={(event) => setSelectedBoardId(event.target.value)}
+                      value={selectedBoardId ?? ""}
+                    >
+                      {boards.length === 0 ? <option value="">Sem board</option> : null}
+                      {boards.map((board) => (
+                        <option key={board.id} value={board.id}>
+                          {board.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div className="board-command-actions" aria-label="Acoes do board">
+                    <button
+                      className={boardPanelMode === "create-board" ? "is-active" : ""}
+                      onClick={() =>
+                        setBoardPanelMode((current) =>
+                          current === "create-board" ? null : "create-board"
+                        )
+                      }
+                      type="button"
+                    >
+                      <Plus size={16} aria-hidden="true" />
                       Novo board
-                      <input
-                        disabled={isBoardSaving}
-                        onChange={(event) =>
-                          setNewBoardForm((current) => ({
-                            ...current,
-                            name: event.target.value
-                          }))
-                        }
-                        placeholder="Ex: Vendas WhatsApp"
-                        value={newBoardForm.name}
-                      />
-                    </label>
-                    <label>
-                      Descricao
-                      <input
-                        disabled={isBoardSaving}
-                        onChange={(event) =>
-                          setNewBoardForm((current) => ({
-                            ...current,
-                            description: event.target.value
-                          }))
-                        }
-                        placeholder="Opcional"
-                        value={newBoardForm.description}
-                      />
-                    </label>
-                    <button
-                      className="secondary-button icon-button-label"
-                      disabled={isBoardSaving || !newBoardForm.name.trim()}
-                      type="submit"
-                    >
-                      <Plus size={16} aria-hidden="true" />
-                      Criar board
                     </button>
-                  </form>
-
-                  <form className="board-edit-form" onSubmit={handleUpdateBoard}>
-                    <label>
-                      Board ativo
-                      <select
-                        disabled={isBoardLoading || boards.length === 0}
-                        onChange={(event) => setSelectedBoardId(event.target.value)}
-                        value={selectedBoardId ?? ""}
-                      >
-                        {boards.map((board) => (
-                          <option key={board.id} value={board.id}>
-                            {board.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Nome
-                      <input
-                        disabled={!selectedBoard || isBoardSaving}
-                        onChange={(event) =>
-                          setBoardEditForm((current) => ({
-                            ...current,
-                            name: event.target.value
-                          }))
-                        }
-                        value={boardEditForm.name}
-                      />
-                    </label>
-                    <label>
-                      Descricao
-                      <input
-                        disabled={!selectedBoard || isBoardSaving}
-                        onChange={(event) =>
-                          setBoardEditForm((current) => ({
-                            ...current,
-                            description: event.target.value
-                          }))
-                        }
-                        value={boardEditForm.description}
-                      />
-                    </label>
-                    <div className="board-management-actions">
-                      <button
-                        className="secondary-button icon-button-label"
-                        disabled={!selectedBoard || isBoardSaving || !boardEditForm.name.trim()}
-                        type="submit"
-                      >
-                        <Save size={16} aria-hidden="true" />
-                        Salvar
-                      </button>
-                      <button
-                        className="secondary-button danger-button icon-button-label"
-                        disabled={!selectedBoard || isBoardSaving}
-                        onClick={() => void handleDeleteBoard()}
-                        type="button"
-                      >
-                        <Trash2 size={16} aria-hidden="true" />
-                        Apagar
-                      </button>
-                    </div>
-                  </form>
-
-                  <form className="board-stage-form" onSubmit={handleCreateStage}>
-                    <label>
+                    <button
+                      className={boardPanelMode === "edit-board" ? "is-active" : ""}
+                      disabled={!selectedBoard}
+                      onClick={() =>
+                        setBoardPanelMode((current) =>
+                          current === "edit-board" ? null : "edit-board"
+                        )
+                      }
+                      type="button"
+                    >
+                      <Pencil size={16} aria-hidden="true" />
+                      Gerenciar
+                    </button>
+                    <button
+                      className={boardPanelMode === "create-stage" ? "is-active" : ""}
+                      disabled={!selectedBoard}
+                      onClick={() =>
+                        setBoardPanelMode((current) =>
+                          current === "create-stage" ? null : "create-stage"
+                        )
+                      }
+                      type="button"
+                    >
+                      <Columns3 size={16} aria-hidden="true" />
                       Nova etapa
-                      <input
-                        disabled={!selectedBoard || isBoardSaving}
-                        onChange={(event) =>
-                          setNewStageForm((current) => ({
-                            ...current,
-                            name: event.target.value
-                          }))
-                        }
-                        placeholder="Ex: Qualificado"
-                        value={newStageForm.name}
-                      />
-                    </label>
-                    <label>
-                      Cor
-                      <input
-                        disabled={!selectedBoard || isBoardSaving}
-                        onChange={(event) =>
-                          setNewStageForm((current) => ({
-                            ...current,
-                            color: event.target.value
-                          }))
-                        }
-                        type="color"
-                        value={newStageForm.color}
-                      />
-                    </label>
-                    <button
-                      className="secondary-button icon-button-label"
-                      disabled={!selectedBoard || isBoardSaving || !newStageForm.name.trim()}
-                      type="submit"
-                    >
-                      <Plus size={16} aria-hidden="true" />
-                      Criar etapa
                     </button>
-                  </form>
-
-                  <form className="board-add-form" onSubmit={handleAddContactToBoard}>
-                    <label>
-                      Contato
-                      <select
-                        disabled={
-                          !loadedBoardContacts ||
-                          availableBoardContacts.length === 0 ||
-                          isBoardLoading ||
-                          isBoardSaving
-                        }
-                        onChange={(event) => setAddContactId(event.target.value)}
-                        value={addContactId}
-                      >
-                        {availableBoardContacts.map((contact) => (
-                          <option key={contact.id} value={contact.id}>
-                            {contactName(contact)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Etapa
-                      <select
-                        disabled={
-                          !loadedBoardContacts ||
-                          loadedBoardStages.length === 0 ||
-                          isBoardLoading ||
-                          isBoardSaving
-                        }
-                        onChange={(event) => setAddStageId(event.target.value)}
-                        value={addStageId}
-                      >
-                        {loadedBoardStages.map((stage) => (
-                          <option key={stage.id} value={stage.id}>
-                            {stage.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
                     <button
-                      className="secondary-button icon-button-label"
-                      disabled={!canSubmitBoardAdd}
-                      type="submit"
+                      className={boardPanelMode === "add-contact" ? "is-active" : ""}
+                      disabled={!selectedBoard || boardStages.length === 0}
+                      onClick={() =>
+                        setBoardPanelMode((current) =>
+                          current === "add-contact" ? null : "add-contact"
+                        )
+                      }
+                      type="button"
                     >
-                      <Plus size={16} aria-hidden="true" />
+                      <Users size={16} aria-hidden="true" />
                       Adicionar contato
                     </button>
-                  </form>
+                  </div>
                 </div>
+
+                {boardPanelMode ? (
+                  <div className="board-panel">
+                    <div className="board-panel-heading">
+                      <strong>
+                        {boardPanelMode === "create-board"
+                          ? "Novo board"
+                          : boardPanelMode === "edit-board"
+                            ? "Gerenciar board"
+                            : boardPanelMode === "create-stage"
+                              ? "Nova etapa"
+                              : "Adicionar contato"}
+                      </strong>
+                      {boards.length > 0 ? (
+                        <button
+                          aria-label="Fechar painel"
+                          onClick={() => setBoardPanelMode(null)}
+                          type="button"
+                        >
+                          Fechar
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {boardPanelMode === "create-board" ? (
+                      <form className="board-create-form" onSubmit={handleCreateBoard}>
+                        <label>
+                          Nome
+                          <input
+                            disabled={isBoardSaving}
+                            onChange={(event) =>
+                              setNewBoardForm((current) => ({
+                                ...current,
+                                name: event.target.value
+                              }))
+                            }
+                            placeholder="Ex: Vendas WhatsApp"
+                            value={newBoardForm.name}
+                          />
+                        </label>
+                        <label>
+                          Descricao
+                          <input
+                            disabled={isBoardSaving}
+                            onChange={(event) =>
+                              setNewBoardForm((current) => ({
+                                ...current,
+                                description: event.target.value
+                              }))
+                            }
+                            placeholder="Opcional"
+                            value={newBoardForm.description}
+                          />
+                        </label>
+                        <button
+                          className="secondary-button icon-button-label"
+                          disabled={isBoardSaving || !newBoardForm.name.trim()}
+                          type="submit"
+                        >
+                          <Plus size={16} aria-hidden="true" />
+                          Criar board
+                        </button>
+                      </form>
+                    ) : null}
+
+                    {boardPanelMode === "edit-board" ? (
+                      <form className="board-edit-form" onSubmit={handleUpdateBoard}>
+                        <label>
+                          Nome
+                          <input
+                            disabled={!selectedBoard || isBoardSaving}
+                            onChange={(event) =>
+                              setBoardEditForm((current) => ({
+                                ...current,
+                                name: event.target.value
+                              }))
+                            }
+                            value={boardEditForm.name}
+                          />
+                        </label>
+                        <label>
+                          Descricao
+                          <input
+                            disabled={!selectedBoard || isBoardSaving}
+                            onChange={(event) =>
+                              setBoardEditForm((current) => ({
+                                ...current,
+                                description: event.target.value
+                              }))
+                            }
+                            value={boardEditForm.description}
+                          />
+                        </label>
+                        <div className="board-management-actions">
+                          <button
+                            className="secondary-button icon-button-label"
+                            disabled={!selectedBoard || isBoardSaving || !boardEditForm.name.trim()}
+                            type="submit"
+                          >
+                            <Save size={16} aria-hidden="true" />
+                            Salvar
+                          </button>
+                          <button
+                            className="secondary-button danger-button icon-button-label"
+                            disabled={!selectedBoard || isBoardSaving}
+                            onClick={() => void handleDeleteBoard()}
+                            type="button"
+                          >
+                            <Trash2 size={16} aria-hidden="true" />
+                            Apagar
+                          </button>
+                        </div>
+                      </form>
+                    ) : null}
+
+                    {boardPanelMode === "create-stage" ? (
+                      <form className="board-stage-form" onSubmit={handleCreateStage}>
+                        <label>
+                          Nome
+                          <input
+                            disabled={!selectedBoard || isBoardSaving}
+                            onChange={(event) =>
+                              setNewStageForm((current) => ({
+                                ...current,
+                                name: event.target.value
+                              }))
+                            }
+                            placeholder="Ex: Qualificado"
+                            value={newStageForm.name}
+                          />
+                        </label>
+                        <label>
+                          Cor
+                          <input
+                            disabled={!selectedBoard || isBoardSaving}
+                            onChange={(event) =>
+                              setNewStageForm((current) => ({
+                                ...current,
+                                color: event.target.value
+                              }))
+                            }
+                            type="color"
+                            value={newStageForm.color}
+                          />
+                        </label>
+                        <button
+                          className="secondary-button icon-button-label"
+                          disabled={!selectedBoard || isBoardSaving || !newStageForm.name.trim()}
+                          type="submit"
+                        >
+                          <Plus size={16} aria-hidden="true" />
+                          Criar etapa
+                        </button>
+                      </form>
+                    ) : null}
+
+                    {boardPanelMode === "add-contact" ? (
+                      <form className="board-add-form" onSubmit={handleAddContactToBoard}>
+                        <label>
+                          Contato
+                          <select
+                            disabled={
+                              !loadedBoardContacts ||
+                              availableBoardContacts.length === 0 ||
+                              isBoardLoading ||
+                              isBoardSaving
+                            }
+                            onChange={(event) => setAddContactId(event.target.value)}
+                            value={addContactId}
+                          >
+                            {availableBoardContacts.map((contact) => (
+                              <option key={contact.id} value={contact.id}>
+                                {contactName(contact)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Etapa
+                          <select
+                            disabled={
+                              !loadedBoardContacts ||
+                              loadedBoardStages.length === 0 ||
+                              isBoardLoading ||
+                              isBoardSaving
+                            }
+                            onChange={(event) => setAddStageId(event.target.value)}
+                            value={addStageId}
+                          >
+                            {loadedBoardStages.map((stage) => (
+                              <option key={stage.id} value={stage.id}>
+                                {stage.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          className="secondary-button icon-button-label"
+                          disabled={!canSubmitBoardAdd}
+                          type="submit"
+                        >
+                          <Plus size={16} aria-hidden="true" />
+                          Adicionar
+                        </button>
+                      </form>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {isBoardLoading ? <p className="list-note">Carregando board...</p> : null}
 
                 {!isBoardLoading && boards.length === 0 ? (
-                  <div className="empty-panel">
+                  <div className="board-empty-state">
                     <Columns3 size={28} aria-hidden="true" />
-                    <h3>Nenhum board encontrado</h3>
-                    <p>Crie o primeiro board acima para organizar contatos em etapas.</p>
+                    <div>
+                      <h3>Nenhum board encontrado</h3>
+                      <p>Crie o primeiro board para organizar contatos em etapas.</p>
+                    </div>
                   </div>
                 ) : null}
 
                 {!isBoardLoading && selectedBoard && boardStages.length === 0 ? (
-                  <div className="empty-panel">
+                  <div className="board-empty-state">
                     <Columns3 size={28} aria-hidden="true" />
-                    <h3>Board sem etapas</h3>
-                    <p>Crie a primeira etapa acima para iniciar este fluxo.</p>
+                    <div>
+                      <h3>Board sem etapas</h3>
+                      <p>Crie uma etapa para começar a mover contatos.</p>
+                    </div>
+                    <button
+                      className="secondary-button icon-button-label"
+                      onClick={() => setBoardPanelMode("create-stage")}
+                      type="button"
+                    >
+                      <Plus size={16} aria-hidden="true" />
+                      Criar etapa
+                    </button>
                   </div>
                 ) : null}
 

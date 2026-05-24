@@ -718,7 +718,10 @@ select:disabled {
   min-width: 0;
 }
 
-.board-management,
+.board-command-bar,
+.board-command-actions,
+.board-panel,
+.board-panel-heading,
 .board-create-form,
 .board-edit-form,
 .board-stage-form,
@@ -728,9 +731,13 @@ select:disabled {
   min-width: 0;
 }
 
-.board-management {
-  grid-template-columns: minmax(220px, 0.8fr) minmax(280px, 1.2fr);
-  align-items: start;
+.board-command-bar {
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: #f8fbf9;
 }
 
 .board-create-form,
@@ -741,8 +748,82 @@ select:disabled {
 }
 
 .board-edit-form {
-  grid-template-columns: minmax(150px, 0.8fr) minmax(140px, 1fr) minmax(140px, 1fr) auto;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
   align-items: end;
+}
+
+.board-active-select {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.board-active-select span {
+  color: #40564d;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.board-command-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.board-command-actions button,
+.board-panel-heading button {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  color: var(--color-text-secondary);
+  font-weight: 800;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.board-command-actions button {
+  padding: 0 12px;
+}
+
+.board-command-actions button:hover,
+.board-command-actions button.is-active {
+  border-color: rgba(43, 89, 76, 0.35);
+  background: #e9f1ed;
+  color: var(--color-brand-700);
+}
+
+.board-command-actions button:disabled {
+  opacity: 0.45;
+}
+
+.board-panel {
+  padding: 12px;
+  border: 1px solid rgba(43, 89, 76, 0.16);
+  border-radius: var(--radius-lg);
+  background: #fbfdfc;
+  box-shadow: 0 10px 24px rgba(28, 47, 39, 0.06);
+}
+
+.board-panel-heading {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.board-panel-heading strong {
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+}
+
+.board-panel-heading button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.78rem;
 }
 
 .board-management-actions {
@@ -751,7 +832,7 @@ select:disabled {
   align-items: center;
 }
 
-.board-management label,
+.board-panel label,
 .board-add-form label {
   display: grid;
   gap: 6px;
@@ -762,8 +843,9 @@ select:disabled {
   text-transform: uppercase;
 }
 
-.board-management select,
-.board-management input,
+.board-active-select select,
+.board-panel select,
+.board-panel input,
 .board-add-form select {
   min-width: 0;
   width: 100%;
@@ -775,9 +857,40 @@ select:disabled {
   font-weight: 700;
 }
 
-.board-management input[type="color"] {
+.board-panel input[type="color"] {
   min-height: 41px;
   padding: 4px;
+}
+
+.board-empty-state {
+  display: flex;
+  width: min(100%, 760px);
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border: 1px dashed rgba(43, 89, 76, 0.24);
+  border-radius: var(--radius-lg);
+  background: #f8fbf9;
+  color: var(--color-text-secondary);
+}
+
+.board-empty-state h3,
+.board-empty-state p {
+  margin: 0;
+}
+
+.board-empty-state h3 {
+  color: var(--color-text-primary);
+  font-size: 1rem;
+}
+
+.board-empty-state p {
+  margin-top: 3px;
+  font-size: 0.9rem;
+}
+
+.board-empty-state .secondary-button {
+  margin-left: auto;
 }
 
 .danger-button {
@@ -3183,12 +3296,26 @@ select:disabled {
     grid-template-columns: 1fr;
   }
 
-  .board-management,
+  .board-command-bar,
+  .board-panel-heading,
   .board-create-form,
   .board-edit-form,
   .board-stage-form,
   .board-add-form {
     grid-template-columns: 1fr;
+  }
+
+  .board-command-actions {
+    justify-content: flex-start;
+  }
+
+  .board-empty-state {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .board-empty-state .secondary-button {
+    margin-left: 0;
   }
 
   .contacts-board {
