@@ -1507,6 +1507,99 @@ select:disabled {
   min-height: 0;
 }
 
+.automation-editor-shell {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 8px 8px;
+}
+
+.automation-editor-topbar {
+  display: grid;
+  grid-template-columns: auto minmax(240px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  box-shadow: var(--shadow-card);
+  padding: 10px 12px;
+}
+
+.automation-editor-title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.automation-editor-title h2 {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.74rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.automation-title-field {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--color-surface-subtle);
+  color: var(--color-text-primary);
+  padding: 8px 10px;
+  font-size: 1.02rem;
+  font-weight: 900;
+}
+
+.automation-title-field:focus {
+  border-color: var(--color-brand-600);
+  outline: 3px solid rgba(36, 86, 74, 0.16);
+}
+
+.automation-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.automation-status-control.status-badge {
+  border-color: transparent;
+  border-radius: var(--radius-full);
+  padding: 7px 10px;
+}
+
+.automation-status-control svg {
+  flex-shrink: 0;
+}
+
+.automation-editor-meta {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(220px, 0.55fr);
+  align-items: end;
+  gap: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  padding: 10px 12px;
+}
+
+.automation-editor-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.automation-editor-canvas-area {
+  min-width: 0;
+}
+
 .automations-list-panel {
   overflow-y: auto;
 }
@@ -3895,6 +3988,10 @@ select:disabled {
     grid-template-columns: 220px minmax(0, 1fr);
   }
 
+  .automation-editor-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .automation-runs-panel {
     grid-column: 1 / -1;
   }
@@ -3933,10 +4030,17 @@ select:disabled {
   .split-panel,
   .channels-grid,
   .automations-layout,
+  .automation-editor-topbar,
+  .automation-editor-meta,
+  .automation-editor-body,
   .campaigns-layout,
   .ops-grid,
   .reports-grid {
     grid-template-columns: 1fr;
+  }
+
+  .automation-editor-actions {
+    justify-content: flex-start;
   }
 
   .board-command-bar,

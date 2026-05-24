@@ -322,6 +322,7 @@ describe("AutomationsPage navigation", () => {
     clickButton(page.expandedTree, /Voltar para automações/i);
     await page.settle();
 
+    expect(hasText(page.expandedTree, "Fluxos")).toBe(true);
     expect(findButtonByName(page.expandedTree, /Boas-vindas/i)).not.toBeNull();
     expect(hasText(page.expandedTree, "Gatilho do canvas")).toBe(false);
 
@@ -373,6 +374,40 @@ describe("AutomationsPage navigation", () => {
           (element.props as { value?: unknown }).value === "Boas-vindas local"
       )
     ).not.toBeNull();
+  });
+
+  it("uses flow status copy in the editor instead of standalone enable language", async () => {
+    const enabledAutomation = {
+      ...baseAutomation,
+      id: "automation-2",
+      name: "Mover para vendas",
+      status: "enabled"
+    } satisfies AutomationRuleDto;
+    const page = await renderAutomationsPageContainer({
+      automations: [baseAutomation, enabledAutomation]
+    });
+
+    clickButton(page.expandedTree, /Boas-vindas/i);
+    await page.settle();
+
+    expect(hasText(page.expandedTree, "Fluxo pausado")).toBe(true);
+    expect(hasText(page.expandedTree, "Habilitar")).toBe(false);
+
+    clickButton(page.expandedTree, /Voltar para automações/i);
+    await page.settle();
+    clickButton(page.expandedTree, /Mover para vendas/i);
+    await page.settle();
+
+    expect(hasText(page.expandedTree, "Fluxo ativo")).toBe(true);
+    expect(hasText(page.expandedTree, "Desabilitar")).toBe(false);
+
+    clickButton(page.expandedTree, /Voltar para automações/i);
+    await page.settle();
+    await clickButton(page.expandedTree, /Criar fluxo/i);
+    await page.settle();
+
+    expect(hasText(page.expandedTree, "Rascunho")).toBe(true);
+    expect(hasText(page.expandedTree, "Habilitar")).toBe(false);
   });
 });
 
