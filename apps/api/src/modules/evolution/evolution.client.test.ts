@@ -195,7 +195,7 @@ describe("Evolution client", () => {
     expect(result.providerMessageId).toBe("provider_msg_1");
   });
 
-  it("sends a media message with the expected provider payload", async () => {
+  it("sends a media message with raw base64 in the provider payload", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       createJsonResponse({ key: { id: "provider_media_1" } })
     );
@@ -224,7 +224,7 @@ describe("Evolution client", () => {
       mediatype: "image",
       mimetype: "image/png",
       caption: "Oi",
-      media: "data:image/png;base64,aW1n",
+      media: "aW1n",
       fileName: "foto.png"
     });
     expect(result.providerMessageId).toBe("provider_media_1");

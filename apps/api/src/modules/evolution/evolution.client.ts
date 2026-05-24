@@ -229,6 +229,13 @@ function setWebhookPayload(webhookUrl: string, webhookSecret: string) {
   };
 }
 
+function normalizeMediaPayload(media: string) {
+  const trimmedMedia = media.trim();
+  const base64Match = /^data:[^,]+;base64,(.+)$/i.exec(trimmedMedia);
+
+  return base64Match?.[1] ?? trimmedMedia;
+}
+
 async function parseResponseBody(response: Response) {
   const text = await response.text();
   if (text.trim() === "") {
@@ -333,7 +340,7 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
         mediatype: input.mediatype,
         mimetype: input.mimetype,
         caption: input.caption ?? "",
-        media: input.media,
+        media: normalizeMediaPayload(input.media),
         fileName: input.fileName
       });
 
