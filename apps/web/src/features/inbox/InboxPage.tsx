@@ -1112,82 +1112,7 @@ export function InboxPage() {
           </div>
         )}
 
-        <form
-          aria-busy={isSending}
-          className="composer"
-          aria-label="Compositor de mensagem"
-          onSubmit={handleSendMessage}
-        >
-          <div className="composer-toolbar" aria-label="Ferramentas de formatação">
-            <button
-              type="button"
-              className="composer-tool"
-              aria-label="Negrito"
-              disabled={!selectedConversation}
-              onClick={() => applyDraftMarker("*")}
-            >
-              <strong>B</strong>
-            </button>
-            <button
-              type="button"
-              className="composer-tool"
-              aria-label="Itálico"
-              disabled={!selectedConversation}
-              onClick={() => applyDraftMarker("_")}
-            >
-              <em>I</em>
-            </button>
-            <span className="composer-tool-divider" aria-hidden="true" />
-            <button
-              type="button"
-              className="composer-tool"
-              aria-label="Emoji"
-              disabled={!selectedConversation}
-              onClick={() => setShowEmojiPicker((current) => !current)}
-            >
-              😊
-            </button>
-            <button
-              type="button"
-              className="composer-tool"
-              aria-label="Anexo"
-              disabled={!selectedConversation}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              📎
-            </button>
-            <input
-              className="composer-file-input"
-              onChange={handleFileSelected}
-              ref={fileInputRef}
-              type="file"
-            />
-            <span className="composer-tool-spacer" aria-hidden="true" />
-            <button
-              type="button"
-              className="composer-quick-replies"
-              disabled={!selectedConversation}
-              onClick={() => setShowQuickReplies((current) => !current)}
-            >
-              Mensagens padrão
-            </button>
-          </div>
-          {showEmojiPicker ? (
-            <div className="composer-emoji-picker" aria-label="Emojis">
-              {composerEmojis.map((emoji) => (
-                <button
-                  key={emoji}
-                  type="button"
-                  onClick={() => {
-                    insertDraftText(emoji);
-                    setShowEmojiPicker(false);
-                  }}
-                >
-                  {emoji}
-                </button>
-              ))}
-            </div>
-          ) : null}
+        <div className="composer-shell">
           {showQuickReplies ? (
             <QuickRepliesPopover
               replies={quickReplies}
@@ -1211,37 +1136,114 @@ export function InboxPage() {
               }}
             />
           ) : null}
-          <div className="composer-input-row">
-            <textarea
-              aria-label="Mensagem"
-              className="composer-textarea"
-              disabled={!selectedConversation}
-              onChange={(event) => {
-                setDraft(event.target.value);
-                resizeDraftTextArea();
-              }}
-              onInput={resizeDraftTextArea}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
-              placeholder="Escreva uma mensagem..."
-              ref={draftTextAreaRef}
-              rows={1}
-              value={draft}
-            />
-            <button
-              className="composer-send"
-              disabled={!selectedConversation || !draft.trim()}
-              type="submit"
-              aria-label="Enviar mensagem"
-            >
-              →
-            </button>
-          </div>
-        </form>
+          <form
+            aria-busy={isSending}
+            className="composer"
+            aria-label="Compositor de mensagem"
+            onSubmit={handleSendMessage}
+          >
+            <div className="composer-toolbar" aria-label="Ferramentas de formatação">
+              <button
+                type="button"
+                className="composer-tool"
+                aria-label="Negrito"
+                disabled={!selectedConversation}
+                onClick={() => applyDraftMarker("*")}
+              >
+                <strong>B</strong>
+              </button>
+              <button
+                type="button"
+                className="composer-tool"
+                aria-label="Itálico"
+                disabled={!selectedConversation}
+                onClick={() => applyDraftMarker("_")}
+              >
+                <em>I</em>
+              </button>
+              <span className="composer-tool-divider" aria-hidden="true" />
+              <button
+                type="button"
+                className="composer-tool"
+                aria-label="Emoji"
+                disabled={!selectedConversation}
+                onClick={() => setShowEmojiPicker((current) => !current)}
+              >
+                😊
+              </button>
+              <button
+                type="button"
+                className="composer-tool"
+                aria-label="Anexo"
+                disabled={!selectedConversation}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                📎
+              </button>
+              <input
+                className="composer-file-input"
+                onChange={handleFileSelected}
+                ref={fileInputRef}
+                type="file"
+              />
+              <span className="composer-tool-spacer" aria-hidden="true" />
+              <button
+                type="button"
+                className="composer-quick-replies"
+                disabled={!selectedConversation}
+                onClick={() => setShowQuickReplies((current) => !current)}
+              >
+                Mensagens padrão
+              </button>
+            </div>
+            {showEmojiPicker ? (
+              <div className="composer-emoji-picker" aria-label="Emojis">
+                {composerEmojis.map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => {
+                      insertDraftText(emoji);
+                      setShowEmojiPicker(false);
+                    }}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <div className="composer-input-row">
+              <textarea
+                aria-label="Mensagem"
+                className="composer-textarea"
+                disabled={!selectedConversation}
+                onChange={(event) => {
+                  setDraft(event.target.value);
+                  resizeDraftTextArea();
+                }}
+                onInput={resizeDraftTextArea}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                placeholder="Escreva uma mensagem..."
+                ref={draftTextAreaRef}
+                rows={1}
+                value={draft}
+              />
+              <button
+                className="composer-send"
+                disabled={!selectedConversation || !draft.trim()}
+                type="submit"
+                aria-label="Enviar mensagem"
+              >
+                →
+              </button>
+            </div>
+          </form>
+        </div>
       </section>
 
       <aside className="contact-panel" aria-label="Detalhes do contato">

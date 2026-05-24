@@ -2995,13 +2995,16 @@ select:disabled {
   cursor: pointer;
 }
 
-.composer {
+.composer-shell {
   position: relative;
+  flex-shrink: 0;
+}
+
+.composer {
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--color-border-subtle);
   background: var(--color-surface-card);
-  flex-shrink: 0;
 }
 
 .composer-toolbar {
