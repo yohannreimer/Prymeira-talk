@@ -1,3 +1,9 @@
+import {
+  automationFlowSchema,
+  getAutomationBlock,
+  validateAutomationFlowForStatus
+} from "@prymeira-talk/shared";
+
 type DateLike = Date | string;
 
 type AutomationStatus = "enabled" | "disabled";
@@ -33,7 +39,7 @@ export interface AutomationRuleDto {
   status: AutomationStatus;
   trigger: string;
   conditions: unknown;
-  actions: unknown[];
+  actions: unknown;
   createdAt: string;
   updatedAt: string;
 }
@@ -66,7 +72,7 @@ export interface PrismaLike {
         status: AutomationStatus;
         trigger: string;
         conditions: unknown;
-        actions: unknown[];
+        actions: unknown;
       };
     }): Promise<AutomationRuleRecord>;
     update(args: {
@@ -76,7 +82,7 @@ export interface PrismaLike {
         status: AutomationStatus;
         trigger: string;
         conditions: unknown;
-        actions: unknown[];
+        actions: unknown;
       }>;
     }): Promise<AutomationRuleRecord>;
   };
@@ -113,7 +119,7 @@ export interface PrismaLike {
 
 export class AutomationsServiceError extends Error {
   constructor(
-    public code: "AUTOMATION_NOT_FOUND",
+    public code: "AUTOMATION_NOT_FOUND" | "AUTOMATION_INVALID_FLOW",
     message: string
   ) {
     super(message);
@@ -128,6 +134,24 @@ function normalizeActions(actions: unknown): unknown[] {
   return Array.isArray(actions) ? actions : [];
 }
 
+function parseFlow(actions: unknown) {
+  const parsed = automationFlowSchema.safeParse(actions);
+  return parsed.success ? parsed.data : null;
+}
+
+function assertValidFlow(actions: unknown, status: AutomationStatus) {
+  const flow = parseFlow(actions);
+  if (!flow) return;
+
+  const validation = validateAutomationFlowForStatus(flow, status);
+  if (!validation.success) {
+    throw new AutomationsServiceError(
+      "AUTOMATION_INVALID_FLOW",
+      validation.errors.join(" ")
+    );
+  }
+}
+
 function toRuleDto(record: AutomationRuleRecord): AutomationRuleDto {
   return {
     id: record.id,
@@ -136,7 +160,7 @@ function toRuleDto(record: AutomationRuleRecord): AutomationRuleDto {
     status: record.status,
     trigger: record.trigger,
     conditions: record.conditions,
-    actions: normalizeActions(record.actions),
+    actions: record.actions,
     createdAt: toIsoString(record.createdAt),
     updatedAt: toIsoString(record.updatedAt)
   };
@@ -173,6 +197,21 @@ function buildLocalActionResults(rule: AutomationRuleRecord) {
     status: "completed",
     mode: "simulated",
     message: "Local runner simulated this action."
+  }));
+}
+
+function buildGraphActionResults(rule: AutomationRuleRecord) {
+  const flow = parseFlow(rule.actions);
+  if (!flow) {
+    return buildLocalActionResults(rule);
+  }
+
+  return flow.nodes.map((node) => ({
+    nodeId: node.id,
+    type: node.type,
+    label: getAutomationBlock(node.type)?.label ?? node.type,
+    status: "completed",
+    mode: "simulated"
   }));
 }
 
@@ -214,8 +253,10 @@ export function createAutomationsService(prisma: PrismaLike) {
       status?: AutomationStatus;
       trigger: string;
       conditions?: unknown;
-      actions?: unknown[];
+      actions?: unknown;
     }): Promise<AutomationRuleDto> {
+      assertValidFlow(input.actions, input.status ?? "disabled");
+
       const rule = await prisma.automationRule.create({
         data: {
           workspaceId: input.workspaceId,
@@ -238,10 +279,12 @@ export function createAutomationsService(prisma: PrismaLike) {
         status: AutomationStatus;
         trigger: string;
         conditions: unknown;
-        actions: unknown[];
+        actions: unknown;
       }>;
     }): Promise<AutomationRuleDto> {
-      await findRuleForWorkspace(input);
+      const currentRule = await findRuleForWorkspace(input);
+      const nextStatus = input.data.status ?? currentRule.status;
+      assertValidFlow(input.data.actions ?? currentRule.actions, nextStatus);
 
       const rule = await prisma.automationRule.update({
         where: {
@@ -269,10 +312,11 @@ export function createAutomationsService(prisma: PrismaLike) {
         source: "manual_test",
         trigger: rule.trigger
       };
+      const flow = parseFlow(rule.actions);
       const result = {
         mode: "simulated",
-        runner: "local",
-        actionResults: buildLocalActionResults(rule)
+        runner: flow ? "graph" : "local",
+        actionResults: buildGraphActionResults(rule)
       };
 
       const run = await prisma.automationRun.upsert({

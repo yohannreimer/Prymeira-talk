@@ -18,12 +18,17 @@ const actionSchema = z
   })
   .passthrough();
 
+const actionsSchema = z.union([
+  z.array(actionSchema),
+  z.record(z.string(), z.unknown())
+]);
+
 const createAutomationBodySchema = z.object({
   name: z.string().trim().min(1).max(160),
   status: z.enum(["enabled", "disabled"]).optional(),
   trigger: z.string().trim().min(1).max(120),
   conditions: z.record(z.string(), z.unknown()).optional(),
-  actions: z.array(actionSchema).optional()
+  actions: actionsSchema.optional()
 });
 
 const updateAutomationBodySchema = createAutomationBodySchema.partial().refine(
@@ -49,6 +54,10 @@ function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
 
 function handleAutomationsError(reply: FastifyReply, error: unknown) {
   if (error instanceof AutomationsServiceError) {
+    if (error.code === "AUTOMATION_INVALID_FLOW") {
+      return reply.code(400).send({ code: error.code, error: error.message });
+    }
+
     return reply.code(404).send({ code: error.code, error: error.message });
   }
 

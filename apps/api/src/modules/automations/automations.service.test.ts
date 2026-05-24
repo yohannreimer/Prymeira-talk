@@ -174,6 +174,107 @@ describe("automations service", () => {
     ).rejects.toMatchObject({ code: "AUTOMATION_NOT_FOUND" });
     expect(prisma.automationRun.upsert).not.toHaveBeenCalled();
   });
+
+  it("rejects enabling an automation with a coming soon flow block", async () => {
+    const prisma = createMockPrisma({
+      automationRule: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue(baseRule),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue(baseRule)
+      }
+    });
+    const service = createAutomationsService(prisma);
+
+    await expect(
+      service.updateAutomation({
+        workspaceId: "workspace_a",
+        automationId,
+        data: {
+          status: "enabled",
+          actions: {
+            version: 1,
+            nodes: [
+              {
+                id: "trigger-1",
+                type: "trigger_first_message",
+                position: { x: 0, y: 0 },
+                data: { title: "Primeira mensagem", config: {} }
+              },
+              {
+                id: "ai-1",
+                type: "ai_classify_message",
+                position: { x: 240, y: 0 },
+                data: { title: "Classificar", config: {} }
+              }
+            ],
+            edges: [{ id: "edge-1", source: "trigger-1", target: "ai-1" }]
+          }
+        }
+      })
+    ).rejects.toMatchObject({ code: "AUTOMATION_INVALID_FLOW" });
+  });
+
+  it("simulates graph nodes in manual test runs", async () => {
+    const rule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          {
+            id: "trigger-1",
+            type: "trigger_first_message",
+            position: { x: 0, y: 0 },
+            data: { title: "Primeira mensagem", config: {} }
+          },
+          {
+            id: "message-1",
+            type: "send_message",
+            position: { x: 260, y: 0 },
+            data: { title: "Enviar mensagem", config: { text: "Ola!" } }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "trigger-1", target: "message-1" }]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue(rule),
+        create: vi.fn(),
+        update: vi.fn()
+      },
+      automationRun: {
+        findMany: vi.fn(),
+        upsert: vi.fn().mockImplementation(async (args) => ({
+          id: "run-1",
+          workspaceId: "workspace_a",
+          ruleId: automationId,
+          eventKey: args.create.eventKey,
+          status: args.create.status,
+          input: args.create.input,
+          result: args.create.result,
+          createdAt: new Date("2026-05-24T12:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T12:00:00.000Z")
+        }))
+      }
+    });
+    const service = createAutomationsService(prisma);
+
+    const run = await service.testAutomation({
+      workspaceId: "workspace_a",
+      automationId
+    });
+
+    expect(run.result).toMatchObject({
+      mode: "simulated",
+      runner: "graph",
+      actionResults: [
+        { nodeId: "trigger-1", type: "trigger_first_message", status: "completed" },
+        { nodeId: "message-1", type: "send_message", status: "completed" }
+      ]
+    });
+  });
 });
 
 describe("automations routes", () => {
