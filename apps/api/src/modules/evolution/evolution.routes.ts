@@ -84,6 +84,134 @@ function readStringPath(data: unknown, path: string[]) {
   return typeof current === "string" && current.length > 0 ? current : null;
 }
 
+function readFirstStringPath(data: unknown, paths: string[][]) {
+  for (const path of paths) {
+    const value = readStringPath(data, path);
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function normalizeMediaUrl(value: string | null) {
+  if (!value) return null;
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "data:"
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractMessageContent(message: unknown): {
+  type: MessageDto["type"];
+  body: string | null;
+  mediaUrl: string | null;
+  preview: string | null;
+} {
+  const text = readFirstStringPath(message, [
+    ["conversation"],
+    ["extendedTextMessage", "text"]
+  ]);
+
+  if (text) {
+    return {
+      type: "text",
+      body: text,
+      mediaUrl: null,
+      preview: text
+    };
+  }
+
+  const imageUrl = normalizeMediaUrl(
+    readFirstStringPath(message, [
+      ["imageMessage", "url"],
+      ["imageMessage", "mediaUrl"]
+    ])
+  );
+  if (readStringPath(message, ["imageMessage", "mimetype"]) || imageUrl) {
+    const caption = readStringPath(message, ["imageMessage", "caption"]);
+    const body = caption ?? "Imagem recebida";
+
+    return {
+      type: "image",
+      body,
+      mediaUrl: imageUrl,
+      preview: body
+    };
+  }
+
+  const stickerUrl = normalizeMediaUrl(
+    readFirstStringPath(message, [
+      ["stickerMessage", "url"],
+      ["stickerMessage", "mediaUrl"]
+    ])
+  );
+  if (readStringPath(message, ["stickerMessage", "mimetype"]) || stickerUrl) {
+    return {
+      type: "image",
+      body: "Figurinha recebida",
+      mediaUrl: stickerUrl,
+      preview: "Figurinha recebida"
+    };
+  }
+
+  const audioUrl = normalizeMediaUrl(
+    readFirstStringPath(message, [
+      ["audioMessage", "url"],
+      ["audioMessage", "mediaUrl"]
+    ])
+  );
+  if (readStringPath(message, ["audioMessage", "mimetype"]) || audioUrl) {
+    return {
+      type: "audio",
+      body: "Audio recebido",
+      mediaUrl: audioUrl,
+      preview: "Audio recebido"
+    };
+  }
+
+  const documentUrl = normalizeMediaUrl(
+    readFirstStringPath(message, [
+      ["documentMessage", "url"],
+      ["documentMessage", "mediaUrl"],
+      ["videoMessage", "url"],
+      ["videoMessage", "mediaUrl"]
+    ])
+  );
+  if (
+    readStringPath(message, ["documentMessage", "mimetype"]) ||
+    readStringPath(message, ["videoMessage", "mimetype"]) ||
+    documentUrl
+  ) {
+    const body =
+      readStringPath(message, ["documentMessage", "fileName"]) ??
+      readStringPath(message, ["documentMessage", "caption"]) ??
+      readStringPath(message, ["videoMessage", "caption"]) ??
+      "Arquivo recebido";
+
+    return {
+      type: "file",
+      body,
+      mediaUrl: documentUrl,
+      preview: body
+    };
+  }
+
+  return {
+    type: "text",
+    body: null,
+    mediaUrl: null,
+    preview: "Mensagem recebida"
+  };
+}
+
 function extractPushName(data: unknown) {
   const candidates = [
     readStringPath(data, ["pushName"]),
@@ -307,7 +435,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
     const payload = body.data;
     const phone = extractPhone(payload.data.key.remoteJid);
     const pushName = payload.data.key.fromMe ? null : extractPushName(request.body);
-    const messageBody = payload.data.message?.conversation ?? null;
+    const messageContent = extractMessageContent(payload.data.message);
     const receivedAt =
       typeof payload.data.messageTimestamp === "number"
         ? new Date(payload.data.messageTimestamp * 1000)
@@ -380,8 +508,9 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             providerMessageId: payload.data.key.id,
             providerEventId: `${payload.event}:${payload.instance}:${payload.data.key.id}`,
             direction: payload.data.key.fromMe ? "outbound" : "inbound",
-            type: "text",
-            body: messageBody,
+            type: messageContent.type,
+            body: messageContent.body,
+            mediaUrl: messageContent.mediaUrl,
             status: payload.data.key.fromMe ? "sent" : "delivered",
             createdAt: receivedAt
           }
@@ -409,7 +538,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           },
           data: {
             lastMessageAt: receivedAt,
-            lastMessagePreview: messageBody
+            lastMessagePreview: messageContent.preview
           }
         });
 

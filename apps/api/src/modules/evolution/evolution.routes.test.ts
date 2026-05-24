@@ -583,6 +583,129 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it("stores Evolution image messages with media type and readable preview", async () => {
+    const prisma = createMockPrisma();
+    const { app } = await buildEvolutionApp(prisma);
+    const imagePayload = {
+      ...validWebhookBody,
+      data: {
+        ...validWebhookBody.data,
+        key: {
+          ...validWebhookBody.data.key,
+          id: "provider_image_1"
+        },
+        message: {
+          imageMessage: {
+            caption: "Comprovante",
+            mimetype: "image/jpeg",
+            url: "https://media.example.com/image.jpg"
+          }
+        }
+      }
+    };
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: imagePayload
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          providerMessageId: "provider_image_1",
+          type: "image",
+          body: "Comprovante",
+          mediaUrl: "https://media.example.com/image.jpg"
+        })
+      });
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            lastMessagePreview: "Comprovante"
+          })
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("stores Evolution audio and sticker messages with non-empty previews", async () => {
+    const prisma = createMockPrisma();
+    const { app } = await buildEvolutionApp(prisma);
+    const audioPayload = {
+      ...validWebhookBody,
+      data: {
+        ...validWebhookBody.data,
+        key: {
+          ...validWebhookBody.data.key,
+          id: "provider_audio_1"
+        },
+        message: {
+          audioMessage: {
+            mimetype: "audio/ogg",
+            url: "https://media.example.com/audio.ogg"
+          }
+        }
+      }
+    };
+    const stickerPayload = {
+      ...validWebhookBody,
+      data: {
+        ...validWebhookBody.data,
+        key: {
+          ...validWebhookBody.data.key,
+          id: "provider_sticker_1"
+        },
+        message: {
+          stickerMessage: {
+            mimetype: "image/webp",
+            url: "https://media.example.com/sticker.webp"
+          }
+        }
+      }
+    };
+
+    try {
+      const audioResponse = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: audioPayload
+      });
+      const stickerResponse = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: stickerPayload
+      });
+
+      expect(audioResponse.statusCode).toBe(200);
+      expect(stickerResponse.statusCode).toBe(200);
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          providerMessageId: "provider_audio_1",
+          type: "audio",
+          body: "Audio recebido",
+          mediaUrl: "https://media.example.com/audio.ogg"
+        })
+      });
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          providerMessageId: "provider_sticker_1",
+          type: "image",
+          body: "Figurinha recebida",
+          mediaUrl: "https://media.example.com/sticker.webp"
+        })
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("increments unread without regressing preview when an older inbound message arrives", async () => {
     const currentLastMessageAt = new Date("2026-05-21T12:00:00.000Z");
     const incomingMessageAt = new Date(validWebhookBody.data.messageTimestamp * 1000);

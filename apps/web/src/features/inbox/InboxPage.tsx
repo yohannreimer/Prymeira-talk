@@ -78,6 +78,34 @@ function upsertConversation(list: ConversationDto[], conversation: ConversationD
   return [conversation, ...withoutUpdated];
 }
 
+export function messageDisplayText(message: Pick<MessageDto, "body" | "type">) {
+  if (message.body?.trim()) {
+    return message.body;
+  }
+
+  const labels: Record<MessageDto["type"], string> = {
+    text: "Mensagem sem texto.",
+    image: "Imagem recebida",
+    audio: "Audio recebido",
+    file: "Arquivo recebido",
+    template: "Template recebido",
+    system: "Evento do sistema",
+    internal_note: "Nota interna"
+  };
+
+  return labels[message.type];
+}
+
+export function messageMediaLabel(message: Pick<MessageDto, "type">) {
+  const labels: Partial<Record<MessageDto["type"], string>> = {
+    image: "Abrir imagem",
+    audio: "Abrir audio",
+    file: "Abrir arquivo"
+  };
+
+  return labels[message.type] ?? "Abrir midia";
+}
+
 export function InboxPage() {
   const { getToken } = useTalkAuth();
   const [token, setToken] = useState<string | null>(null);
@@ -101,7 +129,11 @@ export function InboxPage() {
   const [crmStatus, setCrmStatus] = useState<string | null>(null);
   const selectedConversationIdRef = useRef<string | null>(null);
   const conversationsRef = useRef<ConversationDto[]>([]);
-  const tokenRef = useRef<string | null>(null);
+  const getFreshToken = useCallback(async () => {
+    const nextToken = await getToken();
+    setToken(nextToken);
+    return nextToken;
+  }, [getToken]);
 
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
@@ -112,8 +144,30 @@ export function InboxPage() {
   }, [conversations]);
 
   useEffect(() => {
-    tokenRef.current = token;
-  }, [token]);
+    let isMounted = true;
+
+    const refreshToken = () => {
+      void getToken()
+        .then((nextToken) => {
+          if (isMounted) {
+            setToken(nextToken);
+          }
+        })
+        .catch(() => {
+          if (isMounted) {
+            setToken(null);
+          }
+        });
+    };
+
+    refreshToken();
+    const interval = window.setInterval(refreshToken, 45_000);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(interval);
+    };
+  }, [getToken]);
 
   useEffect(() => {
     let isMounted = true;
@@ -123,12 +177,10 @@ export function InboxPage() {
       setError(null);
 
       try {
-        const authToken = await getToken();
-        const nextConversations = await apiGetConversations(async () => authToken);
+        const nextConversations = await apiGetConversations(getFreshToken);
 
         if (!isMounted) return;
 
-        setToken(authToken);
         setConversations(nextConversations);
         const requestedConversationId = readConversationIdFromUrl();
         setSelectedConversationId((current) =>
@@ -153,13 +205,13 @@ export function InboxPage() {
     return () => {
       isMounted = false;
     };
-  }, [getToken]);
+  }, [getFreshToken]);
 
   useEffect(() => {
     let isMounted = true;
 
     async function loadMessages() {
-      if (!selectedConversationId || !token) {
+      if (!selectedConversationId) {
         setMessages([]);
         return;
       }
@@ -168,7 +220,7 @@ export function InboxPage() {
       setMessageError(null);
 
       try {
-        const nextMessages = await apiGetConversationMessages(selectedConversationId, async () => token);
+        const nextMessages = await apiGetConversationMessages(selectedConversationId, getFreshToken);
 
         if (!isMounted) return;
 
@@ -188,13 +240,13 @@ export function InboxPage() {
     return () => {
       isMounted = false;
     };
-  }, [selectedConversationId, token]);
+  }, [getFreshToken, selectedConversationId]);
 
   useEffect(() => {
     let isMounted = true;
 
     async function loadContext() {
-      if (!selectedConversationId || !token) {
+      if (!selectedConversationId) {
         setContactContext(null);
         return;
       }
@@ -205,7 +257,7 @@ export function InboxPage() {
       setCrmStatus(null);
 
       try {
-        const nextContext = await apiGetConversationContext(selectedConversationId, async () => token);
+        const nextContext = await apiGetConversationContext(selectedConversationId, getFreshToken);
 
         if (!isMounted) return;
 
@@ -225,17 +277,17 @@ export function InboxPage() {
     return () => {
       isMounted = false;
     };
-  }, [selectedConversationId, token]);
+  }, [getFreshToken, selectedConversationId]);
 
   const refreshSelectedContext = useCallback((targetConversationId: string) => {
-    void apiGetConversationContext(targetConversationId, async () => tokenRef.current)
+    void apiGetConversationContext(targetConversationId, getFreshToken)
       .then((nextContext) => {
         if (selectedConversationIdRef.current === targetConversationId) {
           setContactContext(nextContext);
         }
       })
       .catch(() => undefined);
-  }, []);
+  }, [getFreshToken]);
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "message.created") {
@@ -325,18 +377,18 @@ export function InboxPage() {
   );
 
   useEffect(() => {
-    if (!selectedConversation || !token || selectedConversation.unreadCount === 0) return;
+    if (!selectedConversation || selectedConversation.unreadCount === 0) return;
 
     const targetConversationId = selectedConversation.id;
 
-    void apiMarkConversationRead(async () => token, targetConversationId)
+    void apiMarkConversationRead(getFreshToken, targetConversationId)
       .then((conversation) => {
         setConversations((current) =>
           current.map((item) => (item.id === conversation.id ? conversation : item))
         );
       })
       .catch(() => undefined);
-  }, [selectedConversation, token]);
+  }, [getFreshToken, selectedConversation]);
 
   const openCount = conversations.filter((conversation) => conversation.status === "open").length;
   const unreadCount = conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
@@ -344,7 +396,7 @@ export function InboxPage() {
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!selectedConversationId || !token || !draft.trim()) return;
+    if (!selectedConversationId || !draft.trim()) return;
 
     const targetConversationId = selectedConversationId;
     const messageBody = draft.trim();
@@ -355,7 +407,7 @@ export function InboxPage() {
       const createdMessage = await apiCreateConversationMessage(
         targetConversationId,
         messageBody,
-        async () => token
+        getFreshToken
       );
 
       setMessages((current) => {
@@ -392,14 +444,14 @@ export function InboxPage() {
   }
 
   async function runAction(body: ConversationActionBody) {
-    if (!selectedConversationId || !token) return null;
+    if (!selectedConversationId) return null;
 
     const targetConversationId = selectedConversationId;
     setIsRunningAction(true);
     setContextError(null);
 
     try {
-      const result = await apiRunConversationAction(targetConversationId, body, async () => token);
+      const result = await apiRunConversationAction(targetConversationId, body, getFreshToken);
       applyActionResult(result, targetConversationId);
       return result;
     } catch (actionError) {
@@ -580,7 +632,18 @@ export function InboxPage() {
                   </span>
                 ) : null}
                 <div className="msg-bubble-body">
-                  <p>{message.body ?? "Mensagem sem texto."}</p>
+                  <p>{messageDisplayText(message)}</p>
+                  {message.mediaUrl ? (
+                    <a
+                      className="message-media-link"
+                      href={message.mediaUrl}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      <Link2 size={13} aria-hidden="true" />
+                      {messageMediaLabel(message)}
+                    </a>
+                  ) : null}
                   <time>{formatMessageTime(message.createdAt)}</time>
                 </div>
               </article>

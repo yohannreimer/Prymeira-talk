@@ -2891,6 +2891,25 @@ select:disabled {
   color: var(--color-surface-card);
 }
 
+.message-media-link {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 5px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.message-bubble.is-inbound .message-media-link {
+  color: var(--color-brand-700);
+}
+
+.message-bubble.is-outbound .message-media-link {
+  color: rgba(255, 255, 255, 0.82);
+}
+
 .message-bubble time {
   font-size: 10px;
   align-self: flex-end;
