@@ -34,6 +34,13 @@ interface AutomationFormState {
   actionLabel: string;
 }
 
+interface AutomationSavePayload {
+  name: string;
+  trigger: string;
+  conditions: { summary: string };
+  actions: AutomationRuleDto["actions"];
+}
+
 const emptyForm: AutomationFormState = {
   name: "Boas-vindas local",
   trigger: "message.received",
@@ -97,6 +104,22 @@ function toFormState(automation: AutomationRuleDto): AutomationFormState {
     conditionSummary: conditionSummary(automation.conditions),
     actionType: firstAction?.type ?? "send_message",
     actionLabel: firstAction ? actionLabel(firstAction) : "Enviar saudacao em modo simulado"
+  };
+}
+
+export function buildAutomationSavePayload(
+  form: AutomationFormState,
+  selectedAutomation?: AutomationRuleDto | null
+): AutomationSavePayload {
+  const actions = Array.isArray(selectedAutomation?.actions)
+    ? [{ type: form.actionType, label: form.actionLabel }]
+    : selectedAutomation?.actions ?? [{ type: form.actionType, label: form.actionLabel }];
+
+  return {
+    name: form.name,
+    trigger: form.trigger,
+    conditions: { summary: form.conditionSummary },
+    actions
   };
 }
 
@@ -209,12 +232,7 @@ export function AutomationsPage() {
     setError(null);
     setNotice(null);
 
-    const payload = {
-      name: form.name,
-      trigger: form.trigger,
-      conditions: { summary: form.conditionSummary },
-      actions: [{ type: form.actionType, label: form.actionLabel }]
-    };
+    const payload = buildAutomationSavePayload(form, selectedAutomation);
 
     try {
       const savedAutomation = selectedAutomation

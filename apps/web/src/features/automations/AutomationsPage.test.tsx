@@ -2,10 +2,15 @@ import {
   apiCreateAutomation,
   apiGetAutomations,
   type AutomationActionsDto,
+  type AutomationRuleDto,
   type AutomationRunDto
 } from "../../app/api";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { defaultAutomationEventKey, mergeAutomationRun } from "./AutomationsPage";
+import {
+  buildAutomationSavePayload,
+  defaultAutomationEventKey,
+  mergeAutomationRun
+} from "./AutomationsPage";
 
 const baseRun: AutomationRunDto = {
   id: "run-1",
@@ -32,7 +37,7 @@ const graphActions = {
   edges: []
 } satisfies AutomationActionsDto;
 
-const baseAutomation = {
+const baseAutomation: AutomationRuleDto = {
   id: "automation-1",
   workspaceId: "workspace-1",
   name: "Boas-vindas",
@@ -63,6 +68,48 @@ describe("automation run helpers", () => {
     };
 
     expect(mergeAutomationRun([baseRun], updatedRun)).toEqual([updatedRun]);
+  });
+});
+
+describe("automation form helpers", () => {
+  it("builds legacy array actions when saving a legacy automation", () => {
+    expect(
+      buildAutomationSavePayload(
+        {
+          name: "Boas-vindas editada",
+          trigger: "message.received",
+          conditionSummary: "Condicao editada",
+          actionType: "add_tag",
+          actionLabel: "Adicionar tag"
+        },
+        {
+          ...baseAutomation,
+          actions: [{ type: "send_message", label: "Enviar mensagem" }]
+        }
+      )
+    ).toMatchObject({
+      actions: [{ type: "add_tag", label: "Adicionar tag" }]
+    });
+  });
+
+  it("preserves graph actions when saving an existing automation", () => {
+    expect(
+      buildAutomationSavePayload(
+        {
+          name: "Boas-vindas editada",
+          trigger: "message.received",
+          conditionSummary: "Condicao editada",
+          actionType: "send_message",
+          actionLabel: "Enviar saudacao em modo simulado"
+        },
+        baseAutomation
+      )
+    ).toMatchObject({
+      name: "Boas-vindas editada",
+      trigger: "message.received",
+      conditions: { summary: "Condicao editada" },
+      actions: graphActions
+    });
   });
 });
 
