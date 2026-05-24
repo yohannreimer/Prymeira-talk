@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ConversationDto, MessageDto, RealtimeEvent } from "@prymeira-talk/shared";
-import { Bot, Link2, MessageSquare, Send, StickyNote, UserCheck } from "lucide-react";
+import { Bot, Link2, MessageSquare, Send, StickyNote, UserCheck, X } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -8,6 +8,7 @@ import {
   apiGetConversationContext,
   apiGetConversationMessages,
   apiGetConversations,
+  apiMarkConversationRead,
   apiRunConversationAction,
   type ContactContextDto,
   type ConversationActionBody,
@@ -27,6 +28,13 @@ function formatTime(value: string | null) {
     hour: "2-digit",
     minute: "2-digit"
   }).format(new Date(value));
+}
+
+function readConversationIdFromUrl() {
+  if (typeof window === "undefined") return null;
+
+  const value = new URLSearchParams(window.location.search).get("conversation");
+  return value && value.trim().length > 0 ? value : null;
 }
 
 function formatMessageTime(value: string) {
@@ -85,6 +93,7 @@ export function InboxPage() {
   const [contextError, setContextError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
+  const [tagDraft, setTagDraft] = useState("");
   const [selectedChannelFilter, setSelectedChannelFilter] = useState("all");
   const [isSending, setIsSending] = useState(false);
   const [isRunningAction, setIsRunningAction] = useState(false);
@@ -121,7 +130,14 @@ export function InboxPage() {
 
         setToken(authToken);
         setConversations(nextConversations);
-        setSelectedConversationId((current) => current ?? nextConversations[0]?.id ?? null);
+        const requestedConversationId = readConversationIdFromUrl();
+        setSelectedConversationId((current) =>
+          current ??
+          (requestedConversationId &&
+          nextConversations.some((conversation) => conversation.id === requestedConversationId)
+            ? requestedConversationId
+            : nextConversations[0]?.id ?? null)
+        );
       } catch (loadError) {
         if (!isMounted) return;
         setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar conversas.");
@@ -308,6 +324,20 @@ export function InboxPage() {
     [visibleConversations, selectedConversationId]
   );
 
+  useEffect(() => {
+    if (!selectedConversation || !token || selectedConversation.unreadCount === 0) return;
+
+    const targetConversationId = selectedConversation.id;
+
+    void apiMarkConversationRead(async () => token, targetConversationId)
+      .then((conversation) => {
+        setConversations((current) =>
+          current.map((item) => (item.id === conversation.id ? conversation : item))
+        );
+      })
+      .catch(() => undefined);
+  }, [selectedConversation, token]);
+
   const openCount = conversations.filter((conversation) => conversation.status === "open").length;
   const unreadCount = conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
 
@@ -409,6 +439,21 @@ export function InboxPage() {
     if (result) {
       setNoteDraft("");
     }
+  }
+
+  async function handleAddTag(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!tagDraft.trim()) return;
+
+    const result = await runAction({ action: "add_tag", name: tagDraft.trim() });
+    if (result) {
+      setTagDraft("");
+    }
+  }
+
+  async function handleRemoveTag(tagId: string) {
+    await runAction({ action: "remove_tag", tagId });
   }
 
   return (
@@ -650,12 +695,35 @@ export function InboxPage() {
               contactContext.tags.map((tag) => (
                 <span key={tag.id} className="context-tag" style={{ borderColor: tag.color }}>
                   {tag.name}
+                  <button
+                    aria-label={`Remover tag ${tag.name}`}
+                    disabled={!selectedConversation || isRunningAction}
+                    onClick={() => void handleRemoveTag(tag.id)}
+                    type="button"
+                  >
+                    <X size={11} aria-hidden="true" />
+                  </button>
                 </span>
               ))
             ) : (
               <span className="context-empty-label">Sem tags</span>
             )}
           </div>
+          <form className="tag-add-form" onSubmit={handleAddTag}>
+            <input
+              aria-label="Nova tag"
+              disabled={!selectedConversation || isRunningAction}
+              onChange={(event) => setTagDraft(event.target.value)}
+              placeholder="Adicionar tag..."
+              value={tagDraft}
+            />
+            <button
+              disabled={!selectedConversation || !tagDraft.trim() || isRunningAction}
+              type="submit"
+            >
+              Adicionar
+            </button>
+          </form>
         </div>
 
         {/* Card notas */}

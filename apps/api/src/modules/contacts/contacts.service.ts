@@ -1,5 +1,13 @@
 import type { PrismaClient } from "@prisma/client";
-import type { ContactDto } from "@prymeira-talk/shared";
+import type { ContactDto, ConversationDto } from "@prymeira-talk/shared";
+import {
+  toConversationDto,
+  type ConversationRecord
+} from "../conversations/conversations.service.js";
+import {
+  buildPhoneLookupCandidates,
+  normalizePhoneForStorage
+} from "./phone-normalization.js";
 
 type DateLike = Date | string;
 
@@ -22,6 +30,9 @@ type ContactFindManyArgs = Parameters<PrismaClient["contact"]["findMany"]>[0];
 type ContactCreateArgs = Parameters<PrismaClient["contact"]["create"]>[0];
 type ContactUpdateArgs = Parameters<PrismaClient["contact"]["update"]>[0];
 type ContactFindUniqueArgs = Parameters<PrismaClient["contact"]["findUnique"]>[0];
+type ContactFindFirstArgs = Parameters<PrismaClient["contact"]["findFirst"]>[0];
+type ChannelFindFirstArgs = Parameters<PrismaClient["channel"]["findFirst"]>[0];
+type ConversationUpsertArgs = Parameters<PrismaClient["conversation"]["upsert"]>[0];
 
 export interface PrismaLike {
   contact: {
@@ -29,6 +40,13 @@ export interface PrismaLike {
     create(args: ContactCreateArgs): Promise<ContactRecord>;
     update(args: ContactUpdateArgs): Promise<ContactRecord>;
     findUnique(args: ContactFindUniqueArgs): Promise<{ id: string } | null>;
+    findFirst(args: ContactFindFirstArgs): Promise<ContactRecord | null>;
+  };
+  channel: {
+    findFirst(args: ChannelFindFirstArgs): Promise<{ id: string } | null>;
+  };
+  conversation: {
+    upsert(args: ConversationUpsertArgs): Promise<unknown>;
   };
 }
 
@@ -37,7 +55,7 @@ function toIsoString(value: DateLike) {
 }
 
 function normalizeRequired(value: string) {
-  return value.trim();
+  return normalizePhoneForStorage(value);
 }
 
 function normalizeOptional(value: string | undefined) {
@@ -69,6 +87,16 @@ export function toContactDto(record: ContactRecord): ContactDto {
 }
 
 export function createContactsService(prisma: PrismaLike) {
+  async function findContactByPhoneVariant(workspaceId: string, phone: string) {
+    return prisma.contact.findFirst({
+      where: {
+        workspaceId,
+        phone: { in: buildPhoneLookupCandidates(phone) }
+      },
+      orderBy: { updatedAt: "desc" }
+    });
+  }
+
   return {
     async listContacts(input: {
       workspaceId: string;
@@ -101,15 +129,29 @@ export function createContactsService(prisma: PrismaLike) {
       email?: string;
       company?: string;
     }): Promise<ContactDto> {
-      const contact = await prisma.contact.create({
-        data: {
-          workspaceId: input.workspaceId,
-          name: normalizeOptional(input.name) ?? null,
-          phone: normalizeRequired(input.phone),
-          email: normalizeOptional(input.email) ?? null,
-          company: normalizeOptional(input.company) ?? null
-        }
-      });
+      const data = {
+        name: normalizeOptional(input.name) ?? null,
+        phone: normalizeRequired(input.phone),
+        email: normalizeOptional(input.email) ?? null,
+        company: normalizeOptional(input.company) ?? null
+      };
+      const existingContact = await findContactByPhoneVariant(input.workspaceId, input.phone);
+      const contact = existingContact
+        ? await prisma.contact.update({
+            where: {
+              workspaceId_id: {
+                workspaceId: input.workspaceId,
+                id: existingContact.id
+              }
+            },
+            data
+          })
+        : await prisma.contact.create({
+            data: {
+              workspaceId: input.workspaceId,
+              ...data
+            }
+          });
 
       return toContactDto(contact);
     },
@@ -138,6 +180,67 @@ export function createContactsService(prisma: PrismaLike) {
       });
 
       return toContactDto(contact);
+    },
+
+    async startConversation(input: {
+      workspaceId: string;
+      contactId: string;
+      channelId: string;
+    }): Promise<ConversationDto> {
+      const [contact, channel] = await Promise.all([
+        prisma.contact.findUnique({
+          where: {
+            workspaceId_id: {
+              workspaceId: input.workspaceId,
+              id: input.contactId
+            }
+          },
+          select: { id: true }
+        }),
+        prisma.channel.findFirst({
+          where: {
+            workspaceId: input.workspaceId,
+            id: input.channelId,
+            provider: "evolution"
+          },
+          select: { id: true }
+        })
+      ]);
+
+      if (!contact) {
+        throw new Error("CONTACT_NOT_FOUND");
+      }
+
+      if (!channel) {
+        throw new Error("CHANNEL_NOT_FOUND");
+      }
+
+      const conversation = await prisma.conversation.upsert({
+        where: {
+          workspaceId_channelId_contactId: {
+            workspaceId: input.workspaceId,
+            channelId: input.channelId,
+            contactId: input.contactId
+          }
+        },
+        create: {
+          workspaceId: input.workspaceId,
+          channelId: input.channelId,
+          contactId: input.contactId,
+          status: "open"
+        },
+        update: {
+          status: "open"
+        },
+        include: {
+          assignedUser: { select: { displayName: true } },
+          channel: { select: { displayName: true, phoneNumber: true } },
+          contact: { select: { name: true, phone: true } },
+          department: { select: { name: true } }
+        }
+      });
+
+      return toConversationDto(conversation as ConversationRecord);
     }
   };
 }

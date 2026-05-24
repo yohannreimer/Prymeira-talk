@@ -45,6 +45,14 @@ const conversationActionBodySchema = z.discriminatedUnion("action", [
     stageId: z.string().uuid()
   }),
   z.object({
+    action: z.literal("add_tag"),
+    name: z.string().trim().min(1).max(80)
+  }),
+  z.object({
+    action: z.literal("remove_tag"),
+    tagId: z.string().uuid()
+  }),
+  z.object({
     action: z.literal("request_ai_suggestion")
   }),
   z.object({
@@ -136,6 +144,39 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     }
 
     return context;
+  });
+
+  app.post("/conversations/:conversationId/read", async (request, reply) => {
+    const params = createMessageParamsSchema.safeParse(request.params);
+
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid conversation read request." });
+    }
+
+    const conversation = await service.markConversationRead({
+      workspaceId: request.talk.workspaceId,
+      conversationId: params.data.conversationId
+    }).catch((error: unknown) => {
+      if (error instanceof ConversationNotFoundError) {
+        return null;
+      }
+
+      throw error;
+    });
+
+    if (!conversation) {
+      return reply
+        .code(404)
+        .send({ code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
+    }
+
+    app.realtime.publish({
+      type: "conversation.updated",
+      workspaceId: request.talk.workspaceId,
+      payload: conversation
+    });
+
+    return conversation;
   });
 
   app.post("/conversations/:conversationId/actions", async (request, reply) => {

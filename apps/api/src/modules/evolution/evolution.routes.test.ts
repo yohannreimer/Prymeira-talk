@@ -17,7 +17,11 @@ const validWebhookBody = {
 function createMockPrisma(overrides: {
   $transaction?: ReturnType<typeof vi.fn>;
   channel?: { findUnique?: ReturnType<typeof vi.fn>; update?: ReturnType<typeof vi.fn> };
-  contact?: { upsert?: ReturnType<typeof vi.fn>; updateMany?: ReturnType<typeof vi.fn> };
+  contact?: {
+    findFirst?: ReturnType<typeof vi.fn>;
+    create?: ReturnType<typeof vi.fn>;
+    updateMany?: ReturnType<typeof vi.fn>;
+  };
   conversation?: {
     findUnique?: ReturnType<typeof vi.fn>;
     upsert?: ReturnType<typeof vi.fn>;
@@ -59,12 +63,19 @@ function createMockPrisma(overrides: {
         })
     },
     contact: {
-      upsert:
-        overrides.contact?.upsert ??
+      findFirst:
+        overrides.contact?.findFirst ??
         vi.fn().mockResolvedValue({
           id: "contact_1",
           workspaceId: "workspace_a",
-          phone: "5511999999999"
+          phone: "551199999999"
+        }),
+      create:
+        overrides.contact?.create ??
+        vi.fn().mockResolvedValue({
+          id: "contact_1",
+          workspaceId: "workspace_a",
+          phone: "551199999999"
         }),
       updateMany: overrides.contact?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 })
     },
@@ -82,7 +93,11 @@ function createMockPrisma(overrides: {
           lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
           lastMessagePreview: "Oi",
           unreadCount: 1,
-          priority: "normal"
+          priority: "normal",
+          channel: { displayName: "Client One", phoneNumber: null },
+          contact: { name: null, phone: "551199999999" },
+          department: null,
+          assignedUser: null
         }),
       upsert:
         overrides.conversation?.upsert ??
@@ -212,7 +227,8 @@ describe("Evolution webhook routes", () => {
       expect(response.statusCode).toBe(401);
       expect(response.json()).toEqual({ ok: false, error: "invalid_webhook_secret" });
       expect(prisma.channel.findUnique).not.toHaveBeenCalled();
-      expect(prisma.contact.upsert).not.toHaveBeenCalled();
+      expect(prisma.contact.findFirst).not.toHaveBeenCalled();
+      expect(prisma.contact.create).not.toHaveBeenCalled();
       expect(prisma.conversation.upsert).not.toHaveBeenCalled();
       expect(prisma.message.create).not.toHaveBeenCalled();
       expect(prisma.$transaction).not.toHaveBeenCalled();
@@ -651,15 +667,16 @@ describe("Evolution webhook routes", () => {
   });
 
   it("uses top-level Evolution push names for contacts without a local name", async () => {
-    const contactUpsertMock = vi.fn().mockResolvedValue({
+    const contactCreateMock = vi.fn().mockResolvedValue({
       id: "contact_1",
       workspaceId: "workspace_a",
-      phone: "5547999990000",
+      phone: "554799990000",
       name: "Ana WhatsApp"
     });
     const prisma = createMockPrisma({
       contact: {
-        upsert: contactUpsertMock
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: contactCreateMock
       }
     });
     const { app } = await buildEvolutionApp(prisma);
@@ -682,19 +699,17 @@ describe("Evolution webhook routes", () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(contactUpsertMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          create: expect.objectContaining({
-            phone: "5547999990000",
-            name: "Ana WhatsApp"
-          }),
-          update: {}
-        })
-      );
+      expect(contactCreateMock).toHaveBeenCalledWith({
+        data: {
+          workspaceId: "workspace_a",
+          phone: "554799990000",
+          name: "Ana WhatsApp"
+        }
+      });
       expect(prisma.contact.updateMany).toHaveBeenCalledWith({
         where: {
           workspaceId: "workspace_a",
-          phone: "5547999990000",
+          phone: { in: ["554799990000", "5547999990000"] },
           name: null
         },
         data: { name: "Ana WhatsApp" }
@@ -705,15 +720,15 @@ describe("Evolution webhook routes", () => {
   });
 
   it("keeps an existing local contact name when Evolution sends a push name", async () => {
-    const contactUpsertMock = vi.fn().mockResolvedValue({
+    const contactFindFirstMock = vi.fn().mockResolvedValue({
       id: "contact_1",
       workspaceId: "workspace_a",
-      phone: "5547999990000",
+      phone: "554799990000",
       name: "Ana Local"
     });
     const prisma = createMockPrisma({
       contact: {
-        upsert: contactUpsertMock
+        findFirst: contactFindFirstMock
       }
     });
     const { app } = await buildEvolutionApp(prisma);
@@ -736,18 +751,17 @@ describe("Evolution webhook routes", () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(contactUpsertMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          create: expect.objectContaining({
-            name: "Ana WhatsApp"
-          }),
-          update: {}
-        })
-      );
+      expect(contactFindFirstMock).toHaveBeenCalledWith({
+        where: {
+          workspaceId: "workspace_a",
+          phone: { in: ["554799990000", "5547999990000"] }
+        },
+        orderBy: { updatedAt: "desc" }
+      });
       expect(prisma.contact.updateMany).toHaveBeenCalledWith({
         where: {
           workspaceId: "workspace_a",
-          phone: "5547999990000",
+          phone: { in: ["554799990000", "5547999990000"] },
           name: null
         },
         data: { name: "Ana WhatsApp" }
@@ -758,14 +772,15 @@ describe("Evolution webhook routes", () => {
   });
 
   it("does not use Evolution push names from outbound messages", async () => {
-    const contactUpsertMock = vi.fn().mockResolvedValue({
+    const contactCreateMock = vi.fn().mockResolvedValue({
       id: "contact_1",
       workspaceId: "workspace_a",
-      phone: "5547999990000"
+      phone: "554799990000"
     });
     const prisma = createMockPrisma({
       contact: {
-        upsert: contactUpsertMock
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: contactCreateMock
       }
     });
     const { app } = await buildEvolutionApp(prisma);
@@ -788,15 +803,12 @@ describe("Evolution webhook routes", () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(contactUpsertMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          create: {
-            workspaceId: "workspace_a",
-            phone: "5547999990000"
-          },
-          update: {}
-        })
-      );
+      expect(contactCreateMock).toHaveBeenCalledWith({
+        data: {
+          workspaceId: "workspace_a",
+          phone: "554799990000"
+        }
+      });
       expect(prisma.contact.updateMany).not.toHaveBeenCalled();
     } finally {
       await app.close();
@@ -816,10 +828,12 @@ describe("Evolution webhook routes", () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ ok: true });
-      expect(prisma.contact.upsert).toHaveBeenCalledWith({
-        where: { workspaceId_phone: { workspaceId: "workspace_a", phone: "5511999999999" } },
-        create: { workspaceId: "workspace_a", phone: "5511999999999" },
-        update: {}
+      expect(prisma.contact.findFirst).toHaveBeenCalledWith({
+        where: {
+          workspaceId: "workspace_a",
+          phone: { in: ["551199999999", "5511999999999"] }
+        },
+        orderBy: { updatedAt: "desc" }
       });
       const timestampDate = new Date(validWebhookBody.data.messageTimestamp * 1000);
       expect(prisma.conversation.upsert).toHaveBeenCalledWith({

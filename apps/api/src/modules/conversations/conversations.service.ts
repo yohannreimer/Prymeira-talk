@@ -48,7 +48,7 @@ export class OutboundMessageValidationError extends Error {
   }
 }
 
-interface ConversationRecord {
+export interface ConversationRecord {
   id: string;
   workspaceId: string;
   channelId: string;
@@ -80,6 +80,14 @@ interface ConversationRecord {
     tag: TagRecord;
   }>;
 }
+
+const conversationDtoInclude = {
+  assignedUser: { select: { displayName: true } },
+  channel: { select: { displayName: true, phoneNumber: true } },
+  contact: { select: { name: true, phone: true } },
+  department: { select: { name: true } },
+  tags: { include: { tag: true } }
+} as const;
 
 interface MessageRecord {
   id: string;
@@ -191,6 +199,8 @@ type ConversationAction =
   | { action: "change_department"; departmentId: string | null }
   | { action: "change_priority"; priority: ConversationDto["priority"] }
   | { action: "change_primary_board_stage"; stageId: string }
+  | { action: "add_tag"; name: string }
+  | { action: "remove_tag"; tagId: string }
   | { action: "request_ai_suggestion" }
   | { action: "create_crm_note" };
 
@@ -219,6 +229,9 @@ type BoardStageFindFirstArgs = Parameters<PrismaClient["contactBoardStage"]["fin
 type DepartmentFindManyArgs = Parameters<PrismaClient["department"]["findMany"]>[0];
 type DepartmentFindFirstArgs = Parameters<PrismaClient["department"]["findFirst"]>[0];
 type UserProfileFindFirstArgs = Parameters<PrismaClient["userProfile"]["findFirst"]>[0];
+type TagUpsertArgs = Parameters<PrismaClient["tag"]["upsert"]>[0];
+type ConversationTagUpsertArgs = Parameters<PrismaClient["conversationTag"]["upsert"]>[0];
+type ConversationTagDeleteManyArgs = Parameters<PrismaClient["conversationTag"]["deleteMany"]>[0];
 type AiActionLogCreateArgs = Parameters<PrismaClient["aiActionLog"]["create"]>[0];
 type CrmSyncActionCreateArgs = Parameters<PrismaClient["crmSyncAction"]["create"]>[0];
 
@@ -252,6 +265,13 @@ export interface PrismaLike {
   };
   userProfile: {
     findFirst(args: UserProfileFindFirstArgs): Promise<UserProfileRecord | null>;
+  };
+  tag: {
+    upsert(args: TagUpsertArgs): Promise<TagRecord>;
+  };
+  conversationTag: {
+    upsert(args: ConversationTagUpsertArgs): Promise<unknown>;
+    deleteMany(args: ConversationTagDeleteManyArgs): Promise<{ count: number }>;
   };
   aiActionLog: {
     create(args: AiActionLogCreateArgs): Promise<{ id: string; status: string }>;
@@ -468,12 +488,7 @@ export function createConversationsService(
     async listConversations(input: { workspaceId: string }): Promise<ConversationDto[]> {
       const conversations = await prisma.conversation.findMany({
         where: { workspaceId: input.workspaceId },
-        include: {
-          assignedUser: { select: { displayName: true } },
-          channel: { select: { displayName: true, phoneNumber: true } },
-          contact: { select: { name: true, phone: true } },
-          department: { select: { name: true } }
-        },
+        include: conversationDtoInclude,
         orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
         take: 50
       });
@@ -552,13 +567,38 @@ export function createConversationsService(
           lastMessageAt:
             message.createdAt instanceof Date ? message.createdAt : new Date(message.createdAt),
           lastMessagePreview: input.body
-        }
+        },
+        include: conversationDtoInclude
       });
 
       return {
         message: toMessageDto(message),
         conversation: toConversationDto(updatedConversation)
       };
+    },
+
+    async markConversationRead(input: {
+      workspaceId: string;
+      conversationId: string;
+    }): Promise<ConversationDto> {
+      const conversation = await prisma.conversation.update({
+        where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+        data: { unreadCount: 0 },
+        include: conversationDtoInclude
+      }).catch((error: unknown) => {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "P2025"
+        ) {
+          throw new ConversationNotFoundError();
+        }
+
+        throw error;
+      });
+
+      return toConversationDto(conversation);
     },
 
     async getContactContext(input: {
@@ -696,6 +736,50 @@ export function createConversationsService(
           });
         })) as BoardMembershipRecord;
         boardMembership = toBoardMembershipDto(updatedMembership);
+      }
+
+      if (input.action === "add_tag") {
+        const tagName = input.name.trim();
+        const tag = await prisma.tag.upsert({
+          where: {
+            workspaceId_name: {
+              workspaceId: input.workspaceId,
+              name: tagName
+            }
+          },
+          create: {
+            workspaceId: input.workspaceId,
+            name: tagName,
+            color: "#24564a"
+          },
+          update: {}
+        });
+
+        await prisma.conversationTag.upsert({
+          where: {
+            workspaceId_conversationId_tagId: {
+              workspaceId: input.workspaceId,
+              conversationId: input.conversationId,
+              tagId: tag.id
+            }
+          },
+          create: {
+            workspaceId: input.workspaceId,
+            conversationId: input.conversationId,
+            tagId: tag.id
+          },
+          update: {}
+        });
+      }
+
+      if (input.action === "remove_tag") {
+        await prisma.conversationTag.deleteMany({
+          where: {
+            workspaceId: input.workspaceId,
+            conversationId: input.conversationId,
+            tagId: input.tagId
+          }
+        });
       }
 
       if (input.action === "request_ai_suggestion") {

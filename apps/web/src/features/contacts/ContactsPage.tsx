@@ -16,16 +16,28 @@ import {
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { ContactDto, RealtimeEvent } from "@prymeira-talk/shared";
-import { ChevronLeft, ChevronRight, Columns3, Pencil, Plus, Save, Search, Users } from "lucide-react";
+import type { ChannelDto, ContactDto, RealtimeEvent } from "@prymeira-talk/shared";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Columns3,
+  MessageSquarePlus,
+  Pencil,
+  Plus,
+  Save,
+  Search,
+  Users
+} from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   apiAddContactToBoard,
   apiCreateContact,
   apiGetBoardContacts,
   apiGetBoards,
+  apiGetChannels,
   apiGetContacts,
   apiMoveBoardMembership,
+  apiStartContactConversation,
   apiUpdateContact,
   type BoardContactCardDto,
   type BoardContactsDto,
@@ -164,6 +176,9 @@ export function ContactsPage() {
   const [drawerContact, setDrawerContact] = useState<ContactDto | null>(null);
   const [createDrawerOpen, setCreateDrawerOpen] = useState(false);
   const [activeBoardMembershipId, setActiveBoardMembershipId] = useState<string | null>(null);
+  const [channels, setChannels] = useState<ChannelDto[]>([]);
+  const [startChannelId, setStartChannelId] = useState("");
+  const [isStartingConversation, setIsStartingConversation] = useState(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
 
   function openDrawer(contact: ContactDto) {
@@ -182,6 +197,26 @@ export function ContactsPage() {
         if (isMounted) {
           setRealtimeToken(token);
         }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [getToken]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    void apiGetChannels(getToken)
+      .then((nextChannels) => {
+        if (!isMounted) return;
+        setChannels(nextChannels);
+        setStartChannelId((current) =>
+          nextChannels.some((channel) => channel.id === current)
+            ? current
+            : nextChannels[0]?.id ?? ""
+        );
       })
       .catch(() => undefined);
 
@@ -489,6 +524,29 @@ export function ContactsPage() {
       setError(updateError instanceof Error ? updateError.message : "Nao foi possivel atualizar o contato.");
     } finally {
       setIsSaving(false);
+    }
+  }
+
+  async function handleStartConversation() {
+    if (!drawerContact || !startChannelId) return;
+
+    setIsStartingConversation(true);
+    setError(null);
+    setSaveMessage(null);
+
+    try {
+      const conversation = await apiStartContactConversation(getToken, drawerContact.id, {
+        channelId: startChannelId
+      });
+      const url = new URL(window.location.href);
+      url.searchParams.set("module", "atendimento");
+      url.searchParams.set("conversation", conversation.id);
+      window.history.pushState({ module: "atendimento", conversation: conversation.id }, "", `${url.pathname}${url.search}${url.hash}`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    } catch (startError) {
+      setError(startError instanceof Error ? startError.message : "Nao foi possivel iniciar a conversa.");
+    } finally {
+      setIsStartingConversation(false);
     }
   }
 
@@ -931,6 +989,39 @@ export function ContactsPage() {
                   <div className="context-identity-name">{contactName(drawerContact)}</div>
                   {drawerContact.company ? (
                     <div className="context-identity-sub">{drawerContact.company}</div>
+                  ) : null}
+                </div>
+              </div>
+              <div className="context-card">
+                <div className="context-card-title">Atendimento</div>
+                <div className="drawer-action-stack">
+                  {channels.length > 1 ? (
+                    <label className="drawer-field">
+                      <span>Canal</span>
+                      <select
+                        onChange={(event) => setStartChannelId(event.target.value)}
+                        value={startChannelId}
+                      >
+                        {channels.map((channel) => (
+                          <option key={channel.id} value={channel.id}>
+                            {channel.displayName ?? channel.phoneNumber ?? `Canal ${channel.id.slice(0, 8)}`}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  <button
+                    className="primary-button"
+                    disabled={!startChannelId || isStartingConversation}
+                    onClick={() => void handleStartConversation()}
+                    type="button"
+                    style={{ width: "100%", justifyContent: "center" }}
+                  >
+                    <MessageSquarePlus size={15} aria-hidden="true" />
+                    Iniciar conversa
+                  </button>
+                  {channels.length === 0 ? (
+                    <p className="context-empty-label">Crie um canal WhatsApp antes de iniciar conversa.</p>
                   ) : null}
                 </div>
               </div>

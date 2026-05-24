@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { contactSchema, realtimeEventSchema } from "@prymeira-talk/shared";
+import { contactSchema, conversationSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createContactsService } from "./contacts.service.js";
 import type { PrismaLike } from "./contacts.service.js";
@@ -11,6 +11,13 @@ type MockPrisma = {
     create: ReturnType<typeof vi.fn<PrismaLike["contact"]["create"]>>;
     update: ReturnType<typeof vi.fn<PrismaLike["contact"]["update"]>>;
     findUnique: ReturnType<typeof vi.fn<PrismaLike["contact"]["findUnique"]>>;
+    findFirst: ReturnType<typeof vi.fn<PrismaLike["contact"]["findFirst"]>>;
+  };
+  channel: {
+    findFirst: ReturnType<typeof vi.fn<PrismaLike["channel"]["findFirst"]>>;
+  };
+  conversation: {
+    upsert: ReturnType<typeof vi.fn<PrismaLike["conversation"]["upsert"]>>;
   };
 };
 
@@ -48,7 +55,32 @@ function createMockPrisma(
         }),
       findUnique:
         overrides.findUnique ??
-        vi.fn<PrismaLike["contact"]["findUnique"]>().mockResolvedValue({ id: baseContact.id })
+        vi.fn<PrismaLike["contact"]["findUnique"]>().mockResolvedValue({ id: baseContact.id }),
+      findFirst:
+        overrides.findFirst ??
+        vi.fn<PrismaLike["contact"]["findFirst"]>().mockResolvedValue(null)
+    },
+    channel: {
+      findFirst: vi.fn<PrismaLike["channel"]["findFirst"]>().mockResolvedValue({ id: "channel_1" })
+    },
+    conversation: {
+      upsert: vi.fn<PrismaLike["conversation"]["upsert"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: baseContact.id,
+        status: "open",
+        assignedUserId: null,
+        departmentId: null,
+        lastMessageAt: null,
+        lastMessagePreview: null,
+        unreadCount: 0,
+        priority: "normal",
+        channel: { displayName: "WhatsApp", phoneNumber: null },
+        contact: { name: "Ana Silva", phone: "554791396920" },
+        department: null,
+        assignedUser: null
+      })
     }
   };
 }
@@ -118,7 +150,49 @@ describe("contacts service", () => {
       data: {
         workspaceId: "workspace_a",
         name: null,
-        phone: "+5511999990000",
+        phone: "551199990000",
+        email: null,
+        company: "Prymeira"
+      }
+    });
+  });
+
+  it("updates an existing contact when the only phone difference is the Brazilian ninth digit", async () => {
+    const prisma = createMockPrisma({
+      findFirst: vi.fn<PrismaLike["contact"]["findFirst"]>().mockResolvedValue({
+        ...baseContact,
+        phone: "554791396920"
+      })
+    });
+    const service = createContactsService(prisma);
+
+    const contact = await service.createContact({
+      workspaceId: "workspace_a",
+      name: "Yohann",
+      phone: "5547991396920",
+      email: "",
+      company: "Prymeira"
+    });
+
+    expect(contact.id).toBe(baseContact.id);
+    expect(prisma.contact.findFirst).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        phone: { in: ["554791396920", "5547991396920"] }
+      },
+      orderBy: { updatedAt: "desc" }
+    });
+    expect(prisma.contact.create).not.toHaveBeenCalled();
+    expect(prisma.contact.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: baseContact.id
+        }
+      },
+      data: {
+        name: "Yohann",
+        phone: "554791396920",
         email: null,
         company: "Prymeira"
       }
@@ -145,13 +219,37 @@ describe("contacts service", () => {
           id: baseContact.id
         }
       },
-      data: {
-        name: "Ana Paula",
-        phone: "+5511888880000",
-        email: null,
-        company: null
-      }
+        data: {
+          name: "Ana Paula",
+          phone: "5511888880000",
+          email: null,
+          company: null
+        }
+      });
+  });
+
+  it("starts a conversation for a contact and channel", async () => {
+    const prisma = createMockPrisma();
+    const service = createContactsService(prisma);
+
+    const conversation = await service.startConversation({
+      workspaceId: "workspace_a",
+      contactId: baseContact.id,
+      channelId: "channel_1"
     });
+
+    expect(conversationSchema.parse(conversation)).toEqual(conversation);
+    expect(prisma.conversation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          workspaceId_channelId_contactId: {
+            workspaceId: "workspace_a",
+            channelId: "channel_1",
+            contactId: baseContact.id
+          }
+        }
+      })
+    );
   });
 });
 

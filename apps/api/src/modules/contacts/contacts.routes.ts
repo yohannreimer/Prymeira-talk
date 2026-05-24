@@ -10,6 +10,10 @@ const contactParamsSchema = z.object({
   contactId: z.string().uuid()
 });
 
+const startConversationBodySchema = z.object({
+  channelId: z.string().uuid()
+});
+
 const optionalEmailSchema = z
   .string()
   .trim()
@@ -141,5 +145,46 @@ export const contactsRoutes: FastifyPluginAsync = async (app) => {
     });
 
     return contact;
+  });
+
+  app.post("/contacts/:contactId/conversations", async (request, reply) => {
+    const params = contactParamsSchema.safeParse(request.params);
+    const body = startConversationBodySchema.safeParse(request.body);
+
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid contact conversation request." });
+    }
+
+    const conversation = await service.startConversation({
+      workspaceId: request.talk.workspaceId,
+      contactId: params.data.contactId,
+      channelId: body.data.channelId
+    }).catch((error: unknown) => {
+      if (error instanceof Error && error.message === "CONTACT_NOT_FOUND") {
+        return { status: "contact_not_found" as const };
+      }
+
+      if (error instanceof Error && error.message === "CHANNEL_NOT_FOUND") {
+        return { status: "channel_not_found" as const };
+      }
+
+      throw error;
+    });
+
+    if ("status" in conversation && conversation.status === "contact_not_found") {
+      return reply.code(404).send({ code: "CONTACT_NOT_FOUND", error: "Contact not found." });
+    }
+
+    if ("status" in conversation && conversation.status === "channel_not_found") {
+      return reply.code(404).send({ code: "CHANNEL_NOT_FOUND", error: "Channel not found." });
+    }
+
+    app.realtime.publish({
+      type: "conversation.updated",
+      workspaceId: request.talk.workspaceId,
+      payload: conversation
+    });
+
+    return reply.code(201).send(conversation);
   });
 };

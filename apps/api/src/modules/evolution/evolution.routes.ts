@@ -3,6 +3,10 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { ChannelDto, MessageDto } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { toChannelDto } from "../channels/channels.service.js";
+import {
+  buildPhoneLookupCandidates,
+  normalizePhoneForStorage
+} from "../contacts/phone-normalization.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import {
   evolutionConnectionUpdateSchema,
@@ -21,7 +25,7 @@ const evolutionWebhookParamsSchema = z.object({
 });
 
 function extractPhone(remoteJid: string) {
-  return remoteJid.split("@")[0] ?? remoteJid;
+  return normalizePhoneForStorage(remoteJid.split("@")[0] ?? remoteJid);
 }
 
 function normalizeHeaderValue(header: string | string[] | undefined) {
@@ -326,26 +330,25 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           return { kind: "channel_not_found" as const };
         }
 
-        const contact = await tx.contact.upsert({
+        const contact = await tx.contact.findFirst({
           where: {
-            workspaceId_phone: {
-              workspaceId,
-              phone
-            }
+            workspaceId,
+            phone: { in: buildPhoneLookupCandidates(phone) }
           },
-          create: {
+          orderBy: { updatedAt: "desc" }
+        }) ?? await tx.contact.create({
+          data: {
             workspaceId,
             phone,
             ...(pushName ? { name: pushName } : {})
-          },
-          update: {}
+          }
         });
 
         if (pushName) {
           await tx.contact.updateMany({
             where: {
               workspaceId,
-              phone,
+              phone: { in: buildPhoneLookupCandidates(phone) },
               name: null
             },
             data: { name: pushName }
@@ -416,6 +419,12 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
               workspaceId,
               id: conversation.id
             }
+          },
+          include: {
+            assignedUser: { select: { displayName: true } },
+            channel: { select: { displayName: true, phoneNumber: true } },
+            contact: { select: { name: true, phone: true } },
+            department: { select: { name: true } }
           }
         });
 

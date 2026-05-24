@@ -2919,11 +2919,33 @@ select:disabled {
 }
 
 .context-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 10px;
   padding: 2px 8px;
   border-radius: var(--radius-full);
   border: 1px solid var(--color-border);
   color: var(--color-text-secondary);
+}
+
+.context-tag button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.context-tag button:hover:not(:disabled) {
+  background: var(--color-brand-50);
+  color: var(--color-brand-600);
 }
 
 .context-empty-label {
@@ -2953,12 +2975,20 @@ select:disabled {
   gap: 8px;
 }
 
+.tag-add-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
 .quick-note-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 38px;
   gap: 8px;
 }
 
+.tag-add-form input,
+.tag-add-form button,
 .quick-note-form input,
 .quick-note-form button,
 .quick-actions button {
@@ -2968,12 +2998,14 @@ select:disabled {
   color: var(--color-text-primary);
 }
 
+.tag-add-form input,
 .quick-note-form input {
   min-width: 0;
   padding: 9px 10px;
   font-size: 0.85rem;
 }
 
+.tag-add-form button,
 .quick-note-form button,
 .quick-actions button {
   display: inline-flex;
@@ -2991,9 +3023,15 @@ select:disabled {
 }
 
 .quick-actions button:hover:not(:disabled),
+.tag-add-form button:hover:not(:disabled),
 .quick-note-form button:hover:not(:disabled) {
   border-color: var(--color-brand-300);
   background: var(--color-brand-50);
+}
+
+.drawer-action-stack {
+  display: grid;
+  gap: 10px;
 }
 
 .notes-list p {

@@ -79,6 +79,8 @@ export type ConversationActionBody =
   | { action: "change_department"; departmentId: string | null }
   | { action: "change_priority"; priority: ConversationDto["priority"] }
   | { action: "change_primary_board_stage"; stageId: string }
+  | { action: "add_tag"; name: string }
+  | { action: "remove_tag"; tagId: string }
   | { action: "request_ai_suggestion" }
   | { action: "create_crm_note" };
 
@@ -798,6 +800,45 @@ export async function apiUpdateContact(
 
   const data = await response.json();
   return contactSchema.parse(data);
+}
+
+export async function apiStartContactConversation(
+  getToken: () => Promise<string | null>,
+  contactId: string,
+  body: {
+    channelId: string;
+  }
+): Promise<ConversationDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/contacts/${contactId}/conversations`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(await readApiErrorMessage(response, "Failed to start conversation"));
+  }
+
+  const data = await response.json();
+  return conversationSchema.parse(data);
+}
+
+export async function apiMarkConversationRead(
+  getToken: () => Promise<string | null>,
+  conversationId: string
+): Promise<ConversationDto> {
+  return fetchJson(
+    getToken,
+    `/conversations/${conversationId}/read`,
+    { method: "POST" },
+    (data) => conversationSchema.parse(data),
+    "Failed to mark conversation read"
+  );
 }
 
 export async function apiGetBoards(

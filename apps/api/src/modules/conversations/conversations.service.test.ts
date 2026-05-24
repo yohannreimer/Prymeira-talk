@@ -41,6 +41,13 @@ type MockPrisma = {
   userProfile: {
     findFirst: ReturnType<typeof vi.fn<PrismaLike["userProfile"]["findFirst"]>>;
   };
+  tag: {
+    upsert: ReturnType<typeof vi.fn<PrismaLike["tag"]["upsert"]>>;
+  };
+  conversationTag: {
+    upsert: ReturnType<typeof vi.fn<PrismaLike["conversationTag"]["upsert"]>>;
+    deleteMany: ReturnType<typeof vi.fn<PrismaLike["conversationTag"]["deleteMany"]>>;
+  };
   aiActionLog: {
     create: ReturnType<typeof vi.fn<PrismaLike["aiActionLog"]["create"]>>;
   };
@@ -91,7 +98,12 @@ function createMockPrisma(overrides: {
           lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
           lastMessagePreview: "Oi",
           unreadCount: 0,
-          priority: "normal"
+          priority: "normal",
+          channel: { displayName: "WhatsApp", phoneNumber: "+55 47 99999-0000" },
+          contact: { name: "Ana Silva", phone: "5547999990000" },
+          department: null,
+          assignedUser: null,
+          tags: []
         })
     },
     message: {
@@ -235,6 +247,17 @@ function createMockPrisma(overrides: {
         displayName: "Ana"
       })
     },
+    tag: {
+      upsert: vi.fn<PrismaLike["tag"]["upsert"]>().mockResolvedValue({
+        id: "tag_1",
+        name: "VIP",
+        color: "#24564a"
+      })
+    },
+    conversationTag: {
+      upsert: vi.fn<PrismaLike["conversationTag"]["upsert"]>().mockResolvedValue({}),
+      deleteMany: vi.fn<PrismaLike["conversationTag"]["deleteMany"]>().mockResolvedValue({ count: 1 })
+    },
     aiActionLog: {
       create: vi.fn<PrismaLike["aiActionLog"]["create"]>().mockResolvedValue({
         id: "ai_1",
@@ -304,14 +327,62 @@ describe("conversations service", () => {
         })
       })
     );
-    expect(prisma.conversation.update).toHaveBeenCalledWith({
-      where: { workspaceId_id: { workspaceId: "workspace_a", id: "conv_1" } },
-      data: {
-        lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
-        lastMessagePreview: "Oi"
-      }
-    });
+    expect(prisma.conversation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { workspaceId_id: { workspaceId: "workspace_a", id: "conv_1" } },
+        data: {
+          lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+          lastMessagePreview: "Oi"
+        },
+        include: expect.objectContaining({
+          contact: { select: { name: true, phone: true } },
+          channel: { select: { displayName: true, phoneNumber: true } }
+        })
+      })
+    );
     expect(conversationSchema.parse(result.conversation)).toEqual(result.conversation);
+    expect(result.conversation.contactName).toBe("Ana Silva");
+    expect(result.conversation.channelName).toBe("WhatsApp");
+  });
+
+  it("marks conversations as read with complete contact and channel data", async () => {
+    const prisma = createMockPrisma({
+      update: vi.fn<PrismaLike["conversation"]["update"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        status: "open",
+        assignedUserId: null,
+        departmentId: null,
+        lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+        lastMessagePreview: "Oi",
+        unreadCount: 0,
+        priority: "normal",
+        channel: { displayName: "WhatsApp", phoneNumber: null },
+        contact: { name: "Yohann", phone: "554791396920" },
+        department: null,
+        assignedUser: null,
+        tags: []
+      })
+    });
+    const service = createConversationsService(prisma);
+
+    const conversation = await service.markConversationRead({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1"
+    });
+
+    expect(prisma.conversation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { workspaceId_id: { workspaceId: "workspace_a", id: "conv_1" } },
+        data: { unreadCount: 0 },
+        include: expect.any(Object)
+      })
+    );
+    expect(conversation.unreadCount).toBe(0);
+    expect(conversation.contactName).toBe("Yohann");
+    expect(conversation.channelName).toBe("WhatsApp");
   });
 
   it("preflights outbound messages with the workspace conversation composite key", async () => {
@@ -819,6 +890,61 @@ describe("conversations service", () => {
     );
   });
 
+  it("adds and removes conversation tags", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+
+    await service.runConversationAction({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      action: "add_tag",
+      name: " VIP "
+    });
+    await service.runConversationAction({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      action: "remove_tag",
+      tagId: "tag_1"
+    });
+
+    expect(prisma.tag.upsert).toHaveBeenCalledWith({
+      where: {
+        workspaceId_name: {
+          workspaceId: "workspace_a",
+          name: "VIP"
+        }
+      },
+      create: {
+        workspaceId: "workspace_a",
+        name: "VIP",
+        color: "#24564a"
+      },
+      update: {}
+    });
+    expect(prisma.conversationTag.upsert).toHaveBeenCalledWith({
+      where: {
+        workspaceId_conversationId_tagId: {
+          workspaceId: "workspace_a",
+          conversationId: "conv_1",
+          tagId: "tag_1"
+        }
+      },
+      create: {
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        tagId: "tag_1"
+      },
+      update: {}
+    });
+    expect(prisma.conversationTag.deleteMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        tagId: "tag_1"
+      }
+    });
+  });
+
   it("logs simulated AI suggestions and CRM notes", async () => {
     const prisma = createMockPrisma();
     const service = createConversationsService(prisma);
@@ -905,6 +1031,40 @@ describe("conversation routes", () => {
       for (const [event] of publish.mock.calls) {
         expect(realtimeEventSchema.parse(event)).toEqual(event);
       }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("marks a conversation as read and publishes the updated conversation", async () => {
+    const prisma = createMockPrisma();
+    const publish = vi.fn();
+    const app = Fastify({ logger: false });
+
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => {
+      request.talk = { workspaceId: "workspace_a", role: "agent" };
+    });
+    await app.register(conversationsRoutes);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/conversations/00000000-0000-4000-8000-000000000001/read"
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(conversationSchema.parse(response.json())).toEqual(response.json());
+      expect(publish).toHaveBeenCalledWith({
+        type: "conversation.updated",
+        workspaceId: "workspace_a",
+        payload: expect.objectContaining({
+          unreadCount: 0,
+          contactName: "Ana Silva",
+          channelName: "WhatsApp"
+        })
+      });
     } finally {
       await app.close();
     }
