@@ -1576,7 +1576,7 @@ select:disabled {
 
 .automation-flow-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
   gap: 12px;
 }
 
@@ -1611,6 +1611,7 @@ select:disabled {
   color: var(--color-text-primary);
   font-size: 1rem;
   font-weight: 800;
+  overflow-wrap: anywhere;
 }
 
 .automation-flow-card small,
@@ -1619,6 +1620,7 @@ select:disabled {
   color: var(--color-text-secondary);
   font-size: 0.82rem;
   font-style: normal;
+  overflow-wrap: anywhere;
 }
 
 .automation-flow-card em {
