@@ -88,7 +88,8 @@ function formatAutomationRunDate(value: string) {
 }
 
 function toFormState(automation: AutomationRuleDto): AutomationFormState {
-  const firstAction = automation.actions[0];
+  const actions = Array.isArray(automation.actions) ? automation.actions : [];
+  const firstAction = actions[0];
 
   return {
     name: automation.name,

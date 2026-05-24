@@ -119,6 +119,8 @@ export interface AutomationActionDto {
   config?: Record<string, unknown>;
 }
 
+export type AutomationActionsDto = AutomationActionDto[] | Record<string, unknown>;
+
 export interface AutomationRuleDto {
   id: string;
   workspaceId: string;
@@ -126,7 +128,7 @@ export interface AutomationRuleDto {
   status: AutomationStatus;
   trigger: string;
   conditions: unknown;
-  actions: AutomationActionDto[];
+  actions: AutomationActionsDto;
   createdAt: string;
   updatedAt: string;
 }
@@ -475,6 +477,18 @@ function parseAutomationAction(data: unknown): AutomationActionDto {
   };
 }
 
+function parseAutomationActions(data: unknown): AutomationActionsDto {
+  if (Array.isArray(data)) {
+    return data.map(parseAutomationAction);
+  }
+
+  if (data && typeof data === "object") {
+    return data as Record<string, unknown>;
+  }
+
+  return [];
+}
+
 function parseAutomationRule(data: unknown): AutomationRuleDto {
   const payload = data as AutomationRuleDto;
 
@@ -485,7 +499,7 @@ function parseAutomationRule(data: unknown): AutomationRuleDto {
     status: payload.status === "enabled" ? "enabled" : "disabled",
     trigger: payload.trigger,
     conditions: payload.conditions ?? {},
-    actions: Array.isArray(payload.actions) ? payload.actions.map(parseAutomationAction) : [],
+    actions: parseAutomationActions(payload.actions),
     createdAt: payload.createdAt,
     updatedAt: payload.updatedAt
   };
@@ -1513,7 +1527,7 @@ export async function apiCreateAutomation(
     status?: AutomationStatus;
     trigger: string;
     conditions?: Record<string, unknown>;
-    actions?: AutomationActionDto[];
+    actions?: AutomationActionsDto;
   }
 ): Promise<AutomationRuleDto> {
   const token = await getRequiredToken(getToken);
@@ -1543,7 +1557,7 @@ export async function apiUpdateAutomation(
     status: AutomationStatus;
     trigger: string;
     conditions: Record<string, unknown>;
-    actions: AutomationActionDto[];
+    actions: AutomationActionsDto;
   }>
 ): Promise<AutomationRuleDto> {
   const token = await getRequiredToken(getToken);
