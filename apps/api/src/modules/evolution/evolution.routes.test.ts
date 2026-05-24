@@ -648,7 +648,7 @@ describe("Evolution webhook routes", () => {
         message: {
           base64: "YXVkaW8=",
           audioMessage: {
-            mimetype: "audio/ogg",
+            mimetype: "audio/ogg; codecs=opus",
             url: "https://media.example.com/audio.ogg"
           }
         }

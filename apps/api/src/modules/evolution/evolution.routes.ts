@@ -123,6 +123,12 @@ function normalizeMediaUrl(value: string | null) {
   }
 }
 
+function normalizeMediaMimeType(value: string | null) {
+  const mimetype = value?.split(";")[0]?.trim().toLowerCase();
+
+  return mimetype && mimetype.length > 0 ? mimetype : "application/octet-stream";
+}
+
 function normalizeBase64MediaUrl(value: string | null, mimetype: string | null) {
   if (!value) return null;
 
@@ -133,7 +139,7 @@ function normalizeBase64MediaUrl(value: string | null, mimetype: string | null) 
   const compactValue = value.replace(/\s/g, "");
 
   return compactValue.length > 0
-    ? `data:${mimetype ?? "application/octet-stream"};base64,${compactValue}`
+    ? `data:${normalizeMediaMimeType(mimetype)};base64,${compactValue}`
     : null;
 }
 
