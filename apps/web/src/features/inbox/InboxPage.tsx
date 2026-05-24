@@ -109,7 +109,32 @@ export function applyComposerMarker(
   };
 }
 
-const composerEmojis = ["😊", "👍", "🙏", "✅", "🙌", "😉", "👏", "🔥"];
+const composerEmojis = [
+  "😀",
+  "😄",
+  "😊",
+  "😂",
+  "😍",
+  "😉",
+  "😎",
+  "🤔",
+  "👍",
+  "🙏",
+  "🙌",
+  "👏",
+  "✅",
+  "🔥",
+  "🚀",
+  "❤️",
+  "💚",
+  "⭐",
+  "📌",
+  "📎",
+  "📄",
+  "💬",
+  "⏰",
+  "🎯"
+];
 
 function optimisticMessageId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -119,7 +144,7 @@ function optimisticMessageId() {
   return `optimistic-${Date.now()}`;
 }
 
-function isOptimisticMessage(message: MessageDto) {
+function isOptimisticMessage(message: Pick<MessageDto, "id">) {
   return message.id.startsWith("optimistic-");
 }
 
@@ -188,9 +213,9 @@ function isVideoMediaUrl(mediaUrl: string) {
   return /^data:video\//i.test(mediaUrl) || /\.(mp4|m4v|mov|webm)(\?|#|$)/i.test(mediaUrl);
 }
 
-function outboundStatusLabel(message: MessageDto) {
+export function outboundStatusLabel(message: Pick<MessageDto, "direction" | "id" | "status">) {
   if (message.direction !== "outbound") return null;
-  if (message.status === "pending") return "Enviando...";
+  if (message.status === "pending" && isOptimisticMessage(message)) return "Enviando...";
   if (message.status === "failed") return "Falhou";
   return null;
 }
@@ -349,6 +374,15 @@ export function InboxPage() {
     setDraftSelection(nextDraft.selectionStart, nextDraft.selectionEnd);
   }
 
+  function resizeDraftTextArea() {
+    const textarea = draftTextAreaRef.current;
+
+    if (!textarea) return;
+
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 140)}px`;
+  }
+
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
   }, [selectedConversationId]);
@@ -356,6 +390,10 @@ export function InboxPage() {
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
+
+  useEffect(() => {
+    resizeDraftTextArea();
+  }, [draft]);
 
   useEffect(() => {
     let isMounted = true;
@@ -506,6 +544,20 @@ export function InboxPage() {
   }, [getFreshToken]);
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
+    if (event.type === "message.status_changed") {
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === event.payload.messageId
+            ? {
+                ...message,
+                status: event.payload.status
+              }
+            : message
+        )
+      );
+      return;
+    }
+
     if (event.type === "message.created") {
       const isSelectedConversation = event.payload.conversationId === selectedConversationIdRef.current;
       const shouldStickToBottom = isMessageThreadNearBottom();
@@ -1106,7 +1158,11 @@ export function InboxPage() {
               aria-label="Mensagem"
               className="composer-textarea"
               disabled={!selectedConversation}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                resizeDraftTextArea();
+              }}
+              onInput={resizeDraftTextArea}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();

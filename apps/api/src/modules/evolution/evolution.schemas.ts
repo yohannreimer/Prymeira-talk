@@ -39,6 +39,7 @@ export const evolutionMessageStatusUpdateSchema = evolutionWebhookEnvelopeSchema
   data: z
     .object({
       id: z.string().min(1).optional(),
+      keyId: z.string().min(1).optional(),
       messageId: z.string().min(1).optional(),
       status: z.union([z.string(), z.number()]).optional(),
       key: z

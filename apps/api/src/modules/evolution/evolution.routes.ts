@@ -441,7 +441,8 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         return reply.code(400).send({ ok: false, error: "invalid_webhook_payload" });
       }
 
-      const providerMessageId = body.data.data?.key?.id ?? body.data.data?.messageId ?? body.data.data?.id;
+      const providerMessageId =
+        body.data.data?.key?.id ?? body.data.data?.keyId ?? body.data.data?.id ?? body.data.data?.messageId;
       const status = mapEvolutionMessageStatus(body.data.data?.status);
 
       if (!providerMessageId || !status) {

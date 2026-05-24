@@ -2996,6 +2996,7 @@ select:disabled {
 }
 
 .composer {
+  position: relative;
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--color-border-subtle);
@@ -3073,10 +3074,18 @@ select:disabled {
 }
 
 .composer-emoji-picker {
-  display: flex;
-  gap: 4px;
-  padding: 8px 12px 0;
-  border-bottom: 1px solid var(--color-border-subtle);
+  position: absolute;
+  left: 12px;
+  bottom: calc(100% + 8px);
+  z-index: 5;
+  display: grid;
+  grid-template-columns: repeat(8, 32px);
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  box-shadow: var(--shadow-card);
 }
 
 .composer-emoji-picker button {
@@ -3109,8 +3118,10 @@ select:disabled {
   background: transparent;
   font-family: var(--font-family);
   line-height: 1.5;
-  max-height: calc(4 * 1.5 * 13px);
+  min-height: 34px;
+  max-height: 140px;
   overflow-y: auto;
+  padding-top: 7px;
 }
 
 .composer-textarea::placeholder {

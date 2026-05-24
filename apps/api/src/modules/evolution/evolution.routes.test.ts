@@ -411,6 +411,40 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it("updates message status using Evolution keyId before local messageId", async () => {
+    const { app, prisma } = await buildEvolutionApp();
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          event: "messages.update",
+          instance: "client-one",
+          data: {
+            keyId: "provider_media_1",
+            messageId: "local_msg_1",
+            status: "DELIVERY_ACK"
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(prisma.message.update).toHaveBeenCalledWith({
+        where: {
+          workspaceId_providerMessageId: {
+            workspaceId: "workspace_a",
+            providerMessageId: "provider_media_1"
+          }
+        },
+        data: { status: "delivered" }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("publishes QR code update events without parsing message-shaped data", async () => {
     const { app, prisma, publish } = await buildEvolutionApp();
 

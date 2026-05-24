@@ -4,7 +4,8 @@ import {
   insertComposerText,
   messageDisplayText,
   messageMediaKind,
-  messageMediaLabel
+  messageMediaLabel,
+  outboundStatusLabel
 } from "./InboxPage";
 
 describe("messageDisplayText", () => {
@@ -63,5 +64,22 @@ describe("composer formatting helpers", () => {
       selectionStart: 5,
       selectionEnd: 5
     });
+  });
+});
+
+describe("outboundStatusLabel", () => {
+  const outboundMessage = {
+    id: "msg_1",
+    direction: "outbound",
+    status: "pending"
+  } as const;
+
+  it("shows sending only for optimistic pending messages", () => {
+    expect(outboundStatusLabel(outboundMessage)).toBeNull();
+    expect(outboundStatusLabel({ ...outboundMessage, id: "optimistic-1" })).toBe("Enviando...");
+  });
+
+  it("shows failed outbound messages", () => {
+    expect(outboundStatusLabel({ ...outboundMessage, status: "failed" })).toBe("Falhou");
   });
 });
