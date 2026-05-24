@@ -7,7 +7,7 @@ import {
   messageMediaLabel,
   outboundStatusLabel
 } from "./InboxPage";
-import { quickReplyMatchesQuery } from "./QuickRepliesPopover";
+import { quickReplyMatchesQuery, quickReplyMutationErrorMessage } from "./QuickRepliesPopover";
 
 describe("messageDisplayText", () => {
   it("uses message body when present", () => {
@@ -101,5 +101,10 @@ describe("quick reply helpers", () => {
     expect(quickReplyMatchesQuery(reply, "bem-vindo")).toBe(true);
     expect(quickReplyMatchesQuery(reply, "atendimento")).toBe(true);
     expect(quickReplyMatchesQuery(reply, "financeiro")).toBe(false);
+  });
+
+  it("uses mutation error messages when available", () => {
+    expect(quickReplyMutationErrorMessage(new Error("Falha da API"), "Fallback")).toBe("Falha da API");
+    expect(quickReplyMutationErrorMessage("erro", "Fallback")).toBe("Fallback");
   });
 });
