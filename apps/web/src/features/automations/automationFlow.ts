@@ -29,6 +29,10 @@ export function supportedBlockTypes(): AutomationBlockDefinition[] {
   return automationBlockCatalog;
 }
 
+export function isTriggerBlock(type: AutomationBlockType) {
+  return getAutomationBlock(type)?.category === "trigger";
+}
+
 export function createAutomationNode(
   type: AutomationBlockType,
   position: XYPosition,
@@ -52,6 +56,8 @@ export function createAutomationNode(
     id,
     type: block.type,
     position,
+    draggable: block.category !== "trigger",
+    deletable: block.category !== "trigger",
     data: {
       blockType: block.type,
       title: block.label,

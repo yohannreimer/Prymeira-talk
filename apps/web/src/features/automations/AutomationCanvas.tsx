@@ -17,6 +17,7 @@ import {
   automationBlockCatalog,
   automationFlowSchema,
   getAutomationBlock,
+  type AutomationBlockDefinition,
   type AutomationBlockType,
   type AutomationFlowDefinition
 } from "@prymeira-talk/shared";
@@ -30,6 +31,7 @@ import {
   createAutomationNode,
   createDefaultAutomationFlow,
   flowToAutomationPayload,
+  isTriggerBlock,
   type AutomationCanvasEdge,
   type AutomationCanvasNode
 } from "./automationFlow";
@@ -91,6 +93,8 @@ function canvasNodeFromPayloadNode(node: AutomationFlowDefinition["nodes"][numbe
     id: node.id,
     type: block.type,
     position: node.position,
+    draggable: block.category !== "trigger",
+    deletable: block.category !== "trigger",
     data: {
       blockType: block.type,
       title: node.data.title || block.label,
@@ -180,9 +184,29 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId]
   );
+  const hasTrigger = useMemo(() => nodes.some((node) => node.data.category === "trigger"), [nodes]);
+  const triggerDisabledReason = useCallback((block: AutomationBlockDefinition) => {
+    if (block.category !== "trigger") {
+      return null;
+    }
+
+    return "Use o gatilho fixo no canvas e altere o tipo no painel de configuracao.";
+  }, []);
 
   const handleNodesChange = useCallback((changes: NodeChange<AutomationCanvasNode>[]) => {
-    setNodes((currentNodes) => applyNodeChanges(changes, currentNodes) as AutomationCanvasNode[]);
+    setNodes((currentNodes) => {
+      const protectedChanges = changes.filter((change) => {
+        const node = "id" in change ? currentNodes.find((item) => item.id === change.id) : null;
+
+        if (node?.data.category !== "trigger") {
+          return true;
+        }
+
+        return change.type !== "remove" && change.type !== "position";
+      });
+
+      return applyNodeChanges(protectedChanges, currentNodes) as AutomationCanvasNode[];
+    });
 
     if (changes.some((change) => change.type === "remove" && change.id === selectedNodeId)) {
       setSelectedNodeId(null);
@@ -194,8 +218,13 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
   }, []);
 
   const handleConnect = useCallback((connection: Connection) => {
+    const targetNode = nodes.find((node) => node.id === connection.target);
+    if (targetNode?.data.category === "trigger") {
+      return;
+    }
+
     setEdges((currentEdges) => addEdge(connection, currentEdges));
-  }, []);
+  }, [nodes]);
 
   const handleSelectionChange = useCallback((selection: OnSelectionChangeParams) => {
     const nextSelectedNodeId = selection.nodes[0]?.id ?? null;
@@ -208,6 +237,14 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
 
   const addBlock = useCallback((type: AutomationBlockType) => {
     setNodes((currentNodes) => {
+      if (isTriggerBlock(type) && currentNodes.some((node) => node.data.category === "trigger")) {
+        const triggerNode = currentNodes.find((node) => node.data.category === "trigger");
+        if (triggerNode) {
+          setSelectedNodeId(triggerNode.id);
+        }
+        return currentNodes;
+      }
+
       const anchorNode = currentNodes.find((node) => node.id === selectedNodeId) ?? currentNodes.at(-1);
       const position = anchorNode
         ? { x: anchorNode.position.x + 280, y: anchorNode.position.y + 24 }
@@ -218,6 +255,35 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
       return [...currentNodes, node];
     });
   }, [selectedNodeId]);
+
+  const updateNodeType = useCallback((nodeId: string, type: AutomationBlockType) => {
+    const block = getAutomationBlock(type);
+    if (!block) {
+      return;
+    }
+
+    setNodes((currentNodes) =>
+      currentNodes.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              type: block.type,
+              draggable: block.category !== "trigger",
+              deletable: block.category !== "trigger",
+              data: {
+                ...node.data,
+                blockType: block.type,
+                title: block.label,
+                description: block.description,
+                category: block.category,
+                support: block.support,
+                config: {}
+              }
+            }
+          : node
+      )
+    );
+  }, []);
 
   const addFocusBlock = useCallback((type: AutomationBlockType) => {
     addBlock(type);
@@ -243,7 +309,12 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
 
   return (
     <div className={`automation-canvas-shell automation-canvas-shell--${variant}`}>
-      {isFocusMode ? null : <AutomationBlockLibrary onSelect={addBlock} />}
+      {isFocusMode ? null : (
+        <AutomationBlockLibrary
+          disabledReason={hasTrigger ? triggerDisabledReason : undefined}
+          onSelect={addBlock}
+        />
+      )}
 
       <div
         className={`automation-canvas-surface ${isFocusMode ? "is-focus-mode" : ""}`}
@@ -297,20 +368,33 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
 
             {isFocusPaletteOpen ? (
               <div className="automation-focus-popover">
-                <AutomationBlockLibrary onSelect={addFocusBlock} />
+                <AutomationBlockLibrary
+                  disabledReason={hasTrigger ? triggerDisabledReason : undefined}
+                  onSelect={addFocusBlock}
+                />
               </div>
             ) : null}
 
             {isFocusInspectorOpen ? (
               <div className="automation-focus-inspector">
-                <AutomationNodeInspector node={selectedNode} onConfigChange={updateConfig} />
+                <AutomationNodeInspector
+                  node={selectedNode}
+                  onConfigChange={updateConfig}
+                  onTypeChange={updateNodeType}
+                />
               </div>
             ) : null}
           </>
         ) : null}
       </div>
 
-      {isFocusMode ? null : <AutomationNodeInspector node={selectedNode} onConfigChange={updateConfig} />}
+      {isFocusMode ? null : (
+        <AutomationNodeInspector
+          node={selectedNode}
+          onConfigChange={updateConfig}
+          onTypeChange={updateNodeType}
+        />
+      )}
     </div>
   );
 }

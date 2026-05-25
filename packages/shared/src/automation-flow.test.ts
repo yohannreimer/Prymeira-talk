@@ -120,6 +120,60 @@ describe("automation flow contract", () => {
     expect(result.errors).toContain("O fluxo precisa ter pelo menos um gatilho.");
   });
 
+  it("allows only one trigger node per flow", () => {
+    const result = validateAutomationFlowForStatus(
+      {
+        version: 1,
+        nodes: [
+          {
+            id: "trigger-1",
+            type: "trigger_first_message",
+            position: { x: 0, y: 0 },
+            data: { title: "Primeira mensagem", config: {} }
+          },
+          {
+            id: "trigger-2",
+            type: "trigger_keyword",
+            position: { x: 260, y: 0 },
+            data: { title: "Palavra-chave", config: { keyword: "preco" } }
+          }
+        ],
+        edges: []
+      },
+      "disabled"
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errors).toContain("O fluxo permite apenas um gatilho.");
+  });
+
+  it("rejects connections pointing into the trigger", () => {
+    const result = validateAutomationFlowForStatus(
+      {
+        version: 1,
+        nodes: [
+          {
+            id: "trigger-1",
+            type: "trigger_first_message",
+            position: { x: 0, y: 0 },
+            data: { title: "Primeira mensagem", config: {} }
+          },
+          {
+            id: "message-1",
+            type: "send_message",
+            position: { x: 260, y: 0 },
+            data: { title: "Enviar mensagem", config: { text: "Ola!" } }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "message-1", target: "trigger-1" }]
+      },
+      "disabled"
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errors).toContain("O gatilho nao pode receber conexoes.");
+  });
+
   it("rejects duplicate edge ids", () => {
     const result = validateAutomationFlowForStatus(
       {

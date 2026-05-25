@@ -807,6 +807,55 @@ function sanitizeError(error: unknown) {
   return "Automation execution failed.";
 }
 
+async function recordAutomationRun(
+  options: AutomationRunnerOptions,
+  input: RunForInboundMessageInput,
+  context: ExecuteContext,
+  rule: AutomationRuleRecord,
+  status: string,
+  result: unknown
+) {
+  const run = await options.prisma.automationRun.upsert({
+    where: {
+      workspaceId_ruleId_eventKey: {
+        workspaceId: input.workspaceId,
+        ruleId: rule.id,
+        eventKey: input.eventKey
+      }
+    },
+    create: {
+      workspaceId: input.workspaceId,
+      ruleId: rule.id,
+      eventKey: input.eventKey,
+      status,
+      input: runInput(context),
+      result
+    },
+    update: {
+      status,
+      input: runInput(context),
+      result
+    }
+  });
+
+  options.realtime?.publish({
+    type: "automation_run.created",
+    workspaceId: input.workspaceId,
+    payload: {
+      id: run.id,
+      ruleId: run.ruleId,
+      eventKey: run.eventKey,
+      status: run.status,
+      input: run.input,
+      result: run.result,
+      createdAt: run.createdAt instanceof Date ? run.createdAt.toISOString() : run.createdAt,
+      updatedAt: run.updatedAt instanceof Date ? run.updatedAt.toISOString() : run.updatedAt
+    }
+  });
+
+  return run;
+}
+
 export function createAutomationRunner(options: AutomationRunnerOptions) {
   return {
     async runForInboundMessage(input: RunForInboundMessageInput) {
@@ -844,6 +893,24 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
         ).find((candidate) => candidate.matches)?.node;
 
         if (!triggerNode) {
+          const skippedTriggerNode = triggerNodes[0];
+          if (!skippedTriggerNode) {
+            continue;
+          }
+
+          const result = {
+            mode: "real",
+            runner: "graph",
+            triggerNodeId: skippedTriggerNode.id,
+            skippedReason: "trigger_not_matched",
+            actionResults: [
+              resultFor(skippedTriggerNode, "skipped", {
+                message: "Trigger did not match this event."
+              })
+            ]
+          };
+          const run = await recordAutomationRun(options, input, context, rule, "skipped", result);
+          runs.push(run);
           continue;
         }
 
@@ -864,43 +931,8 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
           triggerNodeId: triggerNode.id,
           actionResults: results
         };
-        const run = await options.prisma.automationRun.upsert({
-          where: {
-            workspaceId_ruleId_eventKey: {
-              workspaceId: input.workspaceId,
-              ruleId: rule.id,
-              eventKey: input.eventKey
-            }
-          },
-          create: {
-            workspaceId: input.workspaceId,
-            ruleId: rule.id,
-            eventKey: input.eventKey,
-            status: runStatus(results),
-            input: runInput(context),
-            result
-          },
-          update: {
-            status: runStatus(results),
-            input: runInput(context),
-            result
-          }
-        });
+        const run = await recordAutomationRun(options, input, context, rule, runStatus(results), result);
         runs.push(run);
-        options.realtime?.publish({
-          type: "automation_run.created",
-          workspaceId: input.workspaceId,
-          payload: {
-            id: run.id,
-            ruleId: run.ruleId,
-            eventKey: run.eventKey,
-            status: run.status,
-            input: run.input,
-            result: run.result,
-            createdAt: run.createdAt instanceof Date ? run.createdAt.toISOString() : run.createdAt,
-            updatedAt: run.updatedAt instanceof Date ? run.updatedAt.toISOString() : run.updatedAt
-          }
-        });
       }
 
       return runs;

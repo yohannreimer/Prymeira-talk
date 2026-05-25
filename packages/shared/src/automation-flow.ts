@@ -164,6 +164,10 @@ function hasTrigger(flow: AutomationFlowDefinition) {
   return flow.nodes.some((node) => getAutomationBlock(node.type)?.category === "trigger");
 }
 
+function triggerNodes(flow: AutomationFlowDefinition) {
+  return flow.nodes.filter((node) => getAutomationBlock(node.type)?.category === "trigger");
+}
+
 export function validateAutomationFlowForStatus(
   flow: AutomationFlowDefinition,
   status: "enabled" | "disabled"
@@ -188,8 +192,14 @@ export function validateAutomationFlowForStatus(
     }
   }
 
+  const triggers = triggerNodes(flow);
+
   if (!hasTrigger(flow)) {
     errors.push("O fluxo precisa ter pelo menos um gatilho.");
+  }
+
+  if (triggers.length > 1) {
+    errors.push("O fluxo permite apenas um gatilho.");
   }
 
   const edgeIds = new Set<string>();
@@ -205,6 +215,11 @@ export function validateAutomationFlowForStatus(
     }
     if (!ids.has(edge.target)) {
       errors.push(`A conexao ${edge.id} aponta para um bloco inexistente.`);
+    }
+
+    const targetNode = flow.nodes.find((node) => node.id === edge.target);
+    if (targetNode && getAutomationBlock(targetNode.type)?.category === "trigger") {
+      errors.push("O gatilho nao pode receber conexoes.");
     }
   }
 

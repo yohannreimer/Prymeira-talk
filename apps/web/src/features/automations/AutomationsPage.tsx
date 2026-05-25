@@ -110,6 +110,39 @@ function formatAutomationRunDate(value: string) {
   }).format(new Date(value));
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function automationRunSummary(result: unknown) {
+  if (!isRecord(result)) {
+    return "Resultado ainda sem detalhes.";
+  }
+
+  if (result.skippedReason === "trigger_not_matched") {
+    return "Gatilho avaliado, mas nao correspondeu a este evento.";
+  }
+
+  const actionResults = Array.isArray(result.actionResults) ? result.actionResults : [];
+  const failedAction = actionResults.find(
+    (item): item is Record<string, unknown> => isRecord(item) && item.status === "failed"
+  );
+
+  if (failedAction) {
+    return typeof failedAction.error === "string" ? failedAction.error : "Uma etapa falhou.";
+  }
+
+  const completedCount = actionResults.filter(
+    (item) => isRecord(item) && item.status === "completed"
+  ).length;
+
+  if (completedCount > 0) {
+    return `${completedCount} etapa${completedCount === 1 ? "" : "s"} executada${completedCount === 1 ? "" : "s"}.`;
+  }
+
+  return "Run registrado sem etapas executadas.";
+}
+
 export function automationActionsToTrigger(
   actions: AutomationRuleDto["actions"] | AutomationFlowDefinition | undefined,
   fallback: string
@@ -857,6 +890,7 @@ function AutomationHistoryDrawer({
               {run.status}
             </span>
             <strong>{run.eventKey}</strong>
+            <p>{automationRunSummary(run.result)}</p>
             <small>{formatAutomationRunDate(run.updatedAt)}</small>
           </article>
         ))}

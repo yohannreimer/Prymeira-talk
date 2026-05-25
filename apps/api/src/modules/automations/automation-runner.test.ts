@@ -225,7 +225,7 @@ describe("automation runner", () => {
     );
   });
 
-  it("does not run a first-message flow when the conversation already has inbound history", async () => {
+  it("records a skipped run when a first-message trigger does not match", async () => {
     const prisma = createMockPrisma({
       message: {
         ...createMockPrisma().message,
@@ -246,8 +246,25 @@ describe("automation runner", () => {
       eventKey: "message.received:wamid-inbound"
     });
 
-    expect(runs).toEqual([]);
-    expect(prisma.automationRun.upsert).not.toHaveBeenCalled();
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("skipped");
+    expect(prisma.automationRun.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          status: "skipped",
+          result: expect.objectContaining({
+            skippedReason: "trigger_not_matched",
+            actionResults: [
+              expect.objectContaining({
+                nodeId: "trigger-1",
+                status: "skipped",
+                message: "Trigger did not match this event."
+              })
+            ]
+          })
+        })
+      })
+    );
   });
 
   it("routes condition_text through yes and sends media files", async () => {

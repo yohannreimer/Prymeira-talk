@@ -1693,6 +1693,13 @@ select:disabled {
   font-weight: 700;
 }
 
+.automation-run-card p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .automation-run-card small {
   color: var(--color-text-muted);
   font-size: 11px;
@@ -2502,6 +2509,11 @@ select:disabled {
   color: #92400e;
 }
 
+.automation-node-badge--trigger {
+  background: #d8f5df;
+  color: #176032;
+}
+
 .automation-canvas-surface {
   position: relative;
   width: 100%;
@@ -2608,6 +2620,19 @@ select:disabled {
   box-shadow: 0 8px 22px rgba(36, 86, 74, 0.16);
 }
 
+.automation-canvas-node--trigger {
+  border-color: #8ed0a3;
+  border-left-color: #176032;
+  background:
+    linear-gradient(90deg, rgba(216, 245, 223, 0.92), rgba(255, 255, 255, 0.94) 42%),
+    var(--color-surface-card);
+}
+
+.automation-canvas-node--trigger.is-selected {
+  border-color: #176032;
+  box-shadow: 0 10px 26px rgba(23, 96, 50, 0.18);
+}
+
 .automation-node-title-row {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr) auto;
@@ -2647,6 +2672,12 @@ select:disabled {
   height: 9px;
   border: 2px solid var(--color-surface-card);
   background: var(--color-brand-600);
+}
+
+.automation-node-handle--trigger-output {
+  width: 11px;
+  height: 11px;
+  background: #176032;
 }
 
 .automation-node-inspector {

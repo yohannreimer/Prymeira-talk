@@ -1,12 +1,18 @@
+import { automationBlockCatalog, type AutomationBlockType } from "@prymeira-talk/shared";
 import type { AutomationCanvasNode } from "./automationFlow";
 
 interface AutomationNodeInspectorProps {
   node: AutomationCanvasNode | null;
   onConfigChange: (nodeId: string, config: Record<string, unknown>) => void;
+  onTypeChange?: (nodeId: string, type: AutomationBlockType) => void;
 }
 
 function readConfigValue(config: Record<string, unknown>, key: string) {
   const value = config[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+
   return typeof value === "string" ? value : "";
 }
 
@@ -22,7 +28,7 @@ function updateConfigValue(
   });
 }
 
-export function AutomationNodeInspector({ node, onConfigChange }: AutomationNodeInspectorProps) {
+export function AutomationNodeInspector({ node, onConfigChange, onTypeChange }: AutomationNodeInspectorProps) {
   if (!node) {
     return (
       <aside className="automation-node-inspector" aria-label="Configuracao do bloco">
@@ -39,11 +45,22 @@ export function AutomationNodeInspector({ node, onConfigChange }: AutomationNode
 
   const type = node.data.blockType;
   const config = node.data.config ?? {};
+  const isTrigger = node.data.category === "trigger";
   const showsMessage = type === "send_message" || type === "send_quick_reply" || type === "ask_open_reply";
   const showsFile = type === "send_file" || type === "send_image";
   const showsTag = type === "add_tag" || type === "remove_tag";
   const showsBoardStage = type === "move_board_stage";
-  const hasSupportedInputs = showsMessage || showsFile || showsTag || showsBoardStage;
+  const showsKeywordTrigger = type === "trigger_keyword";
+  const showsReengagementTrigger = type === "trigger_reengagement";
+  const triggerBlocks = automationBlockCatalog.filter(
+    (block) => block.category === "trigger" && block.support === "supported"
+  );
+  const hasSupportedInputs =
+    isTrigger ||
+    showsMessage ||
+    showsFile ||
+    showsTag ||
+    showsBoardStage;
 
   return (
     <aside className="automation-node-inspector" aria-label="Configuracao do bloco">
@@ -60,6 +77,54 @@ export function AutomationNodeInspector({ node, onConfigChange }: AutomationNode
         <strong>{node.data.title}</strong>
         <p>{node.data.description}</p>
       </div>
+
+      {isTrigger ? (
+        <div className="automation-inspector-fields">
+          <label className="form-field">
+            <span>Tipo de gatilho</span>
+            <select
+              onChange={(event) => onTypeChange?.(node.id, event.target.value as AutomationBlockType)}
+              value={type}
+            >
+              {triggerBlocks.map((block) => (
+                <option key={block.type} value={block.type}>
+                  {block.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {type === "trigger_first_message" ? (
+            <p className="list-note">
+              Executa somente quando essa conversa ainda nao tinha mensagens inbound anteriores.
+            </p>
+          ) : null}
+
+          {showsReengagementTrigger ? (
+            <label className="form-field">
+              <span>Dias sem mensagem</span>
+              <input
+                min="1"
+                onChange={(event) => updateConfigValue(node, "pauseDays", event.target.value, onConfigChange)}
+                placeholder="Ex: 3"
+                type="number"
+                value={readConfigValue(config, "pauseDays")}
+              />
+            </label>
+          ) : null}
+
+          {showsKeywordTrigger ? (
+            <label className="form-field">
+              <span>Palavra ou frase</span>
+              <input
+                onChange={(event) => updateConfigValue(node, "keyword", event.target.value, onConfigChange)}
+                placeholder="Ex: preco, proposta, suporte"
+                value={readConfigValue(config, "keyword")}
+              />
+            </label>
+          ) : null}
+        </div>
+      ) : null}
 
       {showsMessage ? (
         <label className="form-field">
