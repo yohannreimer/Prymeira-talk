@@ -1519,12 +1519,62 @@ select:disabled {
   padding: 0 16px;
 }
 
-.automation-page-messages:empty {
-  display: none;
+.automation-toast {
+  position: fixed;
+  top: 92px;
+  right: 24px;
+  z-index: 80;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: min(420px, calc(100vw - 48px));
+  border: 1px solid rgba(36, 86, 74, 0.16);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  box-shadow: 0 12px 32px rgba(31, 47, 42, 0.18);
+  color: var(--color-text-primary);
+  padding: 13px 14px;
+  font-size: 0.92rem;
+  font-weight: 800;
+  line-height: 1.35;
+  animation: automation-toast-in 180ms ease-out;
 }
 
-.automation-page-messages > p {
-  margin: 0;
+.automation-toast svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.automation-toast--success {
+  border-color: rgba(21, 128, 61, 0.2);
+  background: #f2fbf5;
+  color: #24564a;
+}
+
+.automation-toast--success svg {
+  color: #15803d;
+}
+
+.automation-toast--error {
+  border-color: rgba(159, 51, 45, 0.2);
+  background: #fff7f5;
+  color: #7f2a25;
+}
+
+.automation-toast--error svg {
+  color: #9f332d;
+}
+
+@keyframes automation-toast-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -8px, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
 }
 
 .automation-editor-shell {
@@ -4233,6 +4283,12 @@ select:disabled {
 
   .automation-editor-actions {
     justify-content: flex-start;
+  }
+
+  .automation-toast {
+    top: 78px;
+    right: 12px;
+    max-width: calc(100vw - 24px);
   }
 
   .board-command-bar,

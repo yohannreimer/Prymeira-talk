@@ -1,5 +1,17 @@
 import { useTalkAuth } from "../../app/auth";
-import { ArrowLeft, History, Maximize2, Minimize2, Plus, Save, ToggleLeft, ToggleRight, Zap } from "lucide-react";
+import {
+  ArrowLeft,
+  CheckCircle2,
+  History,
+  Maximize2,
+  Minimize2,
+  Plus,
+  Save,
+  ToggleLeft,
+  ToggleRight,
+  TriangleAlert,
+  Zap
+} from "lucide-react";
 import { type Dispatch, FormEvent, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   automationFlowSchema,
@@ -229,6 +241,21 @@ export function AutomationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const previousEditorAutomationId = useRef<string | null>(null);
+
+  useEffect(() => {
+    const feedback = error ?? notice;
+    if (!feedback) return;
+
+    const timeout = setTimeout(() => {
+      if (error) {
+        setError((current) => (current === feedback ? null : current));
+      } else {
+        setNotice((current) => (current === feedback ? null : current));
+      }
+    }, 4200);
+
+    return () => clearTimeout(timeout);
+  }, [error, notice]);
 
   useEffect(() => {
     let isMounted = true;
@@ -649,10 +676,7 @@ export function AutomationsPageView({
         </button>
       </header>
 
-      <div className="automation-page-messages">
-        {error ? <p className="error-note">{error}</p> : null}
-        {notice ? <p className="list-note">{notice}</p> : null}
-      </div>
+      <AutomationToast message={error ?? notice} tone={error ? "error" : "success"} />
 
       {shouldShowEditor ? (
         <AutomationEditorView
@@ -695,6 +719,29 @@ export function AutomationsPageView({
         />
       )}
     </section>
+  );
+}
+
+function AutomationToast({
+  message,
+  tone
+}: {
+  message: string | null;
+  tone: "success" | "error";
+}) {
+  if (!message) return null;
+
+  const Icon = tone === "error" ? TriangleAlert : CheckCircle2;
+
+  return (
+    <div
+      aria-live={tone === "error" ? "assertive" : "polite"}
+      className={`automation-toast automation-toast--${tone}`}
+      role={tone === "error" ? "alert" : "status"}
+    >
+      <Icon size={18} aria-hidden="true" />
+      <span>{message}</span>
+    </div>
   );
 }
 
