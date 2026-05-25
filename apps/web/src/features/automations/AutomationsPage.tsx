@@ -688,6 +688,7 @@ export function AutomationEditorView({
             {selectedAutomation ? (
               <button
                 aria-label={automationEditorStatusActionLabel(selectedAutomation)}
+                aria-pressed={selectedAutomation.status === "enabled"}
                 className={`secondary-button automation-status-control status-badge status-badge--${editorStatusClass}`}
                 type="button"
                 onClick={() => void onToggleAutomation(selectedAutomation)}

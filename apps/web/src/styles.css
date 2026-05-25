@@ -2646,7 +2646,7 @@ select:disabled {
   font-weight: 800;
 }
 
-.automation-run-list article {
+.automation-run-list article:not(.automation-run-card) {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
   gap: 10px;
@@ -4051,10 +4051,13 @@ select:disabled {
 
   .automation-editor-body {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(360px, 1fr) auto;
+    overflow-y: auto;
   }
 
   .automation-runs-panel {
     grid-column: 1 / -1;
+    max-height: 260px;
   }
 }
 
