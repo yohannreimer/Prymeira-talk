@@ -886,6 +886,16 @@ export function AutomationEditorView({
               onClick={onHistoryToggle}
               type="button"
             >
+              <Zap size={15} aria-hidden="true" />
+              Testar fluxo
+            </button>
+
+            <button
+              aria-expanded={isHistoryOpen}
+              className="secondary-button icon-button-label"
+              onClick={onHistoryToggle}
+              type="button"
+            >
               <History size={15} aria-hidden="true" />
               Histórico
             </button>
