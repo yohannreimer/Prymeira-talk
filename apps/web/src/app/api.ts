@@ -99,7 +99,8 @@ export type ConversationActionBody =
   | { action: "add_tag"; name: string }
   | { action: "remove_tag"; tagId: string }
   | { action: "request_ai_suggestion" }
-  | { action: "create_crm_note" };
+  | { action: "create_crm_note" }
+  | { action: "close_conversation" };
 
 export interface ConversationActionResultDto {
   conversation: ConversationDto;
@@ -1577,6 +1578,24 @@ export async function apiUpdateAutomation(
 
   const data = await response.json();
   return parseAutomationRule(data);
+}
+
+export async function apiDeleteAutomation(
+  getToken: () => Promise<string | null>,
+  automationId: string
+): Promise<void> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/automations/${automationId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to delete automation: ${response.status}`);
+  }
 }
 
 export async function apiTestAutomation(

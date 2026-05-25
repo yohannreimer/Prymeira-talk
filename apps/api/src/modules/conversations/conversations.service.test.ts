@@ -287,7 +287,10 @@ describe("conversations service", () => {
 
     expect(prisma.conversation.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ workspaceId: "workspace_a" })
+        where: expect.objectContaining({
+          workspaceId: "workspace_a",
+          status: { in: ["open", "pending"] }
+        })
       })
     );
   });
@@ -870,6 +873,58 @@ describe("conversations service", () => {
         update: expect.objectContaining({ stageId: "stage_2", isPrimary: true })
       })
     );
+  });
+
+  it("closes a conversation through quick actions", async () => {
+    const openConversation = {
+      id: "conv_1",
+      workspaceId: "workspace_a",
+      channelId: "channel_1",
+      contactId: "contact_1",
+      status: "open" as const,
+      assignedUserId: null,
+      departmentId: null,
+      lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+      lastMessagePreview: "Oi",
+      unreadCount: 3,
+      priority: "normal" as const,
+      tags: []
+    };
+    const closedConversation = {
+      ...openConversation,
+      status: "closed" as const,
+      unreadCount: 0,
+      channel: { displayName: "WhatsApp", phoneNumber: "+55 47 99999-0000" },
+      contact: { name: "Ana Silva", phone: "5547999990000" },
+      department: null,
+      assignedUser: null
+    };
+    const prisma = createMockPrisma({
+      findUnique: vi
+        .fn<PrismaLike["conversation"]["findUnique"]>()
+        .mockResolvedValueOnce(openConversation)
+        .mockResolvedValueOnce(closedConversation),
+      update: vi.fn<PrismaLike["conversation"]["update"]>().mockResolvedValue(closedConversation)
+    });
+    const service = createConversationsService(prisma);
+
+    const result = await service.runConversationAction({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      action: "close_conversation"
+    });
+
+    expect(prisma.conversation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { workspaceId_id: { workspaceId: "workspace_a", id: "conv_1" } },
+        data: {
+          status: "closed",
+          unreadCount: 0
+        }
+      })
+    );
+    expect(result.conversation.status).toBe("closed");
+    expect(result.conversation.unreadCount).toBe(0);
   });
 
   it("rejects assigning without a current user identity", async () => {

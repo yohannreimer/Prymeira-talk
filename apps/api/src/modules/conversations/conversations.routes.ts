@@ -68,6 +68,9 @@ const conversationActionBodySchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("create_crm_note")
+  }),
+  z.object({
+    action: z.literal("close_conversation")
   })
 ]);
 

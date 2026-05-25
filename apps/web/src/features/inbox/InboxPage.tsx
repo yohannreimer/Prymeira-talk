@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ConversationDto, MessageDto, RealtimeEvent } from "@prymeira-talk/shared";
-import { Bot, Download, MessageSquare, StickyNote, UserCheck, X } from "lucide-react";
+import { Bot, CheckCircle2, Download, MessageSquare, StickyNote, UserCheck, X } from "lucide-react";
 import type { ChangeEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -80,6 +80,10 @@ function formatNoteDate(value: string) {
 }
 
 function upsertConversation(list: ConversationDto[], conversation: ConversationDto) {
+  if (conversation.status === "closed") {
+    return list.filter((item) => item.id !== conversation.id);
+  }
+
   const withoutUpdated = list.filter((item) => item.id !== conversation.id);
   return [conversation, ...withoutUpdated];
 }
@@ -1369,6 +1373,15 @@ export function InboxPage() {
             >
               <Bot size={15} aria-hidden="true" />
               IA
+            </button>
+            <button
+              className="quick-action-danger"
+              disabled={!selectedConversation || isRunningAction}
+              onClick={() => void runAction({ action: "close_conversation" })}
+              type="button"
+            >
+              <CheckCircle2 size={15} aria-hidden="true" />
+              Finalizar
             </button>
           </div>
           {aiSuggestion ? (

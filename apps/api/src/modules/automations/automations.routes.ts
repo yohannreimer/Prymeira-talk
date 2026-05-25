@@ -273,6 +273,27 @@ export const automationsRoutes: FastifyPluginAsync<AutomationsRoutesOptions> = a
     }
   });
 
+  app.delete("/automations/:automationId", async (request, reply) => {
+    if (!requireAutomationManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = automationParamsSchema.safeParse(request.params);
+
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid automation request." });
+    }
+
+    try {
+      return await service.deleteAutomation({
+        workspaceId: request.talk.workspaceId,
+        automationId: params.data.automationId
+      });
+    } catch (error) {
+      return handleAutomationsError(reply, error);
+    }
+  });
+
   app.post("/automations/:automationId/test", async (request, reply) => {
     if (!requireAutomationManage(request.talk.role, reply)) {
       return reply;

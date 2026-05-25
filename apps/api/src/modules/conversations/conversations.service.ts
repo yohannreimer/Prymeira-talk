@@ -202,7 +202,8 @@ type ConversationAction =
   | { action: "add_tag"; name: string }
   | { action: "remove_tag"; tagId: string }
   | { action: "request_ai_suggestion" }
-  | { action: "create_crm_note" };
+  | { action: "create_crm_note" }
+  | { action: "close_conversation" };
 
 export interface ConversationActionResultDto {
   conversation: ConversationDto;
@@ -487,7 +488,10 @@ export function createConversationsService(
   return {
     async listConversations(input: { workspaceId: string }): Promise<ConversationDto[]> {
       const conversations = await prisma.conversation.findMany({
-        where: { workspaceId: input.workspaceId },
+        where: {
+          workspaceId: input.workspaceId,
+          status: { in: ["open", "pending"] }
+        },
         include: conversationDtoInclude,
         orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
         take: 50
@@ -843,6 +847,23 @@ export function createConversationsService(
           }
         });
         crmAction = { id: created.id, status: created.status };
+      }
+
+      if (input.action === "close_conversation") {
+        conversation = await prisma.conversation.update({
+          where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+          data: {
+            status: "closed",
+            unreadCount: 0
+          },
+          include: {
+            assignedUser: { select: { displayName: true } },
+            channel: { select: { displayName: true, phoneNumber: true } },
+            contact: { select: { name: true, phone: true } },
+            department: { select: { name: true } },
+            tags: { include: { tag: true } }
+          }
+        });
       }
 
       conversation = await findConversation(input);

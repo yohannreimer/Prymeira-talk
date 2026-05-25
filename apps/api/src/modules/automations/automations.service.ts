@@ -85,6 +85,9 @@ export interface PrismaLike {
         actions: unknown;
       }>;
     }): Promise<AutomationRuleRecord>;
+    delete(args: {
+      where: { workspaceId_id: { workspaceId: string; id: string } };
+    }): Promise<AutomationRuleRecord>;
   };
   automationRun: {
     findMany(args: {
@@ -306,6 +309,24 @@ export function createAutomationsService(prisma: PrismaLike) {
       });
 
       return toRuleDto(rule);
+    },
+
+    async deleteAutomation(input: {
+      workspaceId: string;
+      automationId: string;
+    }): Promise<{ ok: true; automationId: string }> {
+      await findRuleForWorkspace(input);
+
+      await prisma.automationRule.delete({
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: input.automationId
+          }
+        }
+      });
+
+      return { ok: true, automationId: input.automationId };
     },
 
     async testAutomation(input: {

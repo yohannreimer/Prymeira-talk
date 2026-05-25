@@ -11,11 +11,17 @@ type MockPrisma = {
     findFirst: any;
     create: any;
     update: any;
+    delete: any;
   };
   automationRun: {
     findMany: any;
     upsert: any;
   };
+};
+
+type MockPrismaOverrides = {
+  automationRule?: Partial<MockPrisma["automationRule"]>;
+  automationRun?: Partial<MockPrisma["automationRun"]>;
 };
 
 const automationId = "00000000-0000-4000-8000-000000000101";
@@ -48,7 +54,7 @@ const baseRun = {
   updatedAt: new Date("2026-05-21T10:05:00.000Z")
 };
 
-function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & PrismaLike {
+function createMockPrisma(overrides: MockPrismaOverrides = {}): MockPrisma & PrismaLike {
   return {
     automationRule: {
       findMany:
@@ -62,6 +68,9 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
         vi.fn().mockResolvedValue(baseRule),
       update:
         overrides.automationRule?.update ??
+        vi.fn().mockResolvedValue(baseRule),
+      delete:
+        overrides.automationRule?.delete ??
         vi.fn().mockResolvedValue(baseRule)
     },
     automationRun: {
@@ -180,6 +189,31 @@ describe("automations service", () => {
       })
     ).rejects.toMatchObject({ code: "AUTOMATION_NOT_FOUND" });
     expect(prisma.automationRun.upsert).not.toHaveBeenCalled();
+  });
+
+  it("deletes an automation inside the caller workspace", async () => {
+    const prisma = createMockPrisma();
+    const service = createAutomationsService(prisma);
+
+    const result = await service.deleteAutomation({
+      workspaceId: "workspace_a",
+      automationId
+    });
+
+    expect(result).toEqual({ ok: true, automationId });
+    expect(prisma.automationRule.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { workspaceId: "workspace_a", id: automationId }
+      })
+    );
+    expect(prisma.automationRule.delete).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: automationId
+        }
+      }
+    });
   });
 
   it("rejects enabling an automation with a coming soon flow block", async () => {
@@ -360,6 +394,10 @@ describe("automations routes", () => {
       method: "POST" as const,
       url: `/automations/${automationId}/test`,
       payload: { eventKey: "message.received:test-event" }
+    },
+    {
+      method: "DELETE" as const,
+      url: `/automations/${automationId}`
     }
   ])("returns 403 for agents on $method $url", async ({ method, url, payload }) => {
     const { app, prisma } = await buildAutomationsApp({ role: "agent" });
@@ -378,6 +416,7 @@ describe("automations routes", () => {
       });
       expect(prisma.automationRule.create).not.toHaveBeenCalled();
       expect(prisma.automationRule.update).not.toHaveBeenCalled();
+      expect(prisma.automationRule.delete).not.toHaveBeenCalled();
       expect(prisma.automationRun.upsert).not.toHaveBeenCalled();
     } finally {
       await app.close();
@@ -409,10 +448,15 @@ describe("automations routes", () => {
           url: `/automations/${automationId}/test`,
           payload: { eventKey: "message.received:test-event" }
         });
+        const deleteResponse = await app.inject({
+          method: "DELETE",
+          url: `/automations/${automationId}`
+        });
 
         expect(createResponse.statusCode).toBe(201);
         expect(patchResponse.statusCode).toBe(200);
         expect(testResponse.statusCode).toBe(200);
+        expect(deleteResponse.statusCode).toBe(200);
       } finally {
         await app.close();
       }

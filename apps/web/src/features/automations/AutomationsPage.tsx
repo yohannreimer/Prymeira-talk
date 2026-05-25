@@ -9,6 +9,7 @@ import {
   Save,
   ToggleLeft,
   ToggleRight,
+  Trash2,
   TriangleAlert,
   Zap
 } from "lucide-react";
@@ -22,6 +23,7 @@ import {
 } from "@prymeira-talk/shared";
 import {
   apiCreateAutomation,
+  apiDeleteAutomation,
   apiGetContacts,
   apiGetAutomationRuns,
   apiGetAutomations,
@@ -484,6 +486,36 @@ export function AutomationsPage() {
     }
   }
 
+  async function deleteSelectedAutomation() {
+    if (!selectedAutomation) return;
+
+    const shouldDelete =
+      typeof window === "undefined"
+        ? true
+        : window.confirm(`Apagar o fluxo "${selectedAutomation.name}"? Essa acao nao pode ser desfeita.`);
+
+    if (!shouldDelete) return;
+
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      await apiDeleteAutomation(getToken, selectedAutomation.id);
+      setAutomations((current) => current.filter((automation) => automation.id !== selectedAutomation.id));
+      setSelectedAutomationId(null);
+      setFlowPayload(null);
+      setRuns([]);
+      setIsHistoryOpen(false);
+      setViewMode("hub");
+      setNotice("Automacao apagada.");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Nao foi possivel apagar automacao.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   async function testSelectedAutomation() {
     if (!selectedAutomation) return;
 
@@ -557,6 +589,7 @@ export function AutomationsPage() {
       onFormChange={setForm}
       onHistoryToggle={() => setIsHistoryOpen((current) => !current)}
       onOpen={openAutomation}
+      onDeleteAutomation={deleteSelectedAutomation}
       onRunEventKeyChange={setRunEventKey}
       onSimulationContactChange={setSimulationContactId}
       onSimulationMessageBodyChange={setSimulationMessageBody}
@@ -599,6 +632,7 @@ interface AutomationsPageViewProps {
   onFormChange: Dispatch<SetStateAction<AutomationFormState>>;
   onHistoryToggle: () => void;
   onOpen: (automationId: string) => void;
+  onDeleteAutomation: () => void;
   onRealSimulation: () => void;
   onRunEventKeyChange?: Dispatch<SetStateAction<string>>;
   onSimulationContactChange: Dispatch<SetStateAction<string>>;
@@ -639,6 +673,7 @@ export function AutomationsPageView({
   onFormChange,
   onHistoryToggle,
   onOpen,
+  onDeleteAutomation,
   onRealSimulation,
   onRunEventKeyChange,
   onSimulationContactChange,
@@ -696,6 +731,7 @@ export function AutomationsPageView({
           onExitFocusMode={onExitFocusMode}
           onFormChange={onFormChange}
           onHistoryToggle={onHistoryToggle}
+          onDeleteAutomation={onDeleteAutomation}
           onRealSimulation={onRealSimulation}
           onRunEventKeyChange={onRunEventKeyChange}
           onSimulationContactChange={onSimulationContactChange}
@@ -835,6 +871,7 @@ export function AutomationEditorView({
   onExitFocusMode,
   onFormChange,
   onHistoryToggle,
+  onDeleteAutomation,
   onRealSimulation,
   onRunEventKeyChange,
   onSimulationContactChange,
@@ -865,6 +902,7 @@ export function AutomationEditorView({
   onExitFocusMode: () => void;
   onFormChange: Dispatch<SetStateAction<AutomationFormState>>;
   onHistoryToggle: () => void;
+  onDeleteAutomation: () => void;
   onRealSimulation: () => void;
   onRunEventKeyChange?: Dispatch<SetStateAction<string>>;
   onSimulationContactChange: Dispatch<SetStateAction<string>>;
@@ -959,6 +997,18 @@ export function AutomationEditorView({
               )}
               {isFocusMode ? "Sair do foco" : "Modo foco"}
             </button>
+
+            {selectedAutomation ? (
+              <button
+                className="secondary-button danger-button icon-button-label"
+                disabled={isSaving}
+                onClick={onDeleteAutomation}
+                type="button"
+              >
+                <Trash2 size={15} aria-hidden="true" />
+                Apagar
+              </button>
+            ) : null}
 
             <button className="primary-button" disabled={isSaving} type="submit">
               <Save size={15} aria-hidden="true" />

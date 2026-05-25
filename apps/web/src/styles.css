@@ -4183,6 +4183,16 @@ select:disabled {
   background: var(--color-brand-50);
 }
 
+.quick-actions .quick-action-danger {
+  border-color: rgba(144, 45, 45, 0.24);
+  color: #8a2b2b;
+}
+
+.quick-actions .quick-action-danger:hover:not(:disabled) {
+  border-color: rgba(144, 45, 45, 0.34);
+  background: rgba(144, 45, 45, 0.06);
+}
+
 .drawer-action-stack {
   display: grid;
   gap: 10px;
