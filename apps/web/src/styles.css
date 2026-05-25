@@ -1626,7 +1626,7 @@ select:disabled {
 
 .automation-editor-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 260px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   min-width: 0;
   min-height: 0;
@@ -1647,16 +1647,27 @@ select:disabled {
   overflow-y: auto;
 }
 
-.automation-runs-panel {
+.automation-history-drawer {
+  position: fixed;
+  top: 86px;
+  right: 16px;
+  z-index: 20;
   display: grid;
   align-content: start;
   gap: 12px;
+  width: min(360px, calc(100vw - 32px));
+  max-height: calc(100vh - 108px);
   min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  box-shadow: var(--shadow-drawer);
   overflow-y: auto;
+  padding: 14px;
 }
 
-.automation-editor-shell.is-focus-mode .automation-runs-panel {
-  display: none;
+.automation-history-drawer .secondary-button {
+  width: fit-content;
 }
 
 .automation-run-card {
@@ -4047,17 +4058,6 @@ select:disabled {
 @media (max-width: 1360px) {
   .automations-layout {
     grid-template-columns: 220px minmax(0, 1fr);
-  }
-
-  .automation-editor-body {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(360px, 1fr) auto;
-    overflow-y: auto;
-  }
-
-  .automation-runs-panel {
-    grid-column: 1 / -1;
-    max-height: 260px;
   }
 }
 

@@ -71,7 +71,8 @@ afterEach(() => {
 const pureAutomationComponents = new Set([
   "AutomationsPageView",
   "AutomationHubView",
-  "AutomationEditorView"
+  "AutomationEditorView",
+  "AutomationHistoryDrawer"
 ]);
 
 function expandPureComponents(node: ReactNode): ReactNode {
@@ -439,6 +440,24 @@ describe("AutomationsPage navigation", () => {
           element.type.name === "AutomationCanvas" &&
           (element.props as { variant?: unknown }).variant === "focus"
       )
+    ).not.toBeNull();
+  });
+
+  it("keeps test history collapsed until requested", async () => {
+    const page = await renderAutomationsPageContainer();
+
+    clickButton(page.expandedTree, /Boas-vindas/i);
+    await page.settle();
+
+    expect(
+      findElement(page.expandedTree, (element) => element.type === "h2" && hasText(element, /Teste & histórico/i))
+    ).toBeNull();
+
+    clickButton(page.expandedTree, /Histórico/i);
+    await page.settle();
+
+    expect(
+      findElement(page.expandedTree, (element) => element.type === "h2" && hasText(element, /Teste & histórico/i))
     ).not.toBeNull();
   });
 });

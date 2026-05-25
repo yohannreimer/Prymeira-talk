@@ -1,5 +1,5 @@
 import { useTalkAuth } from "../../app/auth";
-import { ArrowLeft, Maximize2, Minimize2, Plus, Save, ToggleLeft, ToggleRight, Zap } from "lucide-react";
+import { ArrowLeft, History, Maximize2, Minimize2, Plus, Save, ToggleLeft, ToggleRight, Zap } from "lucide-react";
 import { type Dispatch, FormEvent, type SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
 import { automationFlowSchema, getAutomationBlock, type AutomationBlockType, type AutomationFlowDefinition } from "@prymeira-talk/shared";
 import {
@@ -178,6 +178,7 @@ export function AutomationsPage() {
   const [isRunsLoading, setIsRunsLoading] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [runEventKey, setRunEventKey] = useState("");
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -202,6 +203,7 @@ export function AutomationsPage() {
             : nextAutomations[0]?.id ?? null
         );
         setViewMode("hub");
+        setIsHistoryOpen(false);
       } catch (loadError) {
         if (!isMounted) return;
         setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar automacoes.");
@@ -285,14 +287,17 @@ export function AutomationsPage() {
 
   function openAutomation(automationId: string) {
     setSelectedAutomationId(automationId);
+    setIsHistoryOpen(false);
     setViewMode("editor");
   }
 
   function closeEditor() {
+    setIsHistoryOpen(false);
     setViewMode("hub");
   }
 
   function enterFocusMode() {
+    setIsHistoryOpen(false);
     setViewMode("focus");
   }
 
@@ -322,6 +327,7 @@ export function AutomationsPage() {
 
       setAutomations((current) => mergeAutomation(current, savedAutomation));
       setSelectedAutomationId(savedAutomation.id);
+      setIsHistoryOpen(false);
       setViewMode("editor");
       setNotice("Automacao salva no runner local.");
     } catch (saveError) {
@@ -336,6 +342,7 @@ export function AutomationsPage() {
     setForm(emptyForm);
     setFlowPayload(null);
     setDraftVersion((current) => current + 1);
+    setIsHistoryOpen(false);
     setViewMode("editor");
     setNotice("Rascunho local pronto para edicao.");
   }
@@ -399,6 +406,7 @@ export function AutomationsPage() {
       error={error}
       form={form}
       isFocusMode={viewMode === "focus"}
+      isHistoryOpen={isHistoryOpen}
       isLoading={isLoading}
       isRunsLoading={isRunsLoading}
       isSaving={isSaving}
@@ -410,6 +418,7 @@ export function AutomationsPage() {
       onEnterFocusMode={enterFocusMode}
       onExitFocusMode={exitFocusMode}
       onFormChange={setForm}
+      onHistoryToggle={() => setIsHistoryOpen((current) => !current)}
       onOpen={openAutomation}
       onRunEventKeyChange={setRunEventKey}
       onSave={saveAutomation}
@@ -431,6 +440,7 @@ interface AutomationsPageViewProps {
   error: string | null;
   form: AutomationFormState;
   isFocusMode: boolean;
+  isHistoryOpen: boolean;
   isLoading: boolean;
   isRunsLoading: boolean;
   isSaving: boolean;
@@ -442,6 +452,7 @@ interface AutomationsPageViewProps {
   onEnterFocusMode: () => void;
   onExitFocusMode: () => void;
   onFormChange: Dispatch<SetStateAction<AutomationFormState>>;
+  onHistoryToggle: () => void;
   onOpen: (automationId: string) => void;
   onRunEventKeyChange?: Dispatch<SetStateAction<string>>;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
@@ -461,6 +472,7 @@ export function AutomationsPageView({
   error,
   form,
   isFocusMode,
+  isHistoryOpen,
   isLoading,
   isRunsLoading,
   isSaving,
@@ -472,6 +484,7 @@ export function AutomationsPageView({
   onEnterFocusMode,
   onExitFocusMode,
   onFormChange,
+  onHistoryToggle,
   onOpen,
   onRunEventKeyChange,
   onSave,
@@ -515,6 +528,7 @@ export function AutomationsPageView({
           draftVersion={draftVersion}
           form={form}
           isFocusMode={isFocusMode}
+          isHistoryOpen={isHistoryOpen}
           isRunsLoading={isRunsLoading}
           isSaving={isSaving}
           isTesting={isTesting}
@@ -523,6 +537,7 @@ export function AutomationsPageView({
           onEnterFocusMode={onEnterFocusMode}
           onExitFocusMode={onExitFocusMode}
           onFormChange={onFormChange}
+          onHistoryToggle={onHistoryToggle}
           onRunEventKeyChange={onRunEventKeyChange}
           onSave={onSave}
           onTest={onTest}
@@ -621,6 +636,7 @@ export function AutomationEditorView({
   draftVersion,
   form,
   isFocusMode,
+  isHistoryOpen,
   isRunsLoading,
   isSaving,
   isTesting,
@@ -629,6 +645,7 @@ export function AutomationEditorView({
   onEnterFocusMode,
   onExitFocusMode,
   onFormChange,
+  onHistoryToggle,
   onRunEventKeyChange,
   onSave,
   onTest,
@@ -641,6 +658,7 @@ export function AutomationEditorView({
   draftVersion: number;
   form: AutomationFormState;
   isFocusMode: boolean;
+  isHistoryOpen: boolean;
   isRunsLoading: boolean;
   isSaving: boolean;
   isTesting: boolean;
@@ -649,6 +667,7 @@ export function AutomationEditorView({
   onEnterFocusMode: () => void;
   onExitFocusMode: () => void;
   onFormChange: Dispatch<SetStateAction<AutomationFormState>>;
+  onHistoryToggle: () => void;
   onRunEventKeyChange?: Dispatch<SetStateAction<string>>;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
   onTest: () => void;
@@ -706,13 +725,13 @@ export function AutomationEditorView({
             )}
 
             <button
+              aria-expanded={isHistoryOpen}
               className="secondary-button icon-button-label"
-              disabled={!selectedAutomation || isTesting}
-              onClick={() => void onTest()}
+              onClick={onHistoryToggle}
               type="button"
             >
-              <Zap size={15} aria-hidden="true" />
-              {isTesting ? "Testando" : "Testar agora"}
+              <History size={15} aria-hidden="true" />
+              Histórico
             </button>
 
             <button
@@ -761,38 +780,80 @@ export function AutomationEditorView({
             variant={isFocusMode ? "focus" : "editor"}
           />
         </div>
-
-        <aside className="module-panel automation-runs-panel">
-          <div className="panel-title-row">
-            <h2>Teste & histórico</h2>
-            <span>{isRunsLoading ? "Carregando" : `${runs.length} runs`}</span>
-          </div>
-
-          <label className="form-field">
-            <span>Event key</span>
-            <input
-              disabled={!selectedAutomation || isTesting}
-              onChange={(event) => onRunEventKeyChange?.(event.target.value)}
-              value={runEventKey}
-            />
-          </label>
-
-          <div className="automation-run-list">
-            {runs.length === 0 && !isRunsLoading ? (
-              <p className="list-note">Nenhum teste executado.</p>
-            ) : null}
-            {runs.map((run) => (
-              <article className="automation-run-card" key={run.id}>
-                <span className={`status-badge status-badge--${run.status === "completed" ? "open" : "waiting"}`}>
-                  {run.status}
-                </span>
-                <strong>{run.eventKey}</strong>
-                <small>{formatAutomationRunDate(run.updatedAt)}</small>
-              </article>
-            ))}
-          </div>
-        </aside>
       </div>
+
+      {isHistoryOpen ? (
+        <AutomationHistoryDrawer
+          isRunsLoading={isRunsLoading}
+          isTesting={isTesting}
+          onRunEventKeyChange={onRunEventKeyChange}
+          onTest={onTest}
+          runEventKey={runEventKey}
+          runs={runs}
+          selectedAutomation={selectedAutomation}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function AutomationHistoryDrawer({
+  isRunsLoading,
+  isTesting,
+  onRunEventKeyChange,
+  onTest,
+  runEventKey,
+  runs,
+  selectedAutomation
+}: {
+  isRunsLoading: boolean;
+  isTesting: boolean;
+  onRunEventKeyChange?: Dispatch<SetStateAction<string>>;
+  onTest: () => void;
+  runEventKey: string;
+  runs: AutomationRunDto[];
+  selectedAutomation: AutomationRuleDto | null;
+}) {
+  return (
+    <aside className="automation-history-drawer" aria-label="Teste & histórico">
+      <div className="panel-title-row">
+        <h2>Teste & histórico</h2>
+        <span>{isRunsLoading ? "Carregando" : `${runs.length} runs`}</span>
+      </div>
+
+      <label className="form-field">
+        <span>Event key</span>
+        <input
+          disabled={!selectedAutomation || isTesting}
+          onChange={(event) => onRunEventKeyChange?.(event.target.value)}
+          value={runEventKey}
+        />
+      </label>
+
+      <button
+        className="secondary-button icon-button-label"
+        disabled={!selectedAutomation || isTesting}
+        onClick={() => void onTest()}
+        type="button"
+      >
+        <Zap size={15} aria-hidden="true" />
+        {isTesting ? "Testando" : "Testar agora"}
+      </button>
+
+      <div className="automation-run-list">
+        {runs.length === 0 && !isRunsLoading ? (
+          <p className="list-note">Nenhum teste executado.</p>
+        ) : null}
+        {runs.map((run) => (
+          <article className="automation-run-card" key={run.id}>
+            <span className={`status-badge status-badge--${run.status === "completed" ? "open" : "waiting"}`}>
+              {run.status}
+            </span>
+            <strong>{run.eventKey}</strong>
+            <small>{formatAutomationRunDate(run.updatedAt)}</small>
+          </article>
+        ))}
+      </div>
+    </aside>
   );
 }
