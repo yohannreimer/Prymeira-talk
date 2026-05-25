@@ -2382,6 +2382,314 @@ select:disabled {
   gap: 10px;
 }
 
+.campaign-inline-note {
+  margin: 0 20px;
+}
+
+.campaign-hub-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+  padding: 0 20px 20px;
+}
+
+.campaign-create-card,
+.campaign-hub-card,
+.campaign-empty-panel {
+  min-height: 178px;
+}
+
+.campaign-create-card,
+.campaign-hub-card {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  padding: 18px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.campaign-create-card:hover,
+.campaign-hub-card:hover {
+  border-color: rgba(36, 86, 74, 0.34);
+  box-shadow: var(--shadow-card);
+  transform: translateY(-1px);
+}
+
+.campaign-create-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 8px;
+  background: var(--color-brand-50);
+  color: var(--color-brand-600);
+}
+
+.campaign-create-card strong,
+.campaign-hub-card strong {
+  color: var(--color-text-primary);
+  font-size: 1.05rem;
+  line-height: 1.2;
+}
+
+.campaign-create-card span,
+.campaign-hub-card span,
+.campaign-hub-card small {
+  color: var(--color-text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.campaign-hub-card .status-badge {
+  justify-self: start;
+}
+
+.campaign-empty-panel {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.campaign-editor-header {
+  align-items: center;
+}
+
+.campaign-editor-header > div:first-child {
+  display: grid;
+  gap: 8px;
+}
+
+.campaign-editor-header .secondary-button {
+  justify-self: start;
+}
+
+.campaign-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.campaign-builder-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.34fr);
+  gap: 14px;
+  padding: 0 20px 20px;
+  align-items: start;
+}
+
+.campaign-builder-main,
+.campaign-builder-side {
+  min-width: 0;
+}
+
+.campaign-builder-main {
+  display: grid;
+  gap: 18px;
+}
+
+.campaign-builder-section {
+  display: grid;
+  gap: 14px;
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: 18px;
+}
+
+.campaign-builder-section:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.campaign-import-box {
+  display: grid;
+  gap: 12px;
+  border: 1px dashed rgba(36, 86, 74, 0.28);
+  border-radius: 8px;
+  background: var(--color-surface-subtle);
+  padding: 14px;
+}
+
+.campaign-import-box > span,
+.campaign-import-preview small {
+  color: var(--color-text-secondary);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.campaign-import-box .secondary-button {
+  justify-self: start;
+  cursor: pointer;
+}
+
+.campaign-import-preview {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+}
+
+.campaign-import-preview-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.55fr);
+  gap: 10px;
+  padding: 9px 11px;
+  border-top: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+  font-size: 0.84rem;
+}
+
+.campaign-import-preview-row:first-child {
+  border-top: 0;
+}
+
+.campaign-import-preview-row.is-header {
+  background: var(--color-surface-subtle);
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.campaign-import-preview-row strong,
+.campaign-import-preview-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-import-preview small {
+  padding: 9px 11px;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.campaign-cadence-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.campaign-builder-side {
+  display: grid;
+  gap: 14px;
+  position: sticky;
+  top: 18px;
+}
+
+.campaign-preview-panel,
+.campaign-results {
+  display: grid;
+  gap: 14px;
+}
+
+.campaign-preview-bubble {
+  display: block;
+  max-width: 100%;
+  border-radius: 8px;
+  background: var(--color-brand-600);
+  color: var(--color-on-brand);
+  padding: 14px 16px;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.campaign-summary-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+}
+
+.campaign-summary-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.campaign-summary-list div:first-child {
+  border-top: 0;
+}
+
+.campaign-summary-list dt {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.campaign-summary-list dd {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 0.84rem;
+  font-weight: 800;
+  text-align: right;
+}
+
+.recipient-table {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+}
+
+.recipient-table-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(86px, auto) minmax(96px, auto);
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-top: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+  font-size: 0.82rem;
+}
+
+.recipient-table-row:first-child {
+  border-top: 0;
+}
+
+.recipient-table-row.is-header {
+  background: var(--color-surface-subtle);
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.recipient-table-row small {
+  grid-column: 1 / -1;
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .automation-actions-editor {
   border: 1px solid var(--color-border);
   border-radius: 8px;

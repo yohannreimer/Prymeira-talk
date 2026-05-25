@@ -389,6 +389,9 @@ model Campaign {
   status      CampaignStatus  @default(draft)
   audience    Json            @default("{}")
   messageBody String          @map("message_body")
+  templates   Json            @default("[]")
+  fallbackName String         @default("cliente") @map("fallback_name")
+  cadence     Json            @default("{}")
   scheduledAt DateTime?       @map("scheduled_at")
   mode        IntegrationMode @default(simulated)
   createdAt   DateTime        @default(now()) @map("created_at")
@@ -405,17 +408,25 @@ model CampaignRecipient {
   id          String   @id @default(uuid()) @db.Uuid
   workspaceId String   @map("workspace_id")
   campaignId  String   @map("campaign_id") @db.Uuid
-  contactId   String   @map("contact_id") @db.Uuid
+  contactId   String?  @map("contact_id") @db.Uuid
+  audienceKey String?  @map("audience_key")
+  providerMessageId String? @map("provider_message_id")
   status      String
   result      Json     @default("{}")
+  contactSnapshot Json @default("{}") @map("contact_snapshot")
+  scheduledAt DateTime? @map("scheduled_at")
+  sentAt      DateTime? @map("sent_at")
+  attempts    Int      @default(0)
+  errorMessage String? @map("error_message")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   campaign Campaign @relation(fields: [workspaceId, campaignId], references: [workspaceId, id], onDelete: Cascade)
-  contact  Contact  @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  contact  Contact? @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, campaignId, contactId])
+  @@unique([workspaceId, campaignId, audienceKey])
   @@index([workspaceId, campaignId, status])
   @@map("campaign_recipients")
 }

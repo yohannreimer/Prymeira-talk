@@ -1,33 +1,67 @@
 import { useTalkAuth } from "../../app/auth";
-import { CalendarClock, Eye, Play, Plus, Save, Send } from "lucide-react";
+import { CalendarClock, Gauge, Play, Plus, Save, Send, Upload, Zap } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { read, utils } from "xlsx";
 import {
   apiCreateCampaign,
   apiGetBoards,
   apiGetCampaignRecipients,
   apiGetCampaigns,
   apiResolveCampaignAudience,
+  apiSendCampaignReal,
   apiSendCampaignSimulated,
   apiUpdateCampaign,
   type CampaignAudienceContactDto,
+  type CampaignCadenceDto,
   type CampaignDto,
   type CampaignRecipientDto,
   type ContactBoardWithStagesDto
 } from "../../app/api";
 
+type AudienceSource = "board" | "imported";
+type CampaignViewMode = "hub" | "editor";
+
+interface ImportedAudienceRow {
+  name?: string;
+  phone: string;
+  fields: Record<string, string>;
+}
+
 interface CampaignFormState {
   name: string;
+  audienceSource: AudienceSource;
   boardId: string;
   stageId: string;
-  messageBody: string;
+  importedRows: ImportedAudienceRow[];
+  templates: string[];
+  fallbackName: string;
+  cadence: CampaignCadenceDto;
   scheduledAt: string;
 }
 
+const defaultCadence: CampaignCadenceDto = {
+  minDelaySeconds: 30,
+  maxDelaySeconds: 90,
+  batchSize: 25,
+  pauseMinSeconds: 300,
+  pauseMaxSeconds: 900,
+  windowStart: "09:00",
+  windowEnd: "18:00"
+};
+
 const emptyForm: CampaignFormState = {
   name: "Reativacao VIP",
+  audienceSource: "board",
   boardId: "",
   stageId: "",
-  messageBody: "Oi {{name}}, temos uma novidade para voce.",
+  importedRows: [],
+  templates: [
+    "Oi {{name}}, temos uma novidade para voce.",
+    "{{name}}, passando rapidinho para falar contigo.",
+    "Ola {{name}}, posso te mostrar uma novidade?"
+  ],
+  fallbackName: "cliente",
+  cadence: defaultCadence,
   scheduledAt: ""
 };
 
@@ -51,9 +85,16 @@ function toApiDateTime(value: string) {
 function toFormState(campaign: CampaignDto): CampaignFormState {
   return {
     name: campaign.name,
-    boardId: campaign.audience.boardId,
+    audienceSource: campaign.audience.type === "imported" ? "imported" : "board",
+    boardId: campaign.audience.boardId ?? "",
     stageId: campaign.audience.stageId ?? "",
-    messageBody: campaign.messageBody,
+    importedRows: (campaign.audience.rows ?? []).map((row) => ({
+      ...row,
+      fields: row.fields ?? {}
+    })),
+    templates: campaign.templates.length > 0 ? campaign.templates : [campaign.messageBody],
+    fallbackName: campaign.fallbackName || "cliente",
+    cadence: campaign.cadence,
     scheduledAt: toInputDateTime(campaign.scheduledAt)
   };
 }
@@ -69,10 +110,6 @@ function formatDateTime(value: string | null) {
   }).format(new Date(value));
 }
 
-function previewMessage(messageBody: string, name = "Ana", phone = "+5511999990001") {
-  return messageBody.replaceAll("{{name}}", name).replaceAll("{{phone}}", phone);
-}
-
 function statusLabel(status: CampaignDto["status"]) {
   const labels: Record<CampaignDto["status"], string> = {
     draft: "Rascunho",
@@ -85,8 +122,83 @@ function statusLabel(status: CampaignDto["status"]) {
   return labels[status];
 }
 
+function renderPreview(template: string, fallbackName: string, sample?: ImportedAudienceRow | CampaignAudienceContactDto) {
+  const name = sample?.name?.trim() || fallbackName;
+  const fields = "fields" in (sample ?? {}) ? (sample as ImportedAudienceRow | CampaignAudienceContactDto).fields : {};
+  const variables: Record<string, string> = {
+    ...fields,
+    name,
+    nome: name,
+    phone: sample?.phone ?? "+5511999990001",
+    telefone: sample?.phone ?? "+5511999990001"
+  };
+
+  return template.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_, key: string) =>
+    variables[key as keyof typeof variables] ?? ""
+  );
+}
+
+function estimateDuration(rowCount: number, cadence: CampaignCadenceDto) {
+  if (rowCount <= 1) return "imediato";
+
+  const delaySeconds = Math.round((cadence.minDelaySeconds + cadence.maxDelaySeconds) / 2);
+  const pauses = cadence.batchSize > 0 ? Math.floor((rowCount - 1) / cadence.batchSize) : 0;
+  const totalSeconds = (rowCount - 1) * delaySeconds + pauses * cadence.pauseMinSeconds;
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.ceil((totalSeconds % 3600) / 60);
+
+  if (hours > 0) return `${hours}h ${minutes}min`;
+  return `${minutes}min`;
+}
+
+function normalizeCell(value: unknown) {
+  return value == null ? "" : String(value).trim();
+}
+
+function findColumn(headers: string[], patterns: RegExp[]) {
+  return headers.find((header) => patterns.some((pattern) => pattern.test(header.toLowerCase())));
+}
+
+async function parseAudienceFile(file: File): Promise<ImportedAudienceRow[]> {
+  const buffer = await file.arrayBuffer();
+  const workbook = read(buffer, { type: "array" });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+  if (!sheet) return [];
+
+  const rows = utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
+  const headers = rows[0] ? Object.keys(rows[0]) : [];
+  const phoneColumn = findColumn(headers, [/telefone/, /phone/, /celular/, /whats/, /numero/, /número/]);
+  const nameColumn = findColumn(headers, [/^nome$/, /name/, /cliente/, /contato/]);
+
+  if (!phoneColumn) return [];
+
+  return rows
+    .map((row) => {
+      const phone = normalizeCell(row[phoneColumn]);
+      const name = nameColumn ? normalizeCell(row[nameColumn]) : "";
+      const fields = Object.fromEntries(
+        Object.entries(row).map(([key, value]) => [key, normalizeCell(value)])
+      );
+
+      return {
+        ...(name ? { name } : {}),
+        phone,
+        fields
+      };
+    })
+    .filter((row) => row.phone.length > 0);
+}
+
+function resultPreview(result: unknown) {
+  if (typeof result !== "object" || result === null) return "";
+  const payload = result as { messagePreview?: unknown };
+  return typeof payload.messagePreview === "string" ? payload.messagePreview : "";
+}
+
 export function CampaignsPage() {
   const { getToken } = useTalkAuth();
+  const [viewMode, setViewMode] = useState<CampaignViewMode>("hub");
   const [campaigns, setCampaigns] = useState<CampaignDto[]>([]);
   const [boards, setBoards] = useState<ContactBoardWithStagesDto[]>([]);
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
@@ -116,11 +228,6 @@ export function CampaignsPage() {
 
         setCampaigns(nextCampaigns);
         setBoards(nextBoards);
-        setSelectedCampaignId((current) =>
-          nextCampaigns.some((campaign) => campaign.id === current)
-            ? current
-            : nextCampaigns[0]?.id ?? null
-        );
         setForm((current) => ({
           ...current,
           boardId: current.boardId || nextBoards[0]?.id || ""
@@ -153,37 +260,11 @@ export function CampaignsPage() {
     [boards, form.boardId]
   );
 
-  const hasUnsavedChanges = useMemo(() => {
-    if (!selectedCampaign) {
-      return false;
-    }
-
-    const savedForm = toFormState(selectedCampaign);
-
-    return (
-      form.name !== savedForm.name ||
-      form.boardId !== savedForm.boardId ||
-      form.stageId !== savedForm.stageId ||
-      form.messageBody !== savedForm.messageBody ||
-      form.scheduledAt !== savedForm.scheduledAt
-    );
-  }, [form, selectedCampaign]);
-
-  const canUseSavedCampaign = Boolean(selectedCampaign) && !hasUnsavedChanges;
-
-  useEffect(() => {
-    if (selectedCampaign) {
-      setForm(toFormState(selectedCampaign));
-      setAudiencePreview([]);
-    } else {
-      setForm((current) => ({
-        ...emptyForm,
-        boardId: current.boardId || boards[0]?.id || ""
-      }));
-      setAudiencePreview([]);
-      setRecipients([]);
-    }
-  }, [boards, selectedCampaign]);
+  const audienceCount = form.audienceSource === "imported" ? form.importedRows.length : audiencePreview.length;
+  const previewSample = form.audienceSource === "imported" ? form.importedRows[0] : audiencePreview[0];
+  const scheduledCount = campaigns.filter((campaign) => campaign.status === "scheduled").length;
+  const completedCount = campaigns.filter((campaign) => campaign.status === "completed").length;
+  const sendingCount = campaigns.filter((campaign) => campaign.status === "sending").length;
 
   useEffect(() => {
     if (!selectedCampaignId) {
@@ -221,24 +302,51 @@ export function CampaignsPage() {
     };
   }, [getToken, selectedCampaignId]);
 
-  const simulatedCount = campaigns.filter((campaign) => campaign.mode === "simulated").length;
-  const scheduledCount = campaigns.filter((campaign) => campaign.status === "scheduled").length;
-  const completedCount = campaigns.filter((campaign) => campaign.status === "completed").length;
+  function openCampaign(campaign: CampaignDto) {
+    setSelectedCampaignId(campaign.id);
+    setForm(toFormState(campaign));
+    setAudiencePreview([]);
+    setViewMode("editor");
+    setError(null);
+    setNotice(null);
+  }
 
-  async function saveCampaign(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  function createDraft() {
+    setSelectedCampaignId(null);
+    setRecipients([]);
+    setAudiencePreview([]);
+    setForm((current) => ({
+      ...emptyForm,
+      boardId: current.boardId || boards[0]?.id || ""
+    }));
+    setViewMode("editor");
+    setNotice(null);
+    setError(null);
+  }
+
+  async function saveCampaign(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
     setIsSaving(true);
     setError(null);
     setNotice(null);
 
+    const cleanTemplates = form.templates.map((template) => template.trim()).filter(Boolean);
     const payload = {
       name: form.name,
-      audience: {
-        type: "board" as const,
-        boardId: form.boardId,
-        ...(form.stageId ? { stageId: form.stageId } : {})
-      },
-      messageBody: form.messageBody,
+      audience: form.audienceSource === "imported"
+        ? {
+            type: "imported" as const,
+            rows: form.importedRows
+          }
+        : {
+            type: "board" as const,
+            boardId: form.boardId,
+            ...(form.stageId ? { stageId: form.stageId } : {})
+          },
+      messageBody: cleanTemplates[0] ?? "",
+      templates: cleanTemplates,
+      fallbackName: form.fallbackName.trim() || "cliente",
+      cadence: form.cadence,
       scheduledAt: toApiDateTime(form.scheduledAt)
     };
 
@@ -249,32 +357,34 @@ export function CampaignsPage() {
 
       setCampaigns((current) => mergeCampaign(current, savedCampaign));
       setSelectedCampaignId(savedCampaign.id);
-      setNotice("Campanha salva em modo simulado.");
+      setForm(toFormState(savedCampaign));
+      setNotice("Disparo salvo.");
+      return savedCampaign;
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Nao foi possivel salvar campanha.");
+      setError(saveError instanceof Error ? saveError.message : "Nao foi possivel salvar disparo.");
+      return null;
     } finally {
       setIsSaving(false);
     }
   }
 
-  function createDraft() {
-    setSelectedCampaignId(null);
-    setRecipients([]);
-    setAudiencePreview([]);
-    setNotice("Rascunho local pronto para edicao.");
-  }
-
   async function resolveAudience() {
-    if (!selectedCampaign) return;
+    let campaign = selectedCampaign;
+
+    if (!campaign) {
+      campaign = await saveCampaign();
+    }
+
+    if (!campaign) return;
 
     setIsSaving(true);
     setError(null);
     setNotice(null);
 
     try {
-      const contacts = await apiResolveCampaignAudience(getToken, selectedCampaign.id);
+      const contacts = await apiResolveCampaignAudience(getToken, campaign.id);
       setAudiencePreview(contacts);
-      setNotice(`${contacts.length} contatos encontrados na audiencia.`);
+      setNotice(`${contacts.length} contatos prontos para o disparo.`);
     } catch (resolveError) {
       setError(resolveError instanceof Error ? resolveError.message : "Nao foi possivel resolver audiencia.");
     } finally {
@@ -283,23 +393,28 @@ export function CampaignsPage() {
   }
 
   async function sendSimulation() {
-    if (!selectedCampaign) return;
+    let campaign = selectedCampaign;
+
+    if (!campaign) {
+      campaign = await saveCampaign();
+    }
+
+    if (!campaign) return;
 
     setIsSaving(true);
     setError(null);
     setNotice(null);
 
     try {
-      const result = await apiSendCampaignSimulated(getToken, selectedCampaign.id);
+      const result = await apiSendCampaignSimulated(getToken, campaign.id);
       const [nextCampaigns, nextRecipients] = await Promise.all([
         apiGetCampaigns(getToken),
-        apiGetCampaignRecipients(getToken, selectedCampaign.id)
+        apiGetCampaignRecipients(getToken, campaign.id)
       ]);
 
       setCampaigns(nextCampaigns);
       setRecipients(nextRecipients);
-      setSelectedCampaignId(selectedCampaign.id);
-      setNotice(`${result.recipientsCreated} envios simulados gravados como sent_simulated.`);
+      setNotice(`${result.recipientsCreated} mensagens colocadas na fila simulada.`);
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : "Nao foi possivel simular envio.");
     } finally {
@@ -307,103 +422,180 @@ export function CampaignsPage() {
     }
   }
 
-  return (
-    <section className="module-page campaigns-page" aria-label="Disparos">
-      <header className="module-header">
-        <div>
-          <p className="eyebrow">Prymeira Talk</p>
-          <h1>Disparos</h1>
-        </div>
-        <button className="primary-button" type="button" onClick={createDraft}>
-          <Plus size={16} aria-hidden="true" />
-          Novo disparo
-        </button>
-      </header>
+  async function sendReal() {
+    let campaign = selectedCampaign;
 
-      <div className="contacts-stats-row" aria-label="Resumo de disparos">
-        <span className="contacts-stat">
-          <strong>{campaigns.length}</strong>
-          <span>Campanhas</span>
-        </span>
-        <span className="contacts-stat">
-          <strong>{scheduledCount}</strong>
-          <span>Agendadas</span>
-        </span>
-        <span className="contacts-stat">
-          <strong>{completedCount}</strong>
-          <span>Concluídas</span>
-        </span>
-      </div>
+    if (!campaign) {
+      campaign = await saveCampaign();
+    }
 
-      {error ? <p className="error-note" style={{ margin: '0 8px' }}>{error}</p> : null}
-      {notice ? <p className="list-note" style={{ margin: '0 8px' }}>{notice}</p> : null}
-      {hasUnsavedChanges ? (
-        <p className="list-note" style={{ margin: '0 8px' }}>Salve as alterações antes de resolver audiência ou simular envio.</p>
-      ) : null}
+    if (!campaign) return;
 
-      <div className="campaigns-layout">
-        {/* Left — campaign list */}
-        <div className="module-panel campaigns-list-panel">
-          <div className="panel-title-row">
-            <h2>Campanhas</h2>
-            <span>{isLoading ? 'Carregando' : `${campaigns.length} itens`}</span>
+    const shouldSend = window.confirm("Enviar mensagens reais pelo WhatsApp para esta audiencia?");
+    if (!shouldSend) return;
+
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const result = await apiSendCampaignReal(getToken, campaign.id);
+      const [nextCampaigns, nextRecipients] = await Promise.all([
+        apiGetCampaigns(getToken),
+        apiGetCampaignRecipients(getToken, campaign.id)
+      ]);
+
+      setCampaigns(nextCampaigns);
+      setRecipients(nextRecipients);
+      setNotice(`${result.recipientsSent ?? 0} mensagens reais enviadas. ${result.recipientsFailed ?? 0} falharam.`);
+    } catch (sendError) {
+      setError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar campanha real.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function handleAudienceFile(file: File | null) {
+    if (!file) return;
+
+    setError(null);
+    const rows = await parseAudienceFile(file);
+
+    if (rows.length === 0) {
+      setError("Nao encontrei uma coluna de telefone/WhatsApp na planilha.");
+      return;
+    }
+
+    setForm((current) => ({
+      ...current,
+      audienceSource: "imported",
+      importedRows: rows
+    }));
+    setAudiencePreview([]);
+    setNotice(`${rows.length} contatos importados da planilha.`);
+  }
+
+  function updateTemplate(index: number, value: string) {
+    setForm((current) => ({
+      ...current,
+      templates: current.templates.map((template, templateIndex) =>
+        templateIndex === index ? value : template
+      )
+    }));
+  }
+
+  if (viewMode === "hub") {
+    return (
+      <section className="module-page campaigns-page" aria-label="Disparos">
+        <header className="module-header">
+          <div>
+            <p className="eyebrow">Prymeira Talk</p>
+            <h1>Disparos</h1>
           </div>
+          <button className="primary-button" type="button" onClick={createDraft}>
+            <Plus size={16} aria-hidden="true" />
+            Novo disparo
+          </button>
+        </header>
 
-          {!isLoading && campaigns.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-state-icon">
-                <Send size={28} aria-hidden="true" />
-              </div>
-              <h3>Nenhum disparo criado</h3>
-              <p>Crie um rascunho para testar disparos em modo simulado.</p>
+        <div className="contacts-stats-row" aria-label="Resumo de disparos">
+          <span className="contacts-stat">
+            <strong>{campaigns.length}</strong>
+            <span>Campanhas</span>
+          </span>
+          <span className="contacts-stat">
+            <strong>{scheduledCount}</strong>
+            <span>Agendadas</span>
+          </span>
+          <span className="contacts-stat">
+            <strong>{sendingCount}</strong>
+            <span>Enviando</span>
+          </span>
+          <span className="contacts-stat">
+            <strong>{completedCount}</strong>
+            <span>Concluidas</span>
+          </span>
+        </div>
+
+        {error ? <p className="error-note campaign-inline-note">{error}</p> : null}
+
+        <div className="campaign-hub-grid">
+          <button className="campaign-create-card" type="button" onClick={createDraft}>
+            <span className="campaign-create-icon">
+              <Send size={26} aria-hidden="true" />
+            </span>
+            <strong>Criar novo disparo</strong>
+            <span>Importe uma lista, escreva templates e configure o ritmo antes de enviar.</span>
+          </button>
+
+          {isLoading ? (
+            <div className="module-panel campaign-empty-panel">Carregando campanhas...</div>
+          ) : campaigns.length === 0 ? (
+            <div className="module-panel campaign-empty-panel">
+              <strong>Nenhum disparo criado</strong>
+              <span>Comece por um rascunho e valide tudo em simulação.</span>
             </div>
-          ) : null}
-
-          <div className="campaign-list">
-            {campaigns.map((campaign) => (
+          ) : (
+            campaigns.map((campaign) => (
               <button
-                className={`campaign-card ${campaign.id === selectedCampaignId ? 'is-selected' : ''}`}
+                className="campaign-hub-card"
                 key={campaign.id}
-                onClick={() => setSelectedCampaignId(campaign.id)}
+                onClick={() => openCampaign(campaign)}
                 type="button"
               >
                 <span className={`status-badge status-badge--${
-                  campaign.status === 'completed' ? 'open' :
-                  campaign.status === 'scheduled' || campaign.status === 'sending' ? 'waiting' : 'closed'
+                  campaign.status === "completed" ? "open" :
+                  campaign.status === "scheduled" || campaign.status === "sending" ? "waiting" : "closed"
                 }`}>
                   {statusLabel(campaign.status)}
                 </span>
-                <span className="campaign-card-info">
-                  <strong>{campaign.name}</strong>
-                  <small>{formatDateTime(campaign.scheduledAt)}</small>
-                </span>
+                <strong>{campaign.name}</strong>
+                <span>{campaign.audience.type === "imported" ? "Lista importada" : "Board do CRM"}</span>
+                <small>{formatDateTime(campaign.scheduledAt)}</small>
               </button>
-            ))}
-          </div>
+            ))
+          )}
         </div>
+      </section>
+    );
+  }
 
-        {/* Right — editor + results */}
-        <div className="campaigns-editor-col">
-          <form className="module-panel campaign-editor" onSubmit={saveCampaign}>
+  return (
+    <section className="module-page campaigns-page" aria-label="Disparos">
+      <header className="module-header campaign-editor-header">
+        <div>
+          <button className="secondary-button" type="button" onClick={() => setViewMode("hub")}>
+            Voltar para disparos
+          </button>
+          <p className="eyebrow">Editar disparo</p>
+          <h1>{selectedCampaign ? form.name : "Novo disparo"}</h1>
+        </div>
+        <div className="campaign-header-actions">
+          <button className="secondary-button" disabled={isSaving} onClick={sendSimulation} type="button">
+            <Play size={14} aria-hidden="true" />
+            Simular fila
+          </button>
+          <button className="secondary-button" disabled={isSaving} onClick={sendReal} type="button">
+            <Zap size={14} aria-hidden="true" />
+            Enviar real
+          </button>
+          <button className="primary-button" disabled={isSaving} onClick={() => void saveCampaign()} type="button">
+            <Save size={14} aria-hidden="true" />
+            Salvar
+          </button>
+        </div>
+      </header>
+
+      {error ? <p className="error-note campaign-inline-note">{error}</p> : null}
+      {notice ? <p className="list-note campaign-inline-note">{notice}</p> : null}
+
+      <div className="campaign-builder-layout">
+        <form className="module-panel campaign-builder-main" onSubmit={saveCampaign}>
+          <section className="campaign-builder-section">
             <div className="panel-title-row">
-              <h2>{selectedCampaign ? 'Editar disparo' : 'Novo rascunho'}</h2>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  className="secondary-button"
-                  disabled={isSaving || !canUseSavedCampaign}
-                  onClick={sendSimulation}
-                  type="button"
-                >
-                  <Play size={14} aria-hidden="true" />
-                  {hasUnsavedChanges ? 'Salve para simular' : 'Simular envio'}
-                </button>
-                <button className="primary-button" disabled={isSaving || !form.boardId} type="submit">
-                  <Save size={14} aria-hidden="true" />
-                  Salvar
-                </button>
-              </div>
+              <h2>Base</h2>
+              <span>{selectedCampaign ? statusLabel(selectedCampaign.status) : "Rascunho"}</span>
             </div>
-
             <label className="form-field">
               <span>Nome</span>
               <input
@@ -412,44 +604,6 @@ export function CampaignsPage() {
                 value={form.name}
               />
             </label>
-
-            <div className="campaign-audience-grid">
-              <label className="form-field">
-                <span>Board de audiência</span>
-                <select
-                  onChange={(event) => setForm((current) => ({ ...current, boardId: event.target.value, stageId: '' }))}
-                  required
-                  value={form.boardId}
-                >
-                  {boards.map((board) => (
-                    <option key={board.id} value={board.id}>{board.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="form-field">
-                <span>Etapa opcional</span>
-                <select
-                  onChange={(event) => setForm((current) => ({ ...current, stageId: event.target.value }))}
-                  value={form.stageId}
-                >
-                  <option value="">Todas</option>
-                  {selectedBoard?.stages.map((stage) => (
-                    <option key={stage.id} value={stage.id}>{stage.name}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <label className="form-field">
-              <span>Mensagem</span>
-              <textarea
-                onChange={(event) => setForm((current) => ({ ...current, messageBody: event.target.value }))}
-                required
-                rows={5}
-                value={form.messageBody}
-              />
-            </label>
-
             <label className="form-field">
               <span>Agendamento</span>
               <input
@@ -458,63 +612,260 @@ export function CampaignsPage() {
                 value={form.scheduledAt}
               />
             </label>
+          </section>
 
-            <div className="message-preview">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
-                <Eye size={14} aria-hidden="true" />
-                <strong style={{ fontSize: '11px', color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Preview</strong>
-              </div>
-              <p style={{ fontSize: '13px', color: 'var(--color-text-primary)', margin: 0 }}>{previewMessage(form.messageBody)}</p>
+          <section className="campaign-builder-section">
+            <div className="panel-title-row">
+              <h2>Audiencia</h2>
+              <span>{form.audienceSource === "imported" ? `${form.importedRows.length} importados` : "CRM"}</span>
             </div>
-
-            <div className="campaign-editor-footer">
+            <div className="segmented-control">
               <button
-                className="secondary-button"
-                disabled={isSaving || !canUseSavedCampaign}
-                onClick={resolveAudience}
+                className={form.audienceSource === "board" ? "is-active" : ""}
+                onClick={() => setForm((current) => ({ ...current, audienceSource: "board" }))}
                 type="button"
               >
-                <CalendarClock size={14} aria-hidden="true" />
-                {hasUnsavedChanges ? 'Salve para resolver' : 'Resolver audiência'}
+                Board
+              </button>
+              <button
+                className={form.audienceSource === "imported" ? "is-active" : ""}
+                onClick={() => setForm((current) => ({ ...current, audienceSource: "imported" }))}
+                type="button"
+              >
+                Excel/CSV
               </button>
             </div>
-          </form>
 
-          {/* Results section */}
-          {(audiencePreview.length > 0 || recipients.length > 0 || isRecipientsLoading) ? (
-            <div className="module-panel campaign-results">
-              <div className="panel-title-row">
-                <h2>Resultados</h2>
-                <span>{isRecipientsLoading ? 'Carregando' : `${recipients.length} recipients`}</span>
+            {form.audienceSource === "board" ? (
+              <div className="campaign-audience-grid">
+                <label className="form-field">
+                  <span>Board de audiencia</span>
+                  <select
+                    onChange={(event) => setForm((current) => ({ ...current, boardId: event.target.value, stageId: "" }))}
+                    required
+                    value={form.boardId}
+                  >
+                    {boards.map((board) => (
+                      <option key={board.id} value={board.id}>{board.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>Etapa opcional</span>
+                  <select
+                    onChange={(event) => setForm((current) => ({ ...current, stageId: event.target.value }))}
+                    value={form.stageId}
+                  >
+                    <option value="">Todas</option>
+                    {selectedBoard?.stages.map((stage) => (
+                      <option key={stage.id} value={stage.id}>{stage.name}</option>
+                    ))}
+                  </select>
+                </label>
               </div>
-
-              {audiencePreview.length > 0 ? (
-                <div className="audience-preview">
-                  <strong>Audiência resolvida</strong>
-                  <span>{audiencePreview.length} contatos</span>
-                  <p>{audiencePreview.slice(0, 3).map((contact) => contact.name ?? contact.phone).join(', ')}</p>
-                </div>
-              ) : null}
-
-              {recipients.length > 0 ? (
-                <div className="recipient-table" role="table" aria-label="Resultados de recipients">
-                  <div className="recipient-table-row is-header" role="row">
-                    <span role="columnheader">Contato</span>
-                    <span role="columnheader">Status</span>
-                  </div>
-                  {recipients.map((recipient) => (
-                    <div className="recipient-table-row" role="row" key={recipient.id}>
-                      <span role="cell">{recipient.contactName ?? recipient.contactPhone ?? recipient.contactId}</span>
-                      <span role="cell">{recipient.status}</span>
+            ) : (
+              <div className="campaign-import-box">
+                <label className="secondary-button">
+                  <Upload size={14} aria-hidden="true" />
+                  Importar Excel/CSV
+                  <input
+                    accept=".csv,.xlsx,.xls"
+                    className="visually-hidden"
+                    onChange={(event) => void handleAudienceFile(event.target.files?.[0] ?? null)}
+                    type="file"
+                  />
+                </label>
+                <span>Reconheco colunas como nome, telefone, phone, celular ou WhatsApp.</span>
+                {form.importedRows.length > 0 ? (
+                  <div className="campaign-import-preview" aria-label="Previa da lista importada">
+                    <div className="campaign-import-preview-row is-header">
+                      <span>Nome</span>
+                      <span>Telefone</span>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                !isRecipientsLoading ? <p className="list-note">Sem recipients para esta campanha.</p> : null
-              )}
+                    {form.importedRows.slice(0, 5).map((row, index) => (
+                      <div className="campaign-import-preview-row" key={`${row.phone}-${index}`}>
+                        <strong>{row.name?.trim() || form.fallbackName || "cliente"}</strong>
+                        <span>{row.phone}</span>
+                      </div>
+                    ))}
+                    {form.importedRows.length > 5 ? (
+                      <small>+{form.importedRows.length - 5} contatos na fila importada</small>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </section>
+
+          <section className="campaign-builder-section">
+            <div className="panel-title-row">
+              <h2>Mensagens</h2>
+              <span>{form.templates.filter((template) => template.trim()).length} templates</span>
             </div>
-          ) : null}
-        </div>
+            <label className="form-field">
+              <span>Nome padrao quando vier vazio</span>
+              <input
+                onChange={(event) => setForm((current) => ({ ...current, fallbackName: event.target.value }))}
+                value={form.fallbackName}
+              />
+            </label>
+            {form.templates.map((template, index) => (
+              <label className="form-field" key={index}>
+                <span>Template {index + 1}</span>
+                <textarea
+                  onChange={(event) => updateTemplate(index, event.target.value)}
+                  required={index === 0}
+                  rows={4}
+                  value={template}
+                />
+              </label>
+            ))}
+            <button
+              className="secondary-button"
+              disabled={form.templates.length >= 6}
+              onClick={() => setForm((current) => ({ ...current, templates: [...current.templates, ""] }))}
+              type="button"
+            >
+              <Plus size={14} aria-hidden="true" />
+              Adicionar template
+            </button>
+          </section>
+
+          <section className="campaign-builder-section">
+            <div className="panel-title-row">
+              <h2>Ritmo</h2>
+              <span>{estimateDuration(Math.max(audienceCount, form.importedRows.length, 1), form.cadence)}</span>
+            </div>
+            <div className="campaign-cadence-grid">
+              <label className="form-field">
+                <span>Delay minimo (s)</span>
+                <input
+                  min={0}
+                  onChange={(event) => setForm((current) => ({
+                    ...current,
+                    cadence: { ...current.cadence, minDelaySeconds: Number(event.target.value) }
+                  }))}
+                  type="number"
+                  value={form.cadence.minDelaySeconds}
+                />
+              </label>
+              <label className="form-field">
+                <span>Delay maximo (s)</span>
+                <input
+                  min={0}
+                  onChange={(event) => setForm((current) => ({
+                    ...current,
+                    cadence: { ...current.cadence, maxDelaySeconds: Number(event.target.value) }
+                  }))}
+                  type="number"
+                  value={form.cadence.maxDelaySeconds}
+                />
+              </label>
+              <label className="form-field">
+                <span>Pausa a cada</span>
+                <input
+                  min={0}
+                  onChange={(event) => setForm((current) => ({
+                    ...current,
+                    cadence: { ...current.cadence, batchSize: Number(event.target.value) }
+                  }))}
+                  type="number"
+                  value={form.cadence.batchSize}
+                />
+              </label>
+              <label className="form-field">
+                <span>Pausa minima (s)</span>
+                <input
+                  min={0}
+                  onChange={(event) => setForm((current) => ({
+                    ...current,
+                    cadence: { ...current.cadence, pauseMinSeconds: Number(event.target.value) }
+                  }))}
+                  type="number"
+                  value={form.cadence.pauseMinSeconds}
+                />
+              </label>
+              <label className="form-field">
+                <span>Inicio da janela</span>
+                <input
+                  onChange={(event) => setForm((current) => ({
+                    ...current,
+                    cadence: { ...current.cadence, windowStart: event.target.value }
+                  }))}
+                  type="time"
+                  value={form.cadence.windowStart ?? ""}
+                />
+              </label>
+              <label className="form-field">
+                <span>Fim da janela</span>
+                <input
+                  onChange={(event) => setForm((current) => ({
+                    ...current,
+                    cadence: { ...current.cadence, windowEnd: event.target.value }
+                  }))}
+                  type="time"
+                  value={form.cadence.windowEnd ?? ""}
+                />
+              </label>
+            </div>
+          </section>
+        </form>
+
+        <aside className="campaign-builder-side">
+          <section className="module-panel campaign-preview-panel">
+            <div className="panel-title-row">
+              <h2>Preview</h2>
+              <Gauge size={16} aria-hidden="true" />
+            </div>
+            <div className="campaign-preview-bubble">
+              {renderPreview(form.templates.find((template) => template.trim()) ?? "", form.fallbackName, previewSample)}
+            </div>
+            <dl className="campaign-summary-list">
+              <div>
+                <dt>Audiencia</dt>
+                <dd>{form.audienceSource === "imported" ? `${form.importedRows.length} importados` : `${audiencePreview.length || "Resolver"} contatos`}</dd>
+              </div>
+              <div>
+                <dt>Templates</dt>
+                <dd>{form.templates.filter((template) => template.trim()).length}</dd>
+              </div>
+              <div>
+                <dt>Duração estimada</dt>
+                <dd>{estimateDuration(Math.max(audienceCount, form.importedRows.length, 1), form.cadence)}</dd>
+              </div>
+            </dl>
+            <button className="secondary-button" disabled={isSaving} onClick={resolveAudience} type="button">
+              <CalendarClock size={14} aria-hidden="true" />
+              Resolver audiencia
+            </button>
+          </section>
+
+          <section className="module-panel campaign-results">
+            <div className="panel-title-row">
+              <h2>Fila e resultados</h2>
+              <span>{isRecipientsLoading ? "Carregando" : `${recipients.length} linhas`}</span>
+            </div>
+            {recipients.length > 0 ? (
+              <div className="recipient-table" role="table" aria-label="Resultados de recipients">
+                <div className="recipient-table-row is-header" role="row">
+                  <span role="columnheader">Contato</span>
+                  <span role="columnheader">Status</span>
+                  <span role="columnheader">Quando</span>
+                </div>
+                {recipients.map((recipient) => (
+                  <div className="recipient-table-row" role="row" key={recipient.id}>
+                    <span role="cell">{recipient.contactName ?? recipient.contactPhone ?? recipient.audienceKey}</span>
+                    <span role="cell">{recipient.status}</span>
+                    <span role="cell">{formatDateTime(recipient.scheduledAt)}</span>
+                    <small>{resultPreview(recipient.result)}</small>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="list-note">Simule ou envie para gerar a fila de destinatarios.</p>
+            )}
+          </section>
+        </aside>
       </div>
     </section>
   );

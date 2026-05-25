@@ -16,6 +16,9 @@ type MockPrisma = {
     findMany: any;
     upsert: any;
   };
+  channel: {
+    findFirst: any;
+  };
   contactBoard: {
     findFirst: any;
   };
@@ -36,6 +39,15 @@ const baseCampaign = {
   status: "draft" as const,
   audience: { type: "board", boardId },
   messageBody: "Oi {{name}}, temos uma novidade para voce.",
+  templates: [],
+  fallbackName: "cliente",
+  cadence: {
+    minDelaySeconds: 30,
+    maxDelaySeconds: 90,
+    batchSize: 2,
+    pauseMinSeconds: 300,
+    pauseMaxSeconds: 600
+  },
   scheduledAt: null,
   mode: "simulated" as const,
   createdAt: new Date("2026-05-21T12:00:00.000Z"),
@@ -104,12 +116,26 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
         overrides.campaignRecipient?.upsert ??
         vi.fn().mockImplementation(async (args) => ({
           ...baseRecipients.find(
-            (recipient) =>
-              recipient.contactId === args.where.workspaceId_campaignId_contactId.contactId
+            (recipient) => {
+              const contactId = args.where.workspaceId_campaignId_contactId?.contactId;
+              const audienceKey = args.where.workspaceId_campaignId_audienceKey?.audienceKey;
+              return recipient.contactId === contactId || recipient.contactId === audienceKey;
+            }
           ),
           ...args.create,
           ...args.update
         }))
+    },
+    channel: {
+      findFirst:
+        overrides.channel?.findFirst ??
+        vi.fn().mockResolvedValue({
+          id: "channel_1",
+          workspaceId: "workspace_a",
+          provider: "evolution",
+          providerKey: "talk-workspace-a",
+          status: "connected"
+        })
     },
     contactBoard: {
       findFirst:
@@ -174,7 +200,7 @@ describe("campaigns service", () => {
 
     expect(result).toEqual({
       mode: "simulated",
-      result: "sent_simulated",
+      result: "queued_simulated",
       recipientsCreated: 2
     });
     expect(prisma.contactBoardMembership.findMany).toHaveBeenCalledWith(
@@ -187,22 +213,150 @@ describe("campaigns service", () => {
       1,
       expect.objectContaining({
         where: {
-          workspaceId_campaignId_contactId: {
+          workspaceId_campaignId_audienceKey: {
             workspaceId: "workspace_a",
             campaignId,
-            contactId: firstContactId
+            audienceKey: firstContactId
           }
         },
         create: expect.objectContaining({
           workspaceId: "workspace_a",
           campaignId,
           contactId: firstContactId,
-          status: "sent_simulated",
+          status: "queued_simulated",
           result: expect.objectContaining({
             mode: "simulated",
-            result: "sent_simulated"
+            result: "queued_simulated"
           })
         })
+      })
+    );
+  });
+
+  it("builds a delayed simulated queue from imported rows with rotating templates and fallback names", async () => {
+    const importedCampaign = {
+      ...baseCampaign,
+      audience: {
+        type: "imported",
+        rows: [
+          { name: "", phone: "+5511999990001", fields: { company: "Prymeira" } },
+          { name: "Maria", phone: "+5511999990002", fields: { company: "Acme" } },
+          { phone: "+5511999990003", fields: { company: "Sem Nome" } }
+        ]
+      },
+      templates: [
+        "Oi {{name}}, novidade para {{company}}.",
+        "{{name}}, passando para falar contigo."
+      ],
+      fallbackName: "cliente"
+    };
+    const upsert = vi.fn().mockImplementation(async (args) => args.create);
+    const prisma = createMockPrisma({
+      campaign: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue(importedCampaign),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({ ...importedCampaign, status: "completed" })
+      },
+      campaignRecipient: {
+        findMany: vi.fn(),
+        upsert
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      now: () => new Date("2026-05-25T12:00:00.000Z")
+    });
+
+    const result = await service.sendSimulated({
+      workspaceId: "workspace_a",
+      campaignId
+    });
+
+    expect(result.recipientsCreated).toBe(3);
+    expect(upsert).toHaveBeenCalledTimes(3);
+    expect(upsert.mock.calls[0]?.[0].create).toEqual(
+      expect.objectContaining({
+        audienceKey: "+5511999990001",
+        contactId: null,
+        scheduledAt: new Date("2026-05-25T12:00:00.000Z"),
+        status: "queued_simulated",
+        result: expect.objectContaining({
+          messagePreview: "Oi cliente, novidade para Prymeira.",
+          templateIndex: 0
+        })
+      })
+    );
+    expect(upsert.mock.calls[1]?.[0].create).toEqual(
+      expect.objectContaining({
+        audienceKey: "+5511999990002",
+        scheduledAt: new Date("2026-05-25T12:01:00.000Z"),
+        result: expect.objectContaining({
+          messagePreview: "Maria, passando para falar contigo.",
+          templateIndex: 1
+        })
+      })
+    );
+    expect(upsert.mock.calls[2]?.[0].create).toEqual(
+      expect.objectContaining({
+        audienceKey: "+5511999990003",
+        scheduledAt: new Date("2026-05-25T12:07:00.000Z"),
+        result: expect.objectContaining({
+          messagePreview: "Oi cliente, novidade para Sem Nome.",
+          templateIndex: 0
+        })
+      })
+    );
+  });
+
+  it("sends a real campaign through the connected Evolution channel", async () => {
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "wamid_campaign_1", raw: {} });
+    const upsert = vi.fn().mockImplementation(async (args) => args.create);
+    const prisma = createMockPrisma({
+      campaign: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseCampaign,
+          templates: ["Oi {{name}}, campanha real."]
+        }),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({ ...baseCampaign, status: "completed", mode: "real" })
+      },
+      campaignRecipient: {
+        findMany: vi.fn(),
+        upsert
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      evolution: {
+        mode: "real",
+        client: { sendText }
+      },
+      now: () => new Date("2026-05-25T12:00:00.000Z")
+    });
+
+    const result = await service.sendReal({
+      workspaceId: "workspace_a",
+      campaignId
+    });
+
+    expect(result).toEqual({
+      mode: "real",
+      result: "sent",
+      recipientsCreated: 2,
+      recipientsSent: 2,
+      recipientsFailed: 0
+    });
+    expect(sendText).toHaveBeenCalledWith({
+      instanceName: "talk-workspace-a",
+      number: "+5511999990001",
+      text: "Oi Ana, campanha real."
+    });
+    expect(upsert.mock.calls[0]?.[0].create).toEqual(
+      expect.objectContaining({
+        status: "sent",
+        attempts: 1,
+        providerMessageId: "wamid_campaign_1",
+        sentAt: new Date("2026-05-25T12:00:00.000Z")
       })
     );
   });
@@ -338,7 +492,7 @@ describe("campaigns routes", () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({
         mode: "simulated",
-        result: "sent_simulated",
+        result: "queued_simulated",
         recipientsCreated: 2
       });
       expect(realtimeEventSchema.parse(publish.mock.calls[0]?.[0])).toEqual({

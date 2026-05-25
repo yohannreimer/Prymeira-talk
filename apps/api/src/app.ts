@@ -81,7 +81,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(boardsRoutes);
   await app.register(channelsRoutes, { evolution: evolutionRuntime });
   await app.register(automationsRoutes, { evolution: evolutionRuntime });
-  await app.register(campaignsRoutes);
+  await app.register(campaignsRoutes, { evolution: evolutionRuntime });
   await app.register(reportsRoutes);
   await app.register(teamRoutes);
   await app.register(assistantRoutes);

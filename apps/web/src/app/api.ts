@@ -149,9 +149,24 @@ export interface AutomationRunDto {
 export type CampaignStatus = "draft" | "scheduled" | "sending" | "completed" | "failed";
 
 export interface CampaignAudienceDto {
-  type: "board";
-  boardId: string;
+  type: "board" | "imported";
+  boardId?: string;
   stageId?: string;
+  rows?: Array<{
+    name?: string;
+    phone: string;
+    fields?: Record<string, string>;
+  }>;
+}
+
+export interface CampaignCadenceDto {
+  minDelaySeconds: number;
+  maxDelaySeconds: number;
+  batchSize: number;
+  pauseMinSeconds: number;
+  pauseMaxSeconds: number;
+  windowStart?: string;
+  windowEnd?: string;
 }
 
 export interface CampaignDto {
@@ -161,6 +176,9 @@ export interface CampaignDto {
   status: CampaignStatus;
   audience: CampaignAudienceDto;
   messageBody: string;
+  templates: string[];
+  fallbackName: string;
+  cadence: CampaignCadenceDto;
   scheduledAt: string | null;
   mode: "simulated" | "real";
   createdAt: string;
@@ -168,18 +186,27 @@ export interface CampaignDto {
 }
 
 export interface CampaignAudienceContactDto {
-  contactId: string;
+  contactId: string | null;
+  audienceKey: string;
   name: string | null;
   phone: string;
+  fields: Record<string, string>;
 }
 
 export interface CampaignRecipientDto {
   id: string;
   workspaceId: string;
   campaignId: string;
-  contactId: string;
+  contactId: string | null;
+  audienceKey: string | null;
+  providerMessageId: string | null;
   status: string;
   result: unknown;
+  contactSnapshot: unknown;
+  scheduledAt: string | null;
+  sentAt: string | null;
+  attempts: number;
+  errorMessage: string | null;
   createdAt: string;
   updatedAt: string;
   contactName: string | null;
@@ -187,9 +214,11 @@ export interface CampaignRecipientDto {
 }
 
 export interface CampaignSendResultDto {
-  mode: "simulated";
-  result: "sent_simulated";
+  mode: "simulated" | "real";
+  result: "queued_simulated" | "sent";
   recipientsCreated: number;
+  recipientsSent?: number;
+  recipientsFailed?: number;
 }
 
 export interface ReportMetricDto {
@@ -527,12 +556,51 @@ function parseCampaignAudience(data: unknown): CampaignAudienceDto {
     type?: unknown;
     boardId?: unknown;
     stageId?: unknown;
+    rows?: unknown;
   };
+
+  if (payload.type === "imported") {
+    return {
+      type: "imported",
+      rows: Array.isArray(payload.rows)
+        ? payload.rows.map((row) => {
+            const importedRow = row as { name?: unknown; phone?: unknown; fields?: unknown };
+            return {
+              ...(typeof importedRow.name === "string" ? { name: importedRow.name } : {}),
+              phone: typeof importedRow.phone === "string" ? importedRow.phone : "",
+              fields:
+                importedRow.fields && typeof importedRow.fields === "object"
+                  ? Object.fromEntries(
+                      Object.entries(importedRow.fields as Record<string, unknown>).map(([key, value]) => [
+                        key,
+                        value == null ? "" : String(value)
+                      ])
+                    )
+                  : {}
+            };
+          })
+        : []
+    };
+  }
 
   return {
     type: "board",
     boardId: typeof payload.boardId === "string" ? payload.boardId : "",
     ...(typeof payload.stageId === "string" ? { stageId: payload.stageId } : {})
+  };
+}
+
+function parseCampaignCadence(data: unknown): CampaignCadenceDto {
+  const payload = data as Partial<CampaignCadenceDto>;
+
+  return {
+    minDelaySeconds: Number(payload?.minDelaySeconds ?? 30),
+    maxDelaySeconds: Number(payload?.maxDelaySeconds ?? 90),
+    batchSize: Number(payload?.batchSize ?? 25),
+    pauseMinSeconds: Number(payload?.pauseMinSeconds ?? 300),
+    pauseMaxSeconds: Number(payload?.pauseMaxSeconds ?? 900),
+    ...(typeof payload?.windowStart === "string" ? { windowStart: payload.windowStart } : {}),
+    ...(typeof payload?.windowEnd === "string" ? { windowEnd: payload.windowEnd } : {})
   };
 }
 
@@ -546,6 +614,9 @@ function parseCampaign(data: unknown): CampaignDto {
     status: payload.status,
     audience: parseCampaignAudience(payload.audience),
     messageBody: payload.messageBody,
+    templates: Array.isArray(payload.templates) ? payload.templates : [payload.messageBody],
+    fallbackName: typeof payload.fallbackName === "string" ? payload.fallbackName : "cliente",
+    cadence: parseCampaignCadence(payload.cadence),
     scheduledAt: payload.scheduledAt,
     mode: payload.mode === "real" ? "real" : "simulated",
     createdAt: payload.createdAt,
@@ -557,9 +628,11 @@ function parseCampaignAudienceContact(data: unknown): CampaignAudienceContactDto
   const payload = data as CampaignAudienceContactDto;
 
   return {
-    contactId: payload.contactId,
+    contactId: payload.contactId ?? null,
+    audienceKey: payload.audienceKey ?? payload.contactId ?? payload.phone,
     name: payload.name ?? null,
-    phone: payload.phone
+    phone: payload.phone,
+    fields: payload.fields ?? {}
   };
 }
 
@@ -570,9 +643,16 @@ function parseCampaignRecipient(data: unknown): CampaignRecipientDto {
     id: payload.id,
     workspaceId: payload.workspaceId,
     campaignId: payload.campaignId,
-    contactId: payload.contactId,
+    contactId: payload.contactId ?? null,
+    audienceKey: payload.audienceKey ?? null,
+    providerMessageId: payload.providerMessageId ?? null,
     status: payload.status,
     result: payload.result ?? {},
+    contactSnapshot: payload.contactSnapshot ?? {},
+    scheduledAt: payload.scheduledAt ?? null,
+    sentAt: payload.sentAt ?? null,
+    attempts: Number(payload.attempts ?? 0),
+    errorMessage: payload.errorMessage ?? null,
     createdAt: payload.createdAt,
     updatedAt: payload.updatedAt,
     contactName: payload.contactName ?? null,
@@ -584,9 +664,11 @@ function parseCampaignSendResult(data: unknown): CampaignSendResultDto {
   const payload = data as CampaignSendResultDto;
 
   return {
-    mode: "simulated",
-    result: "sent_simulated",
-    recipientsCreated: Number(payload.recipientsCreated ?? 0)
+    mode: payload.mode === "real" ? "real" : "simulated",
+    result: payload.result === "sent" ? "sent" : "queued_simulated",
+    recipientsCreated: Number(payload.recipientsCreated ?? 0),
+    recipientsSent: Number(payload.recipientsSent ?? 0),
+    recipientsFailed: Number(payload.recipientsFailed ?? 0)
   };
 }
 
@@ -1673,6 +1755,9 @@ export async function apiCreateCampaign(
     name: string;
     audience: CampaignAudienceDto;
     messageBody: string;
+    templates?: string[];
+    fallbackName?: string;
+    cadence?: CampaignCadenceDto;
     scheduledAt?: string | null;
   }
 ): Promise<CampaignDto> {
@@ -1703,6 +1788,9 @@ export async function apiUpdateCampaign(
     status: CampaignStatus;
     audience: CampaignAudienceDto;
     messageBody: string;
+    templates: string[];
+    fallbackName: string;
+    cadence: CampaignCadenceDto;
     scheduledAt: string | null;
   }>
 ): Promise<CampaignDto> {
@@ -1761,6 +1849,27 @@ export async function apiSendCampaignSimulated(
 
   if (!response.ok) {
     throw new Error(`Failed to send simulated campaign: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return parseCampaignSendResult(data);
+}
+
+export async function apiSendCampaignReal(
+  getToken: () => Promise<string | null>,
+  campaignId: string
+): Promise<CampaignSendResultDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/campaigns/${campaignId}/send-real`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to send real campaign: ${response.status}`);
   }
 
   const data = await response.json();
