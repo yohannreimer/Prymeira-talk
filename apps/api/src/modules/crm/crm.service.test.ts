@@ -159,6 +159,36 @@ describe("crm service", () => {
         })
       )
       .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 9 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [], total: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [], total: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [], total: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [], total: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify({ data: { id: 42 } }), {
           status: 200,
           headers: { "content-type": "application/json" }
@@ -195,6 +225,7 @@ describe("crm service", () => {
         status: "completed",
         result: expect.objectContaining({
           vinculaContactId: "42",
+          vinculaCompanyId: "9",
           vinculaLeadId: "77"
         })
       })
@@ -218,6 +249,96 @@ describe("crm service", () => {
           atomicCrmContactId: "42",
           atomicCrmLeadId: "77"
         }
+      })
+    );
+  });
+
+  it("reuses Vincula contacts with phone variants and links the contact to an existing company", async () => {
+    const prisma = createMockPrisma({
+      contact: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseContact,
+          phone: "5547999463048",
+          company: "BK2"
+        })
+      }
+    });
+    const fetchCrm = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ id: 9, name: "BK2" }], total: 1 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [], total: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: 42,
+                phone_jsonb: [{ number: "554799463048", type: "Work" }]
+              }
+            ],
+            total: 1
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 42 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 77 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 88 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+    const service = createCrmService(prisma, {
+      vinculaApiUrl: "https://vincula.example.com/api",
+      fetch: fetchCrm as typeof fetch
+    });
+
+    const action = await service.createLead({
+      workspaceId: "workspace_a",
+      contactId,
+      title: "Lead via WhatsApp",
+      vinculaToken: "clerk-token"
+    });
+
+    expect(fetchCrm).not.toHaveBeenCalledWith(
+      "https://vincula.example.com/api/records/contacts",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchCrm).toHaveBeenCalledWith(
+      "https://vincula.example.com/api/records/contacts/42",
+      expect.objectContaining({
+        method: "PATCH",
+        body: expect.stringContaining('"company_id":9')
+      })
+    );
+    expect(action.result).toEqual(
+      expect.objectContaining({
+        vinculaContactId: "42",
+        vinculaCompanyId: "9"
       })
     );
   });

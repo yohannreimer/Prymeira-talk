@@ -648,7 +648,14 @@ export function createConversationsService(
       let boardMembership: ContactBoardMembershipDto | undefined;
 
       if (input.action === "add_note") {
-        const user = await resolveCurrentUser(input);
+        const user = input.currentClerkUserId
+          ? await prisma.userProfile.findFirst({
+              where: {
+                workspaceId: input.workspaceId,
+                clerkUserId: input.currentClerkUserId
+              }
+            })
+          : null;
 
         await prisma.contactNote.create({
           data: {
@@ -656,7 +663,7 @@ export function createConversationsService(
             contactId: conversation.contactId,
             conversationId: input.conversationId,
             body: input.body.trim(),
-            createdById: user.id
+            createdById: user?.id ?? null
           },
           include: {
             createdBy: { select: { displayName: true } }

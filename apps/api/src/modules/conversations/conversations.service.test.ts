@@ -769,23 +769,28 @@ describe("conversations service", () => {
     expect(result.context.notes[0]?.body).toBe("Cliente pediu retorno");
   });
 
-  it("rejects contact notes without a current user identity", async () => {
+  it("creates contact notes without a current user identity as a system note", async () => {
     const prisma = createMockPrisma();
     const service = createConversationsService(prisma);
 
-    const error = await service
-      .runConversationAction({
-        workspaceId: "workspace_a",
-        conversationId: "conv_1",
-        action: "add_note",
-        body: "Cliente pediu retorno",
-        currentClerkUserId: null
-      })
-      .catch((caught: unknown) => caught);
+    const result = await service.runConversationAction({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      action: "add_note",
+      body: "Cliente pediu retorno",
+      currentClerkUserId: null
+    });
 
-    expect(error).toBeInstanceOf(ConversationActionError);
-    expect(error).toMatchObject({ code: "CURRENT_USER_REQUIRED" });
-    expect(prisma.contactNote.create).not.toHaveBeenCalled();
+    expect(prisma.userProfile.findFirst).not.toHaveBeenCalled();
+    expect(prisma.contactNote.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          body: "Cliente pediu retorno",
+          createdById: null
+        })
+      })
+    );
+    expect(result.context.notes[0]?.body).toBe("Cliente pediu retorno");
   });
 
   it("creates contact notes as the current user even when another agent owns the conversation", async () => {

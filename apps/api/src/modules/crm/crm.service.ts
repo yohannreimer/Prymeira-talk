@@ -84,6 +84,11 @@ interface VinculaContactRecord {
   phone_jsonb?: Array<{ number?: string | null }> | null;
 }
 
+interface VinculaCompanyRecord {
+  id: string | number;
+  name?: string | null;
+}
+
 interface VinculaLeadRecord {
   id: string | number;
 }
@@ -120,6 +125,54 @@ function normalizePhone(value: string | null | undefined) {
   return String(value ?? "").replace(/\D/g, "");
 }
 
+function normalizeText(value: string | null | undefined) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim()
+    .toLowerCase();
+}
+
+function uniqueValues(values: Array<string | null | undefined>) {
+  return [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];
+}
+
+function phoneSearchVariants(value: string | null | undefined) {
+  const digits = normalizePhone(value);
+  const variants = [digits];
+
+  const addBrazilianVariants = (number: string, hasCountryCode: boolean) => {
+    const body = hasCountryCode ? number.slice(2) : number;
+    if (body.length < 10) return;
+
+    const areaCode = body.slice(0, 2);
+    const subscriber = body.slice(2);
+    if (subscriber.length === 9 && subscriber.startsWith("9")) {
+      variants.push(`${hasCountryCode ? "55" : ""}${areaCode}${subscriber.slice(1)}`);
+    }
+    if (subscriber.length === 8) {
+      variants.push(`${hasCountryCode ? "55" : ""}${areaCode}9${subscriber}`);
+    }
+  };
+
+  if (digits.startsWith("55")) {
+    variants.push(digits.slice(2));
+    addBrazilianVariants(digits, true);
+    addBrazilianVariants(digits.slice(2), false);
+  } else {
+    variants.push(`55${digits}`);
+    addBrazilianVariants(digits, false);
+    addBrazilianVariants(`55${digits}`, true);
+  }
+
+  return uniqueValues(variants);
+}
+
+function phoneMatches(a: string | null | undefined, b: string | null | undefined) {
+  const aVariants = new Set(phoneSearchVariants(a));
+  return phoneSearchVariants(b).some((variant) => aVariants.has(variant));
+}
+
 function splitContactName(contact: ContactRecord) {
   const fallback = contact.phone ? `Contato ${contact.phone.slice(-4)}` : "Contato Talk";
   const parts = String(contact.name ?? "").trim().split(/\s+/).filter(Boolean);
@@ -134,7 +187,7 @@ function splitContactName(contact: ContactRecord) {
   };
 }
 
-function buildVinculaContactPayload(contact: ContactRecord) {
+function buildVinculaContactPayload(contact: ContactRecord, companyId?: string | number | null) {
   const { firstName, lastName } = splitContactName(contact);
 
   return {
@@ -151,8 +204,23 @@ function buildVinculaContactPayload(contact: ContactRecord) {
       .join("\n"),
     email_jsonb: contact.email ? [{ email: contact.email, type: "Work" }] : [],
     phone_jsonb: contact.phone ? [{ number: contact.phone, type: "Work" }] : [],
+    ...(companyId ? { company_id: Number(companyId) } : {}),
     first_seen: new Date().toISOString(),
     last_seen: new Date().toISOString()
+  };
+}
+
+function buildVinculaCompanyPayload(contact: ContactRecord) {
+  return {
+    name: String(contact.company ?? "").trim(),
+    phone_number: contact.phone,
+    description: [
+      "Empresa criada a partir do Prymeira Talk.",
+      contact.name ? `Contato inicial: ${contact.name}` : null,
+      contact.phone ? `Telefone do contato: ${contact.phone}` : null
+    ]
+      .filter(Boolean)
+      .join("\n")
   };
 }
 
@@ -227,33 +295,74 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
     return response.json() as Promise<T>;
   }
 
-  async function findVinculaContactByPhone(token: string, contact: ContactRecord) {
-    const phone = normalizePhone(contact.phone);
-    if (!phone) return null;
-
+  function buildListPath(resource: string, filter: Record<string, unknown>, perPage = 10) {
     const params = new URLSearchParams({
-      filter: JSON.stringify({ q: phone }),
-      pagination: JSON.stringify({ page: 1, perPage: 10 }),
+      filter: JSON.stringify(filter),
+      pagination: JSON.stringify({ page: 1, perPage }),
       sort: JSON.stringify({ field: "id", order: "ASC" })
     });
-    const response = await vinculaRequest<VinculaList<VinculaContactRecord>>(
+
+    return `/records/${resource}?${params.toString()}`;
+  }
+
+  async function findVinculaCompanyByName(token: string, contact: ContactRecord) {
+    const companyName = String(contact.company ?? "").trim();
+    if (!companyName) return null;
+
+    const response = await vinculaRequest<VinculaList<VinculaCompanyRecord>>(
       token,
-      `/records/contacts?${params.toString()}`
+      buildListPath("companies", { q: companyName })
     );
+    const normalizedCompanyName = normalizeText(companyName);
 
     return (
-      response.data.find((candidate) =>
-        (candidate.phone_jsonb ?? []).some((phoneEntry) =>
-          normalizePhone(phoneEntry.number).endsWith(phone)
-        )
-      ) ??
-      response.data[0] ??
+      response.data.find((candidate) => normalizeText(candidate.name) === normalizedCompanyName) ??
       null
     );
   }
 
-  async function upsertVinculaContact(token: string, contact: ContactRecord) {
-    const payload = buildVinculaContactPayload(contact);
+  async function upsertVinculaCompany(token: string, contact: ContactRecord) {
+    if (!String(contact.company ?? "").trim()) return null;
+
+    const existing = await findVinculaCompanyByName(token, contact);
+    if (existing?.id) return existing;
+
+    const created = await vinculaRequest<VinculaRecord<VinculaCompanyRecord>>(token, "/records/companies", {
+      method: "POST",
+      body: JSON.stringify(buildVinculaCompanyPayload(contact))
+    });
+
+    return created.data;
+  }
+
+  async function findVinculaContactByPhone(token: string, contact: ContactRecord) {
+    const phoneVariants = phoneSearchVariants(contact.phone);
+    if (!phoneVariants.length) return null;
+
+    for (const phone of phoneVariants) {
+      const response = await vinculaRequest<VinculaList<VinculaContactRecord>>(
+        token,
+        buildListPath("contacts", { q: phone })
+      );
+      const exactMatch =
+        response.data.find((candidate) =>
+          (candidate.phone_jsonb ?? []).some((phoneEntry) =>
+            phoneMatches(phoneEntry.number, contact.phone)
+          )
+        ) ?? null;
+
+      if (exactMatch) return exactMatch;
+    }
+
+    return null;
+  }
+
+  async function upsertVinculaContact(
+    token: string,
+    contact: ContactRecord,
+    companyId?: string | number | null
+  ) {
+    const payload = buildVinculaContactPayload(contact, companyId);
     const existingCrmId =
       contact.atomicCrmContactId && /^\d+$/.test(contact.atomicCrmContactId)
         ? contact.atomicCrmContactId
@@ -423,7 +532,9 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
       const title = input.title.trim();
 
       if (vinculaApiUrl && input.vinculaToken) {
-        const vinculaContact = await upsertVinculaContact(input.vinculaToken, contact);
+        const vinculaCompany = await upsertVinculaCompany(input.vinculaToken, contact);
+        const vinculaCompanyId = vinculaCompany?.id ? String(vinculaCompany.id) : null;
+        const vinculaContact = await upsertVinculaContact(input.vinculaToken, contact, vinculaCompanyId);
         const vinculaContactId = String(vinculaContact.id);
         const vinculaLead = await createVinculaLead(input.vinculaToken, contact, title);
         const vinculaLeadId = String(vinculaLead.id);
@@ -459,12 +570,14 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
               contactId: input.contactId,
               title,
               vinculaContactId,
+              vinculaCompanyId,
               provider: "vincula"
             },
             result: {
               mode: "real",
               leadCreated: true,
               vinculaContactId,
+              vinculaCompanyId,
               vinculaLeadId
             }
           }
@@ -498,7 +611,9 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
       const contact = await ensureContactInWorkspace(input);
 
       if (vinculaApiUrl && input.vinculaToken) {
-        const vinculaContact = await upsertVinculaContact(input.vinculaToken, contact);
+        const vinculaCompany = await upsertVinculaCompany(input.vinculaToken, contact);
+        const vinculaCompanyId = vinculaCompany?.id ? String(vinculaCompany.id) : null;
+        const vinculaContact = await upsertVinculaContact(input.vinculaToken, contact, vinculaCompanyId);
         const vinculaContactId = String(vinculaContact.id);
 
         await vinculaRequest<VinculaRecord<unknown>>(input.vinculaToken, "/records/contact_notes", {
@@ -533,12 +648,14 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
               contactId: input.contactId,
               body: input.body.trim(),
               vinculaContactId,
+              vinculaCompanyId,
               provider: "vincula"
             },
             result: {
               mode: "real",
               noteCreated: true,
-              vinculaContactId
+              vinculaContactId,
+              vinculaCompanyId
             }
           }
         });
