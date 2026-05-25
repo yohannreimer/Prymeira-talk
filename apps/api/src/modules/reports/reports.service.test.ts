@@ -26,6 +26,7 @@ type MockPrisma = {
 };
 
 const workspaceId = "workspace_a";
+const salesDepartmentId = "00000000-0000-4000-8000-000000000201";
 
 function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & PrismaLike {
   return {
@@ -45,7 +46,9 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
             id: "conversation_1",
             status: "open",
             createdAt: new Date("2026-05-20T10:00:00.000Z"),
-            department: { name: "Vendas" },
+            departmentId: salesDepartmentId,
+            channelId: "00000000-0000-4000-8000-000000000101",
+            department: { id: salesDepartmentId, name: "Vendas" },
             channel: {
               id: "00000000-0000-4000-8000-000000000101",
               displayName: "WhatsApp matriz",
@@ -57,6 +60,8 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
             id: "conversation_2",
             status: "closed",
             createdAt: new Date("2026-05-21T11:00:00.000Z"),
+            departmentId: null,
+            channelId: "00000000-0000-4000-8000-000000000102",
             department: null,
             channel: {
               id: "00000000-0000-4000-8000-000000000102",
@@ -142,7 +147,7 @@ describe("reports service", () => {
       { key: "completed", label: "completed", value: 2 }
     ]);
     expect(overview.breakdowns.departments).toEqual([
-      { key: "Vendas", label: "Vendas", value: 1 },
+      { key: salesDepartmentId, label: "Vendas", value: 1 },
       { key: "unassigned", label: "Sem departamento", value: 1 }
     ]);
     expect(overview.breakdowns.channels).toEqual([
@@ -169,16 +174,16 @@ describe("reports service", () => {
       }
     ]);
     expect(prisma.conversation.groupBy).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { workspaceId } })
+      expect.objectContaining({ where: expect.objectContaining({ workspaceId }) })
     );
     expect(prisma.message.groupBy).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { workspaceId } })
+      expect.objectContaining({ where: expect.objectContaining({ workspaceId }) })
     );
     expect(prisma.campaignRecipient.groupBy).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { workspaceId } })
+      expect.objectContaining({ where: expect.objectContaining({ workspaceId }) })
     );
     expect(prisma.automationRun.groupBy).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { workspaceId } })
+      expect.objectContaining({ where: expect.objectContaining({ workspaceId }) })
     );
   });
 
@@ -194,6 +199,8 @@ describe("reports service", () => {
             id: "conversation_1",
             status: "open",
             createdAt: new Date("2026-05-20T10:00:00.000Z"),
+            departmentId: null,
+            channelId: firstChannelId,
             department: null,
             channel: {
               id: firstChannelId,
@@ -206,6 +213,8 @@ describe("reports service", () => {
             id: "conversation_2",
             status: "open",
             createdAt: new Date("2026-05-20T11:00:00.000Z"),
+            departmentId: null,
+            channelId: secondChannelId,
             department: null,
             channel: {
               id: secondChannelId,
@@ -225,6 +234,60 @@ describe("reports service", () => {
       { key: firstChannelId, label: "Comercial", value: 1 },
       { key: secondChannelId, label: "Comercial", value: 1 }
     ]);
+  });
+
+  it("applies date, status, channel and department filters to report queries", async () => {
+    const prisma = createMockPrisma();
+    const service = createReportsService(prisma);
+    const channelId = "00000000-0000-4000-8000-000000000101";
+    const departmentId = "00000000-0000-4000-8000-000000000201";
+
+    await service.getOverview({
+      workspaceId,
+      filters: {
+        startDate: "2026-05-01",
+        endDate: "2026-05-25",
+        status: "open",
+        channelId,
+        departmentId
+      }
+    });
+
+    const conversationWhere = {
+      workspaceId,
+      createdAt: {
+        gte: new Date("2026-05-01T00:00:00.000Z"),
+        lte: new Date("2026-05-25T23:59:59.999Z")
+      },
+      status: "open",
+      channelId,
+      departmentId
+    };
+    const messageWhere = {
+      workspaceId,
+      createdAt: conversationWhere.createdAt,
+      conversation: {
+        workspaceId,
+        status: "open",
+        channelId,
+        departmentId
+      }
+    };
+
+    expect(prisma.conversation.count).toHaveBeenCalledWith({ where: conversationWhere });
+    expect(prisma.message.count).toHaveBeenCalledWith({ where: messageWhere });
+    expect(prisma.campaignRecipient.count).toHaveBeenCalledWith({
+      where: {
+        workspaceId,
+        createdAt: conversationWhere.createdAt
+      }
+    });
+    expect(prisma.automationRun.count).toHaveBeenCalledWith({
+      where: {
+        workspaceId,
+        createdAt: conversationWhere.createdAt
+      }
+    });
   });
 });
 
@@ -251,6 +314,34 @@ describe("reports routes", () => {
             departments: expect.any(Array),
             tags: expect.any(Array),
             channels: expect.any(Array)
+          })
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("passes query filters from GET /reports/overview", async () => {
+    const prisma = createMockPrisma();
+    const { app } = await buildReportsApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/reports/overview?startDate=2026-05-01&endDate=2026-05-25&status=open"
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(prisma.conversation.count).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            workspaceId,
+            status: "open",
+            createdAt: {
+              gte: new Date("2026-05-01T00:00:00.000Z"),
+              lte: new Date("2026-05-25T23:59:59.999Z")
+            }
           })
         })
       );

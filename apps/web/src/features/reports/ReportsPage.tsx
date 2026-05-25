@@ -1,9 +1,11 @@
 import { useTalkAuth } from "../../app/auth";
-import { Download, RefreshCw } from "lucide-react";
+import { Download, FileText, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   apiGetReportsOverview,
+  type ReportFiltersDto,
   type ReportMetricDto,
+  type ReportPeriodPresetDto,
   type ReportsOverviewDto
 } from "../../app/api";
 
@@ -44,6 +46,14 @@ const loadingCards: ReportMetricDto[] = ["conversations", "messages", "campaigns
   value: 0
 }));
 
+const periodPresets: Array<{ key: ReportPeriodPresetDto; label: string }> = [
+  { key: "today", label: "Hoje" },
+  { key: "7d", label: "7 dias" },
+  { key: "30d", label: "30 dias" },
+  { key: "month", label: "Mes atual" },
+  { key: "custom", label: "Personalizado" }
+];
+
 function exportRows(title: string, rows: ReportMetricDto[]) {
   const header = ["label", "value"].map(escapeCsvCell).join(",");
   const body = rows.map((row) => [row.label, row.value].map(escapeCsvCell).join(",")).join("\n");
@@ -55,6 +65,103 @@ function exportRows(title: string, rows: ReportMetricDto[]) {
   link.download = `${title}.csv`;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function reportRows(overview: ReportsOverviewDto) {
+  return [
+    { section: "Indicadores", rows: overview.cards },
+    { section: "Conversas por status", rows: overview.conversationsByStatus },
+    { section: "Mensagens por direcao", rows: overview.messagesByDirection },
+    { section: "Resultados de disparos", rows: overview.campaignResults },
+    { section: "Runs de automacao", rows: overview.automationRuns },
+    { section: "Departamentos", rows: overview.breakdowns.departments },
+    { section: "Tags", rows: overview.breakdowns.tags },
+    { section: "Canais", rows: overview.breakdowns.channels }
+  ];
+}
+
+function exportOverviewCsv(overview: ReportsOverviewDto) {
+  const header = ["section", "label", "value", "helper"].map(escapeCsvCell).join(",");
+  const body = reportRows(overview)
+    .flatMap((section) =>
+      section.rows.map((row) =>
+        [section.section, row.label, row.value, row.helper ?? ""].map(escapeCsvCell).join(",")
+      )
+    )
+    .join("\n");
+  const blob = new Blob([`${header}\n${body}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = "relatorios-prymeira-talk.csv";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function periodLabel(filters: ReportFiltersDto) {
+  const preset = periodPresets.find((item) => item.key === filters.preset)?.label ?? "Periodo";
+
+  if (filters.startDate || filters.endDate) {
+    return `${preset}: ${filters.startDate ?? "..."} ate ${filters.endDate ?? "..."}`;
+  }
+
+  return preset;
+}
+
+async function exportOverviewPdf(overview: ReportsOverviewDto) {
+  const { jsPDF } = await import("jspdf");
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 44;
+  let cursorY = 56;
+
+  const ensureSpace = (height: number) => {
+    if (cursorY + height <= pageHeight - margin) return;
+    doc.addPage();
+    cursorY = 56;
+  };
+  const writeSection = (title: string, rows: ReportMetricDto[]) => {
+    ensureSpace(44 + rows.length * 18);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text(title, margin, cursorY);
+    cursorY += 20;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+
+    if (rows.length === 0) {
+      doc.text("Sem dados", margin, cursorY);
+      cursorY += 20;
+      return;
+    }
+
+    for (const row of rows) {
+      ensureSpace(22);
+      doc.text(row.label, margin, cursorY);
+      doc.text(formatNumber(row.value), pageWidth - margin, cursorY, { align: "right" });
+      cursorY += 18;
+    }
+    cursorY += 10;
+  };
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(20);
+  doc.text("Relatorio Prymeira Talk", margin, cursorY);
+  cursorY += 26;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.text(`Gerado em ${new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date())}`, margin, cursorY);
+  cursorY += 16;
+  doc.text(periodLabel(overview.filters), margin, cursorY);
+  cursorY += 28;
+
+  for (const section of reportRows(overview)) {
+    writeSection(section.section, section.rows);
+  }
+
+  doc.save("relatorios-prymeira-talk.pdf");
 }
 
 function BarSection(input: { title: string; subtitle: string; rows: ReportMetricDto[] }) {
@@ -129,6 +236,7 @@ function BreakdownTable(input: { title: string; rows: ReportMetricDto[] }) {
 export function ReportsPage() {
   const { getToken } = useTalkAuth();
   const [overview, setOverview] = useState<ReportsOverviewDto | null>(null);
+  const [filters, setFilters] = useState<Partial<ReportFiltersDto>>({ preset: "30d" });
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -137,7 +245,7 @@ export function ReportsPage() {
     setError(null);
 
     try {
-      const nextOverview = await apiGetReportsOverview(getToken);
+      const nextOverview = await apiGetReportsOverview(getToken, filters);
       setOverview(nextOverview);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar relatórios.");
@@ -154,7 +262,7 @@ export function ReportsPage() {
       setError(null);
 
       try {
-        const nextOverview = await apiGetReportsOverview(getToken);
+        const nextOverview = await apiGetReportsOverview(getToken, filters);
 
         if (isMounted) {
           setOverview(nextOverview);
@@ -175,7 +283,7 @@ export function ReportsPage() {
     return () => {
       isMounted = false;
     };
-  }, [getToken]);
+  }, [filters, getToken]);
 
   const timelineMax = useMemo(() => {
     if (!overview) return 1;
@@ -189,9 +297,19 @@ export function ReportsPage() {
   }, [overview]);
 
   const cards = overview?.cards ?? [];
+  const currentFilters = overview?.filters ?? {
+    preset: filters.preset ?? "30d",
+    startDate: filters.startDate ?? null,
+    endDate: filters.endDate ?? null,
+    ...(filters.status ? { status: filters.status } : {}),
+    ...(filters.channelId ? { channelId: filters.channelId } : {}),
+    ...(filters.departmentId ? { departmentId: filters.departmentId } : {})
+  };
+  const channelOptions = overview?.breakdowns.channels ?? [];
+  const departmentOptions = overview?.breakdowns.departments ?? [];
 
   return (
-    <section className="module-page" aria-label="Relatórios">
+    <section className="module-page reports-page" aria-label="Relatórios">
       <header className="module-header">
         <div>
           <p className="eyebrow">Prymeira Talk</p>
@@ -209,15 +327,117 @@ export function ReportsPage() {
             className="secondary-button"
             type="button"
             disabled={!overview}
-            onClick={() => exportRows("reports-cards", cards)}
+            onClick={() => overview ? exportOverviewCsv(overview) : undefined}
           >
             <Download size={14} />
             Exportar CSV
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={!overview}
+            onClick={() => overview ? void exportOverviewPdf(overview) : undefined}
+          >
+            <FileText size={14} />
+            Exportar PDF
           </button>
         </div>
       </header>
 
       {error ? <p className="error-note">{error}</p> : null}
+
+      <section className="module-panel reports-control-panel" aria-label="Filtros de relatorios">
+        <div className="reports-period-buttons">
+          {periodPresets.map((preset) => (
+            <button
+              className={currentFilters.preset === preset.key ? "is-active" : ""}
+              key={preset.key}
+              onClick={() => setFilters((current) => ({
+                ...current,
+                preset: preset.key,
+                ...(preset.key === "custom" ? {} : { startDate: undefined, endDate: undefined })
+              }))}
+              type="button"
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+        <div className="reports-filter-grid">
+          <label className="form-field">
+            <span>Inicio</span>
+            <input
+              onChange={(event) => setFilters((current) => ({
+                ...current,
+                preset: "custom",
+                startDate: event.target.value || undefined
+              }))}
+              type="date"
+              value={currentFilters.startDate ?? ""}
+            />
+          </label>
+          <label className="form-field">
+            <span>Fim</span>
+            <input
+              onChange={(event) => setFilters((current) => ({
+                ...current,
+                preset: "custom",
+                endDate: event.target.value || undefined
+              }))}
+              type="date"
+              value={currentFilters.endDate ?? ""}
+            />
+          </label>
+          <label className="form-field">
+            <span>Status</span>
+            <select
+              onChange={(event) => setFilters((current) => ({
+                ...current,
+                status: event.target.value as ReportFiltersDto["status"] || undefined
+              }))}
+              value={currentFilters.status ?? ""}
+            >
+              <option value="">Todos</option>
+              <option value="open">Abertas</option>
+              <option value="pending">Pendentes</option>
+              <option value="closed">Fechadas</option>
+            </select>
+          </label>
+          <label className="form-field">
+            <span>Canal</span>
+            <select
+              onChange={(event) => setFilters((current) => ({
+                ...current,
+                channelId: event.target.value || undefined
+              }))}
+              value={currentFilters.channelId ?? ""}
+            >
+              <option value="">Todos</option>
+              {channelOptions.map((channel) => (
+                <option key={channel.key} value={channel.key}>{channel.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="form-field">
+            <span>Departamento</span>
+            <select
+              onChange={(event) => setFilters((current) => ({
+                ...current,
+                departmentId: event.target.value || undefined
+              }))}
+              value={currentFilters.departmentId ?? ""}
+            >
+              <option value="">Todos</option>
+              {departmentOptions
+                .filter((department) => department.key !== "unassigned")
+                .map((department) => (
+                  <option key={department.key} value={department.key}>{department.label}</option>
+                ))}
+            </select>
+          </label>
+        </div>
+        <p className="reports-applied-period">{periodLabel(currentFilters)}</p>
+      </section>
 
       <div className="contacts-stats-row" aria-label="Indicadores">
         {(cards.length > 0 ? cards : loadingCards).map((card) => (

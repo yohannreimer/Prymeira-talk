@@ -235,7 +235,19 @@ export interface ReportTimeSeriesPointDto {
   outboundMessages: number;
 }
 
+export type ReportPeriodPresetDto = "today" | "7d" | "30d" | "month" | "custom";
+
+export interface ReportFiltersDto {
+  preset: ReportPeriodPresetDto;
+  startDate: string | null;
+  endDate: string | null;
+  status?: "open" | "pending" | "closed";
+  channelId?: string;
+  departmentId?: string;
+}
+
 export interface ReportsOverviewDto {
+  filters: ReportFiltersDto;
   cards: ReportMetricDto[];
   conversationsByStatus: ReportMetricDto[];
   messagesByDirection: ReportMetricDto[];
@@ -694,6 +706,24 @@ function parseReportTimeSeriesPoint(data: unknown): ReportTimeSeriesPointDto {
   };
 }
 
+function parseReportFilters(data: unknown): ReportFiltersDto {
+  const payload = data as Partial<ReportFiltersDto>;
+  const preset = ["today", "7d", "30d", "month", "custom"].includes(String(payload?.preset))
+    ? payload?.preset as ReportPeriodPresetDto
+    : "30d";
+
+  return {
+    preset,
+    startDate: typeof payload?.startDate === "string" ? payload.startDate : null,
+    endDate: typeof payload?.endDate === "string" ? payload.endDate : null,
+    ...(payload?.status === "open" || payload?.status === "pending" || payload?.status === "closed"
+      ? { status: payload.status }
+      : {}),
+    ...(typeof payload?.channelId === "string" ? { channelId: payload.channelId } : {}),
+    ...(typeof payload?.departmentId === "string" ? { departmentId: payload.departmentId } : {})
+  };
+}
+
 function parseReportsOverview(data: unknown): ReportsOverviewDto {
   const payload = data as ReportsOverviewDto;
   const breakdowns = payload.breakdowns ?? {
@@ -703,6 +733,7 @@ function parseReportsOverview(data: unknown): ReportsOverviewDto {
   };
 
   return {
+    filters: parseReportFilters(payload.filters),
     cards: Array.isArray(payload.cards) ? payload.cards.map(parseReportMetric) : [],
     conversationsByStatus: Array.isArray(payload.conversationsByStatus)
       ? payload.conversationsByStatus.map(parseReportMetric)
@@ -1897,11 +1928,20 @@ export async function apiGetCampaignRecipients(
 }
 
 export async function apiGetReportsOverview(
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  filters: Partial<ReportFiltersDto> = {}
 ): Promise<ReportsOverviewDto> {
   const token = await getRequiredToken(getToken);
+  const searchParams = new URLSearchParams();
 
-  const response = await fetch(`${apiUrl}/reports/overview`, {
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) {
+      searchParams.set(key, String(value));
+    }
+  }
+
+  const queryString = searchParams.toString();
+  const response = await fetch(`${apiUrl}/reports/overview${queryString ? `?${queryString}` : ""}`, {
     headers: {
       Authorization: `Bearer ${token}`
     }

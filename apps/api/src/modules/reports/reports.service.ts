@@ -6,6 +6,7 @@ type CountGroup = {
 
 type ConversationStatus = "open" | "pending" | "closed";
 type MessageDirection = "inbound" | "outbound";
+type ReportPeriodPreset = "today" | "7d" | "30d" | "month" | "custom";
 
 interface ConversationGroup extends CountGroup {
   status: ConversationStatus;
@@ -23,7 +24,9 @@ interface ConversationBreakdownRecord {
   id: string;
   status: ConversationStatus;
   createdAt: Date | string;
-  department: { name: string } | null;
+  departmentId: string | null;
+  channelId: string;
+  department: { id: string; name: string } | null;
   channel: { id: string; displayName: string | null; providerKey: string } | null;
   tags: Array<{
     tag: {
@@ -74,6 +77,7 @@ export interface ReportTimeSeriesPointDto {
 }
 
 export interface ReportsOverviewDto {
+  filters: ReportFiltersDto;
   cards: ReportMetricDto[];
   conversationsByStatus: ReportMetricDto[];
   messagesByDirection: ReportMetricDto[];
@@ -85,6 +89,15 @@ export interface ReportsOverviewDto {
     tags: ReportMetricDto[];
     channels: ReportMetricDto[];
   };
+}
+
+export interface ReportFiltersDto {
+  preset: ReportPeriodPreset;
+  startDate: string | null;
+  endDate: string | null;
+  status?: ConversationStatus;
+  channelId?: string;
+  departmentId?: string;
 }
 
 const conversationStatusLabels: Record<ConversationStatus, string> = {
@@ -172,10 +185,109 @@ function buildTimeSeries(
   return [...points.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
+function parseDateStart(value?: string) {
+  if (!value) return undefined;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function parseDateEnd(value?: string) {
+  if (!value) return undefined;
+  const date = new Date(`${value}T23:59:59.999Z`);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function dateKey(value: Date) {
+  return value.toISOString().slice(0, 10);
+}
+
+function subtractDays(value: Date, days: number) {
+  const next = new Date(value);
+  next.setUTCDate(next.getUTCDate() - days);
+  return next;
+}
+
+function startOfUtcMonth(value: Date) {
+  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1, 0, 0, 0, 0));
+}
+
+function endOfUtcDay(value: Date) {
+  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate(), 23, 59, 59, 999));
+}
+
+function normalizeFilters(filters?: Partial<ReportFiltersDto>, now = new Date()): ReportFiltersDto {
+  const preset = filters?.preset ?? (filters?.startDate || filters?.endDate ? "custom" : "30d");
+  const todayEnd = endOfUtcDay(now);
+  let startDate: string | null = filters?.startDate ?? null;
+  let endDate: string | null = filters?.endDate ?? null;
+
+  if (preset === "today") {
+    startDate = dateKey(todayEnd);
+    endDate = dateKey(todayEnd);
+  } else if (preset === "7d") {
+    startDate = dateKey(subtractDays(todayEnd, 6));
+    endDate = dateKey(todayEnd);
+  } else if (preset === "30d") {
+    startDate = dateKey(subtractDays(todayEnd, 29));
+    endDate = dateKey(todayEnd);
+  } else if (preset === "month") {
+    startDate = dateKey(startOfUtcMonth(todayEnd));
+    endDate = dateKey(todayEnd);
+  }
+
+  return {
+    preset,
+    startDate,
+    endDate,
+    ...(filters?.status ? { status: filters.status } : {}),
+    ...(filters?.channelId ? { channelId: filters.channelId } : {}),
+    ...(filters?.departmentId ? { departmentId: filters.departmentId } : {})
+  };
+}
+
+function buildDateWhere(filters: ReportFiltersDto) {
+  const gte = parseDateStart(filters.startDate ?? undefined);
+  const lte = parseDateEnd(filters.endDate ?? undefined);
+
+  if (!gte && !lte) return undefined;
+  return {
+    ...(gte ? { gte } : {}),
+    ...(lte ? { lte } : {})
+  };
+}
+
+function withoutUndefined<T extends Record<string, unknown>>(value: T) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entryValue]) => entryValue !== undefined)
+  ) as T;
+}
+
 export function createReportsService(prisma: PrismaLike) {
   return {
-    async getOverview(input: { workspaceId: string }): Promise<ReportsOverviewDto> {
-      const where = { workspaceId: input.workspaceId };
+    async getOverview(input: { workspaceId: string; filters?: Partial<ReportFiltersDto> }): Promise<ReportsOverviewDto> {
+      const filters = normalizeFilters(input.filters);
+      const dateWhere = buildDateWhere(filters);
+      const conversationWhere = withoutUndefined({
+        workspaceId: input.workspaceId,
+        createdAt: dateWhere,
+        status: filters.status,
+        channelId: filters.channelId,
+        departmentId: filters.departmentId
+      });
+      const messageWhere = withoutUndefined({
+        workspaceId: input.workspaceId,
+        createdAt: dateWhere,
+        conversation: withoutUndefined({
+          workspaceId: input.workspaceId,
+          status: filters.status,
+          channelId: filters.channelId,
+          departmentId: filters.departmentId
+        })
+      });
+      const dateOnlyWhere = withoutUndefined({
+        workspaceId: input.workspaceId,
+        createdAt: dateWhere
+      });
 
       const [
         totalConversations,
@@ -189,20 +301,23 @@ export function createReportsService(prisma: PrismaLike) {
         totalAutomationRuns,
         automationGroups
       ] = await Promise.all([
-        prisma.conversation.count({ where }),
+        prisma.conversation.count({ where: conversationWhere }),
         prisma.conversation.groupBy({
           by: ["status"],
-          where,
+          where: conversationWhere,
           _count: { _all: true }
         }),
         prisma.conversation.findMany({
-          where,
+          where: conversationWhere,
           select: {
             id: true,
             status: true,
             createdAt: true,
+            departmentId: true,
+            channelId: true,
             department: {
               select: {
+                id: true,
                 name: true
               }
             },
@@ -228,14 +343,14 @@ export function createReportsService(prisma: PrismaLike) {
             createdAt: "asc"
           }
         }),
-        prisma.message.count({ where }),
+        prisma.message.count({ where: messageWhere }),
         prisma.message.groupBy({
           by: ["direction"],
-          where,
+          where: messageWhere,
           _count: { _all: true }
         }),
         prisma.message.findMany({
-          where,
+          where: messageWhere,
           select: {
             createdAt: true,
             direction: true
@@ -244,16 +359,16 @@ export function createReportsService(prisma: PrismaLike) {
             createdAt: "asc"
           }
         }),
-        prisma.campaignRecipient.count({ where }),
+        prisma.campaignRecipient.count({ where: dateOnlyWhere }),
         prisma.campaignRecipient.groupBy({
           by: ["status"],
-          where,
+          where: dateOnlyWhere,
           _count: { _all: true }
         }),
-        prisma.automationRun.count({ where }),
+        prisma.automationRun.count({ where: dateOnlyWhere }),
         prisma.automationRun.groupBy({
           by: ["status"],
-          where,
+          where: dateOnlyWhere,
           _count: { _all: true }
         })
       ]);
@@ -282,7 +397,7 @@ export function createReportsService(prisma: PrismaLike) {
         const departmentLabel = conversation.department?.name ?? "Sem departamento";
         incrementBreakdown(
           departments,
-          conversation.department?.name ?? "unassigned",
+          conversation.department?.id ?? "unassigned",
           departmentLabel
         );
 
@@ -296,6 +411,7 @@ export function createReportsService(prisma: PrismaLike) {
       }
 
       return {
+        filters,
         cards: [
           metric(
             "conversations",
