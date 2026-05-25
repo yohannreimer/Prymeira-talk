@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import { ArrowLeft, History, Maximize2, Minimize2, Plus, Save, ToggleLeft, ToggleRight, Zap } from "lucide-react";
-import { type Dispatch, FormEvent, type SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
+import { type Dispatch, FormEvent, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { automationFlowSchema, getAutomationBlock, type AutomationBlockType, type AutomationFlowDefinition } from "@prymeira-talk/shared";
 import {
   apiCreateAutomation,
@@ -183,6 +183,7 @@ export function AutomationsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const previousEditorAutomationId = useRef<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -227,13 +228,19 @@ export function AutomationsPage() {
   );
 
   useEffect(() => {
+    if (previousEditorAutomationId.current === selectedAutomationId) {
+      return;
+    }
+
+    previousEditorAutomationId.current = selectedAutomationId;
+
     if (selectedAutomation) {
       setForm(toFormState(selectedAutomation));
     } else {
       setForm(emptyForm);
     }
     setFlowPayload(null);
-  }, [selectedAutomation]);
+  }, [selectedAutomation, selectedAutomationId]);
 
   useEffect(() => {
     if (!selectedAutomation) {

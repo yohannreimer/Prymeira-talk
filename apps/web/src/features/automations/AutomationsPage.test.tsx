@@ -172,6 +172,18 @@ function clickButton(node: ReactNode, matcher: string | RegExp) {
   return button?.props.onClick();
 }
 
+function submitEditorForm(node: ReactNode) {
+  const form = findElement(
+    node,
+    (element) => element.type === "form" && typeof (element.props as { onSubmit?: unknown }).onSubmit === "function"
+  ) as ReactElement<{
+    onSubmit: (event: { preventDefault: () => void }) => void | Promise<void>;
+  }> | null;
+
+  expect(form).not.toBeNull();
+  return form?.props.onSubmit({ preventDefault: vi.fn() });
+}
+
 function depsChanged(previous: readonly unknown[] | undefined, next: readonly unknown[] | undefined) {
   if (!previous || !next || previous.length !== next.length) {
     return true;
@@ -190,16 +202,31 @@ async function renderAutomationsPageContainer({
   let stateCursor = 0;
   let effectCursor = 0;
   let memoCursor = 0;
+  let refCursor = 0;
   const stateValues: unknown[] = [];
   const effectDeps: Array<readonly unknown[] | undefined> = [];
   const memoValues: Array<{ deps: readonly unknown[] | undefined; value: unknown }> = [];
+  const refValues: Array<{ current: unknown }> = [];
   const scheduledEffects: Array<() => void | (() => void)> = [];
+  const apiUpdateAutomationMock = vi.fn(
+    async (
+      _getToken: () => Promise<string | null>,
+      automationId: string,
+      body: Partial<AutomationRuleDto>
+    ) => ({
+      ...(automations.find((automation) => automation.id === automationId) ?? baseAutomation),
+      ...body,
+      id: automationId,
+      updatedAt: "2026-05-22T12:10:00.000Z"
+    })
+  );
 
   function render() {
     if (!ComponentUnderTest) return;
     stateCursor = 0;
     effectCursor = 0;
     memoCursor = 0;
+    refCursor = 0;
     tree = ComponentUnderTest();
   }
 
@@ -222,6 +249,15 @@ async function renderAutomationsPageContainer({
         scheduledEffects.push(effect);
       },
       useMemo: useMemoMock,
+      useRef: <T,>(initialValue: T) => {
+        const index = refCursor++;
+
+        if (!(index in refValues)) {
+          refValues[index] = { current: initialValue };
+        }
+
+        return refValues[index] as { current: T };
+      },
       useState: <T,>(initialValue: T | (() => T)) => {
         const index = stateCursor++;
 
@@ -261,7 +297,8 @@ async function renderAutomationsPageContainer({
     return {
       ...original,
       apiGetAutomationRuns: vi.fn().mockResolvedValue([]),
-      apiGetAutomations: vi.fn().mockResolvedValue(automations)
+      apiGetAutomations: vi.fn().mockResolvedValue(automations),
+      apiUpdateAutomation: apiUpdateAutomationMock
     };
   });
 
@@ -301,6 +338,7 @@ async function renderAutomationsPageContainer({
     get expandedTree() {
       return expandPureComponents(tree);
     },
+    apiUpdateAutomationMock,
     settle
   };
 }
@@ -459,6 +497,61 @@ describe("AutomationsPage navigation", () => {
     expect(
       findElement(page.expandedTree, (element) => element.type === "h2" && hasText(element, /Teste & histórico/i))
     ).not.toBeNull();
+  });
+
+  it("preserves unsaved canvas edits after toggling flow status", async () => {
+    const page = await renderAutomationsPageContainer();
+
+    clickButton(page.expandedTree, /Boas-vindas/i);
+    await page.settle();
+
+    const editedFlow = {
+      version: 1,
+      nodes: [
+        {
+          id: "trigger-1",
+          type: "trigger_first_message",
+          position: { x: 0, y: 0 },
+          data: { title: "Primeira mensagem", config: {} }
+        },
+        {
+          id: "send-message-1",
+          type: "send_message",
+          position: { x: 280, y: 0 },
+          data: {
+            title: "Enviar mensagem",
+            config: { message: "Ola pelo fluxo" }
+          }
+        }
+      ],
+      edges: [
+        {
+          id: "trigger-1-send-message-1",
+          source: "trigger-1",
+          target: "send-message-1",
+          sourceHandle: "success",
+          targetHandle: "input"
+        }
+      ]
+    } satisfies AutomationFlowDefinition;
+    const canvas = findElement(
+      page.expandedTree,
+      (element) => typeof element.type === "function" && element.type.name === "AutomationCanvas"
+    ) as ReactElement<{ onChange: (payload: AutomationFlowDefinition) => void }> | null;
+
+    expect(canvas).not.toBeNull();
+    canvas?.props.onChange(editedFlow);
+    await page.settle();
+
+    await clickButton(page.expandedTree, /Fluxo pausado/i);
+    await page.settle();
+    await submitEditorForm(page.expandedTree);
+    await page.settle();
+
+    expect(page.apiUpdateAutomationMock).toHaveBeenCalledTimes(2);
+    expect(page.apiUpdateAutomationMock.mock.calls[1]?.[2]).toMatchObject({
+      actions: editedFlow
+    });
   });
 });
 
