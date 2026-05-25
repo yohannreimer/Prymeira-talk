@@ -533,6 +533,10 @@ function automationEditorStatusLabel(automation: AutomationRuleDto | null) {
   return automation.status === "enabled" ? "Fluxo ativo" : "Fluxo pausado";
 }
 
+function automationEditorStatusActionLabel(automation: AutomationRuleDto) {
+  return automation.status === "enabled" ? "Pausar fluxo" : "Ativar fluxo";
+}
+
 export function AutomationHubView({
   automations,
   isLoading,
@@ -633,75 +637,78 @@ export function AutomationEditorView({
     : "waiting";
 
   return (
-    <form className="automation-editor-shell" onSubmit={onSave}>
-      <div className="automation-editor-topbar">
-        <button className="secondary-button icon-button-label" type="button" onClick={onBack}>
-          <ArrowLeft size={15} aria-hidden="true" />
-          Voltar para automações
-        </button>
+    <div className="automation-editor-shell">
+      <form className="automation-editor-main-form" onSubmit={onSave}>
+        <div className="automation-editor-topbar">
+          <button className="secondary-button icon-button-label" type="button" onClick={onBack}>
+            <ArrowLeft size={15} aria-hidden="true" />
+            Voltar para automações
+          </button>
 
-        <div className="automation-editor-title">
-          <h2>{selectedAutomation ? "Editar fluxo" : "Novo fluxo"}</h2>
-          <input
-            aria-label="Nome do fluxo"
-            className="automation-title-field"
-            onChange={(event) => onFormChange((current) => ({ ...current, name: event.target.value }))}
-            required
-            value={form.name}
-          />
-        </div>
+          <div className="automation-editor-title">
+            <h2>{selectedAutomation ? "Editar fluxo" : "Novo fluxo"}</h2>
+            <input
+              aria-label="Nome do fluxo"
+              className="automation-title-field"
+              onChange={(event) => onFormChange((current) => ({ ...current, name: event.target.value }))}
+              required
+              value={form.name}
+            />
+          </div>
 
-        <div className="automation-editor-actions">
-          {selectedAutomation ? (
+          <div className="automation-editor-actions">
+            {selectedAutomation ? (
+              <button
+                aria-label={automationEditorStatusActionLabel(selectedAutomation)}
+                className={`secondary-button automation-status-control status-badge status-badge--${editorStatusClass}`}
+                type="button"
+                onClick={() => void onToggleAutomation(selectedAutomation)}
+                disabled={isSaving}
+              >
+                {selectedAutomation.status === "enabled" ? (
+                  <ToggleRight size={15} aria-hidden="true" />
+                ) : (
+                  <ToggleLeft size={15} aria-hidden="true" />
+                )}
+                {editorStatusLabel}
+              </button>
+            ) : (
+              <span className={`status-badge status-badge--${editorStatusClass}`}>{editorStatusLabel}</span>
+            )}
+
             <button
-              className={`secondary-button automation-status-control status-badge status-badge--${editorStatusClass}`}
+              className="secondary-button icon-button-label"
+              disabled={!selectedAutomation || isTesting}
+              onClick={() => void onTest()}
               type="button"
-              onClick={() => void onToggleAutomation(selectedAutomation)}
-              disabled={isSaving}
             >
-              {selectedAutomation.status === "enabled" ? (
-                <ToggleRight size={15} aria-hidden="true" />
-              ) : (
-                <ToggleLeft size={15} aria-hidden="true" />
-              )}
-              {editorStatusLabel}
+              <Zap size={15} aria-hidden="true" />
+              {isTesting ? "Testando" : "Testar agora"}
             </button>
-          ) : (
-            <span className={`status-badge status-badge--${editorStatusClass}`}>{editorStatusLabel}</span>
-          )}
 
-          <button
-            className="secondary-button icon-button-label"
-            disabled={!selectedAutomation || isTesting}
-            onClick={() => void onTest()}
-            type="button"
-          >
-            <Zap size={15} aria-hidden="true" />
-            {isTesting ? "Testando" : "Testar agora"}
-          </button>
-
-          <button className="primary-button" disabled={isSaving} type="submit">
-            <Save size={15} aria-hidden="true" />
-            Salvar
-          </button>
+            <button className="primary-button" disabled={isSaving} type="submit">
+              <Save size={15} aria-hidden="true" />
+              Salvar
+            </button>
+          </div>
         </div>
-      </div>
 
-      <div className="automation-editor-meta">
-        <label className="form-field automation-condition-field">
-          <span>Resumo das condições</span>
-          <input
-            onChange={(event) => onFormChange((current) => ({ ...current, conditionSummary: event.target.value }))}
-            required
-            value={form.conditionSummary}
-          />
-        </label>
+        <div className="automation-editor-meta">
+          <label className="form-field automation-condition-field">
+            <span>Resumo das condições</span>
+            <input
+              onChange={(event) => onFormChange((current) => ({ ...current, conditionSummary: event.target.value }))}
+              required
+              value={form.conditionSummary}
+            />
+          </label>
 
-        <div className="automation-flow-summary" aria-label="Resumo do fluxo">
-          <span>Gatilho do canvas</span>
-          <strong>{canvasTriggerLabel}</strong>
+          <div className="automation-flow-summary" aria-label="Resumo do fluxo">
+            <span>Gatilho do canvas</span>
+            <strong>{canvasTriggerLabel}</strong>
+          </div>
         </div>
-      </div>
+      </form>
 
       <div className="automation-editor-body">
         <div className="automation-editor-canvas-area">
@@ -743,6 +750,6 @@ export function AutomationEditorView({
           </div>
         </aside>
       </div>
-    </form>
+    </div>
   );
 }

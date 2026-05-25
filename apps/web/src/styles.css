@@ -1509,11 +1509,17 @@ select:disabled {
 
 .automation-editor-shell {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   min-width: 0;
   min-height: 0;
   padding: 0 8px 8px;
+}
+
+.automation-editor-main-form {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
 }
 
 .automation-editor-topbar {
