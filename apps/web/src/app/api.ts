@@ -1583,8 +1583,11 @@ export async function apiTestAutomation(
   getToken: () => Promise<string | null>,
   automationId: string,
   body: {
+    channelId?: string;
+    contactId?: string;
     eventKey?: string;
     input?: Record<string, unknown>;
+    messageBody?: string;
   } = {}
 ): Promise<AutomationRunDto> {
   const token = await getRequiredToken(getToken);

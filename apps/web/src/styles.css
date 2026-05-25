@@ -1670,6 +1670,36 @@ select:disabled {
   width: fit-content;
 }
 
+.automation-real-simulation {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #d6b25c;
+  border-radius: 8px;
+  background: #fff8e6;
+  padding: 12px;
+}
+
+.automation-real-simulation-heading {
+  display: grid;
+  gap: 3px;
+}
+
+.automation-real-simulation-heading strong {
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.automation-real-simulation-heading small {
+  color: #7c5d1b;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.automation-real-simulation .primary-button {
+  width: fit-content;
+}
+
 .automation-run-card {
   display: grid;
   gap: 5px;

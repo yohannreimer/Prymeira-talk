@@ -1,9 +1,16 @@
 import { useTalkAuth } from "../../app/auth";
 import { ArrowLeft, History, Maximize2, Minimize2, Plus, Save, ToggleLeft, ToggleRight, Zap } from "lucide-react";
 import { type Dispatch, FormEvent, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { automationFlowSchema, getAutomationBlock, type AutomationBlockType, type AutomationFlowDefinition } from "@prymeira-talk/shared";
+import {
+  automationFlowSchema,
+  getAutomationBlock,
+  type AutomationBlockType,
+  type AutomationFlowDefinition,
+  type ContactDto
+} from "@prymeira-talk/shared";
 import {
   apiCreateAutomation,
+  apiGetContacts,
   apiGetAutomationRuns,
   apiGetAutomations,
   apiTestAutomation,
@@ -210,7 +217,12 @@ export function AutomationsPage() {
   const [runs, setRuns] = useState<AutomationRunDto[]>([]);
   const [isRunsLoading, setIsRunsLoading] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  const [isRealSimulating, setIsRealSimulating] = useState(false);
   const [runEventKey, setRunEventKey] = useState("");
+  const [simulationContacts, setSimulationContacts] = useState<ContactDto[]>([]);
+  const [simulationContactId, setSimulationContactId] = useState("");
+  const [simulationMessageBody, setSimulationMessageBody] = useState("Mensagem de simulacao da automacao.");
+  const [isSimulationContactsLoading, setIsSimulationContactsLoading] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -313,6 +325,40 @@ export function AutomationsPage() {
       isMounted = false;
     };
   }, [getToken, selectedAutomation]);
+
+  useEffect(() => {
+    if (!isHistoryOpen) {
+      return;
+    }
+
+    let isMounted = true;
+    setIsSimulationContactsLoading(true);
+
+    apiGetContacts(getToken)
+      .then((contacts) => {
+        if (!isMounted) return;
+        setSimulationContacts(contacts);
+        setSimulationContactId((current) =>
+          current && contacts.some((contact) => contact.id === current)
+            ? current
+            : contacts[0]?.id ?? ""
+        );
+      })
+      .catch((contactsError) => {
+        if (isMounted) {
+          setError(contactsError instanceof Error ? contactsError.message : "Nao foi possivel carregar contatos.");
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsSimulationContactsLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [getToken, isHistoryOpen]);
 
   const enabledCount = automations.filter((automation) => automation.status === "enabled").length;
   const canvasTrigger = automationActionsToTrigger(
@@ -437,6 +483,28 @@ export function AutomationsPage() {
     }
   }
 
+  async function simulateSelectedAutomationWithContact() {
+    if (!selectedAutomation || !simulationContactId) return;
+
+    setIsRealSimulating(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const run = await apiTestAutomation(getToken, selectedAutomation.id, {
+        contactId: simulationContactId,
+        messageBody: simulationMessageBody.trim() || "Mensagem de simulacao da automacao."
+      });
+
+      setRuns((current) => mergeAutomationRun(current, run));
+      setNotice("Simulacao real enviada para o contato selecionado.");
+    } catch (simulationError) {
+      setError(simulationError instanceof Error ? simulationError.message : "Nao foi possivel simular automacao.");
+    } finally {
+      setIsRealSimulating(false);
+    }
+  }
+
   return (
     <AutomationsPageView
       automations={automations}
@@ -449,7 +517,9 @@ export function AutomationsPage() {
       isHistoryOpen={isHistoryOpen}
       isLoading={isLoading}
       isRunsLoading={isRunsLoading}
+      isRealSimulating={isRealSimulating}
       isSaving={isSaving}
+      isSimulationContactsLoading={isSimulationContactsLoading}
       isTesting={isTesting}
       notice={notice}
       onBack={closeEditor}
@@ -461,12 +531,18 @@ export function AutomationsPage() {
       onHistoryToggle={() => setIsHistoryOpen((current) => !current)}
       onOpen={openAutomation}
       onRunEventKeyChange={setRunEventKey}
+      onSimulationContactChange={setSimulationContactId}
+      onSimulationMessageBodyChange={setSimulationMessageBody}
       onSave={saveAutomation}
       onTest={testSelectedAutomation}
+      onRealSimulation={simulateSelectedAutomationWithContact}
       onToggleAutomation={toggleAutomation}
       runEventKey={runEventKey}
       runs={runs}
       selectedAutomation={selectedAutomation}
+      simulationContactId={simulationContactId}
+      simulationContacts={simulationContacts}
+      simulationMessageBody={simulationMessageBody}
       viewMode={viewMode}
     />
   );
@@ -483,7 +559,9 @@ interface AutomationsPageViewProps {
   isHistoryOpen: boolean;
   isLoading: boolean;
   isRunsLoading: boolean;
+  isRealSimulating: boolean;
   isSaving: boolean;
+  isSimulationContactsLoading: boolean;
   isTesting: boolean;
   notice: string | null;
   onBack: () => void;
@@ -494,13 +572,19 @@ interface AutomationsPageViewProps {
   onFormChange: Dispatch<SetStateAction<AutomationFormState>>;
   onHistoryToggle: () => void;
   onOpen: (automationId: string) => void;
+  onRealSimulation: () => void;
   onRunEventKeyChange?: Dispatch<SetStateAction<string>>;
+  onSimulationContactChange: Dispatch<SetStateAction<string>>;
+  onSimulationMessageBodyChange: Dispatch<SetStateAction<string>>;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
   onTest: () => void;
   onToggleAutomation: (automation: AutomationRuleDto) => void;
   runEventKey: string;
   runs: AutomationRunDto[];
   selectedAutomation: AutomationRuleDto | null;
+  simulationContactId: string;
+  simulationContacts: ContactDto[];
+  simulationMessageBody: string;
   viewMode: AutomationViewMode;
 }
 
@@ -515,7 +599,9 @@ export function AutomationsPageView({
   isHistoryOpen,
   isLoading,
   isRunsLoading,
+  isRealSimulating,
   isSaving,
+  isSimulationContactsLoading,
   isTesting,
   notice,
   onBack,
@@ -526,13 +612,19 @@ export function AutomationsPageView({
   onFormChange,
   onHistoryToggle,
   onOpen,
+  onRealSimulation,
   onRunEventKeyChange,
+  onSimulationContactChange,
+  onSimulationMessageBodyChange,
   onSave,
   onTest,
   onToggleAutomation,
   runEventKey,
   runs,
   selectedAutomation,
+  simulationContactId,
+  simulationContacts,
+  simulationMessageBody,
   viewMode
 }: AutomationsPageViewProps) {
   const shouldShowEditor = viewMode === "editor" || viewMode === "focus";
@@ -570,7 +662,9 @@ export function AutomationsPageView({
           isFocusMode={isFocusMode}
           isHistoryOpen={isHistoryOpen}
           isRunsLoading={isRunsLoading}
+          isRealSimulating={isRealSimulating}
           isSaving={isSaving}
+          isSimulationContactsLoading={isSimulationContactsLoading}
           isTesting={isTesting}
           onBack={onBack}
           onCanvasChange={onCanvasChange}
@@ -578,13 +672,19 @@ export function AutomationsPageView({
           onExitFocusMode={onExitFocusMode}
           onFormChange={onFormChange}
           onHistoryToggle={onHistoryToggle}
+          onRealSimulation={onRealSimulation}
           onRunEventKeyChange={onRunEventKeyChange}
+          onSimulationContactChange={onSimulationContactChange}
+          onSimulationMessageBodyChange={onSimulationMessageBodyChange}
           onSave={onSave}
           onTest={onTest}
           onToggleAutomation={onToggleAutomation}
           runEventKey={runEventKey}
           runs={runs}
           selectedAutomation={selectedAutomation}
+          simulationContactId={simulationContactId}
+          simulationContacts={simulationContacts}
+          simulationMessageBody={simulationMessageBody}
         />
       ) : (
         <AutomationHubView
@@ -678,7 +778,9 @@ export function AutomationEditorView({
   isFocusMode,
   isHistoryOpen,
   isRunsLoading,
+  isRealSimulating,
   isSaving,
+  isSimulationContactsLoading,
   isTesting,
   onBack,
   onCanvasChange,
@@ -686,13 +788,19 @@ export function AutomationEditorView({
   onExitFocusMode,
   onFormChange,
   onHistoryToggle,
+  onRealSimulation,
   onRunEventKeyChange,
+  onSimulationContactChange,
+  onSimulationMessageBodyChange,
   onSave,
   onTest,
   onToggleAutomation,
   runEventKey,
   runs,
-  selectedAutomation
+  selectedAutomation,
+  simulationContactId,
+  simulationContacts,
+  simulationMessageBody
 }: {
   canvasTriggerLabel: string;
   draftVersion: number;
@@ -700,7 +808,9 @@ export function AutomationEditorView({
   isFocusMode: boolean;
   isHistoryOpen: boolean;
   isRunsLoading: boolean;
+  isRealSimulating: boolean;
   isSaving: boolean;
+  isSimulationContactsLoading: boolean;
   isTesting: boolean;
   onBack: () => void;
   onCanvasChange: (payload: AutomationFlowDefinition) => void;
@@ -708,13 +818,19 @@ export function AutomationEditorView({
   onExitFocusMode: () => void;
   onFormChange: Dispatch<SetStateAction<AutomationFormState>>;
   onHistoryToggle: () => void;
+  onRealSimulation: () => void;
   onRunEventKeyChange?: Dispatch<SetStateAction<string>>;
+  onSimulationContactChange: Dispatch<SetStateAction<string>>;
+  onSimulationMessageBodyChange: Dispatch<SetStateAction<string>>;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
   onTest: () => void;
   onToggleAutomation: (automation: AutomationRuleDto) => void;
   runEventKey: string;
   runs: AutomationRunDto[];
   selectedAutomation: AutomationRuleDto | null;
+  simulationContactId: string;
+  simulationContacts: ContactDto[];
+  simulationMessageBody: string;
 }) {
   const editorStatusLabel = automationEditorStatusLabel(selectedAutomation);
   const editorStatusClass = selectedAutomation
@@ -825,12 +941,20 @@ export function AutomationEditorView({
       {isHistoryOpen ? (
         <AutomationHistoryDrawer
           isRunsLoading={isRunsLoading}
+          isRealSimulating={isRealSimulating}
+          isSimulationContactsLoading={isSimulationContactsLoading}
           isTesting={isTesting}
+          onRealSimulation={onRealSimulation}
           onRunEventKeyChange={onRunEventKeyChange}
+          onSimulationContactChange={onSimulationContactChange}
+          onSimulationMessageBodyChange={onSimulationMessageBodyChange}
           onTest={onTest}
           runEventKey={runEventKey}
           runs={runs}
           selectedAutomation={selectedAutomation}
+          simulationContactId={simulationContactId}
+          simulationContacts={simulationContacts}
+          simulationMessageBody={simulationMessageBody}
         />
       ) : null}
     </div>
@@ -839,20 +963,36 @@ export function AutomationEditorView({
 
 function AutomationHistoryDrawer({
   isRunsLoading,
+  isRealSimulating,
+  isSimulationContactsLoading,
   isTesting,
+  onRealSimulation,
   onRunEventKeyChange,
+  onSimulationContactChange,
+  onSimulationMessageBodyChange,
   onTest,
   runEventKey,
   runs,
-  selectedAutomation
+  selectedAutomation,
+  simulationContactId,
+  simulationContacts,
+  simulationMessageBody
 }: {
   isRunsLoading: boolean;
+  isRealSimulating: boolean;
+  isSimulationContactsLoading: boolean;
   isTesting: boolean;
+  onRealSimulation: () => void;
   onRunEventKeyChange?: Dispatch<SetStateAction<string>>;
+  onSimulationContactChange: Dispatch<SetStateAction<string>>;
+  onSimulationMessageBodyChange: Dispatch<SetStateAction<string>>;
   onTest: () => void;
   runEventKey: string;
   runs: AutomationRunDto[];
   selectedAutomation: AutomationRuleDto | null;
+  simulationContactId: string;
+  simulationContacts: ContactDto[];
+  simulationMessageBody: string;
 }) {
   return (
     <aside className="automation-history-drawer" aria-label="Teste & histórico">
@@ -877,8 +1017,50 @@ function AutomationHistoryDrawer({
         type="button"
       >
         <Zap size={15} aria-hidden="true" />
-        {isTesting ? "Testando" : "Testar agora"}
+        {isTesting ? "Testando" : "Teste seco"}
       </button>
+
+      <div className="automation-real-simulation">
+        <div className="automation-real-simulation-heading">
+          <strong>Simulacao real</strong>
+          <small>Envia WhatsApp de verdade quando o fluxo tiver envio.</small>
+        </div>
+        <label className="form-field">
+          <span>Contato salvo</span>
+          <select
+            disabled={!selectedAutomation || isSimulationContactsLoading || isRealSimulating}
+            onChange={(event) => onSimulationContactChange(event.target.value)}
+            value={simulationContactId}
+          >
+            {simulationContacts.length === 0 ? (
+              <option value="">{isSimulationContactsLoading ? "Carregando contatos..." : "Nenhum contato encontrado"}</option>
+            ) : null}
+            {simulationContacts.map((contact) => (
+              <option key={contact.id} value={contact.id}>
+                {contact.name || contact.phone} {contact.phone ? `- ${contact.phone}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="form-field">
+          <span>Mensagem inbound simulada</span>
+          <textarea
+            disabled={!selectedAutomation || isRealSimulating}
+            onChange={(event) => onSimulationMessageBodyChange(event.target.value)}
+            rows={3}
+            value={simulationMessageBody}
+          />
+        </label>
+        <button
+          className="primary-button icon-button-label"
+          disabled={!selectedAutomation || !simulationContactId || isRealSimulating}
+          onClick={() => void onRealSimulation()}
+          type="button"
+        >
+          <Zap size={15} aria-hidden="true" />
+          {isRealSimulating ? "Simulando" : "Simular real"}
+        </button>
+      </div>
 
       <div className="automation-run-list">
         {runs.length === 0 && !isRunsLoading ? (

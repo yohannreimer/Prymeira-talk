@@ -86,7 +86,7 @@ interface ConversationRecord {
 export interface AutomationRunnerPrisma {
   automationRule: {
     findMany(args: {
-      where: { workspaceId: string; status: "enabled"; trigger: string };
+      where: { workspaceId: string; status?: "enabled"; trigger: string; id?: string };
       orderBy: Array<{ createdAt: "asc" }>;
     }): Promise<AutomationRuleRecord[]>;
   };
@@ -164,6 +164,8 @@ export interface RunForInboundMessageInput {
   workspaceId: string;
   messageId: string;
   eventKey: string;
+  automationId?: string;
+  includeDisabled?: boolean;
 }
 
 interface ActionResult {
@@ -867,8 +869,9 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
       const rules = await options.prisma.automationRule.findMany({
         where: {
           workspaceId: input.workspaceId,
-          status: "enabled",
-          trigger: "message.received"
+          ...(input.includeDisabled ? {} : { status: "enabled" as const }),
+          trigger: "message.received",
+          ...(input.automationId ? { id: input.automationId } : {})
         },
         orderBy: [{ createdAt: "asc" }]
       });
