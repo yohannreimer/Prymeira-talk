@@ -760,10 +760,7 @@ function runStatus(results: ActionResult[]) {
 async function loadContext(options: AutomationRunnerOptions, input: RunForInboundMessageInput) {
   const message = await options.prisma.message.findUnique({
     where: {
-      workspaceId_id: {
-        workspaceId: input.workspaceId,
-        id: input.messageId
-      }
+      id: input.messageId
     },
     include: {
       conversation: {
@@ -776,7 +773,7 @@ async function loadContext(options: AutomationRunnerOptions, input: RunForInboun
     }
   });
 
-  if (!message || message.direction !== "inbound") {
+  if (!message || message.workspaceId !== input.workspaceId || message.direction !== "inbound") {
     return null;
   }
 
@@ -845,6 +842,7 @@ async function recordAutomationRun(
     workspaceId: input.workspaceId,
     payload: {
       id: run.id,
+      workspaceId: run.workspaceId,
       ruleId: run.ruleId,
       eventKey: run.eventKey,
       status: run.status,

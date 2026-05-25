@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { realtimeEventSchema } from "@prymeira-talk/shared";
 import { createAutomationRunner } from "./automation-runner.js";
 import type { AutomationRunnerPrisma } from "./automation-runner.js";
 
@@ -184,6 +185,11 @@ describe("automation runner", () => {
       number: "5547991396920",
       text: "Ola! Como posso ajudar?"
     });
+    expect(prisma.message.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: messageId }
+      })
+    );
     expect(prisma.message.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         workspaceId,
@@ -222,6 +228,13 @@ describe("automation runner", () => {
     });
     expect(realtime.publish).toHaveBeenCalledWith(
       expect.objectContaining({ type: "automation_run.created", workspaceId })
+    );
+    expect(realtimeEventSchema.parse(realtime.publish.mock.calls[0]?.[0])).toEqual(
+      expect.objectContaining({
+        type: "automation_run.created",
+        workspaceId,
+        payload: expect.objectContaining({ workspaceId })
+      })
     );
   });
 

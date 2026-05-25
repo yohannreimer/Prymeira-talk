@@ -155,8 +155,7 @@ export const automationsRoutes: FastifyPluginAsync<AutomationsRoutesOptions> = a
 
     const now = new Date();
     const body = input.messageBody ?? "Mensagem de simulacao da automacao.";
-    const eventKey =
-      input.eventKey ?? `message.received:automation-simulation:${input.automationId}:${randomUUID()}`;
+    const eventKey = `message.received:automation-simulation:${input.automationId}:${randomUUID()}`;
     const conversation = await app.prisma.conversation.upsert({
       where: {
         workspaceId_channelId_contactId: {
@@ -194,6 +193,7 @@ export const automationsRoutes: FastifyPluginAsync<AutomationsRoutesOptions> = a
         metadata: {
           source: "automation_simulation",
           automationId: input.automationId,
+          requestedEventKey: input.eventKey ?? null,
           contactId: contact.id,
           channelId: channel.id
         }
