@@ -1,5 +1,5 @@
 import { useTalkAuth } from "../../app/auth";
-import { ArrowLeft, Plus, Save, ToggleLeft, ToggleRight, Zap } from "lucide-react";
+import { ArrowLeft, Maximize2, Minimize2, Plus, Save, ToggleLeft, ToggleRight, Zap } from "lucide-react";
 import { type Dispatch, FormEvent, type SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
 import { automationFlowSchema, getAutomationBlock, type AutomationBlockType, type AutomationFlowDefinition } from "@prymeira-talk/shared";
 import {
@@ -292,6 +292,14 @@ export function AutomationsPage() {
     setViewMode("hub");
   }
 
+  function enterFocusMode() {
+    setViewMode("focus");
+  }
+
+  function exitFocusMode() {
+    setViewMode("editor");
+  }
+
   async function saveAutomation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsSaving(true);
@@ -390,6 +398,7 @@ export function AutomationsPage() {
       enabledCount={enabledCount}
       error={error}
       form={form}
+      isFocusMode={viewMode === "focus"}
       isLoading={isLoading}
       isRunsLoading={isRunsLoading}
       isSaving={isSaving}
@@ -398,6 +407,8 @@ export function AutomationsPage() {
       onBack={closeEditor}
       onCanvasChange={handleCanvasChange}
       onCreate={createDraft}
+      onEnterFocusMode={enterFocusMode}
+      onExitFocusMode={exitFocusMode}
       onFormChange={setForm}
       onOpen={openAutomation}
       onRunEventKeyChange={setRunEventKey}
@@ -419,6 +430,7 @@ interface AutomationsPageViewProps {
   enabledCount: number;
   error: string | null;
   form: AutomationFormState;
+  isFocusMode: boolean;
   isLoading: boolean;
   isRunsLoading: boolean;
   isSaving: boolean;
@@ -427,6 +439,8 @@ interface AutomationsPageViewProps {
   onBack: () => void;
   onCanvasChange: (payload: AutomationFlowDefinition) => void;
   onCreate: () => void;
+  onEnterFocusMode: () => void;
+  onExitFocusMode: () => void;
   onFormChange: Dispatch<SetStateAction<AutomationFormState>>;
   onOpen: (automationId: string) => void;
   onRunEventKeyChange?: Dispatch<SetStateAction<string>>;
@@ -446,6 +460,7 @@ export function AutomationsPageView({
   enabledCount,
   error,
   form,
+  isFocusMode,
   isLoading,
   isRunsLoading,
   isSaving,
@@ -454,6 +469,8 @@ export function AutomationsPageView({
   onBack,
   onCanvasChange,
   onCreate,
+  onEnterFocusMode,
+  onExitFocusMode,
   onFormChange,
   onOpen,
   onRunEventKeyChange,
@@ -487,19 +504,24 @@ export function AutomationsPageView({
         </button>
       </header>
 
-      {error ? <p className="error-note" style={{ margin: "0 16px" }}>{error}</p> : null}
-      {notice ? <p className="list-note" style={{ margin: "0 16px" }}>{notice}</p> : null}
+      <div className="automation-page-messages">
+        {error ? <p className="error-note">{error}</p> : null}
+        {notice ? <p className="list-note">{notice}</p> : null}
+      </div>
 
       {shouldShowEditor ? (
         <AutomationEditorView
           canvasTriggerLabel={canvasTriggerLabel}
           draftVersion={draftVersion}
           form={form}
+          isFocusMode={isFocusMode}
           isRunsLoading={isRunsLoading}
           isSaving={isSaving}
           isTesting={isTesting}
           onBack={onBack}
           onCanvasChange={onCanvasChange}
+          onEnterFocusMode={onEnterFocusMode}
+          onExitFocusMode={onExitFocusMode}
           onFormChange={onFormChange}
           onRunEventKeyChange={onRunEventKeyChange}
           onSave={onSave}
@@ -598,11 +620,14 @@ export function AutomationEditorView({
   canvasTriggerLabel,
   draftVersion,
   form,
+  isFocusMode,
   isRunsLoading,
   isSaving,
   isTesting,
   onBack,
   onCanvasChange,
+  onEnterFocusMode,
+  onExitFocusMode,
   onFormChange,
   onRunEventKeyChange,
   onSave,
@@ -615,11 +640,14 @@ export function AutomationEditorView({
   canvasTriggerLabel: string;
   draftVersion: number;
   form: AutomationFormState;
+  isFocusMode: boolean;
   isRunsLoading: boolean;
   isSaving: boolean;
   isTesting: boolean;
   onBack: () => void;
   onCanvasChange: (payload: AutomationFlowDefinition) => void;
+  onEnterFocusMode: () => void;
+  onExitFocusMode: () => void;
   onFormChange: Dispatch<SetStateAction<AutomationFormState>>;
   onRunEventKeyChange?: Dispatch<SetStateAction<string>>;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
@@ -637,7 +665,7 @@ export function AutomationEditorView({
     : "waiting";
 
   return (
-    <div className="automation-editor-shell">
+    <div className={`automation-editor-shell ${isFocusMode ? "is-focus-mode" : ""}`}>
       <form className="automation-editor-main-form" onSubmit={onSave}>
         <div className="automation-editor-topbar">
           <button className="secondary-button icon-button-label" type="button" onClick={onBack}>
@@ -686,6 +714,19 @@ export function AutomationEditorView({
               {isTesting ? "Testando" : "Testar agora"}
             </button>
 
+            <button
+              className="secondary-button icon-button-label"
+              onClick={isFocusMode ? onExitFocusMode : onEnterFocusMode}
+              type="button"
+            >
+              {isFocusMode ? (
+                <Minimize2 size={15} aria-hidden="true" />
+              ) : (
+                <Maximize2 size={15} aria-hidden="true" />
+              )}
+              {isFocusMode ? "Sair do foco" : "Modo foco"}
+            </button>
+
             <button className="primary-button" disabled={isSaving} type="submit">
               <Save size={15} aria-hidden="true" />
               Salvar
@@ -716,6 +757,7 @@ export function AutomationEditorView({
             key={selectedAutomation?.id ?? `new-automation-${draftVersion}`}
             onChange={onCanvasChange}
             value={selectedAutomation?.actions}
+            variant={isFocusMode ? "focus" : "editor"}
           />
         </div>
 

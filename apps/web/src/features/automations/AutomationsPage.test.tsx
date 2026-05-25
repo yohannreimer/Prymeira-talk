@@ -409,6 +409,38 @@ describe("AutomationsPage navigation", () => {
     expect(hasText(page.expandedTree, "Rascunho")).toBe(true);
     expect(hasText(page.expandedTree, "Habilitar")).toBe(false);
   });
+
+  it("switches the editor canvas into focus mode", async () => {
+    const page = await renderAutomationsPageContainer();
+
+    clickButton(page.expandedTree, /Boas-vindas/i);
+    await page.settle();
+
+    expect(findButtonByName(page.expandedTree, "Modo foco")).not.toBeNull();
+    expect(
+      findElement(
+        page.expandedTree,
+        (element) =>
+          typeof element.type === "function" &&
+          element.type.name === "AutomationCanvas" &&
+          (element.props as { variant?: unknown }).variant === "editor"
+      )
+    ).not.toBeNull();
+
+    clickButton(page.expandedTree, "Modo foco");
+    await page.settle();
+
+    expect(findButtonByName(page.expandedTree, "Sair do foco")).not.toBeNull();
+    expect(
+      findElement(
+        page.expandedTree,
+        (element) =>
+          typeof element.type === "function" &&
+          element.type.name === "AutomationCanvas" &&
+          (element.props as { variant?: unknown }).variant === "focus"
+      )
+    ).not.toBeNull();
+  });
 });
 
 describe("automation run helpers", () => {

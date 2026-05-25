@@ -36,6 +36,7 @@ import {
 interface AutomationCanvasProps {
   value?: unknown;
   onChange: (payload: AutomationFlowDefinition) => void;
+  variant?: "editor" | "focus";
 }
 
 interface AutomationCanvasState {
@@ -161,11 +162,12 @@ export function automationCanvasStateFromValue(value: unknown): AutomationCanvas
   return canvasStateFromFlow(createDefaultAutomationFlow());
 }
 
-export function AutomationCanvas({ value, onChange }: AutomationCanvasProps) {
+export function AutomationCanvas({ value, onChange, variant = "editor" }: AutomationCanvasProps) {
   const initialState = useMemo(() => automationCanvasStateFromValue(value), [value]);
   const [nodes, setNodes] = useState<AutomationCanvasNode[]>(initialState.nodes);
   const [edges, setEdges] = useState<AutomationCanvasEdge[]>(initialState.edges);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialState.nodes[0]?.id ?? null);
+  const isFocusMode = variant === "focus";
 
   useEffect(() => {
     onChange(flowToAutomationPayload(nodes, edges));
@@ -226,10 +228,13 @@ export function AutomationCanvas({ value, onChange }: AutomationCanvasProps) {
   }, []);
 
   return (
-    <div className="automation-canvas-shell">
-      <AutomationBlockLibrary onSelect={addBlock} />
+    <div className={`automation-canvas-shell automation-canvas-shell--${variant}`}>
+      {isFocusMode ? null : <AutomationBlockLibrary onSelect={addBlock} />}
 
-      <div className="automation-canvas-surface" aria-label="Canvas da automacao">
+      <div
+        className={`automation-canvas-surface ${isFocusMode ? "is-focus-mode" : ""}`}
+        aria-label="Canvas da automacao"
+      >
         <ReactFlow
           edges={edges}
           fitView
@@ -255,7 +260,7 @@ export function AutomationCanvas({ value, onChange }: AutomationCanvasProps) {
         </ReactFlow>
       </div>
 
-      <AutomationNodeInspector node={selectedNode} onConfigChange={updateConfig} />
+      {isFocusMode ? null : <AutomationNodeInspector node={selectedNode} onConfigChange={updateConfig} />}
     </div>
   );
 }
