@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { conversationSchema, messageSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
 import { evolutionRoutes, isUniqueConstraintError } from "./evolution.routes.js";
+import type { EvolutionRoutesOptions } from "./evolution.routes.js";
 import { evolutionWebhookEnvelopeSchema, evolutionWebhookSchema } from "./evolution.schemas.js";
 
 const validWebhookBody = {
@@ -29,8 +30,36 @@ function createMockPrisma(overrides: {
     updateMany?: ReturnType<typeof vi.fn>;
   };
   message?: {
+    findUnique?: ReturnType<typeof vi.fn>;
+    count?: ReturnType<typeof vi.fn>;
+    findFirst?: ReturnType<typeof vi.fn>;
     create?: ReturnType<typeof vi.fn>;
     update?: ReturnType<typeof vi.fn>;
+  };
+  automationRule?: {
+    findMany?: ReturnType<typeof vi.fn>;
+  };
+  automationRun?: {
+    upsert?: ReturnType<typeof vi.fn>;
+  };
+  tag?: {
+    upsert?: ReturnType<typeof vi.fn>;
+    findFirst?: ReturnType<typeof vi.fn>;
+  };
+  conversationTag?: {
+    create?: ReturnType<typeof vi.fn>;
+    deleteMany?: ReturnType<typeof vi.fn>;
+    findFirst?: ReturnType<typeof vi.fn>;
+  };
+  contactBoardStage?: {
+    findFirst?: ReturnType<typeof vi.fn>;
+  };
+  contactBoardMembership?: {
+    findFirst?: ReturnType<typeof vi.fn>;
+    upsert?: ReturnType<typeof vi.fn>;
+  };
+  contactNote?: {
+    create?: ReturnType<typeof vi.fn>;
   };
 } = {}) {
   const prisma = {
@@ -124,6 +153,52 @@ function createMockPrisma(overrides: {
         })
     },
     message: {
+      findUnique:
+        overrides.message?.findUnique ??
+        vi.fn().mockResolvedValue({
+          id: "msg_1",
+          workspaceId: "workspace_a",
+          conversationId: "conv_1",
+          providerMessageId: "provider_msg_1",
+          providerEventId: "messages.upsert:client-one:provider_msg_1",
+          direction: "inbound",
+          type: "text",
+          body: "Oi",
+          mediaUrl: null,
+          status: "delivered",
+          sentByUserId: null,
+          createdAt: new Date("2026-05-20T12:00:00.000Z"),
+          updatedAt: new Date("2026-05-20T12:00:00.000Z"),
+          conversation: {
+            id: "conv_1",
+            workspaceId: "workspace_a",
+            channelId: "channel_1",
+            contactId: "contact_1",
+            status: "open",
+            assignedUserId: null,
+            departmentId: null,
+            lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+            lastMessagePreview: "Oi",
+            unreadCount: 1,
+            priority: "normal",
+            createdAt: new Date("2026-05-20T11:59:00.000Z"),
+            updatedAt: new Date("2026-05-20T12:00:00.000Z"),
+            channel: {
+              id: "channel_1",
+              provider: "evolution",
+              providerKey: "client-one",
+              displayName: "Client One"
+            },
+            contact: {
+              id: "contact_1",
+              phone: "551199999999",
+              name: null
+            },
+            tags: []
+          }
+        }),
+      count: overrides.message?.count ?? vi.fn().mockResolvedValue(1),
+      findFirst: overrides.message?.findFirst ?? vi.fn().mockResolvedValue(null),
       create:
         overrides.message?.create ??
         vi.fn().mockResolvedValue({
@@ -154,6 +229,43 @@ function createMockPrisma(overrides: {
           sentByUserId: null,
           createdAt: new Date("2026-05-20T12:00:00.000Z")
         })
+    },
+    automationRule: {
+      findMany: overrides.automationRule?.findMany ?? vi.fn().mockResolvedValue([])
+    },
+    automationRun: {
+      upsert:
+        overrides.automationRun?.upsert ??
+        vi.fn().mockImplementation(async (args) => ({
+          id: "run_1",
+          workspaceId: args.create.workspaceId,
+          ruleId: args.create.ruleId,
+          eventKey: args.create.eventKey,
+          status: args.create.status,
+          input: args.create.input,
+          result: args.create.result,
+          createdAt: new Date("2026-05-20T12:00:01.000Z"),
+          updatedAt: new Date("2026-05-20T12:00:01.000Z")
+        }))
+    },
+    tag: {
+      upsert: overrides.tag?.upsert ?? vi.fn().mockResolvedValue({ id: "tag_1", name: "Lead" }),
+      findFirst: overrides.tag?.findFirst ?? vi.fn().mockResolvedValue(null)
+    },
+    conversationTag: {
+      create: overrides.conversationTag?.create ?? vi.fn().mockResolvedValue({}),
+      deleteMany: overrides.conversationTag?.deleteMany ?? vi.fn().mockResolvedValue({ count: 1 }),
+      findFirst: overrides.conversationTag?.findFirst ?? vi.fn().mockResolvedValue(null)
+    },
+    contactBoardStage: {
+      findFirst: overrides.contactBoardStage?.findFirst ?? vi.fn().mockResolvedValue(null)
+    },
+    contactBoardMembership: {
+      findFirst: overrides.contactBoardMembership?.findFirst ?? vi.fn().mockResolvedValue(null),
+      upsert: overrides.contactBoardMembership?.upsert ?? vi.fn().mockResolvedValue({})
+    },
+    contactNote: {
+      create: overrides.contactNote?.create ?? vi.fn().mockResolvedValue({})
     }
   };
 
@@ -165,13 +277,16 @@ function createMockPrisma(overrides: {
   };
 }
 
-async function buildEvolutionApp(prisma = createMockPrisma()) {
+async function buildEvolutionApp(
+  prisma = createMockPrisma(),
+  evolution?: EvolutionRoutesOptions["evolution"]
+) {
   const app = Fastify({ logger: false });
   const publish = vi.fn();
 
   app.decorate("prisma", prisma as never);
   app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
-  await app.register(evolutionRoutes, { webhookSecret: "top_secret" });
+  await app.register(evolutionRoutes, { webhookSecret: "top_secret", evolution });
 
   return { app, prisma, publish };
 }
@@ -1079,6 +1194,87 @@ describe("Evolution webhook routes", () => {
       expect(conversationSchema.parse(conversationEvent.payload)).toEqual(conversationEvent.payload);
       expect(realtimeEventSchema.parse(messageEvent)).toEqual(messageEvent);
       expect(realtimeEventSchema.parse(conversationEvent)).toEqual(conversationEvent);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("runs enabled automations after an inbound Evolution message is ingested", async () => {
+    const automationRule = {
+      id: "automation_1",
+      workspaceId: "workspace_a",
+      name: "Primeiro contato",
+      status: "enabled",
+      trigger: "message.received",
+      conditions: {},
+      actions: {
+        version: 1,
+        nodes: [
+          {
+            id: "trigger-1",
+            type: "trigger_first_message",
+            position: { x: 0, y: 0 },
+            data: { title: "Primeira mensagem", config: {} }
+          },
+          {
+            id: "send-1",
+            type: "send_message",
+            position: { x: 260, y: 0 },
+            data: { title: "Enviar mensagem", config: { message: "Bem-vindo!" } }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "trigger-1", target: "send-1" }]
+      },
+      createdAt: new Date("2026-05-20T10:00:00.000Z"),
+      updatedAt: new Date("2026-05-20T10:00:00.000Z")
+    };
+    const prisma = createMockPrisma({
+      automationRule: {
+        findMany: vi.fn().mockResolvedValue([automationRule])
+      },
+      message: {
+        count: vi.fn().mockResolvedValue(0)
+      }
+    });
+    const evolutionClient = {
+      sendText: vi.fn().mockResolvedValue({ providerMessageId: "provider_auto_1", raw: {} }),
+      sendMedia: vi.fn()
+    };
+    const { app, publish } = await buildEvolutionApp(prisma, {
+      mode: "real",
+      client: evolutionClient
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: validWebhookBody
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(evolutionClient.sendText).toHaveBeenCalledWith({
+        instanceName: "client-one",
+        number: "551199999999",
+        text: "Bem-vindo!"
+      });
+      expect(prisma.automationRun.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            workspaceId: "workspace_a",
+            ruleId: "automation_1",
+            eventKey: "message.received:provider_msg_1",
+            status: "completed"
+          })
+        })
+      );
+      expect(publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "automation_run.created",
+          workspaceId: "workspace_a"
+        })
+      );
     } finally {
       await app.close();
     }

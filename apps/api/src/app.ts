@@ -71,7 +71,10 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   });
 
   await app.register(realtimeRoutes);
-  await app.register(evolutionRoutes, { webhookSecret: env.EVOLUTION_WEBHOOK_SECRET });
+  await app.register(evolutionRoutes, {
+    webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,
+    evolution: evolutionRuntime
+  });
   await app.register(conversationsRoutes, { evolution: evolutionRuntime });
   await app.register(quickRepliesRoutes);
   await app.register(contactsRoutes);

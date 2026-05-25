@@ -6,12 +6,12 @@ interface AutomationBlockLibraryProps {
 }
 
 const categoryLabels: Record<AutomationBlockCategory, string> = {
-  trigger: "Entrada",
-  communication: "Comunicacao",
-  decision: "Decisao",
+  trigger: "Gatilhos",
+  communication: "Mensagens",
+  decision: "Decisoes",
   time: "Tempo",
   crm: "CRM",
-  integration: "Integracao",
+  integration: "Integracoes",
   control: "Controle"
 };
 
@@ -48,8 +48,14 @@ export function AutomationBlockLibrary({ onSelect }: AutomationBlockLibraryProps
                 {blocks.map((block) => (
                   <button
                     className="automation-block-button"
+                    disabled={block.support !== "supported"}
                     key={block.type}
                     onClick={() => onSelect(block.type)}
+                    title={
+                      block.support === "supported"
+                        ? `Adicionar ${block.label}`
+                        : `${block.label} ainda nao executa em automacoes reais`
+                    }
                     type="button"
                   >
                     <span className="automation-block-add" aria-hidden="true">

@@ -4,6 +4,11 @@ import type { ChannelDto, MessageDto } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { toChannelDto } from "../channels/channels.service.js";
 import {
+  createAutomationRunner,
+  type AutomationRunnerEvolution,
+  type AutomationRunnerPrisma
+} from "../automations/automation-runner.js";
+import {
   buildPhoneLookupCandidates,
   normalizePhoneForStorage
 } from "../contacts/phone-normalization.js";
@@ -18,6 +23,7 @@ import {
 
 export interface EvolutionRoutesOptions {
   webhookSecret: string;
+  evolution?: AutomationRunnerEvolution;
 }
 
 const evolutionWebhookParamsSchema = z.object({
@@ -333,6 +339,12 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
   app,
   options
 ) => {
+  const automationRunner = createAutomationRunner({
+    prisma: app.prisma as unknown as AutomationRunnerPrisma,
+    evolution: options.evolution,
+    realtime: app.realtime
+  });
+
   app.post("/webhooks/evolution/:workspaceId", async (request, reply) => {
     if (!hasValidWebhookSecret(request.headers["x-prymeira-talk-secret"], options.webhookSecret)) {
       return reply.code(401).send({ ok: false, error: "invalid_webhook_secret" });
@@ -637,6 +649,16 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         workspaceId,
         payload: toConversationDto(conversation)
       });
+
+      if (message.direction === "inbound") {
+        await automationRunner.runForInboundMessage({
+          workspaceId,
+          messageId: message.id,
+          eventKey: `message.received:${message.providerMessageId ?? message.id}`
+        }).catch((error: unknown) => {
+          request.log.error({ error }, "Failed to run message automations.");
+        });
+      }
 
       return { ok: true };
     } catch (error) {

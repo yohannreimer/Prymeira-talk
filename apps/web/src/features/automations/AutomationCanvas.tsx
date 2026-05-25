@@ -20,6 +20,7 @@ import {
   type AutomationBlockType,
   type AutomationFlowDefinition
 } from "@prymeira-talk/shared";
+import { Plus, SlidersHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AutomationActionDto } from "../../app/api";
 import { AutomationBlockLibrary } from "./AutomationBlockLibrary";
@@ -167,6 +168,8 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
   const [nodes, setNodes] = useState<AutomationCanvasNode[]>(initialState.nodes);
   const [edges, setEdges] = useState<AutomationCanvasEdge[]>(initialState.edges);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialState.nodes[0]?.id ?? null);
+  const [isFocusPaletteOpen, setFocusPaletteOpen] = useState(false);
+  const [isFocusInspectorOpen, setFocusInspectorOpen] = useState(false);
   const isFocusMode = variant === "focus";
 
   useEffect(() => {
@@ -195,8 +198,13 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
   }, []);
 
   const handleSelectionChange = useCallback((selection: OnSelectionChangeParams) => {
-    setSelectedNodeId(selection.nodes[0]?.id ?? null);
-  }, []);
+    const nextSelectedNodeId = selection.nodes[0]?.id ?? null;
+
+    setSelectedNodeId(nextSelectedNodeId);
+    if (nextSelectedNodeId && isFocusMode) {
+      setFocusInspectorOpen(true);
+    }
+  }, [isFocusMode]);
 
   const addBlock = useCallback((type: AutomationBlockType) => {
     setNodes((currentNodes) => {
@@ -210,6 +218,12 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
       return [...currentNodes, node];
     });
   }, [selectedNodeId]);
+
+  const addFocusBlock = useCallback((type: AutomationBlockType) => {
+    addBlock(type);
+    setFocusPaletteOpen(false);
+    setFocusInspectorOpen(true);
+  }, [addBlock]);
 
   const updateConfig = useCallback((nodeId: string, config: Record<string, unknown>) => {
     setNodes((currentNodes) =>
@@ -258,6 +272,42 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
             zoomable
           />
         </ReactFlow>
+
+        {isFocusMode ? (
+          <>
+            <div className="automation-focus-toolbar" aria-label="Ferramentas do modo foco">
+              <button
+                className="button-primary automation-focus-action"
+                onClick={() => setFocusPaletteOpen((current) => !current)}
+                type="button"
+              >
+                {isFocusPaletteOpen ? <X size={16} /> : <Plus size={16} />}
+                <span>Bloco</span>
+              </button>
+              <button
+                className="button-ghost automation-focus-action"
+                disabled={!selectedNode}
+                onClick={() => setFocusInspectorOpen((current) => !current)}
+                type="button"
+              >
+                <SlidersHorizontal size={16} />
+                <span>Configurar</span>
+              </button>
+            </div>
+
+            {isFocusPaletteOpen ? (
+              <div className="automation-focus-popover">
+                <AutomationBlockLibrary onSelect={addFocusBlock} />
+              </div>
+            ) : null}
+
+            {isFocusInspectorOpen ? (
+              <div className="automation-focus-inspector">
+                <AutomationNodeInspector node={selectedNode} onConfigChange={updateConfig} />
+              </div>
+            ) : null}
+          </>
+        ) : null}
       </div>
 
       {isFocusMode ? null : <AutomationNodeInspector node={selectedNode} onConfigChange={updateConfig} />}
