@@ -73,7 +73,7 @@ export const talkModules: TalkModule[] = [
   },
   {
     key: "atomic_crm",
-    label: "Atomic CRM",
+    label: "Vincula CRM",
     Icon: BriefcaseBusiness
   },
   {

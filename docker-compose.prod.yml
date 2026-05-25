@@ -45,6 +45,7 @@ services:
       EVOLUTION_API_BASE_URL: https://wsapi.yrdnegocios.com.br
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
       EVOLUTION_WEBHOOK_SECRET: ${EVOLUTION_WEBHOOK_SECRET}
+      VINCULA_CRM_API_URL: ${VINCULA_CRM_API_URL:-https://vincula.prymeiradigital.com.br/api}
     networks:
       prymeira_talk_internal:
         aliases:

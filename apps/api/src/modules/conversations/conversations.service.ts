@@ -841,7 +841,7 @@ export function createConversationsService(
               note: conversation.lastMessagePreview ?? "Atendimento atualizado no Talk."
             },
             result: {
-              provider: "atomic-crm",
+              provider: "vincula",
               simulated: true
             }
           }

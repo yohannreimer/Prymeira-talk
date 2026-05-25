@@ -6,6 +6,11 @@ import type { PrismaLike } from "./crm.service.js";
 
 const uuidSchema = z.string().uuid();
 
+interface CrmRoutesOptions {
+  vinculaApiUrl?: string;
+  fetch?: typeof fetch;
+}
+
 const syncActionsQuerySchema = z.object({
   contactId: uuidSchema.optional()
 });
@@ -39,14 +44,23 @@ function requireCrmManage(role: "owner" | "manager" | "agent", reply: FastifyRep
 
 function handleCrmError(reply: FastifyReply, error: unknown) {
   if (error instanceof CrmServiceError) {
-    return reply.code(404).send({ code: error.code, error: error.message });
+    return reply.code(error.statusCode).send({ code: error.code, error: error.message });
   }
 
   throw error;
 }
 
-export const crmRoutes: FastifyPluginAsync = async (app) => {
-  const service = createCrmService(app.prisma as unknown as PrismaLike);
+function readBearerToken(authorizationHeader: string | undefined) {
+  return authorizationHeader?.startsWith("Bearer ")
+    ? authorizationHeader.slice("Bearer ".length)
+    : null;
+}
+
+export const crmRoutes: FastifyPluginAsync<CrmRoutesOptions> = async (app, options) => {
+  const service = createCrmService(app.prisma as unknown as PrismaLike, {
+    vinculaApiUrl: options.vinculaApiUrl,
+    fetch: options.fetch
+  });
 
   app.get("/crm/sync-actions", async (request, reply) => {
     const query = syncActionsQuerySchema.safeParse(request.query);
@@ -95,7 +109,8 @@ export const crmRoutes: FastifyPluginAsync = async (app) => {
     try {
       const action = await service.createLead({
         workspaceId: request.talk.workspaceId,
-        ...body.data
+        ...body.data,
+        vinculaToken: readBearerToken(request.headers.authorization)
       });
 
       return reply.code(201).send(action);
@@ -117,7 +132,8 @@ export const crmRoutes: FastifyPluginAsync = async (app) => {
     try {
       const action = await service.createNote({
         workspaceId: request.talk.workspaceId,
-        ...body.data
+        ...body.data,
+        vinculaToken: readBearerToken(request.headers.authorization)
       });
 
       return reply.code(201).send(action);

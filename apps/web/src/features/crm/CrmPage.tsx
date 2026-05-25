@@ -12,7 +12,7 @@ import {
 function actionLabel(actionType: string) {
   const labels: Record<string, string> = {
     link_contact: "Vincular contato",
-    create_lead: "Criar lead",
+    create_lead: "Enviar lead",
     create_note: "Criar nota"
   };
 
@@ -72,15 +72,15 @@ export function CrmPage() {
   }
 
   return (
-    <section className="module-page" aria-label="Atomic CRM">
+    <section className="module-page" aria-label="Vincula CRM">
       <header className="module-header">
         <div>
           <p className="eyebrow">Prymeira Talk</p>
-          <h1>Atomic CRM</h1>
+          <h1>Vincula CRM</h1>
         </div>
         <span className="status-pill status-pending">
           <FlaskConical size={14} />
-          Modo simulado
+          {actions.some((action) => action.mode === "real") ? "Conexao real" : "Modo simulado"}
         </span>
       </header>
 
@@ -106,7 +106,7 @@ export function CrmPage() {
               <input value={contactId} onChange={(event) => setContactId(event.target.value)} placeholder="UUID do contato" required />
             </label>
             <label className="form-field">
-              Atomic CRM Contact ID
+              ID do contato no Vincula
               <input value={atomicCrmContactId} onChange={(event) => setAtomicCrmContactId(event.target.value)} />
             </label>
             <button className="primary-button" type="submit" disabled={isSaving}>
@@ -121,7 +121,7 @@ export function CrmPage() {
             </label>
             <button className="secondary-button" type="submit" disabled={isSaving || !contactId}>
               <Plus size={16} />
-              Criar lead
+              Enviar lead
             </button>
           </form>
           <form className="module-form compact-form" onSubmit={(event) => void runAction(event, "note")}>

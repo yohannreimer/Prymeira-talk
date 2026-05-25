@@ -29,7 +29,8 @@ export const envSchema = z.object({
   EVOLUTION_MODE: z.enum(["simulated", "real"]).default("simulated"),
   EVOLUTION_API_BASE_URL: optionalUrl,
   EVOLUTION_API_KEY: optionalNonEmptyString,
-  EVOLUTION_WEBHOOK_SECRET: z.string().min(1)
+  EVOLUTION_WEBHOOK_SECRET: z.string().min(1),
+  VINCULA_CRM_API_URL: optionalUrl
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

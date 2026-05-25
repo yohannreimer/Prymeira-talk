@@ -8,11 +8,17 @@ import type { PrismaLike } from "./crm.service.js";
 type MockPrisma = {
   contact: {
     findUnique: any;
+    update: any;
   };
   crmSyncAction: {
     create: any;
     findMany: any;
   };
+};
+
+type MockPrismaOverrides = {
+  contact?: Partial<MockPrisma["contact"]>;
+  crmSyncAction?: Partial<MockPrisma["crmSyncAction"]>;
 };
 
 const actionId = "00000000-0000-4000-8000-000000000501";
@@ -31,12 +37,29 @@ const baseAction = {
   updatedAt: new Date("2026-05-21T15:00:00.000Z")
 };
 
-function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & PrismaLike {
+const baseContact = {
+  id: contactId,
+  workspaceId: "workspace_a",
+  name: "Yohann Reimer",
+  phone: "554791396920",
+  email: "yohann@example.com",
+  company: "Prymeira",
+  atomicCrmContactId: null,
+  atomicCrmLeadId: null
+};
+
+function createMockPrisma(overrides: MockPrismaOverrides = {}): MockPrisma & PrismaLike {
   return {
     contact: {
       findUnique:
         overrides.contact?.findUnique ??
-        vi.fn().mockResolvedValue({ id: contactId, workspaceId: "workspace_a" })
+        vi.fn().mockResolvedValue(baseContact),
+      update:
+        overrides.contact?.update ??
+        vi.fn().mockImplementation(async (args) => ({
+          ...baseContact,
+          ...args.data
+        }))
     },
     crmSyncAction: {
       create:
@@ -123,6 +146,108 @@ describe("crm service", () => {
         })
       })
     );
+  });
+
+  it("syncs contact, lead and note to Vincula when API URL and token are present", async () => {
+    const prisma = createMockPrisma();
+    const fetchCrm = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [], total: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 42 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 77 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 88 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+    const service = createCrmService(prisma, {
+      vinculaApiUrl: "https://vincula.example.com/api",
+      fetch: fetchCrm as typeof fetch
+    });
+
+    const action = await service.createLead({
+      workspaceId: "workspace_a",
+      contactId,
+      title: "Quer proposta de implantacao",
+      vinculaToken: "clerk-token"
+    });
+
+    expect(action).toEqual(
+      expect.objectContaining({
+        actionType: "create_lead",
+        mode: "real",
+        status: "completed",
+        result: expect.objectContaining({
+          vinculaContactId: "42",
+          vinculaLeadId: "77"
+        })
+      })
+    );
+    expect(fetchCrm).toHaveBeenCalledWith(
+      expect.stringContaining("/records/contacts?"),
+      expect.objectContaining({
+        headers: expect.objectContaining({ authorization: "Bearer clerk-token" })
+      })
+    );
+    expect(fetchCrm).toHaveBeenCalledWith(
+      "https://vincula.example.com/api/records/leads",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("Prymeira Talk / WhatsApp")
+      })
+    );
+    expect(prisma.contact.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          atomicCrmContactId: "42",
+          atomicCrmLeadId: "77"
+        }
+      })
+    );
+  });
+
+  it("preserves Vincula authorization failures for the UI", async () => {
+    const prisma = createMockPrisma();
+    const fetchCrm = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "CRM access denied." } }), {
+        status: 403,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    const service = createCrmService(prisma, {
+      vinculaApiUrl: "https://vincula.example.com/api",
+      fetch: fetchCrm as typeof fetch
+    });
+
+    await expect(
+      service.createLead({
+        workspaceId: "workspace_a",
+        contactId,
+        title: "Quer proposta de implantacao",
+        vinculaToken: "clerk-token"
+      })
+    ).rejects.toMatchObject({
+      code: "VINCULA_SYNC_FAILED",
+      statusCode: 403,
+      message: "CRM access denied."
+    });
+    expect(prisma.crmSyncAction.create).not.toHaveBeenCalled();
   });
 
   it("lists sync actions by contact within the current workspace", async () => {

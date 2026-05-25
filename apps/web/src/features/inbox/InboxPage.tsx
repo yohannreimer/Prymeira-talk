@@ -1,11 +1,12 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ConversationDto, MessageDto, RealtimeEvent } from "@prymeira-talk/shared";
-import { Bot, CheckCircle2, Download, MessageSquare, StickyNote, UserCheck, X } from "lucide-react";
+import { Bot, CheckCircle2, Download, MessageSquare, Plus, StickyNote, UserCheck, X } from "lucide-react";
 import type { ChangeEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiCreateQuickReply,
   apiCreateConversationMessage,
+  apiCreateCrmLead,
   apiDeleteQuickReply,
   apiGetConversationContext,
   apiGetConversationMessages,
@@ -924,7 +925,7 @@ export function InboxPage() {
       setAiSuggestion(result.aiSuggestion);
     }
     if (result.crmAction) {
-      setCrmStatus(`Nota simulada enviada ao CRM (${result.crmAction.status}).`);
+      setCrmStatus(`Nota registrada no CRM (${result.crmAction.status}).`);
     }
   }
 
@@ -952,6 +953,34 @@ export function InboxPage() {
 
   async function handleRemoveTag(tagId: string) {
     await runAction({ action: "remove_tag", tagId });
+  }
+
+  async function handleCreateLead() {
+    if (!selectedConversation) return;
+
+    const targetConversation = selectedConversation;
+    setIsRunningAction(true);
+    setContextError(null);
+    setCrmStatus(null);
+
+    try {
+      const action = await apiCreateCrmLead(getFreshToken, {
+        contactId: targetConversation.contactId,
+        title: `Lead WhatsApp - ${contactDisplayName(targetConversation)}`
+      });
+
+      setCrmStatus(
+        action.mode === "real"
+          ? "Lead enviado ao Vincula CRM."
+          : "Lead registrado em modo simulado."
+      );
+    } catch (leadError) {
+      setContextError(
+        leadError instanceof Error ? leadError.message : "Nao foi possivel enviar o lead ao CRM."
+      );
+    } finally {
+      setIsRunningAction(false);
+    }
   }
 
   return (
@@ -1373,6 +1402,14 @@ export function InboxPage() {
             >
               <Bot size={15} aria-hidden="true" />
               IA
+            </button>
+            <button
+              disabled={!selectedConversation || isRunningAction}
+              onClick={() => void handleCreateLead()}
+              type="button"
+            >
+              <Plus size={15} aria-hidden="true" />
+              Lead
             </button>
             <button
               className="quick-action-danger"

@@ -85,7 +85,9 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(reportsRoutes);
   await app.register(teamRoutes);
   await app.register(assistantRoutes);
-  await app.register(crmRoutes);
+  await app.register(crmRoutes, {
+    vinculaApiUrl: env.VINCULA_CRM_API_URL
+  });
   await app.register(settingsRoutes);
 
   return app;
