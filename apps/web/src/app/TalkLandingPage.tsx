@@ -512,8 +512,14 @@ function ReportsVisual() {
 function InboxScreenshot() {
   return <ScreenshotVisual src="/screenshots/inbox.jpg" alt="Inbox de atendimento do Prymeira Talk" />;
 }
+function ContatosScreenshot() {
+  return <ScreenshotVisual src="/screenshots/contatos.jpg" alt="Lista de contatos do Prymeira Talk" />;
+}
 function AutomacoesScreenshot() {
   return <ScreenshotVisual src="/screenshots/automacoes.jpg" alt="Editor visual de automações do Prymeira Talk" />;
+}
+function DisparosScreenshot() {
+  return <ScreenshotVisual src="/screenshots/disparos.jpg" alt="Disparos e campanhas do Prymeira Talk" />;
 }
 function RelatoriosScreenshot() {
   return <ScreenshotVisual src="/screenshots/relatorios.jpg" alt="Relatórios de atendimento do Prymeira Talk" />;
@@ -529,6 +535,13 @@ const FEATURES = [
     Visual: InboxScreenshot,
   },
   {
+    id: 'contatos',
+    label: 'Contatos',
+    headline: 'Sua base de clientes centralizada e sempre atualizada.',
+    body: 'Gerencie todos os contatos com histórico de conversas, empresa, e-mail e campos customizados. Busque, filtre e organize em segundos.',
+    Visual: ContatosScreenshot,
+  },
+  {
     id: 'automation',
     label: 'Automações',
     headline: 'Fluxos que trabalham enquanto sua equipe descansa.',
@@ -539,8 +552,8 @@ const FEATURES = [
     id: 'campaigns',
     label: 'Disparos',
     headline: 'Alcance milhares de contatos com uma campanha.',
-    body: 'Envie mensagens em massa para sua base de contatos via WhatsApp com template aprovado. Acompanhe entrega, leitura e resposta em tempo real.',
-    Visual: CampaignVisual,
+    body: 'Envie mensagens em massa para sua base de contatos via WhatsApp com template aprovado. Agende, acompanhe e analise cada envio em tempo real.',
+    Visual: DisparosScreenshot,
   },
   {
     id: 'reports',

@@ -343,6 +343,82 @@ describe("crm service", () => {
     );
   });
 
+  it("updates an existing Vincula lead instead of creating duplicate leads and notes", async () => {
+    const prisma = createMockPrisma({
+      contact: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseContact,
+          atomicCrmContactId: "42",
+          atomicCrmLeadId: "77"
+        })
+      }
+    });
+    const fetchCrm = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ id: 9, name: "Prymeira" }], total: 1 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 42 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 77 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+    const service = createCrmService(prisma, {
+      vinculaApiUrl: "https://vincula.example.com/api",
+      fetch: fetchCrm as typeof fetch
+    });
+
+    const action = await service.createLead({
+      workspaceId: "workspace_a",
+      contactId,
+      title: "Lead WhatsApp atualizado",
+      vinculaToken: "clerk-token"
+    });
+
+    expect(fetchCrm).not.toHaveBeenCalledWith(
+      "https://vincula.example.com/api/records/leads",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchCrm).not.toHaveBeenCalledWith(
+      "https://vincula.example.com/api/records/contact_notes",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchCrm).toHaveBeenCalledWith(
+      "https://vincula.example.com/api/records/leads/77",
+      expect.objectContaining({
+        method: "PATCH",
+        body: expect.stringContaining("Lead WhatsApp atualizado")
+      })
+    );
+    expect(action.result).toEqual(
+      expect.objectContaining({
+        leadCreated: false,
+        leadUpdated: true,
+        vinculaContactId: "42",
+        vinculaCompanyId: "9",
+        vinculaLeadId: "77"
+      })
+    );
+    expect(prisma.contact.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          atomicCrmContactId: "42",
+          atomicCrmLeadId: "77"
+        }
+      })
+    );
+  });
+
   it("preserves Vincula authorization failures for the UI", async () => {
     const prisma = createMockPrisma();
     const fetchCrm = vi.fn().mockResolvedValue(

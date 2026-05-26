@@ -396,13 +396,30 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
     return created.data;
   }
 
-  async function createVinculaLead(token: string, contact: ContactRecord, title: string) {
+  async function upsertVinculaLead(token: string, contact: ContactRecord, title: string) {
+    const existingLeadId =
+      contact.atomicCrmLeadId && /^\d+$/.test(contact.atomicCrmLeadId)
+        ? contact.atomicCrmLeadId
+        : null;
+    if (existingLeadId) {
+      const updated = await vinculaRequest<VinculaRecord<VinculaLeadRecord>>(
+        token,
+        `/records/leads/${encodeURIComponent(existingLeadId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(buildVinculaLeadPayload(contact, title))
+        }
+      );
+
+      return { lead: updated.data, created: false };
+    }
+
     const created = await vinculaRequest<VinculaRecord<VinculaLeadRecord>>(token, "/records/leads", {
       method: "POST",
       body: JSON.stringify(buildVinculaLeadPayload(contact, title))
     });
 
-    return created.data;
+    return { lead: created.data, created: true };
   }
 
   async function createVinculaContactNote(
@@ -536,15 +553,21 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
         const vinculaCompanyId = vinculaCompany?.id ? String(vinculaCompany.id) : null;
         const vinculaContact = await upsertVinculaContact(input.vinculaToken, contact, vinculaCompanyId);
         const vinculaContactId = String(vinculaContact.id);
-        const vinculaLead = await createVinculaLead(input.vinculaToken, contact, title);
+        const { lead: vinculaLead, created: leadCreated } = await upsertVinculaLead(
+          input.vinculaToken,
+          contact,
+          title
+        );
         const vinculaLeadId = String(vinculaLead.id);
 
-        await createVinculaContactNote(input.vinculaToken, {
-          vinculaContactId,
-          contact,
-          title,
-          leadId: vinculaLeadId
-        });
+        if (leadCreated) {
+          await createVinculaContactNote(input.vinculaToken, {
+            vinculaContactId,
+            contact,
+            title,
+            leadId: vinculaLeadId
+          });
+        }
 
         await prisma.contact.update({
           where: {
@@ -575,7 +598,8 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
             },
             result: {
               mode: "real",
-              leadCreated: true,
+              leadCreated,
+              leadUpdated: !leadCreated,
               vinculaContactId,
               vinculaCompanyId,
               vinculaLeadId

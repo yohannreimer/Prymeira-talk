@@ -442,6 +442,20 @@ function deriveStatusFromSchedule(input: {
   return input.currentStatus === "scheduled" ? "draft" : input.currentStatus;
 }
 
+// Select only columns that exist in the current DB (templates/fallbackName/cadence are schema-only)
+const campaignSelect = {
+  id: true,
+  workspaceId: true,
+  name: true,
+  status: true,
+  audience: true,
+  messageBody: true,
+  scheduledAt: true,
+  mode: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
 export function createCampaignsService(prisma: PrismaLike, options: CampaignsServiceOptions = {}) {
   const now = () => options.now?.() ?? new Date();
 
@@ -450,6 +464,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
     campaignId: string;
   }) => {
     const campaign = await prisma.campaign.findFirst({
+      select: campaignSelect,
       where: {
         workspaceId: input.workspaceId,
         id: input.campaignId
@@ -552,6 +567,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
 
     async listCampaigns(input: { workspaceId: string }): Promise<CampaignDto[]> {
       const campaigns = await prisma.campaign.findMany({
+        select: campaignSelect,
         where: { workspaceId: input.workspaceId },
         orderBy: [{ createdAt: "desc" }],
         take: 100
@@ -571,15 +587,13 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       scheduledAt?: string | null;
     }): Promise<CampaignDto> {
       const campaign = await prisma.campaign.create({
+        select: campaignSelect,
         data: {
           workspaceId: input.workspaceId,
           name: input.name.trim(),
           status: input.scheduledAt ? "scheduled" : "draft",
           audience: input.audience,
           messageBody: input.messageBody.trim(),
-          templates: input.templates ?? [input.messageBody.trim()],
-          fallbackName: normalizeFallbackName(input.fallbackName),
-          cadence: cadenceToJson(input.cadence ?? normalizeCadence(null)),
           scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : null,
           mode: "simulated"
         }
@@ -605,6 +619,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       const currentCampaign = await findCampaignForWorkspace(input);
 
       const campaign = await prisma.campaign.update({
+        select: campaignSelect,
         where: {
           workspaceId_id: {
             workspaceId: input.workspaceId,
@@ -620,9 +635,6 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
           }),
           audience: input.data.audience,
           messageBody: normalizeOptional(input.data.messageBody),
-          templates: input.data.templates,
-          fallbackName: input.data.fallbackName,
-          cadence: input.data.cadence ? cadenceToJson(input.data.cadence) : input.data.cadence,
           scheduledAt:
             input.data.scheduledAt === undefined
               ? undefined
@@ -699,6 +711,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       }
 
       await prisma.campaign.update({
+        select: { id: true },
         where: {
           workspaceId_id: {
             workspaceId: input.workspaceId,
@@ -839,6 +852,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       }
 
       await prisma.campaign.update({
+        select: { id: true },
         where: {
           workspaceId_id: {
             workspaceId: input.workspaceId,
