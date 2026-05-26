@@ -26,6 +26,42 @@ function TalkLogoMark({ size = 20, dark = false }: { size?: number; dark?: boole
   );
 }
 
+// ── Screenshot visual wrapper ─────────────────────────────────────────────────
+function ScreenshotVisual({ src, alt }: { src: string; alt: string }) {
+  return (
+    <div style={{
+      height: 380,
+      borderRadius: 16,
+      border: `1px solid ${BORDER}`,
+      overflow: 'hidden',
+      boxShadow: '0 40px 100px rgba(0,0,0,0.6), 0 0 0 1px rgba(52,211,153,0.05)',
+      position: 'relative',
+    }}>
+      <img
+        src={src}
+        alt={alt}
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          objectPosition: 'top left',
+          display: 'block',
+        }}
+      />
+      {/* subtle green tint overlay at bottom */}
+      <div style={{
+        position: 'absolute',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        height: 80,
+        background: 'linear-gradient(to top, rgba(8,12,10,0.5) 0%, transparent 100%)',
+        pointerEvents: 'none',
+      }} />
+    </div>
+  );
+}
+
 // ── Coded visual: Inbox mockup (hero) ─────────────────────────────────────────
 const CONVERSATIONS = [
   { name: 'Marina Costa', preview: 'Preciso de ajuda com meu pedido', time: '14:32', unread: 2, open: true },
@@ -450,12 +486,12 @@ function ReportsVisual() {
         </div>
       </div>
 
-      {/* Channel breakdown */}
+      {/* Agent breakdown */}
       <div style={{ display: 'flex', gap: 8 }}>
         {[
-          { channel: 'WhatsApp', pct: 68, color: '#22c55e' },
-          { channel: 'Instagram', pct: 20, color: '#e879f9' },
-          { channel: 'Web', pct: 12, color: '#60a5fa' },
+          { channel: 'Time de vendas', pct: 58, color: '#22c55e' },
+          { channel: 'Suporte', pct: 30, color: ACCENT },
+          { channel: 'Bot', pct: 12, color: '#60a5fa' },
         ].map(({ channel, pct, color }) => (
           <div key={channel} style={{ flex: 1 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -472,35 +508,46 @@ function ReportsVisual() {
   );
 }
 
+// ── Screenshot visual binders ─────────────────────────────────────────────────
+function InboxScreenshot() {
+  return <ScreenshotVisual src="/screenshots/inbox.jpg" alt="Inbox de atendimento do Prymeira Talk" />;
+}
+function AutomacoesScreenshot() {
+  return <ScreenshotVisual src="/screenshots/automacoes.jpg" alt="Editor visual de automações do Prymeira Talk" />;
+}
+function RelatoriosScreenshot() {
+  return <ScreenshotVisual src="/screenshots/relatorios.jpg" alt="Relatórios de atendimento do Prymeira Talk" />;
+}
+
 // ── Features config ───────────────────────────────────────────────────────────
 const FEATURES = [
   {
     id: 'inbox',
-    label: 'Atendimento unificado',
-    headline: 'Todos os canais numa única fila de atendimento.',
-    body: 'WhatsApp, Instagram e chat web numa inbox compartilhada. Distribua conversas entre agentes, veja o histórico completo e responda sem trocar de aba.',
-    Visual: InboxMockup,
+    label: 'Atendimento',
+    headline: 'Todos os seus clientes do WhatsApp, numa fila organizada.',
+    body: 'Inbox compartilhada entre agentes, com histórico completo de cada contato. Distribua conversas, adicione tags e responda sem perder o fio.',
+    Visual: InboxScreenshot,
   },
   {
     id: 'automation',
     label: 'Automações',
     headline: 'Fluxos que trabalham enquanto sua equipe descansa.',
     body: 'Monte automações visuais para triagem, respostas fora do horário, redistribuição de fila e muito mais — sem escrever uma linha de código.',
-    Visual: AutomationVisual,
+    Visual: AutomacoesScreenshot,
   },
   {
     id: 'campaigns',
     label: 'Disparos',
     headline: 'Alcance milhares de contatos com uma campanha.',
-    body: 'Envie mensagens em massa via WhatsApp com template aprovado, acompanhe entrega, leitura e resposta em tempo real.',
+    body: 'Envie mensagens em massa para sua base de contatos via WhatsApp com template aprovado. Acompanhe entrega, leitura e resposta em tempo real.',
     Visual: CampaignVisual,
   },
   {
     id: 'reports',
     label: 'Relatórios',
     headline: 'Dados que ajudam a tomar a decisão certa.',
-    body: 'Volume de atendimentos, tempo de resposta, CSAT e performance por canal e agente — tudo num painel em tempo real.',
-    Visual: ReportsVisual,
+    body: 'Volume de atendimentos, tempo de resposta e performance por agente — tudo num painel em tempo real.',
+    Visual: RelatoriosScreenshot,
   },
 ];
 
@@ -576,7 +623,7 @@ function Hero({ mounted }: { mounted: boolean }) {
           marginBottom: 28,
         }}>
           <div style={{ width: 6, height: 6, borderRadius: '50%', background: ACCENT }} />
-          <span style={{ fontSize: 11, fontWeight: 700, color: ACCENT, letterSpacing: '0.04em' }}>Plataforma de atendimento</span>
+          <span style={{ fontSize: 11, fontWeight: 700, color: ACCENT, letterSpacing: '0.04em' }}>Atendimento via WhatsApp</span>
         </div>
 
         <h1 style={{
@@ -598,7 +645,7 @@ function Hero({ mounted }: { mounted: boolean }) {
           color: TEXT_MUTED,
           maxWidth: '38ch',
         }}>
-          Atenda clientes por WhatsApp e outros canais, automatize respostas e entenda seus dados — tudo numa plataforma só.
+          Gerencie todo seu atendimento via WhatsApp, automatize respostas e entenda seus dados — tudo numa plataforma só.
         </p>
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 36 }}>
@@ -631,7 +678,7 @@ function Hero({ mounted }: { mounted: boolean }) {
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
-          {['WhatsApp', 'Automações', 'Disparos', 'Relatórios', 'IA'].map(chip => (
+          {['WhatsApp Business', 'Automações', 'Disparos', 'Relatórios', 'IA'].map(chip => (
             <span key={chip} style={{
               padding: '5px 12px',
               borderRadius: 20,
@@ -649,7 +696,7 @@ function Hero({ mounted }: { mounted: boolean }) {
         transform: mounted ? 'none' : 'translateY(24px)',
         transition: 'opacity 0.7s ease 0.25s, transform 0.7s ease 0.25s',
       }}>
-        <InboxMockup />
+        <ScreenshotVisual src="/screenshots/inbox.jpg" alt="Inbox de atendimento do Prymeira Talk" />
       </div>
     </section>
   );
@@ -745,10 +792,10 @@ function Features({ activeIdx, setActiveIdx }: { activeIdx: number; setActiveIdx
 
 // ── How it works ──────────────────────────────────────────────────────────────
 const HOW_STEPS = [
-  { n: '01', title: 'Conecte seus canais', body: 'WhatsApp, Instagram e webchat integrados em minutos. Sem código.' },
+  { n: '01', title: 'Conecte seu WhatsApp', body: 'Integre seu número via API oficial do WhatsApp Business em minutos. Sem código.' },
   { n: '02', title: 'Configure sua equipe', body: 'Adicione agentes, crie grupos e defina regras de distribuição de conversas.' },
   { n: '03', title: 'Monte automações', body: 'Triagem automática, respostas rápidas e fluxos de bot no construtor visual.' },
-  { n: '04', title: 'Acompanhe os dados', body: 'Relatórios em tempo real de volume, SLA, satisfação e performance por canal.' },
+  { n: '04', title: 'Acompanhe os dados', body: 'Relatórios em tempo real de volume, SLA, satisfação e performance por agente.' },
 ];
 
 function HowItWorks() {
