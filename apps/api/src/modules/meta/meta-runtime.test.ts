@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolveMetaRuntime } from "./meta-runtime.js";
 
 describe("resolveMetaRuntime", () => {
@@ -48,5 +48,51 @@ describe("resolveMetaRuntime", () => {
       phoneNumberId: "222"
     });
     expect(runtime.client).not.toBeNull();
+  });
+
+  it("trims whitespace settings without exposing the access token", async () => {
+    const prisma = {
+      integrationConfig: {
+        findUnique: async () => ({
+          mode: "real",
+          status: "configured",
+          settings: {
+            enabled: true,
+            wabaId: " 111 ",
+            phoneNumberId: " 222 ",
+            accessToken: " token ",
+            webhookVerifyToken: " verify-token "
+          }
+        })
+      }
+    };
+    const fetch = vi.fn().mockResolvedValue(new Response("{}"));
+
+    const runtime = await resolveMetaRuntime(prisma, {
+      workspaceId: "local_workspace",
+      graphApiBaseUrl: "https://graph.example.test/v23.0",
+      fetch
+    });
+
+    expect(runtime).toMatchObject({
+      active: true,
+      wabaId: "111",
+      phoneNumberId: "222",
+      webhookVerifyToken: "verify-token"
+    });
+    expect(runtime).not.toHaveProperty("accessToken");
+
+    if (runtime.active) {
+      await runtime.client.testConnection({ phoneNumberId: runtime.phoneNumberId });
+    }
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://graph.example.test/v23.0/222?fields=id,display_phone_number,verified_name",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer token"
+        })
+      })
+    );
   });
 });

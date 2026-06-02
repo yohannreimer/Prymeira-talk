@@ -2,10 +2,14 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import type { MetaClient } from "./meta.client.js";
 
 type MetaMessageTemplateUpsertArgs = Parameters<PrismaClient["metaMessageTemplate"]["upsert"]>[0];
+type MetaMessageTemplateUpdateManyArgs = Parameters<
+  PrismaClient["metaMessageTemplate"]["updateMany"]
+>[0];
 type AuditLogCreateArgs = Parameters<PrismaClient["auditLog"]["create"]>[0];
 
 interface MetaTemplatesPrismaLike {
   metaMessageTemplate: {
+    updateMany(args: MetaMessageTemplateUpdateManyArgs): Promise<unknown>;
     upsert(args: MetaMessageTemplateUpsertArgs): Promise<unknown>;
   };
   auditLog: {
@@ -20,7 +24,7 @@ interface SyncTemplatesInput {
 }
 
 function toInputJson(value: unknown): Prisma.InputJsonValue {
-  return value as Prisma.InputJsonValue;
+  return JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
 }
 
 export function createMetaTemplatesService(prisma: MetaTemplatesPrismaLike) {
@@ -28,6 +32,18 @@ export function createMetaTemplatesService(prisma: MetaTemplatesPrismaLike) {
     async syncTemplates(input: SyncTemplatesInput): Promise<{ synced: number }> {
       const result = await input.client.listMessageTemplates({ wabaId: input.wabaId });
       const approved = result.templates.filter((template) => template.status === "APPROVED");
+      const syncedAt = new Date();
+
+      await prisma.metaMessageTemplate.updateMany({
+        where: {
+          workspaceId: input.workspaceId,
+          wabaId: input.wabaId
+        },
+        data: {
+          status: "STALE",
+          syncedAt
+        }
+      });
 
       await Promise.all(
         approved.map((template) =>
@@ -49,14 +65,14 @@ export function createMetaTemplatesService(prisma: MetaTemplatesPrismaLike) {
               category: template.category,
               status: template.status,
               components: toInputJson(template.components),
-              syncedAt: new Date()
+              syncedAt
             },
             update: {
               templateId: template.id,
               category: template.category,
               status: template.status,
               components: toInputJson(template.components),
-              syncedAt: new Date()
+              syncedAt
             }
           })
         )

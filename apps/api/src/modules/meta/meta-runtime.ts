@@ -56,7 +56,12 @@ function isSettingsRecord(value: Prisma.JsonValue): value is Prisma.JsonObject {
 
 function getStringSetting(settings: Prisma.JsonObject, key: string) {
   const value = settings[key];
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 export async function resolveMetaRuntime(
