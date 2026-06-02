@@ -4,6 +4,7 @@ import { canPerform } from "../access/roles.js";
 import { CampaignsServiceError, createCampaignsService } from "./campaigns.service.js";
 import type { PrismaLike } from "./campaigns.service.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import { resolveMetaRuntime } from "../meta/meta-runtime.js";
 
 const uuidParamSchema = z.string().uuid();
 
@@ -57,6 +58,34 @@ const updateCampaignBodySchema = createCampaignBodySchema
   .partial()
   .refine((body) => Object.keys(body).length > 0, "At least one campaign field is required.");
 
+const metaTemplateComponentTypeSchema = z.preprocess(
+  (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+  z.enum(["header", "body"])
+);
+
+const metaTemplateTextParameterSchema = z
+  .object({
+    type: z.literal("text"),
+    text: z.string()
+  })
+  .strict();
+
+const metaTemplateSendComponentSchema = z
+  .object({
+    type: metaTemplateComponentTypeSchema,
+    parameters: z.array(metaTemplateTextParameterSchema).optional()
+  })
+  .strict();
+
+const sendMetaTemplateBodySchema = z.object({
+  channelId: uuidParamSchema.optional(),
+  template: z.object({
+    name: z.string().trim().min(1).max(512),
+    language: z.string().trim().min(1).max(64),
+    components: z.array(metaTemplateSendComponentSchema).optional()
+  })
+});
+
 function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
   return (
     typeof error === "object" &&
@@ -77,6 +106,12 @@ function handleCampaignsError(reply: FastifyReply, error: unknown) {
             ? 404
             : error.code === "CAMPAIGN_EVOLUTION_NOT_CONFIGURED"
               ? 409
+              : error.code === "CAMPAIGN_META_NOT_CONFIGURED"
+                ? 409
+                : error.code === "CAMPAIGN_TEMPLATE_NOT_FOUND"
+                  ? 404
+                  : error.code === "CAMPAIGN_TEMPLATE_COMPONENT_INVALID"
+                    ? 400
               : 404;
 
     return reply.code(statusCode).send({ code: error.code, error: error.message });
@@ -245,6 +280,59 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
       const result = await service.sendReal({
         workspaceId: request.talk.workspaceId,
         campaignId: params.data.campaignId
+      });
+      const campaign = await service.getCampaign({
+        workspaceId: request.talk.workspaceId,
+        campaignId: params.data.campaignId
+      });
+
+      app.realtime.publish({
+        type: "campaign.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: campaign
+      });
+
+      return result;
+    } catch (error) {
+      return handleCampaignsError(reply, error);
+    }
+  });
+
+  app.post("/campaigns/:campaignId/send-meta-template", async (request, reply) => {
+    if (!requireCampaignManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = campaignParamsSchema.safeParse(request.params);
+    const body = sendMetaTemplateBodySchema.safeParse(request.body);
+
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid campaign request." });
+    }
+
+    try {
+      const runtime = await resolveMetaRuntime(app.prisma, {
+        workspaceId: request.talk.workspaceId
+      });
+      const metaService = createCampaignsService(app.prisma as unknown as PrismaLike, {
+        evolution: options.evolution,
+        meta: {
+          phoneNumberId: runtime.phoneNumberId,
+          wabaId: runtime.wabaId,
+          client: runtime.client
+        },
+        metaEvolution: {
+          instanceName: runtime.evolutionInstanceName,
+          client: runtime.evolutionClient?.sendTemplate ? {
+            sendTemplate: runtime.evolutionClient.sendTemplate.bind(runtime.evolutionClient)
+          } : null
+        }
+      });
+      const result = await metaService.sendMetaTemplate({
+        workspaceId: request.talk.workspaceId,
+        campaignId: params.data.campaignId,
+        channelId: body.data.channelId,
+        template: body.data.template
       });
       const campaign = await service.getCampaign({
         workspaceId: request.talk.workspaceId,

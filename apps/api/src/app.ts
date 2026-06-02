@@ -14,6 +14,7 @@ import { conversationsRoutes } from "./modules/conversations/conversations.route
 import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js";
 import { crmRoutes } from "./modules/crm/crm.routes.js";
 import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
+import { metaWebhooksRoutes } from "./modules/meta/meta.webhooks.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 import { reportsRoutes } from "./modules/reports/reports.routes.js";
 import { settingsRoutes } from "./modules/settings/settings.routes.js";
@@ -75,6 +76,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,
     evolution: evolutionRuntime
   });
+  await app.register(metaWebhooksRoutes);
   await app.register(conversationsRoutes, { evolution: evolutionRuntime });
   await app.register(quickRepliesRoutes);
   await app.register(contactsRoutes);

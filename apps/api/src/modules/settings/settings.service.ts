@@ -105,6 +105,30 @@ function toWorkspaceDto(workspaceId: string, record: WorkspaceMirrorRecord | nul
   };
 }
 
+const SECRET_SETTING_KEYS = new Set([
+  "accessToken",
+  "webhookVerifyToken",
+  "appSecret",
+  "evolutionApiKey",
+  "token",
+  "secret"
+]);
+
+function maskIntegrationSettings(settings: Prisma.JsonValue): Prisma.JsonValue {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return settings;
+  }
+
+  return Object.fromEntries(
+    Object.entries(settings as Record<string, unknown>).map(([key, value]) => [
+      key,
+      SECRET_SETTING_KEYS.has(key) && typeof value === "string" && value.length > 0
+        ? "[redacted]"
+        : value
+    ])
+  ) as Prisma.JsonObject;
+}
+
 function toIntegrationDto(record: IntegrationConfigRecord): IntegrationConfigDto {
   return {
     id: record.id,
@@ -112,7 +136,7 @@ function toIntegrationDto(record: IntegrationConfigRecord): IntegrationConfigDto
     provider: record.provider,
     mode: record.mode,
     status: record.status,
-    settings: record.settings,
+    settings: maskIntegrationSettings(record.settings),
     createdAt: toIsoString(record.createdAt),
     updatedAt: toIsoString(record.updatedAt)
   };
@@ -129,6 +153,99 @@ function toAuditLogDto(record: AuditLogRecord): AuditLogDto {
     metadata: record.metadata,
     createdAt: toIsoString(record.createdAt)
   };
+}
+
+function isSettingsRecord(settings: Prisma.JsonValue | Prisma.InputJsonValue | undefined) {
+  return Boolean(settings) && typeof settings === "object" && !Array.isArray(settings);
+}
+
+function shouldPreserveSecretValue(key: string, value: unknown) {
+  return SECRET_SETTING_KEYS.has(key) && (value === "[redacted]" || value === "");
+}
+
+function getStringSetting(settings: Record<string, unknown>, key: string) {
+  const value = settings[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export class SettingsValidationError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = "SettingsValidationError";
+  }
+}
+
+function mergeIntegrationSettings(
+  provider: string,
+  previousSettings: Prisma.JsonValue | undefined,
+  nextSettings: Prisma.InputJsonValue | undefined
+): Prisma.InputJsonValue | undefined {
+  if (!isSettingsRecord(nextSettings)) {
+    return nextSettings;
+  }
+
+  const previous = isSettingsRecord(previousSettings) ? previousSettings as Record<string, unknown> : {};
+  const incoming = nextSettings as Record<string, unknown>;
+  const merged = provider === "meta_cloud"
+    ? { ...previous, ...incoming }
+    : { ...incoming };
+
+  for (const key of SECRET_SETTING_KEYS) {
+    if (!(key in incoming) || shouldPreserveSecretValue(key, incoming[key])) {
+      const previousValue = previous[key];
+
+      if (typeof previousValue === "string" && previousValue.length > 0) {
+        merged[key] = previousValue;
+      } else if (key in incoming && shouldPreserveSecretValue(key, incoming[key])) {
+        delete merged[key];
+      }
+    }
+  }
+
+  return merged as Prisma.InputJsonObject;
+}
+
+function assertMetaCloudSettingsConfigured(
+  provider: string,
+  mode: IntegrationMode,
+  settings: Prisma.InputJsonValue | undefined
+) {
+  if (provider !== "meta_cloud" || mode !== "real" || !isSettingsRecord(settings)) {
+    return;
+  }
+
+  const record = settings as Record<string, unknown>;
+  if (record.enabled !== true) {
+    return;
+  }
+
+  const connectionMode = record.connectionMode === "evolution_official"
+    ? "evolution_official"
+    : "direct";
+  const requiredKeys = connectionMode === "evolution_official"
+    ? [
+        "evolutionBaseUrl",
+        "evolutionApiKey",
+        "evolutionInstanceName"
+      ]
+    : [
+        "wabaId",
+        "phoneNumberId",
+        "accessToken",
+        "webhookVerifyToken",
+        "appSecret"
+      ];
+  const missingKey = requiredKeys.find((key) => !getStringSetting(record, key));
+
+  if (missingKey) {
+    throw new SettingsValidationError(
+      "SETTINGS_META_CLOUD_INCOMPLETE",
+      `Meta Cloud setting ${missingKey} is required when the integration is active.`
+    );
+  }
 }
 
 export function createSettingsService(prisma: PrismaLike) {
@@ -162,6 +279,17 @@ export function createSettingsService(prisma: PrismaLike) {
       mode: IntegrationMode;
       settings?: Prisma.InputJsonValue;
     }): Promise<SettingsDto> {
+      const existingConfig = input.settings
+        ? (await prisma.integrationConfig.findMany({
+            where: {
+              workspaceId: input.workspaceId,
+              provider: input.provider
+            },
+            take: 1
+          }))[0]
+        : undefined;
+      const settings = mergeIntegrationSettings(input.provider, existingConfig?.settings, input.settings);
+      assertMetaCloudSettingsConfigured(input.provider, input.mode, settings);
       const updatedConfig = await prisma.integrationConfig.upsert({
         where: {
           workspaceId_provider: {
@@ -174,12 +302,12 @@ export function createSettingsService(prisma: PrismaLike) {
           provider: input.provider,
           mode: input.mode,
           status: "configured",
-          settings: input.settings ?? {}
+          settings: settings ?? {}
         },
         update: {
           mode: input.mode,
           status: "configured",
-          ...(input.settings ? { settings: input.settings } : {})
+          ...(settings ? { settings } : {})
         }
       });
 

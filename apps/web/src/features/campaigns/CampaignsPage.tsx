@@ -1,25 +1,34 @@
 import { useTalkAuth } from "../../app/auth";
-import { CalendarClock, Gauge, Play, Plus, Save, Send, Upload, Zap } from "lucide-react";
+import type { ChannelDto } from "@prymeira-talk/shared";
+import { CalendarClock, Gauge, Play, Plus, RefreshCw, Save, Send, Upload, Zap } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { read, utils } from "xlsx";
 import {
   apiCreateCampaign,
   apiGetBoards,
+  apiGetChannels,
   apiGetCampaignRecipients,
   apiGetCampaigns,
+  apiGetSettings,
+  apiListMetaEvolutionTemplates,
   apiResolveCampaignAudience,
   apiSendCampaignReal,
+  apiSendCampaignMetaTemplate,
   apiSendCampaignSimulated,
   apiUpdateCampaign,
   type CampaignAudienceContactDto,
   type CampaignCadenceDto,
   type CampaignDto,
   type CampaignRecipientDto,
-  type ContactBoardWithStagesDto
+  type ContactBoardWithStagesDto,
+  type IntegrationConfigDto,
+  type MetaTemplateDto,
+  type MetaTemplateOptionDto
 } from "../../app/api";
 
 type AudienceSource = "board" | "imported";
 type CampaignViewMode = "hub" | "editor";
+type MetaConnectionMode = "direct" | "evolution_official";
 
 interface ImportedAudienceRow {
   name?: string;
@@ -196,15 +205,66 @@ function resultPreview(result: unknown) {
   return typeof payload.messagePreview === "string" ? payload.messagePreview : "";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getMetaCloudStatus(integrations: IntegrationConfigDto[]): {
+  active: boolean;
+  connectionMode: MetaConnectionMode;
+} {
+  const integration = integrations.find((current) => current.provider === "meta_cloud");
+  const settings = isRecord(integration?.settings) ? integration.settings : {};
+  const connectionMode: MetaConnectionMode = settings.connectionMode === "evolution_official"
+    ? "evolution_official"
+    : "direct";
+  const directActive = (
+    integration?.mode === "real" &&
+    settings.enabled === true &&
+    typeof settings.wabaId === "string" &&
+    settings.wabaId.trim().length > 0 &&
+    typeof settings.phoneNumberId === "string" &&
+    settings.phoneNumberId.trim().length > 0 &&
+    typeof settings.accessToken === "string" &&
+    settings.accessToken.trim().length > 0
+  );
+  const evolutionOfficialActive = (
+    integration?.mode === "real" &&
+    settings.enabled === true &&
+    typeof settings.evolutionBaseUrl === "string" &&
+    settings.evolutionBaseUrl.trim().length > 0 &&
+    typeof settings.evolutionApiKey === "string" &&
+    settings.evolutionApiKey.trim().length > 0 &&
+    typeof settings.evolutionInstanceName === "string" &&
+    settings.evolutionInstanceName.trim().length > 0
+  );
+
+  return {
+    active: connectionMode === "evolution_official" ? evolutionOfficialActive : directActive,
+    connectionMode
+  };
+}
+
 export function CampaignsPage() {
   const { getToken } = useTalkAuth();
   const [viewMode, setViewMode] = useState<CampaignViewMode>("hub");
   const [campaigns, setCampaigns] = useState<CampaignDto[]>([]);
   const [boards, setBoards] = useState<ContactBoardWithStagesDto[]>([]);
+  const [channels, setChannels] = useState<ChannelDto[]>([]);
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
   const [form, setForm] = useState<CampaignFormState>(emptyForm);
   const [audiencePreview, setAudiencePreview] = useState<CampaignAudienceContactDto[]>([]);
   const [recipients, setRecipients] = useState<CampaignRecipientDto[]>([]);
+  const [isMetaActive, setIsMetaActive] = useState(false);
+  const [metaConnectionMode, setMetaConnectionMode] = useState<MetaConnectionMode>("direct");
+  const [metaTemplate, setMetaTemplate] = useState<MetaTemplateDto>({
+    name: "",
+    language: "pt_BR"
+  });
+  const [selectedMetaChannelId, setSelectedMetaChannelId] = useState("");
+  const [metaTemplateOptions, setMetaTemplateOptions] = useState<MetaTemplateOptionDto[]>([]);
+  const [isMetaTemplatesLoading, setIsMetaTemplatesLoading] = useState(false);
+  const [metaTemplatesLoaded, setMetaTemplatesLoaded] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isRecipientsLoading, setIsRecipientsLoading] = useState(false);
@@ -219,19 +279,35 @@ export function CampaignsPage() {
       setError(null);
 
       try {
-        const [nextCampaigns, nextBoards] = await Promise.all([
+        const [nextCampaigns, nextBoards, nextChannels] = await Promise.all([
           apiGetCampaigns(getToken),
-          apiGetBoards(getToken)
+          apiGetBoards(getToken),
+          apiGetChannels(getToken)
         ]);
 
         if (!isMounted) return;
 
         setCampaigns(nextCampaigns);
         setBoards(nextBoards);
+        setChannels(nextChannels);
         setForm((current) => ({
           ...current,
           boardId: current.boardId || nextBoards[0]?.id || ""
         }));
+
+        const settings = await apiGetSettings(getToken).catch(() => null);
+        if (!isMounted) return;
+
+        const metaStatus = settings ? getMetaCloudStatus(settings.integrations) : {
+          active: false,
+          connectionMode: "direct" as const
+        };
+        setIsMetaActive(metaStatus.active);
+        setMetaConnectionMode(metaStatus.connectionMode);
+        const firstMetaChannel = nextChannels.find((channel) =>
+          channel.provider === "meta_cloud" && channel.status === "connected"
+        );
+        setSelectedMetaChannelId((current) => current || firstMetaChannel?.id || "");
       } catch (loadError) {
         if (isMounted) {
           setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar disparos.");
@@ -258,6 +334,10 @@ export function CampaignsPage() {
   const selectedBoard = useMemo(
     () => boards.find((board) => board.id === form.boardId) ?? null,
     [boards, form.boardId]
+  );
+  const metaChannels = useMemo(
+    () => channels.filter((channel) => channel.provider === "meta_cloud" && channel.status === "connected"),
+    [channels]
   );
 
   const audienceCount = form.audienceSource === "imported" ? form.importedRows.length : audiencePreview.length;
@@ -453,6 +533,92 @@ export function CampaignsPage() {
     } finally {
       setIsSaving(false);
     }
+  }
+
+  async function sendMetaTemplate() {
+    let campaign = selectedCampaign;
+    const template = {
+      name: metaTemplate.name.trim(),
+      language: metaTemplate.language.trim()
+    };
+
+    if (!template.name || !template.language) {
+      setError("Informe o nome e o idioma do template Meta aprovado.");
+      return;
+    }
+
+    if (metaConnectionMode === "evolution_official" && !selectedMetaChannelId) {
+      setError("Escolha o canal Meta oficial para enviar este template.");
+      return;
+    }
+
+    if (!campaign) {
+      campaign = await saveCampaign();
+    }
+
+    if (!campaign) return;
+
+    const shouldSend = window.confirm("Enviar template aprovado da Meta para esta audiencia?");
+    if (!shouldSend) return;
+
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const result = await apiSendCampaignMetaTemplate(
+        getToken,
+        campaign.id,
+        template,
+        selectedMetaChannelId || undefined
+      );
+      const [nextCampaigns, nextRecipients] = await Promise.all([
+        apiGetCampaigns(getToken),
+        apiGetCampaignRecipients(getToken, campaign.id)
+      ]);
+
+      setCampaigns(nextCampaigns);
+      setRecipients(nextRecipients);
+      setNotice(`${result.recipientsSent ?? 0} templates Meta enviados. ${result.recipientsFailed ?? 0} falharam.`);
+    } catch (sendError) {
+      setError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar template Meta.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function loadMetaEvolutionTemplates() {
+    if (!selectedMetaChannelId) {
+      setError("Escolha um canal Meta oficial para carregar os templates.");
+      return;
+    }
+
+    setIsMetaTemplatesLoading(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const templates = await apiListMetaEvolutionTemplates(getToken, selectedMetaChannelId);
+      setMetaTemplateOptions(templates);
+      setMetaTemplatesLoaded(true);
+      setNotice(
+        templates.length > 0
+          ? `${templates.length} templates Meta encontrados na Evolution.`
+          : "A Evolution nao retornou templates para esta instancia."
+      );
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar templates da Evolution.");
+    } finally {
+      setIsMetaTemplatesLoading(false);
+    }
+  }
+
+  function useMetaTemplateOption(template: MetaTemplateOptionDto) {
+    setMetaTemplate({
+      name: template.name,
+      language: template.language || "pt_BR"
+    });
+    setNotice(`Template ${template.name} selecionado.`);
   }
 
   async function handleAudienceFile(file: File | null) {
@@ -730,6 +896,115 @@ export function CampaignsPage() {
               Adicionar template
             </button>
           </section>
+
+          {isMetaActive ? (
+            <section className="campaign-builder-section">
+              <div className="panel-title-row">
+                <h2>Meta Cloud</h2>
+                <span>{metaConnectionMode === "evolution_official" ? "Via Evolution" : "Template aprovado"}</span>
+              </div>
+              {metaChannels.length > 0 ? (
+                <label className="form-field">
+                  <span>Enviar pelo canal</span>
+                  <select
+                    onChange={(event) => {
+                      setSelectedMetaChannelId(event.target.value);
+                      setMetaTemplateOptions([]);
+                      setMetaTemplatesLoaded(false);
+                    }}
+                    value={selectedMetaChannelId}
+                  >
+                    {metaChannels.map((channel) => (
+                      <option key={channel.id} value={channel.id}>
+                        {channel.displayName || channel.phoneNumber || channel.providerKey}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <p className="list-note">Crie um canal Meta oficial conectado antes de enviar templates.</p>
+              )}
+              {metaConnectionMode === "evolution_official" ? (
+                <div className="meta-template-picker">
+                  <div className="meta-template-picker-header">
+                    <div>
+                      <strong>Templates da Evolution</strong>
+                      <span>Use a lista da instancia oficial ou preencha manualmente abaixo.</span>
+                    </div>
+                    <button
+                      className="secondary-button"
+                      disabled={isMetaTemplatesLoading || !selectedMetaChannelId}
+                      onClick={() => void loadMetaEvolutionTemplates()}
+                      type="button"
+                    >
+                      <RefreshCw size={14} aria-hidden="true" />
+                      {isMetaTemplatesLoading ? "Carregando" : "Carregar templates"}
+                    </button>
+                  </div>
+                  {metaTemplateOptions.length > 0 ? (
+                    <div className="meta-template-list" aria-label="Templates Meta da Evolution">
+                      {metaTemplateOptions.map((template) => (
+                        <article className="meta-template-option" key={template.id}>
+                          <div>
+                            <strong>{template.name}</strong>
+                            <span>{template.language} · {template.status}</span>
+                            {template.preview ? <p>{template.preview}</p> : null}
+                          </div>
+                          <button
+                            className="secondary-button"
+                            onClick={() => useMetaTemplateOption(template)}
+                            type="button"
+                          >
+                            Usar
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  ) : metaTemplatesLoaded ? (
+                    <p className="list-note">Nenhum template voltou da Evolution para esta instancia.</p>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="campaign-audience-grid">
+                <label className="form-field">
+                  <span>Nome do template</span>
+                  <input
+                    onChange={(event) => setMetaTemplate((current) => ({
+                      ...current,
+                      name: event.target.value
+                    }))}
+                    placeholder="reactivation_vip"
+                    value={metaTemplate.name}
+                  />
+                </label>
+                <label className="form-field">
+                  <span>Idioma</span>
+                  <input
+                    onChange={(event) => setMetaTemplate((current) => ({
+                      ...current,
+                      language: event.target.value
+                    }))}
+                    placeholder="pt_BR"
+                    value={metaTemplate.language}
+                  />
+                </label>
+              </div>
+              <button
+                className="secondary-button"
+                disabled={
+                  isSaving ||
+                  !metaTemplate.name.trim() ||
+                  !metaTemplate.language.trim() ||
+                  (metaConnectionMode === "evolution_official" && !selectedMetaChannelId)
+                }
+                onClick={sendMetaTemplate}
+                type="button"
+              >
+                <Send size={14} aria-hidden="true" />
+                Enviar template Meta
+              </button>
+            </section>
+          ) : null}
 
           <section className="campaign-builder-section">
             <div className="panel-title-row">

@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { ContactBoardMembershipDto, ConversationDto, MessageDto } from "@prymeira-talk/shared";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import type { MetaClient } from "../meta/meta.client.js";
 
 type DateLike = Date | string;
 
@@ -34,7 +35,10 @@ export class ConversationActionError extends Error {
 
 type OutboundMessageValidationErrorCode =
   | "OUTBOUND_CONTACT_PHONE_REQUIRED"
-  | "OUTBOUND_PROVIDER_KEY_REQUIRED";
+  | "OUTBOUND_PROVIDER_KEY_REQUIRED"
+  | "META_MEDIA_NOT_SUPPORTED"
+  | "META_NOT_CONFIGURED"
+  | "META_SERVICE_WINDOW_CLOSED";
 
 export class OutboundMessageValidationError extends Error {
   statusCode = 400 as const;
@@ -63,6 +67,7 @@ export interface ConversationRecord {
     provider?: string;
     providerKey?: string;
   } | null;
+  customerServiceWindowExpiresAt?: DateLike | null;
   department?: {
     name: string;
   } | null;
@@ -83,7 +88,7 @@ export interface ConversationRecord {
 
 const conversationDtoInclude = {
   assignedUser: { select: { displayName: true } },
-  channel: { select: { displayName: true, phoneNumber: true } },
+  channel: { select: { displayName: true, phoneNumber: true, provider: true } },
   contact: { select: { name: true, phone: true } },
   department: { select: { name: true } },
   tags: { include: { tag: true } }
@@ -285,13 +290,42 @@ export interface PrismaLike {
 
 interface ConversationsServiceOptions {
   evolution?: EvolutionRuntime;
+  meta?: {
+    phoneNumberId: string | null;
+    client?: Pick<MetaClient, "sendText"> | null;
+  } | null;
+  metaEvolution?: {
+    client?: {
+      sendText(input: {
+        instanceName: string;
+        number: string;
+        text: string;
+      }): Promise<{ providerMessageId: string | null; raw: unknown }>;
+    } | null;
+  } | null;
 }
 
 function toIsoString(value: DateLike) {
   return value instanceof Date ? value.toISOString() : value;
 }
 
+function toChannelProvider(value: string | undefined): ConversationDto["channelProvider"] {
+  return value === "evolution" || value === "meta_cloud" ? value : null;
+}
+
+function isFutureDate(value: DateLike | null | undefined) {
+  if (!value) return false;
+
+  const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp > Date.now();
+}
+
 export function toConversationDto(record: ConversationRecord): ConversationDto {
+  const channelProvider = toChannelProvider(record.channel?.provider);
+  const customerServiceWindowExpiresAt = record.customerServiceWindowExpiresAt
+    ? toIsoString(record.customerServiceWindowExpiresAt)
+    : null;
+
   return {
     id: record.id,
     workspaceId: record.workspaceId,
@@ -300,6 +334,10 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
     contactName: record.contact?.name ?? null,
     contactPhone: record.contact?.phone ?? null,
     channelName: record.channel?.displayName ?? record.channel?.phoneNumber ?? null,
+    channelProvider,
+    customerServiceWindowExpiresAt,
+    metaServiceWindowOpen:
+      channelProvider === "meta_cloud" ? isFutureDate(record.customerServiceWindowExpiresAt) : null,
     departmentName: record.department?.name ?? null,
     assignedUserName: record.assignedUser?.displayName ?? null,
     status: record.status,
@@ -395,7 +433,7 @@ export function createConversationsService(
       where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
       include: {
         assignedUser: { select: { displayName: true } },
-        channel: { select: { displayName: true, phoneNumber: true } },
+        channel: { select: { displayName: true, phoneNumber: true, provider: true } },
         contact: { select: { name: true, phone: true } },
         department: { select: { name: true } },
         tags: { include: { tag: true } }
@@ -514,6 +552,7 @@ export function createConversationsService(
       const conversation = await prisma.conversation.findUnique({
         where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
         select: {
+          customerServiceWindowExpiresAt: true,
           id: true,
           channel: { select: { provider: true, providerKey: true } },
           contact: { select: { phone: true } }
@@ -531,10 +570,7 @@ export function createConversationsService(
           : "file"
         : "text";
 
-      let providerSend: Awaited<
-        ReturnType<NonNullable<EvolutionRuntime["client"]>["sendText"]> |
-        ReturnType<NonNullable<EvolutionRuntime["client"]>["sendMedia"]>
-      > | null = null;
+      let providerSend: { providerMessageId: string | null; raw: unknown } | null = null;
 
       if (
         options.evolution?.mode === "real" &&
@@ -573,6 +609,61 @@ export function createConversationsService(
               number: contactPhone,
               text: messageBody
             });
+      }
+
+      if (conversation.channel?.provider === "meta_cloud") {
+        const contactPhone = conversation.contact?.phone?.trim();
+        const providerKey = conversation.channel.providerKey?.trim();
+        const phoneNumberId = options.meta?.phoneNumberId?.trim();
+        const metaClient = options.meta?.client;
+        const metaEvolutionClient = options.metaEvolution?.client;
+
+        if (input.attachment) {
+          throw new OutboundMessageValidationError(
+            "META_MEDIA_NOT_SUPPORTED",
+            "Meta Cloud inbox replies support text only in this release."
+          );
+        }
+
+        if (!contactPhone) {
+          throw new OutboundMessageValidationError(
+            "OUTBOUND_CONTACT_PHONE_REQUIRED",
+            "Contact phone is required to send a Meta Cloud message."
+          );
+        }
+
+        if (metaEvolutionClient && providerKey) {
+          if (!isFutureDate(conversation.customerServiceWindowExpiresAt)) {
+            throw new OutboundMessageValidationError(
+              "META_SERVICE_WINDOW_CLOSED",
+              "The Meta customer service window is closed. An approved Meta template is required."
+            );
+          }
+
+          providerSend = await metaEvolutionClient.sendText({
+            instanceName: providerKey,
+            number: contactPhone,
+            text: messageBody
+          });
+        } else if (!metaClient || !phoneNumberId) {
+          throw new OutboundMessageValidationError(
+            "META_NOT_CONFIGURED",
+            "Meta Cloud is not configured for this workspace."
+          );
+        } else {
+          if (!isFutureDate(conversation.customerServiceWindowExpiresAt)) {
+            throw new OutboundMessageValidationError(
+              "META_SERVICE_WINDOW_CLOSED",
+              "The Meta customer service window is closed. An approved Meta template is required."
+            );
+          }
+
+          providerSend = await metaClient.sendText({
+            phoneNumberId,
+            to: contactPhone,
+            text: messageBody
+          });
+        }
       }
 
       const message = await prisma.message.create({

@@ -22,7 +22,7 @@ export type SuiteModule = z.infer<typeof suiteModuleSchema>;
 export const integrationModeSchema = z.enum(["simulated", "real"]);
 export type IntegrationMode = z.infer<typeof integrationModeSchema>;
 
-export const channelProviderSchema = z.enum(["evolution"]);
+export const channelProviderSchema = z.enum(["evolution", "meta_cloud"]);
 export type ChannelProvider = z.infer<typeof channelProviderSchema>;
 export const channelStatusSchema = z.enum(["disconnected", "connecting", "connected", "failed"]);
 export type ChannelStatus = z.infer<typeof channelStatusSchema>;
@@ -124,6 +124,9 @@ export const conversationSchema = z.object({
   contactName: z.string().nullable().optional(),
   contactPhone: z.string().nullable().optional(),
   channelName: z.string().nullable().optional(),
+  channelProvider: channelProviderSchema.nullable().optional(),
+  customerServiceWindowExpiresAt: z.string().datetime().nullable().optional(),
+  metaServiceWindowOpen: z.boolean().nullable().optional(),
   departmentName: z.string().nullable().optional(),
   assignedUserName: z.string().nullable().optional(),
   status: conversationStatusSchema,

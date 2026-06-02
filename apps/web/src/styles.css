@@ -2849,6 +2849,65 @@ select:disabled {
   border-top: 1px solid var(--color-border-subtle);
 }
 
+.meta-template-picker {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-surface-subtle);
+  padding: 12px;
+}
+
+.meta-template-picker-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.meta-template-picker-header > div,
+.meta-template-option > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.meta-template-picker-header strong,
+.meta-template-option strong {
+  color: var(--color-text-primary);
+  font-size: 0.92rem;
+}
+
+.meta-template-picker-header span,
+.meta-template-option span,
+.meta-template-option p {
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.meta-template-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.meta-template-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid rgba(36, 86, 74, 0.14);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  padding: 10px;
+}
+
+.meta-template-option p {
+  margin: 0;
+}
+
 .campaign-cadence-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

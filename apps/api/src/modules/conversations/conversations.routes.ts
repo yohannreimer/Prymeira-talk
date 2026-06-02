@@ -2,6 +2,8 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import { MetaClientError } from "../meta/meta.client.js";
+import { resolveMetaRuntime } from "../meta/meta-runtime.js";
 import {
   ConversationActionError,
   ConversationNotFoundError,
@@ -253,7 +255,21 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       return reply.code(400).send({ error: "Invalid conversation message request." });
     }
 
-    const result = await service.createPendingOutboundMessage({
+    const meta = await resolveMetaRuntime(app.prisma, { workspaceId: request.talk.workspaceId });
+    const writeService = createConversationsService(app.prisma as unknown as PrismaLike, {
+      evolution: options.evolution,
+      meta: {
+        client: meta.client,
+        phoneNumberId: meta.phoneNumberId
+      },
+      metaEvolution: {
+        client: meta.evolutionClient?.sendText ? {
+          sendText: meta.evolutionClient.sendText.bind(meta.evolutionClient)
+        } : null
+      }
+    });
+
+    const result = await writeService.createPendingOutboundMessage({
       workspaceId: request.talk.workspaceId,
       conversationId: params.data.conversationId,
       body: body.data.body,
@@ -264,7 +280,11 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
         return null;
       }
 
-      if (error instanceof OutboundMessageValidationError || error instanceof EvolutionClientError) {
+      if (
+        error instanceof OutboundMessageValidationError ||
+        error instanceof EvolutionClientError ||
+        error instanceof MetaClientError
+      ) {
         return error;
       }
 
@@ -285,6 +305,13 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       return reply.code(502).send({
         code: "EVOLUTION_SEND_FAILED",
         error: "Evolution did not accept the outbound message."
+      });
+    }
+
+    if (result instanceof MetaClientError) {
+      return reply.code(502).send({
+        code: "META_SEND_FAILED",
+        error: "Meta did not accept the outbound message."
       });
     }
 

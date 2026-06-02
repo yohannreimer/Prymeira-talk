@@ -231,6 +231,19 @@ export function outboundStatusLabel(message: Pick<MessageDto, "direction" | "id"
   return null;
 }
 
+export const metaClosedWindowMessage =
+  "A janela de atendimento esta fechada. Escolha um template aprovado da Meta para continuar.";
+
+export function metaServiceWindowSendError(
+  conversation: Pick<ConversationDto, "channelProvider" | "metaServiceWindowOpen"> | null | undefined
+) {
+  if (conversation?.channelProvider === "meta_cloud" && conversation.metaServiceWindowOpen === false) {
+    return metaClosedWindowMessage;
+  }
+
+  return null;
+}
+
 export function messageMediaKind(message: Pick<MessageDto, "mediaUrl" | "type">): MessageMediaKind | null {
   if (!message.mediaUrl) {
     return null;
@@ -713,6 +726,13 @@ export function InboxPage() {
 
     const targetConversationId = selectedConversationId;
     const messageBody = draft.trim();
+    const serviceWindowError = metaServiceWindowSendError(selectedConversation);
+
+    if (serviceWindowError) {
+      setMessageError(serviceWindowError);
+      return;
+    }
+
     const optimisticMessage: MessageDto = {
       id: optimisticMessageId(),
       workspaceId: selectedConversation?.workspaceId ?? "",
@@ -800,6 +820,13 @@ export function InboxPage() {
     if (!file || !selectedConversationId) return;
 
     const targetConversationId = selectedConversationId;
+    const serviceWindowError = metaServiceWindowSendError(selectedConversation);
+
+    if (serviceWindowError) {
+      setMessageError(serviceWindowError);
+      return;
+    }
+
     const caption = draft.trim();
     const mediaUrl = await fileToDataUrl(file).catch((fileError: unknown) => {
       setMessageError(fileError instanceof Error ? fileError.message : "Nao foi possivel ler o arquivo.");

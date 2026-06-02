@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  channelProviderSchema,
+  channelSchema,
   contactBoardMembershipSchema,
   contactBoardSchema,
   contactBoardStageSchema,
@@ -23,7 +25,10 @@ describe("domain schemas", () => {
     lastMessageAt: "2026-05-20T12:00:00.000Z",
     lastMessagePreview: "Oi",
     unreadCount: 2,
-    priority: "normal"
+    priority: "normal",
+    channelProvider: "meta_cloud",
+    customerServiceWindowExpiresAt: "2026-05-21T12:00:00.000Z",
+    metaServiceWindowOpen: true
   };
 
   const validMessage = {
@@ -79,6 +84,9 @@ describe("domain schemas", () => {
     const parsed = conversationSchema.parse(validConversation);
 
     expect(parsed.workspaceId).toBe("workspace_1");
+    expect(parsed.channelProvider).toBe("meta_cloud");
+    expect(parsed.customerServiceWindowExpiresAt).toBe("2026-05-21T12:00:00.000Z");
+    expect(parsed.metaServiceWindowOpen).toBe(true);
   });
 
   it("rejects a conversation with a negative unread count", () => {
@@ -290,6 +298,23 @@ describe("domain schemas", () => {
   it("validates suite module keys", () => {
     expect(suiteModuleSchema.parse("atendimento")).toBe("atendimento");
     expect(() => suiteModuleSchema.parse("pipeline")).toThrow();
+  });
+
+  it("accepts Meta Cloud as a WhatsApp channel provider", () => {
+    expect(channelProviderSchema.parse("meta_cloud")).toBe("meta_cloud");
+    expect(
+      channelSchema.parse({
+        id: "channel_1",
+        workspaceId: "local_workspace",
+        provider: "meta_cloud",
+        providerKey: "1234567890",
+        phoneNumber: "5511999999999",
+        displayName: "Numero oficial",
+        status: "connected",
+        createdAt: "2026-06-02T12:00:00.000Z",
+        updatedAt: "2026-06-02T12:00:00.000Z"
+      }).provider
+    ).toBe("meta_cloud");
   });
 
   it("validates contact board membership with primary flag", () => {

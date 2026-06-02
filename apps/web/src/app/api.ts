@@ -221,6 +221,28 @@ export interface CampaignSendResultDto {
   recipientsFailed?: number;
 }
 
+export interface MetaTemplateDto {
+  name: string;
+  language: string;
+  components?: Array<{
+    type: "header" | "body";
+    parameters?: Array<{
+      type: "text";
+      text: string;
+    }>;
+  }>;
+}
+
+export interface MetaTemplateOptionDto {
+  id: string;
+  name: string;
+  language: string;
+  status: string;
+  category: string;
+  preview: string | null;
+  components: unknown[];
+}
+
 export interface ReportMetricDto {
   key: string;
   label: string;
@@ -263,6 +285,23 @@ export interface ReportsOverviewDto {
 
 export type TeamUserRole = "owner" | "manager" | "agent";
 export type IntegrationModeDto = "simulated" | "real";
+
+export interface MetaCloudSettingsPayload {
+  enabled: boolean;
+  connectionMode?: "direct" | "evolution_official";
+  wabaId?: string;
+  phoneNumberId?: string;
+  accessToken?: string;
+  webhookVerifyToken?: string;
+  appSecret?: string;
+  evolutionBaseUrl?: string;
+  evolutionApiKey?: string;
+  evolutionInstanceName?: string;
+}
+
+export interface MetaTemplatesSyncResultDto {
+  synced: number;
+}
 
 export interface TeamUserDto {
   id: string;
@@ -875,6 +914,37 @@ function parseAuditLog(data: unknown): AuditLogDto {
   };
 }
 
+function parseMetaTemplatesSyncResult(data: unknown): MetaTemplatesSyncResultDto {
+  const payload = asRecord(data);
+  const synced = payload.synced;
+
+  return {
+    synced: typeof synced === "number" && Number.isFinite(synced) ? synced : 0
+  };
+}
+
+function parseMetaTemplateOption(data: unknown): MetaTemplateOptionDto {
+  const payload = asRecord(data);
+  const preview = payload.preview;
+
+  return {
+    id: String(payload.id ?? `${String(payload.name ?? "")}:${String(payload.language ?? "")}`),
+    name: String(payload.name ?? ""),
+    language: String(payload.language ?? ""),
+    status: String(payload.status ?? "UNKNOWN"),
+    category: String(payload.category ?? "UNKNOWN"),
+    preview: typeof preview === "string" && preview.trim().length > 0 ? preview : null,
+    components: Array.isArray(payload.components) ? payload.components : []
+  };
+}
+
+function parseMetaTemplateOptionsResult(data: unknown): MetaTemplateOptionDto[] {
+  const payload = asRecord(data);
+  const templates = payload.templates;
+
+  return Array.isArray(templates) ? templates.map(parseMetaTemplateOption) : [];
+}
+
 async function fetchJson<T>(
   getToken: () => Promise<string | null>,
   path: string,
@@ -1313,6 +1383,7 @@ export async function apiCreateChannel(
   getToken: () => Promise<string | null>,
   body: {
     displayName: string;
+    provider?: ChannelDto["provider"];
     providerKey?: string;
     phoneNumber?: string;
   }
@@ -1505,7 +1576,7 @@ export async function apiCreateConversationMessage(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to send message: ${response.status}`);
+    throw new Error(await readApiErrorMessage(response, "Failed to send message"));
   }
 
   const data = await response.json();
@@ -1907,6 +1978,31 @@ export async function apiSendCampaignReal(
   return parseCampaignSendResult(data);
 }
 
+export async function apiSendCampaignMetaTemplate(
+  getToken: () => Promise<string | null>,
+  campaignId: string,
+  template: MetaTemplateDto,
+  channelId?: string
+): Promise<CampaignSendResultDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/campaigns/${campaignId}/send-meta-template`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ ...(channelId ? { channelId } : {}), template })
+  });
+
+  if (!response.ok) {
+    throw new Error(await readApiErrorMessage(response, "Failed to send Meta template campaign"));
+  }
+
+  const data = await response.json();
+  return parseCampaignSendResult(data);
+}
+
 export async function apiGetCampaignRecipients(
   getToken: () => Promise<string | null>,
   campaignId: string
@@ -2147,6 +2243,37 @@ export async function apiUpdateSettings(
     },
     parseSettings,
     "Failed to update settings"
+  );
+}
+
+export async function apiSyncMetaTemplates(
+  getToken: () => Promise<string | null>
+): Promise<MetaTemplatesSyncResultDto> {
+  return fetchJson(
+    getToken,
+    "/settings/meta-cloud/sync-templates",
+    { method: "POST" },
+    parseMetaTemplatesSyncResult,
+    "Failed to sync Meta templates"
+  );
+}
+
+export async function apiListMetaEvolutionTemplates(
+  getToken: () => Promise<string | null>,
+  channelId?: string
+): Promise<MetaTemplateOptionDto[]> {
+  const searchParams = new URLSearchParams();
+  if (channelId) {
+    searchParams.set("channelId", channelId);
+  }
+  const queryString = searchParams.toString();
+
+  return fetchJson(
+    getToken,
+    `/settings/meta-cloud/evolution-templates${queryString ? `?${queryString}` : ""}`,
+    {},
+    parseMetaTemplateOptionsResult,
+    "Failed to list Meta templates from Evolution"
   );
 }
 

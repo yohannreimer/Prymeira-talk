@@ -9,6 +9,7 @@ type MockPrisma = {
     findUnique: any;
   };
   integrationConfig: {
+    findUnique: any;
     findMany: any;
     upsert: any;
   };
@@ -43,7 +44,11 @@ const baseAuditLog = {
   createdAt: new Date("2026-05-21T16:05:00.000Z")
 };
 
-function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & PrismaLike {
+function createMockPrisma(overrides: {
+  workspaceMirror?: Partial<MockPrisma["workspaceMirror"]>;
+  integrationConfig?: Partial<MockPrisma["integrationConfig"]>;
+  auditLog?: Partial<MockPrisma["auditLog"]>;
+} = {}): MockPrisma & PrismaLike {
   return {
     workspaceMirror: {
       findUnique:
@@ -58,6 +63,7 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
         })
     },
     integrationConfig: {
+      findUnique: overrides.integrationConfig?.findUnique ?? vi.fn().mockResolvedValue(null),
       findMany: overrides.integrationConfig?.findMany ?? vi.fn().mockResolvedValue([baseConfig]),
       upsert:
         overrides.integrationConfig?.upsert ??
@@ -79,13 +85,13 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
   } as MockPrisma & PrismaLike;
 }
 
-async function buildSettingsApp(input: { prisma?: MockPrisma & PrismaLike } = {}) {
+async function buildSettingsApp(input: { prisma?: MockPrisma & PrismaLike; role?: "owner" | "manager" | "agent" } = {}) {
   const app = Fastify({ logger: false });
   const prisma = input.prisma ?? createMockPrisma();
 
   app.decorate("prisma", prisma as never);
   app.addHook("preHandler", async (request) => {
-    request.talk = { workspaceId: "workspace_a", role: "owner" };
+    request.talk = { workspaceId: "workspace_a", role: input.role ?? "owner" };
   });
   await app.register(settingsRoutes);
 
@@ -160,9 +166,525 @@ describe("settings service", () => {
       }
     });
   });
+
+  it("stores Meta Cloud config and masks secrets in the returned settings", async () => {
+    const upsert = vi.fn().mockResolvedValue({
+      id: "config_1",
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      status: "configured",
+      settings: {
+        enabled: true,
+        wabaId: "111",
+        phoneNumberId: "222",
+        accessToken: "secret-token",
+        webhookVerifyToken: "verify-secret",
+        appSecret: "app-secret"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    });
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockResolvedValue([]),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    const result = await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      settings: {
+        enabled: true,
+        wabaId: "111",
+        phoneNumberId: "222",
+        accessToken: "secret-token",
+        webhookVerifyToken: "verify-secret",
+        appSecret: "app-secret"
+      }
+    });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
+        provider: "meta_cloud",
+        mode: "real",
+        settings: expect.objectContaining({
+          enabled: true,
+          wabaId: "111",
+          phoneNumberId: "222",
+          accessToken: "secret-token",
+          webhookVerifyToken: "verify-secret",
+          appSecret: "app-secret"
+        })
+      }),
+      update: expect.objectContaining({
+        settings: expect.objectContaining({
+          enabled: true,
+          wabaId: "111",
+          phoneNumberId: "222",
+          accessToken: "secret-token",
+          webhookVerifyToken: "verify-secret",
+          appSecret: "app-secret"
+        })
+      })
+    }));
+    expect(result.integrations[0]?.settings).toMatchObject({
+      enabled: true,
+      wabaId: "111",
+      phoneNumberId: "222",
+      accessToken: "[redacted]",
+      webhookVerifyToken: "[redacted]",
+      appSecret: "[redacted]"
+    });
+  });
+
+  it("preserves existing Meta Cloud secrets when masked or omitted in updates", async () => {
+    const existingMetaConfig = {
+      id: "config_meta",
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real" as const,
+      status: "configured",
+      settings: {
+        enabled: true,
+        wabaId: "111",
+        phoneNumberId: "222",
+        accessToken: "stored-token",
+        webhookVerifyToken: "stored-verify",
+        appSecret: "stored-secret"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    };
+    const upsert = vi.fn().mockImplementation(async (args) => ({
+      ...existingMetaConfig,
+      ...args.update,
+      updatedAt: new Date("2026-06-02T12:05:00.000Z")
+    }));
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockImplementation(async (args) =>
+          "provider" in (args.where ?? {}) ? [existingMetaConfig] : []
+        ),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      settings: {
+        enabled: true,
+        wabaId: "333",
+        phoneNumberId: "444",
+        accessToken: "[redacted]",
+        webhookVerifyToken: "",
+        appSecret: "new-secret"
+      }
+    });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({
+        settings: expect.objectContaining({
+          enabled: true,
+          wabaId: "333",
+          phoneNumberId: "444",
+          accessToken: "stored-token",
+          webhookVerifyToken: "stored-verify",
+          appSecret: "new-secret"
+        })
+      })
+    }));
+  });
+
+  it("preserves existing Meta Cloud identifiers when the integration is deactivated", async () => {
+    const existingMetaConfig = {
+      id: "config_meta",
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real" as const,
+      status: "configured",
+      settings: {
+        enabled: true,
+        wabaId: "111",
+        phoneNumberId: "222",
+        accessToken: "stored-token",
+        webhookVerifyToken: "stored-verify",
+        appSecret: "stored-secret"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    };
+    const upsert = vi.fn().mockImplementation(async (args) => ({
+      ...existingMetaConfig,
+      ...args.update,
+      updatedAt: new Date("2026-06-02T12:05:00.000Z")
+    }));
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockImplementation(async (args) =>
+          "provider" in (args.where ?? {}) ? [existingMetaConfig] : []
+        ),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "simulated",
+      settings: {
+        enabled: false
+      }
+    });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({
+        mode: "simulated",
+        settings: expect.objectContaining({
+          enabled: false,
+          wabaId: "111",
+          phoneNumberId: "222",
+          accessToken: "stored-token",
+          webhookVerifyToken: "stored-verify",
+          appSecret: "stored-secret"
+        })
+      })
+    }));
+  });
+
+  it("rejects active Meta Cloud settings after merging when required fields are missing", async () => {
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockResolvedValue([]),
+        upsert: vi.fn()
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    await expect(service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      settings: {
+        enabled: true
+      }
+    })).rejects.toMatchObject({
+      code: "SETTINGS_META_CLOUD_INCOMPLETE"
+    });
+
+    expect(prisma.integrationConfig.upsert).not.toHaveBeenCalled();
+  });
+
+  it("stores Meta Cloud via Evolution config and masks the Evolution API key", async () => {
+    const upsert = vi.fn().mockResolvedValue({
+      id: "config_evolution_meta",
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      status: "configured",
+      settings: {
+        enabled: true,
+        connectionMode: "evolution_official",
+        evolutionBaseUrl: "https://wsapi.yrdnegocios.com.br",
+        evolutionApiKey: "evolution-secret",
+        evolutionInstanceName: "official-instance"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    });
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockResolvedValue([]),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    const result = await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      settings: {
+        enabled: true,
+        connectionMode: "evolution_official",
+        evolutionBaseUrl: "https://wsapi.yrdnegocios.com.br",
+        evolutionApiKey: "evolution-secret",
+        evolutionInstanceName: "official-instance"
+      }
+    });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
+        settings: expect.objectContaining({
+          connectionMode: "evolution_official",
+          evolutionApiKey: "evolution-secret",
+          evolutionInstanceName: "official-instance"
+        })
+      })
+    }));
+    expect(result.integrations[0]?.settings).toMatchObject({
+      enabled: true,
+      connectionMode: "evolution_official",
+      evolutionBaseUrl: "https://wsapi.yrdnegocios.com.br",
+      evolutionApiKey: "[redacted]",
+      evolutionInstanceName: "official-instance"
+    });
+  });
+
+  it("preserves existing Evolution official API key when masked in updates", async () => {
+    const existingMetaConfig = {
+      id: "config_meta",
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real" as const,
+      status: "configured",
+      settings: {
+        enabled: true,
+        connectionMode: "evolution_official",
+        evolutionBaseUrl: "https://old.example.test",
+        evolutionApiKey: "stored-evolution-key",
+        evolutionInstanceName: "old-instance"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    };
+    const upsert = vi.fn().mockImplementation(async (args) => ({
+      ...existingMetaConfig,
+      ...args.update,
+      updatedAt: new Date("2026-06-02T12:05:00.000Z")
+    }));
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockImplementation(async (args) =>
+          "provider" in (args.where ?? {}) ? [existingMetaConfig] : []
+        ),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      settings: {
+        enabled: true,
+        connectionMode: "evolution_official",
+        evolutionBaseUrl: "https://new.example.test",
+        evolutionApiKey: "[redacted]",
+        evolutionInstanceName: "new-instance"
+      }
+    });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({
+        settings: expect.objectContaining({
+          evolutionBaseUrl: "https://new.example.test",
+          evolutionApiKey: "stored-evolution-key",
+          evolutionInstanceName: "new-instance"
+        })
+      })
+    }));
+  });
+});
+
+describe("settings Meta Evolution template routes", () => {
+  it("lists templates from the configured official Evolution instance", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        templates: [
+          {
+            id: "tpl_1",
+            name: "boas_vindas",
+            language: "pt_BR",
+            status: "APPROVED",
+            category: "MARKETING",
+            components: [{ type: "BODY", text: "Ola {{1}}, tudo certo?" }]
+          }
+        ]
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    globalThis.fetch = fetchMock;
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "config_meta",
+          workspaceId: "workspace_a",
+          provider: "meta_cloud",
+          mode: "real",
+          status: "configured",
+          settings: {
+            enabled: true,
+            connectionMode: "evolution_official",
+            evolutionBaseUrl: "https://wsapi.yrdnegocios.com.br",
+            evolutionApiKey: "secret-key",
+            evolutionInstanceName: "prymeiradisparos1"
+          },
+          createdAt: new Date("2026-06-02T12:00:00.000Z"),
+          updatedAt: new Date("2026-06-02T12:00:00.000Z")
+        }),
+        findMany: vi.fn().mockResolvedValue([]),
+        upsert: vi.fn()
+      }
+    });
+    const { app } = await buildSettingsApp({ prisma });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/settings/meta-cloud/evolution-templates"
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://wsapi.yrdnegocios.com.br/template/find/prymeiradisparos1",
+        expect.objectContaining({
+          method: "GET",
+          headers: expect.objectContaining({ apikey: "secret-key" })
+        })
+      );
+      expect(response.json()).toEqual({
+        templates: [
+          {
+            id: "tpl_1",
+            name: "boas_vindas",
+            language: "pt_BR",
+            status: "APPROVED",
+            category: "MARKETING",
+            preview: "Ola {{1}}, tudo certo?",
+            components: [{ type: "BODY", text: "Ola {{1}}, tudo certo?" }]
+          }
+        ],
+        raw: {
+          templates: [
+            {
+              id: "tpl_1",
+              name: "boas_vindas",
+              language: "pt_BR",
+              status: "APPROVED",
+              category: "MARKETING",
+              components: [{ type: "BODY", text: "Ola {{1}}, tudo certo?" }]
+            }
+          ]
+        }
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      await app.close();
+    }
+  });
+
+  it("rejects Evolution template listing when Meta is not active via Evolution", async () => {
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "config_meta",
+          workspaceId: "workspace_a",
+          provider: "meta_cloud",
+          mode: "real",
+          status: "configured",
+          settings: {
+            enabled: true,
+            connectionMode: "direct",
+            wabaId: "111",
+            phoneNumberId: "222",
+            accessToken: "secret-token"
+          },
+          createdAt: new Date("2026-06-02T12:00:00.000Z"),
+          updatedAt: new Date("2026-06-02T12:00:00.000Z")
+        }),
+        findMany: vi.fn().mockResolvedValue([]),
+        upsert: vi.fn()
+      }
+    });
+    const { app } = await buildSettingsApp({ prisma });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/settings/meta-cloud/evolution-templates"
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        code: "META_CLOUD_NOT_CONFIGURED",
+        error: "Meta Cloud via Evolution is not active for this workspace."
+      });
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe("settings routes", () => {
+  it("allows managers to update Meta Cloud settings", async () => {
+    const { app } = await buildSettingsApp({ role: "manager" });
+
+    try {
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/settings",
+        payload: {
+          provider: "meta_cloud",
+          mode: "real",
+          settings: {
+            enabled: true,
+            wabaId: "111",
+            phoneNumberId: "222",
+            accessToken: "secret-token",
+            webhookVerifyToken: "verify-secret",
+            appSecret: "app-secret"
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects incomplete active Meta Cloud settings from the API", async () => {
+    const { app } = await buildSettingsApp();
+
+    try {
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/settings",
+        payload: {
+          provider: "meta_cloud",
+          mode: "real",
+          settings: {
+            enabled: true
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual(expect.objectContaining({
+        code: "SETTINGS_META_CLOUD_INCOMPLETE"
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns audit log entries from GET /settings/audit-log", async () => {
     const { app } = await buildSettingsApp();
 

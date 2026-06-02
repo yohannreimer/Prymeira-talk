@@ -15,6 +15,7 @@ enum UserRole {
 
 enum ChannelProvider {
   evolution
+  meta_cloud
 }
 
 enum ChannelStatus {
@@ -172,19 +173,20 @@ model Department {
 }
 
 model Conversation {
-  id                 String               @id @default(uuid()) @db.Uuid
-  workspaceId        String               @map("workspace_id")
-  channelId          String               @map("channel_id") @db.Uuid
-  contactId          String               @map("contact_id") @db.Uuid
-  status             ConversationStatus   @default(open)
-  assignedUserId     String?              @map("assigned_user_id") @db.Uuid
-  departmentId       String?              @map("department_id") @db.Uuid
-  lastMessageAt      DateTime?            @map("last_message_at")
-  lastMessagePreview String?              @map("last_message_preview")
-  unreadCount        Int                  @default(0) @map("unread_count")
-  priority           ConversationPriority @default(normal)
-  createdAt          DateTime             @default(now()) @map("created_at")
-  updatedAt          DateTime             @updatedAt @map("updated_at")
+  id                             String               @id @default(uuid()) @db.Uuid
+  workspaceId                    String               @map("workspace_id")
+  channelId                      String               @map("channel_id") @db.Uuid
+  contactId                      String               @map("contact_id") @db.Uuid
+  status                         ConversationStatus   @default(open)
+  assignedUserId                 String?              @map("assigned_user_id") @db.Uuid
+  departmentId                   String?              @map("department_id") @db.Uuid
+  lastMessageAt                  DateTime?            @map("last_message_at")
+  lastMessagePreview             String?              @map("last_message_preview")
+  customerServiceWindowExpiresAt DateTime?            @map("customer_service_window_expires_at")
+  unreadCount                    Int                  @default(0) @map("unread_count")
+  priority                       ConversationPriority @default(normal)
+  createdAt                      DateTime             @default(now()) @map("created_at")
+  updatedAt                      DateTime             @updatedAt @map("updated_at")
 
   assignedUser UserProfile?      @relation("AssignedUserConversations", fields: [workspaceId, assignedUserId], references: [workspaceId, id], onDelete: NoAction)
   channel      Channel           @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
@@ -380,6 +382,25 @@ model QuickReply {
   @@index([workspaceId, category])
   @@index([workspaceId, updatedAt])
   @@map("quick_replies")
+}
+
+model MetaMessageTemplate {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  wabaId      String   @map("waba_id")
+  templateId  String?  @map("template_id")
+  name        String
+  language    String
+  category    String
+  status      String
+  components  Json     @default("[]")
+  syncedAt    DateTime @default(now()) @map("synced_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, wabaId, name, language])
+  @@index([workspaceId, status])
+  @@map("meta_message_templates")
 }
 
 model Campaign {

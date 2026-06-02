@@ -653,8 +653,64 @@ describe("Evolution webhook routes", () => {
             providerKey: "client-one"
           }
         },
-        select: { id: true }
+        select: { id: true, provider: true }
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("ingests official Meta via Evolution messages through a meta_cloud channel", async () => {
+    const findUnique = vi.fn().mockImplementation(async (args) => {
+      if (args.where.workspaceId_provider_providerKey.provider === "meta_cloud") {
+        return { id: "channel_meta_1", provider: "meta_cloud" };
+      }
+
+      return null;
+    });
+    const prisma = createMockPrisma({
+      channel: { findUnique }
+    });
+    const { app } = await buildEvolutionApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: validWebhookBody
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true });
+      expect(findUnique).toHaveBeenCalledWith({
+        where: {
+          workspaceId_provider_providerKey: {
+            workspaceId: "workspace_a",
+            provider: "evolution",
+            providerKey: "client-one"
+          }
+        },
+        select: { id: true, provider: true }
+      });
+      expect(findUnique).toHaveBeenCalledWith({
+        where: {
+          workspaceId_provider_providerKey: {
+            workspaceId: "workspace_a",
+            provider: "meta_cloud",
+            providerKey: "client-one"
+          }
+        },
+        select: { id: true, provider: true }
+      });
+      expect(prisma.conversation.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            channelId: "channel_meta_1",
+            customerServiceWindowExpiresAt: new Date("2026-05-21T18:00:00.000Z")
+          })
+        })
+      );
     } finally {
       await app.close();
     }

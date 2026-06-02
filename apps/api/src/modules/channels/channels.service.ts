@@ -16,7 +16,7 @@ type DateLike = Date | string;
 interface ChannelRecord {
   id: string;
   workspaceId: string;
-  provider: "evolution";
+  provider: ChannelDto["provider"];
   providerKey: string;
   phoneNumber: string | null;
   displayName: string | null;
@@ -43,7 +43,7 @@ export interface PrismaLike {
     create(args: {
       data: {
         workspaceId: string;
-        provider: "evolution";
+        provider: ChannelDto["provider"];
         providerKey: string;
         displayName: string;
         phoneNumber: string | null;
@@ -115,13 +115,29 @@ export interface PrismaLike {
 
 interface ChannelsServiceOptions {
   evolution?: EvolutionRuntime;
+  metaEvolutionWebhook?: {
+    client: {
+      setWebhook(input: {
+        instanceName: string;
+        webhookUrl: string;
+        webhookSecret: string;
+      }): Promise<{ raw: unknown }>;
+    };
+    publicWebhookUrl(workspaceId: string): string;
+    webhookSecret: string;
+  };
 }
 
 export class ChannelsServiceError extends Error {
   statusCode: number;
 
   constructor(
-    public code: "CHANNEL_NOT_FOUND" | "EVOLUTION_LICENSE_REQUIRED" | "EVOLUTION_QR_UNAVAILABLE",
+    public code:
+      | "CHANNEL_NOT_FOUND"
+      | "CHANNEL_PROVIDER_KEY_REQUIRED"
+      | "CHANNEL_PROVIDER_UNSUPPORTED"
+      | "EVOLUTION_LICENSE_REQUIRED"
+      | "EVOLUTION_QR_UNAVAILABLE",
     message: string,
     statusCode = 404
   ) {
@@ -235,6 +251,32 @@ export function createChannelsService(
     });
   };
 
+  const getEvolutionChannel = async (input: {
+    workspaceId: string;
+    channelId: string;
+  }) => {
+    const channel = await prisma.channel.findFirst({
+      where: {
+        workspaceId: input.workspaceId,
+        id: input.channelId
+      }
+    });
+
+    if (!channel) {
+      throw new ChannelsServiceError("CHANNEL_NOT_FOUND", "Channel not found.");
+    }
+
+    if (channel.provider !== "evolution") {
+      throw new ChannelsServiceError(
+        "CHANNEL_PROVIDER_UNSUPPORTED",
+        "This channel provider does not support Evolution QR or demo actions.",
+        400
+      );
+    }
+
+    return channel;
+  };
+
   return {
     async listChannels(input: { workspaceId: string }): Promise<ChannelDto[]> {
       const channels = await prisma.channel.findMany({
@@ -248,11 +290,60 @@ export function createChannelsService(
     async createChannel(input: {
       workspaceId: string;
       displayName: string;
+      provider?: ChannelDto["provider"];
       providerKey?: string;
       phoneNumber?: string;
     }): Promise<ChannelDto> {
+      const provider = input.provider ?? "evolution";
+      const requestedProviderKey = normalizeOptional(input.providerKey);
+
+      if (provider === "meta_cloud") {
+        if (!requestedProviderKey) {
+          throw new ChannelsServiceError(
+            "CHANNEL_PROVIDER_KEY_REQUIRED",
+            "Meta Cloud channels require a provider key.",
+            400
+          );
+        }
+
+        const channel = await prisma.channel.create({
+          data: {
+            workspaceId: input.workspaceId,
+            provider,
+            providerKey: requestedProviderKey,
+            displayName: input.displayName.trim(),
+            phoneNumber: normalizeOptional(input.phoneNumber) ?? null,
+            status: "connected"
+          }
+        });
+
+        if (options.metaEvolutionWebhook) {
+          try {
+            await options.metaEvolutionWebhook.client.setWebhook({
+              instanceName: requestedProviderKey,
+              webhookUrl: options.metaEvolutionWebhook.publicWebhookUrl(input.workspaceId),
+              webhookSecret: options.metaEvolutionWebhook.webhookSecret
+            });
+          } catch {
+            const failedChannel = await prisma.channel.update({
+              where: {
+                workspaceId_id: {
+                  workspaceId: input.workspaceId,
+                  id: channel.id
+                }
+              },
+              data: { status: "failed" }
+            });
+
+            return toChannelDto(failedChannel);
+          }
+        }
+
+        return toChannelDto(channel);
+      }
+
       const providerKey =
-        normalizeOptional(input.providerKey) ??
+        requestedProviderKey ??
         (options.evolution?.mode === "real" && options.evolution.client
           ? createInstanceName(input.workspaceId)
           : `demo-evolution-${Date.now().toString(36)}`);
@@ -274,21 +365,11 @@ export function createChannelsService(
       workspaceId: string;
       channelId: string;
     }): Promise<ChannelQrResultDto> {
+      const existingChannel = await getEvolutionChannel(input);
       const evolution = options.evolution;
       const client = evolution?.client;
 
       if (evolution?.mode === "real" && client) {
-        const existingChannel = await prisma.channel.findFirst({
-          where: {
-            workspaceId: input.workspaceId,
-            id: input.channelId
-          }
-        });
-
-        if (!existingChannel) {
-          throw new ChannelsServiceError("CHANNEL_NOT_FOUND", "Channel not found.");
-        }
-
         const webhookUrl = evolution.publicWebhookUrl(input.workspaceId);
         let instance;
 
@@ -371,6 +452,7 @@ export function createChannelsService(
       workspaceId: string;
       channelId: string;
     }): Promise<ChannelOperationResultDto> {
+      await getEvolutionChannel(input);
       const mode = await resolveMode(input.workspaceId);
       const channel = await updateChannelStatus({
         ...input,
@@ -387,6 +469,7 @@ export function createChannelsService(
       workspaceId: string;
       channelId: string;
     }): Promise<ChannelOperationResultDto> {
+      await getEvolutionChannel(input);
       const mode = await resolveMode(input.workspaceId);
       const channel = await updateChannelStatus({
         ...input,
@@ -431,6 +514,14 @@ export function createChannelsService(
 
       if (!channel) {
         throw new ChannelsServiceError("CHANNEL_NOT_FOUND", "Channel not found.");
+      }
+
+      if (channel.provider !== "evolution") {
+        throw new ChannelsServiceError(
+          "CHANNEL_PROVIDER_UNSUPPORTED",
+          "This channel provider does not support Evolution QR or demo actions.",
+          400
+        );
       }
 
       const phone = input.phone?.trim() || "5599999990000";

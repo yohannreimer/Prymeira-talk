@@ -513,16 +513,27 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
 
     try {
       const transactionResult = await app.prisma.$transaction(async (tx) => {
-        const channel = await tx.channel.findUnique({
-          where: {
-            workspaceId_provider_providerKey: {
-              workspaceId,
-              provider: "evolution",
-              providerKey: payload.instance
-            }
-          },
-          select: { id: true }
-        });
+        const channel =
+          await tx.channel.findUnique({
+            where: {
+              workspaceId_provider_providerKey: {
+                workspaceId,
+                provider: "evolution",
+                providerKey: payload.instance
+              }
+            },
+            select: { id: true, provider: true }
+          }) ??
+          await tx.channel.findUnique({
+            where: {
+              workspaceId_provider_providerKey: {
+                workspaceId,
+                provider: "meta_cloud",
+                providerKey: payload.instance
+              }
+            },
+            select: { id: true, provider: true }
+          });
 
         if (!channel) {
           return { kind: "channel_not_found" as const };
@@ -566,6 +577,9 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             channelId: channel.id,
             contactId: contact.id,
             status: "open",
+            ...(channel.provider === "meta_cloud" && !payload.data.key.fromMe
+              ? { customerServiceWindowExpiresAt: new Date(receivedAt.getTime() + 24 * 60 * 60 * 1000) }
+              : {}),
             unreadCount: 0
           },
           update: {}
@@ -587,6 +601,21 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         });
 
         if (!payload.data.key.fromMe) {
+          if (channel.provider === "meta_cloud") {
+            const customerServiceWindowExpiresAt = new Date(receivedAt.getTime() + 24 * 60 * 60 * 1000);
+            await tx.conversation.updateMany({
+              where: {
+                id: conversation.id,
+                workspaceId,
+                OR: [
+                  { customerServiceWindowExpiresAt: null },
+                  { customerServiceWindowExpiresAt: { lt: customerServiceWindowExpiresAt } }
+                ]
+              },
+              data: { customerServiceWindowExpiresAt }
+            });
+          }
+
           await tx.conversation.update({
             where: {
               workspaceId_id: {
