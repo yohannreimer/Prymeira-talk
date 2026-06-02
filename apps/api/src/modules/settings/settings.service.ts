@@ -162,7 +162,23 @@ function shouldPreserveSecretValue(key: string, value: unknown) {
   return SECRET_SETTING_KEYS.has(key) && (value === "[redacted]" || value === "");
 }
 
-function mergeSecretSettings(
+function getStringSetting(settings: Record<string, unknown>, key: string) {
+  const value = settings[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export class SettingsValidationError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = "SettingsValidationError";
+  }
+}
+
+function mergeIntegrationSettings(
+  provider: string,
   previousSettings: Prisma.JsonValue | undefined,
   nextSettings: Prisma.InputJsonValue | undefined
 ): Prisma.InputJsonValue | undefined {
@@ -171,21 +187,55 @@ function mergeSecretSettings(
   }
 
   const previous = isSettingsRecord(previousSettings) ? previousSettings as Record<string, unknown> : {};
-  const merged = { ...nextSettings as Record<string, unknown> };
+  const incoming = nextSettings as Record<string, unknown>;
+  const merged = provider === "meta_cloud"
+    ? { ...previous, ...incoming }
+    : { ...incoming };
 
   for (const key of SECRET_SETTING_KEYS) {
-    if (!(key in merged) || shouldPreserveSecretValue(key, merged[key])) {
+    if (!(key in incoming) || shouldPreserveSecretValue(key, incoming[key])) {
       const previousValue = previous[key];
 
       if (typeof previousValue === "string" && previousValue.length > 0) {
         merged[key] = previousValue;
-      } else if (key in merged && shouldPreserveSecretValue(key, merged[key])) {
+      } else if (key in incoming && shouldPreserveSecretValue(key, incoming[key])) {
         delete merged[key];
       }
     }
   }
 
   return merged as Prisma.InputJsonObject;
+}
+
+function assertMetaCloudSettingsConfigured(
+  provider: string,
+  mode: IntegrationMode,
+  settings: Prisma.InputJsonValue | undefined
+) {
+  if (provider !== "meta_cloud" || mode !== "real" || !isSettingsRecord(settings)) {
+    return;
+  }
+
+  const record = settings as Record<string, unknown>;
+  if (record.enabled !== true) {
+    return;
+  }
+
+  const requiredKeys = [
+    "wabaId",
+    "phoneNumberId",
+    "accessToken",
+    "webhookVerifyToken",
+    "appSecret"
+  ];
+  const missingKey = requiredKeys.find((key) => !getStringSetting(record, key));
+
+  if (missingKey) {
+    throw new SettingsValidationError(
+      "SETTINGS_META_CLOUD_INCOMPLETE",
+      `Meta Cloud setting ${missingKey} is required when the integration is active.`
+    );
+  }
 }
 
 export function createSettingsService(prisma: PrismaLike) {
@@ -228,7 +278,8 @@ export function createSettingsService(prisma: PrismaLike) {
             take: 1
           }))[0]
         : undefined;
-      const settings = mergeSecretSettings(existingConfig?.settings, input.settings);
+      const settings = mergeIntegrationSettings(input.provider, existingConfig?.settings, input.settings);
+      assertMetaCloudSettingsConfigured(input.provider, input.mode, settings);
       const updatedConfig = await prisma.integrationConfig.upsert({
         where: {
           workspaceId_provider: {

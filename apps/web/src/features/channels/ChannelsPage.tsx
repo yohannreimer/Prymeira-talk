@@ -42,13 +42,25 @@ function asSettingsRecord(value: unknown) {
     : {};
 }
 
+function hasStringSetting(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 function getMetaCloudCreateSettings(settings: SettingsDto | null) {
   const integration = settings?.integrations.find((config) => config.provider === "meta_cloud");
   const integrationSettings = asSettingsRecord(integration?.settings);
   const phoneNumberId = integrationSettings.phoneNumberId;
 
   return {
-    enabled: integrationSettings.enabled === true,
+    enabled: (
+      integration?.mode === "real" &&
+      integrationSettings.enabled === true &&
+      hasStringSetting(integrationSettings.wabaId) &&
+      hasStringSetting(phoneNumberId) &&
+      hasStringSetting(integrationSettings.accessToken) &&
+      hasStringSetting(integrationSettings.webhookVerifyToken) &&
+      hasStringSetting(integrationSettings.appSecret)
+    ),
     providerKey: typeof phoneNumberId === "string" ? phoneNumberId : ""
   };
 }

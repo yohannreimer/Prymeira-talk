@@ -79,13 +79,13 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
   } as MockPrisma & PrismaLike;
 }
 
-async function buildSettingsApp(input: { prisma?: MockPrisma & PrismaLike } = {}) {
+async function buildSettingsApp(input: { prisma?: MockPrisma & PrismaLike; role?: "owner" | "manager" | "agent" } = {}) {
   const app = Fastify({ logger: false });
   const prisma = input.prisma ?? createMockPrisma();
 
   app.decorate("prisma", prisma as never);
   app.addHook("preHandler", async (request) => {
-    request.talk = { workspaceId: "workspace_a", role: "owner" };
+    request.talk = { workspaceId: "workspace_a", role: input.role ?? "owner" };
   });
   await app.register(settingsRoutes);
 
@@ -173,7 +173,8 @@ describe("settings service", () => {
         wabaId: "111",
         phoneNumberId: "222",
         accessToken: "secret-token",
-        webhookVerifyToken: "verify-secret"
+        webhookVerifyToken: "verify-secret",
+        appSecret: "app-secret"
       },
       createdAt: new Date("2026-06-02T12:00:00.000Z"),
       updatedAt: new Date("2026-06-02T12:00:00.000Z")
@@ -196,7 +197,8 @@ describe("settings service", () => {
         wabaId: "111",
         phoneNumberId: "222",
         accessToken: "secret-token",
-        webhookVerifyToken: "verify-secret"
+        webhookVerifyToken: "verify-secret",
+        appSecret: "app-secret"
       }
     });
 
@@ -209,7 +211,8 @@ describe("settings service", () => {
           wabaId: "111",
           phoneNumberId: "222",
           accessToken: "secret-token",
-          webhookVerifyToken: "verify-secret"
+          webhookVerifyToken: "verify-secret",
+          appSecret: "app-secret"
         })
       }),
       update: expect.objectContaining({
@@ -218,7 +221,8 @@ describe("settings service", () => {
           wabaId: "111",
           phoneNumberId: "222",
           accessToken: "secret-token",
-          webhookVerifyToken: "verify-secret"
+          webhookVerifyToken: "verify-secret",
+          appSecret: "app-secret"
         })
       })
     }));
@@ -227,7 +231,8 @@ describe("settings service", () => {
       wabaId: "111",
       phoneNumberId: "222",
       accessToken: "[redacted]",
-      webhookVerifyToken: "[redacted]"
+      webhookVerifyToken: "[redacted]",
+      appSecret: "[redacted]"
     });
   });
 
@@ -292,9 +297,142 @@ describe("settings service", () => {
       })
     }));
   });
+
+  it("preserves existing Meta Cloud identifiers when the integration is deactivated", async () => {
+    const existingMetaConfig = {
+      id: "config_meta",
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real" as const,
+      status: "configured",
+      settings: {
+        enabled: true,
+        wabaId: "111",
+        phoneNumberId: "222",
+        accessToken: "stored-token",
+        webhookVerifyToken: "stored-verify",
+        appSecret: "stored-secret"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    };
+    const upsert = vi.fn().mockImplementation(async (args) => ({
+      ...existingMetaConfig,
+      ...args.update,
+      updatedAt: new Date("2026-06-02T12:05:00.000Z")
+    }));
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockImplementation(async (args) =>
+          "provider" in (args.where ?? {}) ? [existingMetaConfig] : []
+        ),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "simulated",
+      settings: {
+        enabled: false
+      }
+    });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({
+        mode: "simulated",
+        settings: expect.objectContaining({
+          enabled: false,
+          wabaId: "111",
+          phoneNumberId: "222",
+          accessToken: "stored-token",
+          webhookVerifyToken: "stored-verify",
+          appSecret: "stored-secret"
+        })
+      })
+    }));
+  });
+
+  it("rejects active Meta Cloud settings after merging when required fields are missing", async () => {
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockResolvedValue([]),
+        upsert: vi.fn()
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    await expect(service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      settings: {
+        enabled: true
+      }
+    })).rejects.toMatchObject({
+      code: "SETTINGS_META_CLOUD_INCOMPLETE"
+    });
+
+    expect(prisma.integrationConfig.upsert).not.toHaveBeenCalled();
+  });
 });
 
 describe("settings routes", () => {
+  it("allows managers to update Meta Cloud settings", async () => {
+    const { app } = await buildSettingsApp({ role: "manager" });
+
+    try {
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/settings",
+        payload: {
+          provider: "meta_cloud",
+          mode: "real",
+          settings: {
+            enabled: true,
+            wabaId: "111",
+            phoneNumberId: "222",
+            accessToken: "secret-token",
+            webhookVerifyToken: "verify-secret",
+            appSecret: "app-secret"
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects incomplete active Meta Cloud settings from the API", async () => {
+    const { app } = await buildSettingsApp();
+
+    try {
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/settings",
+        payload: {
+          provider: "meta_cloud",
+          mode: "real",
+          settings: {
+            enabled: true
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual(expect.objectContaining({
+        code: "SETTINGS_META_CLOUD_INCOMPLETE"
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns audit log entries from GET /settings/audit-log", async () => {
     const { app } = await buildSettingsApp();
 

@@ -1,10 +1,10 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import type { Prisma } from "@prisma/client";
+import type { UserRole } from "@prymeira-talk/shared";
 import { z } from "zod";
-import { canPerform } from "../access/roles.js";
 import { resolveMetaRuntime } from "../meta/meta-runtime.js";
 import { createMetaTemplatesService } from "../meta/meta.templates.service.js";
-import { createSettingsService } from "./settings.service.js";
+import { createSettingsService, SettingsValidationError } from "./settings.service.js";
 import type { PrismaLike } from "./settings.service.js";
 
 const integrationModeSchema = z.enum(["simulated", "real"]);
@@ -31,11 +31,11 @@ const updateSettingsBodySchema = z.union([
   })
 ]);
 
-function requireWorkspaceManage(
-  role: Parameters<typeof canPerform>[0],
+function requireSettingsManage(
+  role: UserRole,
   reply: FastifyReply
 ) {
-  if (canPerform(role, "workspace.manage")) {
+  if (role === "owner" || role === "manager") {
     return true;
   }
 
@@ -54,7 +54,7 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
   );
 
   app.patch("/settings", async (request, reply) => {
-    if (!requireWorkspaceManage(request.talk.role, reply)) {
+    if (!requireSettingsManage(request.talk.role, reply)) {
       return reply;
     }
 
@@ -63,15 +63,26 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "Invalid settings request." });
     }
 
-    return service.updateIntegrationMode({
-      workspaceId: request.talk.workspaceId,
-      ...body.data,
-      settings: body.data.settings as Prisma.InputJsonValue | undefined
-    });
+    try {
+      return await service.updateIntegrationMode({
+        workspaceId: request.talk.workspaceId,
+        ...body.data,
+        settings: body.data.settings as Prisma.InputJsonValue | undefined
+      });
+    } catch (error) {
+      if (error instanceof SettingsValidationError) {
+        return reply.code(400).send({
+          code: error.code,
+          error: error.message
+        });
+      }
+
+      throw error;
+    }
   });
 
   app.get("/settings/audit-log", async (request, reply) => {
-    if (!requireWorkspaceManage(request.talk.role, reply)) {
+    if (!requireSettingsManage(request.talk.role, reply)) {
       return reply;
     }
 
@@ -79,7 +90,7 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post("/settings/meta-cloud/sync-templates", async (request, reply) => {
-    if (!requireWorkspaceManage(request.talk.role, reply)) {
+    if (!requireSettingsManage(request.talk.role, reply)) {
       return reply;
     }
 
