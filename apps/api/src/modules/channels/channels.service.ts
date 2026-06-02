@@ -124,6 +124,7 @@ export class ChannelsServiceError extends Error {
     public code:
       | "CHANNEL_NOT_FOUND"
       | "CHANNEL_PROVIDER_KEY_REQUIRED"
+      | "CHANNEL_PROVIDER_UNSUPPORTED"
       | "EVOLUTION_LICENSE_REQUIRED"
       | "EVOLUTION_QR_UNAVAILABLE",
     message: string,
@@ -239,6 +240,32 @@ export function createChannelsService(
     });
   };
 
+  const getEvolutionChannel = async (input: {
+    workspaceId: string;
+    channelId: string;
+  }) => {
+    const channel = await prisma.channel.findFirst({
+      where: {
+        workspaceId: input.workspaceId,
+        id: input.channelId
+      }
+    });
+
+    if (!channel) {
+      throw new ChannelsServiceError("CHANNEL_NOT_FOUND", "Channel not found.");
+    }
+
+    if (channel.provider !== "evolution") {
+      throw new ChannelsServiceError(
+        "CHANNEL_PROVIDER_UNSUPPORTED",
+        "This channel provider does not support Evolution QR or demo actions.",
+        400
+      );
+    }
+
+    return channel;
+  };
+
   return {
     async listChannels(input: { workspaceId: string }): Promise<ChannelDto[]> {
       const channels = await prisma.channel.findMany({
@@ -305,21 +332,11 @@ export function createChannelsService(
       workspaceId: string;
       channelId: string;
     }): Promise<ChannelQrResultDto> {
+      const existingChannel = await getEvolutionChannel(input);
       const evolution = options.evolution;
       const client = evolution?.client;
 
       if (evolution?.mode === "real" && client) {
-        const existingChannel = await prisma.channel.findFirst({
-          where: {
-            workspaceId: input.workspaceId,
-            id: input.channelId
-          }
-        });
-
-        if (!existingChannel) {
-          throw new ChannelsServiceError("CHANNEL_NOT_FOUND", "Channel not found.");
-        }
-
         const webhookUrl = evolution.publicWebhookUrl(input.workspaceId);
         let instance;
 
@@ -402,6 +419,7 @@ export function createChannelsService(
       workspaceId: string;
       channelId: string;
     }): Promise<ChannelOperationResultDto> {
+      await getEvolutionChannel(input);
       const mode = await resolveMode(input.workspaceId);
       const channel = await updateChannelStatus({
         ...input,
@@ -418,6 +436,7 @@ export function createChannelsService(
       workspaceId: string;
       channelId: string;
     }): Promise<ChannelOperationResultDto> {
+      await getEvolutionChannel(input);
       const mode = await resolveMode(input.workspaceId);
       const channel = await updateChannelStatus({
         ...input,
@@ -462,6 +481,14 @@ export function createChannelsService(
 
       if (!channel) {
         throw new ChannelsServiceError("CHANNEL_NOT_FOUND", "Channel not found.");
+      }
+
+      if (channel.provider !== "evolution") {
+        throw new ChannelsServiceError(
+          "CHANNEL_PROVIDER_UNSUPPORTED",
+          "This channel provider does not support Evolution QR or demo actions.",
+          400
+        );
       }
 
       const phone = input.phone?.trim() || "5599999990000";

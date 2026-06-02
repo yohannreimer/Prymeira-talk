@@ -133,24 +133,27 @@ export function ChannelsPage() {
       setError(null);
 
       try {
-        const [nextChannels, nextSettings] = await Promise.all([
-          apiGetChannels(getToken),
-          apiGetSettings(getToken)
-        ]);
+        const nextChannels = await apiGetChannels(getToken);
 
         if (!isMounted) return;
 
         const availableChannels = filterDeletedChannels(nextChannels, deletedChannelIdsRef.current);
-        const metaSettings = getMetaCloudCreateSettings(nextSettings);
 
-        setSettings(nextSettings);
-        setMetaProviderKey((current) => current || metaSettings.providerKey);
         setChannels(availableChannels);
         setSelectedChannelId((current) =>
           availableChannels.some((channel) => channel.id === current)
             ? current
             : availableChannels[0]?.id ?? null
         );
+        setIsLoading(false);
+
+        const nextSettings = await apiGetSettings(getToken).catch(() => null);
+        if (!isMounted) return;
+
+        const metaSettings = getMetaCloudCreateSettings(nextSettings);
+
+        setSettings(nextSettings);
+        setMetaProviderKey((current) => current || metaSettings.providerKey);
       } catch (loadError) {
         if (!isMounted) return;
         setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar canais.");
