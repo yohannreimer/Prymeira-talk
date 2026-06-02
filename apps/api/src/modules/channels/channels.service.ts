@@ -16,7 +16,7 @@ type DateLike = Date | string;
 interface ChannelRecord {
   id: string;
   workspaceId: string;
-  provider: "evolution";
+  provider: ChannelDto["provider"];
   providerKey: string;
   phoneNumber: string | null;
   displayName: string | null;

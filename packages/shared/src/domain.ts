@@ -22,7 +22,7 @@ export type SuiteModule = z.infer<typeof suiteModuleSchema>;
 export const integrationModeSchema = z.enum(["simulated", "real"]);
 export type IntegrationMode = z.infer<typeof integrationModeSchema>;
 
-export const channelProviderSchema = z.enum(["evolution"]);
+export const channelProviderSchema = z.enum(["evolution", "meta_cloud"]);
 export type ChannelProvider = z.infer<typeof channelProviderSchema>;
 export const channelStatusSchema = z.enum(["disconnected", "connecting", "connected", "failed"]);
 export type ChannelStatus = z.infer<typeof channelStatusSchema>;
