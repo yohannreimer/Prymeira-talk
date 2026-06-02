@@ -224,6 +224,13 @@ export interface CampaignSendResultDto {
 export interface MetaTemplateDto {
   name: string;
   language: string;
+  components?: Array<{
+    type: "header" | "body" | "button";
+    parameters?: Array<{
+      type: "text";
+      text: string;
+    }>;
+  }>;
 }
 
 export interface ReportMetricDto {

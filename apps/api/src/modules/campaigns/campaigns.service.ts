@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import type { MetaTemplateComponent } from "../meta/meta.client.js";
 
 type DateLike = Date | string;
 type CampaignStatus = "draft" | "scheduled" | "sending" | "completed" | "failed";
@@ -167,6 +168,18 @@ export interface CampaignSendResultDto {
   recipientsFailed?: number;
 }
 
+type MetaSendTemplateComponentType = "header" | "body" | "button";
+
+interface MetaSendTemplateTextParameter {
+  type: "text";
+  text: string;
+}
+
+export interface MetaSendTemplateComponent {
+  type: MetaSendTemplateComponentType;
+  parameters?: MetaSendTemplateTextParameter[];
+}
+
 export interface CampaignCadenceDto {
   minDelaySeconds: number;
   maxDelaySeconds: number;
@@ -186,7 +199,8 @@ export class CampaignsServiceError extends Error {
       | "CAMPAIGN_CHANNEL_NOT_FOUND"
       | "CAMPAIGN_EVOLUTION_NOT_CONFIGURED"
       | "CAMPAIGN_META_NOT_CONFIGURED"
-      | "CAMPAIGN_TEMPLATE_NOT_FOUND",
+      | "CAMPAIGN_TEMPLATE_NOT_FOUND"
+      | "CAMPAIGN_TEMPLATE_COMPONENT_INVALID",
     message: string
   ) {
     super(message);
@@ -212,6 +226,10 @@ function withoutUndefined<T extends Record<string, unknown>>(value: T) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entryValue]) => entryValue !== undefined)
   ) as T;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cadenceToJson(cadence: CampaignCadenceDto): Prisma.InputJsonObject {
@@ -445,6 +463,101 @@ function buildRecipientResult(input: {
   }) as Prisma.InputJsonObject;
 }
 
+function normalizeMetaSendComponentType(value: unknown): MetaSendTemplateComponentType | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized === "header" || normalized === "body" || normalized === "button"
+    ? normalized
+    : null;
+}
+
+function getStoredTemplateComponents(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((component) => {
+    if (!isRecord(component)) {
+      return [];
+    }
+
+    const type = normalizeMetaSendComponentType(component.type);
+    if (!type) {
+      return [];
+    }
+
+    return [
+      {
+        type,
+        text: typeof component.text === "string" ? component.text : undefined
+      }
+    ];
+  });
+}
+
+function countNumericPlaceholders(text: string) {
+  const matches = text.matchAll(/\{\{\s*(\d+)\s*\}\}/g);
+  return new Set(Array.from(matches, (match) => match[1])).size;
+}
+
+function validateMetaSendComponents(input: {
+  supplied?: MetaSendTemplateComponent[];
+  storedComponents: unknown;
+}): MetaTemplateComponent[] | undefined {
+  if (!input.supplied || input.supplied.length === 0) {
+    return undefined;
+  }
+
+  const storedComponents = getStoredTemplateComponents(input.storedComponents);
+
+  return input.supplied.map((component) => {
+    const type = normalizeMetaSendComponentType(component.type);
+    const storedComponent = type
+      ? storedComponents.find((current) => current.type === type)
+      : undefined;
+
+    if (!type || !storedComponent) {
+      throw new CampaignsServiceError(
+        "CAMPAIGN_TEMPLATE_COMPONENT_INVALID",
+        "Template component is not present in the approved Meta template."
+      );
+    }
+
+    const parameters = component.parameters?.map((parameter) => {
+      if (parameter.type !== "text" || typeof parameter.text !== "string") {
+        throw new CampaignsServiceError(
+          "CAMPAIGN_TEMPLATE_COMPONENT_INVALID",
+          "Only text template component parameters are supported."
+        );
+      }
+
+      return {
+        type: "text" as const,
+        text: parameter.text
+      };
+    });
+
+    if (
+      (type === "body" || type === "header") &&
+      storedComponent.text !== undefined &&
+      (parameters?.length ?? 0) > countNumericPlaceholders(storedComponent.text)
+    ) {
+      throw new CampaignsServiceError(
+        "CAMPAIGN_TEMPLATE_COMPONENT_INVALID",
+        "Template component has more parameters than the approved Meta template allows."
+      );
+    }
+
+    return withoutUndefined({
+      type,
+      parameters: parameters && parameters.length > 0 ? parameters : undefined
+    }) as MetaTemplateComponent;
+  });
+}
+
 export interface CampaignsServiceOptions {
   evolution?: {
     mode: EvolutionRuntime["mode"];
@@ -459,6 +572,7 @@ export interface CampaignsServiceOptions {
         to: string;
         name: string;
         language: string;
+        components?: MetaTemplateComponent[];
       }): Promise<{ providerMessageId: string | null; raw: unknown }>;
     } | null;
   };
@@ -919,6 +1033,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       template: {
         name: string;
         language: string;
+        components?: MetaSendTemplateComponent[];
       };
     }): Promise<CampaignSendResultDto> {
       const phoneNumberId = options.meta?.phoneNumberId?.trim();
@@ -969,6 +1084,10 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
 
       const campaign = await findCampaignForWorkspace(input);
       const plans = await buildRecipientPlans(campaign);
+      const components = validateMetaSendComponents({
+        supplied: input.template.components,
+        storedComponents: template.components
+      });
       const messagePreview = `Template ${templateName} (${templateLanguage})`;
       let sent = 0;
       let failed = 0;
@@ -999,7 +1118,8 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
             phoneNumberId,
             to: plan.contact.phone,
             name: templateName,
-            language: templateLanguage
+            language: templateLanguage,
+            ...(components ? { components } : {})
           });
 
           sent += 1;

@@ -58,10 +58,30 @@ const updateCampaignBodySchema = createCampaignBodySchema
   .partial()
   .refine((body) => Object.keys(body).length > 0, "At least one campaign field is required.");
 
+const metaTemplateComponentTypeSchema = z.preprocess(
+  (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+  z.enum(["header", "body", "button"])
+);
+
+const metaTemplateTextParameterSchema = z
+  .object({
+    type: z.literal("text"),
+    text: z.string()
+  })
+  .strict();
+
+const metaTemplateSendComponentSchema = z
+  .object({
+    type: metaTemplateComponentTypeSchema,
+    parameters: z.array(metaTemplateTextParameterSchema).optional()
+  })
+  .strict();
+
 const sendMetaTemplateBodySchema = z.object({
   template: z.object({
     name: z.string().trim().min(1).max(512),
-    language: z.string().trim().min(1).max(64)
+    language: z.string().trim().min(1).max(64),
+    components: z.array(metaTemplateSendComponentSchema).optional()
   })
 });
 
@@ -89,6 +109,8 @@ function handleCampaignsError(reply: FastifyReply, error: unknown) {
                 ? 409
                 : error.code === "CAMPAIGN_TEMPLATE_NOT_FOUND"
                   ? 404
+                  : error.code === "CAMPAIGN_TEMPLATE_COMPONENT_INVALID"
+                    ? 400
               : 404;
 
     return reply.code(statusCode).send({ code: error.code, error: error.message });
