@@ -51,6 +51,18 @@ function signMetaPayload(body: string, appSecret = "app-secret") {
   return `sha256=${createHmac("sha256", appSecret).update(body).digest("hex")}`;
 }
 
+function signedMetaPostPayload(payload: unknown, appSecret = "app-secret") {
+  const rawPayload = JSON.stringify(payload);
+
+  return {
+    headers: {
+      "content-type": "application/json",
+      "x-hub-signature-256": signMetaPayload(rawPayload, appSecret)
+    },
+    payload: rawPayload
+  };
+}
+
 function createMockPrismaWithAppSecret(appSecret = "app-secret") {
   return createMockPrisma({
     integrationConfig: {
@@ -99,7 +111,8 @@ function createMockPrisma(overrides: {
             wabaId: "111",
             phoneNumberId: "222",
             accessToken: "meta-token",
-            webhookVerifyToken: "verify-me"
+            webhookVerifyToken: "verify-me",
+            appSecret: "app-secret"
           }
         })
     },
@@ -287,7 +300,7 @@ describe("Meta webhook routes", () => {
       const response = await app.inject({
         method: "POST",
         url: "/webhooks/meta/local_workspace",
-        payload: metaTextPayload
+        ...signedMetaPostPayload(metaTextPayload)
       });
 
       expect(response.statusCode).toBe(409);
@@ -306,7 +319,7 @@ describe("Meta webhook routes", () => {
       const response = await app.inject({
         method: "POST",
         url: "/webhooks/meta/local_workspace",
-        payload: metaTextPayload
+        ...signedMetaPostPayload(metaTextPayload)
       });
 
       expect(response.statusCode).toBe(200);
@@ -460,8 +473,7 @@ describe("Meta webhook routes", () => {
   });
 
   it("rejects unsigned Meta webhook payloads when appSecret is configured", async () => {
-    const prisma = createMockPrismaWithAppSecret();
-    const { app } = await buildMetaApp(prisma);
+    const { app, prisma } = await buildMetaApp();
 
     try {
       const response = await app.inject({
@@ -480,8 +492,7 @@ describe("Meta webhook routes", () => {
   });
 
   it("rejects invalid Meta webhook signatures when appSecret is configured", async () => {
-    const prisma = createMockPrismaWithAppSecret();
-    const { app } = await buildMetaApp(prisma);
+    const { app, prisma } = await buildMetaApp();
     const rawPayload = JSON.stringify(metaTextPayload);
 
     try {
@@ -497,6 +508,40 @@ describe("Meta webhook routes", () => {
 
       expect(response.statusCode).toBe(401);
       expect(response.json()).toEqual({ ok: false, error: "invalid_meta_signature" });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 409 without writing when Meta appSecret is missing", async () => {
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findUnique: vi.fn().mockResolvedValue({
+          mode: "real",
+          status: "connected",
+          settings: {
+            enabled: true,
+            wabaId: "111",
+            phoneNumberId: "222",
+            accessToken: "meta-token",
+            webhookVerifyToken: "verify-me"
+          }
+        })
+      }
+    });
+    const { app } = await buildMetaApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/meta/local_workspace",
+        payload: metaTextPayload
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ ok: false, error: "meta_signature_not_configured" });
       expect(prisma.message.create).not.toHaveBeenCalled();
       expect(prisma.$transaction).not.toHaveBeenCalled();
     } finally {
@@ -535,7 +580,7 @@ describe("Meta webhook routes", () => {
       const response = await app.inject({
         method: "POST",
         url: "/webhooks/meta/local_workspace",
-        payload: createMetaPayloadWithMessages([
+        ...signedMetaPostPayload(createMetaPayloadWithMessages([
           {
             id: "wamid_in_1",
             from: "5511999999999",
@@ -550,7 +595,7 @@ describe("Meta webhook routes", () => {
             type: "text",
             text: { body: "Tudo bem?" }
           }
-        ])
+        ]))
       });
 
       expect(response.statusCode).toBe(200);
@@ -590,7 +635,7 @@ describe("Meta webhook routes", () => {
       const response = await app.inject({
         method: "POST",
         url: "/webhooks/meta/local_workspace",
-        payload: createMetaPayloadWithMessages([
+        ...signedMetaPostPayload(createMetaPayloadWithMessages([
           {
             id: "wamid_in_1",
             from: "5511999999999",
@@ -605,7 +650,7 @@ describe("Meta webhook routes", () => {
             type: "text",
             text: { body: "Tudo bem?" }
           }
-        ])
+        ]))
       });
 
       expect(response.statusCode).toBe(200);
@@ -636,7 +681,7 @@ describe("Meta webhook routes", () => {
       const response = await app.inject({
         method: "POST",
         url: "/webhooks/meta/local_workspace",
-        payload: {
+        ...signedMetaPostPayload({
           ...metaTextPayload,
           entry: [
             {
@@ -659,7 +704,7 @@ describe("Meta webhook routes", () => {
               ]
             }
           ]
-        }
+        })
       });
 
       expect(response.statusCode).toBe(200);
@@ -678,7 +723,7 @@ describe("Meta webhook routes", () => {
       const response = await app.inject({
         method: "POST",
         url: "/webhooks/meta/local_workspace",
-        payload: metaTextPayload
+        ...signedMetaPostPayload(metaTextPayload)
       });
 
       expect(response.statusCode).toBe(200);

@@ -182,16 +182,16 @@ function getRawRequestBody(request: { raw: unknown; body: unknown }) {
     return rawBody;
   }
 
-  return Buffer.from(JSON.stringify(request.body ?? {}));
+  return null;
 }
 
 function hasValidMetaSignature(
   header: string | string[] | undefined,
-  rawBody: Buffer,
+  rawBody: Buffer | null,
   appSecret: string
 ) {
   const signature = normalizeHeaderValue(header);
-  if (!signature?.startsWith("sha256=")) {
+  if (!rawBody || !signature?.startsWith("sha256=")) {
     return false;
   }
 
@@ -265,14 +265,15 @@ export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(409).send({ ok: false, error: "meta_cloud_not_configured" });
     }
 
-    if (
-      runtime.appSecret &&
-      !hasValidMetaSignature(
-        request.headers["x-hub-signature-256"],
-        getRawRequestBody(request),
-        runtime.appSecret
-      )
-    ) {
+    if (!runtime.appSecret) {
+      return reply.code(409).send({ ok: false, error: "meta_signature_not_configured" });
+    }
+
+    if (!hasValidMetaSignature(
+      request.headers["x-hub-signature-256"],
+      getRawRequestBody(request),
+      runtime.appSecret
+    )) {
       return reply.code(401).send({ ok: false, error: "invalid_meta_signature" });
     }
 
