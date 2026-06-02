@@ -22,6 +22,9 @@ type MockPrisma = {
   metaMessageTemplate: {
     findFirst: any;
   };
+  integrationConfig: {
+    findUnique: any;
+  };
   contactBoard: {
     findFirst: any;
   };
@@ -161,6 +164,20 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
           syncedAt: new Date("2026-05-24T12:00:00.000Z"),
           createdAt: new Date("2026-05-24T12:00:00.000Z"),
           updatedAt: new Date("2026-05-24T12:00:00.000Z")
+        })
+    },
+    integrationConfig: {
+      findUnique:
+        overrides.integrationConfig?.findUnique ??
+        vi.fn().mockResolvedValue({
+          mode: "real",
+          status: "connected",
+          settings: {
+            enabled: true,
+            wabaId: "waba_1",
+            phoneNumberId: "phone_number_1",
+            accessToken: "meta_access_token"
+          }
         })
     },
     contactBoard: {
@@ -503,6 +520,36 @@ describe("campaigns service", () => {
     expect(upsert).not.toHaveBeenCalled();
   });
 
+  it("rejects Meta template campaigns when no connected Meta channel exists", async () => {
+    const sendTemplate = vi.fn();
+    const upsert = vi.fn();
+    const prisma = createMockPrisma({
+      campaignRecipient: {
+        findMany: vi.fn(),
+        upsert
+      },
+      channel: {
+        findFirst: vi.fn().mockResolvedValue(null)
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      meta: {
+        phoneNumberId: "phone_number_1",
+        client: { sendTemplate }
+      }
+    });
+
+    await expect(
+      service.sendMetaTemplate({
+        workspaceId: "workspace_a",
+        campaignId,
+        template: { name: "reactivation_vip", language: "pt_BR" }
+      })
+    ).rejects.toMatchObject({ code: "CAMPAIGN_CHANNEL_NOT_FOUND" });
+    expect(sendTemplate).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it("rejects Meta template campaigns when no approved local template exists", async () => {
     const sendTemplate = vi.fn();
     const upsert = vi.fn();
@@ -531,6 +578,67 @@ describe("campaigns service", () => {
     ).rejects.toMatchObject({ code: "CAMPAIGN_TEMPLATE_NOT_FOUND" });
     expect(sendTemplate).not.toHaveBeenCalled();
     expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("marks Meta template campaigns as failed when any recipient send fails", async () => {
+    const sendTemplate = vi
+      .fn()
+      .mockResolvedValueOnce({
+        providerMessageId: "wamid_meta_campaign_1",
+        raw: { messages: [{ id: "wamid_meta_campaign_1" }] }
+      })
+      .mockRejectedValueOnce(new Error("Meta rejected recipient"));
+    const upsert = vi.fn().mockImplementation(async (args) => args.create);
+    const update = vi.fn().mockResolvedValue({ ...baseCampaign, status: "failed", mode: "real" });
+    const prisma = createMockPrisma({
+      campaign: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue(baseCampaign),
+        create: vi.fn(),
+        update
+      },
+      campaignRecipient: {
+        findMany: vi.fn(),
+        upsert
+      },
+      channel: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "channel_meta_1",
+          workspaceId: "workspace_a",
+          provider: "meta_cloud",
+          providerKey: "phone_number_1",
+          status: "connected"
+        })
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      meta: {
+        phoneNumberId: "phone_number_1",
+        client: { sendTemplate }
+      }
+    });
+
+    const result = await service.sendMetaTemplate({
+      workspaceId: "workspace_a",
+      campaignId,
+      template: { name: "reactivation_vip", language: "pt_BR" }
+    });
+
+    expect(result).toEqual({
+      mode: "real",
+      result: "sent",
+      recipientsCreated: 2,
+      recipientsSent: 1,
+      recipientsFailed: 1
+    });
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "failed",
+          mode: "real"
+        })
+      })
+    );
   });
 
   it("rejects audience resolution for campaigns outside the current workspace", async () => {
@@ -677,6 +785,83 @@ describe("campaigns routes", () => {
         })
       });
     } finally {
+      await app.close();
+    }
+  });
+
+  it("sends a Meta template campaign from POST /campaigns/:campaignId/send-meta-template", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () =>
+      new Response(JSON.stringify({ messages: [{ id: "wamid_route_meta_1" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const prisma = createMockPrisma({
+      campaign: {
+        findMany: vi.fn(),
+        findFirst: vi
+          .fn()
+          .mockResolvedValueOnce(baseCampaign)
+          .mockResolvedValueOnce({
+            ...baseCampaign,
+            status: "completed",
+            mode: "real",
+            updatedAt: new Date("2026-05-21T12:05:00.000Z")
+          }),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({
+          ...baseCampaign,
+          status: "completed",
+          mode: "real",
+          updatedAt: new Date("2026-05-21T12:05:00.000Z")
+        })
+      },
+      channel: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "channel_meta_1",
+          workspaceId: "workspace_a",
+          provider: "meta_cloud",
+          providerKey: "phone_number_1",
+          status: "connected"
+        })
+      }
+    });
+    const { app, publish } = await buildCampaignsApp({ prisma });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/campaigns/${campaignId}/send-meta-template`,
+        payload: {
+          template: {
+            name: "reactivation_vip",
+            language: "pt_BR"
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        mode: "real",
+        result: "sent",
+        recipientsCreated: 2,
+        recipientsSent: 2,
+        recipientsFailed: 0
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(realtimeEventSchema.parse(publish.mock.calls[0]?.[0])).toEqual({
+        type: "campaign.updated",
+        workspaceId: "workspace_a",
+        payload: expect.objectContaining({
+          id: campaignId,
+          workspaceId: "workspace_a",
+          status: "completed",
+          mode: "real"
+        })
+      });
+    } finally {
+      vi.unstubAllGlobals();
       await app.close();
     }
   });

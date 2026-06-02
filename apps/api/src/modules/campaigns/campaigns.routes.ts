@@ -301,18 +301,17 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
       return reply.code(400).send({ error: "Invalid campaign request." });
     }
 
-    const runtime = await resolveMetaRuntime(app.prisma, {
-      workspaceId: request.talk.workspaceId
-    });
-    const metaService = createCampaignsService(app.prisma as unknown as PrismaLike, {
-      evolution: options.evolution,
-      meta: {
-        phoneNumberId: runtime.phoneNumberId,
-        client: runtime.client
-      }
-    });
-
     try {
+      const runtime = await resolveMetaRuntime(app.prisma, {
+        workspaceId: request.talk.workspaceId
+      });
+      const metaService = createCampaignsService(app.prisma as unknown as PrismaLike, {
+        evolution: options.evolution,
+        meta: {
+          phoneNumberId: runtime.phoneNumberId,
+          client: runtime.client
+        }
+      });
       const result = await metaService.sendMetaTemplate({
         workspaceId: request.talk.workspaceId,
         campaignId: params.data.campaignId,

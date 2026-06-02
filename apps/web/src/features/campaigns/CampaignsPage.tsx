@@ -214,7 +214,9 @@ function isMetaCloudActive(integrations: IntegrationConfigDto[]) {
     typeof settings.wabaId === "string" &&
     settings.wabaId.trim().length > 0 &&
     typeof settings.phoneNumberId === "string" &&
-    settings.phoneNumberId.trim().length > 0
+    settings.phoneNumberId.trim().length > 0 &&
+    typeof settings.accessToken === "string" &&
+    settings.accessToken.trim().length > 0
   );
 }
 
@@ -246,21 +248,24 @@ export function CampaignsPage() {
       setError(null);
 
       try {
-        const [nextCampaigns, nextBoards, settings] = await Promise.all([
+        const [nextCampaigns, nextBoards] = await Promise.all([
           apiGetCampaigns(getToken),
-          apiGetBoards(getToken),
-          apiGetSettings(getToken)
+          apiGetBoards(getToken)
         ]);
 
         if (!isMounted) return;
 
         setCampaigns(nextCampaigns);
         setBoards(nextBoards);
-        setIsMetaActive(isMetaCloudActive(settings.integrations));
         setForm((current) => ({
           ...current,
           boardId: current.boardId || nextBoards[0]?.id || ""
         }));
+
+        const settings = await apiGetSettings(getToken).catch(() => null);
+        if (!isMounted) return;
+
+        setIsMetaActive(settings ? isMetaCloudActive(settings.integrations) : false);
       } catch (loadError) {
         if (isMounted) {
           setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar disparos.");

@@ -1110,7 +1110,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
           }
         },
         data: {
-          status: failed > 0 && sent === 0 ? "failed" : "completed",
+          status: failed > 0 ? "failed" : "completed",
           mode: "real"
         }
       });
