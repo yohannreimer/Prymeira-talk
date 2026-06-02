@@ -6,6 +6,8 @@ const SECRET_RESPONSE_KEYS = new Set([
   "token"
 ]);
 
+const MAX_TEMPLATE_PAGES = 20;
+
 export class MetaClientError extends Error {
   readonly statusCode: number;
   readonly responseBody: unknown;
@@ -64,7 +66,7 @@ export interface ListMetaMessageTemplatesInput {
 
 export interface ListMetaMessageTemplatesResult {
   templates: MetaTemplateRecord[];
-  raw: unknown;
+  raw: unknown[];
 }
 
 export interface TestMetaConnectionInput {
@@ -200,10 +202,36 @@ function listTemplatesPath(wabaId: string) {
 
 export function createMetaClient(options: CreateMetaClientOptions): MetaClient {
   const baseUrl = options.graphApiBaseUrl.replace(/\/$/, "");
+  const baseUrlOrigin = new URL(baseUrl).origin;
   const fetchImpl = options.fetch ?? globalThis.fetch;
 
-  async function request(path: string, init: RequestInit) {
-    const response = await fetchImpl(`${baseUrl}${path}`, {
+  function resolveRequestUrl(pathOrUrl: string) {
+    if (pathOrUrl.startsWith("/")) {
+      return `${baseUrl}${pathOrUrl}`;
+    }
+
+    let url: URL;
+    try {
+      url = new URL(pathOrUrl);
+    } catch {
+      throw new Error(`Invalid Meta Graph API pagination URL: ${pathOrUrl}`);
+    }
+
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error(`Unsupported Meta Graph API pagination URL protocol: ${url.protocol}`);
+    }
+
+    if (url.origin !== baseUrlOrigin) {
+      throw new Error(
+        `Refusing to follow Meta Graph API pagination URL for different origin: ${url.origin}`
+      );
+    }
+
+    return url.href;
+  }
+
+  async function request(pathOrUrl: string, init: RequestInit) {
+    const response = await fetchImpl(resolveRequestUrl(pathOrUrl), {
       ...init,
       headers: {
         Authorization: `Bearer ${options.accessToken}`,
@@ -270,15 +298,34 @@ export function createMetaClient(options: CreateMetaClientOptions): MetaClient {
     },
 
     async listMessageTemplates(input) {
-      const responseBody = await get(listTemplatesPath(input.wabaId));
-      const data = isRecord(responseBody) && Array.isArray(responseBody.data) ? responseBody.data : [];
+      const pages: unknown[] = [];
+      const templates: MetaTemplateRecord[] = [];
+      let nextUrl: string | undefined = listTemplatesPath(input.wabaId);
+
+      for (let page = 0; nextUrl; page += 1) {
+        if (page >= MAX_TEMPLATE_PAGES) {
+          throw new Error(`Meta Graph API template pagination exceeded ${MAX_TEMPLATE_PAGES} pages`);
+        }
+
+        const responseBody = await get(nextUrl);
+        pages.push(responseBody);
+
+        const data = isRecord(responseBody) && Array.isArray(responseBody.data) ? responseBody.data : [];
+        templates.push(
+          ...data.flatMap((template) => {
+            const normalized = normalizeTemplateRecord(template);
+            return normalized ? [normalized] : [];
+          })
+        );
+
+        const paging =
+          isRecord(responseBody) && isRecord(responseBody.paging) ? responseBody.paging : null;
+        nextUrl = getString(paging, "next");
+      }
 
       return {
-        templates: data.flatMap((template) => {
-          const normalized = normalizeTemplateRecord(template);
-          return normalized ? [normalized] : [];
-        }),
-        raw: responseBody
+        templates,
+        raw: pages
       };
     },
 

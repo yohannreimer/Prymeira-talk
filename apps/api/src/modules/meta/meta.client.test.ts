@@ -74,32 +74,46 @@ describe("createMetaClient", () => {
     expect(result.providerMessageId).toBe("wamid_template_1");
   });
 
-  it("lists templates for a WABA", async () => {
-    const fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          data: [
-            {
-              id: "tpl_1",
-              name: "approved",
-              language: "pt_BR",
-              category: "UTILITY",
-              status: "APPROVED",
-              components: []
-            },
-            {
-              id: "tpl_2",
-              name: "paused",
-              language: "pt_BR",
-              category: "MARKETING",
-              status: "PAUSED",
-              components: []
+  it("lists templates for a WABA across Graph API pages", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "tpl_1",
+                name: "approved",
+                language: "pt_BR",
+                category: "UTILITY",
+                status: "APPROVED",
+                components: []
+              }
+            ],
+            paging: {
+              next: "https://graph.facebook.com/v23.0/111/message_templates?after=cursor"
             }
-          ]
-        }),
-        { status: 200 }
+          }),
+          { status: 200 }
+        )
       )
-    );
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "tpl_2",
+                name: "paused",
+                language: "pt_BR",
+                category: "MARKETING",
+                status: "PAUSED",
+                components: []
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
     const client = createMetaClient({
       graphApiBaseUrl: "https://graph.facebook.com/v23.0",
       accessToken: "token",
@@ -111,6 +125,13 @@ describe("createMetaClient", () => {
     expect(fetch).toHaveBeenCalledWith(
       "https://graph.facebook.com/v23.0/111/message_templates?fields=id,name,language,category,status,components&limit=100",
       expect.objectContaining({ method: "GET" })
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "https://graph.facebook.com/v23.0/111/message_templates?after=cursor",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({ Authorization: "Bearer token" })
+      })
     );
     expect(result.templates).toHaveLength(2);
   });
@@ -130,8 +151,31 @@ describe("createMetaClient", () => {
       fetch
     });
 
-    await expect(client.listMessageTemplates({ wabaId: "111" })).rejects.toBeInstanceOf(
-      MetaClientError
-    );
+    try {
+      await client.listMessageTemplates({ wabaId: "111" });
+      expect.fail("Expected MetaClientError");
+    } catch (error) {
+      expect(error).toBeInstanceOf(MetaClientError);
+      expect(error).toMatchObject({
+        statusCode: 401,
+        responseBody: {
+          error: { message: "Invalid token", access_token: "[redacted]" }
+        }
+      });
+    }
+  });
+
+  it("preserves plain text failed responses", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response("temporarily unavailable", { status: 503 }));
+    const client = createMetaClient({
+      graphApiBaseUrl: "https://graph.facebook.com/v23.0",
+      accessToken: "token",
+      fetch
+    });
+
+    await expect(client.testConnection({ phoneNumberId: "222" })).rejects.toMatchObject({
+      statusCode: 503,
+      responseBody: "temporarily unavailable"
+    });
   });
 });
