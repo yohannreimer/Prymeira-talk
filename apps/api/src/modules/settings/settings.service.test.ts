@@ -230,6 +230,68 @@ describe("settings service", () => {
       webhookVerifyToken: "[redacted]"
     });
   });
+
+  it("preserves existing Meta Cloud secrets when masked or omitted in updates", async () => {
+    const existingMetaConfig = {
+      id: "config_meta",
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real" as const,
+      status: "configured",
+      settings: {
+        enabled: true,
+        wabaId: "111",
+        phoneNumberId: "222",
+        accessToken: "stored-token",
+        webhookVerifyToken: "stored-verify",
+        appSecret: "stored-secret"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    };
+    const upsert = vi.fn().mockImplementation(async (args) => ({
+      ...existingMetaConfig,
+      ...args.update,
+      updatedAt: new Date("2026-06-02T12:05:00.000Z")
+    }));
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockImplementation(async (args) =>
+          "provider" in (args.where ?? {}) ? [existingMetaConfig] : []
+        ),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      settings: {
+        enabled: true,
+        wabaId: "333",
+        phoneNumberId: "444",
+        accessToken: "[redacted]",
+        webhookVerifyToken: "",
+        appSecret: "new-secret"
+      }
+    });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({
+        settings: expect.objectContaining({
+          enabled: true,
+          wabaId: "333",
+          phoneNumberId: "444",
+          accessToken: "stored-token",
+          webhookVerifyToken: "stored-verify",
+          appSecret: "new-secret"
+        })
+      })
+    }));
+  });
 });
 
 describe("settings routes", () => {

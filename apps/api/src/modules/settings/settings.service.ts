@@ -154,6 +154,40 @@ function toAuditLogDto(record: AuditLogRecord): AuditLogDto {
   };
 }
 
+function isSettingsRecord(settings: Prisma.JsonValue | Prisma.InputJsonValue | undefined) {
+  return Boolean(settings) && typeof settings === "object" && !Array.isArray(settings);
+}
+
+function shouldPreserveSecretValue(key: string, value: unknown) {
+  return SECRET_SETTING_KEYS.has(key) && (value === "[redacted]" || value === "");
+}
+
+function mergeSecretSettings(
+  previousSettings: Prisma.JsonValue | undefined,
+  nextSettings: Prisma.InputJsonValue | undefined
+): Prisma.InputJsonValue | undefined {
+  if (!isSettingsRecord(nextSettings)) {
+    return nextSettings;
+  }
+
+  const previous = isSettingsRecord(previousSettings) ? previousSettings as Record<string, unknown> : {};
+  const merged = { ...nextSettings as Record<string, unknown> };
+
+  for (const key of SECRET_SETTING_KEYS) {
+    if (!(key in merged) || shouldPreserveSecretValue(key, merged[key])) {
+      const previousValue = previous[key];
+
+      if (typeof previousValue === "string" && previousValue.length > 0) {
+        merged[key] = previousValue;
+      } else if (key in merged && shouldPreserveSecretValue(key, merged[key])) {
+        delete merged[key];
+      }
+    }
+  }
+
+  return merged as Prisma.InputJsonObject;
+}
+
 export function createSettingsService(prisma: PrismaLike) {
   const readSettingsParts = async (workspaceId: string) => {
     const [workspace, integrations] = await Promise.all([
@@ -185,6 +219,16 @@ export function createSettingsService(prisma: PrismaLike) {
       mode: IntegrationMode;
       settings?: Prisma.InputJsonValue;
     }): Promise<SettingsDto> {
+      const existingConfig = input.settings
+        ? (await prisma.integrationConfig.findMany({
+            where: {
+              workspaceId: input.workspaceId,
+              provider: input.provider
+            },
+            take: 1
+          }))[0]
+        : undefined;
+      const settings = mergeSecretSettings(existingConfig?.settings, input.settings);
       const updatedConfig = await prisma.integrationConfig.upsert({
         where: {
           workspaceId_provider: {
@@ -197,12 +241,12 @@ export function createSettingsService(prisma: PrismaLike) {
           provider: input.provider,
           mode: input.mode,
           status: "configured",
-          settings: input.settings ?? {}
+          settings: settings ?? {}
         },
         update: {
           mode: input.mode,
           status: "configured",
-          ...(input.settings ? { settings: input.settings } : {})
+          ...(settings ? { settings } : {})
         }
       });
 

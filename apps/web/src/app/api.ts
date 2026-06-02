@@ -285,6 +285,10 @@ export interface MetaCloudSettingsPayload {
   appSecret?: string;
 }
 
+export interface MetaTemplatesSyncResultDto {
+  synced: number;
+}
+
 export interface TeamUserDto {
   id: string;
   workspaceId: string;
@@ -893,6 +897,15 @@ function parseAuditLog(data: unknown): AuditLogDto {
     targetId: typeof payload.targetId === "string" ? payload.targetId : null,
     metadata: payload.metadata ?? {},
     createdAt: String(payload.createdAt ?? "")
+  };
+}
+
+function parseMetaTemplatesSyncResult(data: unknown): MetaTemplatesSyncResultDto {
+  const payload = asRecord(data);
+  const synced = payload.synced;
+
+  return {
+    synced: typeof synced === "number" && Number.isFinite(synced) ? synced : 0
   };
 }
 
@@ -2193,6 +2206,18 @@ export async function apiUpdateSettings(
     },
     parseSettings,
     "Failed to update settings"
+  );
+}
+
+export async function apiSyncMetaTemplates(
+  getToken: () => Promise<string | null>
+): Promise<MetaTemplatesSyncResultDto> {
+  return fetchJson(
+    getToken,
+    "/settings/meta-cloud/sync-templates",
+    { method: "POST" },
+    parseMetaTemplatesSyncResult,
+    "Failed to sync Meta templates"
   );
 }
 
