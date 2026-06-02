@@ -15,6 +15,7 @@ const channelParamsSchema = z.object({
 });
 
 const createChannelBodySchema = z.object({
+  provider: z.enum(["evolution", "meta_cloud"]).default("evolution"),
   displayName: z.string().trim().min(1).max(160),
   providerKey: z.string().trim().min(1).max(160).optional(),
   phoneNumber: z.string().trim().min(1).max(40).optional()

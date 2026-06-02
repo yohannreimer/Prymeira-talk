@@ -1322,6 +1322,7 @@ export async function apiCreateChannel(
   getToken: () => Promise<string | null>,
   body: {
     displayName: string;
+    provider?: ChannelDto["provider"];
     providerKey?: string;
     phoneNumber?: string;
   }

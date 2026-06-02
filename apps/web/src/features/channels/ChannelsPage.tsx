@@ -10,7 +10,9 @@ import {
   apiDeleteChannel,
   apiDisconnectChannel,
   apiGetChannels,
-  apiStartChannelQr
+  apiGetSettings,
+  apiStartChannelQr,
+  type SettingsDto
 } from "../../app/api";
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
 import { getQrDisplaySource } from "./qr-display";
@@ -24,9 +26,31 @@ const statusLabels: Record<ChannelDto["status"], string> = {
 
 const publicWebhookUrl = "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace";
 const localWebhookUrl = "http://localhost:3002/webhooks/evolution/local_workspace";
+type CreateChannelProvider = "evolution" | "meta_cloud";
 
 function channelTitle(channel: ChannelDto) {
   return channel.displayName ?? channel.phoneNumber ?? channel.providerKey;
+}
+
+function channelProviderLabel(channel: ChannelDto) {
+  return channel.provider === "meta_cloud" ? "Meta oficial" : "Evolution API";
+}
+
+function asSettingsRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function getMetaCloudCreateSettings(settings: SettingsDto | null) {
+  const integration = settings?.integrations.find((config) => config.provider === "meta_cloud");
+  const integrationSettings = asSettingsRecord(integration?.settings);
+  const phoneNumberId = integrationSettings.phoneNumberId;
+
+  return {
+    enabled: integrationSettings.enabled === true,
+    providerKey: typeof phoneNumberId === "string" ? phoneNumberId : ""
+  };
 }
 
 function mergeChannel(channels: ChannelDto[], channel: ChannelDto) {
@@ -76,7 +100,11 @@ export function ChannelsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
   const [createDrawerOpen, setCreateDrawerOpen] = useState(false);
+  const [createProvider, setCreateProvider] = useState<CreateChannelProvider>("evolution");
   const [newChannelName, setNewChannelName] = useState("");
+  const [metaProviderKey, setMetaProviderKey] = useState("");
+  const [metaPhoneNumber, setMetaPhoneNumber] = useState("");
+  const [settings, setSettings] = useState<SettingsDto | null>(null);
   const [qrDrawerOpen, setQrDrawerOpen] = useState(false);
   const [generatedQrImageSrc, setGeneratedQrImageSrc] = useState<string | null>(null);
   const [qrRenderError, setQrRenderError] = useState<string | null>(null);
@@ -105,12 +133,18 @@ export function ChannelsPage() {
       setError(null);
 
       try {
-        const nextChannels = await apiGetChannels(getToken);
+        const [nextChannels, nextSettings] = await Promise.all([
+          apiGetChannels(getToken),
+          apiGetSettings(getToken)
+        ]);
 
         if (!isMounted) return;
 
         const availableChannels = filterDeletedChannels(nextChannels, deletedChannelIdsRef.current);
+        const metaSettings = getMetaCloudCreateSettings(nextSettings);
 
+        setSettings(nextSettings);
+        setMetaProviderKey((current) => current || metaSettings.providerKey);
         setChannels(availableChannels);
         setSelectedChannelId((current) =>
           availableChannels.some((channel) => channel.id === current)
@@ -259,13 +293,31 @@ export function ChannelsPage() {
   const qrImageSrc = qrDisplaySource?.kind === "image" ? qrDisplaySource.src : generatedQrImageSrc;
   const connectedCount = channels.filter((channel) => channel.status === "connected").length;
   const connectingCount = channels.filter((channel) => channel.status === "connecting").length;
+  const metaCreateSettings = useMemo(() => getMetaCloudCreateSettings(settings), [settings]);
 
-  async function createChannelAndStartQr(event: React.FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    if (!metaCreateSettings.enabled && createProvider === "meta_cloud") {
+      setCreateProvider("evolution");
+    }
+  }, [createProvider, metaCreateSettings.enabled]);
+
+  async function createChannel(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const displayName = newChannelName.trim();
     if (!displayName) {
       setError("Informe um nome para o canal.");
+      return;
+    }
+
+    if (createProvider === "meta_cloud" && !metaCreateSettings.enabled) {
+      setError("A integracao Meta Cloud nao esta habilitada.");
+      return;
+    }
+
+    const providerKey = metaProviderKey.trim();
+    if (createProvider === "meta_cloud" && !providerKey) {
+      setError("Informe o Phone Number ID da Meta.");
       return;
     }
 
@@ -276,6 +328,26 @@ export function ChannelsPage() {
     setQrDrawerOpen(false);
 
     try {
+      if (createProvider === "meta_cloud") {
+        const channel = await apiCreateChannel(getToken, {
+          provider: "meta_cloud",
+          displayName,
+          providerKey,
+          phoneNumber: metaPhoneNumber.trim() || undefined
+        });
+        if (deletedChannelIdsRef.current.has(channel.id)) {
+          return;
+        }
+
+        setChannels((current) => mergeChannel(current, channel));
+        setSelectedChannelId(channel.id);
+        setCreateDrawerOpen(false);
+        setNewChannelName("");
+        setMetaPhoneNumber("");
+        setNotice("Canal Meta oficial criado.");
+        return;
+      }
+
       const channel = await apiCreateChannel(getToken, { displayName });
       if (deletedChannelIdsRef.current.has(channel.id)) {
         return;
@@ -481,31 +553,35 @@ export function ChannelsPage() {
                   </span>
                   <span className="channel-row-info">
                     <strong>{channelTitle(channel)}</strong>
-                    <small>{channel.provider === 'evolution' ? 'Evolution API' : channel.provider}</small>
+                    <small>{channelProviderLabel(channel)}</small>
                   </span>
                   <span className="channel-row-phone">
                     {channel.phoneNumber ?? "Numero ainda nao identificado"}
                   </span>
                 </button>
                 <div className="channel-row-actions">
-                  <button
-                    className="secondary-button"
-                    disabled={isSaving}
-                    onClick={() => { void reconnectChannel(channel); }}
-                    type="button"
-                  >
-                    <RefreshCw size={14} aria-hidden="true" />
-                    Reconectar
-                  </button>
-                  <button
-                    className="secondary-button"
-                    disabled={isSaving}
-                    onClick={() => { void disconnectChannel(channel); }}
-                    type="button"
-                  >
-                    <WifiOff size={14} aria-hidden="true" />
-                    Desconectar
-                  </button>
+                  {channel.provider === "evolution" ? (
+                    <>
+                      <button
+                        className="secondary-button"
+                        disabled={isSaving}
+                        onClick={() => { void reconnectChannel(channel); }}
+                        type="button"
+                      >
+                        <RefreshCw size={14} aria-hidden="true" />
+                        Reconectar
+                      </button>
+                      <button
+                        className="secondary-button"
+                        disabled={isSaving}
+                        onClick={() => { void disconnectChannel(channel); }}
+                        type="button"
+                      >
+                        <WifiOff size={14} aria-hidden="true" />
+                        Desconectar
+                      </button>
+                    </>
+                  ) : null}
                   <button
                     className="secondary-button danger-button"
                     disabled={isSaving}
@@ -541,7 +617,22 @@ export function ChannelsPage() {
                 ✕
               </button>
             </header>
-            <form className="contact-drawer-body" onSubmit={createChannelAndStartQr}>
+            <form className="contact-drawer-body" onSubmit={createChannel}>
+              {metaCreateSettings.enabled ? (
+                <div className="context-card">
+                  <label className="field-label" htmlFor="channel-provider">Provider</label>
+                  <select
+                    className="text-input"
+                    id="channel-provider"
+                    name="channelProvider"
+                    onChange={(event) => setCreateProvider(event.target.value as CreateChannelProvider)}
+                    value={createProvider}
+                  >
+                    <option value="evolution">Evolution API</option>
+                    <option value="meta_cloud">Meta oficial</option>
+                  </select>
+                </div>
+              ) : null}
               <div className="context-card">
                 <label className="field-label" htmlFor="channel-name">Nome do canal</label>
                 <input
@@ -555,9 +646,49 @@ export function ChannelsPage() {
                   value={newChannelName}
                 />
               </div>
-              <button className="primary-button" disabled={isSaving || !newChannelName.trim()} type="submit">
-                <QrCode size={16} aria-hidden="true" />
-                Gerar QR
+              {createProvider === "meta_cloud" ? (
+                <>
+                  <div className="context-card">
+                    <label className="field-label" htmlFor="meta-provider-key">Phone Number ID</label>
+                    <input
+                      className="text-input"
+                      id="meta-provider-key"
+                      maxLength={160}
+                      name="metaProviderKey"
+                      onChange={(event) => setMetaProviderKey(event.target.value)}
+                      placeholder="ID do numero no WhatsApp Cloud API"
+                      value={metaProviderKey}
+                    />
+                  </div>
+                  <div className="context-card">
+                    <label className="field-label" htmlFor="meta-phone-number">Numero exibido</label>
+                    <input
+                      className="text-input"
+                      id="meta-phone-number"
+                      maxLength={40}
+                      name="metaPhoneNumber"
+                      onChange={(event) => setMetaPhoneNumber(event.target.value)}
+                      placeholder="+55 47 99999-0000"
+                      value={metaPhoneNumber}
+                    />
+                  </div>
+                </>
+              ) : null}
+              <button
+                className="primary-button"
+                disabled={
+                  isSaving ||
+                  !newChannelName.trim() ||
+                  (createProvider === "meta_cloud" && !metaProviderKey.trim())
+                }
+                type="submit"
+              >
+                {createProvider === "meta_cloud" ? (
+                  <PlugZap size={16} aria-hidden="true" />
+                ) : (
+                  <QrCode size={16} aria-hidden="true" />
+                )}
+                {createProvider === "meta_cloud" ? "Criar canal" : "Gerar QR"}
               </button>
             </form>
           </aside>

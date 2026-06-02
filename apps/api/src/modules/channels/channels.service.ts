@@ -43,7 +43,7 @@ export interface PrismaLike {
     create(args: {
       data: {
         workspaceId: string;
-        provider: "evolution";
+        provider: ChannelDto["provider"];
         providerKey: string;
         displayName: string;
         phoneNumber: string | null;
@@ -121,7 +121,11 @@ export class ChannelsServiceError extends Error {
   statusCode: number;
 
   constructor(
-    public code: "CHANNEL_NOT_FOUND" | "EVOLUTION_LICENSE_REQUIRED" | "EVOLUTION_QR_UNAVAILABLE",
+    public code:
+      | "CHANNEL_NOT_FOUND"
+      | "CHANNEL_PROVIDER_KEY_REQUIRED"
+      | "EVOLUTION_LICENSE_REQUIRED"
+      | "EVOLUTION_QR_UNAVAILABLE",
     message: string,
     statusCode = 404
   ) {
@@ -248,11 +252,38 @@ export function createChannelsService(
     async createChannel(input: {
       workspaceId: string;
       displayName: string;
+      provider?: ChannelDto["provider"];
       providerKey?: string;
       phoneNumber?: string;
     }): Promise<ChannelDto> {
+      const provider = input.provider ?? "evolution";
+      const requestedProviderKey = normalizeOptional(input.providerKey);
+
+      if (provider === "meta_cloud") {
+        if (!requestedProviderKey) {
+          throw new ChannelsServiceError(
+            "CHANNEL_PROVIDER_KEY_REQUIRED",
+            "Meta Cloud channels require a provider key.",
+            400
+          );
+        }
+
+        const channel = await prisma.channel.create({
+          data: {
+            workspaceId: input.workspaceId,
+            provider,
+            providerKey: requestedProviderKey,
+            displayName: input.displayName.trim(),
+            phoneNumber: normalizeOptional(input.phoneNumber) ?? null,
+            status: "connected"
+          }
+        });
+
+        return toChannelDto(channel);
+      }
+
       const providerKey =
-        normalizeOptional(input.providerKey) ??
+        requestedProviderKey ??
         (options.evolution?.mode === "real" && options.evolution.client
           ? createInstanceName(input.workspaceId)
           : `demo-evolution-${Date.now().toString(36)}`);
