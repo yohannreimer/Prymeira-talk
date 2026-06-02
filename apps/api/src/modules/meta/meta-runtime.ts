@@ -51,7 +51,7 @@ export type MetaRuntime =
       webhookVerifyToken: null;
       appSecret: null;
       evolutionClient: EvolutionClient;
-      evolutionInstanceName: string;
+      evolutionInstanceName: string | null;
     };
 
 export interface MetaRuntimePrismaLike {
@@ -119,7 +119,7 @@ export async function resolveMetaRuntime(
     const evolutionApiKey = getStringSetting(config.settings, "evolutionApiKey");
     const evolutionInstanceName = getStringSetting(config.settings, "evolutionInstanceName");
 
-    if (!evolutionBaseUrl || !evolutionApiKey || !evolutionInstanceName) {
+    if (!evolutionBaseUrl || !evolutionApiKey) {
       return inactiveRuntime();
     }
 

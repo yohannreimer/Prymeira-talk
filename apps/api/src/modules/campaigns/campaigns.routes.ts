@@ -79,12 +79,19 @@ const metaTemplateSendComponentSchema = z
 
 const sendMetaTemplateBodySchema = z.object({
   channelId: uuidParamSchema.optional(),
+  channelIds: z.array(uuidParamSchema).min(1).max(20).optional(),
   template: z.object({
     name: z.string().trim().min(1).max(512),
     language: z.string().trim().min(1).max(64),
     components: z.array(metaTemplateSendComponentSchema).optional()
   })
 });
+
+const sendRealBodySchema = z
+  .object({
+    channelIds: z.array(uuidParamSchema).min(1).max(20).optional()
+  })
+  .optional();
 
 function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
   return (
@@ -271,15 +278,17 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
     }
 
     const params = campaignParamsSchema.safeParse(request.params);
+    const body = sendRealBodySchema.safeParse(request.body);
 
-    if (!params.success) {
+    if (!params.success || !body.success) {
       return reply.code(400).send({ error: "Invalid campaign request." });
     }
 
     try {
       const result = await service.sendReal({
         workspaceId: request.talk.workspaceId,
-        campaignId: params.data.campaignId
+        campaignId: params.data.campaignId,
+        channelIds: body.data?.channelIds
       });
       const campaign = await service.getCampaign({
         workspaceId: request.talk.workspaceId,
@@ -332,6 +341,7 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
         workspaceId: request.talk.workspaceId,
         campaignId: params.data.campaignId,
         channelId: body.data.channelId,
+        channelIds: body.data.channelIds,
         template: body.data.template
       });
       const campaign = await service.getCampaign({

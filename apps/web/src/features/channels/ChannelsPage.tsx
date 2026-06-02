@@ -24,8 +24,6 @@ const statusLabels: Record<ChannelDto["status"], string> = {
   failed: "Falhou"
 };
 
-const publicWebhookUrl = "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace";
-const localWebhookUrl = "http://localhost:3002/webhooks/evolution/local_workspace";
 type CreateChannelProvider = "evolution" | "meta_cloud";
 
 function channelTitle(channel: ChannelDto) {
@@ -53,7 +51,6 @@ function getMetaCloudCreateSettings(settings: SettingsDto | null) {
     ? "evolution_official"
     : "direct";
   const phoneNumberId = integrationSettings.phoneNumberId;
-  const evolutionInstanceName = integrationSettings.evolutionInstanceName;
   const directEnabled = (
     integration?.mode === "real" &&
     integrationSettings.enabled === true &&
@@ -67,15 +64,14 @@ function getMetaCloudCreateSettings(settings: SettingsDto | null) {
     integration?.mode === "real" &&
     integrationSettings.enabled === true &&
     hasStringSetting(integrationSettings.evolutionBaseUrl) &&
-    hasStringSetting(integrationSettings.evolutionApiKey) &&
-    hasStringSetting(evolutionInstanceName)
+    hasStringSetting(integrationSettings.evolutionApiKey)
   );
 
   return {
     enabled: connectionMode === "evolution_official" ? evolutionOfficialEnabled : directEnabled,
     connectionMode,
     providerKey: connectionMode === "evolution_official"
-      ? typeof evolutionInstanceName === "string" ? evolutionInstanceName : ""
+      ? ""
       : typeof phoneNumberId === "string" ? phoneNumberId : ""
   };
 }
@@ -546,14 +542,6 @@ export function ChannelsPage() {
 
       {error ? <p className="error-note" style={{ margin: '0 16px' }}>{error}</p> : null}
       {notice ? <p className="list-note" style={{ margin: '0 16px' }}>{notice}</p> : null}
-
-      <div className="channel-technical-strip">
-        <span className="status-badge status-badge--bot">
-          Evolution {qrResult?.mode === "real" ? "Real" : "Simulado"}
-        </span>
-        <code>{publicWebhookUrl}</code>
-        <code>{localWebhookUrl}</code>
-      </div>
 
       <div className="channels-list-wrap">
         {isLoading ? (

@@ -166,7 +166,6 @@ export function SettingsPage() {
       if (!metaForm.evolutionApiKey.trim() && !metaForm.storedSecrets.evolutionApiKey) {
         return "Informe a API key da Evolution.";
       }
-      if (!metaForm.evolutionInstanceName.trim()) return "Informe o nome da instância na Evolution.";
 
       return null;
     }
@@ -400,16 +399,9 @@ export function SettingsPage() {
                         value={metaForm.evolutionApiKey}
                       />
                     </label>
-                    <label className="form-field">
-                      Instance name
-                      <input
-                        autoComplete="off"
-                        onChange={(event) => updateMetaForm({ evolutionInstanceName: event.target.value })}
-                        placeholder="nome-da-instancia-oficial"
-                        required
-                        value={metaForm.evolutionInstanceName}
-                      />
-                    </label>
+                    <p className="list-note">
+                      Os Instance names ficam em Canais, um por numero oficial Meta.
+                    </p>
                   </>
                 )}
               </>

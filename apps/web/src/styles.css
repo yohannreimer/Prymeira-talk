@@ -2814,6 +2814,16 @@ select:disabled {
   background: var(--color-surface-card);
 }
 
+.campaign-import-preview-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 11px;
+  color: var(--color-text-primary);
+  font-size: 0.84rem;
+}
+
 .campaign-import-preview-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(120px, 0.55fr);
@@ -2847,6 +2857,72 @@ select:disabled {
 .campaign-import-preview small {
   padding: 9px 11px;
   border-top: 1px solid var(--color-border-subtle);
+}
+
+.campaign-channel-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  gap: 10px;
+}
+
+.campaign-channel-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 58px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.campaign-channel-option:has(input:checked) {
+  border-color: rgba(31, 93, 73, 0.5);
+  background: var(--color-brand-50);
+}
+
+.campaign-channel-option input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-brand-700);
+}
+
+.campaign-channel-option span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.campaign-channel-option strong,
+.campaign-channel-option small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-channel-option small {
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+}
+
+.campaign-toast {
+  position: fixed;
+  top: 18px;
+  right: 22px;
+  z-index: 80;
+  max-width: min(360px, calc(100vw - 44px));
+  border: 1px solid rgba(31, 93, 73, 0.2);
+  border-radius: 8px;
+  background: #f4fff7;
+  box-shadow: 0 18px 42px rgba(23, 50, 39, 0.16);
+  color: var(--color-brand-800);
+  padding: 12px 14px;
+  font-size: 0.9rem;
+  font-weight: 800;
+  animation: automation-toast-in 180ms ease-out;
 }
 
 .meta-template-picker {

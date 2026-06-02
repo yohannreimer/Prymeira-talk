@@ -1959,15 +1959,18 @@ export async function apiSendCampaignSimulated(
 
 export async function apiSendCampaignReal(
   getToken: () => Promise<string | null>,
-  campaignId: string
+  campaignId: string,
+  channelIds?: string[]
 ): Promise<CampaignSendResultDto> {
   const token = await getRequiredToken(getToken);
 
   const response = await fetch(`${apiUrl}/campaigns/${campaignId}/send-real`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token}`
-    }
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ ...(channelIds && channelIds.length > 0 ? { channelIds } : {}) })
   });
 
   if (!response.ok) {
@@ -1982,9 +1985,11 @@ export async function apiSendCampaignMetaTemplate(
   getToken: () => Promise<string | null>,
   campaignId: string,
   template: MetaTemplateDto,
-  channelId?: string
+  channelIdOrIds?: string | string[]
 ): Promise<CampaignSendResultDto> {
   const token = await getRequiredToken(getToken);
+  const channelIds = Array.isArray(channelIdOrIds) ? channelIdOrIds : undefined;
+  const channelId = typeof channelIdOrIds === "string" ? channelIdOrIds : undefined;
 
   const response = await fetch(`${apiUrl}/campaigns/${campaignId}/send-meta-template`, {
     method: "POST",
@@ -1992,7 +1997,11 @@ export async function apiSendCampaignMetaTemplate(
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ ...(channelId ? { channelId } : {}), template })
+    body: JSON.stringify({
+      ...(channelIds && channelIds.length > 0 ? { channelIds } : {}),
+      ...(channelId ? { channelId } : {}),
+      template
+    })
   });
 
   if (!response.ok) {

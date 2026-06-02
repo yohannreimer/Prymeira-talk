@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto } from "@prymeira-talk/shared";
-import { CalendarClock, Gauge, Play, Plus, RefreshCw, Save, Send, Upload, Zap } from "lucide-react";
+import { CalendarClock, Gauge, Play, Plus, RefreshCw, Save, Send, Upload, X, Zap } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { read, utils } from "xlsx";
 import {
@@ -29,6 +29,7 @@ import {
 type AudienceSource = "board" | "imported";
 type CampaignViewMode = "hub" | "editor";
 type MetaConnectionMode = "direct" | "evolution_official";
+type CampaignSendMode = "evolution" | "meta_cloud";
 
 interface ImportedAudienceRow {
   name?: string;
@@ -59,16 +60,12 @@ const defaultCadence: CampaignCadenceDto = {
 };
 
 const emptyForm: CampaignFormState = {
-  name: "Reativacao VIP",
+  name: "",
   audienceSource: "board",
   boardId: "",
   stageId: "",
   importedRows: [],
-  templates: [
-    "Oi {{name}}, temos uma novidade para voce.",
-    "{{name}}, passando rapidinho para falar contigo.",
-    "Ola {{name}}, posso te mostrar uma novidade?"
-  ],
+  templates: [""],
   fallbackName: "cliente",
   cadence: defaultCadence,
   scheduledAt: ""
@@ -234,9 +231,7 @@ function getMetaCloudStatus(integrations: IntegrationConfigDto[]): {
     typeof settings.evolutionBaseUrl === "string" &&
     settings.evolutionBaseUrl.trim().length > 0 &&
     typeof settings.evolutionApiKey === "string" &&
-    settings.evolutionApiKey.trim().length > 0 &&
-    typeof settings.evolutionInstanceName === "string" &&
-    settings.evolutionInstanceName.trim().length > 0
+    settings.evolutionApiKey.trim().length > 0
   );
 
   return {
@@ -257,6 +252,9 @@ export function CampaignsPage() {
   const [recipients, setRecipients] = useState<CampaignRecipientDto[]>([]);
   const [isMetaActive, setIsMetaActive] = useState(false);
   const [metaConnectionMode, setMetaConnectionMode] = useState<MetaConnectionMode>("direct");
+  const [sendMode, setSendMode] = useState<CampaignSendMode>("evolution");
+  const [selectedEvolutionChannelIds, setSelectedEvolutionChannelIds] = useState<string[]>([]);
+  const [selectedMetaChannelIds, setSelectedMetaChannelIds] = useState<string[]>([]);
   const [metaTemplate, setMetaTemplate] = useState<MetaTemplateDto>({
     name: "",
     language: "pt_BR"
@@ -307,7 +305,19 @@ export function CampaignsPage() {
         const firstMetaChannel = nextChannels.find((channel) =>
           channel.provider === "meta_cloud" && channel.status === "connected"
         );
+        const firstEvolutionChannel = nextChannels.find((channel) =>
+          channel.provider === "evolution" && channel.status === "connected"
+        );
         setSelectedMetaChannelId((current) => current || firstMetaChannel?.id || "");
+        setSelectedMetaChannelIds((current) =>
+          current.length > 0 ? current : firstMetaChannel ? [firstMetaChannel.id] : []
+        );
+        setSelectedEvolutionChannelIds((current) =>
+          current.length > 0 ? current : firstEvolutionChannel ? [firstEvolutionChannel.id] : []
+        );
+        if (!firstEvolutionChannel && firstMetaChannel) {
+          setSendMode("meta_cloud");
+        }
       } catch (loadError) {
         if (isMounted) {
           setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar disparos.");
@@ -335,6 +345,10 @@ export function CampaignsPage() {
     () => boards.find((board) => board.id === form.boardId) ?? null,
     [boards, form.boardId]
   );
+  const evolutionChannels = useMemo(
+    () => channels.filter((channel) => channel.provider === "evolution" && channel.status === "connected"),
+    [channels]
+  );
   const metaChannels = useMemo(
     () => channels.filter((channel) => channel.provider === "meta_cloud" && channel.status === "connected"),
     [channels]
@@ -345,6 +359,26 @@ export function CampaignsPage() {
   const scheduledCount = campaigns.filter((campaign) => campaign.status === "scheduled").length;
   const completedCount = campaigns.filter((campaign) => campaign.status === "completed").length;
   const sendingCount = campaigns.filter((campaign) => campaign.status === "sending").length;
+
+  useEffect(() => {
+    if (!notice) return;
+
+    const timeout = window.setTimeout(() => setNotice(null), 1600);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
+
+  useEffect(() => {
+    if (selectedMetaChannelIds.length === 0) {
+      setSelectedMetaChannelId("");
+      return;
+    }
+
+    setSelectedMetaChannelId((current) =>
+      current && selectedMetaChannelIds.includes(current)
+        ? current
+        : selectedMetaChannelIds[0] ?? ""
+    );
+  }, [selectedMetaChannelIds]);
 
   useEffect(() => {
     if (!selectedCampaignId) {
@@ -404,6 +438,18 @@ export function CampaignsPage() {
     setError(null);
   }
 
+  function toggleSelectedChannel(channelId: string, selectedIds: string[], setSelectedIds: (value: string[]) => void) {
+    setSelectedIds(
+      selectedIds.includes(channelId)
+        ? selectedIds.filter((current) => current !== channelId)
+        : [...selectedIds, channelId]
+    );
+  }
+
+  function channelLabel(channel: ChannelDto) {
+    return channel.displayName || channel.phoneNumber || channel.providerKey;
+  }
+
   async function saveCampaign(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     setIsSaving(true);
@@ -411,8 +457,22 @@ export function CampaignsPage() {
     setNotice(null);
 
     const cleanTemplates = form.templates.map((template) => template.trim()).filter(Boolean);
+    const campaignName = form.name.trim();
+    if (!campaignName) {
+      setError("Informe o nome do disparo.");
+      setIsSaving(false);
+      return null;
+    }
+    if (sendMode === "evolution" && cleanTemplates.length === 0) {
+      setError("Escreva pelo menos uma mensagem para enviar por numero nao oficial.");
+      setIsSaving(false);
+      return null;
+    }
+    const metaMessageBody = metaTemplate.name.trim()
+      ? `Template Meta ${metaTemplate.name.trim()}`
+      : "Template Meta oficial";
     const payload = {
-      name: form.name,
+      name: campaignName,
       audience: form.audienceSource === "imported"
         ? {
             type: "imported" as const,
@@ -423,7 +483,7 @@ export function CampaignsPage() {
             boardId: form.boardId,
             ...(form.stageId ? { stageId: form.stageId } : {})
           },
-      messageBody: cleanTemplates[0] ?? "",
+      messageBody: sendMode === "meta_cloud" ? metaMessageBody : cleanTemplates[0] ?? "",
       templates: cleanTemplates,
       fallbackName: form.fallbackName.trim() || "cliente",
       cadence: form.cadence,
@@ -503,6 +563,11 @@ export function CampaignsPage() {
   }
 
   async function sendReal() {
+    if (selectedEvolutionChannelIds.length === 0) {
+      setError("Escolha pelo menos um numero nao oficial para enviar.");
+      return;
+    }
+
     let campaign = selectedCampaign;
 
     if (!campaign) {
@@ -519,7 +584,7 @@ export function CampaignsPage() {
     setNotice(null);
 
     try {
-      const result = await apiSendCampaignReal(getToken, campaign.id);
+      const result = await apiSendCampaignReal(getToken, campaign.id, selectedEvolutionChannelIds);
       const [nextCampaigns, nextRecipients] = await Promise.all([
         apiGetCampaigns(getToken),
         apiGetCampaignRecipients(getToken, campaign.id)
@@ -547,8 +612,8 @@ export function CampaignsPage() {
       return;
     }
 
-    if (metaConnectionMode === "evolution_official" && !selectedMetaChannelId) {
-      setError("Escolha o canal Meta oficial para enviar este template.");
+    if (selectedMetaChannelIds.length === 0) {
+      setError("Escolha pelo menos um numero oficial Meta para enviar.");
       return;
     }
 
@@ -570,7 +635,7 @@ export function CampaignsPage() {
         getToken,
         campaign.id,
         template,
-        selectedMetaChannelId || undefined
+        selectedMetaChannelIds
       );
       const [nextCampaigns, nextRecipients] = await Promise.all([
         apiGetCampaigns(getToken),
@@ -741,9 +806,14 @@ export function CampaignsPage() {
             <Play size={14} aria-hidden="true" />
             Simular fila
           </button>
-          <button className="secondary-button" disabled={isSaving} onClick={sendReal} type="button">
+          <button
+            className="secondary-button"
+            disabled={isSaving}
+            onClick={sendMode === "meta_cloud" ? sendMetaTemplate : sendReal}
+            type="button"
+          >
             <Zap size={14} aria-hidden="true" />
-            Enviar real
+            {sendMode === "meta_cloud" ? "Enviar Meta" : "Enviar real"}
           </button>
           <button className="primary-button" disabled={isSaving} onClick={() => void saveCampaign()} type="button">
             <Save size={14} aria-hidden="true" />
@@ -753,7 +823,11 @@ export function CampaignsPage() {
       </header>
 
       {error ? <p className="error-note campaign-inline-note">{error}</p> : null}
-      {notice ? <p className="list-note campaign-inline-note">{notice}</p> : null}
+      {notice ? (
+        <div className="campaign-toast" role="status" aria-live="polite">
+          {notice}
+        </div>
+      ) : null}
 
       <div className="campaign-builder-layout">
         <form className="module-panel campaign-builder-main" onSubmit={saveCampaign}>
@@ -844,6 +918,21 @@ export function CampaignsPage() {
                 <span>Reconheco colunas como nome, telefone, phone, celular ou WhatsApp.</span>
                 {form.importedRows.length > 0 ? (
                   <div className="campaign-import-preview" aria-label="Previa da lista importada">
+                    <div className="campaign-import-preview-actions">
+                      <strong>{form.importedRows.length} contatos importados</strong>
+                      <button
+                        className="icon-button"
+                        onClick={() => {
+                          setForm((current) => ({ ...current, importedRows: [] }));
+                          setAudiencePreview([]);
+                          setNotice("Lista importada removida.");
+                        }}
+                        type="button"
+                        aria-label="Remover lista importada"
+                      >
+                        <X size={14} aria-hidden="true" />
+                      </button>
+                    </div>
                     <div className="campaign-import-preview-row is-header">
                       <span>Nome</span>
                       <span>Telefone</span>
@@ -864,6 +953,83 @@ export function CampaignsPage() {
           </section>
 
           <section className="campaign-builder-section">
+            <div className="panel-title-row">
+              <h2>Numeros de envio</h2>
+              <span>
+                {sendMode === "meta_cloud"
+                  ? `${selectedMetaChannelIds.length} oficiais`
+                  : `${selectedEvolutionChannelIds.length} nao oficiais`}
+              </span>
+            </div>
+            <div className="segmented-control">
+              <button
+                className={sendMode === "evolution" ? "is-active" : ""}
+                onClick={() => setSendMode("evolution")}
+                type="button"
+              >
+                Nao oficial
+              </button>
+              <button
+                className={sendMode === "meta_cloud" ? "is-active" : ""}
+                disabled={!isMetaActive}
+                onClick={() => setSendMode("meta_cloud")}
+                type="button"
+              >
+                Meta oficial
+              </button>
+            </div>
+
+            {sendMode === "evolution" ? (
+              evolutionChannels.length > 0 ? (
+                <div className="campaign-channel-picker" aria-label="Numeros nao oficiais">
+                  {evolutionChannels.map((channel) => (
+                    <label className="campaign-channel-option" key={channel.id}>
+                      <input
+                        checked={selectedEvolutionChannelIds.includes(channel.id)}
+                        onChange={() => toggleSelectedChannel(
+                          channel.id,
+                          selectedEvolutionChannelIds,
+                          setSelectedEvolutionChannelIds
+                        )}
+                        type="checkbox"
+                      />
+                      <span>
+                        <strong>{channelLabel(channel)}</strong>
+                        <small>{channel.phoneNumber ?? "Numero ainda nao identificado"}</small>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <p className="list-note">Conecte um canal Evolution API para enviar mensagem livre.</p>
+              )
+            ) : metaChannels.length > 0 ? (
+              <div className="campaign-channel-picker" aria-label="Numeros oficiais Meta">
+                {metaChannels.map((channel) => (
+                  <label className="campaign-channel-option" key={channel.id}>
+                    <input
+                      checked={selectedMetaChannelIds.includes(channel.id)}
+                      onChange={() => {
+                        toggleSelectedChannel(channel.id, selectedMetaChannelIds, setSelectedMetaChannelIds);
+                        setMetaTemplateOptions([]);
+                        setMetaTemplatesLoaded(false);
+                      }}
+                      type="checkbox"
+                    />
+                    <span>
+                      <strong>{channelLabel(channel)}</strong>
+                      <small>{channel.phoneNumber ?? channel.providerKey}</small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <p className="list-note">Crie um canal Meta oficial conectado antes de enviar templates.</p>
+            )}
+          </section>
+
+          {sendMode === "evolution" ? (
+            <section className="campaign-builder-section">
             <div className="panel-title-row">
               <h2>Mensagens</h2>
               <span>{form.templates.filter((template) => template.trim()).length} templates</span>
@@ -896,8 +1062,9 @@ export function CampaignsPage() {
               Adicionar template
             </button>
           </section>
+          ) : null}
 
-          {isMetaActive ? (
+          {sendMode === "meta_cloud" && isMetaActive ? (
             <section className="campaign-builder-section">
               <div className="panel-title-row">
                 <h2>Meta Cloud</h2>
@@ -905,7 +1072,7 @@ export function CampaignsPage() {
               </div>
               {metaChannels.length > 0 ? (
                 <label className="form-field">
-                  <span>Enviar pelo canal</span>
+                  <span>Canal para carregar templates</span>
                   <select
                     onChange={(event) => {
                       setSelectedMetaChannelId(event.target.value);
@@ -914,9 +1081,11 @@ export function CampaignsPage() {
                     }}
                     value={selectedMetaChannelId}
                   >
-                    {metaChannels.map((channel) => (
+                    {metaChannels
+                      .filter((channel) => selectedMetaChannelIds.includes(channel.id))
+                      .map((channel) => (
                       <option key={channel.id} value={channel.id}>
-                        {channel.displayName || channel.phoneNumber || channel.providerKey}
+                        {channelLabel(channel)}
                       </option>
                     ))}
                   </select>
@@ -933,7 +1102,7 @@ export function CampaignsPage() {
                     </div>
                     <button
                       className="secondary-button"
-                      disabled={isMetaTemplatesLoading || !selectedMetaChannelId}
+                      disabled={isMetaTemplatesLoading || selectedMetaChannelIds.length === 0}
                       onClick={() => void loadMetaEvolutionTemplates()}
                       type="button"
                     >
@@ -995,7 +1164,7 @@ export function CampaignsPage() {
                   isSaving ||
                   !metaTemplate.name.trim() ||
                   !metaTemplate.language.trim() ||
-                  (metaConnectionMode === "evolution_official" && !selectedMetaChannelId)
+                  selectedMetaChannelIds.length === 0
                 }
                 onClick={sendMetaTemplate}
                 type="button"
@@ -1093,7 +1262,11 @@ export function CampaignsPage() {
               <Gauge size={16} aria-hidden="true" />
             </div>
             <div className="campaign-preview-bubble">
-              {renderPreview(form.templates.find((template) => template.trim()) ?? "", form.fallbackName, previewSample)}
+              {sendMode === "meta_cloud"
+                ? metaTemplate.name.trim()
+                  ? `Template Meta ${metaTemplate.name.trim()} (${metaTemplate.language || "pt_BR"})`
+                  : "Escolha um template Meta aprovado."
+                : renderPreview(form.templates.find((template) => template.trim()) ?? "", form.fallbackName, previewSample)}
             </div>
             <dl className="campaign-summary-list">
               <div>
@@ -1101,8 +1274,12 @@ export function CampaignsPage() {
                 <dd>{form.audienceSource === "imported" ? `${form.importedRows.length} importados` : `${audiencePreview.length || "Resolver"} contatos`}</dd>
               </div>
               <div>
-                <dt>Templates</dt>
-                <dd>{form.templates.filter((template) => template.trim()).length}</dd>
+                <dt>Envio</dt>
+                <dd>
+                  {sendMode === "meta_cloud"
+                    ? `${selectedMetaChannelIds.length} oficiais`
+                    : `${selectedEvolutionChannelIds.length} nao oficiais`}
+                </dd>
               </div>
               <div>
                 <dt>Duração estimada</dt>

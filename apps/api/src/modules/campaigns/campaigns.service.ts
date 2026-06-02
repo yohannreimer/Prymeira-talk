@@ -68,6 +68,7 @@ type RecipientUpsertArgs = Parameters<PrismaClient["campaignRecipient"]["upsert"
 type BoardFindFirstArgs = Parameters<PrismaClient["contactBoard"]["findFirst"]>[0];
 type MembershipFindManyArgs = Parameters<PrismaClient["contactBoardMembership"]["findMany"]>[0];
 type ChannelFindFirstArgs = Parameters<PrismaClient["channel"]["findFirst"]>[0];
+type ChannelFindManyArgs = Parameters<PrismaClient["channel"]["findMany"]>[0];
 type ContactFindFirstArgs = Parameters<PrismaClient["contact"]["findFirst"]>[0];
 type ContactCreateArgs = Parameters<PrismaClient["contact"]["create"]>[0];
 type ConversationUpsertArgs = Parameters<PrismaClient["conversation"]["upsert"]>[0];
@@ -113,6 +114,7 @@ export interface PrismaLike {
   };
   channel: {
     findFirst(args: ChannelFindFirstArgs): Promise<ChannelRecord | null>;
+    findMany(args: ChannelFindManyArgs): Promise<ChannelRecord[]>;
   };
   contact: {
     findFirst(args: ContactFindFirstArgs): Promise<RecipientContactRecord | null>;
@@ -739,6 +741,9 @@ const campaignSelect = {
   status: true,
   audience: true,
   messageBody: true,
+  templates: true,
+  fallbackName: true,
+  cadence: true,
   scheduledAt: true,
   mode: true,
   createdAt: true,
@@ -846,6 +851,27 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
     });
   };
 
+  const listConnectedChannels = async (input: {
+    workspaceId: string;
+    provider: ChannelRecord["provider"];
+    channelIds?: string[];
+  }) => {
+    const where: NonNullable<ChannelFindManyArgs>["where"] = {
+      workspaceId: input.workspaceId,
+      provider: input.provider,
+      status: "connected"
+    };
+
+    if (input.channelIds && input.channelIds.length > 0) {
+      where.id = { in: input.channelIds };
+    }
+
+    return prisma.channel.findMany({
+      where,
+      orderBy: [{ createdAt: "asc" }]
+    });
+  };
+
   return {
     async getCampaign(input: {
       workspaceId: string;
@@ -883,6 +909,9 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
           status: input.scheduledAt ? "scheduled" : "draft",
           audience: input.audience,
           messageBody: input.messageBody.trim(),
+          templates: input.templates ?? [input.messageBody.trim()],
+          fallbackName: input.fallbackName?.trim() || "cliente",
+          cadence: input.cadence ? cadenceToJson(input.cadence) : cadenceToJson(normalizeCadence({})),
           scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : null,
           mode: "simulated"
         }
@@ -924,6 +953,9 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
           }),
           audience: input.data.audience,
           messageBody: normalizeOptional(input.data.messageBody),
+          templates: input.data.templates,
+          fallbackName: normalizeOptional(input.data.fallbackName),
+          cadence: input.data.cadence ? cadenceToJson(input.data.cadence) : undefined,
           scheduledAt:
             input.data.scheduledAt === undefined
               ? undefined
@@ -1022,6 +1054,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
     async sendReal(input: {
       workspaceId: string;
       campaignId: string;
+      channelIds?: string[];
     }): Promise<CampaignSendResultDto> {
       if (options.evolution?.mode !== "real" || !options.evolution.client) {
         throw new CampaignsServiceError(
@@ -1032,23 +1065,21 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
 
       const campaign = await findCampaignForWorkspace(input);
       const plans = await buildRecipientPlans(campaign);
-      const channel = await prisma.channel.findFirst({
-        where: {
-          workspaceId: input.workspaceId,
-          provider: "evolution",
-          status: "connected"
-        },
-        orderBy: [{ createdAt: "asc" }]
+      const channels = await listConnectedChannels({
+        workspaceId: input.workspaceId,
+        provider: "evolution",
+        channelIds: input.channelIds
       });
 
-      if (!channel?.providerKey) {
+      if (channels.length === 0) {
         throw new CampaignsServiceError("CAMPAIGN_CHANNEL_NOT_FOUND", "Connected Evolution channel not found.");
       }
 
       let sent = 0;
       let failed = 0;
 
-      for (const plan of plans) {
+      for (const [planIndex, plan] of plans.entries()) {
+        const channel = channels[planIndex % channels.length]!;
         const sentAt = now();
         const baseData = {
           workspaceId: input.workspaceId,
@@ -1072,6 +1103,17 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
             instanceName: channel.providerKey,
             number: plan.contact.phone,
             text: plan.messagePreview
+          });
+
+          await createCampaignConversationMessage({
+            prisma,
+            workspaceId: input.workspaceId,
+            campaignId: input.campaignId,
+            channelId: channel.id,
+            contact: plan.contact,
+            providerMessageId: providerSend.providerMessageId,
+            body: plan.messagePreview,
+            sentAt
           });
 
           sent += 1;
@@ -1167,6 +1209,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       workspaceId: string;
       campaignId: string;
       channelId?: string;
+      channelIds?: string[];
       template: {
         name: string;
         language: string;
@@ -1177,7 +1220,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       const wabaId = options.meta?.wabaId?.trim();
       const evolutionInstanceName = options.metaEvolution?.instanceName?.trim();
       const directMetaConfigured = Boolean(phoneNumberId && wabaId && options.meta?.client);
-      const evolutionOfficialConfigured = Boolean(evolutionInstanceName && options.metaEvolution?.client);
+      const evolutionOfficialConfigured = Boolean(options.metaEvolution?.client);
 
       if (!directMetaConfigured && !evolutionOfficialConfigured) {
         throw new CampaignsServiceError(
@@ -1207,19 +1250,31 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
         );
       }
 
-      const channel = await prisma.channel.findFirst({
-        where: {
-          workspaceId: input.workspaceId,
-          provider: "meta_cloud",
-          status: "connected",
-          ...(input.channelId
-            ? { id: input.channelId }
-            : { providerKey: directMetaConfigured ? phoneNumberId : evolutionInstanceName })
-        },
+      const selectedChannelIds = input.channelIds && input.channelIds.length > 0
+        ? input.channelIds
+        : input.channelId
+          ? [input.channelId]
+          : undefined;
+      const channelWhere: NonNullable<ChannelFindManyArgs>["where"] = {
+        workspaceId: input.workspaceId,
+        provider: "meta_cloud",
+        status: "connected"
+      };
+
+      if (selectedChannelIds) {
+        channelWhere.id = { in: selectedChannelIds };
+      } else if (directMetaConfigured) {
+        channelWhere.providerKey = phoneNumberId;
+      } else if (evolutionInstanceName) {
+        channelWhere.providerKey = evolutionInstanceName;
+      }
+
+      const channels = await prisma.channel.findMany({
+        where: channelWhere,
         orderBy: [{ createdAt: "asc" }]
       });
 
-      if (!channel?.providerKey) {
+      if (channels.length === 0) {
         throw new CampaignsServiceError(
           "CAMPAIGN_CHANNEL_NOT_FOUND",
           "Connected Meta Cloud channel not found."
@@ -1241,7 +1296,8 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       let sent = 0;
       let failed = 0;
 
-      for (const plan of plans) {
+      for (const [planIndex, plan] of plans.entries()) {
+        const channel = channels[planIndex % channels.length]!;
         const sentAt = now();
         const baseData = {
           workspaceId: input.workspaceId,

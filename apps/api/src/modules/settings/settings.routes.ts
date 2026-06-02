@@ -139,8 +139,7 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
     if (
       !runtime.active ||
       runtime.connectionMode !== "evolution_official" ||
-      !runtime.evolutionClient?.listTemplates ||
-      !runtime.evolutionInstanceName
+      !runtime.evolutionClient?.listTemplates
     ) {
       return reply.code(409).send({
         code: "META_CLOUD_NOT_CONFIGURED",
@@ -168,6 +167,13 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
       }
 
       instanceName = channel.providerKey;
+    }
+
+    if (!instanceName) {
+      return reply.code(400).send({
+        code: "META_CHANNEL_REQUIRED",
+        error: "Choose a Meta Cloud channel to list Evolution templates."
+      });
     }
 
     try {

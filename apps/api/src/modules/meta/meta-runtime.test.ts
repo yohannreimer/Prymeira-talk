@@ -132,8 +132,9 @@ describe("resolveMetaRuntime", () => {
     });
 
     if (runtime.active && runtime.connectionMode === "evolution_official") {
+      expect(runtime.evolutionInstanceName).toBe("official-instance");
       await runtime.evolutionClient.sendTemplate?.({
-        instanceName: runtime.evolutionInstanceName,
+        instanceName: runtime.evolutionInstanceName!,
         number: "5547999990000",
         name: "reactivation_vip",
         language: "pt_BR"
