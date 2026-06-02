@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import type { MetaTemplateComponent } from "../meta/meta.client.js";
 
 type DateLike = Date | string;
 type CampaignStatus = "draft" | "scheduled" | "sending" | "completed" | "failed";
@@ -63,13 +64,31 @@ type RecipientUpsertArgs = Parameters<PrismaClient["campaignRecipient"]["upsert"
 type BoardFindFirstArgs = Parameters<PrismaClient["contactBoard"]["findFirst"]>[0];
 type MembershipFindManyArgs = Parameters<PrismaClient["contactBoardMembership"]["findMany"]>[0];
 type ChannelFindFirstArgs = Parameters<PrismaClient["channel"]["findFirst"]>[0];
+type MetaMessageTemplateFindFirstArgs = Parameters<
+  PrismaClient["metaMessageTemplate"]["findFirst"]
+>[0];
 
 interface ChannelRecord {
   id: string;
   workspaceId: string;
-  provider: "evolution";
+  provider: "evolution" | "meta_cloud";
   providerKey: string;
   status: string;
+}
+
+interface MetaMessageTemplateRecord {
+  id: string;
+  workspaceId: string;
+  wabaId: string;
+  templateId: string | null;
+  name: string;
+  language: string;
+  category: string;
+  status: string;
+  components: Prisma.JsonValue;
+  syncedAt: DateLike;
+  createdAt: DateLike;
+  updatedAt: DateLike;
 }
 
 export interface PrismaLike {
@@ -85,6 +104,9 @@ export interface PrismaLike {
   };
   channel: {
     findFirst(args: ChannelFindFirstArgs): Promise<ChannelRecord | null>;
+  };
+  metaMessageTemplate: {
+    findFirst(args: MetaMessageTemplateFindFirstArgs): Promise<MetaMessageTemplateRecord | null>;
   };
   contactBoard: {
     findFirst(args: BoardFindFirstArgs): Promise<{ id: string; workspaceId: string } | null>;
@@ -163,7 +185,9 @@ export class CampaignsServiceError extends Error {
       | "CAMPAIGN_AUDIENCE_INVALID"
       | "CAMPAIGN_BOARD_NOT_FOUND"
       | "CAMPAIGN_CHANNEL_NOT_FOUND"
-      | "CAMPAIGN_EVOLUTION_NOT_CONFIGURED",
+      | "CAMPAIGN_EVOLUTION_NOT_CONFIGURED"
+      | "CAMPAIGN_META_NOT_CONFIGURED"
+      | "CAMPAIGN_TEMPLATE_NOT_FOUND",
     message: string
   ) {
     super(message);
@@ -189,6 +213,10 @@ function withoutUndefined<T extends Record<string, unknown>>(value: T) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entryValue]) => entryValue !== undefined)
   ) as T;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cadenceToJson(cadence: CampaignCadenceDto): Prisma.InputJsonObject {
@@ -406,6 +434,8 @@ function buildRecipientResult(input: {
   scheduledAt: Date;
   cadence: CampaignCadenceDto;
   providerMessageId?: string | null;
+  templateName?: string;
+  templateLanguage?: string;
 }): Prisma.InputJsonObject {
   return withoutUndefined({
     mode: input.mode,
@@ -414,14 +444,49 @@ function buildRecipientResult(input: {
     templateIndex: input.templateIndex,
     scheduledAt: input.scheduledAt.toISOString(),
     cadence: cadenceToJson(input.cadence),
-    providerMessageId: input.providerMessageId ?? undefined
+    providerMessageId: input.providerMessageId ?? undefined,
+    templateName: input.templateName,
+    templateLanguage: input.templateLanguage
   }) as Prisma.InputJsonObject;
+}
+
+function normalizeMetaTemplateComponents(value: unknown): MetaTemplateComponent[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const components = value.flatMap((component) => {
+    if (!isRecord(component) || typeof component.type !== "string" || !component.type.trim()) {
+      return [];
+    }
+
+    return [
+      {
+        ...component,
+        type: component.type
+      } as MetaTemplateComponent
+    ];
+  });
+
+  return components.length > 0 ? components : undefined;
 }
 
 export interface CampaignsServiceOptions {
   evolution?: {
     mode: EvolutionRuntime["mode"];
     client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText"> | null;
+  };
+  meta?: {
+    phoneNumberId: string | null;
+    client?: {
+      sendTemplate(input: {
+        phoneNumberId: string;
+        to: string;
+        name: string;
+        language: string;
+        components?: MetaTemplateComponent[];
+      }): Promise<{ providerMessageId: string | null; raw: unknown }>;
+    } | null;
   };
   now?: () => Date;
 }
@@ -861,6 +926,191 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
         },
         data: {
           status: failed > 0 ? "failed" : "completed",
+          mode: "real"
+        }
+      });
+
+      return {
+        mode: "real",
+        result: "sent",
+        recipientsCreated: plans.length,
+        recipientsSent: sent,
+        recipientsFailed: failed
+      };
+    },
+
+    async sendMetaTemplate(input: {
+      workspaceId: string;
+      campaignId: string;
+      template: {
+        name: string;
+        language: string;
+        components?: MetaTemplateComponent[];
+      };
+    }): Promise<CampaignSendResultDto> {
+      const phoneNumberId = options.meta?.phoneNumberId?.trim();
+
+      if (!phoneNumberId || !options.meta?.client) {
+        throw new CampaignsServiceError(
+          "CAMPAIGN_META_NOT_CONFIGURED",
+          "Meta Cloud real mode is required to send a template campaign."
+        );
+      }
+
+      const templateName = input.template.name.trim();
+      const templateLanguage = input.template.language.trim();
+      const template = await prisma.metaMessageTemplate.findFirst({
+        where: {
+          workspaceId: input.workspaceId,
+          name: templateName,
+          language: templateLanguage,
+          status: "APPROVED"
+        }
+      });
+
+      if (!template) {
+        throw new CampaignsServiceError(
+          "CAMPAIGN_TEMPLATE_NOT_FOUND",
+          "Approved Meta template not found for this workspace."
+        );
+      }
+
+      const channel = await prisma.channel.findFirst({
+        where: {
+          workspaceId: input.workspaceId,
+          provider: "meta_cloud",
+          providerKey: phoneNumberId,
+          status: "connected"
+        },
+        orderBy: [{ createdAt: "asc" }]
+      });
+
+      if (!channel?.providerKey) {
+        throw new CampaignsServiceError(
+          "CAMPAIGN_CHANNEL_NOT_FOUND",
+          "Connected Meta Cloud channel not found."
+        );
+      }
+
+      const campaign = await findCampaignForWorkspace(input);
+      const plans = await buildRecipientPlans(campaign);
+      const components =
+        normalizeMetaTemplateComponents(input.template.components) ??
+        normalizeMetaTemplateComponents(template.components);
+      const messagePreview = `Template ${templateName} (${templateLanguage})`;
+      let sent = 0;
+      let failed = 0;
+
+      for (const plan of plans) {
+        const sentAt = now();
+        const baseData = {
+          workspaceId: input.workspaceId,
+          campaignId: input.campaignId,
+          contactId: plan.contact.contactId,
+          audienceKey: plan.contact.audienceKey,
+          contactSnapshot: contactSnapshotToJson(plan.contact),
+          scheduledAt: plan.scheduledAt,
+          attempts: 1,
+          result: buildRecipientResult({
+            mode: "real",
+            messagePreview,
+            templateIndex: 0,
+            scheduledAt: plan.scheduledAt,
+            cadence: plan.cadence,
+            templateName,
+            templateLanguage
+          })
+        };
+
+        try {
+          const providerSend = await options.meta.client.sendTemplate({
+            phoneNumberId,
+            to: plan.contact.phone,
+            name: templateName,
+            language: templateLanguage,
+            ...(components ? { components } : {})
+          });
+
+          sent += 1;
+          await prisma.campaignRecipient.upsert({
+            where: {
+              workspaceId_campaignId_audienceKey: {
+                workspaceId: input.workspaceId,
+                campaignId: input.campaignId,
+                audienceKey: plan.contact.audienceKey
+              }
+            },
+            create: {
+              ...baseData,
+              status: "sent",
+              providerMessageId: providerSend.providerMessageId,
+              sentAt,
+              errorMessage: null,
+              result: buildRecipientResult({
+                mode: "real",
+                result: "sent",
+                messagePreview,
+                templateIndex: 0,
+                scheduledAt: plan.scheduledAt,
+                cadence: plan.cadence,
+                providerMessageId: providerSend.providerMessageId,
+                templateName,
+                templateLanguage
+              })
+            },
+            update: {
+              ...baseData,
+              status: "sent",
+              providerMessageId: providerSend.providerMessageId,
+              sentAt,
+              errorMessage: null,
+              result: buildRecipientResult({
+                mode: "real",
+                result: "sent",
+                messagePreview,
+                templateIndex: 0,
+                scheduledAt: plan.scheduledAt,
+                cadence: plan.cadence,
+                providerMessageId: providerSend.providerMessageId,
+                templateName,
+                templateLanguage
+              })
+            }
+          });
+        } catch (error) {
+          failed += 1;
+          await prisma.campaignRecipient.upsert({
+            where: {
+              workspaceId_campaignId_audienceKey: {
+                workspaceId: input.workspaceId,
+                campaignId: input.campaignId,
+                audienceKey: plan.contact.audienceKey
+              }
+            },
+            create: {
+              ...baseData,
+              status: "failed",
+              errorMessage: error instanceof Error ? error.message : "Send failed."
+            },
+            update: {
+              ...baseData,
+              status: "failed",
+              errorMessage: error instanceof Error ? error.message : "Send failed."
+            }
+          });
+        }
+      }
+
+      await prisma.campaign.update({
+        select: { id: true },
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: input.campaignId
+          }
+        },
+        data: {
+          status: failed > 0 && sent === 0 ? "failed" : "completed",
           mode: "real"
         }
       });

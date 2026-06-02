@@ -19,6 +19,9 @@ type MockPrisma = {
   channel: {
     findFirst: any;
   };
+  metaMessageTemplate: {
+    findFirst: any;
+  };
   contactBoard: {
     findFirst: any;
   };
@@ -135,6 +138,29 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
           provider: "evolution",
           providerKey: "talk-workspace-a",
           status: "connected"
+        })
+    },
+    metaMessageTemplate: {
+      findFirst:
+        overrides.metaMessageTemplate?.findFirst ??
+        vi.fn().mockResolvedValue({
+          id: "template_1",
+          workspaceId: "workspace_a",
+          wabaId: "waba_1",
+          templateId: "meta_template_1",
+          name: "reactivation_vip",
+          language: "pt_BR",
+          category: "MARKETING",
+          status: "APPROVED",
+          components: [
+            {
+              type: "body",
+              parameters: [{ type: "text", text: "Ana" }]
+            }
+          ],
+          syncedAt: new Date("2026-05-24T12:00:00.000Z"),
+          createdAt: new Date("2026-05-24T12:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T12:00:00.000Z")
         })
     },
     contactBoard: {
@@ -361,6 +387,152 @@ describe("campaigns service", () => {
     );
   });
 
+  it("sends a Meta template campaign through the connected Meta channel", async () => {
+    const sendTemplate = vi.fn().mockResolvedValue({
+      providerMessageId: "wamid_meta_campaign_1",
+      raw: { messages: [{ id: "wamid_meta_campaign_1" }] }
+    });
+    const upsert = vi.fn().mockImplementation(async (args) => args.create);
+    const prisma = createMockPrisma({
+      campaign: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue(baseCampaign),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({ ...baseCampaign, status: "completed", mode: "real" })
+      },
+      campaignRecipient: {
+        findMany: vi.fn(),
+        upsert
+      },
+      channel: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "channel_meta_1",
+          workspaceId: "workspace_a",
+          provider: "meta_cloud",
+          providerKey: "phone_number_1",
+          status: "connected"
+        })
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      meta: {
+        phoneNumberId: "phone_number_1",
+        client: { sendTemplate }
+      },
+      now: () => new Date("2026-05-25T12:00:00.000Z")
+    });
+
+    const result = await service.sendMetaTemplate({
+      workspaceId: "workspace_a",
+      campaignId,
+      template: {
+        name: "reactivation_vip",
+        language: "pt_BR"
+      }
+    });
+
+    expect(result).toEqual({
+      mode: "real",
+      result: "sent",
+      recipientsCreated: 2,
+      recipientsSent: 2,
+      recipientsFailed: 0
+    });
+    expect(prisma.metaMessageTemplate.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          workspaceId: "workspace_a",
+          name: "reactivation_vip",
+          language: "pt_BR",
+          status: "APPROVED"
+        })
+      })
+    );
+    expect(sendTemplate).toHaveBeenCalledWith({
+      phoneNumberId: "phone_number_1",
+      to: "+5511999990001",
+      name: "reactivation_vip",
+      language: "pt_BR",
+      components: [
+        {
+          type: "body",
+          parameters: [{ type: "text", text: "Ana" }]
+        }
+      ]
+    });
+    expect(upsert.mock.calls[0]?.[0].create).toEqual(
+      expect.objectContaining({
+        status: "sent",
+        attempts: 1,
+        providerMessageId: "wamid_meta_campaign_1",
+        sentAt: new Date("2026-05-25T12:00:00.000Z"),
+        result: expect.objectContaining({
+          mode: "real",
+          result: "sent",
+          templateName: "reactivation_vip",
+          templateLanguage: "pt_BR"
+        })
+      })
+    );
+  });
+
+  it("rejects Meta template campaigns when Meta runtime is not configured", async () => {
+    const sendTemplate = vi.fn();
+    const upsert = vi.fn();
+    const prisma = createMockPrisma({
+      campaignRecipient: {
+        findMany: vi.fn(),
+        upsert
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      meta: {
+        phoneNumberId: null,
+        client: { sendTemplate }
+      }
+    });
+
+    await expect(
+      service.sendMetaTemplate({
+        workspaceId: "workspace_a",
+        campaignId,
+        template: { name: "reactivation_vip", language: "pt_BR" }
+      })
+    ).rejects.toMatchObject({ code: "CAMPAIGN_META_NOT_CONFIGURED" });
+    expect(sendTemplate).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects Meta template campaigns when no approved local template exists", async () => {
+    const sendTemplate = vi.fn();
+    const upsert = vi.fn();
+    const prisma = createMockPrisma({
+      campaignRecipient: {
+        findMany: vi.fn(),
+        upsert
+      },
+      metaMessageTemplate: {
+        findFirst: vi.fn().mockResolvedValue(null)
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      meta: {
+        phoneNumberId: "phone_number_1",
+        client: { sendTemplate }
+      }
+    });
+
+    await expect(
+      service.sendMetaTemplate({
+        workspaceId: "workspace_a",
+        campaignId,
+        template: { name: "reactivation_vip", language: "pt_BR" }
+      })
+    ).rejects.toMatchObject({ code: "CAMPAIGN_TEMPLATE_NOT_FOUND" });
+    expect(sendTemplate).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it("rejects audience resolution for campaigns outside the current workspace", async () => {
     const prisma = createMockPrisma({
       campaign: {
@@ -528,6 +700,11 @@ describe("campaigns routes", () => {
       method: "POST" as const,
       url: `/campaigns/${campaignId}/send-simulated`,
       payload: {}
+    },
+    {
+      method: "POST" as const,
+      url: `/campaigns/${campaignId}/send-meta-template`,
+      payload: { template: { name: "reactivation_vip", language: "pt_BR" } }
     }
   ])("returns 403 for agents on $method $url", async ({ method, url, payload }) => {
     const { app, prisma } = await buildCampaignsApp({ role: "agent" });

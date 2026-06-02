@@ -4,6 +4,7 @@ import { canPerform } from "../access/roles.js";
 import { CampaignsServiceError, createCampaignsService } from "./campaigns.service.js";
 import type { PrismaLike } from "./campaigns.service.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import { resolveMetaRuntime } from "../meta/meta-runtime.js";
 
 const uuidParamSchema = z.string().uuid();
 
@@ -57,6 +58,27 @@ const updateCampaignBodySchema = createCampaignBodySchema
   .partial()
   .refine((body) => Object.keys(body).length > 0, "At least one campaign field is required.");
 
+const metaTemplateComponentParameterSchema = z
+  .object({
+    type: z.string().trim().min(1)
+  })
+  .passthrough();
+
+const metaTemplateComponentSchema = z
+  .object({
+    type: z.string().trim().min(1),
+    parameters: z.array(metaTemplateComponentParameterSchema).optional()
+  })
+  .passthrough();
+
+const sendMetaTemplateBodySchema = z.object({
+  template: z.object({
+    name: z.string().trim().min(1).max(512),
+    language: z.string().trim().min(1).max(64),
+    components: z.array(metaTemplateComponentSchema).optional()
+  })
+});
+
 function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
   return (
     typeof error === "object" &&
@@ -77,6 +99,10 @@ function handleCampaignsError(reply: FastifyReply, error: unknown) {
             ? 404
             : error.code === "CAMPAIGN_EVOLUTION_NOT_CONFIGURED"
               ? 409
+              : error.code === "CAMPAIGN_META_NOT_CONFIGURED"
+                ? 409
+                : error.code === "CAMPAIGN_TEMPLATE_NOT_FOUND"
+                  ? 404
               : 404;
 
     return reply.code(statusCode).send({ code: error.code, error: error.message });
@@ -245,6 +271,52 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
       const result = await service.sendReal({
         workspaceId: request.talk.workspaceId,
         campaignId: params.data.campaignId
+      });
+      const campaign = await service.getCampaign({
+        workspaceId: request.talk.workspaceId,
+        campaignId: params.data.campaignId
+      });
+
+      app.realtime.publish({
+        type: "campaign.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: campaign
+      });
+
+      return result;
+    } catch (error) {
+      return handleCampaignsError(reply, error);
+    }
+  });
+
+  app.post("/campaigns/:campaignId/send-meta-template", async (request, reply) => {
+    if (!requireCampaignManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = campaignParamsSchema.safeParse(request.params);
+    const body = sendMetaTemplateBodySchema.safeParse(request.body);
+
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid campaign request." });
+    }
+
+    const runtime = await resolveMetaRuntime(app.prisma, {
+      workspaceId: request.talk.workspaceId
+    });
+    const metaService = createCampaignsService(app.prisma as unknown as PrismaLike, {
+      evolution: options.evolution,
+      meta: {
+        phoneNumberId: runtime.phoneNumberId,
+        client: runtime.client
+      }
+    });
+
+    try {
+      const result = await metaService.sendMetaTemplate({
+        workspaceId: request.talk.workspaceId,
+        campaignId: params.data.campaignId,
+        template: body.data.template
       });
       const campaign = await service.getCampaign({
         workspaceId: request.talk.workspaceId,

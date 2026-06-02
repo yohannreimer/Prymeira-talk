@@ -7,15 +7,19 @@ import {
   apiGetBoards,
   apiGetCampaignRecipients,
   apiGetCampaigns,
+  apiGetSettings,
   apiResolveCampaignAudience,
   apiSendCampaignReal,
+  apiSendCampaignMetaTemplate,
   apiSendCampaignSimulated,
   apiUpdateCampaign,
   type CampaignAudienceContactDto,
   type CampaignCadenceDto,
   type CampaignDto,
   type CampaignRecipientDto,
-  type ContactBoardWithStagesDto
+  type ContactBoardWithStagesDto,
+  type IntegrationConfigDto,
+  type MetaTemplateDto
 } from "../../app/api";
 
 type AudienceSource = "board" | "imported";
@@ -196,6 +200,24 @@ function resultPreview(result: unknown) {
   return typeof payload.messagePreview === "string" ? payload.messagePreview : "";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isMetaCloudActive(integrations: IntegrationConfigDto[]) {
+  const integration = integrations.find((current) => current.provider === "meta_cloud");
+  const settings = isRecord(integration?.settings) ? integration.settings : {};
+
+  return (
+    integration?.mode === "real" &&
+    settings.enabled === true &&
+    typeof settings.wabaId === "string" &&
+    settings.wabaId.trim().length > 0 &&
+    typeof settings.phoneNumberId === "string" &&
+    settings.phoneNumberId.trim().length > 0
+  );
+}
+
 export function CampaignsPage() {
   const { getToken } = useTalkAuth();
   const [viewMode, setViewMode] = useState<CampaignViewMode>("hub");
@@ -205,6 +227,11 @@ export function CampaignsPage() {
   const [form, setForm] = useState<CampaignFormState>(emptyForm);
   const [audiencePreview, setAudiencePreview] = useState<CampaignAudienceContactDto[]>([]);
   const [recipients, setRecipients] = useState<CampaignRecipientDto[]>([]);
+  const [isMetaActive, setIsMetaActive] = useState(false);
+  const [metaTemplate, setMetaTemplate] = useState<MetaTemplateDto>({
+    name: "",
+    language: "pt_BR"
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isRecipientsLoading, setIsRecipientsLoading] = useState(false);
@@ -219,15 +246,17 @@ export function CampaignsPage() {
       setError(null);
 
       try {
-        const [nextCampaigns, nextBoards] = await Promise.all([
+        const [nextCampaigns, nextBoards, settings] = await Promise.all([
           apiGetCampaigns(getToken),
-          apiGetBoards(getToken)
+          apiGetBoards(getToken),
+          apiGetSettings(getToken)
         ]);
 
         if (!isMounted) return;
 
         setCampaigns(nextCampaigns);
         setBoards(nextBoards);
+        setIsMetaActive(isMetaCloudActive(settings.integrations));
         setForm((current) => ({
           ...current,
           boardId: current.boardId || nextBoards[0]?.id || ""
@@ -450,6 +479,48 @@ export function CampaignsPage() {
       setNotice(`${result.recipientsSent ?? 0} mensagens reais enviadas. ${result.recipientsFailed ?? 0} falharam.`);
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar campanha real.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function sendMetaTemplate() {
+    let campaign = selectedCampaign;
+    const template = {
+      name: metaTemplate.name.trim(),
+      language: metaTemplate.language.trim()
+    };
+
+    if (!template.name || !template.language) {
+      setError("Informe o nome e o idioma do template Meta aprovado.");
+      return;
+    }
+
+    if (!campaign) {
+      campaign = await saveCampaign();
+    }
+
+    if (!campaign) return;
+
+    const shouldSend = window.confirm("Enviar template aprovado da Meta para esta audiencia?");
+    if (!shouldSend) return;
+
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const result = await apiSendCampaignMetaTemplate(getToken, campaign.id, template);
+      const [nextCampaigns, nextRecipients] = await Promise.all([
+        apiGetCampaigns(getToken),
+        apiGetCampaignRecipients(getToken, campaign.id)
+      ]);
+
+      setCampaigns(nextCampaigns);
+      setRecipients(nextRecipients);
+      setNotice(`${result.recipientsSent ?? 0} templates Meta enviados. ${result.recipientsFailed ?? 0} falharam.`);
+    } catch (sendError) {
+      setError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar template Meta.");
     } finally {
       setIsSaving(false);
     }
@@ -730,6 +801,48 @@ export function CampaignsPage() {
               Adicionar template
             </button>
           </section>
+
+          {isMetaActive ? (
+            <section className="campaign-builder-section">
+              <div className="panel-title-row">
+                <h2>Meta Cloud</h2>
+                <span>Template aprovado</span>
+              </div>
+              <div className="campaign-audience-grid">
+                <label className="form-field">
+                  <span>Nome do template</span>
+                  <input
+                    onChange={(event) => setMetaTemplate((current) => ({
+                      ...current,
+                      name: event.target.value
+                    }))}
+                    placeholder="reactivation_vip"
+                    value={metaTemplate.name}
+                  />
+                </label>
+                <label className="form-field">
+                  <span>Idioma</span>
+                  <input
+                    onChange={(event) => setMetaTemplate((current) => ({
+                      ...current,
+                      language: event.target.value
+                    }))}
+                    placeholder="pt_BR"
+                    value={metaTemplate.language}
+                  />
+                </label>
+              </div>
+              <button
+                className="secondary-button"
+                disabled={isSaving || !metaTemplate.name.trim() || !metaTemplate.language.trim()}
+                onClick={sendMetaTemplate}
+                type="button"
+              >
+                <Send size={14} aria-hidden="true" />
+                Enviar template Meta
+              </button>
+            </section>
+          ) : null}
 
           <section className="campaign-builder-section">
             <div className="panel-title-row">
