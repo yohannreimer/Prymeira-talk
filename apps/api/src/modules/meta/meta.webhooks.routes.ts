@@ -29,6 +29,12 @@ interface MetaInboundTextMessage {
   profileName: string | null;
 }
 
+type MetaMessageProcessResult =
+  | { kind: "created"; message: Parameters<typeof toMessageDto>[0]; conversation: Parameters<typeof toConversationDto>[0] }
+  | { kind: "duplicate" }
+  | { kind: "channel_not_found" }
+  | { kind: "ignored" };
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -156,20 +162,24 @@ export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
     const params = metaWebhookParamsSchema.safeParse(request.params);
     const query = metaWebhookVerificationQuerySchema.safeParse(request.query);
 
-    if (params.success && query.success) {
-      const runtime = await resolveMetaRuntime(app.prisma, {
-        workspaceId: params.data.workspaceId
-      });
+    if (!params.success || !query.success) {
+      return reply
+        .code(400)
+        .send({ error: "Invalid Meta webhook verification request." });
+    }
 
-      if (
-        query.data["hub.mode"] === "subscribe" &&
-        runtime.active &&
-        runtime.webhookVerifyToken &&
-        query.data["hub.verify_token"] === runtime.webhookVerifyToken &&
-        query.data["hub.challenge"]
-      ) {
-        return reply.type("text/plain").send(query.data["hub.challenge"]);
-      }
+    const runtime = await resolveMetaRuntime(app.prisma, {
+      workspaceId: params.data.workspaceId
+    });
+
+    if (
+      query.data["hub.mode"] === "subscribe" &&
+      runtime.active &&
+      runtime.webhookVerifyToken &&
+      query.data["hub.verify_token"] === runtime.webhookVerifyToken &&
+      query.data["hub.challenge"]
+    ) {
+      return reply.type("text/plain").send(query.data["hub.challenge"]);
     }
 
     return reply.code(403).send({ error: "Invalid Meta webhook verification token." });
@@ -183,18 +193,28 @@ export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const workspaceId = params.data.workspaceId;
+    const runtime = await resolveMetaRuntime(app.prisma, { workspaceId });
+
+    if (!runtime.active || !runtime.client || !runtime.phoneNumberId) {
+      return reply.code(409).send({ ok: false, error: "meta_cloud_not_configured" });
+    }
+
     const inboundMessages = extractInboundTextMessages(request.body);
 
     if (inboundMessages.length === 0) {
       return { ok: true, ignored: true };
     }
 
-    try {
-      const transactionResult = await app.prisma.$transaction(async (tx) => {
-        const createdMessages = [];
-        const updatedConversations = [];
+    const results: MetaMessageProcessResult[] = [];
 
-        for (const inboundMessage of inboundMessages) {
+    for (const inboundMessage of inboundMessages) {
+      if (inboundMessage.phoneNumberId !== runtime.phoneNumberId) {
+        results.push({ kind: "ignored" });
+        continue;
+      }
+
+      try {
+        const result = await app.prisma.$transaction(async (tx): Promise<MetaMessageProcessResult> => {
           const channel = await tx.channel.findUnique({
             where: {
               workspaceId_provider_providerKey: {
@@ -207,7 +227,7 @@ export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
           });
 
           if (!channel) {
-            return { kind: "channel_not_found" as const };
+            return { kind: "channel_not_found" };
           }
 
           const phone = normalizePhoneForStorage(inboundMessage.from);
@@ -258,9 +278,7 @@ export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
               unreadCount: 0,
               customerServiceWindowExpiresAt
             },
-            update: {
-              customerServiceWindowExpiresAt
-            }
+            update: {}
           });
 
           const message = await tx.message.create({
@@ -287,6 +305,20 @@ export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
             },
             data: {
               unreadCount: { increment: 1 }
+            }
+          });
+
+          await tx.conversation.updateMany({
+            where: {
+              id: conversation.id,
+              workspaceId,
+              OR: [
+                { customerServiceWindowExpiresAt: null },
+                { customerServiceWindowExpiresAt: { lt: customerServiceWindowExpiresAt } }
+              ]
+            },
+            data: {
+              customerServiceWindowExpiresAt
             }
           });
 
@@ -324,44 +356,68 @@ export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
             throw new Error("Conversation disappeared during Meta webhook ingestion.");
           }
 
-          createdMessages.push(message);
-          updatedConversations.push(updatedConversation);
+          return { kind: "created", message, conversation: updatedConversation };
+        });
+
+        results.push(result);
+      } catch (error) {
+        if (isUniqueConstraintError(error)) {
+          results.push({ kind: "duplicate" });
+          continue;
         }
 
-        return {
-          kind: "created" as const,
-          messages: createdMessages,
-          conversations: updatedConversations
-        };
-      });
-
-      if (transactionResult.kind === "channel_not_found") {
-        return reply.code(404).send({ ok: false, error: "channel_not_found" });
+        throw error;
       }
-
-      for (const message of transactionResult.messages) {
-        app.realtime.publish({
-          type: "message.created",
-          workspaceId,
-          payload: toMessageDto(message)
-        });
-      }
-
-      for (const conversation of transactionResult.conversations) {
-        app.realtime.publish({
-          type: "conversation.updated",
-          workspaceId,
-          payload: toConversationDto(conversation)
-        });
-      }
-
-      return { ok: true };
-    } catch (error) {
-      if (isUniqueConstraintError(error)) {
-        return { ok: true, duplicate: true };
-      }
-
-      throw error;
     }
+
+    for (const result of results) {
+      if (result.kind !== "created") {
+        continue;
+      }
+
+      app.realtime.publish({
+        type: "message.created",
+        workspaceId,
+        payload: toMessageDto(result.message)
+      });
+      app.realtime.publish({
+        type: "conversation.updated",
+        workspaceId,
+        payload: toConversationDto(result.conversation)
+      });
+    }
+
+    const createdCount = results.filter((result) => result.kind === "created").length;
+    const duplicateCount = results.filter((result) => result.kind === "duplicate").length;
+    const ignoredCount = results.filter((result) => result.kind === "ignored").length;
+    const channelNotFoundCount = results.filter(
+      (result) => result.kind === "channel_not_found"
+    ).length;
+
+    if (channelNotFoundCount === results.length) {
+      return reply.code(404).send({ ok: false, error: "channel_not_found" });
+    }
+
+    if (createdCount > 0) {
+      return duplicateCount > 0 || ignoredCount > 0 || channelNotFoundCount > 0
+        ? { ok: true, partial: true }
+        : { ok: true };
+    }
+
+    if (duplicateCount > 0 && duplicateCount + ignoredCount === results.length) {
+      return duplicateCount === results.length
+        ? { ok: true, duplicate: true }
+        : { ok: true, partial: true };
+    }
+
+    if (ignoredCount === results.length) {
+      return { ok: true, ignored: true };
+    }
+
+    if (channelNotFoundCount > 0) {
+      return { ok: true, partial: true };
+    }
+
+    return { ok: true };
   });
 };

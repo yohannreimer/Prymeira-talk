@@ -27,6 +27,25 @@ const metaTextPayload = {
   ]
 };
 
+function createMetaPayloadWithMessages(messages: Array<Record<string, unknown>>) {
+  return {
+    ...metaTextPayload,
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              metadata: { phone_number_id: "222" },
+              contacts: [{ wa_id: "5511999999999", profile: { name: "Cliente" } }],
+              messages
+            }
+          }
+        ]
+      }
+    ]
+  };
+}
+
 function createMockPrisma(overrides: {
   integrationConfig?: { findUnique?: ReturnType<typeof vi.fn> };
   $transaction?: ReturnType<typeof vi.fn>;
@@ -204,6 +223,58 @@ describe("Meta webhook routes", () => {
     }
   });
 
+  it("returns 400 when the Meta verification query is malformed", async () => {
+    const { app } = await buildMetaApp();
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/webhooks/meta/local_workspace?hub.mode=subscribe&hub.verify_token=verify-me"
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: "Invalid Meta webhook verification request."
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 409 for inactive Meta runtime without writing messages", async () => {
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findUnique: vi.fn().mockResolvedValue({
+          mode: "real",
+          status: "connected",
+          settings: {
+            enabled: false,
+            wabaId: "111",
+            phoneNumberId: "222",
+            accessToken: "meta-token",
+            webhookVerifyToken: "verify-me"
+          }
+        })
+      }
+    });
+    const { app } = await buildMetaApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/meta/local_workspace",
+        payload: metaTextPayload
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ ok: false, error: "meta_cloud_not_configured" });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("stores inbound Meta text messages and publishes realtime events", async () => {
     const { app, prisma, publish } = await buildMetaApp();
 
@@ -257,9 +328,7 @@ describe("Meta webhook routes", () => {
           unreadCount: 0,
           customerServiceWindowExpiresAt: new Date((1780401600 + 24 * 60 * 60) * 1000)
         }),
-        update: {
-          customerServiceWindowExpiresAt: new Date((1780401600 + 24 * 60 * 60) * 1000)
-        }
+        update: {}
       });
       expect(prisma.message.create).toHaveBeenCalledWith({
         data: {
@@ -297,6 +366,23 @@ describe("Meta webhook routes", () => {
           lastMessagePreview: "Oi"
         }
       });
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "conv_1",
+          workspaceId: "local_workspace",
+          OR: [
+            { customerServiceWindowExpiresAt: null },
+            {
+              customerServiceWindowExpiresAt: {
+                lt: new Date((1780401600 + 24 * 60 * 60) * 1000)
+              }
+            }
+          ]
+        },
+        data: {
+          customerServiceWindowExpiresAt: new Date((1780401600 + 24 * 60 * 60) * 1000)
+        }
+      });
       expect(publish).toHaveBeenCalledWith({
         type: "message.created",
         workspaceId: "local_workspace",
@@ -314,6 +400,211 @@ describe("Meta webhook routes", () => {
           contactName: "Cliente",
           lastMessagePreview: "Oi"
         })
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("continues processing later messages when an earlier message is a duplicate", async () => {
+    const duplicateError = {
+      code: "P2002",
+      meta: { target: ["workspace_id", "provider_message_id"] }
+    };
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(duplicateError)
+      .mockResolvedValueOnce({
+        id: "msg_2",
+        workspaceId: "local_workspace",
+        conversationId: "conv_1",
+        providerMessageId: "wamid_in_2",
+        providerEventId: "meta:222:wamid_in_2",
+        direction: "inbound",
+        type: "text",
+        body: "Tudo bem?",
+        mediaUrl: null,
+        status: "delivered",
+        sentByUserId: null,
+        createdAt: new Date(1780401610 * 1000)
+      });
+    const prisma = createMockPrisma({
+      message: { create }
+    });
+    const { app, publish } = await buildMetaApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/meta/local_workspace",
+        payload: createMetaPayloadWithMessages([
+          {
+            id: "wamid_in_1",
+            from: "5511999999999",
+            timestamp: "1780401600",
+            type: "text",
+            text: { body: "Oi" }
+          },
+          {
+            id: "wamid_in_2",
+            from: "5511999999999",
+            timestamp: "1780401610",
+            type: "text",
+            text: { body: "Tudo bem?" }
+          }
+        ])
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true, partial: true });
+      expect(prisma.message.create).toHaveBeenCalledTimes(2);
+      expect(prisma.message.create).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          data: expect.objectContaining({
+            providerMessageId: "wamid_in_2",
+            body: "Tudo bem?"
+          })
+        })
+      );
+      expect(publish).toHaveBeenCalledWith({
+        type: "message.created",
+        workspaceId: "local_workspace",
+        payload: expect.objectContaining({
+          id: "msg_2",
+          providerMessageId: "wamid_in_2",
+          body: "Tudo bem?"
+        })
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("continues processing valid messages when an earlier message targets a missing channel", async () => {
+    const findUnique = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ id: "channel_1" });
+    const prisma = createMockPrisma({
+      channel: { findUnique }
+    });
+    const { app, publish } = await buildMetaApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/meta/local_workspace",
+        payload: createMetaPayloadWithMessages([
+          {
+            id: "wamid_in_1",
+            from: "5511999999999",
+            timestamp: "1780401600",
+            type: "text",
+            text: { body: "Oi" }
+          },
+          {
+            id: "wamid_in_2",
+            from: "5511999999999",
+            timestamp: "1780401610",
+            type: "text",
+            text: { body: "Tudo bem?" }
+          }
+        ])
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true, partial: true });
+      expect(prisma.contact.findFirst).toHaveBeenCalledTimes(1);
+      expect(prisma.message.create).toHaveBeenCalledTimes(1);
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          providerMessageId: "wamid_in_2",
+          body: "Tudo bem?"
+        })
+      });
+      expect(publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "message.created",
+          workspaceId: "local_workspace"
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("ignores inbound messages for a different Meta phone number", async () => {
+    const { app, prisma } = await buildMetaApp();
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/meta/local_workspace",
+        payload: {
+          ...metaTextPayload,
+          entry: [
+            {
+              changes: [
+                {
+                  value: {
+                    metadata: { phone_number_id: "different-phone" },
+                    contacts: [{ wa_id: "5511999999999", profile: { name: "Cliente" } }],
+                    messages: [
+                      {
+                        id: "wamid_in_1",
+                        from: "5511999999999",
+                        timestamp: "1780401600",
+                        type: "text",
+                        text: { body: "Oi" }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true, ignored: true });
+      expect(prisma.channel.findUnique).not.toHaveBeenCalled();
+      expect(prisma.message.create).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("guards customer service window updates so older webhooks cannot move it backwards", async () => {
+    const { app, prisma } = await buildMetaApp();
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/meta/local_workspace",
+        payload: metaTextPayload
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(prisma.conversation.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: {}
+        })
+      );
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "conv_1",
+          workspaceId: "local_workspace",
+          OR: [
+            { customerServiceWindowExpiresAt: null },
+            {
+              customerServiceWindowExpiresAt: {
+                lt: new Date((1780401600 + 24 * 60 * 60) * 1000)
+              }
+            }
+          ]
+        },
+        data: {
+          customerServiceWindowExpiresAt: new Date((1780401600 + 24 * 60 * 60) * 1000)
+        }
       });
     } finally {
       await app.close();
