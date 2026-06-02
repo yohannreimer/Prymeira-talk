@@ -9,6 +9,7 @@ type MockPrisma = {
     findUnique: any;
   };
   integrationConfig: {
+    findUnique: any;
     findMany: any;
     upsert: any;
   };
@@ -43,7 +44,11 @@ const baseAuditLog = {
   createdAt: new Date("2026-05-21T16:05:00.000Z")
 };
 
-function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & PrismaLike {
+function createMockPrisma(overrides: {
+  workspaceMirror?: Partial<MockPrisma["workspaceMirror"]>;
+  integrationConfig?: Partial<MockPrisma["integrationConfig"]>;
+  auditLog?: Partial<MockPrisma["auditLog"]>;
+} = {}): MockPrisma & PrismaLike {
   return {
     workspaceMirror: {
       findUnique:
@@ -58,6 +63,7 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
         })
     },
     integrationConfig: {
+      findUnique: overrides.integrationConfig?.findUnique ?? vi.fn().mockResolvedValue(null),
       findMany: overrides.integrationConfig?.findMany ?? vi.fn().mockResolvedValue([baseConfig]),
       upsert:
         overrides.integrationConfig?.upsert ??
@@ -491,6 +497,138 @@ describe("settings service", () => {
         })
       })
     }));
+  });
+});
+
+describe("settings Meta Evolution template routes", () => {
+  it("lists templates from the configured official Evolution instance", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        templates: [
+          {
+            id: "tpl_1",
+            name: "boas_vindas",
+            language: "pt_BR",
+            status: "APPROVED",
+            category: "MARKETING",
+            components: [{ type: "BODY", text: "Ola {{1}}, tudo certo?" }]
+          }
+        ]
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    globalThis.fetch = fetchMock;
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "config_meta",
+          workspaceId: "workspace_a",
+          provider: "meta_cloud",
+          mode: "real",
+          status: "configured",
+          settings: {
+            enabled: true,
+            connectionMode: "evolution_official",
+            evolutionBaseUrl: "https://wsapi.yrdnegocios.com.br",
+            evolutionApiKey: "secret-key",
+            evolutionInstanceName: "prymeiradisparos1"
+          },
+          createdAt: new Date("2026-06-02T12:00:00.000Z"),
+          updatedAt: new Date("2026-06-02T12:00:00.000Z")
+        }),
+        findMany: vi.fn().mockResolvedValue([]),
+        upsert: vi.fn()
+      }
+    });
+    const { app } = await buildSettingsApp({ prisma });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/settings/meta-cloud/evolution-templates"
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://wsapi.yrdnegocios.com.br/template/find/prymeiradisparos1",
+        expect.objectContaining({
+          method: "GET",
+          headers: expect.objectContaining({ apikey: "secret-key" })
+        })
+      );
+      expect(response.json()).toEqual({
+        templates: [
+          {
+            id: "tpl_1",
+            name: "boas_vindas",
+            language: "pt_BR",
+            status: "APPROVED",
+            category: "MARKETING",
+            preview: "Ola {{1}}, tudo certo?",
+            components: [{ type: "BODY", text: "Ola {{1}}, tudo certo?" }]
+          }
+        ],
+        raw: {
+          templates: [
+            {
+              id: "tpl_1",
+              name: "boas_vindas",
+              language: "pt_BR",
+              status: "APPROVED",
+              category: "MARKETING",
+              components: [{ type: "BODY", text: "Ola {{1}}, tudo certo?" }]
+            }
+          ]
+        }
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      await app.close();
+    }
+  });
+
+  it("rejects Evolution template listing when Meta is not active via Evolution", async () => {
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "config_meta",
+          workspaceId: "workspace_a",
+          provider: "meta_cloud",
+          mode: "real",
+          status: "configured",
+          settings: {
+            enabled: true,
+            connectionMode: "direct",
+            wabaId: "111",
+            phoneNumberId: "222",
+            accessToken: "secret-token"
+          },
+          createdAt: new Date("2026-06-02T12:00:00.000Z"),
+          updatedAt: new Date("2026-06-02T12:00:00.000Z")
+        }),
+        findMany: vi.fn().mockResolvedValue([]),
+        upsert: vi.fn()
+      }
+    });
+    const { app } = await buildSettingsApp({ prisma });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/settings/meta-cloud/evolution-templates"
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        code: "META_CLOUD_NOT_CONFIGURED",
+        error: "Meta Cloud via Evolution is not active for this workspace."
+      });
+    } finally {
+      await app.close();
+    }
   });
 });
 

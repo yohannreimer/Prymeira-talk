@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import type { Prisma } from "@prisma/client";
 import type { UserRole } from "@prymeira-talk/shared";
 import { z } from "zod";
+import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { resolveMetaRuntime } from "../meta/meta-runtime.js";
 import { createMetaTemplatesService } from "../meta/meta.templates.service.js";
 import { createSettingsService, SettingsValidationError } from "./settings.service.js";
@@ -116,5 +117,42 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
       wabaId: runtime.wabaId,
       client: runtime.client
     });
+  });
+
+  app.get("/settings/meta-cloud/evolution-templates", async (request, reply) => {
+    if (!requireSettingsManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const runtime = await resolveMetaRuntime(app.prisma, {
+      workspaceId: request.talk.workspaceId
+    });
+
+    if (
+      !runtime.active ||
+      runtime.connectionMode !== "evolution_official" ||
+      !runtime.evolutionClient?.listTemplates ||
+      !runtime.evolutionInstanceName
+    ) {
+      return reply.code(409).send({
+        code: "META_CLOUD_NOT_CONFIGURED",
+        error: "Meta Cloud via Evolution is not active for this workspace."
+      });
+    }
+
+    try {
+      return runtime.evolutionClient.listTemplates({
+        instanceName: runtime.evolutionInstanceName
+      });
+    } catch (error) {
+      if (error instanceof EvolutionClientError) {
+        return reply.code(502).send({
+          code: "EVOLUTION_TEMPLATE_LIST_FAILED",
+          error: "Evolution did not return the official template list."
+        });
+      }
+
+      throw error;
+    }
   });
 };

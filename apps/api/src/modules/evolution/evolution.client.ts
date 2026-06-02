@@ -105,6 +105,31 @@ export interface SendTemplateResult {
   raw: unknown;
 }
 
+export interface EvolutionTemplateComponent {
+  type: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
+export interface EvolutionTemplateRecord {
+  id: string;
+  name: string;
+  language: string;
+  status: string;
+  category: string;
+  preview: string | null;
+  components: EvolutionTemplateComponent[];
+}
+
+export interface ListTemplatesInput {
+  instanceName: string;
+}
+
+export interface ListTemplatesResult {
+  templates: EvolutionTemplateRecord[];
+  raw: unknown;
+}
+
 export interface EvolutionClient {
   createInstance(input: CreateInstanceInput): Promise<CreateInstanceResult>;
   connectInstance(input: ConnectInstanceInput): Promise<ConnectInstanceResult>;
@@ -112,6 +137,7 @@ export interface EvolutionClient {
   sendText(input: SendTextInput): Promise<SendTextResult>;
   sendMedia(input: SendMediaInput): Promise<SendMediaResult>;
   sendTemplate?(input: SendTemplateInput): Promise<SendTemplateResult>;
+  listTemplates?(input: ListTemplatesInput): Promise<ListTemplatesResult>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -181,6 +207,83 @@ function extractProviderMessageId(body: unknown): string | null {
 
 function extractInstanceName(body: unknown, fallback: string): string {
   return getString(getRecord(body, "instance"), "instanceName") ?? fallback;
+}
+
+function normalizeTemplateComponent(value: unknown): EvolutionTemplateComponent | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const type = getString(value, "type");
+  if (!type) {
+    return null;
+  }
+
+  return {
+    ...value,
+    type,
+    text: getString(value, "text")
+  };
+}
+
+function extractTemplatePreview(components: EvolutionTemplateComponent[]) {
+  const bodyComponent = components.find((component) => component.type.toLowerCase() === "body");
+  const text = bodyComponent?.text ?? components.find((component) => component.text)?.text ?? null;
+
+  return text?.replace(/\s+/g, " ").trim() || null;
+}
+
+function normalizeTemplateRecord(value: unknown): EvolutionTemplateRecord | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const name = getString(value, "name");
+  const language = getString(value, "language");
+
+  if (!name || !language) {
+    return null;
+  }
+
+  const components = Array.isArray(value.components)
+    ? value.components.flatMap((component) => {
+        const normalized = normalizeTemplateComponent(component);
+        return normalized ? [normalized] : [];
+      })
+    : [];
+
+  return {
+    id: getString(value, "id") ?? `${name}:${language}`,
+    name,
+    language,
+    status: getString(value, "status") ?? "UNKNOWN",
+    category: getString(value, "category") ?? "UNKNOWN",
+    preview: extractTemplatePreview(components),
+    components
+  };
+}
+
+function collectTemplateRecords(value: unknown, depth = 0): EvolutionTemplateRecord[] {
+  if (depth > 5) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectTemplateRecords(item, depth + 1));
+  }
+
+  if (!isRecord(value)) {
+    return [];
+  }
+
+  const template = normalizeTemplateRecord(value);
+  if (template) {
+    return [template];
+  }
+
+  return ["templates", "data", "result", "response", "items"].flatMap((key) =>
+    collectTemplateRecords(value[key], depth + 1)
+  );
 }
 
 function collectStrings(value: unknown): string[] {
@@ -374,6 +477,15 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
 
       return {
         providerMessageId: extractProviderMessageId(responseBody),
+        raw: responseBody
+      };
+    },
+
+    async listTemplates(input) {
+      const responseBody = await get(`/template/find/${encodeURIComponent(input.instanceName)}`);
+
+      return {
+        templates: collectTemplateRecords(responseBody),
         raw: responseBody
       };
     }

@@ -272,6 +272,119 @@ describe("Evolution client", () => {
     expect(result.providerMessageId).toBe("provider_template_1");
   });
 
+  it("lists official templates through Evolution and normalizes nested responses", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({
+        data: {
+          templates: [
+            {
+              id: "tpl_1",
+              name: "boas_vindas",
+              language: "pt_BR",
+              status: "APPROVED",
+              category: "MARKETING",
+              components: [
+                {
+                  type: "HEADER",
+                  text: "Prymeira"
+                },
+                {
+                  type: "BODY",
+                  text: "Ola {{1}}, sua conta esta pronta."
+                }
+              ]
+            },
+            {
+              name: "sem_id",
+              language: "en_US",
+              components: []
+            },
+            {
+              name: "sem_idioma"
+            }
+          ]
+        }
+      })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    expect(client.listTemplates).toBeDefined();
+    const result = await client.listTemplates!({
+      instanceName: "official-instance"
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://wsapi.yrdnegocios.com.br/template/find/official-instance",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({ apikey: "secret-key" })
+      })
+    );
+    expect(result.templates).toEqual([
+      {
+        id: "tpl_1",
+        name: "boas_vindas",
+        language: "pt_BR",
+        status: "APPROVED",
+        category: "MARKETING",
+        preview: "Ola {{1}}, sua conta esta pronta.",
+        components: [
+          {
+            type: "HEADER",
+            text: "Prymeira"
+          },
+          {
+            type: "BODY",
+            text: "Ola {{1}}, sua conta esta pronta."
+          }
+        ]
+      },
+      {
+        id: "sem_id:en_US",
+        name: "sem_id",
+        language: "en_US",
+        status: "UNKNOWN",
+        category: "UNKNOWN",
+        preview: null,
+        components: []
+      }
+    ]);
+  });
+
+  it("lists official templates when Evolution returns an array directly", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse([
+        {
+          name: "alerta_pagamento",
+          language: "pt_BR",
+          components: [{ type: "BODY", text: "Seu pagamento foi confirmado." }]
+        }
+      ])
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    const result = await client.listTemplates!({
+      instanceName: "official-instance"
+    });
+
+    expect(result.templates).toEqual([
+      expect.objectContaining({
+        id: "alerta_pagamento:pt_BR",
+        name: "alerta_pagamento",
+        language: "pt_BR",
+        preview: "Seu pagamento foi confirmado."
+      })
+    ]);
+  });
+
   it("sets an instance webhook with the expected provider payload", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse({ ok: true }));
     const client = createEvolutionClient({

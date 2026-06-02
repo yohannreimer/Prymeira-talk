@@ -1,5 +1,5 @@
 import { useTalkAuth } from "../../app/auth";
-import { CalendarClock, Gauge, Play, Plus, Save, Send, Upload, Zap } from "lucide-react";
+import { CalendarClock, Gauge, Play, Plus, RefreshCw, Save, Send, Upload, Zap } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { read, utils } from "xlsx";
 import {
@@ -8,6 +8,7 @@ import {
   apiGetCampaignRecipients,
   apiGetCampaigns,
   apiGetSettings,
+  apiListMetaEvolutionTemplates,
   apiResolveCampaignAudience,
   apiSendCampaignReal,
   apiSendCampaignMetaTemplate,
@@ -19,11 +20,13 @@ import {
   type CampaignRecipientDto,
   type ContactBoardWithStagesDto,
   type IntegrationConfigDto,
-  type MetaTemplateDto
+  type MetaTemplateDto,
+  type MetaTemplateOptionDto
 } from "../../app/api";
 
 type AudienceSource = "board" | "imported";
 type CampaignViewMode = "hub" | "editor";
+type MetaConnectionMode = "direct" | "evolution_official";
 
 interface ImportedAudienceRow {
   name?: string;
@@ -204,10 +207,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isMetaCloudActive(integrations: IntegrationConfigDto[]) {
+function getMetaCloudStatus(integrations: IntegrationConfigDto[]): {
+  active: boolean;
+  connectionMode: MetaConnectionMode;
+} {
   const integration = integrations.find((current) => current.provider === "meta_cloud");
   const settings = isRecord(integration?.settings) ? integration.settings : {};
-  const connectionMode = settings.connectionMode === "evolution_official"
+  const connectionMode: MetaConnectionMode = settings.connectionMode === "evolution_official"
     ? "evolution_official"
     : "direct";
   const directActive = (
@@ -231,7 +237,10 @@ function isMetaCloudActive(integrations: IntegrationConfigDto[]) {
     settings.evolutionInstanceName.trim().length > 0
   );
 
-  return connectionMode === "evolution_official" ? evolutionOfficialActive : directActive;
+  return {
+    active: connectionMode === "evolution_official" ? evolutionOfficialActive : directActive,
+    connectionMode
+  };
 }
 
 export function CampaignsPage() {
@@ -244,10 +253,14 @@ export function CampaignsPage() {
   const [audiencePreview, setAudiencePreview] = useState<CampaignAudienceContactDto[]>([]);
   const [recipients, setRecipients] = useState<CampaignRecipientDto[]>([]);
   const [isMetaActive, setIsMetaActive] = useState(false);
+  const [metaConnectionMode, setMetaConnectionMode] = useState<MetaConnectionMode>("direct");
   const [metaTemplate, setMetaTemplate] = useState<MetaTemplateDto>({
     name: "",
     language: "pt_BR"
   });
+  const [metaTemplateOptions, setMetaTemplateOptions] = useState<MetaTemplateOptionDto[]>([]);
+  const [isMetaTemplatesLoading, setIsMetaTemplatesLoading] = useState(false);
+  const [metaTemplatesLoaded, setMetaTemplatesLoaded] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isRecipientsLoading, setIsRecipientsLoading] = useState(false);
@@ -279,7 +292,12 @@ export function CampaignsPage() {
         const settings = await apiGetSettings(getToken).catch(() => null);
         if (!isMounted) return;
 
-        setIsMetaActive(settings ? isMetaCloudActive(settings.integrations) : false);
+        const metaStatus = settings ? getMetaCloudStatus(settings.integrations) : {
+          active: false,
+          connectionMode: "direct" as const
+        };
+        setIsMetaActive(metaStatus.active);
+        setMetaConnectionMode(metaStatus.connectionMode);
       } catch (loadError) {
         if (isMounted) {
           setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar disparos.");
@@ -543,6 +561,35 @@ export function CampaignsPage() {
     } finally {
       setIsSaving(false);
     }
+  }
+
+  async function loadMetaEvolutionTemplates() {
+    setIsMetaTemplatesLoading(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const templates = await apiListMetaEvolutionTemplates(getToken);
+      setMetaTemplateOptions(templates);
+      setMetaTemplatesLoaded(true);
+      setNotice(
+        templates.length > 0
+          ? `${templates.length} templates Meta encontrados na Evolution.`
+          : "A Evolution nao retornou templates para esta instancia."
+      );
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar templates da Evolution.");
+    } finally {
+      setIsMetaTemplatesLoading(false);
+    }
+  }
+
+  function useMetaTemplateOption(template: MetaTemplateOptionDto) {
+    setMetaTemplate({
+      name: template.name,
+      language: template.language || "pt_BR"
+    });
+    setNotice(`Template ${template.name} selecionado.`);
   }
 
   async function handleAudienceFile(file: File | null) {
@@ -825,8 +872,49 @@ export function CampaignsPage() {
             <section className="campaign-builder-section">
               <div className="panel-title-row">
                 <h2>Meta Cloud</h2>
-                <span>Template aprovado</span>
+                <span>{metaConnectionMode === "evolution_official" ? "Via Evolution" : "Template aprovado"}</span>
               </div>
+              {metaConnectionMode === "evolution_official" ? (
+                <div className="meta-template-picker">
+                  <div className="meta-template-picker-header">
+                    <div>
+                      <strong>Templates da Evolution</strong>
+                      <span>Use a lista da instancia oficial ou preencha manualmente abaixo.</span>
+                    </div>
+                    <button
+                      className="secondary-button"
+                      disabled={isMetaTemplatesLoading}
+                      onClick={() => void loadMetaEvolutionTemplates()}
+                      type="button"
+                    >
+                      <RefreshCw size={14} aria-hidden="true" />
+                      {isMetaTemplatesLoading ? "Carregando" : "Carregar templates"}
+                    </button>
+                  </div>
+                  {metaTemplateOptions.length > 0 ? (
+                    <div className="meta-template-list" aria-label="Templates Meta da Evolution">
+                      {metaTemplateOptions.map((template) => (
+                        <article className="meta-template-option" key={template.id}>
+                          <div>
+                            <strong>{template.name}</strong>
+                            <span>{template.language} · {template.status}</span>
+                            {template.preview ? <p>{template.preview}</p> : null}
+                          </div>
+                          <button
+                            className="secondary-button"
+                            onClick={() => useMetaTemplateOption(template)}
+                            type="button"
+                          >
+                            Usar
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  ) : metaTemplatesLoaded ? (
+                    <p className="list-note">Nenhum template voltou da Evolution para esta instancia.</p>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="campaign-audience-grid">
                 <label className="form-field">
                   <span>Nome do template</span>

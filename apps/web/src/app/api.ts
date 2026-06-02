@@ -233,6 +233,16 @@ export interface MetaTemplateDto {
   }>;
 }
 
+export interface MetaTemplateOptionDto {
+  id: string;
+  name: string;
+  language: string;
+  status: string;
+  category: string;
+  preview: string | null;
+  components: unknown[];
+}
+
 export interface ReportMetricDto {
   key: string;
   label: string;
@@ -911,6 +921,28 @@ function parseMetaTemplatesSyncResult(data: unknown): MetaTemplatesSyncResultDto
   return {
     synced: typeof synced === "number" && Number.isFinite(synced) ? synced : 0
   };
+}
+
+function parseMetaTemplateOption(data: unknown): MetaTemplateOptionDto {
+  const payload = asRecord(data);
+  const preview = payload.preview;
+
+  return {
+    id: String(payload.id ?? `${String(payload.name ?? "")}:${String(payload.language ?? "")}`),
+    name: String(payload.name ?? ""),
+    language: String(payload.language ?? ""),
+    status: String(payload.status ?? "UNKNOWN"),
+    category: String(payload.category ?? "UNKNOWN"),
+    preview: typeof preview === "string" && preview.trim().length > 0 ? preview : null,
+    components: Array.isArray(payload.components) ? payload.components : []
+  };
+}
+
+function parseMetaTemplateOptionsResult(data: unknown): MetaTemplateOptionDto[] {
+  const payload = asRecord(data);
+  const templates = payload.templates;
+
+  return Array.isArray(templates) ? templates.map(parseMetaTemplateOption) : [];
 }
 
 async function fetchJson<T>(
@@ -2222,6 +2254,18 @@ export async function apiSyncMetaTemplates(
     { method: "POST" },
     parseMetaTemplatesSyncResult,
     "Failed to sync Meta templates"
+  );
+}
+
+export async function apiListMetaEvolutionTemplates(
+  getToken: () => Promise<string | null>
+): Promise<MetaTemplateOptionDto[]> {
+  return fetchJson(
+    getToken,
+    "/settings/meta-cloud/evolution-templates",
+    {},
+    parseMetaTemplateOptionsResult,
+    "Failed to list Meta templates from Evolution"
   );
 }
 
