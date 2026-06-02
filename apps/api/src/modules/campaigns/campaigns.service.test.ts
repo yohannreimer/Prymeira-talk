@@ -856,6 +856,88 @@ describe("campaigns service", () => {
     }));
   });
 
+  it("renders Meta template component parameters per recipient", async () => {
+    const sendTemplate = vi.fn().mockResolvedValue({
+      providerMessageId: "evo_dynamic_parameter_1",
+      raw: { key: { id: "evo_dynamic_parameter_1" } }
+    });
+    const prisma = createMockPrisma({
+      campaign: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseCampaign,
+          fallbackName: "cliente"
+        }),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({ ...baseCampaign, status: "completed", mode: "real" })
+      },
+      channel: {
+        findFirst: vi.fn(),
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "channel_meta_evolution_1",
+            workspaceId: "workspace_a",
+            provider: "meta_cloud",
+            providerKey: "official-instance-one",
+            status: "connected"
+          }
+        ])
+      },
+      metaMessageTemplate: {
+        findFirst: vi.fn()
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      metaEvolution: {
+        instanceName: null,
+        client: { sendTemplate }
+      },
+      now: () => new Date("2026-05-25T12:00:00.000Z")
+    });
+
+    await service.sendMetaTemplate({
+      workspaceId: "workspace_a",
+      campaignId,
+      channelIds: ["channel_meta_evolution_1"],
+      template: {
+        name: "reactivation_vip",
+        language: "pt_BR",
+        components: [
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: "{{name}}" },
+              { type: "text", text: "valor fixo" }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(sendTemplate).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      components: [
+        {
+          type: "body",
+          parameters: [
+            { type: "text", text: "Ana" },
+            { type: "text", text: "valor fixo" }
+          ]
+        }
+      ]
+    }));
+    expect(sendTemplate).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      components: [
+        {
+          type: "body",
+          parameters: [
+            { type: "text", text: "Bruno" },
+            { type: "text", text: "valor fixo" }
+          ]
+        }
+      ]
+    }));
+  });
+
   it("sends validated Meta template components through the connected Meta channel", async () => {
     const sendTemplate = vi.fn().mockResolvedValue({
       providerMessageId: "wamid_meta_campaign_1",

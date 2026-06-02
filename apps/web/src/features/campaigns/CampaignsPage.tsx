@@ -30,11 +30,19 @@ type AudienceSource = "board" | "imported";
 type CampaignViewMode = "hub" | "editor";
 type MetaConnectionMode = "direct" | "evolution_official";
 type CampaignSendMode = "evolution" | "meta_cloud";
+type MetaVariableMode = "field" | "fixed";
 
 interface ImportedAudienceRow {
   name?: string;
   phone: string;
   fields: Record<string, string>;
+}
+
+interface MetaVariableMapping {
+  index: number;
+  mode: MetaVariableMode;
+  fieldKey: string;
+  fixedValue: string;
 }
 
 interface CampaignFormState {
@@ -206,6 +214,97 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function getMetaComponentText(component: unknown) {
+  if (!isRecord(component)) return "";
+
+  return typeof component.text === "string" ? component.text : "";
+}
+
+function getMetaComponentType(component: unknown) {
+  if (!isRecord(component)) return "";
+
+  return typeof component.type === "string" ? component.type.toLowerCase() : "";
+}
+
+function getMetaBodyText(template: MetaTemplateOptionDto | null) {
+  if (!template) return "";
+
+  const bodyComponent = template.components.find((component) => getMetaComponentType(component) === "body");
+  return getMetaComponentText(bodyComponent) || template.preview || "";
+}
+
+function extractMetaVariableIndexes(text: string) {
+  return Array.from(text.matchAll(/\{\{\s*(\d+)\s*\}\}/g), (match) => Number(match[1]))
+    .filter((index) => Number.isInteger(index) && index > 0)
+    .filter((index, position, indexes) => indexes.indexOf(index) === position)
+    .sort((first, second) => first - second);
+}
+
+function resolveSampleValue(
+  mapping: MetaVariableMapping,
+  sample: ImportedAudienceRow | CampaignAudienceContactDto | undefined,
+  fallbackName: string
+) {
+  if (mapping.mode === "fixed") return mapping.fixedValue;
+
+  const fieldKey = mapping.fieldKey.trim();
+  if (!fieldKey) return "";
+
+  const name = sample?.name?.trim() || fallbackName;
+  const fields = "fields" in (sample ?? {}) ? (sample as ImportedAudienceRow | CampaignAudienceContactDto).fields : {};
+  const variables: Record<string, string> = {
+    ...fields,
+    name,
+    nome: name,
+    phone: sample?.phone ?? "",
+    telefone: sample?.phone ?? ""
+  };
+
+  return variables[fieldKey] ?? "";
+}
+
+function renderMetaTemplatePreview(input: {
+  text: string;
+  mappings: MetaVariableMapping[];
+  sample?: ImportedAudienceRow | CampaignAudienceContactDto;
+  fallbackName: string;
+}) {
+  return input.text.replace(/\{\{\s*(\d+)\s*\}\}/g, (_, rawIndex: string) => {
+    const index = Number(rawIndex);
+    const mapping = input.mappings.find((current) => current.index === index);
+    if (!mapping) return `{{${rawIndex}}}`;
+
+    return resolveSampleValue(mapping, input.sample, input.fallbackName) || `{{${rawIndex}}}`;
+  });
+}
+
+function buildMetaTemplateComponents(input: {
+  template: MetaTemplateOptionDto | null;
+  mappings: MetaVariableMapping[];
+}) {
+  if (!input.template) return undefined;
+
+  const bodyText = getMetaBodyText(input.template);
+  const indexes = extractMetaVariableIndexes(bodyText);
+  if (indexes.length === 0) return undefined;
+
+  return [
+    {
+      type: "body" as const,
+      parameters: indexes.map((index) => {
+        const mapping = input.mappings.find((current) => current.index === index);
+
+        return {
+          type: "text" as const,
+          text: mapping?.mode === "fixed"
+            ? mapping.fixedValue
+            : `{{${mapping?.fieldKey || "name"}}}`
+        };
+      })
+    }
+  ];
+}
+
 function getMetaCloudStatus(integrations: IntegrationConfigDto[]): {
   active: boolean;
   connectionMode: MetaConnectionMode;
@@ -261,6 +360,8 @@ export function CampaignsPage() {
   });
   const [selectedMetaChannelId, setSelectedMetaChannelId] = useState("");
   const [metaTemplateOptions, setMetaTemplateOptions] = useState<MetaTemplateOptionDto[]>([]);
+  const [selectedMetaTemplate, setSelectedMetaTemplate] = useState<MetaTemplateOptionDto | null>(null);
+  const [metaVariableMappings, setMetaVariableMappings] = useState<MetaVariableMapping[]>([]);
   const [isMetaTemplatesLoading, setIsMetaTemplatesLoading] = useState(false);
   const [metaTemplatesLoaded, setMetaTemplatesLoaded] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -356,6 +457,31 @@ export function CampaignsPage() {
 
   const audienceCount = form.audienceSource === "imported" ? form.importedRows.length : audiencePreview.length;
   const previewSample = form.audienceSource === "imported" ? form.importedRows[0] : audiencePreview[0];
+  const selectedMetaTemplateText = useMemo(() => getMetaBodyText(selectedMetaTemplate), [selectedMetaTemplate]);
+  const selectedMetaVariableIndexes = useMemo(
+    () => extractMetaVariableIndexes(selectedMetaTemplateText),
+    [selectedMetaTemplateText]
+  );
+  const audienceFieldOptions = useMemo(() => {
+    const keys = new Set(["name", "nome", "phone", "telefone"]);
+    const rows = form.audienceSource === "imported" ? form.importedRows : audiencePreview;
+
+    rows.slice(0, 20).forEach((row) => {
+      Object.keys(row.fields ?? {}).forEach((key) => {
+        if (key.trim()) keys.add(key.trim());
+      });
+    });
+
+    return Array.from(keys);
+  }, [audiencePreview, form.audienceSource, form.importedRows]);
+  const metaPreviewText = useMemo(() => (
+    renderMetaTemplatePreview({
+      text: selectedMetaTemplateText,
+      mappings: metaVariableMappings,
+      sample: previewSample,
+      fallbackName: form.fallbackName
+    })
+  ), [form.fallbackName, metaVariableMappings, previewSample, selectedMetaTemplateText]);
   const scheduledCount = campaigns.filter((campaign) => campaign.status === "scheduled").length;
   const completedCount = campaigns.filter((campaign) => campaign.status === "completed").length;
   const sendingCount = campaigns.filter((campaign) => campaign.status === "sending").length;
@@ -448,6 +574,20 @@ export function CampaignsPage() {
 
   function channelLabel(channel: ChannelDto) {
     return channel.displayName || channel.phoneNumber || channel.providerKey;
+  }
+
+  function updateMetaVariableMapping(index: number, partial: Partial<MetaVariableMapping>) {
+    setMetaVariableMappings((current) => current.map((mapping) =>
+      mapping.index === index ? { ...mapping, ...partial } : mapping
+    ));
+  }
+
+  function getIncompleteMetaVariables() {
+    return metaVariableMappings.filter((mapping) =>
+      mapping.mode === "fixed"
+        ? !mapping.fixedValue.trim()
+        : !mapping.fieldKey.trim()
+    );
   }
 
   async function saveCampaign(event?: FormEvent<HTMLFormElement>) {
@@ -604,11 +744,21 @@ export function CampaignsPage() {
     let campaign = selectedCampaign;
     const template = {
       name: metaTemplate.name.trim(),
-      language: metaTemplate.language.trim()
+      language: metaTemplate.language.trim(),
+      components: buildMetaTemplateComponents({
+        template: selectedMetaTemplate,
+        mappings: metaVariableMappings
+      })
     };
 
-    if (!template.name || !template.language) {
-      setError("Informe o nome e o idioma do template Meta aprovado.");
+    if (!selectedMetaTemplate || !template.name || !template.language) {
+      setError("Escolha um template Meta aprovado da lista.");
+      return;
+    }
+
+    const incompleteVariables = getIncompleteMetaVariables();
+    if (incompleteVariables.length > 0) {
+      setError(`Mapeie a variavel {{${incompleteVariables[0]!.index}}} antes de enviar.`);
       return;
     }
 
@@ -666,6 +816,8 @@ export function CampaignsPage() {
       const templates = await apiListMetaEvolutionTemplates(getToken, selectedMetaChannelId);
       setMetaTemplateOptions(templates);
       setMetaTemplatesLoaded(true);
+      setSelectedMetaTemplate(null);
+      setMetaVariableMappings([]);
       setNotice(
         templates.length > 0
           ? `${templates.length} templates Meta encontrados na Evolution.`
@@ -683,6 +835,15 @@ export function CampaignsPage() {
       name: template.name,
       language: template.language || "pt_BR"
     });
+    setSelectedMetaTemplate(template);
+    setMetaVariableMappings(
+      extractMetaVariableIndexes(getMetaBodyText(template)).map((index) => ({
+        index,
+        mode: index === 1 ? "field" : "fixed",
+        fieldKey: index === 1 ? "name" : "",
+        fixedValue: ""
+      }))
+    );
     setNotice(`Template ${template.name} selecionado.`);
   }
 
@@ -1013,6 +1174,8 @@ export function CampaignsPage() {
                         toggleSelectedChannel(channel.id, selectedMetaChannelIds, setSelectedMetaChannelIds);
                         setMetaTemplateOptions([]);
                         setMetaTemplatesLoaded(false);
+                        setSelectedMetaTemplate(null);
+                        setMetaVariableMappings([]);
                       }}
                       type="checkbox"
                     />
@@ -1078,6 +1241,8 @@ export function CampaignsPage() {
                       setSelectedMetaChannelId(event.target.value);
                       setMetaTemplateOptions([]);
                       setMetaTemplatesLoaded(false);
+                      setSelectedMetaTemplate(null);
+                      setMetaVariableMappings([]);
                     }}
                     value={selectedMetaChannelId}
                   >
@@ -1098,7 +1263,7 @@ export function CampaignsPage() {
                   <div className="meta-template-picker-header">
                     <div>
                       <strong>Templates da Evolution</strong>
-                      <span>Use a lista da instancia oficial ou preencha manualmente abaixo.</span>
+                      <span>Escolha um template aprovado e mapeie as variaveis antes de enviar.</span>
                     </div>
                     <button
                       className="secondary-button"
@@ -1120,11 +1285,11 @@ export function CampaignsPage() {
                             {template.preview ? <p>{template.preview}</p> : null}
                           </div>
                           <button
-                            className="secondary-button"
+                            className={selectedMetaTemplate?.id === template.id ? "primary-button" : "secondary-button"}
                             onClick={() => useMetaTemplateOption(template)}
                             type="button"
                           >
-                            Usar
+                            {selectedMetaTemplate?.id === template.id ? "Selecionado" : "Usar"}
                           </button>
                         </article>
                       ))}
@@ -1134,36 +1299,69 @@ export function CampaignsPage() {
                   ) : null}
                 </div>
               ) : null}
-              <div className="campaign-audience-grid">
-                <label className="form-field">
-                  <span>Nome do template</span>
-                  <input
-                    onChange={(event) => setMetaTemplate((current) => ({
-                      ...current,
-                      name: event.target.value
-                    }))}
-                    placeholder="reactivation_vip"
-                    value={metaTemplate.name}
-                  />
-                </label>
-                <label className="form-field">
-                  <span>Idioma</span>
-                  <input
-                    onChange={(event) => setMetaTemplate((current) => ({
-                      ...current,
-                      language: event.target.value
-                    }))}
-                    placeholder="pt_BR"
-                    value={metaTemplate.language}
-                  />
-                </label>
-              </div>
+              {selectedMetaTemplate ? (
+                <div className="meta-variable-panel">
+                  <div className="meta-variable-title">
+                    <div>
+                      <strong>{selectedMetaTemplate.name}</strong>
+                      <span>{selectedMetaTemplate.language} · {selectedMetaTemplate.status}</span>
+                    </div>
+                    <span>{selectedMetaVariableIndexes.length} variavel{selectedMetaVariableIndexes.length !== 1 ? "s" : ""}</span>
+                  </div>
+                  <div className="meta-test-message">
+                    {metaPreviewText || selectedMetaTemplate.preview || "Template sem corpo de mensagem."}
+                  </div>
+                  {selectedMetaVariableIndexes.length > 0 ? (
+                    <div className="meta-variable-list" aria-label="Mapeamento das variaveis Meta">
+                      {metaVariableMappings.map((mapping) => (
+                        <div className="meta-variable-row" key={mapping.index}>
+                          <span className="status-badge status-badge--closed">{`{{${mapping.index}}}`}</span>
+                          <select
+                            onChange={(event) => updateMetaVariableMapping(mapping.index, {
+                              mode: event.target.value as MetaVariableMode
+                            })}
+                            value={mapping.mode}
+                          >
+                            <option value="field">Coluna da audiencia</option>
+                            <option value="fixed">Valor fixo</option>
+                          </select>
+                          {mapping.mode === "field" ? (
+                            <select
+                              onChange={(event) => updateMetaVariableMapping(mapping.index, {
+                                fieldKey: event.target.value
+                              })}
+                              value={mapping.fieldKey}
+                            >
+                              <option value="">Escolha uma coluna</option>
+                              {audienceFieldOptions.map((fieldKey) => (
+                                <option key={fieldKey} value={fieldKey}>{fieldKey}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              onChange={(event) => updateMetaVariableMapping(mapping.index, {
+                                fixedValue: event.target.value
+                              })}
+                              placeholder="Valor enviado igual para todos"
+                              value={mapping.fixedValue}
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="list-note">Este template nao possui variaveis numericas no corpo.</p>
+                  )}
+                </div>
+              ) : (
+                <p className="list-note">Selecione um template aprovado para liberar o envio.</p>
+              )}
               <button
                 className="secondary-button"
                 disabled={
                   isSaving ||
-                  !metaTemplate.name.trim() ||
-                  !metaTemplate.language.trim() ||
+                  !selectedMetaTemplate ||
+                  getIncompleteMetaVariables().length > 0 ||
                   selectedMetaChannelIds.length === 0
                 }
                 onClick={sendMetaTemplate}
@@ -1263,8 +1461,8 @@ export function CampaignsPage() {
             </div>
             <div className="campaign-preview-bubble">
               {sendMode === "meta_cloud"
-                ? metaTemplate.name.trim()
-                  ? `Template Meta ${metaTemplate.name.trim()} (${metaTemplate.language || "pt_BR"})`
+                ? selectedMetaTemplate
+                  ? metaPreviewText || selectedMetaTemplate.preview || `Template Meta ${selectedMetaTemplate.name}`
                   : "Escolha um template Meta aprovado."
                 : renderPreview(form.templates.find((template) => template.trim()) ?? "", form.fallbackName, previewSample)}
             </div>

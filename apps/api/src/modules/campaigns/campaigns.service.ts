@@ -684,6 +684,28 @@ function validateMetaSendComponents(input: {
   });
 }
 
+function renderMetaComponentsForContact(input: {
+  components?: MetaTemplateComponent[];
+  contact: ResolvedCampaignContact;
+  fallbackName: string;
+}) {
+  if (!input.components) {
+    return undefined;
+  }
+
+  return input.components.map((component) => withoutUndefined({
+    type: component.type,
+    parameters: component.parameters?.map((parameter) => ({
+      type: "text" as const,
+      text: renderTemplate({
+        template: parameter.text ?? "",
+        contact: input.contact,
+        fallbackName: input.fallbackName
+      })
+    }))
+  }) as MetaTemplateComponent);
+}
+
 export interface CampaignsServiceOptions {
   evolution?: {
     mode: EvolutionRuntime["mode"];
@@ -1283,6 +1305,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
 
       const campaign = await findCampaignForWorkspace(input);
       const plans = await buildRecipientPlans(campaign);
+      const fallbackName = normalizeFallbackName(campaign.fallbackName);
       const components: MetaTemplateComponent[] | undefined = template
         ? validateMetaSendComponents({
             supplied: input.template.components,
@@ -1299,6 +1322,11 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       for (const [planIndex, plan] of plans.entries()) {
         const channel = channels[planIndex % channels.length]!;
         const sentAt = now();
+        const renderedComponents = renderMetaComponentsForContact({
+          components,
+          contact: plan.contact,
+          fallbackName
+        });
         const baseData = {
           workspaceId: input.workspaceId,
           campaignId: input.campaignId,
@@ -1325,14 +1353,14 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
                 to: plan.contact.phone,
                 name: templateName,
                 language: templateLanguage,
-                ...(components ? { components } : {})
+                ...(renderedComponents ? { components: renderedComponents } : {})
               })
             : await options.metaEvolution!.client!.sendTemplate({
                 instanceName: channel.providerKey,
                 number: plan.contact.phone,
                 name: templateName,
                 language: templateLanguage,
-                ...(components ? { components } : {})
+                ...(renderedComponents ? { components: renderedComponents } : {})
               });
 
           await createCampaignConversationMessage({
