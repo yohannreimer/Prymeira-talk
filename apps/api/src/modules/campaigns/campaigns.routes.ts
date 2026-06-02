@@ -78,6 +78,7 @@ const metaTemplateSendComponentSchema = z
   .strict();
 
 const sendMetaTemplateBodySchema = z.object({
+  channelId: uuidParamSchema.optional(),
   template: z.object({
     name: z.string().trim().min(1).max(512),
     language: z.string().trim().min(1).max(64),
@@ -330,6 +331,7 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
       const result = await metaService.sendMetaTemplate({
         workspaceId: request.talk.workspaceId,
         campaignId: params.data.campaignId,
+        channelId: body.data.channelId,
         template: body.data.template
       });
       const campaign = await service.getCampaign({

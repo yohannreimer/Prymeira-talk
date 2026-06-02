@@ -501,6 +501,88 @@ describe("conversations service", () => {
     }
   });
 
+  it("sends Meta Cloud via Evolution text when the customer service window is open", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-20T12:00:00.000Z"));
+
+    const sendText = vi.fn().mockResolvedValue({
+      providerMessageId: "evo_text_1",
+      raw: { key: { id: "evo_text_1" } }
+    });
+    const prisma = createMockPrisma({
+      findUnique: vi
+        .fn<PrismaLike["conversation"]["findUnique"]>()
+        .mockResolvedValueOnce({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          customerServiceWindowExpiresAt: new Date("2026-05-20T13:00:00.000Z"),
+          channel: { provider: "meta_cloud", providerKey: "official-instance" },
+          contact: { phone: "5547999990000" }
+        })
+        .mockResolvedValue({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          status: "open",
+          assignedUserId: null,
+          departmentId: null,
+          lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+          lastMessagePreview: "Oi Evolution",
+          unreadCount: 0,
+          priority: "normal",
+          tags: []
+        }),
+      create: vi.fn<PrismaLike["message"]["create"]>().mockResolvedValue({
+        id: "msg_1",
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        providerMessageId: "evo_text_1",
+        direction: "outbound",
+        type: "text",
+        body: "Oi Evolution",
+        mediaUrl: null,
+        status: "sent",
+        sentByUserId: "user_1",
+        createdAt: new Date("2026-05-20T12:00:00.000Z")
+      })
+    });
+    const service = createConversationsService(prisma, {
+      metaEvolution: {
+        client: { sendText }
+      }
+    });
+
+    try {
+      const result = await service.createPendingOutboundMessage({
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        body: "Oi Evolution",
+        sentByUserId: "user_1"
+      });
+
+      expect(sendText).toHaveBeenCalledWith({
+        instanceName: "official-instance",
+        number: "5547999990000",
+        text: "Oi Evolution"
+      });
+      expect(prisma.message.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            providerMessageId: "evo_text_1",
+            status: "sent"
+          })
+        })
+      );
+      expect(result.message.status).toBe("sent");
+      expect(result.message.providerMessageId).toBe("evo_text_1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ["missing", null],
     ["closed", new Date("2026-05-20T11:59:59.000Z")]

@@ -294,6 +294,15 @@ interface ConversationsServiceOptions {
     phoneNumberId: string | null;
     client?: Pick<MetaClient, "sendText"> | null;
   } | null;
+  metaEvolution?: {
+    client?: {
+      sendText(input: {
+        instanceName: string;
+        number: string;
+        text: string;
+      }): Promise<{ providerMessageId: string | null; raw: unknown }>;
+    } | null;
+  } | null;
 }
 
 function toIsoString(value: DateLike) {
@@ -604,8 +613,10 @@ export function createConversationsService(
 
       if (conversation.channel?.provider === "meta_cloud") {
         const contactPhone = conversation.contact?.phone?.trim();
+        const providerKey = conversation.channel.providerKey?.trim();
         const phoneNumberId = options.meta?.phoneNumberId?.trim();
         const metaClient = options.meta?.client;
+        const metaEvolutionClient = options.metaEvolution?.client;
 
         if (input.attachment) {
           throw new OutboundMessageValidationError(
@@ -621,25 +632,38 @@ export function createConversationsService(
           );
         }
 
-        if (!metaClient || !phoneNumberId) {
+        if (metaEvolutionClient && providerKey) {
+          if (!isFutureDate(conversation.customerServiceWindowExpiresAt)) {
+            throw new OutboundMessageValidationError(
+              "META_SERVICE_WINDOW_CLOSED",
+              "The Meta customer service window is closed. An approved Meta template is required."
+            );
+          }
+
+          providerSend = await metaEvolutionClient.sendText({
+            instanceName: providerKey,
+            number: contactPhone,
+            text: messageBody
+          });
+        } else if (!metaClient || !phoneNumberId) {
           throw new OutboundMessageValidationError(
             "META_NOT_CONFIGURED",
             "Meta Cloud is not configured for this workspace."
           );
-        }
+        } else {
+          if (!isFutureDate(conversation.customerServiceWindowExpiresAt)) {
+            throw new OutboundMessageValidationError(
+              "META_SERVICE_WINDOW_CLOSED",
+              "The Meta customer service window is closed. An approved Meta template is required."
+            );
+          }
 
-        if (!isFutureDate(conversation.customerServiceWindowExpiresAt)) {
-          throw new OutboundMessageValidationError(
-            "META_SERVICE_WINDOW_CLOSED",
-            "The Meta customer service window is closed. An approved Meta template is required."
-          );
+          providerSend = await metaClient.sendText({
+            phoneNumberId,
+            to: contactPhone,
+            text: messageBody
+          });
         }
-
-        providerSend = await metaClient.sendText({
-          phoneNumberId,
-          to: contactPhone,
-          text: messageBody
-        });
       }
 
       const message = await prisma.message.create({

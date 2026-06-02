@@ -261,6 +261,11 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       meta: {
         client: meta.client,
         phoneNumberId: meta.phoneNumberId
+      },
+      metaEvolution: {
+        client: meta.evolutionClient?.sendText ? {
+          sendText: meta.evolutionClient.sendText.bind(meta.evolutionClient)
+        } : null
       }
     });
 

@@ -1981,7 +1981,8 @@ export async function apiSendCampaignReal(
 export async function apiSendCampaignMetaTemplate(
   getToken: () => Promise<string | null>,
   campaignId: string,
-  template: MetaTemplateDto
+  template: MetaTemplateDto,
+  channelId?: string
 ): Promise<CampaignSendResultDto> {
   const token = await getRequiredToken(getToken);
 
@@ -1991,7 +1992,7 @@ export async function apiSendCampaignMetaTemplate(
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ template })
+    body: JSON.stringify({ ...(channelId ? { channelId } : {}), template })
   });
 
   if (!response.ok) {
@@ -2258,11 +2259,18 @@ export async function apiSyncMetaTemplates(
 }
 
 export async function apiListMetaEvolutionTemplates(
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  channelId?: string
 ): Promise<MetaTemplateOptionDto[]> {
+  const searchParams = new URLSearchParams();
+  if (channelId) {
+    searchParams.set("channelId", channelId);
+  }
+  const queryString = searchParams.toString();
+
   return fetchJson(
     getToken,
-    "/settings/meta-cloud/evolution-templates",
+    `/settings/meta-cloud/evolution-templates${queryString ? `?${queryString}` : ""}`,
     {},
     parseMetaTemplateOptionsResult,
     "Failed to list Meta templates from Evolution"

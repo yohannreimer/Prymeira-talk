@@ -19,6 +19,17 @@ type MockPrisma = {
   channel: {
     findFirst: any;
   };
+  contact: {
+    findFirst: any;
+    create: any;
+  };
+  conversation: {
+    upsert: any;
+    updateMany: any;
+  };
+  message: {
+    create: any;
+  };
   metaMessageTemplate: {
     findFirst: any;
   };
@@ -142,6 +153,36 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
           providerKey: "talk-workspace-a",
           status: "connected"
         })
+    },
+    contact: {
+      findFirst: overrides.contact?.findFirst ?? vi.fn().mockResolvedValue(null),
+      create:
+        overrides.contact?.create ??
+        vi.fn().mockImplementation(async (args) => ({
+          id: String(args.data.phone).endsWith("0001") ? firstContactId : secondContactId,
+          workspaceId: args.data.workspaceId,
+          name: args.data.name ?? null,
+          phone: args.data.phone
+        }))
+    },
+    conversation: {
+      upsert:
+        overrides.conversation?.upsert ??
+        vi.fn().mockImplementation(async (args) => ({
+          id: `conv_${args.create.contactId}`,
+          ...args.create
+        })),
+      updateMany: overrides.conversation?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 })
+    },
+    message: {
+      create:
+        overrides.message?.create ??
+        vi.fn().mockImplementation(async (args) => ({
+          id: `msg_${args.data.providerMessageId ?? args.data.conversationId}`,
+          ...args.data,
+          createdAt: new Date("2026-05-25T12:00:00.000Z"),
+          updatedAt: new Date("2026-05-25T12:00:00.000Z")
+        }))
     },
     metaMessageTemplate: {
       findFirst:
@@ -550,6 +591,38 @@ describe("campaigns service", () => {
       name: "reactivation_vip",
       language: "pt_BR"
     });
+    expect(prisma.contact.findFirst).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        phone: { in: expect.arrayContaining(["5511999990001"]) }
+      },
+      orderBy: { updatedAt: "desc" }
+    });
+    expect(prisma.conversation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          workspaceId: "workspace_a",
+          channelId: "channel_meta_evolution_1",
+          contactId: firstContactId,
+          status: "open",
+          unreadCount: 0
+        })
+      })
+    );
+    expect(prisma.message.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          workspaceId: "workspace_a",
+          conversationId: `conv_${firstContactId}`,
+          providerMessageId: "evo_template_campaign_1",
+          providerEventId: "campaign:00000000-0000-4000-8000-000000000201:evo_template_campaign_1",
+          direction: "outbound",
+          type: "template",
+          body: "Template reactivation_vip (pt_BR)",
+          status: "sent"
+        })
+      })
+    );
     expect(upsert.mock.calls[0]?.[0].create).toEqual(
       expect.objectContaining({
         status: "sent",
@@ -560,6 +633,72 @@ describe("campaigns service", () => {
         })
       })
     );
+  });
+
+  it("sends a Meta template campaign through the selected official Evolution channel", async () => {
+    const sendTemplate = vi.fn().mockResolvedValue({
+      providerMessageId: "evo_selected_channel_1",
+      raw: { key: { id: "evo_selected_channel_1" } }
+    });
+    const channelFindFirst = vi.fn().mockResolvedValue({
+      id: "channel_meta_evolution_2",
+      workspaceId: "workspace_a",
+      provider: "meta_cloud",
+      providerKey: "selected-official-instance",
+      status: "connected"
+    });
+    const prisma = createMockPrisma({
+      campaign: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue(baseCampaign),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({ ...baseCampaign, status: "completed", mode: "real" })
+      },
+      campaignRecipient: {
+        findMany: vi.fn(),
+        upsert: vi.fn().mockImplementation(async (args) => args.create)
+      },
+      channel: {
+        findFirst: channelFindFirst
+      },
+      metaMessageTemplate: {
+        findFirst: vi.fn()
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      metaEvolution: {
+        instanceName: "fallback-instance",
+        client: { sendTemplate }
+      },
+      now: () => new Date("2026-05-25T12:00:00.000Z")
+    });
+
+    const result = await service.sendMetaTemplate({
+      workspaceId: "workspace_a",
+      campaignId,
+      channelId: "channel_meta_evolution_2",
+      template: {
+        name: "reactivation_vip",
+        language: "pt_BR"
+      }
+    });
+
+    expect(result.recipientsSent).toBe(2);
+    expect(channelFindFirst).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        id: "channel_meta_evolution_2",
+        provider: "meta_cloud",
+        status: "connected"
+      },
+      orderBy: [{ createdAt: "asc" }]
+    });
+    expect(sendTemplate).toHaveBeenCalledWith({
+      instanceName: "selected-official-instance",
+      number: "+5511999990001",
+      name: "reactivation_vip",
+      language: "pt_BR"
+    });
   });
 
   it("sends validated Meta template components through the connected Meta channel", async () => {

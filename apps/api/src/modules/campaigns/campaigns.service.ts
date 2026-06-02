@@ -1,4 +1,8 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import {
+  buildPhoneLookupCandidates,
+  normalizePhoneForStorage
+} from "../contacts/phone-normalization.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import type { MetaTemplateComponent } from "../meta/meta.client.js";
 
@@ -64,6 +68,11 @@ type RecipientUpsertArgs = Parameters<PrismaClient["campaignRecipient"]["upsert"
 type BoardFindFirstArgs = Parameters<PrismaClient["contactBoard"]["findFirst"]>[0];
 type MembershipFindManyArgs = Parameters<PrismaClient["contactBoardMembership"]["findMany"]>[0];
 type ChannelFindFirstArgs = Parameters<PrismaClient["channel"]["findFirst"]>[0];
+type ContactFindFirstArgs = Parameters<PrismaClient["contact"]["findFirst"]>[0];
+type ContactCreateArgs = Parameters<PrismaClient["contact"]["create"]>[0];
+type ConversationUpsertArgs = Parameters<PrismaClient["conversation"]["upsert"]>[0];
+type ConversationUpdateManyArgs = Parameters<PrismaClient["conversation"]["updateMany"]>[0];
+type MessageCreateArgs = Parameters<PrismaClient["message"]["create"]>[0];
 type MetaMessageTemplateFindFirstArgs = Parameters<
   PrismaClient["metaMessageTemplate"]["findFirst"]
 >[0];
@@ -104,6 +113,17 @@ export interface PrismaLike {
   };
   channel: {
     findFirst(args: ChannelFindFirstArgs): Promise<ChannelRecord | null>;
+  };
+  contact: {
+    findFirst(args: ContactFindFirstArgs): Promise<RecipientContactRecord | null>;
+    create(args: ContactCreateArgs): Promise<RecipientContactRecord>;
+  };
+  conversation: {
+    upsert(args: ConversationUpsertArgs): Promise<{ id: string }>;
+    updateMany(args: ConversationUpdateManyArgs): Promise<{ count: number }>;
+  };
+  message: {
+    create(args: MessageCreateArgs): Promise<{ id: string }>;
   };
   metaMessageTemplate: {
     findFirst(args: MetaMessageTemplateFindFirstArgs): Promise<MetaMessageTemplateRecord | null>;
@@ -250,6 +270,106 @@ function contactSnapshotToJson(contact: ResolvedCampaignContact): Prisma.InputJs
     phone: contact.phone,
     fields: contact.fields
   };
+}
+
+async function findOrCreateCampaignContact(input: {
+  prisma: PrismaLike;
+  workspaceId: string;
+  contact: ResolvedCampaignContact;
+}) {
+  if (input.contact.contactId) {
+    const existingById = await input.prisma.contact.findFirst({
+      where: {
+        workspaceId: input.workspaceId,
+        id: input.contact.contactId
+      }
+    });
+
+    if (existingById) {
+      return existingById;
+    }
+  }
+
+  const phone = normalizePhoneForStorage(input.contact.phone);
+  const existingByPhone = await input.prisma.contact.findFirst({
+    where: {
+      workspaceId: input.workspaceId,
+      phone: { in: buildPhoneLookupCandidates(phone) }
+    },
+    orderBy: { updatedAt: "desc" }
+  });
+
+  if (existingByPhone) {
+    return existingByPhone;
+  }
+
+  return input.prisma.contact.create({
+    data: {
+      workspaceId: input.workspaceId,
+      phone,
+      ...(input.contact.name ? { name: input.contact.name } : {})
+    }
+  });
+}
+
+async function createCampaignConversationMessage(input: {
+  prisma: PrismaLike;
+  workspaceId: string;
+  campaignId: string;
+  channelId: string;
+  contact: ResolvedCampaignContact;
+  providerMessageId: string | null;
+  body: string;
+  sentAt: Date;
+}) {
+  const contact = await findOrCreateCampaignContact({
+    prisma: input.prisma,
+    workspaceId: input.workspaceId,
+    contact: input.contact
+  });
+  const conversation = await input.prisma.conversation.upsert({
+    where: {
+      workspaceId_channelId_contactId: {
+        workspaceId: input.workspaceId,
+        channelId: input.channelId,
+        contactId: contact.id
+      }
+    },
+    create: {
+      workspaceId: input.workspaceId,
+      channelId: input.channelId,
+      contactId: contact.id,
+      status: "open",
+      unreadCount: 0
+    },
+    update: {}
+  });
+  const providerEventId = `campaign:${input.campaignId}:${input.providerMessageId ?? input.contact.audienceKey}`;
+
+  await input.prisma.message.create({
+    data: {
+      workspaceId: input.workspaceId,
+      conversationId: conversation.id,
+      providerMessageId: input.providerMessageId,
+      providerEventId,
+      direction: "outbound",
+      type: "template",
+      body: input.body,
+      status: "sent",
+      createdAt: input.sentAt
+    }
+  });
+  await input.prisma.conversation.updateMany({
+    where: {
+      id: conversation.id,
+      workspaceId: input.workspaceId,
+      OR: [{ lastMessageAt: null }, { lastMessageAt: { lte: input.sentAt } }]
+    },
+    data: {
+      lastMessageAt: input.sentAt,
+      lastMessagePreview: input.body
+    }
+  });
 }
 
 function toCampaignDto(record: CampaignRecord): CampaignDto {
@@ -1046,6 +1166,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
     async sendMetaTemplate(input: {
       workspaceId: string;
       campaignId: string;
+      channelId?: string;
       template: {
         name: string;
         language: string;
@@ -1090,8 +1211,10 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
         where: {
           workspaceId: input.workspaceId,
           provider: "meta_cloud",
-          providerKey: directMetaConfigured ? phoneNumberId : evolutionInstanceName,
-          status: "connected"
+          status: "connected",
+          ...(input.channelId
+            ? { id: input.channelId }
+            : { providerKey: directMetaConfigured ? phoneNumberId : evolutionInstanceName })
         },
         orderBy: [{ createdAt: "asc" }]
       });
@@ -1149,12 +1272,23 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
                 ...(components ? { components } : {})
               })
             : await options.metaEvolution!.client!.sendTemplate({
-                instanceName: evolutionInstanceName!,
+                instanceName: channel.providerKey,
                 number: plan.contact.phone,
                 name: templateName,
                 language: templateLanguage,
                 ...(components ? { components } : {})
               });
+
+          await createCampaignConversationMessage({
+            prisma,
+            workspaceId: input.workspaceId,
+            campaignId: input.campaignId,
+            channelId: channel.id,
+            contact: plan.contact,
+            providerMessageId: providerSend.providerMessageId,
+            body: messagePreview,
+            sentAt
+          });
 
           sent += 1;
           await prisma.campaignRecipient.upsert({

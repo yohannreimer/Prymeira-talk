@@ -36,6 +36,9 @@ const updateSettingsBodySchema = z.union([
     settings: genericSettingsSchema.optional()
   })
 ]);
+const evolutionOfficialTemplateQuerySchema = z.object({
+  channelId: z.string().uuid().optional()
+});
 
 function requireSettingsManage(
   role: UserRole,
@@ -124,6 +127,11 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
       return reply;
     }
 
+    const query = evolutionOfficialTemplateQuerySchema.safeParse(request.query);
+    if (!query.success) {
+      return reply.code(400).send({ error: "Invalid template list request." });
+    }
+
     const runtime = await resolveMetaRuntime(app.prisma, {
       workspaceId: request.talk.workspaceId
     });
@@ -140,9 +148,31 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    let instanceName = runtime.evolutionInstanceName;
+    if (query.data.channelId) {
+      const channel = await app.prisma.channel.findFirst({
+        where: {
+          workspaceId: request.talk.workspaceId,
+          id: query.data.channelId,
+          provider: "meta_cloud",
+          status: "connected"
+        },
+        select: { providerKey: true }
+      });
+
+      if (!channel?.providerKey) {
+        return reply.code(404).send({
+          code: "META_CHANNEL_NOT_FOUND",
+          error: "Connected Meta Cloud channel not found."
+        });
+      }
+
+      instanceName = channel.providerKey;
+    }
+
     try {
       return runtime.evolutionClient.listTemplates({
-        instanceName: runtime.evolutionInstanceName
+        instanceName
       });
     } catch (error) {
       if (error instanceof EvolutionClientError) {
