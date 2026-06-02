@@ -424,7 +424,7 @@ export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
             },
             include: {
               assignedUser: { select: { displayName: true } },
-              channel: { select: { displayName: true, phoneNumber: true } },
+              channel: { select: { displayName: true, phoneNumber: true, provider: true } },
               contact: { select: { name: true, phone: true } },
               department: { select: { name: true } }
             }

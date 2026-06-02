@@ -1515,7 +1515,7 @@ export async function apiCreateConversationMessage(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to send message: ${response.status}`);
+    throw new Error(await readApiErrorMessage(response, "Failed to send message"));
   }
 
   const data = await response.json();

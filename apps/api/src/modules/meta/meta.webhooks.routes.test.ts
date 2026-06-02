@@ -180,7 +180,12 @@ function createMockPrisma(overrides: {
           lastMessagePreview: "Oi",
           unreadCount: 1,
           priority: "normal",
-          channel: { displayName: "Meta WhatsApp", phoneNumber: "+55 11 99999-9999" },
+          customerServiceWindowExpiresAt: new Date((1780401600 + 24 * 60 * 60) * 1000),
+          channel: {
+            displayName: "Meta WhatsApp",
+            phoneNumber: "+55 11 99999-9999",
+            provider: "meta_cloud"
+          },
           contact: { name: "Cliente", phone: "551199999999" },
           department: null,
           assignedUser: null,
@@ -420,6 +425,20 @@ describe("Meta webhook routes", () => {
           customerServiceWindowExpiresAt: new Date((1780401600 + 24 * 60 * 60) * 1000)
         }
       });
+      expect(prisma.conversation.findUnique).toHaveBeenCalledWith({
+        where: {
+          workspaceId_id: {
+            workspaceId: "local_workspace",
+            id: "conv_1"
+          }
+        },
+        include: {
+          assignedUser: { select: { displayName: true } },
+          channel: { select: { displayName: true, phoneNumber: true, provider: true } },
+          contact: { select: { name: true, phone: true } },
+          department: { select: { name: true } }
+        }
+      });
       expect(publish).toHaveBeenCalledWith({
         type: "message.created",
         workspaceId: "local_workspace",
@@ -435,7 +454,9 @@ describe("Meta webhook routes", () => {
         payload: expect.objectContaining({
           id: "conv_1",
           contactName: "Cliente",
-          lastMessagePreview: "Oi"
+          lastMessagePreview: "Oi",
+          channelProvider: "meta_cloud",
+          metaServiceWindowOpen: true
         })
       });
     } finally {

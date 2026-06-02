@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { conversationSchema, messageSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
+import { MetaClientError } from "../meta/meta.client.js";
 import {
   ConversationActionError,
   ConversationNotFoundError,
@@ -1511,6 +1512,63 @@ describe("conversation routes", () => {
       expect(publish).not.toHaveBeenCalled();
     } finally {
       await app.close();
+    }
+  });
+
+  it("maps Meta provider send failures to a 502 response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new MetaClientError(400, { error: { message: "outside policy" } }))
+    );
+
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        customerServiceWindowExpiresAt: new Date("2999-05-20T13:00:00.000Z"),
+        channel: { provider: "meta_cloud", providerKey: "meta-channel" },
+        contact: { phone: "5547999990000" }
+      })
+    });
+    prisma.integrationConfig.findUnique.mockResolvedValue({
+      mode: "real",
+      status: "connected",
+      settings: {
+        enabled: true,
+        wabaId: "waba_1",
+        phoneNumberId: "phone_number_1",
+        accessToken: "meta_access_token"
+      }
+    });
+    const publish = vi.fn();
+    const app = Fastify({ logger: false });
+
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => {
+      request.talk = { workspaceId: "workspace_a", role: "agent" };
+    });
+    await app.register(conversationsRoutes);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/conversations/00000000-0000-4000-8000-000000000001/messages",
+        payload: { body: "Oi" }
+      });
+
+      expect(response.statusCode).toBe(502);
+      expect(response.json()).toEqual({
+        code: "META_SEND_FAILED",
+        error: "Meta did not accept the outbound message."
+      });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+      vi.unstubAllGlobals();
     }
   });
 
