@@ -80,6 +80,24 @@ Do not commit the Evolution API key or webhook secret. Store both as deployment 
 
 Production Docker/Swarm deployment is documented in `docs/production-deploy.md`.
 
+## Meta WhatsApp Cloud API
+
+Prymeira Talk can run Evolution and official Meta WhatsApp Cloud API channels side by side. Owner and manager users activate Meta in Settings.
+
+Required Meta values for phase 1:
+
+- WABA ID
+- Phone Number ID
+- Access token
+- Webhook verify token
+- App Secret
+
+Webhook URL:
+
+`https://<talk-domain>/webhooks/meta/<workspaceId>`
+
+Cold outbound Meta sends must use approved templates. Free-text sends are allowed only inside the WhatsApp customer service window.
+
 ## Suite Verification Checklist
 
 Run automated verification:
