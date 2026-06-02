@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { metaWebhooksRoutes } from "./meta.webhooks.routes.js";
 
@@ -44,6 +45,29 @@ function createMetaPayloadWithMessages(messages: Array<Record<string, unknown>>)
       }
     ]
   };
+}
+
+function signMetaPayload(body: string, appSecret = "app-secret") {
+  return `sha256=${createHmac("sha256", appSecret).update(body).digest("hex")}`;
+}
+
+function createMockPrismaWithAppSecret(appSecret = "app-secret") {
+  return createMockPrisma({
+    integrationConfig: {
+      findUnique: vi.fn().mockResolvedValue({
+        mode: "real",
+        status: "connected",
+        settings: {
+          enabled: true,
+          wabaId: "111",
+          phoneNumberId: "222",
+          accessToken: "meta-token",
+          webhookVerifyToken: "verify-me",
+          appSecret
+        }
+      })
+    }
+  });
 }
 
 function createMockPrisma(overrides: {
@@ -401,6 +425,80 @@ describe("Meta webhook routes", () => {
           lastMessagePreview: "Oi"
         })
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts signed Meta webhook payloads when appSecret is configured", async () => {
+    const prisma = createMockPrismaWithAppSecret();
+    const { app } = await buildMetaApp(prisma);
+    const rawPayload = JSON.stringify(metaTextPayload);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/meta/local_workspace",
+        headers: {
+          "content-type": "application/json",
+          "x-hub-signature-256": signMetaPayload(rawPayload)
+        },
+        payload: rawPayload
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true });
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          providerMessageId: "wamid_in_1",
+          body: "Oi"
+        })
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects unsigned Meta webhook payloads when appSecret is configured", async () => {
+    const prisma = createMockPrismaWithAppSecret();
+    const { app } = await buildMetaApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/meta/local_workspace",
+        payload: metaTextPayload
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toEqual({ ok: false, error: "invalid_meta_signature" });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects invalid Meta webhook signatures when appSecret is configured", async () => {
+    const prisma = createMockPrismaWithAppSecret();
+    const { app } = await buildMetaApp(prisma);
+    const rawPayload = JSON.stringify(metaTextPayload);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/meta/local_workspace",
+        headers: {
+          "content-type": "application/json",
+          "x-hub-signature-256": "sha256=bad"
+        },
+        payload: rawPayload
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toEqual({ ok: false, error: "invalid_meta_signature" });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

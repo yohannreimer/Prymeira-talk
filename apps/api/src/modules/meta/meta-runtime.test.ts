@@ -17,7 +17,8 @@ describe("resolveMetaRuntime", () => {
       resolveMetaRuntime(prisma, { workspaceId: "local_workspace" })
     ).resolves.toMatchObject({
       active: false,
-      client: null
+      client: null,
+      appSecret: null
     });
   });
 
@@ -45,7 +46,8 @@ describe("resolveMetaRuntime", () => {
     expect(runtime).toMatchObject({
       active: true,
       wabaId: "111",
-      phoneNumberId: "222"
+      phoneNumberId: "222",
+      appSecret: null
     });
     expect(runtime.client).not.toBeNull();
   });
@@ -61,7 +63,8 @@ describe("resolveMetaRuntime", () => {
             wabaId: " 111 ",
             phoneNumberId: " 222 ",
             accessToken: " token ",
-            webhookVerifyToken: " verify-token "
+            webhookVerifyToken: " verify-token ",
+            appSecret: " app-secret "
           }
         })
       }
@@ -78,7 +81,8 @@ describe("resolveMetaRuntime", () => {
       active: true,
       wabaId: "111",
       phoneNumberId: "222",
-      webhookVerifyToken: "verify-token"
+      webhookVerifyToken: "verify-token",
+      appSecret: "app-secret"
     });
     expect(runtime).not.toHaveProperty("accessToken");
 

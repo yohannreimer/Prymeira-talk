@@ -25,6 +25,7 @@ export type MetaRuntime =
       wabaId: null;
       phoneNumberId: null;
       webhookVerifyToken: null;
+      appSecret: null;
     }
   | {
       active: true;
@@ -32,6 +33,7 @@ export type MetaRuntime =
       wabaId: string;
       phoneNumberId: string;
       webhookVerifyToken: string | null;
+      appSecret: string | null;
     };
 
 export interface MetaRuntimePrismaLike {
@@ -46,7 +48,8 @@ function inactiveRuntime(): MetaRuntime {
     client: null,
     wabaId: null,
     phoneNumberId: null,
-    webhookVerifyToken: null
+    webhookVerifyToken: null,
+    appSecret: null
   };
 }
 
@@ -99,6 +102,7 @@ export async function resolveMetaRuntime(
     }),
     wabaId,
     phoneNumberId,
-    webhookVerifyToken: getStringSetting(config.settings, "webhookVerifyToken")
+    webhookVerifyToken: getStringSetting(config.settings, "webhookVerifyToken"),
+    appSecret: getStringSetting(config.settings, "appSecret")
   };
 }

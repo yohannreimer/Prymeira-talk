@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import {
   buildPhoneLookupCandidates,
@@ -20,6 +21,12 @@ const metaWebhookVerificationQuerySchema = z.object({
   "hub.challenge": z.string().min(1)
 });
 
+const rawBodySymbol = Symbol("metaWebhookRawBody");
+
+type MetaRawRequest = {
+  [rawBodySymbol]?: Buffer;
+};
+
 interface MetaInboundTextMessage {
   phoneNumberId: string;
   messageId: string;
@@ -30,7 +37,11 @@ interface MetaInboundTextMessage {
 }
 
 type MetaMessageProcessResult =
-  | { kind: "created"; message: Parameters<typeof toMessageDto>[0]; conversation: Parameters<typeof toConversationDto>[0] }
+  | {
+      kind: "created";
+      message: Parameters<typeof toMessageDto>[0];
+      conversation: Parameters<typeof toConversationDto>[0];
+    }
   | { kind: "duplicate" }
   | { kind: "channel_not_found" }
   | { kind: "ignored" };
@@ -157,7 +168,62 @@ function isUniqueConstraintError(error: unknown) {
   );
 }
 
+function normalizeHeaderValue(header: string | string[] | undefined) {
+  if (Array.isArray(header)) {
+    return header.length === 1 ? header[0] : undefined;
+  }
+
+  return header;
+}
+
+function getRawRequestBody(request: { raw: unknown; body: unknown }) {
+  const rawBody = (request.raw as MetaRawRequest)[rawBodySymbol];
+  if (rawBody) {
+    return rawBody;
+  }
+
+  return Buffer.from(JSON.stringify(request.body ?? {}));
+}
+
+function hasValidMetaSignature(
+  header: string | string[] | undefined,
+  rawBody: Buffer,
+  appSecret: string
+) {
+  const signature = normalizeHeaderValue(header);
+  if (!signature?.startsWith("sha256=")) {
+    return false;
+  }
+
+  const signatureHex = signature.slice("sha256=".length);
+  if (!/^[a-f0-9]+$/i.test(signatureHex)) {
+    return false;
+  }
+
+  const actual = Buffer.from(signatureHex, "hex");
+  const expected = createHmac("sha256", appSecret).update(rawBody).digest();
+
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
 export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {
+    const rawBody = Buffer.isBuffer(body) ? body : Buffer.from(body);
+    (request.raw as MetaRawRequest)[rawBodySymbol] = rawBody;
+
+    if (rawBody.length === 0) {
+      done(null, {});
+      return;
+    }
+
+    try {
+      done(null, JSON.parse(rawBody.toString("utf8")) as unknown);
+    } catch (error) {
+      done(error as Error, undefined);
+    }
+  });
+
   app.get("/webhooks/meta/:workspaceId", async (request, reply) => {
     const params = metaWebhookParamsSchema.safeParse(request.params);
     const query = metaWebhookVerificationQuerySchema.safeParse(request.query);
@@ -197,6 +263,17 @@ export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
 
     if (!runtime.active || !runtime.client || !runtime.phoneNumberId) {
       return reply.code(409).send({ ok: false, error: "meta_cloud_not_configured" });
+    }
+
+    if (
+      runtime.appSecret &&
+      !hasValidMetaSignature(
+        request.headers["x-hub-signature-256"],
+        getRawRequestBody(request),
+        runtime.appSecret
+      )
+    ) {
+      return reply.code(401).send({ ok: false, error: "invalid_meta_signature" });
     }
 
     const inboundMessages = extractInboundTextMessages(request.body);
