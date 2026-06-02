@@ -434,6 +434,7 @@ describe("campaigns service", () => {
     const service = createCampaignsService(prisma, {
       meta: {
         phoneNumberId: "phone_number_1",
+        wabaId: "waba_1",
         client: { sendTemplate }
       },
       now: () => new Date("2026-05-25T12:00:00.000Z")
@@ -459,6 +460,7 @@ describe("campaigns service", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           workspaceId: "workspace_a",
+          wabaId: "waba_1",
           name: "reactivation_vip",
           language: "pt_BR",
           status: "APPROVED"
@@ -469,13 +471,7 @@ describe("campaigns service", () => {
       phoneNumberId: "phone_number_1",
       to: "+5511999990001",
       name: "reactivation_vip",
-      language: "pt_BR",
-      components: [
-        {
-          type: "body",
-          parameters: [{ type: "text", text: "Ana" }]
-        }
-      ]
+      language: "pt_BR"
     });
     expect(upsert.mock.calls[0]?.[0].create).toEqual(
       expect.objectContaining({
@@ -504,6 +500,7 @@ describe("campaigns service", () => {
     });
     const service = createCampaignsService(prisma, {
       meta: {
+        wabaId: "waba_1",
         phoneNumberId: null,
         client: { sendTemplate }
       }
@@ -535,6 +532,7 @@ describe("campaigns service", () => {
     const service = createCampaignsService(prisma, {
       meta: {
         phoneNumberId: "phone_number_1",
+        wabaId: "waba_1",
         client: { sendTemplate }
       }
     });
@@ -565,6 +563,7 @@ describe("campaigns service", () => {
     const service = createCampaignsService(prisma, {
       meta: {
         phoneNumberId: "phone_number_1",
+        wabaId: "waba_1",
         client: { sendTemplate }
       }
     });
@@ -576,6 +575,72 @@ describe("campaigns service", () => {
         template: { name: "reactivation_vip", language: "pt_BR" }
       })
     ).rejects.toMatchObject({ code: "CAMPAIGN_TEMPLATE_NOT_FOUND" });
+    expect(sendTemplate).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects Meta template campaigns when the approved template belongs to an old WABA", async () => {
+    const sendTemplate = vi.fn();
+    const upsert = vi.fn();
+    const oldWabaTemplate = {
+      id: "template_old_waba",
+      workspaceId: "workspace_a",
+      wabaId: "old_waba",
+      templateId: "meta_template_old",
+      name: "reactivation_vip",
+      language: "pt_BR",
+      category: "MARKETING",
+      status: "APPROVED",
+      components: [],
+      syncedAt: new Date("2026-05-24T12:00:00.000Z"),
+      createdAt: new Date("2026-05-24T12:00:00.000Z"),
+      updatedAt: new Date("2026-05-24T12:00:00.000Z")
+    };
+    const findFirst = vi.fn().mockImplementation(async (args) => {
+      const where = args.where ?? {};
+      if (
+        where.workspaceId === "workspace_a" &&
+        where.name === "reactivation_vip" &&
+        where.language === "pt_BR" &&
+        where.status === "APPROVED" &&
+        where.wabaId !== "waba_1"
+      ) {
+        return oldWabaTemplate;
+      }
+
+      return null;
+    });
+    const prisma = createMockPrisma({
+      campaignRecipient: {
+        findMany: vi.fn(),
+        upsert
+      },
+      metaMessageTemplate: {
+        findFirst
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      meta: {
+        phoneNumberId: "phone_number_1",
+        wabaId: "waba_1",
+        client: { sendTemplate }
+      }
+    });
+
+    await expect(
+      service.sendMetaTemplate({
+        workspaceId: "workspace_a",
+        campaignId,
+        template: { name: "reactivation_vip", language: "pt_BR" }
+      })
+    ).rejects.toMatchObject({ code: "CAMPAIGN_TEMPLATE_NOT_FOUND" });
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          wabaId: "waba_1"
+        })
+      })
+    );
     expect(sendTemplate).not.toHaveBeenCalled();
     expect(upsert).not.toHaveBeenCalled();
   });
@@ -614,6 +679,7 @@ describe("campaigns service", () => {
     const service = createCampaignsService(prisma, {
       meta: {
         phoneNumberId: "phone_number_1",
+        wabaId: "waba_1",
         client: { sendTemplate }
       }
     });

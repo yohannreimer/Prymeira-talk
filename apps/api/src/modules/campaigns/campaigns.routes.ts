@@ -58,24 +58,10 @@ const updateCampaignBodySchema = createCampaignBodySchema
   .partial()
   .refine((body) => Object.keys(body).length > 0, "At least one campaign field is required.");
 
-const metaTemplateComponentParameterSchema = z
-  .object({
-    type: z.string().trim().min(1)
-  })
-  .passthrough();
-
-const metaTemplateComponentSchema = z
-  .object({
-    type: z.string().trim().min(1),
-    parameters: z.array(metaTemplateComponentParameterSchema).optional()
-  })
-  .passthrough();
-
 const sendMetaTemplateBodySchema = z.object({
   template: z.object({
     name: z.string().trim().min(1).max(512),
-    language: z.string().trim().min(1).max(64),
-    components: z.array(metaTemplateComponentSchema).optional()
+    language: z.string().trim().min(1).max(64)
   })
 });
 
@@ -309,6 +295,7 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
         evolution: options.evolution,
         meta: {
           phoneNumberId: runtime.phoneNumberId,
+          wabaId: runtime.wabaId,
           client: runtime.client
         }
       });

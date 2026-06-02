@@ -221,16 +221,9 @@ export interface CampaignSendResultDto {
   recipientsFailed?: number;
 }
 
-export interface MetaTemplateComponentDto {
-  type: string;
-  parameters?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
-}
-
 export interface MetaTemplateDto {
   name: string;
   language: string;
-  components?: MetaTemplateComponentDto[];
 }
 
 export interface ReportMetricDto {
@@ -1946,7 +1939,7 @@ export async function apiSendCampaignMetaTemplate(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to send Meta template campaign: ${response.status}`);
+    throw new Error(await readApiErrorMessage(response, "Failed to send Meta template campaign"));
   }
 
   const data = await response.json();

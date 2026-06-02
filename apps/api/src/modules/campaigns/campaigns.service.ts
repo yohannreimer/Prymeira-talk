@@ -1,6 +1,5 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
-import type { MetaTemplateComponent } from "../meta/meta.client.js";
 
 type DateLike = Date | string;
 type CampaignStatus = "draft" | "scheduled" | "sending" | "completed" | "failed";
@@ -213,10 +212,6 @@ function withoutUndefined<T extends Record<string, unknown>>(value: T) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entryValue]) => entryValue !== undefined)
   ) as T;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cadenceToJson(cadence: CampaignCadenceDto): Prisma.InputJsonObject {
@@ -450,27 +445,6 @@ function buildRecipientResult(input: {
   }) as Prisma.InputJsonObject;
 }
 
-function normalizeMetaTemplateComponents(value: unknown): MetaTemplateComponent[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-
-  const components = value.flatMap((component) => {
-    if (!isRecord(component) || typeof component.type !== "string" || !component.type.trim()) {
-      return [];
-    }
-
-    return [
-      {
-        ...component,
-        type: component.type
-      } as MetaTemplateComponent
-    ];
-  });
-
-  return components.length > 0 ? components : undefined;
-}
-
 export interface CampaignsServiceOptions {
   evolution?: {
     mode: EvolutionRuntime["mode"];
@@ -478,13 +452,13 @@ export interface CampaignsServiceOptions {
   };
   meta?: {
     phoneNumberId: string | null;
+    wabaId: string | null;
     client?: {
       sendTemplate(input: {
         phoneNumberId: string;
         to: string;
         name: string;
         language: string;
-        components?: MetaTemplateComponent[];
       }): Promise<{ providerMessageId: string | null; raw: unknown }>;
     } | null;
   };
@@ -945,12 +919,12 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       template: {
         name: string;
         language: string;
-        components?: MetaTemplateComponent[];
       };
     }): Promise<CampaignSendResultDto> {
       const phoneNumberId = options.meta?.phoneNumberId?.trim();
+      const wabaId = options.meta?.wabaId?.trim();
 
-      if (!phoneNumberId || !options.meta?.client) {
+      if (!phoneNumberId || !wabaId || !options.meta?.client) {
         throw new CampaignsServiceError(
           "CAMPAIGN_META_NOT_CONFIGURED",
           "Meta Cloud real mode is required to send a template campaign."
@@ -962,6 +936,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       const template = await prisma.metaMessageTemplate.findFirst({
         where: {
           workspaceId: input.workspaceId,
+          wabaId,
           name: templateName,
           language: templateLanguage,
           status: "APPROVED"
@@ -994,9 +969,6 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
 
       const campaign = await findCampaignForWorkspace(input);
       const plans = await buildRecipientPlans(campaign);
-      const components =
-        normalizeMetaTemplateComponents(input.template.components) ??
-        normalizeMetaTemplateComponents(template.components);
       const messagePreview = `Template ${templateName} (${templateLanguage})`;
       let sent = 0;
       let failed = 0;
@@ -1027,8 +999,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
             phoneNumberId,
             to: plan.contact.phone,
             name: templateName,
-            language: templateLanguage,
-            ...(components ? { components } : {})
+            language: templateLanguage
           });
 
           sent += 1;
