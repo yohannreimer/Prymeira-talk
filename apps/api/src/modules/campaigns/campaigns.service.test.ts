@@ -715,6 +715,102 @@ describe("campaigns service", () => {
     expect(upsert).not.toHaveBeenCalled();
   });
 
+  it("rejects Meta template campaigns when supplied component parameters are missing", async () => {
+    const sendTemplate = vi.fn();
+    const upsert = vi.fn();
+    const prisma = createMockPrisma({
+      campaignRecipient: {
+        findMany: vi.fn(),
+        upsert
+      },
+      metaMessageTemplate: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "template_1",
+          workspaceId: "workspace_a",
+          wabaId: "waba_1",
+          templateId: "meta_template_1",
+          name: "reactivation_vip",
+          language: "pt_BR",
+          category: "MARKETING",
+          status: "APPROVED",
+          components: [{ type: "BODY", text: "Oi {{1}}, temos novidade." }],
+          syncedAt: new Date("2026-05-24T12:00:00.000Z"),
+          createdAt: new Date("2026-05-24T12:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T12:00:00.000Z")
+        })
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      meta: {
+        phoneNumberId: "phone_number_1",
+        wabaId: "waba_1",
+        client: { sendTemplate }
+      }
+    });
+
+    await expect(
+      service.sendMetaTemplate({
+        workspaceId: "workspace_a",
+        campaignId,
+        template: {
+          name: "reactivation_vip",
+          language: "pt_BR",
+          components: [{ type: "body" }]
+        }
+      })
+    ).rejects.toMatchObject({ code: "CAMPAIGN_TEMPLATE_COMPONENT_INVALID" });
+    expect(sendTemplate).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects Meta template campaigns when supplying an unnecessary zero-placeholder component", async () => {
+    const sendTemplate = vi.fn();
+    const upsert = vi.fn();
+    const prisma = createMockPrisma({
+      campaignRecipient: {
+        findMany: vi.fn(),
+        upsert
+      },
+      metaMessageTemplate: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "template_1",
+          workspaceId: "workspace_a",
+          wabaId: "waba_1",
+          templateId: "meta_template_1",
+          name: "reactivation_vip",
+          language: "pt_BR",
+          category: "MARKETING",
+          status: "APPROVED",
+          components: [{ type: "BODY", text: "Oi, temos novidade." }],
+          syncedAt: new Date("2026-05-24T12:00:00.000Z"),
+          createdAt: new Date("2026-05-24T12:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T12:00:00.000Z")
+        })
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      meta: {
+        phoneNumberId: "phone_number_1",
+        wabaId: "waba_1",
+        client: { sendTemplate }
+      }
+    });
+
+    await expect(
+      service.sendMetaTemplate({
+        workspaceId: "workspace_a",
+        campaignId,
+        template: {
+          name: "reactivation_vip",
+          language: "pt_BR",
+          components: [{ type: "body" }]
+        }
+      })
+    ).rejects.toMatchObject({ code: "CAMPAIGN_TEMPLATE_COMPONENT_INVALID" });
+    expect(sendTemplate).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
   it("rejects Meta template campaigns when the approved template belongs to an old WABA", async () => {
     const sendTemplate = vi.fn();
     const upsert = vi.fn();

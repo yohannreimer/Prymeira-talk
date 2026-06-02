@@ -60,7 +60,7 @@ const updateCampaignBodySchema = createCampaignBodySchema
 
 const metaTemplateComponentTypeSchema = z.preprocess(
   (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
-  z.enum(["header", "body", "button"])
+  z.enum(["header", "body"])
 );
 
 const metaTemplateTextParameterSchema = z

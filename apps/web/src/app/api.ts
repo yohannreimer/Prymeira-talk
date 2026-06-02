@@ -225,7 +225,7 @@ export interface MetaTemplateDto {
   name: string;
   language: string;
   components?: Array<{
-    type: "header" | "body" | "button";
+    type: "header" | "body";
     parameters?: Array<{
       type: "text";
       text: string;

@@ -168,7 +168,7 @@ export interface CampaignSendResultDto {
   recipientsFailed?: number;
 }
 
-type MetaSendTemplateComponentType = "header" | "body" | "button";
+type MetaSendTemplateComponentType = "header" | "body";
 
 interface MetaSendTemplateTextParameter {
   type: "text";
@@ -469,9 +469,7 @@ function normalizeMetaSendComponentType(value: unknown): MetaSendTemplateCompone
   }
 
   const normalized = value.trim().toLowerCase();
-  return normalized === "header" || normalized === "body" || normalized === "button"
-    ? normalized
-    : null;
+  return normalized === "header" || normalized === "body" ? normalized : null;
 }
 
 function getStoredTemplateComponents(value: unknown) {
@@ -540,14 +538,20 @@ function validateMetaSendComponents(input: {
       };
     });
 
-    if (
-      (type === "body" || type === "header") &&
-      storedComponent.text !== undefined &&
-      (parameters?.length ?? 0) > countNumericPlaceholders(storedComponent.text)
-    ) {
+    if (storedComponent.text === undefined) {
       throw new CampaignsServiceError(
         "CAMPAIGN_TEMPLATE_COMPONENT_INVALID",
-        "Template component has more parameters than the approved Meta template allows."
+        "Template component text is required before send-time parameters can be validated."
+      );
+    }
+
+    const expectedParameters = countNumericPlaceholders(storedComponent.text);
+    const suppliedParameters = parameters?.length ?? 0;
+
+    if (expectedParameters === 0 || suppliedParameters !== expectedParameters) {
+      throw new CampaignsServiceError(
+        "CAMPAIGN_TEMPLATE_COMPONENT_INVALID",
+        "Template component parameter count must match the approved Meta template."
       );
     }
 
