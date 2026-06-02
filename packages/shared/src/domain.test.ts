@@ -25,7 +25,10 @@ describe("domain schemas", () => {
     lastMessageAt: "2026-05-20T12:00:00.000Z",
     lastMessagePreview: "Oi",
     unreadCount: 2,
-    priority: "normal"
+    priority: "normal",
+    channelProvider: "meta_cloud",
+    customerServiceWindowExpiresAt: "2026-05-21T12:00:00.000Z",
+    metaServiceWindowOpen: true
   };
 
   const validMessage = {
@@ -81,6 +84,9 @@ describe("domain schemas", () => {
     const parsed = conversationSchema.parse(validConversation);
 
     expect(parsed.workspaceId).toBe("workspace_1");
+    expect(parsed.channelProvider).toBe("meta_cloud");
+    expect(parsed.customerServiceWindowExpiresAt).toBe("2026-05-21T12:00:00.000Z");
+    expect(parsed.metaServiceWindowOpen).toBe(true);
   });
 
   it("rejects a conversation with a negative unread count", () => {

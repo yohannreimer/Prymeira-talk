@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import { resolveMetaRuntime } from "../meta/meta-runtime.js";
 import {
   ConversationActionError,
   ConversationNotFoundError,
@@ -253,7 +254,16 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       return reply.code(400).send({ error: "Invalid conversation message request." });
     }
 
-    const result = await service.createPendingOutboundMessage({
+    const meta = await resolveMetaRuntime(app.prisma, { workspaceId: request.talk.workspaceId });
+    const writeService = createConversationsService(app.prisma as unknown as PrismaLike, {
+      evolution: options.evolution,
+      meta: {
+        client: meta.client,
+        phoneNumberId: meta.phoneNumberId
+      }
+    });
+
+    const result = await writeService.createPendingOutboundMessage({
       workspaceId: request.talk.workspaceId,
       conversationId: params.data.conversationId,
       body: body.data.body,

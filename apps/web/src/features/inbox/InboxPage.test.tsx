@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   applyComposerMarker,
   insertComposerText,
+  metaClosedWindowMessage,
+  metaServiceWindowSendError,
   messageDisplayText,
   messageMediaKind,
   messageMediaLabel,
@@ -82,6 +84,39 @@ describe("outboundStatusLabel", () => {
 
   it("shows failed outbound messages", () => {
     expect(outboundStatusLabel({ ...outboundMessage, status: "failed" })).toBe("Falhou");
+  });
+});
+
+describe("metaServiceWindowSendError", () => {
+  const conversation = {
+    id: "conv_1",
+    workspaceId: "workspace_1",
+    channelId: "channel_1",
+    contactId: "contact_1",
+    status: "open",
+    assignedUserId: null,
+    departmentId: null,
+    lastMessageAt: null,
+    lastMessagePreview: null,
+    unreadCount: 0,
+    priority: "normal",
+    channelProvider: "meta_cloud",
+    customerServiceWindowExpiresAt: null,
+    metaServiceWindowOpen: false
+  } as const;
+
+  it("blocks Meta Cloud sends when the service window is closed", () => {
+    expect(metaServiceWindowSendError(conversation)).toBe(metaClosedWindowMessage);
+  });
+
+  it("does not block Evolution sends", () => {
+    expect(
+      metaServiceWindowSendError({
+        ...conversation,
+        channelProvider: "evolution",
+        metaServiceWindowOpen: false
+      })
+    ).toBeNull();
   });
 });
 

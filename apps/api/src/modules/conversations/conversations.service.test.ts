@@ -5,12 +5,16 @@ import { EvolutionClientError } from "../evolution/evolution.client.js";
 import {
   ConversationActionError,
   ConversationNotFoundError,
+  OutboundMessageValidationError,
   createConversationsService
 } from "./conversations.service.js";
 import type { PrismaLike } from "./conversations.service.js";
 import { conversationsRoutes, createMessageParamsSchema } from "./conversations.routes.js";
 
 type MockPrisma = {
+  integrationConfig: {
+    findUnique: ReturnType<typeof vi.fn>;
+  };
   conversation: {
     findMany: ReturnType<typeof vi.fn<PrismaLike["conversation"]["findMany"]>>;
     findUnique: ReturnType<typeof vi.fn<PrismaLike["conversation"]["findUnique"]>>;
@@ -67,6 +71,9 @@ function createMockPrisma(overrides: {
 } = {}): MockPrisma {
   let result: MockPrisma;
   result = {
+    integrationConfig: {
+      findUnique: vi.fn().mockResolvedValue(null)
+    },
     conversation: {
       findMany: overrides.findMany ?? vi.fn<PrismaLike["conversation"]["findMany"]>().mockResolvedValue([]),
       findUnique:
@@ -339,7 +346,7 @@ describe("conversations service", () => {
         },
         include: expect.objectContaining({
           contact: { select: { name: true, phone: true } },
-          channel: { select: { displayName: true, phoneNumber: true } }
+          channel: { select: { displayName: true, phoneNumber: true, provider: true } }
         })
       })
     );
@@ -402,11 +409,188 @@ describe("conversations service", () => {
     expect(prisma.conversation.findUnique).toHaveBeenCalledWith({
       where: { workspaceId_id: { workspaceId: "workspace_a", id: "conv_1" } },
       select: {
+        customerServiceWindowExpiresAt: true,
         id: true,
         channel: { select: { provider: true, providerKey: true } },
         contact: { select: { phone: true } }
       }
     });
+  });
+
+  it("sends Meta Cloud text when the customer service window is open", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-20T12:00:00.000Z"));
+
+    const sendText = vi.fn().mockResolvedValue({
+      providerMessageId: "wamid.meta_1",
+      raw: { messages: [{ id: "wamid.meta_1" }] }
+    });
+    const prisma = createMockPrisma({
+      findUnique: vi
+        .fn<PrismaLike["conversation"]["findUnique"]>()
+        .mockResolvedValueOnce({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          customerServiceWindowExpiresAt: new Date("2026-05-20T13:00:00.000Z"),
+          channel: { provider: "meta_cloud", providerKey: "meta-channel" },
+          contact: { phone: "5547999990000" }
+        })
+        .mockResolvedValue({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          status: "open",
+          assignedUserId: null,
+          departmentId: null,
+          lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+          lastMessagePreview: "Oi Meta",
+          unreadCount: 0,
+          priority: "normal",
+          tags: []
+        }),
+      create: vi.fn<PrismaLike["message"]["create"]>().mockResolvedValue({
+        id: "msg_1",
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        providerMessageId: "wamid.meta_1",
+        direction: "outbound",
+        type: "text",
+        body: "Oi Meta",
+        mediaUrl: null,
+        status: "sent",
+        sentByUserId: "user_1",
+        createdAt: new Date("2026-05-20T12:00:00.000Z")
+      })
+    });
+    const service = createConversationsService(prisma, {
+      meta: {
+        phoneNumberId: "phone_number_1",
+        client: { sendText }
+      }
+    });
+
+    try {
+      const result = await service.createPendingOutboundMessage({
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        body: "Oi Meta",
+        sentByUserId: "user_1"
+      });
+
+      expect(sendText).toHaveBeenCalledWith({
+        phoneNumberId: "phone_number_1",
+        to: "5547999990000",
+        text: "Oi Meta"
+      });
+      expect(prisma.message.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            providerMessageId: "wamid.meta_1",
+            status: "sent"
+          })
+        })
+      );
+      expect(result.message.status).toBe("sent");
+      expect(result.message.providerMessageId).toBe("wamid.meta_1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["missing", null],
+    ["closed", new Date("2026-05-20T11:59:59.000Z")]
+  ])("rejects Meta Cloud text when the customer service window is %s", async (_caseName, expiresAt) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-20T12:00:00.000Z"));
+
+    const sendText = vi.fn();
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        customerServiceWindowExpiresAt: expiresAt,
+        channel: { provider: "meta_cloud", providerKey: "meta-channel" },
+        contact: { phone: "5547999990000" }
+      })
+    });
+    const service = createConversationsService(prisma, {
+      meta: {
+        phoneNumberId: "phone_number_1",
+        client: { sendText }
+      }
+    });
+
+    try {
+      const error = await service
+        .createPendingOutboundMessage({
+          workspaceId: "workspace_a",
+          conversationId: "conv_1",
+          body: "Oi Meta",
+          sentByUserId: "user_1"
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(OutboundMessageValidationError);
+      expect(error).toMatchObject({
+        code: "META_SERVICE_WINDOW_CLOSED",
+        statusCode: 400
+      });
+      expect(sendText).not.toHaveBeenCalled();
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.conversation.update).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects Meta Cloud text when Meta runtime is not configured", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-20T12:00:00.000Z"));
+
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        customerServiceWindowExpiresAt: new Date("2026-05-20T13:00:00.000Z"),
+        channel: { provider: "meta_cloud", providerKey: "meta-channel" },
+        contact: { phone: "5547999990000" }
+      })
+    });
+    const service = createConversationsService(prisma, {
+      meta: {
+        phoneNumberId: null,
+        client: null
+      }
+    });
+
+    try {
+      const error = await service
+        .createPendingOutboundMessage({
+          workspaceId: "workspace_a",
+          conversationId: "conv_1",
+          body: "Oi Meta",
+          sentByUserId: "user_1"
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(OutboundMessageValidationError);
+      expect(error).toMatchObject({
+        code: "META_NOT_CONFIGURED",
+        statusCode: 400
+      });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.conversation.update).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("sends outbound text through Evolution in real mode", async () => {
@@ -1263,6 +1447,65 @@ describe("conversation routes", () => {
       expect(response.json()).toEqual({
         code: "OUTBOUND_CONTACT_PHONE_REQUIRED",
         error: "Contact phone is required to send an Evolution message."
+      });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("maps Meta service window errors to a 400 response", async () => {
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        customerServiceWindowExpiresAt: null,
+        channel: { provider: "meta_cloud", providerKey: "meta-channel" },
+        contact: { phone: "5547999990000" }
+      })
+    });
+    prisma.integrationConfig.findUnique.mockResolvedValue({
+      mode: "real",
+      status: "connected",
+      settings: {
+        enabled: true,
+        wabaId: "waba_1",
+        phoneNumberId: "phone_number_1",
+        accessToken: "meta_access_token"
+      }
+    });
+    const publish = vi.fn();
+    const app = Fastify({ logger: false });
+
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => {
+      request.talk = { workspaceId: "workspace_a", role: "agent" };
+    });
+    await app.register(conversationsRoutes);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/conversations/00000000-0000-4000-8000-000000000001/messages",
+        payload: { body: "Oi" }
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        code: "META_SERVICE_WINDOW_CLOSED",
+        error: "The Meta customer service window is closed. An approved Meta template is required."
+      });
+      expect(prisma.integrationConfig.findUnique).toHaveBeenCalledWith({
+        where: {
+          workspaceId_provider: {
+            workspaceId: "workspace_a",
+            provider: "meta_cloud"
+          }
+        }
       });
       expect(prisma.message.create).not.toHaveBeenCalled();
       expect(publish).not.toHaveBeenCalled();
