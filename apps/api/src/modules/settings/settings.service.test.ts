@@ -160,6 +160,57 @@ describe("settings service", () => {
       }
     });
   });
+
+  it("stores Meta Cloud config and masks secrets in the returned settings", async () => {
+    const upsert = vi.fn().mockResolvedValue({
+      id: "config_1",
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      status: "configured",
+      settings: {
+        enabled: true,
+        wabaId: "111",
+        phoneNumberId: "222",
+        accessToken: "secret-token",
+        webhookVerifyToken: "verify-secret"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    });
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockResolvedValue([]),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    const result = await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      settings: {
+        enabled: true,
+        wabaId: "111",
+        phoneNumberId: "222",
+        accessToken: "secret-token",
+        webhookVerifyToken: "verify-secret"
+      }
+    });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ provider: "meta_cloud", mode: "real" })
+    }));
+    expect(result.integrations[0]?.settings).toMatchObject({
+      enabled: true,
+      wabaId: "111",
+      phoneNumberId: "222",
+      accessToken: "[redacted]",
+      webhookVerifyToken: "[redacted]"
+    });
+  });
 });
 
 describe("settings routes", () => {

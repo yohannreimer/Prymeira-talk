@@ -5,11 +5,29 @@ import { canPerform } from "../access/roles.js";
 import { createSettingsService } from "./settings.service.js";
 import type { PrismaLike } from "./settings.service.js";
 
-const updateSettingsBodySchema = z.object({
-  provider: z.string().trim().min(1).max(80),
-  mode: z.enum(["simulated", "real"]),
-  settings: z.record(z.string(), z.unknown()).optional()
+const integrationModeSchema = z.enum(["simulated", "real"]);
+const genericSettingsSchema = z.record(z.string(), z.unknown());
+const metaSettingsSchema = z.object({
+  enabled: z.boolean(),
+  wabaId: z.string().trim().min(1).optional(),
+  phoneNumberId: z.string().trim().min(1).optional(),
+  accessToken: z.string().trim().min(1).optional(),
+  webhookVerifyToken: z.string().trim().min(1).optional(),
+  appSecret: z.string().trim().min(1).optional()
 });
+
+const updateSettingsBodySchema = z.union([
+  z.object({
+    provider: z.literal("meta_cloud"),
+    mode: integrationModeSchema,
+    settings: metaSettingsSchema
+  }),
+  z.object({
+    provider: z.string().trim().min(1).max(80).refine((provider) => provider !== "meta_cloud"),
+    mode: integrationModeSchema,
+    settings: genericSettingsSchema.optional()
+  })
+]);
 
 function requireWorkspaceManage(
   role: Parameters<typeof canPerform>[0],

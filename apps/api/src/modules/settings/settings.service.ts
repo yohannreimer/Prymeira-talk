@@ -105,6 +105,29 @@ function toWorkspaceDto(workspaceId: string, record: WorkspaceMirrorRecord | nul
   };
 }
 
+const SECRET_SETTING_KEYS = new Set([
+  "accessToken",
+  "webhookVerifyToken",
+  "appSecret",
+  "token",
+  "secret"
+]);
+
+function maskIntegrationSettings(settings: Prisma.JsonValue): Prisma.JsonValue {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return settings;
+  }
+
+  return Object.fromEntries(
+    Object.entries(settings as Record<string, unknown>).map(([key, value]) => [
+      key,
+      SECRET_SETTING_KEYS.has(key) && typeof value === "string" && value.length > 0
+        ? "[redacted]"
+        : value
+    ])
+  ) as Prisma.JsonObject;
+}
+
 function toIntegrationDto(record: IntegrationConfigRecord): IntegrationConfigDto {
   return {
     id: record.id,
@@ -112,7 +135,7 @@ function toIntegrationDto(record: IntegrationConfigRecord): IntegrationConfigDto
     provider: record.provider,
     mode: record.mode,
     status: record.status,
-    settings: record.settings,
+    settings: maskIntegrationSettings(record.settings),
     createdAt: toIsoString(record.createdAt),
     updatedAt: toIsoString(record.updatedAt)
   };

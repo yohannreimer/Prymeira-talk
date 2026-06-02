@@ -264,6 +264,15 @@ export interface ReportsOverviewDto {
 export type TeamUserRole = "owner" | "manager" | "agent";
 export type IntegrationModeDto = "simulated" | "real";
 
+export interface MetaCloudSettingsPayload {
+  enabled: boolean;
+  wabaId?: string;
+  phoneNumberId?: string;
+  accessToken?: string;
+  webhookVerifyToken?: string;
+  appSecret?: string;
+}
+
 export interface TeamUserDto {
   id: string;
   workspaceId: string;
