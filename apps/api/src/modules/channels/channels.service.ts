@@ -115,6 +115,17 @@ export interface PrismaLike {
 
 interface ChannelsServiceOptions {
   evolution?: EvolutionRuntime;
+  metaEvolutionWebhook?: {
+    client: {
+      setWebhook(input: {
+        instanceName: string;
+        webhookUrl: string;
+        webhookSecret: string;
+      }): Promise<{ raw: unknown }>;
+    };
+    publicWebhookUrl(workspaceId: string): string;
+    webhookSecret: string;
+  };
 }
 
 export class ChannelsServiceError extends Error {
@@ -305,6 +316,28 @@ export function createChannelsService(
             status: "connected"
           }
         });
+
+        if (options.metaEvolutionWebhook) {
+          try {
+            await options.metaEvolutionWebhook.client.setWebhook({
+              instanceName: requestedProviderKey,
+              webhookUrl: options.metaEvolutionWebhook.publicWebhookUrl(input.workspaceId),
+              webhookSecret: options.metaEvolutionWebhook.webhookSecret
+            });
+          } catch {
+            const failedChannel = await prisma.channel.update({
+              where: {
+                workspaceId_id: {
+                  workspaceId: input.workspaceId,
+                  id: channel.id
+                }
+              },
+              data: { status: "failed" }
+            });
+
+            return toChannelDto(failedChannel);
+          }
+        }
 
         return toChannelDto(channel);
       }

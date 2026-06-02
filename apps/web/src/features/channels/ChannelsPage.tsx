@@ -347,7 +347,9 @@ export function ChannelsPage() {
 
     const providerKey = metaProviderKey.trim();
     if (createProvider === "meta_cloud" && !providerKey) {
-      setError("Informe o Phone Number ID da Meta.");
+      setError(metaCreateSettings.connectionMode === "evolution_official"
+        ? "Informe o Instance name da Evolution."
+        : "Informe o Phone Number ID da Meta.");
       return;
     }
 
@@ -374,7 +376,9 @@ export function ChannelsPage() {
         setCreateDrawerOpen(false);
         setNewChannelName("");
         setMetaPhoneNumber("");
-        setNotice("Canal Meta oficial criado.");
+        setNotice(channel.status === "failed"
+          ? "Canal Meta oficial criado, mas o webhook nao foi configurado na Evolution."
+          : "Canal Meta oficial criado e webhook configurado.");
         return;
       }
 

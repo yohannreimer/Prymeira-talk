@@ -115,7 +115,10 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
   } as MockPrisma & PrismaLike;
 }
 
-async function buildChannelsApp(prisma = createMockPrisma()) {
+async function buildChannelsApp(
+  prisma = createMockPrisma(),
+  options: Parameters<typeof channelsRoutes>[1] = {}
+) {
   const app = Fastify({ logger: false });
   const publish = vi.fn();
 
@@ -124,7 +127,7 @@ async function buildChannelsApp(prisma = createMockPrisma()) {
   app.addHook("preHandler", async (request) => {
     request.talk = { workspaceId: "workspace_a", role: "agent" };
   });
-  await app.register(channelsRoutes);
+  await app.register(channelsRoutes, options);
 
   return { app, prisma, publish };
 }
@@ -282,6 +285,100 @@ describe("channels service", () => {
         status: "connected"
       })
     );
+  });
+
+  it("configures the Evolution webhook when creating a Meta Cloud via Evolution channel", async () => {
+    const setWebhook = vi.fn().mockResolvedValue({ raw: {} });
+    const prisma = createMockPrisma();
+    prisma.channel.create = vi.fn().mockImplementation(async (args) => ({
+      ...metaChannel,
+      ...args.data,
+      id: channelId,
+      createdAt: new Date("2026-05-20T10:00:00.000Z"),
+      updatedAt: new Date("2026-05-20T10:00:00.000Z")
+    }));
+    const service = createChannelsService(prisma, {
+      metaEvolutionWebhook: {
+        client: { setWebhook },
+        publicWebhookUrl: () =>
+          "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+        webhookSecret: "webhook-secret"
+      }
+    });
+
+    const result = await service.createChannel({
+      workspaceId: "workspace_a",
+      provider: "meta_cloud",
+      displayName: " Meta Oficial ",
+      providerKey: " official-instance ",
+      phoneNumber: " +55 47 98888-0000 "
+    });
+
+    expect(setWebhook).toHaveBeenCalledWith({
+      instanceName: "official-instance",
+      webhookUrl: "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+      webhookSecret: "webhook-secret"
+    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        provider: "meta_cloud",
+        providerKey: "official-instance",
+        status: "connected"
+      })
+    );
+  });
+
+  it("keeps the Meta Cloud channel visible as failed when automatic webhook setup fails", async () => {
+    const setWebhook = vi.fn().mockRejectedValue(new EvolutionClientError(500, { error: "down" }));
+    const update = vi.fn().mockImplementation(async (args) => ({
+      ...metaChannel,
+      id: channelId,
+      providerKey: "official-instance",
+      status: args.data.status,
+      updatedAt: new Date("2026-05-20T10:05:00.000Z")
+    }));
+    const prisma = createMockPrisma({
+      channel: {
+        findMany: vi.fn(),
+        findFirst: vi.fn(),
+        create: vi.fn().mockImplementation(async (args) => ({
+          ...metaChannel,
+          ...args.data,
+          id: channelId,
+          createdAt: new Date("2026-05-20T10:00:00.000Z"),
+          updatedAt: new Date("2026-05-20T10:00:00.000Z")
+        })),
+        update,
+        delete: vi.fn()
+      }
+    });
+    const service = createChannelsService(prisma, {
+      metaEvolutionWebhook: {
+        client: { setWebhook },
+        publicWebhookUrl: () =>
+          "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+        webhookSecret: "webhook-secret"
+      }
+    });
+
+    const result = await service.createChannel({
+      workspaceId: "workspace_a",
+      provider: "meta_cloud",
+      displayName: "Meta Oficial",
+      providerKey: "official-instance"
+    });
+
+    expect(setWebhook).toHaveBeenCalledOnce();
+    expect(update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: channelId
+        }
+      },
+      data: { status: "failed" }
+    });
+    expect(result.status).toBe("failed");
   });
 
   it("rejects a Meta Cloud channel without a provider key", async () => {
@@ -684,6 +781,95 @@ describe("channels service", () => {
 });
 
 describe("channels routes", () => {
+  it("configures an Evolution webhook when creating a Meta Cloud channel through the route", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const prisma = createMockPrisma({
+      channel: {
+        findMany: vi.fn(),
+        findFirst: vi.fn(),
+        create: vi.fn().mockImplementation(async (args) => ({
+          ...metaChannel,
+          ...args.data,
+          id: channelId,
+          createdAt: new Date("2026-05-20T10:00:00.000Z"),
+          updatedAt: new Date("2026-05-20T10:00:00.000Z")
+        })),
+        update: vi.fn(),
+        delete: vi.fn()
+      },
+      integrationConfig: {
+        findUnique: vi.fn().mockResolvedValue({
+          mode: "real",
+          status: "configured",
+          settings: {
+            enabled: true,
+            connectionMode: "evolution_official",
+            evolutionBaseUrl: "https://wsapi.yrdnegocios.com.br",
+            evolutionApiKey: "secret-key",
+            evolutionInstanceName: "fallback-instance"
+          }
+        })
+      }
+    });
+    const { app, publish } = await buildChannelsApp(prisma, {
+      evolution: {
+        mode: "simulated",
+        webhookSecret: "webhook-secret",
+        publicWebhookUrl: () =>
+          "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+        localWebhookUrl: () =>
+          "http://localhost:3002/webhooks/evolution/workspace_a",
+        client: null
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/channels",
+        payload: {
+          provider: "meta_cloud",
+          displayName: "Meta Oficial",
+          providerKey: "official-instance",
+          phoneNumber: "+55 47 98888-0000"
+        }
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://wsapi.yrdnegocios.com.br/webhook/set/official-instance",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({ apikey: "secret-key" })
+        })
+      );
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+        webhook: expect.objectContaining({
+          enabled: true,
+          url: "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+          headers: expect.objectContaining({
+            "x-prymeira-talk-secret": "webhook-secret"
+          }),
+          events: expect.arrayContaining(["MESSAGES_UPSERT", "MESSAGES_UPDATE", "SEND_MESSAGE"])
+        })
+      });
+      expect(realtimeEventSchema.parse(publish.mock.calls[0]?.[0])).toEqual({
+        type: "channel.updated",
+        workspaceId: "workspace_a",
+        payload: channelSchema.parse(response.json())
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      await app.close();
+    }
+  });
+
   it("returns the simulated QR payload from POST /channels/:channelId/qr", async () => {
     const { app, publish } = await buildChannelsApp();
 
