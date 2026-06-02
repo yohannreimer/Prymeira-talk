@@ -378,6 +378,120 @@ describe("settings service", () => {
 
     expect(prisma.integrationConfig.upsert).not.toHaveBeenCalled();
   });
+
+  it("stores Meta Cloud via Evolution config and masks the Evolution API key", async () => {
+    const upsert = vi.fn().mockResolvedValue({
+      id: "config_evolution_meta",
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      status: "configured",
+      settings: {
+        enabled: true,
+        connectionMode: "evolution_official",
+        evolutionBaseUrl: "https://wsapi.yrdnegocios.com.br",
+        evolutionApiKey: "evolution-secret",
+        evolutionInstanceName: "official-instance"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    });
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockResolvedValue([]),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    const result = await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      settings: {
+        enabled: true,
+        connectionMode: "evolution_official",
+        evolutionBaseUrl: "https://wsapi.yrdnegocios.com.br",
+        evolutionApiKey: "evolution-secret",
+        evolutionInstanceName: "official-instance"
+      }
+    });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
+        settings: expect.objectContaining({
+          connectionMode: "evolution_official",
+          evolutionApiKey: "evolution-secret",
+          evolutionInstanceName: "official-instance"
+        })
+      })
+    }));
+    expect(result.integrations[0]?.settings).toMatchObject({
+      enabled: true,
+      connectionMode: "evolution_official",
+      evolutionBaseUrl: "https://wsapi.yrdnegocios.com.br",
+      evolutionApiKey: "[redacted]",
+      evolutionInstanceName: "official-instance"
+    });
+  });
+
+  it("preserves existing Evolution official API key when masked in updates", async () => {
+    const existingMetaConfig = {
+      id: "config_meta",
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real" as const,
+      status: "configured",
+      settings: {
+        enabled: true,
+        connectionMode: "evolution_official",
+        evolutionBaseUrl: "https://old.example.test",
+        evolutionApiKey: "stored-evolution-key",
+        evolutionInstanceName: "old-instance"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    };
+    const upsert = vi.fn().mockImplementation(async (args) => ({
+      ...existingMetaConfig,
+      ...args.update,
+      updatedAt: new Date("2026-06-02T12:05:00.000Z")
+    }));
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockImplementation(async (args) =>
+          "provider" in (args.where ?? {}) ? [existingMetaConfig] : []
+        ),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "meta_cloud",
+      mode: "real",
+      settings: {
+        enabled: true,
+        connectionMode: "evolution_official",
+        evolutionBaseUrl: "https://new.example.test",
+        evolutionApiKey: "[redacted]",
+        evolutionInstanceName: "new-instance"
+      }
+    });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({
+        settings: expect.objectContaining({
+          evolutionBaseUrl: "https://new.example.test",
+          evolutionApiKey: "stored-evolution-key",
+          evolutionInstanceName: "new-instance"
+        })
+      })
+    }));
+  });
 });
 
 describe("settings routes", () => {

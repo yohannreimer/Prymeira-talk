@@ -9,13 +9,18 @@ import type { PrismaLike } from "./settings.service.js";
 
 const integrationModeSchema = z.enum(["simulated", "real"]);
 const genericSettingsSchema = z.record(z.string(), z.unknown());
+const metaConnectionModeSchema = z.enum(["direct", "evolution_official"]);
 const metaSettingsSchema = z.object({
   enabled: z.boolean(),
+  connectionMode: metaConnectionModeSchema.optional(),
   wabaId: z.string().trim().min(1).optional(),
   phoneNumberId: z.string().trim().min(1).optional(),
   accessToken: z.string().trim().min(1).optional(),
   webhookVerifyToken: z.string().trim().min(1).optional(),
-  appSecret: z.string().trim().min(1).optional()
+  appSecret: z.string().trim().min(1).optional(),
+  evolutionBaseUrl: z.string().trim().min(1).optional(),
+  evolutionApiKey: z.string().trim().min(1).optional(),
+  evolutionInstanceName: z.string().trim().min(1).optional()
 });
 
 const updateSettingsBodySchema = z.union([

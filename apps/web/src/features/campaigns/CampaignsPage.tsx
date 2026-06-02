@@ -207,8 +207,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isMetaCloudActive(integrations: IntegrationConfigDto[]) {
   const integration = integrations.find((current) => current.provider === "meta_cloud");
   const settings = isRecord(integration?.settings) ? integration.settings : {};
-
-  return (
+  const connectionMode = settings.connectionMode === "evolution_official"
+    ? "evolution_official"
+    : "direct";
+  const directActive = (
     integration?.mode === "real" &&
     settings.enabled === true &&
     typeof settings.wabaId === "string" &&
@@ -218,6 +220,18 @@ function isMetaCloudActive(integrations: IntegrationConfigDto[]) {
     typeof settings.accessToken === "string" &&
     settings.accessToken.trim().length > 0
   );
+  const evolutionOfficialActive = (
+    integration?.mode === "real" &&
+    settings.enabled === true &&
+    typeof settings.evolutionBaseUrl === "string" &&
+    settings.evolutionBaseUrl.trim().length > 0 &&
+    typeof settings.evolutionApiKey === "string" &&
+    settings.evolutionApiKey.trim().length > 0 &&
+    typeof settings.evolutionInstanceName === "string" &&
+    settings.evolutionInstanceName.trim().length > 0
+  );
+
+  return connectionMode === "evolution_official" ? evolutionOfficialActive : directActive;
 }
 
 export function CampaignsPage() {

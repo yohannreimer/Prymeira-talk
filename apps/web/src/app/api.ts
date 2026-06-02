@@ -278,11 +278,15 @@ export type IntegrationModeDto = "simulated" | "real";
 
 export interface MetaCloudSettingsPayload {
   enabled: boolean;
+  connectionMode?: "direct" | "evolution_official";
   wabaId?: string;
   phoneNumberId?: string;
   accessToken?: string;
   webhookVerifyToken?: string;
   appSecret?: string;
+  evolutionBaseUrl?: string;
+  evolutionApiKey?: string;
+  evolutionInstanceName?: string;
 }
 
 export interface MetaTemplatesSyncResultDto {

@@ -49,19 +49,34 @@ function hasStringSetting(value: unknown) {
 function getMetaCloudCreateSettings(settings: SettingsDto | null) {
   const integration = settings?.integrations.find((config) => config.provider === "meta_cloud");
   const integrationSettings = asSettingsRecord(integration?.settings);
+  const connectionMode = integrationSettings.connectionMode === "evolution_official"
+    ? "evolution_official"
+    : "direct";
   const phoneNumberId = integrationSettings.phoneNumberId;
+  const evolutionInstanceName = integrationSettings.evolutionInstanceName;
+  const directEnabled = (
+    integration?.mode === "real" &&
+    integrationSettings.enabled === true &&
+    hasStringSetting(integrationSettings.wabaId) &&
+    hasStringSetting(phoneNumberId) &&
+    hasStringSetting(integrationSettings.accessToken) &&
+    hasStringSetting(integrationSettings.webhookVerifyToken) &&
+    hasStringSetting(integrationSettings.appSecret)
+  );
+  const evolutionOfficialEnabled = (
+    integration?.mode === "real" &&
+    integrationSettings.enabled === true &&
+    hasStringSetting(integrationSettings.evolutionBaseUrl) &&
+    hasStringSetting(integrationSettings.evolutionApiKey) &&
+    hasStringSetting(evolutionInstanceName)
+  );
 
   return {
-    enabled: (
-      integration?.mode === "real" &&
-      integrationSettings.enabled === true &&
-      hasStringSetting(integrationSettings.wabaId) &&
-      hasStringSetting(phoneNumberId) &&
-      hasStringSetting(integrationSettings.accessToken) &&
-      hasStringSetting(integrationSettings.webhookVerifyToken) &&
-      hasStringSetting(integrationSettings.appSecret)
-    ),
-    providerKey: typeof phoneNumberId === "string" ? phoneNumberId : ""
+    enabled: connectionMode === "evolution_official" ? evolutionOfficialEnabled : directEnabled,
+    connectionMode,
+    providerKey: connectionMode === "evolution_official"
+      ? typeof evolutionInstanceName === "string" ? evolutionInstanceName : ""
+      : typeof phoneNumberId === "string" ? phoneNumberId : ""
   };
 }
 
@@ -664,14 +679,18 @@ export function ChannelsPage() {
               {createProvider === "meta_cloud" ? (
                 <>
                   <div className="context-card">
-                    <label className="field-label" htmlFor="meta-provider-key">Phone Number ID</label>
+                    <label className="field-label" htmlFor="meta-provider-key">
+                      {metaCreateSettings.connectionMode === "evolution_official" ? "Instance name" : "Phone Number ID"}
+                    </label>
                     <input
                       className="text-input"
                       id="meta-provider-key"
                       maxLength={160}
                       name="metaProviderKey"
                       onChange={(event) => setMetaProviderKey(event.target.value)}
-                      placeholder="ID do numero no WhatsApp Cloud API"
+                      placeholder={metaCreateSettings.connectionMode === "evolution_official"
+                        ? "instancia-oficial-na-evolution"
+                        : "ID do numero no WhatsApp Cloud API"}
                       value={metaProviderKey}
                     />
                   </div>

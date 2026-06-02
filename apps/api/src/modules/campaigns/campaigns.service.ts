@@ -580,6 +580,18 @@ export interface CampaignsServiceOptions {
       }): Promise<{ providerMessageId: string | null; raw: unknown }>;
     } | null;
   };
+  metaEvolution?: {
+    instanceName: string | null;
+    client?: {
+      sendTemplate(input: {
+        instanceName: string;
+        number: string;
+        name: string;
+        language: string;
+        components?: MetaTemplateComponent[];
+      }): Promise<{ providerMessageId: string | null; raw: unknown }>;
+    } | null;
+  };
   now?: () => Date;
 }
 
@@ -1042,8 +1054,11 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
     }): Promise<CampaignSendResultDto> {
       const phoneNumberId = options.meta?.phoneNumberId?.trim();
       const wabaId = options.meta?.wabaId?.trim();
+      const evolutionInstanceName = options.metaEvolution?.instanceName?.trim();
+      const directMetaConfigured = Boolean(phoneNumberId && wabaId && options.meta?.client);
+      const evolutionOfficialConfigured = Boolean(evolutionInstanceName && options.metaEvolution?.client);
 
-      if (!phoneNumberId || !wabaId || !options.meta?.client) {
+      if (!directMetaConfigured && !evolutionOfficialConfigured) {
         throw new CampaignsServiceError(
           "CAMPAIGN_META_NOT_CONFIGURED",
           "Meta Cloud real mode is required to send a template campaign."
@@ -1052,17 +1067,19 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
 
       const templateName = input.template.name.trim();
       const templateLanguage = input.template.language.trim();
-      const template = await prisma.metaMessageTemplate.findFirst({
-        where: {
-          workspaceId: input.workspaceId,
-          wabaId,
-          name: templateName,
-          language: templateLanguage,
-          status: "APPROVED"
-        }
-      });
+      const template = directMetaConfigured
+        ? await prisma.metaMessageTemplate.findFirst({
+            where: {
+              workspaceId: input.workspaceId,
+              wabaId,
+              name: templateName,
+              language: templateLanguage,
+              status: "APPROVED"
+            }
+          })
+        : null;
 
-      if (!template) {
+      if (directMetaConfigured && !template) {
         throw new CampaignsServiceError(
           "CAMPAIGN_TEMPLATE_NOT_FOUND",
           "Approved Meta template not found for this workspace."
@@ -1073,7 +1090,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
         where: {
           workspaceId: input.workspaceId,
           provider: "meta_cloud",
-          providerKey: phoneNumberId,
+          providerKey: directMetaConfigured ? phoneNumberId : evolutionInstanceName,
           status: "connected"
         },
         orderBy: [{ createdAt: "asc" }]
@@ -1088,10 +1105,15 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
 
       const campaign = await findCampaignForWorkspace(input);
       const plans = await buildRecipientPlans(campaign);
-      const components = validateMetaSendComponents({
-        supplied: input.template.components,
-        storedComponents: template.components
-      });
+      const components: MetaTemplateComponent[] | undefined = template
+        ? validateMetaSendComponents({
+            supplied: input.template.components,
+            storedComponents: template.components
+          })
+        : input.template.components?.map((component) => ({
+            type: component.type,
+            parameters: component.parameters
+          })) as MetaTemplateComponent[] | undefined;
       const messagePreview = `Template ${templateName} (${templateLanguage})`;
       let sent = 0;
       let failed = 0;
@@ -1118,13 +1140,21 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
         };
 
         try {
-          const providerSend = await options.meta.client.sendTemplate({
-            phoneNumberId,
-            to: plan.contact.phone,
-            name: templateName,
-            language: templateLanguage,
-            ...(components ? { components } : {})
-          });
+          const providerSend = directMetaConfigured
+            ? await options.meta!.client!.sendTemplate({
+                phoneNumberId: phoneNumberId!,
+                to: plan.contact.phone,
+                name: templateName,
+                language: templateLanguage,
+                ...(components ? { components } : {})
+              })
+            : await options.metaEvolution!.client!.sendTemplate({
+                instanceName: evolutionInstanceName!,
+                number: plan.contact.phone,
+                name: templateName,
+                language: templateLanguage,
+                ...(components ? { components } : {})
+              });
 
           sent += 1;
           await prisma.campaignRecipient.upsert({

@@ -230,6 +230,48 @@ describe("Evolution client", () => {
     expect(result.providerMessageId).toBe("provider_media_1");
   });
 
+  it("sends an official template through Evolution", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({ key: { id: "provider_template_1" } })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    expect(client.sendTemplate).toBeDefined();
+    const result = await client.sendTemplate!({
+      instanceName: "official-instance",
+      number: "5547999990000",
+      name: "reactivation_vip",
+      language: "pt_BR",
+      components: [
+        {
+          type: "body",
+          parameters: [{ type: "text", text: "Ana" }]
+        }
+      ]
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://wsapi.yrdnegocios.com.br/message/sendTemplate/official-instance",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      number: "5547999990000",
+      name: "reactivation_vip",
+      language: "pt_BR",
+      components: [
+        {
+          type: "body",
+          parameters: [{ type: "text", text: "Ana" }]
+        }
+      ]
+    });
+    expect(result.providerMessageId).toBe("provider_template_1");
+  });
+
   it("sets an instance webhook with the expected provider payload", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse({ ok: true }));
     const client = createEvolutionClient({

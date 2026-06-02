@@ -489,6 +489,79 @@ describe("campaigns service", () => {
     );
   });
 
+  it("sends a Meta template campaign through an official Evolution instance", async () => {
+    const sendTemplate = vi.fn().mockResolvedValue({
+      providerMessageId: "evo_template_campaign_1",
+      raw: { key: { id: "evo_template_campaign_1" } }
+    });
+    const upsert = vi.fn().mockImplementation(async (args) => args.create);
+    const prisma = createMockPrisma({
+      campaign: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue(baseCampaign),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({ ...baseCampaign, status: "completed", mode: "real" })
+      },
+      campaignRecipient: {
+        findMany: vi.fn(),
+        upsert
+      },
+      channel: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "channel_meta_evolution_1",
+          workspaceId: "workspace_a",
+          provider: "meta_cloud",
+          providerKey: "official-instance",
+          status: "connected"
+        })
+      },
+      metaMessageTemplate: {
+        findFirst: vi.fn()
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      metaEvolution: {
+        instanceName: "official-instance",
+        client: { sendTemplate }
+      },
+      now: () => new Date("2026-05-25T12:00:00.000Z")
+    });
+
+    const result = await service.sendMetaTemplate({
+      workspaceId: "workspace_a",
+      campaignId,
+      template: {
+        name: "reactivation_vip",
+        language: "pt_BR"
+      }
+    });
+
+    expect(result).toEqual({
+      mode: "real",
+      result: "sent",
+      recipientsCreated: 2,
+      recipientsSent: 2,
+      recipientsFailed: 0
+    });
+    expect(prisma.metaMessageTemplate.findFirst).not.toHaveBeenCalled();
+    expect(sendTemplate).toHaveBeenCalledWith({
+      instanceName: "official-instance",
+      number: "+5511999990001",
+      name: "reactivation_vip",
+      language: "pt_BR"
+    });
+    expect(upsert.mock.calls[0]?.[0].create).toEqual(
+      expect.objectContaining({
+        status: "sent",
+        providerMessageId: "evo_template_campaign_1",
+        result: expect.objectContaining({
+          templateName: "reactivation_vip",
+          templateLanguage: "pt_BR"
+        })
+      })
+    );
+  });
+
   it("sends validated Meta template components through the connected Meta channel", async () => {
     const sendTemplate = vi.fn().mockResolvedValue({
       providerMessageId: "wamid_meta_campaign_1",

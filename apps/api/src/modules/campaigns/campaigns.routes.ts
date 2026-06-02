@@ -319,6 +319,12 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
           phoneNumberId: runtime.phoneNumberId,
           wabaId: runtime.wabaId,
           client: runtime.client
+        },
+        metaEvolution: {
+          instanceName: runtime.evolutionInstanceName,
+          client: runtime.evolutionClient?.sendTemplate ? {
+            sendTemplate: runtime.evolutionClient.sendTemplate.bind(runtime.evolutionClient)
+          } : null
         }
       });
       const result = await metaService.sendMetaTemplate({

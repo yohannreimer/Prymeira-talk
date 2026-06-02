@@ -45,6 +45,7 @@ describe("resolveMetaRuntime", () => {
 
     expect(runtime).toMatchObject({
       active: true,
+      connectionMode: "direct",
       wabaId: "111",
       phoneNumberId: "222",
       appSecret: null
@@ -86,7 +87,7 @@ describe("resolveMetaRuntime", () => {
     });
     expect(runtime).not.toHaveProperty("accessToken");
 
-    if (runtime.active) {
+    if (runtime.active && runtime.connectionMode === "direct") {
       await runtime.client.testConnection({ phoneNumberId: runtime.phoneNumberId });
     }
 
@@ -95,6 +96,55 @@ describe("resolveMetaRuntime", () => {
       expect.objectContaining({
         headers: expect.objectContaining({
           Authorization: "Bearer token"
+        })
+      })
+    );
+  });
+
+  it("returns an Evolution official runtime when Evolution settings exist", async () => {
+    const prisma = {
+      integrationConfig: {
+        findUnique: async () => ({
+          mode: "real",
+          status: "configured",
+          settings: {
+            enabled: true,
+            connectionMode: "evolution_official",
+            evolutionBaseUrl: " https://wsapi.example.test ",
+            evolutionApiKey: " evo-key ",
+            evolutionInstanceName: " official-instance "
+          }
+        })
+      }
+    };
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ key: { id: "template_1" } })));
+
+    const runtime = await resolveMetaRuntime(prisma, {
+      workspaceId: "local_workspace",
+      fetch
+    });
+
+    expect(runtime).toMatchObject({
+      active: true,
+      connectionMode: "evolution_official",
+      client: null,
+      evolutionInstanceName: "official-instance"
+    });
+
+    if (runtime.active && runtime.connectionMode === "evolution_official") {
+      await runtime.evolutionClient.sendTemplate?.({
+        instanceName: runtime.evolutionInstanceName,
+        number: "5547999990000",
+        name: "reactivation_vip",
+        language: "pt_BR"
+      });
+    }
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://wsapi.example.test/message/sendTemplate/official-instance",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          apikey: "evo-key"
         })
       })
     );

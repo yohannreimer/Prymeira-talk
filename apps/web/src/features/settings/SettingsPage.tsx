@@ -12,29 +12,39 @@ import {
 
 interface MetaCloudFormState {
   enabled: boolean;
+  connectionMode: "direct" | "evolution_official";
   wabaId: string;
   phoneNumberId: string;
   accessToken: string;
   webhookVerifyToken: string;
   appSecret: string;
+  evolutionBaseUrl: string;
+  evolutionApiKey: string;
+  evolutionInstanceName: string;
   storedSecrets: {
     accessToken: boolean;
     webhookVerifyToken: boolean;
     appSecret: boolean;
+    evolutionApiKey: boolean;
   };
 }
 
 const emptyMetaForm: MetaCloudFormState = {
   enabled: false,
+  connectionMode: "direct",
   wabaId: "",
   phoneNumberId: "",
   accessToken: "",
   webhookVerifyToken: "",
   appSecret: "",
+  evolutionBaseUrl: "",
+  evolutionApiKey: "",
+  evolutionInstanceName: "",
   storedSecrets: {
     accessToken: false,
     webhookVerifyToken: false,
-    appSecret: false
+    appSecret: false,
+    evolutionApiKey: false
   }
 };
 
@@ -54,15 +64,22 @@ function getMetaCloudForm(settings: SettingsDto): MetaCloudFormState {
 
   return {
     enabled: integrationSettings.enabled === true && integration?.mode === "real",
+    connectionMode: integrationSettings.connectionMode === "evolution_official"
+      ? "evolution_official"
+      : "direct",
     wabaId: typeof integrationSettings.wabaId === "string" ? integrationSettings.wabaId : "",
     phoneNumberId: typeof integrationSettings.phoneNumberId === "string" ? integrationSettings.phoneNumberId : "",
     accessToken: "",
     webhookVerifyToken: "",
     appSecret: "",
+    evolutionBaseUrl: typeof integrationSettings.evolutionBaseUrl === "string" ? integrationSettings.evolutionBaseUrl : "",
+    evolutionApiKey: "",
+    evolutionInstanceName: typeof integrationSettings.evolutionInstanceName === "string" ? integrationSettings.evolutionInstanceName : "",
     storedSecrets: {
       accessToken: hasStoredSecret(integrationSettings.accessToken),
       webhookVerifyToken: hasStoredSecret(integrationSettings.webhookVerifyToken),
-      appSecret: hasStoredSecret(integrationSettings.appSecret)
+      appSecret: hasStoredSecret(integrationSettings.appSecret),
+      evolutionApiKey: hasStoredSecret(integrationSettings.evolutionApiKey)
     }
   };
 }
@@ -111,6 +128,7 @@ export function SettingsPage() {
 
   const canSyncMetaTemplates = useMemo(() => (
     metaForm.enabled &&
+    metaForm.connectionMode === "direct" &&
     metaForm.wabaId.trim().length > 0 &&
     metaForm.phoneNumberId.trim().length > 0 &&
     (metaForm.accessToken.trim().length > 0 || metaForm.storedSecrets.accessToken) &&
@@ -124,7 +142,8 @@ export function SettingsPage() {
 
   function buildMetaSettingsPayload() {
     const nextSettings: Record<string, unknown> = {
-      enabled: metaForm.enabled
+      enabled: metaForm.enabled,
+      connectionMode: metaForm.connectionMode
     };
 
     setTrimmedValue(nextSettings, "wabaId", metaForm.wabaId);
@@ -132,12 +151,25 @@ export function SettingsPage() {
     setTrimmedValue(nextSettings, "accessToken", metaForm.accessToken);
     setTrimmedValue(nextSettings, "webhookVerifyToken", metaForm.webhookVerifyToken);
     setTrimmedValue(nextSettings, "appSecret", metaForm.appSecret);
+    setTrimmedValue(nextSettings, "evolutionBaseUrl", metaForm.evolutionBaseUrl);
+    setTrimmedValue(nextSettings, "evolutionApiKey", metaForm.evolutionApiKey);
+    setTrimmedValue(nextSettings, "evolutionInstanceName", metaForm.evolutionInstanceName);
 
     return nextSettings;
   }
 
   function validateMetaSettings() {
     if (!metaForm.enabled) return null;
+
+    if (metaForm.connectionMode === "evolution_official") {
+      if (!metaForm.evolutionBaseUrl.trim()) return "Informe a URL da Evolution.";
+      if (!metaForm.evolutionApiKey.trim() && !metaForm.storedSecrets.evolutionApiKey) {
+        return "Informe a API key da Evolution.";
+      }
+      if (!metaForm.evolutionInstanceName.trim()) return "Informe o nome da instância na Evolution.";
+
+      return null;
+    }
 
     if (!metaForm.wabaId.trim()) return "Informe o WABA ID.";
     if (!metaForm.phoneNumberId.trim()) return "Informe o Phone Number ID.";
@@ -274,57 +306,112 @@ export function SettingsPage() {
 
             {metaForm.enabled ? (
               <>
-                <label className="form-field">
-                  WABA ID
-                  <input
-                    autoComplete="off"
-                    onChange={(event) => updateMetaForm({ wabaId: event.target.value })}
-                    required
-                    value={metaForm.wabaId}
-                  />
-                </label>
-                <label className="form-field">
-                  Phone Number ID
-                  <input
-                    autoComplete="off"
-                    onChange={(event) => updateMetaForm({ phoneNumberId: event.target.value })}
-                    required
-                    value={metaForm.phoneNumberId}
-                  />
-                </label>
-                <label className="form-field">
-                  Access Token
-                  <input
-                    autoComplete="new-password"
-                    onChange={(event) => updateMetaForm({ accessToken: event.target.value })}
-                    placeholder={metaForm.storedSecrets.accessToken ? "Token já salvo" : "Cole o token da Meta"}
-                    required={!metaForm.storedSecrets.accessToken}
-                    type="password"
-                    value={metaForm.accessToken}
-                  />
-                </label>
-                <label className="form-field">
-                  Webhook Verify Token
-                  <input
-                    autoComplete="new-password"
-                    onChange={(event) => updateMetaForm({ webhookVerifyToken: event.target.value })}
-                    placeholder={metaForm.storedSecrets.webhookVerifyToken ? "Token já salvo" : "Defina o token de verificação"}
-                    required={!metaForm.storedSecrets.webhookVerifyToken}
-                    type="password"
-                    value={metaForm.webhookVerifyToken}
-                  />
-                </label>
-                <label className="form-field">
-                  App Secret
-                  <input
-                    autoComplete="new-password"
-                    onChange={(event) => updateMetaForm({ appSecret: event.target.value })}
-                    placeholder={metaForm.storedSecrets.appSecret ? "Segredo já salvo" : "Cole o App Secret"}
-                    required={!metaForm.storedSecrets.appSecret}
-                    type="password"
-                    value={metaForm.appSecret}
-                  />
-                </label>
+                <div className="segmented-control" aria-label="Modo de conexão Meta">
+                  <button
+                    className={metaForm.connectionMode === "direct" ? "is-active" : ""}
+                    onClick={() => updateMetaForm({ connectionMode: "direct" })}
+                    type="button"
+                  >
+                    Direto na Meta
+                  </button>
+                  <button
+                    className={metaForm.connectionMode === "evolution_official" ? "is-active" : ""}
+                    onClick={() => updateMetaForm({ connectionMode: "evolution_official" })}
+                    type="button"
+                  >
+                    Via Evolution
+                  </button>
+                </div>
+
+                {metaForm.connectionMode === "direct" ? (
+                  <>
+                    <label className="form-field">
+                      WABA ID
+                      <input
+                        autoComplete="off"
+                        onChange={(event) => updateMetaForm({ wabaId: event.target.value })}
+                        required
+                        value={metaForm.wabaId}
+                      />
+                    </label>
+                    <label className="form-field">
+                      Phone Number ID
+                      <input
+                        autoComplete="off"
+                        onChange={(event) => updateMetaForm({ phoneNumberId: event.target.value })}
+                        required
+                        value={metaForm.phoneNumberId}
+                      />
+                    </label>
+                    <label className="form-field">
+                      Access Token
+                      <input
+                        autoComplete="new-password"
+                        onChange={(event) => updateMetaForm({ accessToken: event.target.value })}
+                        placeholder={metaForm.storedSecrets.accessToken ? "Token já salvo" : "Cole o token da Meta"}
+                        required={!metaForm.storedSecrets.accessToken}
+                        type="password"
+                        value={metaForm.accessToken}
+                      />
+                    </label>
+                    <label className="form-field">
+                      Webhook Verify Token
+                      <input
+                        autoComplete="new-password"
+                        onChange={(event) => updateMetaForm({ webhookVerifyToken: event.target.value })}
+                        placeholder={metaForm.storedSecrets.webhookVerifyToken ? "Token já salvo" : "Defina o token de verificação"}
+                        required={!metaForm.storedSecrets.webhookVerifyToken}
+                        type="password"
+                        value={metaForm.webhookVerifyToken}
+                      />
+                    </label>
+                    <label className="form-field">
+                      App Secret
+                      <input
+                        autoComplete="new-password"
+                        onChange={(event) => updateMetaForm({ appSecret: event.target.value })}
+                        placeholder={metaForm.storedSecrets.appSecret ? "Segredo já salvo" : "Cole o App Secret"}
+                        required={!metaForm.storedSecrets.appSecret}
+                        type="password"
+                        value={metaForm.appSecret}
+                      />
+                    </label>
+                  </>
+                ) : (
+                  <>
+                    <label className="form-field">
+                      Evolution Base URL
+                      <input
+                        autoComplete="off"
+                        onChange={(event) => updateMetaForm({ evolutionBaseUrl: event.target.value })}
+                        placeholder="https://wsapi.seudominio.com.br"
+                        required
+                        value={metaForm.evolutionBaseUrl}
+                      />
+                    </label>
+                    <label className="form-field">
+                      API key da Evolution
+                      <input
+                        autoComplete="new-password"
+                        onChange={(event) => updateMetaForm({ evolutionApiKey: event.target.value })}
+                        placeholder={metaForm.storedSecrets.evolutionApiKey ? "API key já salva" : "Cole a API key da Evolution"}
+                        required={!metaForm.storedSecrets.evolutionApiKey}
+                        type="password"
+                        value={metaForm.evolutionApiKey}
+                      />
+                    </label>
+                    <label className="form-field">
+                      Instance name
+                      <input
+                        autoComplete="off"
+                        onChange={(event) => updateMetaForm({ evolutionInstanceName: event.target.value })}
+                        placeholder="nome-da-instancia-oficial"
+                        required
+                        value={metaForm.evolutionInstanceName}
+                      />
+                    </label>
+                  </>
+                )}
               </>
             ) : (
               <p className="list-note">A integração oficial fica oculta no app até ser ativada aqui.</p>
@@ -335,7 +422,7 @@ export function SettingsPage() {
                 <Save size={16} />
                 Salvar ajustes
               </button>
-              {metaForm.enabled ? (
+              {metaForm.enabled && metaForm.connectionMode === "direct" ? (
                 <button
                   className="secondary-button"
                   disabled={isSyncingTemplates || !canSyncMetaTemplates}

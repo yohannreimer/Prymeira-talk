@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import { createEvolutionClient, type EvolutionClient } from "../evolution/evolution.client.js";
 import { createMetaClient, type MetaClient } from "./meta.client.js";
 
 const META_CLOUD_PROVIDER = "meta_cloud";
@@ -21,19 +22,36 @@ export interface MetaRuntimeInput {
 export type MetaRuntime =
   | {
       active: false;
+      connectionMode: "direct";
       client: null;
       wabaId: null;
       phoneNumberId: null;
       webhookVerifyToken: null;
       appSecret: null;
+      evolutionClient: null;
+      evolutionInstanceName: null;
     }
   | {
       active: true;
+      connectionMode: "direct";
       client: MetaClient;
       wabaId: string;
       phoneNumberId: string;
       webhookVerifyToken: string | null;
       appSecret: string | null;
+      evolutionClient: null;
+      evolutionInstanceName: null;
+    }
+  | {
+      active: true;
+      connectionMode: "evolution_official";
+      client: null;
+      wabaId: null;
+      phoneNumberId: null;
+      webhookVerifyToken: null;
+      appSecret: null;
+      evolutionClient: EvolutionClient;
+      evolutionInstanceName: string;
     };
 
 export interface MetaRuntimePrismaLike {
@@ -45,11 +63,14 @@ export interface MetaRuntimePrismaLike {
 function inactiveRuntime(): MetaRuntime {
   return {
     active: false,
+    connectionMode: "direct",
     client: null,
     wabaId: null,
     phoneNumberId: null,
     webhookVerifyToken: null,
-    appSecret: null
+    appSecret: null,
+    evolutionClient: null,
+    evolutionInstanceName: null
   };
 }
 
@@ -85,16 +106,51 @@ export async function resolveMetaRuntime(
   }
 
   const enabled = config.settings.enabled === true;
+  const connectionMode = config.settings.connectionMode === "evolution_official"
+    ? "evolution_official"
+    : "direct";
+
+  if (!enabled) {
+    return inactiveRuntime();
+  }
+
+  if (connectionMode === "evolution_official") {
+    const evolutionBaseUrl = getStringSetting(config.settings, "evolutionBaseUrl");
+    const evolutionApiKey = getStringSetting(config.settings, "evolutionApiKey");
+    const evolutionInstanceName = getStringSetting(config.settings, "evolutionInstanceName");
+
+    if (!evolutionBaseUrl || !evolutionApiKey || !evolutionInstanceName) {
+      return inactiveRuntime();
+    }
+
+    return {
+      active: true,
+      connectionMode,
+      client: null,
+      wabaId: null,
+      phoneNumberId: null,
+      webhookVerifyToken: null,
+      appSecret: null,
+      evolutionClient: createEvolutionClient({
+        baseUrl: evolutionBaseUrl,
+        apiKey: evolutionApiKey,
+        fetch: input.fetch
+      }),
+      evolutionInstanceName
+    };
+  }
+
   const wabaId = getStringSetting(config.settings, "wabaId");
   const phoneNumberId = getStringSetting(config.settings, "phoneNumberId");
   const accessToken = getStringSetting(config.settings, "accessToken");
 
-  if (!enabled || !wabaId || !phoneNumberId || !accessToken) {
+  if (!wabaId || !phoneNumberId || !accessToken) {
     return inactiveRuntime();
   }
 
   return {
     active: true,
+    connectionMode,
     client: createMetaClient({
       graphApiBaseUrl: input.graphApiBaseUrl ?? DEFAULT_GRAPH_API_BASE_URL,
       accessToken,
@@ -103,6 +159,8 @@ export async function resolveMetaRuntime(
     wabaId,
     phoneNumberId,
     webhookVerifyToken: getStringSetting(config.settings, "webhookVerifyToken"),
-    appSecret: getStringSetting(config.settings, "appSecret")
+    appSecret: getStringSetting(config.settings, "appSecret"),
+    evolutionClient: null,
+    evolutionInstanceName: null
   };
 }

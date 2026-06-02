@@ -92,6 +92,12 @@ Required Meta values for phase 1:
 - Webhook verify token
 - App Secret
 
+If the official number is already connected inside Evolution API, activate Meta in Settings and choose `Via Evolution`. This mode requires:
+
+- Evolution Base URL
+- Evolution API key
+- Evolution instance name
+
 Webhook URL:
 
 `https://<talk-domain>/webhooks/meta/<workspaceId>`

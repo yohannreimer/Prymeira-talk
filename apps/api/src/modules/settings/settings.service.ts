@@ -109,6 +109,7 @@ const SECRET_SETTING_KEYS = new Set([
   "accessToken",
   "webhookVerifyToken",
   "appSecret",
+  "evolutionApiKey",
   "token",
   "secret"
 ]);
@@ -221,13 +222,22 @@ function assertMetaCloudSettingsConfigured(
     return;
   }
 
-  const requiredKeys = [
-    "wabaId",
-    "phoneNumberId",
-    "accessToken",
-    "webhookVerifyToken",
-    "appSecret"
-  ];
+  const connectionMode = record.connectionMode === "evolution_official"
+    ? "evolution_official"
+    : "direct";
+  const requiredKeys = connectionMode === "evolution_official"
+    ? [
+        "evolutionBaseUrl",
+        "evolutionApiKey",
+        "evolutionInstanceName"
+      ]
+    : [
+        "wabaId",
+        "phoneNumberId",
+        "accessToken",
+        "webhookVerifyToken",
+        "appSecret"
+      ];
   const missingKey = requiredKeys.find((key) => !getStringSetting(record, key));
 
   if (missingKey) {
