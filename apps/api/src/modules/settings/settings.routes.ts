@@ -2,6 +2,8 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { canPerform } from "../access/roles.js";
+import { resolveMetaRuntime } from "../meta/meta-runtime.js";
+import { createMetaTemplatesService } from "../meta/meta.templates.service.js";
 import { createSettingsService } from "./settings.service.js";
 import type { PrismaLike } from "./settings.service.js";
 
@@ -74,5 +76,29 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     return service.listAuditLog({ workspaceId: request.talk.workspaceId });
+  });
+
+  app.post("/settings/meta-cloud/sync-templates", async (request, reply) => {
+    if (!requireWorkspaceManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const runtime = await resolveMetaRuntime(app.prisma, {
+      workspaceId: request.talk.workspaceId
+    });
+
+    if (!runtime.active || !runtime.client || !runtime.wabaId) {
+      return reply.code(409).send({
+        code: "META_CLOUD_NOT_CONFIGURED",
+        error: "Meta Cloud integration is not active for this workspace."
+      });
+    }
+
+    const templateService = createMetaTemplatesService(app.prisma);
+    return templateService.syncTemplates({
+      workspaceId: request.talk.workspaceId,
+      wabaId: runtime.wabaId,
+      client: runtime.client
+    });
   });
 };
