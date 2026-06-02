@@ -201,7 +201,26 @@ describe("settings service", () => {
     });
 
     expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
-      create: expect.objectContaining({ provider: "meta_cloud", mode: "real" })
+      create: expect.objectContaining({
+        provider: "meta_cloud",
+        mode: "real",
+        settings: expect.objectContaining({
+          enabled: true,
+          wabaId: "111",
+          phoneNumberId: "222",
+          accessToken: "secret-token",
+          webhookVerifyToken: "verify-secret"
+        })
+      }),
+      update: expect.objectContaining({
+        settings: expect.objectContaining({
+          enabled: true,
+          wabaId: "111",
+          phoneNumberId: "222",
+          accessToken: "secret-token",
+          webhookVerifyToken: "verify-secret"
+        })
+      })
     }));
     expect(result.integrations[0]?.settings).toMatchObject({
       enabled: true,
