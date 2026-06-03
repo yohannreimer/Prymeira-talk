@@ -30,6 +30,7 @@ export const envSchema = z.object({
   EVOLUTION_API_BASE_URL: optionalUrl,
   EVOLUTION_API_KEY: optionalNonEmptyString,
   EVOLUTION_WEBHOOK_SECRET: z.string().min(1),
+  TALK_UPLOAD_DIR: z.string().min(1).default("storage/uploads"),
   VINCULA_CRM_API_URL: optionalUrl
 });
 

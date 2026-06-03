@@ -1,3 +1,5 @@
+import { rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { buildApp } from "./test/build-app.js";
 
@@ -355,6 +357,52 @@ describe("app", () => {
       expect(fetchProducts).not.toHaveBeenCalled();
     } finally {
       await app.close();
+    }
+  });
+
+  it("stores automation uploads and serves them from a public URL without a token", async () => {
+    const uploadDir = `tmp/test-uploads-${randomUUID()}`;
+    const app = await buildApp(
+      {
+        PRYMEIRA_LOCAL_AUTH_BYPASS: true,
+        PRYMEIRA_LOCAL_WORKSPACE_ID: "workspace_uploads",
+        TALK_UPLOAD_DIR: uploadDir,
+        PUBLIC_TALK_URL: "https://talk.example.com/app"
+      },
+      { authEnabled: true, prismaEnabled: false }
+    );
+
+    try {
+      const uploadResponse = await app.inject({
+        method: "POST",
+        url: "/automation-assets",
+        headers: { authorization: "Bearer local-token" },
+        payload: {
+          fileName: "Proposta Final.pdf",
+          mimeType: "application/pdf",
+          base64: Buffer.from("pdf test").toString("base64")
+        }
+      });
+
+      expect(uploadResponse.statusCode).toBe(201);
+      const upload = uploadResponse.json() as { fileName: string; mimeType: string; url: string };
+      expect(upload).toMatchObject({
+        fileName: "Proposta Final.pdf",
+        mimeType: "application/pdf"
+      });
+      expect(upload.url).toMatch(
+        /^https:\/\/talk\.example\.com\/app\/uploads\/automations\/workspace_uploads\//
+      );
+
+      const publicPath = new URL(upload.url).pathname;
+      const publicResponse = await app.inject({ method: "GET", url: publicPath });
+
+      expect(publicResponse.statusCode).toBe(200);
+      expect(publicResponse.headers["content-type"]).toContain("application/pdf");
+      expect(publicResponse.body).toBe("pdf test");
+    } finally {
+      await app.close();
+      await rm(uploadDir, { recursive: true, force: true });
     }
   });
 });

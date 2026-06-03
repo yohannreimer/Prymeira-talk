@@ -1,4 +1,8 @@
 import { automationBlockCatalog, type AutomationBlockType } from "@prymeira-talk/shared";
+import { Upload } from "lucide-react";
+import { useState } from "react";
+import { apiUploadAutomationAsset } from "../../app/api";
+import { useTalkAuth } from "../../app/auth";
 import type { AutomationCanvasNode } from "./automationFlow";
 
 interface AutomationNodeInspectorProps {
@@ -29,6 +33,10 @@ function updateConfigValue(
 }
 
 export function AutomationNodeInspector({ node, onConfigChange, onTypeChange }: AutomationNodeInspectorProps) {
+  const { getToken } = useTalkAuth();
+  const [uploadingNodeId, setUploadingNodeId] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   if (!node) {
     return (
       <aside className="automation-node-inspector" aria-label="Configuracao do bloco">
@@ -61,6 +69,28 @@ export function AutomationNodeInspector({ node, onConfigChange, onTypeChange }: 
     showsFile ||
     showsTag ||
     showsBoardStage;
+
+  async function uploadAutomationFile(file: File | null) {
+    if (!file || !node) return;
+
+    setUploadingNodeId(node.id);
+    setUploadError(null);
+
+    try {
+      const result = await apiUploadAutomationAsset(getToken, file);
+      onConfigChange(node.id, {
+        ...node.data.config,
+        fileName: result.fileName,
+        fileUrl: result.url,
+        mimetype: result.mimeType,
+        mediaUrl: result.url
+      });
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "Nao foi possivel enviar o arquivo.");
+    } finally {
+      setUploadingNodeId(null);
+    }
+  }
 
   return (
     <aside className="automation-node-inspector" aria-label="Configuracao do bloco">
@@ -140,20 +170,36 @@ export function AutomationNodeInspector({ node, onConfigChange, onTypeChange }: 
 
       {showsFile ? (
         <div className="automation-inspector-fields">
-          <label className="form-field">
-            <span>Nome do arquivo</span>
+          <label className="automation-upload-control">
+            <Upload size={16} aria-hidden="true" />
+            <span>{uploadingNodeId === node.id ? "Enviando..." : "Enviar arquivo"}</span>
             <input
-              onChange={(event) => updateConfigValue(node, "fileName", event.target.value, onConfigChange)}
-              placeholder={type === "send_image" ? "produto.png" : "proposta.pdf"}
-              value={readConfigValue(config, "fileName")}
+              accept={type === "send_image" ? "image/*" : undefined}
+              className="visually-hidden"
+              disabled={uploadingNodeId === node.id}
+              onChange={(event) => {
+                void uploadAutomationFile(event.target.files?.[0] ?? null);
+                event.currentTarget.value = "";
+              }}
+              type="file"
             />
           </label>
+          {readConfigValue(config, "fileUrl") ? (
+            <div className="automation-upload-summary">
+              <strong>{readConfigValue(config, "fileName") || "Arquivo enviado"}</strong>
+              <span>{readConfigValue(config, "mimetype") || "Arquivo publico"}</span>
+            </div>
+          ) : (
+            <p className="list-note">O arquivo sera salvo e usado por uma URL publica do Prymeira Talk.</p>
+          )}
+          {uploadError ? <p className="error-note">{uploadError}</p> : null}
           <label className="form-field">
-            <span>URL ou caminho</span>
-            <input
-              onChange={(event) => updateConfigValue(node, "fileUrl", event.target.value, onConfigChange)}
-              placeholder="https://..."
-              value={readConfigValue(config, "fileUrl")}
+            <span>Legenda opcional</span>
+            <textarea
+              onChange={(event) => updateConfigValue(node, "caption", event.target.value, onConfigChange)}
+              placeholder={type === "send_image" ? "Texto que acompanha a imagem" : "Texto que acompanha o arquivo"}
+              rows={3}
+              value={readConfigValue(config, "caption")}
             />
           </label>
         </div>

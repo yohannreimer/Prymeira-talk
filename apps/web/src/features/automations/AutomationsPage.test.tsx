@@ -18,6 +18,7 @@ import {
   createAutomationNode,
   createDefaultAutomationFlow,
   flowToAutomationPayload,
+  replaceAutomationNodeType,
   supportedBlockTypes
 } from "./automationFlow";
 import type { AutomationFlowDefinition } from "@prymeira-talk/shared";
@@ -828,5 +829,22 @@ describe("automation flow helpers", () => {
     ]);
 
     expect(["trigger_first_message-1", "trigger_first_message-2"]).not.toContain(node.id);
+  });
+
+  it("replaces the initial trigger type without requiring the trigger node to be deleted", () => {
+    const trigger = createAutomationNode("trigger_first_message", { x: 80, y: 180 });
+    const replaced = replaceAutomationNodeType(trigger, "trigger_keyword");
+
+    expect(replaced).toMatchObject({
+      id: trigger.id,
+      type: "trigger_keyword",
+      draggable: false,
+      deletable: false,
+      data: expect.objectContaining({
+        blockType: "trigger_keyword",
+        title: "Palavra-chave",
+        config: {}
+      })
+    });
   });
 });

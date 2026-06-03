@@ -17,7 +17,6 @@ import {
   automationBlockCatalog,
   automationFlowSchema,
   getAutomationBlock,
-  type AutomationBlockDefinition,
   type AutomationBlockType,
   type AutomationFlowDefinition
 } from "@prymeira-talk/shared";
@@ -32,6 +31,7 @@ import {
   createDefaultAutomationFlow,
   flowToAutomationPayload,
   isTriggerBlock,
+  replaceAutomationNodeType,
   type AutomationCanvasEdge,
   type AutomationCanvasNode
 } from "./automationFlow";
@@ -184,14 +184,6 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId]
   );
-  const hasTrigger = useMemo(() => nodes.some((node) => node.data.category === "trigger"), [nodes]);
-  const triggerDisabledReason = useCallback((block: AutomationBlockDefinition) => {
-    if (block.category !== "trigger") {
-      return null;
-    }
-
-    return "Use o gatilho fixo no canvas e altere o tipo no painel de configuracao.";
-  }, []);
 
   const handleNodesChange = useCallback((changes: NodeChange<AutomationCanvasNode>[]) => {
     setNodes((currentNodes) => {
@@ -241,6 +233,9 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
         const triggerNode = currentNodes.find((node) => node.data.category === "trigger");
         if (triggerNode) {
           setSelectedNodeId(triggerNode.id);
+          return currentNodes.map((node) =>
+            node.id === triggerNode.id ? replaceAutomationNodeType(node, type) : node
+          );
         }
         return currentNodes;
       }
@@ -265,21 +260,7 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
     setNodes((currentNodes) =>
       currentNodes.map((node) =>
         node.id === nodeId
-          ? {
-              ...node,
-              type: block.type,
-              draggable: block.category !== "trigger",
-              deletable: block.category !== "trigger",
-              data: {
-                ...node.data,
-                blockType: block.type,
-                title: block.label,
-                description: block.description,
-                category: block.category,
-                support: block.support,
-                config: {}
-              }
-            }
+          ? replaceAutomationNodeType(node, block.type)
           : node
       )
     );
@@ -311,7 +292,6 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
     <div className={`automation-canvas-shell automation-canvas-shell--${variant}`}>
       {isFocusMode ? null : (
         <AutomationBlockLibrary
-          disabledReason={hasTrigger ? triggerDisabledReason : undefined}
           onSelect={addBlock}
         />
       )}
@@ -369,7 +349,6 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
             {isFocusPaletteOpen ? (
               <div className="automation-focus-popover">
                 <AutomationBlockLibrary
-                  disabledReason={hasTrigger ? triggerDisabledReason : undefined}
                   onSelect={addFocusBlock}
                 />
               </div>

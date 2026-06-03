@@ -20,6 +20,7 @@ import { reportsRoutes } from "./modules/reports/reports.routes.js";
 import { settingsRoutes } from "./modules/settings/settings.routes.js";
 import { teamRoutes } from "./modules/team/team.routes.js";
 import { quickRepliesRoutes } from "./modules/quick-replies/quick-replies.routes.js";
+import { uploadsRoutes } from "./modules/uploads/uploads.routes.js";
 
 export interface CreateAppOptions {
   authEnabled?: boolean;
@@ -79,6 +80,10 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(metaWebhooksRoutes);
   await app.register(conversationsRoutes, { evolution: evolutionRuntime });
   await app.register(quickRepliesRoutes);
+  await app.register(uploadsRoutes, {
+    publicTalkUrl: env.PUBLIC_TALK_URL,
+    uploadDir: env.TALK_UPLOAD_DIR
+  });
   await app.register(contactsRoutes);
   await app.register(boardsRoutes);
   await app.register(channelsRoutes, { evolution: evolutionRuntime });

@@ -3591,6 +3591,55 @@ select:disabled {
   gap: 10px;
 }
 
+.automation-upload-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  padding: 10px 12px;
+  font-size: 0.86rem;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.automation-upload-control:hover {
+  border-color: rgba(31, 93, 73, 0.46);
+  background: var(--color-brand-50);
+}
+
+.automation-upload-summary {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(31, 93, 73, 0.2);
+  border-radius: 8px;
+  background: var(--color-brand-50);
+  padding: 10px;
+}
+
+.automation-upload-summary strong,
+.automation-upload-summary span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-upload-summary strong {
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+}
+
+.automation-upload-summary span {
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+}
+
 .panel-title-row.compact {
   padding-bottom: 4px;
 }

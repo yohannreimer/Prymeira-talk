@@ -22,6 +22,7 @@ export async function buildApp(
       LOCAL_TALK_URL: "http://localhost:3002",
       EVOLUTION_MODE: "simulated",
       EVOLUTION_WEBHOOK_SECRET: "test_secret",
+      TALK_UPLOAD_DIR: "tmp/test-uploads",
       ...overrides
     },
     { authEnabled: false, logger: false, prismaEnabled: false, ...options }

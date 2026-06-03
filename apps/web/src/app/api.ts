@@ -146,6 +146,13 @@ export interface AutomationRunDto {
   updatedAt: string;
 }
 
+export interface AutomationAssetUploadResultDto {
+  fileName: string;
+  mimeType: string;
+  size: number;
+  url: string;
+}
+
 export type CampaignStatus = "draft" | "scheduled" | "sending" | "completed" | "failed";
 
 export interface CampaignAudienceDto {
@@ -945,6 +952,29 @@ function parseMetaTemplateOptionsResult(data: unknown): MetaTemplateOptionDto[] 
   return Array.isArray(templates) ? templates.map(parseMetaTemplateOption) : [];
 }
 
+function parseAutomationAssetUploadResult(data: unknown): AutomationAssetUploadResultDto {
+  const payload = asRecord(data);
+
+  return {
+    fileName: String(payload.fileName ?? ""),
+    mimeType: String(payload.mimeType ?? ""),
+    size: Number(payload.size ?? 0),
+    url: String(payload.url ?? "")
+  };
+}
+
+async function fileToBase64Payload(file: File) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+
+  return btoa(binary);
+}
+
 async function fetchJson<T>(
   getToken: () => Promise<string | null>,
   path: string,
@@ -1684,6 +1714,31 @@ export async function apiDeleteQuickReply(
   if (!response.ok) {
     throw new Error(`Failed to delete quick reply: ${response.status}`);
   }
+}
+
+export async function apiUploadAutomationAsset(
+  getToken: () => Promise<string | null>,
+  file: File
+): Promise<AutomationAssetUploadResultDto> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/automation-assets`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      fileName: file.name,
+      mimeType: file.type || "application/octet-stream",
+      base64: await fileToBase64Payload(file)
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(await readApiErrorMessage(response, "Failed to upload automation asset"));
+  }
+
+  return parseAutomationAssetUploadResult(await response.json());
 }
 
 export async function apiGetAutomations(

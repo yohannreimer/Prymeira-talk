@@ -68,7 +68,13 @@ function readPathname(request: FastifyRequest) {
 }
 
 function isPublicPath(pathname: string) {
-  return pathname === "/health" || pathname === "/webhooks/evolution" || pathname.startsWith("/webhooks/evolution/");
+  return (
+    pathname === "/health" ||
+    pathname === "/webhooks/evolution" ||
+    pathname.startsWith("/webhooks/evolution/") ||
+    pathname.startsWith("/uploads/automations/") ||
+    pathname.includes("/uploads/automations/")
+  );
 }
 
 function readBearerToken(request: FastifyRequest, pathname: string) {

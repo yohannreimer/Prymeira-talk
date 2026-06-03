@@ -69,6 +69,33 @@ export function createAutomationNode(
   };
 }
 
+export function replaceAutomationNodeType(
+  node: AutomationCanvasNode,
+  type: AutomationBlockType
+): AutomationCanvasNode {
+  const block = getAutomationBlock(type);
+
+  if (!block) {
+    throw new Error(`Unknown automation block: ${type}`);
+  }
+
+  return {
+    ...node,
+    type: block.type,
+    draggable: block.category !== "trigger",
+    deletable: block.category !== "trigger",
+    data: {
+      ...node.data,
+      blockType: block.type,
+      title: block.label,
+      description: block.description,
+      category: block.category,
+      support: block.support,
+      config: {}
+    }
+  };
+}
+
 export function createDefaultAutomationFlow(): AutomationFlowDefinition {
   return flowToAutomationPayload(
     [createAutomationNode("trigger_first_message", { x: 80, y: 180 })],
