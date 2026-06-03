@@ -5,6 +5,7 @@ import {
   type AutomationFlowDefinition,
   type AutomationNodeDefinition
 } from "@prymeira-talk/shared";
+import { EvolutionClientError } from "../evolution/evolution.client.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 
 type DateLike = Date | string;
@@ -189,6 +190,22 @@ const MAX_GRAPH_STEPS = 80;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function collectStrings(value: unknown): string[] {
+  if (typeof value === "string") {
+    return [value];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap(collectStrings);
+  }
+
+  if (isRecord(value)) {
+    return Object.values(value).flatMap(collectStrings);
+  }
+
+  return [];
 }
 
 function configValue(node: AutomationNodeDefinition, keys: string[]) {
@@ -729,7 +746,15 @@ async function executeFlow(
 
   while (current && steps < MAX_GRAPH_STEPS) {
     steps += 1;
-    const execution = await executeNode(options, context, current);
+
+    let execution: Awaited<ReturnType<typeof executeNode>>;
+    try {
+      execution = await executeNode(options, context, current);
+    } catch (error) {
+      results.push(resultFor(current, "failed", { error: sanitizeError(error) }));
+      break;
+    }
+
     results.push(execution.result);
 
     if (execution.result.status === "failed" || execution.stop) {
@@ -795,6 +820,18 @@ function runInput(context: ExecuteContext) {
 }
 
 function sanitizeError(error: unknown) {
+  if (error instanceof EvolutionClientError) {
+    const details = collectStrings(error.responseBody)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(" ");
+
+    return details
+      ? `Evolution API request failed with status ${error.statusCode}: ${details}`
+      : error.message;
+  }
+
   if (error instanceof Error) {
     return error.message;
   }
@@ -915,16 +952,7 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
           continue;
         }
 
-        let results: ActionResult[];
-        try {
-          results = await executeFlow(options, context, flow, triggerNode);
-        } catch (error) {
-          results = [
-            resultFor(triggerNode, "failed", {
-              error: sanitizeError(error)
-            })
-          ];
-        }
+        const results = await executeFlow(options, context, flow, triggerNode);
 
         const result = {
           mode: "real",

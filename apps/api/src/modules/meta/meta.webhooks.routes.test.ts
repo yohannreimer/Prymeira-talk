@@ -180,7 +180,7 @@ function createMockPrisma(overrides: {
           lastMessagePreview: "Oi",
           unreadCount: 1,
           priority: "normal",
-          customerServiceWindowExpiresAt: new Date((1780401600 + 24 * 60 * 60) * 1000),
+          customerServiceWindowExpiresAt: new Date("2099-06-03T12:00:00.000Z"),
           channel: {
             displayName: "Meta WhatsApp",
             phoneNumber: "+55 11 99999-9999",

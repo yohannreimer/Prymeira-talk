@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { realtimeEventSchema } from "@prymeira-talk/shared";
+import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { createAutomationRunner } from "./automation-runner.js";
 import type { AutomationRunnerPrisma } from "./automation-runner.js";
 
@@ -354,6 +355,88 @@ describe("automation runner", () => {
         { nodeId: "trigger-1", status: "completed" },
         { nodeId: "condition-1", status: "completed", branch: "yes" },
         { nodeId: "file-1", status: "completed" }
+      ]
+    });
+  });
+
+  it("continues from a text step into an image step and records media node failures", async () => {
+    const imageRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          baseRule.actions.nodes[0],
+          {
+            id: "send-1",
+            type: "send_message",
+            position: { x: 260, y: 0 },
+            data: { title: "Enviar mensagem", config: { message: "Vou enviar a imagem." } }
+          },
+          {
+            id: "image-1",
+            type: "send_image",
+            position: { x: 520, y: 0 },
+            data: {
+              title: "Enviar imagem",
+              config: {
+                fileUrl: "https://talk.prymeiradigital.com.br/uploads/automations/workspace_a/foto.jpeg",
+                fileName: "foto.jpeg",
+                mimetype: "image/jpeg",
+                caption: "oiii"
+              }
+            }
+          }
+        ],
+        edges: [
+          { id: "edge-1", source: "trigger-1", target: "send-1" },
+          { id: "edge-2", source: "send-1", target: "image-1" }
+        ]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([imageRule]) }
+    } as Partial<AutomationRunnerPrisma>);
+    const evolutionClient = {
+      sendText: vi.fn().mockResolvedValue({ providerMessageId: "wamid-text", raw: {} }),
+      sendMedia: vi.fn().mockRejectedValue(
+        new EvolutionClientError(400, { message: "Media URL could not be downloaded" })
+      )
+    };
+    const runner = createAutomationRunner({
+      prisma,
+      evolution: { mode: "real", client: evolutionClient }
+    });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:wamid-inbound"
+    });
+
+    expect(evolutionClient.sendText).toHaveBeenCalledWith({
+      instanceName: "talk-instance",
+      number: "5547991396920",
+      text: "Vou enviar a imagem."
+    });
+    expect(evolutionClient.sendMedia).toHaveBeenCalledWith({
+      instanceName: "talk-instance",
+      number: "5547991396920",
+      mediatype: "image",
+      mimetype: "image/jpeg",
+      media: "https://talk.prymeiradigital.com.br/uploads/automations/workspace_a/foto.jpeg",
+      fileName: "foto.jpeg",
+      caption: "oiii"
+    });
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.result).toMatchObject({
+      actionResults: [
+        { nodeId: "trigger-1", status: "completed" },
+        { nodeId: "send-1", status: "completed" },
+        {
+          nodeId: "image-1",
+          status: "failed",
+          error: "Evolution API request failed with status 400: Media URL could not be downloaded"
+        }
       ]
     });
   });

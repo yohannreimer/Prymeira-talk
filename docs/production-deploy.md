@@ -72,7 +72,7 @@ nano .env.production
 docker stack deploy --with-registry-auth -c docker-compose.prod.yml prymeira_talk
 ```
 
-The stack follows the same pattern as the other Prymeira apps: only `prymeira_talk_web` is exposed on Traefik, and Nginx forwards `/api/*` plus `/webhooks/evolution/*` to `prymeira_talk_api` through the internal overlay network.
+The stack follows the same pattern as the other Prymeira apps: only `prymeira_talk_web` is exposed on Traefik, and Nginx forwards `/api/*`, `/webhooks/evolution/*`, and public automation uploads at `/uploads/automations/*` to `prymeira_talk_api` through the internal overlay network.
 
 ## Smoke Test
 
