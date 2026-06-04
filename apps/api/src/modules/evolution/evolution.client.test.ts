@@ -192,7 +192,36 @@ describe("Evolution client", () => {
       "https://wsapi.yrdnegocios.com.br/message/sendText/talk-local_workspace-abc",
       expect.objectContaining({ method: "POST" })
     );
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      number: "5547999990000",
+      text: "Oi",
+      linkPreview: false
+    });
     expect(result.providerMessageId).toBe("provider_msg_1");
+  });
+
+  it("allows link preview to be explicitly enabled for text messages", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({ key: { id: "provider_msg_1" } })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    await client.sendText({
+      instanceName: "talk-local_workspace-abc",
+      number: "5547999990000",
+      text: "https://rubinot.com.br/characters?name=Thiiszk",
+      linkPreview: true
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      number: "5547999990000",
+      text: "https://rubinot.com.br/characters?name=Thiiszk",
+      linkPreview: true
+    });
   });
 
   it("sends a media message with raw base64 in the provider payload", async () => {

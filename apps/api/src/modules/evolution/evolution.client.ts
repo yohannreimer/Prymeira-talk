@@ -70,6 +70,7 @@ export interface SendTextInput {
   instanceName: string;
   number: string;
   text: string;
+  linkPreview?: boolean;
 }
 
 export interface SendTextResult {
@@ -442,7 +443,8 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     async sendText(input) {
       const responseBody = await post(`/message/sendText/${encodeURIComponent(input.instanceName)}`, {
         number: input.number,
-        text: input.text
+        text: input.text,
+        linkPreview: input.linkPreview ?? false
       });
 
       return {
