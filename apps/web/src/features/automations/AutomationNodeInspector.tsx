@@ -20,23 +20,28 @@ function readConfigValue(config: Record<string, unknown>, key: string) {
   return typeof value === "string" ? value : "";
 }
 
-export function keywordInputToConfig(value: string): { keywords?: string[] } {
+export function keywordInputToConfig(value: string): { keywordInput?: string; keywords?: string[] } {
   const keywords = value
     .split(/[,\n]/)
     .map((keyword) => keyword.trim())
     .filter(Boolean);
 
-  return keywords.length > 0 ? { keywords } : {};
+  return value.length > 0 ? { keywordInput: value, ...(keywords.length > 0 ? { keywords } : {}) } : {};
 }
 
 export function keywordConfigToInputValue(config: Record<string, unknown>) {
+  const keywordInput = config.keywordInput;
+  if (typeof keywordInput === "string") {
+    return keywordInput;
+  }
+
   const keywords = config.keywords;
 
   if (Array.isArray(keywords)) {
     return keywords
       .filter((keyword): keyword is string => typeof keyword === "string" && keyword.trim().length > 0)
       .map((keyword) => keyword.trim())
-      .join("\n");
+      .join(", ");
   }
 
   return readConfigValue(config, "keyword") || readConfigValue(config, "text");
@@ -172,6 +177,7 @@ export function AutomationNodeInspector({ node, onConfigChange, onTypeChange }: 
                 onChange={(event) => {
                   const {
                     keyword: _keyword,
+                    keywordInput: _keywordInput,
                     keywords: _keywords,
                     text: _text,
                     ...restConfig

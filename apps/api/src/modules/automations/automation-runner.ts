@@ -225,6 +225,7 @@ function configValue(node: AutomationNodeDefinition, keys: string[]) {
 function configValues(node: AutomationNodeDefinition, keys: string[]) {
   return keys
     .flatMap((key) => collectStrings(node.data.config[key]))
+    .flatMap((value) => value.split(/[,\n]/))
     .map((value) => value.trim())
     .filter(Boolean);
 }
@@ -734,7 +735,7 @@ async function triggerMatches(
   }
 
   if (node.type === "trigger_keyword") {
-    const keywords = configValues(node, ["keywords", "keyword", "text"]);
+    const keywords = configValues(node, ["keywords", "keywordInput", "keyword", "text"]);
     const text = messageText(context);
     return keywords.some((keyword) => textContains(text, keyword));
   }

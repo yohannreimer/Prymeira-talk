@@ -705,12 +705,16 @@ describe("automation API helpers", () => {
 describe("automation flow helpers", () => {
   it("normalizes keyword trigger input into multiple keywords", () => {
     expect(keywordInputToConfig("catalogo, preço\nsuporte,,  proposta ")).toEqual({
+      keywordInput: "catalogo, preço\nsuporte,,  proposta ",
       keywords: ["catalogo", "preço", "suporte", "proposta"]
     });
   });
 
-  it("formats keyword trigger config from multiple and legacy single values", () => {
-    expect(keywordConfigToInputValue({ keywords: ["catalogo", "preço"] })).toBe("catalogo\npreço");
+  it("formats keyword trigger config from raw, multiple and legacy single values", () => {
+    expect(keywordConfigToInputValue({ keywordInput: "catalogo, catálogo, catalogos," })).toBe(
+      "catalogo, catálogo, catalogos,"
+    );
+    expect(keywordConfigToInputValue({ keywords: ["catalogo", "preço"] })).toBe("catalogo, preço");
     expect(keywordConfigToInputValue({ keyword: "catalogo" })).toBe("catalogo");
   });
 

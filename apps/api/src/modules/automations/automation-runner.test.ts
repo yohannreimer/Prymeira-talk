@@ -291,7 +291,7 @@ describe("automation runner", () => {
             id: "trigger-1",
             type: "trigger_keyword",
             position: { x: 0, y: 0 },
-            data: { title: "Palavra-chave", config: { keywords: ["catalogo", "comprar", "suporte"] } }
+            data: { title: "Palavra-chave", config: { keywordInput: "catalogo, comprar, suporte," } }
           },
           {
             id: "send-1",
