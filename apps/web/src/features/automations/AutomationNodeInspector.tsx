@@ -20,6 +20,28 @@ function readConfigValue(config: Record<string, unknown>, key: string) {
   return typeof value === "string" ? value : "";
 }
 
+export function keywordInputToConfig(value: string): { keywords?: string[] } {
+  const keywords = value
+    .split(/[,\n]/)
+    .map((keyword) => keyword.trim())
+    .filter(Boolean);
+
+  return keywords.length > 0 ? { keywords } : {};
+}
+
+export function keywordConfigToInputValue(config: Record<string, unknown>) {
+  const keywords = config.keywords;
+
+  if (Array.isArray(keywords)) {
+    return keywords
+      .filter((keyword): keyword is string => typeof keyword === "string" && keyword.trim().length > 0)
+      .map((keyword) => keyword.trim())
+      .join("\n");
+  }
+
+  return readConfigValue(config, "keyword") || readConfigValue(config, "text");
+}
+
 function updateConfigValue(
   node: AutomationCanvasNode,
   key: string,
@@ -145,11 +167,23 @@ export function AutomationNodeInspector({ node, onConfigChange, onTypeChange }: 
 
           {showsKeywordTrigger ? (
             <label className="form-field">
-              <span>Palavra ou frase</span>
-              <input
-                onChange={(event) => updateConfigValue(node, "keyword", event.target.value, onConfigChange)}
-                placeholder="Ex: preco, proposta, suporte"
-                value={readConfigValue(config, "keyword")}
+              <span>Palavras ou frases</span>
+              <textarea
+                onChange={(event) => {
+                  const {
+                    keyword: _keyword,
+                    keywords: _keywords,
+                    text: _text,
+                    ...restConfig
+                  } = node.data.config;
+                  onConfigChange(node.id, {
+                    ...restConfig,
+                    ...keywordInputToConfig(event.target.value)
+                  });
+                }}
+                placeholder={"Ex: catalogo\npreco\nsuporte"}
+                rows={4}
+                value={keywordConfigToInputValue(config)}
               />
             </label>
           ) : null}

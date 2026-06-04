@@ -281,6 +281,59 @@ describe("automation runner", () => {
     );
   });
 
+  it("matches keyword triggers when any configured keyword is present", async () => {
+    const keywordRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          {
+            id: "trigger-1",
+            type: "trigger_keyword",
+            position: { x: 0, y: 0 },
+            data: { title: "Palavra-chave", config: { keywords: ["catalogo", "comprar", "suporte"] } }
+          },
+          {
+            id: "send-1",
+            type: "send_message",
+            position: { x: 260, y: 0 },
+            data: { title: "Enviar mensagem", config: { message: "Te mando as opcoes agora." } }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "trigger-1", target: "send-1" }]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([keywordRule]) }
+    } as Partial<AutomationRunnerPrisma>);
+    const evolutionClient = {
+      sendText: vi.fn().mockResolvedValue({ providerMessageId: "wamid-keyword", raw: {} }),
+      sendMedia: vi.fn()
+    };
+    const runner = createAutomationRunner({
+      prisma,
+      evolution: { mode: "real", client: evolutionClient }
+    });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:wamid-keyword"
+    });
+
+    expect(evolutionClient.sendText).toHaveBeenCalledWith({
+      instanceName: "talk-instance",
+      number: "5547991396920",
+      text: "Te mando as opcoes agora."
+    });
+    expect(runs[0]?.result).toMatchObject({
+      actionResults: [
+        { nodeId: "trigger-1", status: "completed" },
+        { nodeId: "send-1", status: "completed" }
+      ]
+    });
+  });
+
   it("routes condition_text through yes and sends media files", async () => {
     const fileRule = {
       ...baseRule,
