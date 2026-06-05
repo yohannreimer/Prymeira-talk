@@ -334,6 +334,113 @@ describe("automation runner", () => {
     });
   });
 
+  it("does not match keyword triggers inside another word", async () => {
+    const keywordRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          {
+            id: "trigger-1",
+            type: "trigger_keyword",
+            position: { x: 0, y: 0 },
+            data: { title: "Palavra-chave", config: { keywordInput: "oi" } }
+          },
+          {
+            id: "send-1",
+            type: "send_message",
+            position: { x: 260, y: 0 },
+            data: { title: "Enviar mensagem", config: { message: "Ola!" } }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "trigger-1", target: "send-1" }]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([keywordRule]) },
+      message: {
+        ...createMockPrisma().message,
+        findUnique: vi.fn().mockResolvedValue({
+          ...currentMessage,
+          body: "foi ontem",
+          conversation: { ...conversation, lastMessagePreview: "foi ontem" }
+        })
+      }
+    } as Partial<AutomationRunnerPrisma>);
+    const evolutionClient = {
+      sendText: vi.fn(),
+      sendMedia: vi.fn()
+    };
+    const runner = createAutomationRunner({
+      prisma,
+      evolution: { mode: "real", client: evolutionClient }
+    });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:wamid-keyword-no-match"
+    });
+
+    expect(evolutionClient.sendText).not.toHaveBeenCalled();
+    expect(runs[0]?.status).toBe("skipped");
+  });
+
+  it("matches keyword triggers as standalone words with punctuation", async () => {
+    const keywordRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          {
+            id: "trigger-1",
+            type: "trigger_keyword",
+            position: { x: 0, y: 0 },
+            data: { title: "Palavra-chave", config: { keywordInput: "oi" } }
+          },
+          {
+            id: "send-1",
+            type: "send_message",
+            position: { x: 260, y: 0 },
+            data: { title: "Enviar mensagem", config: { message: "Ola!" } }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "trigger-1", target: "send-1" }]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([keywordRule]) },
+      message: {
+        ...createMockPrisma().message,
+        findUnique: vi.fn().mockResolvedValue({
+          ...currentMessage,
+          body: "Oi, tudo bem?",
+          conversation: { ...conversation, lastMessagePreview: "Oi, tudo bem?" }
+        })
+      }
+    } as Partial<AutomationRunnerPrisma>);
+    const evolutionClient = {
+      sendText: vi.fn().mockResolvedValue({ providerMessageId: "wamid-keyword", raw: {} }),
+      sendMedia: vi.fn()
+    };
+    const runner = createAutomationRunner({
+      prisma,
+      evolution: { mode: "real", client: evolutionClient }
+    });
+
+    await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:wamid-keyword-word-match"
+    });
+
+    expect(evolutionClient.sendText).toHaveBeenCalledWith({
+      instanceName: "talk-instance",
+      number: "5547991396920",
+      text: "Ola!"
+    });
+  });
+
   it("routes condition_text through yes and sends media files", async () => {
     const fileRule = {
       ...baseRule,

@@ -314,6 +314,16 @@ function textContains(haystack: string, needle: string) {
   return haystack.toLocaleLowerCase("pt-BR").includes(needle.toLocaleLowerCase("pt-BR"));
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function textMatchesKeyword(haystack: string, keyword: string) {
+  const pattern = keyword.split(/\s+/).map(escapeRegExp).join("\\s+");
+  const keywordPattern = new RegExp(`(^|[^\\p{L}\\p{N}])${pattern}(?=$|[^\\p{L}\\p{N}])`, "iu");
+  return keywordPattern.test(haystack);
+}
+
 function timeToMinutes(value: string | null) {
   if (!value) {
     return null;
@@ -737,7 +747,7 @@ async function triggerMatches(
   if (node.type === "trigger_keyword") {
     const keywords = configValues(node, ["keywords", "keywordInput", "keyword", "text"]);
     const text = messageText(context);
-    return keywords.some((keyword) => textContains(text, keyword));
+    return keywords.some((keyword) => textMatchesKeyword(text, keyword));
   }
 
   return false;
