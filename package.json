@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "pnpm --parallel dev",
     "demo:prymeira": "PRYMEIRA_LOCAL_AUTH_BYPASS=true PRYMEIRA_LOCAL_WORKSPACE_ID=demo_workspace PRYMEIRA_LOCAL_ROLE=owner VITE_LOCAL_AUTH_BYPASS=true VITE_API_URL=http://localhost:3002 pnpm --parallel dev",
-    "demo:reset": "pnpm --filter @prymeira-talk/api seed:demo",
+    "demo:reset": "docker compose -f docker-compose.dev.yml up -d && pnpm prisma:generate && pnpm prisma:migrate && pnpm --filter @prymeira-talk/api seed:demo",
     "dev:api": "pnpm --filter @prymeira-talk/api dev",
     "dev:web": "pnpm --filter @prymeira-talk/web dev",
     "build": "pnpm -r build",
