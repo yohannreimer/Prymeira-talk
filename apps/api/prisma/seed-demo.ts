@@ -161,7 +161,27 @@ function hoursAgo(hours: number) {
   return minutesAgo(hours * 60);
 }
 
+async function clearDemoWorkspaceData() {
+  const workspaceIds = Array.from(new Set([workspaceId, "local_workspace"]));
+
+  await prisma.conversationTag.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.message.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.contactNote.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.contactBoardMembership.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.conversation.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.contact.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.contactBoardStage.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.contactBoard.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.tag.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.channel.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.department.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.userProfile.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.workspaceMirror.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+}
+
 async function main() {
+  await clearDemoWorkspaceData();
+
   await prisma.workspaceMirror.upsert({
     where: { workspaceId },
     update: {
