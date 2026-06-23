@@ -4,6 +4,7 @@ import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
+import { agentsRoutes } from "./modules/agents/agents.routes.js";
 import { automationsRoutes } from "./modules/automations/automations.routes.js";
 import { assistantRoutes } from "./modules/assistant/assistant.routes.js";
 import { boardsRoutes } from "./modules/boards/boards.routes.js";
@@ -91,6 +92,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(campaignsRoutes, { evolution: evolutionRuntime });
   await app.register(reportsRoutes);
   await app.register(teamRoutes);
+  await app.register(agentsRoutes);
   await app.register(assistantRoutes);
   await app.register(crmRoutes, {
     vinculaApiUrl: env.VINCULA_CRM_API_URL
