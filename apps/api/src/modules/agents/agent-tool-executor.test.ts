@@ -1,16 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentToolExecutionError, executeAgentActions } from "./agent-tool-executor.js";
-import type { AgentToolExecutorPrismaLike } from "./agent-tool-executor.js";
+import type {
+  AgentToolExecutorPrismaLike,
+  AgentToolExecutorTransactionLike
+} from "./agent-tool-executor.js";
 import type { AgentOutput } from "./provider-gateway.js";
 
 function buildPrisma(overrides: Partial<AgentToolExecutorPrismaLike> = {}) {
   let prisma: AgentToolExecutorPrismaLike;
+  let transactionClient: AgentToolExecutorTransactionLike;
   const transaction = vi.fn(
-    <T,>(callback: Parameters<AgentToolExecutorPrismaLike["$transaction"]>[0]) => callback(prisma)
+    <T,>(callback: Parameters<AgentToolExecutorPrismaLike["$transaction"]>[0]) =>
+      callback(transactionClient)
   ) as AgentToolExecutorPrismaLike["$transaction"] & ReturnType<typeof vi.fn>;
 
-  prisma = {
-    $transaction: overrides.$transaction ?? transaction,
+  transactionClient = {
     conversation: {
       findUnique:
         overrides.conversation?.findUnique ??
@@ -47,6 +51,11 @@ function buildPrisma(overrides: Partial<AgentToolExecutorPrismaLike> = {}) {
     aiAgentSession: {
       update: overrides.aiAgentSession?.update ?? vi.fn().mockResolvedValue({})
     }
+  } satisfies AgentToolExecutorTransactionLike;
+
+  prisma = {
+    $transaction: overrides.$transaction ?? transaction,
+    ...transactionClient
   } satisfies AgentToolExecutorPrismaLike;
 
   return prisma;

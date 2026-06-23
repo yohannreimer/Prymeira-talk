@@ -14,8 +14,7 @@ type ConversationRecord = {
   activeAgentSessionId?: string | null;
 };
 
-export interface AgentToolExecutorPrismaLike {
-  $transaction<T>(callback: (tx: AgentToolExecutorPrismaLike) => Promise<T>): Promise<T>;
+export type AgentToolExecutorTransactionLike = {
   conversation: {
     findUnique(args: {
       where: { workspaceId_id: { workspaceId: string; id: string } };
@@ -78,6 +77,10 @@ export interface AgentToolExecutorPrismaLike {
       data: Record<string, unknown>;
     }): Promise<unknown>;
   };
+};
+
+export interface AgentToolExecutorPrismaLike extends AgentToolExecutorTransactionLike {
+  $transaction<T>(callback: (tx: AgentToolExecutorTransactionLike) => Promise<T>): Promise<T>;
 }
 
 export type AgentToolExecutionErrorCode =
@@ -356,7 +359,7 @@ async function requestHandoff(
   const handoffReason = getString(action, "reason")?.trim() || "Agent requested human handoff.";
   const aiControlUpdatedAt = new Date();
 
-  await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx: AgentToolExecutorTransactionLike) => {
     await tx.conversation.update({
       where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
       data: {
