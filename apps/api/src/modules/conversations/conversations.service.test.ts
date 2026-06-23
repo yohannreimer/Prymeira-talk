@@ -53,6 +53,9 @@ type MockPrisma = {
     upsert: ReturnType<typeof vi.fn<PrismaLike["conversationTag"]["upsert"]>>;
     deleteMany: ReturnType<typeof vi.fn<PrismaLike["conversationTag"]["deleteMany"]>>;
   };
+  aiAgentSession: {
+    update: ReturnType<typeof vi.fn<PrismaLike["aiAgentSession"]["update"]>>;
+  };
   aiActionLog: {
     create: ReturnType<typeof vi.fn<PrismaLike["aiActionLog"]["create"]>>;
   };
@@ -266,6 +269,9 @@ function createMockPrisma(overrides: {
       upsert: vi.fn<PrismaLike["conversationTag"]["upsert"]>().mockResolvedValue({}),
       deleteMany: vi.fn<PrismaLike["conversationTag"]["deleteMany"]>().mockResolvedValue({ count: 1 })
     },
+    aiAgentSession: {
+      update: vi.fn<PrismaLike["aiAgentSession"]["update"]>().mockResolvedValue({})
+    },
     aiActionLog: {
       create: vi.fn<PrismaLike["aiActionLog"]["create"]>().mockResolvedValue({
         id: "ai_1",
@@ -394,6 +400,194 @@ describe("conversations service", () => {
     expect(conversation.unreadCount).toBe(0);
     expect(conversation.contactName).toBe("Yohann");
     expect(conversation.channelName).toBe("WhatsApp");
+  });
+
+  it("marks conversations as human controlled", async () => {
+    const humanControlledConversation = {
+      id: "conv_1",
+      workspaceId: "workspace_a",
+      channelId: "channel_1",
+      contactId: "contact_1",
+      status: "open" as const,
+      assignedUserId: null,
+      departmentId: null,
+      lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+      lastMessagePreview: "Oi",
+      unreadCount: 0,
+      priority: "normal" as const,
+      aiControlStatus: "human_controlled" as const,
+      activeAgentSessionId: null,
+      activeAgentSession: null,
+      channel: { displayName: "WhatsApp", phoneNumber: null, provider: "evolution" },
+      contact: { name: "Yohann", phone: "554791396920" },
+      department: null,
+      assignedUser: null,
+      tags: []
+    };
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        contactId: "contact_1",
+        activeAgentSessionId: null
+      }),
+      update: vi.fn<PrismaLike["conversation"]["update"]>().mockResolvedValue(humanControlledConversation)
+    });
+    const service = createConversationsService(prisma);
+
+    const conversation = await service.updateAiControl({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      status: "human_controlled",
+      actorUserId: "00000000-0000-4000-8000-000000000010"
+    });
+
+    expect(prisma.conversation.findUnique).toHaveBeenCalledWith({
+      where: { workspaceId_id: { workspaceId: "workspace_a", id: "conv_1" } },
+      select: {
+        id: true,
+        workspaceId: true,
+        contactId: true,
+        activeAgentSessionId: true
+      }
+    });
+    expect(prisma.conversation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { workspaceId_id: { workspaceId: "workspace_a", id: "conv_1" } },
+        data: expect.objectContaining({
+          aiControlStatus: "human_controlled",
+          aiControlUpdatedAt: expect.any(Date),
+          aiControlUpdatedById: "00000000-0000-4000-8000-000000000010"
+        }),
+        include: expect.objectContaining({
+          activeAgentSession: expect.objectContaining({
+            select: expect.objectContaining({
+              status: true,
+              handoffReason: true
+            })
+          })
+        })
+      })
+    );
+    expect(prisma.aiAgentSession.update).not.toHaveBeenCalled();
+    expect(conversation.aiControlStatus).toBe("human_controlled");
+  });
+
+  it("pauses the active agent session when assuming human control", async () => {
+    const pausedConversation = {
+      id: "conv_1",
+      workspaceId: "workspace_a",
+      channelId: "channel_1",
+      contactId: "contact_1",
+      status: "open" as const,
+      assignedUserId: null,
+      departmentId: null,
+      lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+      lastMessagePreview: "Oi",
+      unreadCount: 0,
+      priority: "normal" as const,
+      aiControlStatus: "human_controlled" as const,
+      activeAgentSessionId: "00000000-0000-4000-8000-000000000020",
+      activeAgentSession: {
+        status: "paused_by_human" as const,
+        handoffReason: null,
+        agent: { name: "Prymeira Concierge" }
+      },
+      channel: { displayName: "WhatsApp", phoneNumber: null, provider: "evolution" },
+      contact: { name: "Yohann", phone: "554791396920" },
+      department: null,
+      assignedUser: null,
+      tags: []
+    };
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        contactId: "contact_1",
+        activeAgentSessionId: "00000000-0000-4000-8000-000000000020"
+      }),
+      update: vi.fn<PrismaLike["conversation"]["update"]>().mockResolvedValue(pausedConversation)
+    });
+    const service = createConversationsService(prisma);
+
+    const conversation = await service.updateAiControl({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      status: "human_controlled",
+      actorUserId: "00000000-0000-4000-8000-000000000010"
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalled();
+    expect(prisma.aiAgentSession.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: "00000000-0000-4000-8000-000000000020"
+        }
+      },
+      data: {
+        status: "paused_by_human"
+      }
+    });
+    expect(conversation.activeAgentName).toBe("Prymeira Concierge");
+    expect(conversation.activeAgentSessionStatus).toBe("paused_by_human");
+  });
+
+  it("releases conversations back to agent allowed without running an agent session", async () => {
+    const releasedConversation = {
+      id: "conv_1",
+      workspaceId: "workspace_a",
+      channelId: "channel_1",
+      contactId: "contact_1",
+      status: "open" as const,
+      assignedUserId: null,
+      departmentId: null,
+      lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+      lastMessagePreview: "Oi",
+      unreadCount: 0,
+      priority: "normal" as const,
+      aiControlStatus: "agent_allowed" as const,
+      activeAgentSessionId: "00000000-0000-4000-8000-000000000020",
+      activeAgentSession: {
+        status: "paused_by_human" as const,
+        handoffReason: null,
+        agent: { name: "Prymeira Concierge" }
+      },
+      channel: { displayName: "WhatsApp", phoneNumber: null, provider: "evolution" },
+      contact: { name: "Yohann", phone: "554791396920" },
+      department: null,
+      assignedUser: null,
+      tags: []
+    };
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        contactId: "contact_1",
+        activeAgentSessionId: "00000000-0000-4000-8000-000000000020"
+      }),
+      update: vi.fn<PrismaLike["conversation"]["update"]>().mockResolvedValue(releasedConversation)
+    });
+    const service = createConversationsService(prisma);
+
+    const conversation = await service.updateAiControl({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      status: "agent_allowed",
+      actorUserId: "00000000-0000-4000-8000-000000000010"
+    });
+
+    expect(prisma.conversation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          aiControlStatus: "agent_allowed",
+          aiControlUpdatedById: "00000000-0000-4000-8000-000000000010"
+        })
+      })
+    );
+    expect(prisma.aiAgentSession.update).not.toHaveBeenCalled();
+    expect(prisma.aiActionLog.create).not.toHaveBeenCalled();
+    expect(conversation.aiControlStatus).toBe("agent_allowed");
   });
 
   it("preflights outbound messages with the workspace conversation composite key", async () => {
@@ -1789,6 +1983,93 @@ describe("conversation routes", () => {
         type: "conversation.updated",
         workspaceId: "workspace_a",
         payload: expect.objectContaining({ id: "conv_1" })
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("assumes AI control through the actions route and publishes conversation updates", async () => {
+    const humanControlledConversation = {
+      id: "conv_1",
+      workspaceId: "workspace_a",
+      channelId: "channel_1",
+      contactId: "contact_1",
+      status: "open" as const,
+      assignedUserId: null,
+      departmentId: null,
+      lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+      lastMessagePreview: "Oi",
+      unreadCount: 0,
+      priority: "normal" as const,
+      aiControlStatus: "human_controlled" as const,
+      activeAgentSessionId: null,
+      activeAgentSession: null,
+      channel: { displayName: "WhatsApp", phoneNumber: "+55 47 99999-0000", provider: "evolution" },
+      contact: { name: "Ana Silva", phone: "5547999990000" },
+      department: null,
+      assignedUser: null,
+      tags: []
+    };
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        status: "open",
+        assignedUserId: null,
+        departmentId: null,
+        lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+        lastMessagePreview: "Oi",
+        unreadCount: 0,
+        priority: "normal",
+        activeAgentSessionId: null,
+        tags: []
+      }),
+      update: vi.fn<PrismaLike["conversation"]["update"]>().mockResolvedValue(humanControlledConversation)
+    });
+    const publish = vi.fn();
+    const app = Fastify({ logger: false });
+
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => {
+      request.talk = { workspaceId: "workspace_a", role: "agent" };
+    });
+    await app.register(conversationsRoutes);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/conversations/00000000-0000-4000-8000-000000000001/actions",
+        payload: { action: "assume_ai_control" }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          conversation: expect.objectContaining({
+            id: "conv_1",
+            aiControlStatus: "human_controlled"
+          }),
+          context: expect.objectContaining({ notes: expect.any(Array) })
+        })
+      );
+      expect(prisma.conversation.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            aiControlStatus: "human_controlled"
+          })
+        })
+      );
+      expect(publish).toHaveBeenCalledWith({
+        type: "conversation.updated",
+        workspaceId: "workspace_a",
+        payload: expect.objectContaining({
+          id: "conv_1",
+          aiControlStatus: "human_controlled"
+        })
       });
     } finally {
       await app.close();

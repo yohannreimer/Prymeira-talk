@@ -100,6 +100,8 @@ export type ConversationActionBody =
   | { action: "remove_tag"; tagId: string }
   | { action: "request_ai_suggestion" }
   | { action: "create_crm_note" }
+  | { action: "assume_ai_control" }
+  | { action: "release_ai_control" }
   | { action: "close_conversation" };
 
 export interface ConversationActionResultDto {

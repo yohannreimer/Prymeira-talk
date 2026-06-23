@@ -81,6 +81,15 @@ export interface ConversationRecord {
   lastMessagePreview: string | null;
   unreadCount: number;
   priority: ConversationDto["priority"];
+  aiControlStatus?: NonNullable<ConversationDto["aiControlStatus"]>;
+  activeAgentSessionId?: string | null;
+  activeAgentSession?: {
+    status: NonNullable<ConversationDto["activeAgentSessionStatus"]>;
+    handoffReason?: string | null;
+    agent?: {
+      name: string;
+    } | null;
+  } | null;
   tags?: Array<{
     tag: TagRecord;
   }>;
@@ -91,6 +100,13 @@ const conversationDtoInclude = {
   channel: { select: { displayName: true, phoneNumber: true, provider: true } },
   contact: { select: { name: true, phone: true } },
   department: { select: { name: true } },
+  activeAgentSession: {
+    select: {
+      status: true,
+      handoffReason: true,
+      agent: { select: { name: true } }
+    }
+  },
   tags: { include: { tag: true } }
 } as const;
 
@@ -238,6 +254,7 @@ type UserProfileFindFirstArgs = Parameters<PrismaClient["userProfile"]["findFirs
 type TagUpsertArgs = Parameters<PrismaClient["tag"]["upsert"]>[0];
 type ConversationTagUpsertArgs = Parameters<PrismaClient["conversationTag"]["upsert"]>[0];
 type ConversationTagDeleteManyArgs = Parameters<PrismaClient["conversationTag"]["deleteMany"]>[0];
+type AiAgentSessionUpdateArgs = Parameters<PrismaClient["aiAgentSession"]["update"]>[0];
 type AiActionLogCreateArgs = Parameters<PrismaClient["aiActionLog"]["create"]>[0];
 type CrmSyncActionCreateArgs = Parameters<PrismaClient["crmSyncAction"]["create"]>[0];
 
@@ -278,6 +295,9 @@ export interface PrismaLike {
   conversationTag: {
     upsert(args: ConversationTagUpsertArgs): Promise<unknown>;
     deleteMany(args: ConversationTagDeleteManyArgs): Promise<{ count: number }>;
+  };
+  aiAgentSession: {
+    update(args: AiAgentSessionUpdateArgs): Promise<unknown>;
   };
   aiActionLog: {
     create(args: AiActionLogCreateArgs): Promise<{ id: string; status: string }>;
@@ -346,7 +366,11 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
     lastMessageAt: record.lastMessageAt ? toIsoString(record.lastMessageAt) : null,
     lastMessagePreview: record.lastMessagePreview,
     unreadCount: record.unreadCount,
-    priority: record.priority
+    priority: record.priority,
+    aiControlStatus: record.aiControlStatus ?? "agent_allowed",
+    activeAgentName: record.activeAgentSession?.agent?.name ?? null,
+    activeAgentSessionStatus: record.activeAgentSession?.status ?? null,
+    handoffReason: record.activeAgentSession?.handoffReason ?? null
   };
 }
 
@@ -436,6 +460,13 @@ export function createConversationsService(
         channel: { select: { displayName: true, phoneNumber: true, provider: true } },
         contact: { select: { name: true, phone: true } },
         department: { select: { name: true } },
+        activeAgentSession: {
+          select: {
+            status: true,
+            handoffReason: true,
+            agent: { select: { name: true } }
+          }
+        },
         tags: { include: { tag: true } }
       }
     });
@@ -718,6 +749,54 @@ export function createConversationsService(
       });
 
       return toConversationDto(conversation);
+    },
+
+    async updateAiControl(input: {
+      workspaceId: string;
+      conversationId: string;
+      status: NonNullable<ConversationDto["aiControlStatus"]>;
+      actorUserId?: string | null;
+    }): Promise<ConversationDto> {
+      const conversation = await prisma.conversation.findUnique({
+        where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+        select: {
+          id: true,
+          workspaceId: true,
+          contactId: true,
+          activeAgentSessionId: true
+        }
+      });
+
+      assertConversationRecord(conversation);
+
+      const aiControlUpdatedAt = new Date();
+      const updatedConversation = (await prisma.$transaction(async (tx) => {
+        if (input.status === "human_controlled" && conversation.activeAgentSessionId) {
+          await tx.aiAgentSession.update({
+            where: {
+              workspaceId_id: {
+                workspaceId: input.workspaceId,
+                id: conversation.activeAgentSessionId
+              }
+            },
+            data: {
+              status: "paused_by_human"
+            }
+          });
+        }
+
+        return tx.conversation.update({
+          where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+          data: {
+            aiControlStatus: input.status,
+            aiControlUpdatedAt,
+            aiControlUpdatedById: input.actorUserId ?? null
+          },
+          include: conversationDtoInclude
+        });
+      })) as ConversationRecord;
+
+      return toConversationDto(updatedConversation);
     },
 
     async getContactContext(input: {

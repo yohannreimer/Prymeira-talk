@@ -72,6 +72,12 @@ const conversationActionBodySchema = z.discriminatedUnion("action", [
     action: z.literal("create_crm_note")
   }),
   z.object({
+    action: z.literal("assume_ai_control")
+  }),
+  z.object({
+    action: z.literal("release_ai_control")
+  }),
+  z.object({
     action: z.literal("close_conversation")
   })
 ]);
@@ -94,6 +100,26 @@ function readCurrentClerkUserId(authorizationHeader: string | undefined) {
   } catch {
     return null;
   }
+}
+
+async function resolveCurrentUserProfileId(input: {
+  prisma: PrismaLike;
+  workspaceId: string;
+  authorizationHeader: string | undefined;
+}) {
+  const currentClerkUserId = readCurrentClerkUserId(input.authorizationHeader);
+
+  if (!currentClerkUserId) return null;
+
+  const user = await input.prisma.userProfile.findFirst({
+    where: {
+      workspaceId: input.workspaceId,
+      clerkUserId: currentClerkUserId
+    },
+    select: { id: true }
+  });
+
+  return user?.id ?? null;
 }
 
 export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions> = async (
@@ -201,6 +227,46 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
 
     if (!params.success || !body.success) {
       return reply.code(400).send({ error: "Invalid conversation action request." });
+    }
+
+    if (body.data.action === "assume_ai_control" || body.data.action === "release_ai_control") {
+      const actorUserId = await resolveCurrentUserProfileId({
+        prisma: app.prisma as unknown as PrismaLike,
+        workspaceId: request.talk.workspaceId,
+        authorizationHeader: request.headers.authorization
+      });
+      const conversation = await service.updateAiControl({
+        workspaceId: request.talk.workspaceId,
+        conversationId: params.data.conversationId,
+        status: body.data.action === "assume_ai_control" ? "human_controlled" : "agent_allowed",
+        actorUserId
+      }).catch((error: unknown) => {
+        if (error instanceof ConversationNotFoundError) {
+          return null;
+        }
+
+        throw error;
+      });
+
+      if (!conversation) {
+        return reply
+          .code(404)
+          .send({ code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
+      }
+
+      const context = await service.getContactContext({
+        workspaceId: request.talk.workspaceId,
+        conversationId: params.data.conversationId
+      });
+      const result = { conversation, context };
+
+      app.realtime.publish({
+        type: "conversation.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: result.conversation
+      });
+
+      return result;
     }
 
     const result = await service.runConversationAction({
