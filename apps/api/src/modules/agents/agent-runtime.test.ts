@@ -274,6 +274,7 @@ describe("createAgentRuntime", () => {
 
     expect(result).toEqual({ status: "handoff_requested", runId: ids.run });
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.message.create).not.toHaveBeenCalled();
     expect(prisma.aiAgentSession.update).toHaveBeenLastCalledWith({
       where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.session } },
       data: expect.objectContaining({
@@ -288,5 +289,70 @@ describe("createAgentRuntime", () => {
         confidence: 0.32
       })
     });
+  });
+
+  it("logs a failed run without a conversation foreign key when conversation is missing", async () => {
+    const prisma = buildPrisma({
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({})
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Ola!",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({ prisma, provider });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({ status: "failed", runId: ids.run });
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        workspaceId: ids.workspace,
+        agentId: ids.agent,
+        conversationId: null,
+        status: "failed",
+        errorMessage: "Agent, conversation, or message was not found."
+      })
+    });
+  });
+
+  it("returns a failed result without writing a run when agent is missing", async () => {
+    const aiAgentFindFirst = vi.fn().mockResolvedValue(null);
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: aiAgentFindFirst
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Ola!",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({ prisma, provider });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({ status: "failed" });
+    expect(aiAgentFindFirst).toHaveBeenCalledTimes(2);
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.aiAgentRun.create).not.toHaveBeenCalled();
   });
 });

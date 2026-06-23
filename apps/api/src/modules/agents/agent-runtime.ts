@@ -91,7 +91,7 @@ type AgentRuntimePrismaLike = Omit<
 
 export type AgentRuntimeResult = {
   status: AgentRunStatus;
-  runId: string;
+  runId?: string;
 };
 
 export function createAgentRuntime(input: {
@@ -109,7 +109,7 @@ export function createAgentRuntime(input: {
       trigger: AgentRunTrigger;
       instruction?: string | null;
     }): Promise<AgentRuntimeResult> {
-      const [agent, conversation, message] = await Promise.all([
+      const [activeAgent, conversation, message] = await Promise.all([
         prisma.aiAgent.findFirst({
           where: {
             workspaceId: runInput.workspaceId,
@@ -138,14 +138,27 @@ export function createAgentRuntime(input: {
         })
       ]);
 
-      if (!agent || !conversation || !message) {
+      const agent =
+        activeAgent ??
+        (await prisma.aiAgent.findFirst({
+          where: {
+            workspaceId: runInput.workspaceId,
+            id: runInput.agentId
+          }
+        }));
+
+      if (!agent) {
+        return { status: "failed" };
+      }
+
+      if (!activeAgent || !conversation || !message) {
         const run = await createRun({
           workspaceId: runInput.workspaceId,
-          agentId: runInput.agentId,
-          conversationId: runInput.conversationId,
+          agentId: agent.id,
+          conversationId: conversation?.id ?? null,
           trigger: runInput.trigger,
           input: runInput,
-          model: agent?.model ?? "unknown",
+          model: agent.model,
           status: "failed",
           errorMessage: "Agent, conversation, or message was not found."
         });
@@ -241,7 +254,11 @@ export function createAgentRuntime(input: {
         actions: providerOutput.actions
       });
 
-      if (providerOutput.reply && allowedActions.includes("send_message")) {
+      const confidenceThreshold = readConfidenceThreshold(agent.handoffConfig);
+      const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
+      const status: AgentRunStatus = handoffReason ? "handoff_requested" : "completed";
+
+      if (!handoffReason && providerOutput.reply && allowedActions.includes("send_message")) {
         await prisma.message.create({
           data: {
             workspaceId: runInput.workspaceId,
@@ -270,10 +287,6 @@ export function createAgentRuntime(input: {
           }
         });
       }
-
-      const confidenceThreshold = readConfidenceThreshold(agent.handoffConfig);
-      const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
-      const status: AgentRunStatus = handoffReason ? "handoff_requested" : "completed";
 
       await prisma.aiAgentSession.update({
         where: {
