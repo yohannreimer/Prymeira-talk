@@ -4,7 +4,9 @@ import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
+import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
 import { agentsRoutes } from "./modules/agents/agents.routes.js";
+import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.js";
 import { automationsRoutes } from "./modules/automations/automations.routes.js";
 import { assistantRoutes } from "./modules/assistant/assistant.routes.js";
 import { boardsRoutes } from "./modules/boards/boards.routes.js";
@@ -72,6 +74,13 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     apiKey: env.EVOLUTION_API_KEY,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET
   });
+  const agentRuntime =
+    options.prismaEnabled === false
+      ? undefined
+      : createAgentRuntime({
+          prisma: app.prisma as unknown as Parameters<typeof createAgentRuntime>[0]["prisma"],
+          provider: createSimulatedAgentProvider()
+        });
 
   await app.register(realtimeRoutes);
   await app.register(evolutionRoutes, {
@@ -88,7 +97,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(contactsRoutes);
   await app.register(boardsRoutes);
   await app.register(channelsRoutes, { evolution: evolutionRuntime });
-  await app.register(automationsRoutes, { evolution: evolutionRuntime });
+  await app.register(automationsRoutes, { agentRuntime, evolution: evolutionRuntime });
   await app.register(campaignsRoutes, { evolution: evolutionRuntime });
   await app.register(reportsRoutes);
   await app.register(teamRoutes);

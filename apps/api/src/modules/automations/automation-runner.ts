@@ -155,8 +155,23 @@ export interface AutomationRunnerEvolution {
   client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText" | "sendMedia"> | null;
 }
 
+export interface AutomationRunnerAgentRuntime {
+  runForMessage(input: {
+    workspaceId: string;
+    agentId: string;
+    conversationId: string;
+    messageId: string;
+    trigger: "automation";
+    instruction?: string | null;
+  }): Promise<{
+    status: "completed" | "handoff_requested" | "skipped" | "failed";
+    runId?: string;
+  }>;
+}
+
 export interface AutomationRunnerOptions {
   prisma: AutomationRunnerPrisma;
+  agentRuntime?: AutomationRunnerAgentRuntime;
   evolution?: AutomationRunnerEvolution;
   realtime?: AutomationRunnerRealtime;
 }
@@ -177,6 +192,7 @@ interface ActionResult {
   branch?: string;
   mode?: "real";
   message?: string;
+  runId?: string;
   error?: string;
 }
 
@@ -687,6 +703,43 @@ async function executeNode(
       data: { status: "closed" }
     });
     return { result: resultFor(node, "completed") };
+  }
+
+  if (node.type === "run_agent") {
+    const agentId = configValue(node, ["agentId"]);
+    const instruction = configValue(node, ["instruction", "prompt", "message"]);
+
+    if (!agentId) {
+      return { result: resultFor(node, "failed", { error: "Agent ID is required." }), stop: true };
+    }
+
+    if (!options.agentRuntime) {
+      return {
+        result: resultFor(node, "failed", { error: "Agent runtime is not configured." }),
+        stop: true
+      };
+    }
+
+    const runtimeResult = await options.agentRuntime.runForMessage({
+      workspaceId: context.message.workspaceId,
+      agentId,
+      conversationId: context.conversation.id,
+      messageId: context.message.id,
+      trigger: "automation",
+      instruction
+    });
+    const actionStatus = runtimeResult.status === "failed" ? "failed" : "completed";
+    const graphBranch = runtimeResult.status === "handoff_requested" ? "handoff" : "success";
+
+    return {
+      result: resultFor(node, actionStatus, {
+        message: `Agent runtime ${runtimeResult.status}.`,
+        branch: runtimeResult.status,
+        runId: runtimeResult.runId
+      }),
+      branch: graphBranch,
+      stop: runtimeResult.status === "failed"
+    };
   }
 
   if (node.type === "log_event") {

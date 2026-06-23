@@ -4,6 +4,7 @@ import { z } from "zod";
 import { canPerform } from "../access/roles.js";
 import {
   createAutomationRunner,
+  type AutomationRunnerAgentRuntime,
   type AutomationRunnerEvolution,
   type AutomationRunnerPrisma
 } from "./automation-runner.js";
@@ -53,6 +54,7 @@ const testAutomationBodySchema = z
   .optional();
 
 interface AutomationsRoutesOptions {
+  agentRuntime?: AutomationRunnerAgentRuntime;
   evolution?: AutomationRunnerEvolution;
 }
 
@@ -201,6 +203,7 @@ export const automationsRoutes: FastifyPluginAsync<AutomationsRoutesOptions> = a
     });
     const contactRunner = createAutomationRunner({
       prisma: app.prisma as unknown as AutomationRunnerPrisma,
+      agentRuntime: options.agentRuntime,
       evolution: options.evolution,
       realtime: app.realtime
     });

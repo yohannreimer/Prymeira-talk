@@ -10,6 +10,7 @@ const messageId = "00000000-0000-4000-8000-000000000201";
 const conversationId = "00000000-0000-4000-8000-000000000301";
 const contactId = "00000000-0000-4000-8000-000000000401";
 const channelId = "00000000-0000-4000-8000-000000000501";
+const agentId = "00000000-0000-4000-8000-000000000601";
 
 const currentMessage = {
   id: messageId,
@@ -759,6 +760,172 @@ describe("automation runner", () => {
         { nodeId: "channel-condition", branch: "yes" },
         { nodeId: "time-condition", branch: "yes" },
         { nodeId: "send-yes", status: "completed" }
+      ]
+    });
+  });
+
+  it("runs an AI agent with the selected agent and instruction", async () => {
+    const agentRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          baseRule.actions.nodes[0],
+          {
+            id: "agent-1",
+            type: "run_agent",
+            position: { x: 260, y: 0 },
+            data: {
+              title: "Executar agente",
+              config: { agentId, instruction: "Responda com foco nos planos empresariais." }
+            }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "trigger-1", target: "agent-1" }]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
+    } as Partial<AutomationRunnerPrisma>);
+    const agentRuntime = {
+      runForMessage: vi.fn().mockResolvedValue({
+        status: "completed",
+        runId: "agent-run-1"
+      })
+    };
+    const runner = createAutomationRunner({ prisma, agentRuntime });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:agent"
+    });
+
+    expect(agentRuntime.runForMessage).toHaveBeenCalledWith({
+      workspaceId,
+      agentId,
+      conversationId,
+      messageId,
+      trigger: "automation",
+      instruction: "Responda com foco nos planos empresariais."
+    });
+    expect(runs[0]?.status).toBe("completed");
+    expect(runs[0]?.result).toMatchObject({
+      actionResults: [
+        { nodeId: "trigger-1", status: "completed" },
+        {
+          nodeId: "agent-1",
+          status: "completed",
+          branch: "completed",
+          message: "Agent runtime completed.",
+          runId: "agent-run-1"
+        }
+      ]
+    });
+  });
+
+  it("fails a run_agent step when the agent ID is missing", async () => {
+    const agentRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          baseRule.actions.nodes[0],
+          {
+            id: "agent-1",
+            type: "run_agent",
+            position: { x: 260, y: 0 },
+            data: { title: "Executar agente", config: { instruction: "Use o contexto." } }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "trigger-1", target: "agent-1" }]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
+    } as Partial<AutomationRunnerPrisma>);
+    const agentRuntime = {
+      runForMessage: vi.fn()
+    };
+    const runner = createAutomationRunner({ prisma, agentRuntime });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:agent-missing-id"
+    });
+
+    expect(agentRuntime.runForMessage).not.toHaveBeenCalled();
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.result).toMatchObject({
+      actionResults: [
+        { nodeId: "trigger-1", status: "completed" },
+        { nodeId: "agent-1", status: "failed", error: "Agent ID is required." }
+      ]
+    });
+  });
+
+  it("routes handoff_requested agent runs through the handoff branch", async () => {
+    const agentRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          baseRule.actions.nodes[0],
+          {
+            id: "agent-1",
+            type: "run_agent",
+            position: { x: 260, y: 0 },
+            data: { title: "Executar agente", config: { agentId, prompt: "Avalie o atendimento." } }
+          },
+          {
+            id: "handoff-log",
+            type: "log_event",
+            position: { x: 520, y: -80 },
+            data: { title: "Registrar handoff", config: {} }
+          },
+          {
+            id: "success-log",
+            type: "log_event",
+            position: { x: 520, y: 80 },
+            data: { title: "Registrar sucesso", config: {} }
+          }
+        ],
+        edges: [
+          { id: "edge-1", source: "trigger-1", target: "agent-1" },
+          { id: "edge-handoff", source: "agent-1", target: "handoff-log", sourceHandle: "handoff" },
+          { id: "edge-success", source: "agent-1", target: "success-log", sourceHandle: "success" }
+        ]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
+    } as Partial<AutomationRunnerPrisma>);
+    const agentRuntime = {
+      runForMessage: vi.fn().mockResolvedValue({
+        status: "handoff_requested",
+        runId: "agent-run-handoff"
+      })
+    };
+    const runner = createAutomationRunner({ prisma, agentRuntime });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:agent-handoff"
+    });
+
+    expect(runs[0]?.status).toBe("completed");
+    expect(runs[0]?.result).toMatchObject({
+      actionResults: [
+        { nodeId: "trigger-1", status: "completed" },
+        {
+          nodeId: "agent-1",
+          status: "completed",
+          branch: "handoff_requested",
+          runId: "agent-run-handoff"
+        },
+        { nodeId: "handoff-log", status: "completed" }
       ]
     });
   });

@@ -121,7 +121,7 @@ export const automationBlockCatalog: AutomationBlockDefinition[] = [
   { type: "ai_classify_message", category: "integration", label: "Classificar mensagem", description: "Classifica com IA.", support: "coming_soon" },
   { type: "ai_generate_summary", category: "integration", label: "Gerar resumo", description: "Resume conversa com IA.", support: "coming_soon" },
   { type: "ai_suggest_reply", category: "integration", label: "Sugerir resposta", description: "Sugere resposta com IA.", support: "coming_soon" },
-  { type: "run_agent", category: "integration", label: "Executar agente", description: "Aciona um agente de IA autonomo nesta conversa.", support: "coming_soon" },
+  { type: "run_agent", category: "integration", label: "Executar agente", description: "Aciona um agente de IA autonomo nesta conversa.", support: "supported" },
   { type: "enrich_contact", category: "integration", label: "Enriquecer contato", description: "Busca dados externos.", support: "coming_soon" },
   { type: "external_system", category: "integration", label: "Sistema externo", description: "Envia para sistema externo.", support: "coming_soon" },
   { type: "end_flow", category: "control", label: "Finalizar fluxo", description: "Encerra automacao.", support: "supported" },
