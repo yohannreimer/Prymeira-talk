@@ -866,6 +866,120 @@ describe("automation runner", () => {
     });
   });
 
+  it("stops a run_agent path when the runtime skips execution", async () => {
+    const agentRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          baseRule.actions.nodes[0],
+          {
+            id: "agent-1",
+            type: "run_agent",
+            position: { x: 260, y: 0 },
+            data: { title: "Executar agente", config: { agentId, prompt: "Responda se puder." } }
+          },
+          {
+            id: "success-log",
+            type: "log_event",
+            position: { x: 520, y: 0 },
+            data: { title: "Registrar sucesso", config: {} }
+          }
+        ],
+        edges: [
+          { id: "edge-1", source: "trigger-1", target: "agent-1" },
+          { id: "edge-success", source: "agent-1", target: "success-log", sourceHandle: "success" }
+        ]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
+    } as Partial<AutomationRunnerPrisma>);
+    const agentRuntime = {
+      runForMessage: vi.fn().mockResolvedValue({
+        status: "skipped",
+        runId: "agent-run-skipped",
+        message: "Conversation is currently human-controlled."
+      })
+    };
+    const runner = createAutomationRunner({ prisma, agentRuntime });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:agent-skipped"
+    });
+
+    expect(runs[0]?.result).toMatchObject({
+      actionResults: [
+        { nodeId: "trigger-1", status: "completed" },
+        {
+          nodeId: "agent-1",
+          status: "skipped",
+          branch: "skipped",
+          message: "Conversation is currently human-controlled.",
+          runId: "agent-run-skipped"
+        }
+      ]
+    });
+  });
+
+  it("stops handoff_requested agent runs when no handoff branch exists", async () => {
+    const agentRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          baseRule.actions.nodes[0],
+          {
+            id: "agent-1",
+            type: "run_agent",
+            position: { x: 260, y: 0 },
+            data: { title: "Executar agente", config: { agentId, prompt: "Avalie o atendimento." } }
+          },
+          {
+            id: "success-log",
+            type: "log_event",
+            position: { x: 520, y: 0 },
+            data: { title: "Registrar sucesso", config: {} }
+          }
+        ],
+        edges: [
+          { id: "edge-1", source: "trigger-1", target: "agent-1" },
+          { id: "edge-success", source: "agent-1", target: "success-log", sourceHandle: "success" }
+        ]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
+    } as Partial<AutomationRunnerPrisma>);
+    const agentRuntime = {
+      runForMessage: vi.fn().mockResolvedValue({
+        status: "handoff_requested",
+        runId: "agent-run-handoff"
+      })
+    };
+    const runner = createAutomationRunner({ prisma, agentRuntime });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:agent-handoff-without-branch"
+    });
+
+    expect(runs[0]?.result).toMatchObject({
+      actionResults: [
+        { nodeId: "trigger-1", status: "completed" },
+        {
+          nodeId: "agent-1",
+          status: "completed",
+          branch: "handoff_requested",
+          runId: "agent-run-handoff"
+        }
+      ]
+    });
+  });
+
   it("routes handoff_requested agent runs through the handoff branch", async () => {
     const agentRule = {
       ...baseRule,

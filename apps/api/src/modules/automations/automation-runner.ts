@@ -295,7 +295,8 @@ function resultFor(
 function outgoingEdges(
   flow: AutomationFlowDefinition,
   node: AutomationNodeDefinition,
-  branch?: string
+  branch?: string,
+  options: { exact?: boolean } = {}
 ) {
   const edges = flow.edges.filter((edge) => edge.source === node.id);
 
@@ -305,6 +306,10 @@ function outgoingEdges(
       edges[0] ??
       null
     );
+  }
+
+  if (options.exact) {
+    return edges.find((edge) => edge.sourceHandle === branch) ?? null;
   }
 
   return (
@@ -466,7 +471,7 @@ async function executeNode(
   options: AutomationRunnerOptions,
   context: ExecuteContext,
   node: AutomationNodeDefinition
-): Promise<{ result: ActionResult; branch?: string; stop?: boolean }> {
+): Promise<{ result: ActionResult; branch?: string; branchExact?: boolean; stop?: boolean }> {
   if (getAutomationBlock(node.type)?.category === "trigger") {
     return { result: resultFor(node, "completed") };
   }
@@ -729,8 +734,16 @@ async function executeNode(
       trigger: "automation",
       instruction
     });
-    const actionStatus = runtimeResult.status === "failed" ? "failed" : "completed";
-    const graphBranch = runtimeResult.status === "handoff_requested" ? "handoff" : "success";
+    const actionStatus =
+      runtimeResult.status === "failed" || runtimeResult.status === "skipped"
+        ? runtimeResult.status
+        : "completed";
+    const graphBranch =
+      runtimeResult.status === "handoff_requested"
+        ? "handoff"
+        : runtimeResult.status === "completed"
+          ? "success"
+          : undefined;
 
     return {
       result: resultFor(node, actionStatus, {
@@ -739,7 +752,8 @@ async function executeNode(
         runId: runtimeResult.runId
       }),
       branch: graphBranch,
-      stop: runtimeResult.status === "failed"
+      branchExact: runtimeResult.status === "handoff_requested",
+      stop: runtimeResult.status === "failed" || runtimeResult.status === "skipped"
     };
   }
 
@@ -834,7 +848,10 @@ async function executeFlow(
       break;
     }
 
-    current = findTarget(flow, outgoingEdges(flow, current, execution.branch));
+    current = findTarget(
+      flow,
+      outgoingEdges(flow, current, execution.branch, { exact: execution.branchExact })
+    );
   }
 
   if (steps >= MAX_GRAPH_STEPS) {
