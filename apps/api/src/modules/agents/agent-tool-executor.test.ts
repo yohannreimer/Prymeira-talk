@@ -61,16 +61,16 @@ describe("executeAgentActions", () => {
     const results = await executeAgentActions(prisma, {
       ...baseInput,
       actions: [
-        { action: "add_tag", name: "  Atendido pela IA  " },
-        { action: "change_priority", priority: "high" },
-        { action: "create_internal_note", body: "Cliente quer retorno humano." }
+        { type: "add_tag", tagName: "  Atendido pela IA  " },
+        { type: "change_priority", priority: "high" },
+        { type: "create_internal_note", body: "Cliente quer retorno humano." }
       ]
     });
 
     expect(results).toEqual([
-      { action: "add_tag", status: "completed" },
-      { action: "change_priority", status: "completed" },
-      { action: "create_internal_note", status: "completed" }
+      { type: "add_tag", status: "completed" },
+      { type: "change_priority", status: "completed" },
+      { type: "create_internal_note", status: "completed" }
     ]);
     expect(prisma.tag.upsert).toHaveBeenCalledWith({
       where: { workspaceId_name: { workspaceId: "workspace_a", name: "Atendido pela IA" } },
@@ -119,7 +119,7 @@ describe("executeAgentActions", () => {
         workspaceId: "workspace_a",
         conversationId: "conv_1",
         allowedActions: ["send_message"],
-        actions: [{ action: "add_tag", name: "Atendido pela IA" }]
+        actions: [{ type: "add_tag", tagName: "Atendido pela IA" }]
       })
     ).rejects.toMatchObject({
       code: "TOOL_NOT_ALLOWED"
@@ -129,7 +129,7 @@ describe("executeAgentActions", () => {
         workspaceId: "workspace_a",
         conversationId: "conv_1",
         allowedActions: ["send_message"],
-        actions: [{ action: "add_tag", name: "Atendido pela IA" }]
+        actions: [{ type: "add_tag", tagName: "Atendido pela IA" }]
       })
     ).rejects.toBeInstanceOf(AgentToolExecutionError);
     expect(prisma.tag.upsert).not.toHaveBeenCalled();
@@ -140,7 +140,7 @@ describe("executeAgentActions", () => {
 
     await executeAgentActions(prisma, {
       ...baseInput,
-      actions: [{ action: "request_handoff", reason: "Baixa confianca" }]
+      actions: [{ type: "request_handoff", reason: "Baixa confianca" }]
     });
 
     expect(prisma.conversation.update).toHaveBeenCalledWith({
@@ -165,11 +165,53 @@ describe("executeAgentActions", () => {
     await expect(
       executeAgentActions(prisma, {
         ...baseInput,
-        actions: [{ action: "create_internal_note", body: "   " }]
+        actions: [{ type: "create_internal_note", body: "   " }]
       })
     ).rejects.toMatchObject({
       code: "TOOL_INVALID_INPUT"
     });
     expect(prisma.contactNote.create).not.toHaveBeenCalled();
+  });
+
+  it("skips send_message actions because message sending is handled elsewhere", async () => {
+    const prisma = buildPrisma();
+
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      allowedActions: ["send_message"],
+      actions: [{ type: "send_message", body: "Ola!" }]
+    });
+
+    expect(results).toEqual([{ type: "send_message", status: "skipped" }]);
+    expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("accepts add_tag name as an alias for tagName", async () => {
+    const prisma = buildPrisma();
+
+    await executeAgentActions(prisma, {
+      ...baseInput,
+      actions: [{ type: "add_tag", name: "  Onboarding  " }]
+    });
+
+    expect(prisma.tag.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { workspaceId_name: { workspaceId: "workspace_a", name: "Onboarding" } }
+      })
+    );
+  });
+
+  it("rejects actions missing type defensively", async () => {
+    const prisma = buildPrisma();
+
+    await expect(
+      executeAgentActions(prisma, {
+        ...baseInput,
+        actions: [{ tagName: "Atendido pela IA" }]
+      })
+    ).rejects.toMatchObject({
+      code: "TOOL_INVALID_INPUT"
+    });
+    expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
   });
 });

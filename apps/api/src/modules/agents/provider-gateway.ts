@@ -1,60 +1,22 @@
 import { z } from "zod";
 
-const prioritySchema = z.enum(["low", "normal", "high"]);
-
-const agentActionSchema = z.discriminatedUnion("action", [
-  z.object({
-    action: z.literal("send_message"),
-    body: z.string().trim().min(1)
-  }),
-  z.object({
-    action: z.literal("add_tag"),
-    name: z.string().trim().min(1)
-  }),
-  z.object({
-    action: z.literal("remove_tag"),
-    tagId: z.string().trim().min(1).optional(),
-    name: z.string().trim().min(1).optional()
-  }),
-  z.object({
-    action: z.literal("change_priority"),
-    priority: prioritySchema
-  }),
-  z.object({
-    action: z.literal("create_internal_note"),
-    body: z.string().trim().min(1)
-  }),
-  z.object({
-    action: z.literal("assign_user"),
-    userId: z.string().trim().min(1)
-  }),
-  z.object({
-    action: z.literal("assign_department"),
-    departmentId: z.string().trim().min(1)
-  }),
-  z.object({
-    action: z.literal("request_handoff"),
-    reason: z.string().trim().min(1).optional()
-  })
-]);
-
 export const agentOutputSchema = z.object({
-  reply: z.string().trim().min(1),
   confidence: z.number().min(0).max(1),
-  shouldHandoff: z.boolean(),
-  handoffReason: z.string().trim().min(1).optional(),
-  actions: z.array(agentActionSchema).default([])
+  reply: z.string().trim().min(1).nullable().optional(),
+  actions: z.array(z.record(z.string(), z.unknown())).default([]),
+  handoff: z.object({
+    required: z.boolean(),
+    reason: z.string().nullable()
+  })
 });
 
 export type AgentOutput = z.infer<typeof agentOutputSchema>;
 
 export interface AgentProviderInput {
-  workspaceId: string;
-  agentId: string;
-  conversationId: string;
-  text: string;
-  systemPrompt?: string;
-  knowledgeSnippets?: string[];
+  model: string;
+  systemPrompt: string;
+  userPrompt: string;
+  context: Record<string, unknown>;
 }
 
 export interface AgentProvider {
@@ -73,7 +35,9 @@ export function parseAgentOutput(value: unknown): AgentOutput {
 export function createSimulatedAgentProvider(): AgentProvider {
   return {
     async generate(input) {
-      const normalizedText = input.text.toLocaleLowerCase("pt-BR");
+      const messageBody =
+        typeof input.context.messageBody === "string" ? input.context.messageBody : "";
+      const normalizedText = `${input.userPrompt} ${messageBody}`.toLocaleLowerCase("pt-BR");
       const shouldHandoff =
         normalizedText.includes("nao sei") ||
         normalizedText.includes("não sei") ||
@@ -84,11 +48,13 @@ export function createSimulatedAgentProvider(): AgentProvider {
           reply:
             "Vou chamar uma pessoa do time para continuar este atendimento com mais seguranca.",
           confidence: 0.32,
-          shouldHandoff: true,
-          handoffReason: "Baixa confianca ou sinal de irritacao do cliente.",
+          handoff: {
+            required: true,
+            reason: "Baixa confianca ou sinal de irritacao do cliente."
+          },
           actions: [
             {
-              action: "request_handoff",
+              type: "request_handoff",
               reason: "Baixa confianca ou sinal de irritacao do cliente."
             }
           ]
@@ -99,8 +65,11 @@ export function createSimulatedAgentProvider(): AgentProvider {
         reply:
           "Sou o assistente simulado da Prymeira Talk. Posso ajudar com informacoes objetivas e encaminhar o atendimento quando necessario.",
         confidence: 0.84,
-        shouldHandoff: false,
-        actions: [{ action: "add_tag", name: "Atendido pela IA" }]
+        actions: [{ type: "add_tag", tagName: "Atendido pela IA" }],
+        handoff: {
+          required: false,
+          reason: null
+        }
       });
     }
   };

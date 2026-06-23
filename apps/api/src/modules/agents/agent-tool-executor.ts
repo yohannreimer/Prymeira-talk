@@ -2,7 +2,7 @@ import type { AiAgentAllowedAction, ConversationPriority } from "@prymeira-talk/
 import type { AgentOutput } from "./provider-gateway.js";
 
 type AgentAction = AgentOutput["actions"][number];
-type NonSendAgentAction = Exclude<AgentAction, { action: "send_message" }>;
+type AgentActionType = AiAgentAllowedAction;
 
 type ConversationRecord = {
   id: string;
@@ -91,7 +91,7 @@ export class AgentToolExecutionError extends Error {
 }
 
 export type AgentToolExecutionResult = {
-  action: AgentAction["action"];
+  type: AgentActionType;
   status: "completed" | "skipped";
 };
 
@@ -131,14 +131,16 @@ export async function executeAgentActions(
   }
 
   for (const action of input.actions) {
-    if (action.action === "send_message") {
-      results.push({ action: action.action, status: "skipped" });
+    const actionType = getActionType(action);
+
+    if (actionType === "send_message") {
+      results.push({ type: actionType, status: "skipped" });
       continue;
     }
 
-    ensureAllowed(input.allowedActions, action.action);
+    ensureAllowed(input.allowedActions, actionType);
     await executeNonSendAction(prisma, input, await loadConversation(), action);
-    results.push({ action: action.action, status: "completed" });
+    results.push({ type: actionType, status: "completed" });
   }
 
   return results;
@@ -161,34 +163,36 @@ async function executeNonSendAction(
     actorUserId?: string | null;
   },
   conversation: ConversationRecord,
-  action: NonSendAgentAction
+  action: AgentAction
 ) {
-  if (action.action === "add_tag") {
+  const actionType = getActionType(action);
+
+  if (actionType === "add_tag") {
     await addTag(prisma, input, action);
     return;
   }
 
-  if (action.action === "remove_tag") {
+  if (actionType === "remove_tag") {
     await removeTag(prisma, input, action);
     return;
   }
 
-  if (action.action === "change_priority") {
-    await changePriority(prisma, input, action.priority);
+  if (actionType === "change_priority") {
+    await changePriority(prisma, input, getString(action, "priority"));
     return;
   }
 
-  if (action.action === "create_internal_note") {
+  if (actionType === "create_internal_note") {
     await createInternalNote(prisma, input, conversation, action);
     return;
   }
 
-  if (action.action === "assign_user") {
+  if (actionType === "assign_user") {
     await assignUser(prisma, input, action);
     return;
   }
 
-  if (action.action === "assign_department") {
+  if (actionType === "assign_department") {
     await assignDepartment(prisma, input, action);
     return;
   }
@@ -199,9 +203,9 @@ async function executeNonSendAction(
 async function addTag(
   prisma: AgentToolExecutorPrismaLike,
   input: { workspaceId: string; conversationId: string },
-  action: Extract<NonSendAgentAction, { action: "add_tag" }>
+  action: AgentAction
 ) {
-  const name = action.name.trim();
+  const name = (getString(action, "tagName") ?? getString(action, "name"))?.trim();
   if (!name) {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Tag name is required.");
   }
@@ -241,9 +245,9 @@ async function addTag(
 async function removeTag(
   prisma: AgentToolExecutorPrismaLike,
   input: { workspaceId: string; conversationId: string },
-  action: Extract<NonSendAgentAction, { action: "remove_tag" }>
+  action: AgentAction
 ) {
-  const tagId = action.tagId?.trim();
+  const tagId = getString(action, "tagId")?.trim();
   if (!tagId) {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Tag ID is required.");
   }
@@ -260,15 +264,15 @@ async function removeTag(
 async function changePriority(
   prisma: AgentToolExecutorPrismaLike,
   input: { workspaceId: string; conversationId: string },
-  priority: ConversationPriority
+  priority: string | undefined
 ) {
-  if (!["low", "normal", "high"].includes(priority)) {
+  if (!priority || !["low", "normal", "high"].includes(priority)) {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Valid priority is required.");
   }
 
   await prisma.conversation.update({
     where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
-    data: { priority }
+    data: { priority: priority as ConversationPriority }
   });
 }
 
@@ -276,9 +280,9 @@ async function createInternalNote(
   prisma: AgentToolExecutorPrismaLike,
   input: { workspaceId: string; conversationId: string; actorUserId?: string | null },
   conversation: ConversationRecord,
-  action: Extract<NonSendAgentAction, { action: "create_internal_note" }>
+  action: AgentAction
 ) {
-  const body = action.body.trim();
+  const body = getString(action, "body")?.trim();
   if (!body) {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Note body is required.");
   }
@@ -297,9 +301,9 @@ async function createInternalNote(
 async function assignUser(
   prisma: AgentToolExecutorPrismaLike,
   input: { workspaceId: string; conversationId: string },
-  action: Extract<NonSendAgentAction, { action: "assign_user" }>
+  action: AgentAction
 ) {
-  const userId = action.userId.trim();
+  const userId = getString(action, "userId")?.trim();
   if (!userId) {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "User ID is required.");
   }
@@ -321,9 +325,9 @@ async function assignUser(
 async function assignDepartment(
   prisma: AgentToolExecutorPrismaLike,
   input: { workspaceId: string; conversationId: string },
-  action: Extract<NonSendAgentAction, { action: "assign_department" }>
+  action: AgentAction
 ) {
-  const departmentId = action.departmentId.trim();
+  const departmentId = getString(action, "departmentId")?.trim();
   if (!departmentId) {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Department ID is required.");
   }
@@ -346,9 +350,9 @@ async function requestHandoff(
   prisma: AgentToolExecutorPrismaLike,
   input: { workspaceId: string; conversationId: string; actorUserId?: string | null },
   conversation: ConversationRecord,
-  action: Extract<NonSendAgentAction, { action: "request_handoff" }>
+  action: AgentAction
 ) {
-  const handoffReason = action.reason?.trim() || "Agent requested human handoff.";
+  const handoffReason = getString(action, "reason")?.trim() || "Agent requested human handoff.";
   const aiControlUpdatedAt = new Date();
 
   await prisma.conversation.update({
@@ -374,4 +378,18 @@ async function requestHandoff(
       }
     });
   }
+}
+
+function getActionType(action: AgentAction): AgentActionType {
+  const actionType = action.type;
+  if (typeof actionType !== "string") {
+    throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Action type is required.");
+  }
+
+  return actionType as AgentActionType;
+}
+
+function getString(action: AgentAction, key: string) {
+  const value = action[key];
+  return typeof value === "string" ? value : undefined;
 }

@@ -4,17 +4,43 @@ import { createSimulatedAgentProvider, parseAgentOutput } from "./provider-gatew
 describe("parseAgentOutput", () => {
   it("parses valid structured agent output", () => {
     const output = parseAgentOutput({
-      reply: "Posso ajudar com isso.",
       confidence: 0.82,
-      shouldHandoff: false,
-      actions: [{ action: "add_tag", name: "Atendido pela IA" }]
+      reply: "Posso ajudar com isso.",
+      actions: [{ type: "add_tag", tagName: "onboarding" }],
+      handoff: { required: false, reason: null }
     });
 
     expect(output).toEqual({
-      reply: "Posso ajudar com isso.",
       confidence: 0.82,
-      shouldHandoff: false,
-      actions: [{ action: "add_tag", name: "Atendido pela IA" }]
+      reply: "Posso ajudar com isso.",
+      actions: [{ type: "add_tag", tagName: "onboarding" }],
+      handoff: { required: false, reason: null }
+    });
+  });
+
+  it("allows nullable or omitted replies and defaults actions", () => {
+    expect(
+      parseAgentOutput({
+        confidence: 0.7,
+        reply: null,
+        handoff: { required: false, reason: null }
+      })
+    ).toEqual({
+      confidence: 0.7,
+      reply: null,
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+
+    expect(
+      parseAgentOutput({
+        confidence: 0.7,
+        handoff: { required: false, reason: null }
+      })
+    ).toEqual({
+      confidence: 0.7,
+      actions: [],
+      handoff: { required: false, reason: null }
     });
   });
 
@@ -23,8 +49,8 @@ describe("parseAgentOutput", () => {
       parseAgentOutput({
         reply: "",
         confidence: 2,
-        shouldHandoff: "no",
-        actions: [{ action: "change_priority", priority: "urgent" }]
+        handoff: { required: "no", reason: null },
+        actions: ["change_priority"]
       })
     ).toThrow("Invalid agent output.");
   });
@@ -37,37 +63,50 @@ describe("createSimulatedAgentProvider", () => {
       const provider = createSimulatedAgentProvider();
 
       const output = await provider.generate({
-        workspaceId: "workspace_a",
-        agentId: "agent_1",
-        conversationId: "conv_1",
-        text
+        model: "simulated",
+        systemPrompt: "Atenda clientes da Prymeira Talk.",
+        userPrompt: text,
+        context: {}
       });
 
       expect(output.confidence).toBeLessThan(0.55);
-      expect(output.shouldHandoff).toBe(true);
+      expect(output.handoff.required).toBe(true);
       expect(output.actions).toContainEqual(
-        expect.objectContaining({ action: "request_handoff" })
+        expect.objectContaining({ type: "request_handoff" })
       );
     }
   );
+
+  it("checks relevant message body context when simulating low confidence", async () => {
+    const provider = createSimulatedAgentProvider();
+
+    const output = await provider.generate({
+      model: "simulated",
+      systemPrompt: "Atenda clientes da Prymeira Talk.",
+      userPrompt: "Pode analisar a conversa?",
+      context: { messageBody: "O cliente esta irritado com o atraso." }
+    });
+
+    expect(output.handoff.required).toBe(true);
+  });
 
   it("returns a normal reply and add_tag action for answerable text", async () => {
     const provider = createSimulatedAgentProvider();
 
     const output = await provider.generate({
-      workspaceId: "workspace_a",
-      agentId: "agent_1",
-      conversationId: "conv_1",
-      text: "Qual o horario de atendimento?"
+      model: "simulated",
+      systemPrompt: "Atenda clientes da Prymeira Talk.",
+      userPrompt: "Qual o horario de atendimento?",
+      context: {}
     });
 
     expect(output).toEqual(
       expect.objectContaining({
         confidence: 0.84,
-        shouldHandoff: false
+        handoff: { required: false, reason: null }
       })
     );
     expect(output.reply).toContain("Prymeira Talk");
-    expect(output.actions).toEqual([{ action: "add_tag", name: "Atendido pela IA" }]);
+    expect(output.actions).toEqual([{ type: "add_tag", tagName: "Atendido pela IA" }]);
   });
 });
