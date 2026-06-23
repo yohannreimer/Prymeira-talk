@@ -240,99 +240,126 @@ export function createAgentRuntime(input: {
 
       const allowedActions = readAllowedActions(agent.allowedActions);
       const context = buildContext(conversation, message, knowledge);
-      const providerOutput = await provider.generate({
-        model: agent.model,
-        systemPrompt: agent.systemPrompt,
-        userPrompt: buildUserPrompt(message.body, runInput.instruction),
-        context
-      });
-
-      const actionResults = await executeAgentActions(prisma as AgentToolExecutorPrismaLike, {
+      const runInputPayload = {
         workspaceId: runInput.workspaceId,
+        agentId: agent.id,
         conversationId: conversation.id,
-        allowedActions,
-        actions: providerOutput.actions
-      });
+        messageId: message.id,
+        trigger: runInput.trigger,
+        instruction: runInput.instruction ?? null
+      };
+      const contextSummary = {
+        contactId: conversation.contactId,
+        contactName: conversation.contact?.name ?? null,
+        channelId: conversation.channelId ?? conversation.channel?.id ?? null,
+        tagCount: context.tags.length,
+        knowledgeCount: knowledge.length
+      };
+      const knowledgeMatches = knowledge.map((source) => ({ id: source.id, title: source.title }));
+      let providerOutput: AgentOutput | undefined;
+      let actionResults: Awaited<ReturnType<typeof executeAgentActions>> | undefined;
 
-      const confidenceThreshold = readConfidenceThreshold(agent.handoffConfig);
-      const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
-      const status: AgentRunStatus = handoffReason ? "handoff_requested" : "completed";
-
-      if (!handoffReason && providerOutput.reply && allowedActions.includes("send_message")) {
-        await prisma.message.create({
-          data: {
-            workspaceId: runInput.workspaceId,
-            conversationId: conversation.id,
-            direction: "outbound",
-            type: "text",
-            body: providerOutput.reply,
-            status: "pending",
-            sentByUserId: null,
-            metadata: {
-              source: "ai_agent",
-              agentId: agent.id
-            }
-          }
+      try {
+        providerOutput = await provider.generate({
+          model: agent.model,
+          systemPrompt: agent.systemPrompt,
+          userPrompt: buildUserPrompt(message.body, runInput.instruction),
+          context
         });
-        await prisma.conversation.update({
+
+        const confidenceThreshold = readConfidenceThreshold(agent.handoffConfig);
+        const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
+        const status: AgentRunStatus = handoffReason ? "handoff_requested" : "completed";
+
+        actionResults = await executeAgentActions(prisma as AgentToolExecutorPrismaLike, {
+          workspaceId: runInput.workspaceId,
+          conversationId: conversation.id,
+          allowedActions,
+          actions: providerOutput.actions
+        });
+
+        if (!handoffReason && providerOutput.reply && allowedActions.includes("send_message")) {
+          await prisma.message.create({
+            data: {
+              workspaceId: runInput.workspaceId,
+              conversationId: conversation.id,
+              direction: "outbound",
+              type: "text",
+              body: providerOutput.reply,
+              status: "pending",
+              sentByUserId: null,
+              metadata: {
+                source: "ai_agent",
+                agentId: agent.id
+              }
+            }
+          });
+          await prisma.conversation.update({
+            where: {
+              workspaceId_id: {
+                workspaceId: runInput.workspaceId,
+                id: conversation.id
+              }
+            },
+            data: {
+              lastMessageAt: new Date(),
+              lastMessagePreview: providerOutput.reply
+            }
+          });
+        }
+
+        await prisma.aiAgentSession.update({
           where: {
             workspaceId_id: {
               workspaceId: runInput.workspaceId,
-              id: conversation.id
+              id: session.id
             }
           },
           data: {
-            lastMessageAt: new Date(),
-            lastMessagePreview: providerOutput.reply
+            status: handoffReason ? "handoff_requested" : "active",
+            handoffReason,
+            lastRunAt: new Date(),
+            messageCount: { increment: 1 }
           }
         });
-      }
 
-      await prisma.aiAgentSession.update({
-        where: {
-          workspaceId_id: {
-            workspaceId: runInput.workspaceId,
-            id: session.id
-          }
-        },
-        data: {
-          status: handoffReason ? "handoff_requested" : "active",
-          handoffReason,
-          lastRunAt: new Date(),
-          messageCount: { increment: 1 }
-        }
-      });
-
-      const run = await createRun({
-        workspaceId: runInput.workspaceId,
-        agentId: agent.id,
-        sessionId: session.id,
-        conversationId: conversation.id,
-        trigger: runInput.trigger,
-        input: {
+        const run = await createRun({
           workspaceId: runInput.workspaceId,
           agentId: agent.id,
+          sessionId: session.id,
           conversationId: conversation.id,
-          messageId: message.id,
           trigger: runInput.trigger,
-          instruction: runInput.instruction ?? null
-        },
-        contextSummary: {
-          contactId: conversation.contactId,
-          contactName: conversation.contact?.name ?? null,
-          channelId: conversation.channelId ?? conversation.channel?.id ?? null,
-          tagCount: context.tags.length,
-          knowledgeCount: knowledge.length
-        },
-        knowledgeMatches: knowledge.map((source) => ({ id: source.id, title: source.title })),
-        model: agent.model,
-        output: providerOutput,
-        actions: actionResults,
-        confidence: providerOutput.confidence,
-        status
-      });
+          input: runInputPayload,
+          contextSummary,
+          knowledgeMatches,
+          model: agent.model,
+          output: providerOutput,
+          actions: actionResults,
+          confidence: providerOutput.confidence,
+          status
+        });
 
-      return { status, runId: run.id };
+        return { status, runId: run.id };
+      } catch (error) {
+        const run = await createRun({
+          workspaceId: runInput.workspaceId,
+          agentId: agent.id,
+          sessionId: session.id,
+          conversationId: conversation.id,
+          trigger: runInput.trigger,
+          input: runInputPayload,
+          contextSummary,
+          knowledgeMatches,
+          model: agent.model,
+          output: providerOutput,
+          actions: actionResults,
+          confidence: providerOutput?.confidence,
+          status: "failed",
+          errorMessage: getErrorMessage(error)
+        });
+
+        return { status: "failed", runId: run.id };
+      }
     }
   };
 
@@ -435,17 +462,27 @@ function buildContext(
 }
 
 function getHandoffReason(output: AgentOutput, confidenceThreshold: number) {
-  if (output.handoff.required) {
-    return output.handoff.reason?.trim() || "Agent requested human handoff.";
+  const requestHandoffAction = output.actions.find((action) => action.type === "request_handoff");
+  const isHandoffRequired =
+    output.handoff.required || output.confidence < confidenceThreshold || Boolean(requestHandoffAction);
+
+  if (!isHandoffRequired) {
+    return null;
   }
 
-  if (output.confidence < confidenceThreshold) {
-    return `Confidence ${output.confidence} below threshold ${confidenceThreshold}.`;
-  }
+  const actionReason =
+    requestHandoffAction && typeof requestHandoffAction.reason === "string"
+      ? requestHandoffAction.reason.trim()
+      : "";
+  const providerReason = output.handoff.reason?.trim() ?? "";
 
-  return null;
+  return actionReason || providerReason || "Agent requested human handoff.";
 }
 
 function isRecord(value: JsonValue): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "AI agent runtime failed.";
 }

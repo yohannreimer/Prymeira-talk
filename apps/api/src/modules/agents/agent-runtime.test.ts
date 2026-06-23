@@ -279,7 +279,7 @@ describe("createAgentRuntime", () => {
       where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.session } },
       data: expect.objectContaining({
         status: "handoff_requested",
-        handoffReason: "Confidence 0.32 below threshold 0.55.",
+        handoffReason: "Baixa confianca.",
         messageCount: { increment: 1 }
       })
     });
@@ -287,6 +287,100 @@ describe("createAgentRuntime", () => {
       data: expect.objectContaining({
         status: "handoff_requested",
         confidence: 0.32
+      })
+    });
+  });
+
+  it("requests handoff from a request_handoff action even with high confidence and a reply", async () => {
+    const prisma = buildPrisma({
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseConversation,
+          activeAgentSessionId: ids.session
+        }),
+        update: vi.fn().mockResolvedValue({})
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.91,
+      reply: "Posso ajudar com isso.",
+      actions: [{ type: "request_handoff", reason: "Cliente pediu atendente humano." }],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({ prisma, provider });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({ status: "handoff_requested", runId: ids.run });
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.aiAgentSession.update).toHaveBeenLastCalledWith({
+      where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.session } },
+      data: expect.objectContaining({
+        status: "handoff_requested",
+        handoffReason: "Cliente pediu atendente humano."
+      })
+    });
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        status: "handoff_requested",
+        confidence: 0.91,
+        output: expect.objectContaining({
+          reply: "Posso ajudar com isso.",
+          handoff: { required: false, reason: null }
+        })
+      })
+    });
+  });
+
+  it("logs a failed run when action execution fails after session creation", async () => {
+    const prisma = buildPrisma({
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseConversation,
+          activeAgentSessionId: ids.session
+        }),
+        update: vi.fn().mockResolvedValue({})
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Vou registrar uma etiqueta.",
+      actions: [{ type: "add_tag" }],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({ prisma, provider });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({ status: "failed", runId: ids.run });
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        workspaceId: ids.workspace,
+        agentId: ids.agent,
+        sessionId: ids.session,
+        conversationId: ids.conversation,
+        model: "prymeira-simulated",
+        status: "failed",
+        confidence: 0.84,
+        errorMessage: "Tag name is required.",
+        output: expect.objectContaining({
+          reply: "Vou registrar uma etiqueta."
+        }),
+        contextSummary: expect.objectContaining({ knowledgeCount: 1 }),
+        knowledgeMatches: [{ id: "knowledge_1", title: "Horario" }]
       })
     });
   });
