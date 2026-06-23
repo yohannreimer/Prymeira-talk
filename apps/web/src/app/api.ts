@@ -1,4 +1,6 @@
 import {
+  aiAgentSchema,
+  aiKnowledgeSourceSchema,
   contactBoardMembershipSchema,
   contactBoardSchema,
   contactBoardStageSchema,
@@ -9,6 +11,9 @@ import {
   contactSchema,
   conversationSchema,
   messageSchema,
+  type AiAgentAllowedAction,
+  type AiAgentDto,
+  type AiKnowledgeSourceDto,
   type ChannelDto,
   type ChannelOperationResultDto,
   type ChannelQrResultDto,
@@ -21,6 +26,8 @@ import {
   type MessageDto
 } from "@prymeira-talk/shared";
 import { readConfigValue } from "./runtime-config";
+
+export type { AiAgentAllowedAction, AiAgentDto, AiKnowledgeSourceDto } from "@prymeira-talk/shared";
 
 const apiUrl = readConfigValue("VITE_API_URL") ?? "http://localhost:3002";
 const localAuthBypass = readConfigValue("VITE_LOCAL_AUTH_BYPASS") === "true";
@@ -855,6 +862,14 @@ function parseAssistantAction(data: unknown): AssistantActionDto {
     status: String(payload.status ?? ""),
     createdAt: String(payload.createdAt ?? "")
   };
+}
+
+function parseAgent(data: unknown): AiAgentDto {
+  return aiAgentSchema.parse(data);
+}
+
+function parseKnowledgeSource(data: unknown): AiKnowledgeSourceDto {
+  return aiKnowledgeSourceSchema.parse(data);
 }
 
 function parseCrmSyncAction(data: unknown): CrmSyncActionDto {
@@ -2209,6 +2224,99 @@ export async function apiCreateAssistantAction(
     },
     parseAssistantAction,
     "Failed to create assistant action"
+  );
+}
+
+export async function apiGetAgents(
+  getToken: () => Promise<string | null>
+): Promise<AiAgentDto[]> {
+  return fetchJson(
+    getToken,
+    "/agents",
+    {},
+    (data) => (Array.isArray(data) ? data.map(parseAgent) : []),
+    "Failed to load agents"
+  );
+}
+
+export async function apiCreateAgent(
+  getToken: () => Promise<string | null>,
+  body: {
+    name: string;
+    description?: string | null;
+    systemPrompt: string;
+    allowedActions?: AiAgentAllowedAction[];
+  }
+): Promise<AiAgentDto> {
+  return fetchJson(
+    getToken,
+    "/agents",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseAgent,
+    "Failed to create agent"
+  );
+}
+
+export async function apiUpdateAgent(
+  getToken: () => Promise<string | null>,
+  agentId: string,
+  body: Partial<{
+    name: string;
+    description: string | null;
+    systemPrompt: string;
+    allowedActions: AiAgentAllowedAction[];
+    status: AiAgentDto["status"];
+  }>
+): Promise<AiAgentDto> {
+  return fetchJson(
+    getToken,
+    `/agents/${agentId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    },
+    parseAgent,
+    "Failed to update agent"
+  );
+}
+
+export async function apiGetAgentKnowledge(
+  getToken: () => Promise<string | null>,
+  agentId: string
+): Promise<AiKnowledgeSourceDto[]> {
+  return fetchJson(
+    getToken,
+    `/agents/${agentId}/knowledge`,
+    {},
+    (data) => (Array.isArray(data) ? data.map(parseKnowledgeSource) : []),
+    "Failed to load agent knowledge"
+  );
+}
+
+export async function apiCreateAgentKnowledge(
+  getToken: () => Promise<string | null>,
+  agentId: string,
+  body: {
+    type: AiKnowledgeSourceDto["type"];
+    title: string;
+    content?: string | null;
+    fileUrl?: string | null;
+    fileName?: string | null;
+    mimeType?: string | null;
+  }
+): Promise<AiKnowledgeSourceDto> {
+  return fetchJson(
+    getToken,
+    `/agents/${agentId}/knowledge`,
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseKnowledgeSource,
+    "Failed to create agent knowledge"
   );
 }
 

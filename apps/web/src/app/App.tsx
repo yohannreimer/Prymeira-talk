@@ -1,4 +1,4 @@
-import { AssistantPage } from "../features/assistant/AssistantPage";
+import { AgentsPage } from "../features/assistant/AgentsPage";
 import { AutomationsPage } from "../features/automations/AutomationsPage";
 import { CampaignsPage } from "../features/campaigns/CampaignsPage";
 import { ChannelsPage } from "../features/channels/ChannelsPage";
@@ -29,7 +29,7 @@ function renderModule(moduleKey: TalkModuleKey) {
     case "equipe":
       return <TeamPage />;
     case "ia":
-      return <AssistantPage />;
+      return <AgentsPage />;
     case "atomic_crm":
       return <CrmPage />;
     case "ajustes":

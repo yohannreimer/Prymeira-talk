@@ -68,7 +68,7 @@ export const talkModules: TalkModule[] = [
   },
   {
     key: "ia",
-    label: "IA",
+    label: "Agentes",
     Icon: Sparkles
   },
   {
