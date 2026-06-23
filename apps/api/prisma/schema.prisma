@@ -540,7 +540,7 @@ model AiKnowledgeSource {
   fileUrl     String?                 @map("file_url")
   fileName    String?                 @map("file_name")
   mimeType    String?                 @map("mime_type")
-  status      AiKnowledgeSourceStatus @default(processing)
+  status      AiKnowledgeSourceStatus @default(ready)
   metadata    Json                    @default("{}")
   createdAt   DateTime                @default(now()) @map("created_at")
   updatedAt   DateTime                @updatedAt @map("updated_at")
@@ -548,7 +548,7 @@ model AiKnowledgeSource {
   agent AiAgent @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
 
   @@unique([workspaceId, id])
-  @@index([workspaceId, agentId, status])
+  @@index([workspaceId, agentId])
   @@map("ai_knowledge_sources")
 }
 
@@ -561,6 +561,7 @@ model AiAgentSession {
   messageCount   Int                  @default(0) @map("message_count")
   lastRunAt      DateTime?            @map("last_run_at")
   handoffReason  String?              @map("handoff_reason")
+  metadata       Json                 @default("{}")
   createdAt      DateTime             @default(now()) @map("created_at")
   updatedAt      DateTime             @updatedAt @map("updated_at")
 
@@ -582,10 +583,14 @@ model AiAgentRun {
   conversationId String?           @map("conversation_id") @db.Uuid
   trigger        AiAgentRunTrigger
   input          Json              @default("{}")
+  contextSummary Json              @default("{}") @map("context_summary")
+  knowledgeMatches Json            @default("[]") @map("knowledge_matches")
   output         Json              @default("{}")
   actions        Json              @default("[]")
   status         AiAgentRunStatus
+  model          String
   confidence     Float?
+  costEstimate   Json              @default("{}") @map("cost_estimate")
   errorMessage   String?           @map("error_message")
   createdAt      DateTime          @default(now()) @map("created_at")
 

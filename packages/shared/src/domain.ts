@@ -179,7 +179,7 @@ export const aiAgentSchema = z.object({
   providerMode: aiProviderModeSchema,
   provider: z.string().min(1),
   model: z.string().min(1),
-  systemPrompt: z.string(),
+  systemPrompt: z.string().min(1),
   behaviorConfig: z.record(z.string(), z.unknown()),
   handoffConfig: z.record(z.string(), z.unknown()),
   limitsConfig: z.record(z.string(), z.unknown()),

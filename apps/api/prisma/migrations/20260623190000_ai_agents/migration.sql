@@ -50,7 +50,7 @@ CREATE TABLE "ai_knowledge_sources" (
     "file_url" TEXT,
     "file_name" TEXT,
     "mime_type" TEXT,
-    "status" "AiKnowledgeSourceStatus" NOT NULL DEFAULT 'processing',
+    "status" "AiKnowledgeSourceStatus" NOT NULL DEFAULT 'ready',
     "metadata" JSONB NOT NULL DEFAULT '{}',
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
@@ -67,6 +67,7 @@ CREATE TABLE "ai_agent_sessions" (
     "message_count" INTEGER NOT NULL DEFAULT 0,
     "last_run_at" TIMESTAMP(3),
     "handoff_reason" TEXT,
+    "metadata" JSONB NOT NULL DEFAULT '{}',
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
@@ -81,10 +82,14 @@ CREATE TABLE "ai_agent_runs" (
     "conversation_id" UUID,
     "trigger" "AiAgentRunTrigger" NOT NULL,
     "input" JSONB NOT NULL DEFAULT '{}',
+    "context_summary" JSONB NOT NULL DEFAULT '{}',
+    "knowledge_matches" JSONB NOT NULL DEFAULT '[]',
     "output" JSONB NOT NULL DEFAULT '{}',
     "actions" JSONB NOT NULL DEFAULT '[]',
     "status" "AiAgentRunStatus" NOT NULL,
+    "model" TEXT NOT NULL,
     "confidence" DOUBLE PRECISION,
+    "cost_estimate" JSONB NOT NULL DEFAULT '{}',
     "error_message" TEXT,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -95,7 +100,7 @@ CREATE UNIQUE INDEX "ai_agents_workspace_id_id_key" ON "ai_agents"("workspace_id
 CREATE INDEX "ai_agents_workspace_id_status_idx" ON "ai_agents"("workspace_id", "status");
 
 CREATE UNIQUE INDEX "ai_knowledge_sources_workspace_id_id_key" ON "ai_knowledge_sources"("workspace_id", "id");
-CREATE INDEX "ai_knowledge_sources_workspace_id_agent_id_status_idx" ON "ai_knowledge_sources"("workspace_id", "agent_id", "status");
+CREATE INDEX "ai_knowledge_sources_workspace_id_agent_id_idx" ON "ai_knowledge_sources"("workspace_id", "agent_id");
 
 CREATE UNIQUE INDEX "ai_agent_sessions_workspace_id_id_key" ON "ai_agent_sessions"("workspace_id", "id");
 CREATE UNIQUE INDEX "ai_agent_sessions_workspace_id_agent_id_conversation_id_key" ON "ai_agent_sessions"("workspace_id", "agent_id", "conversation_id");
