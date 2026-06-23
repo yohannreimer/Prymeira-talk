@@ -147,6 +147,7 @@ model UserProfile {
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   assignedConversations Conversation[] @relation("AssignedUserConversations")
+  aiControlUpdates      Conversation[] @relation("AiControlUpdatedByConversations")
   sentMessages          Message[]      @relation("UserSentMessages")
   contactNotes          ContactNote[]  @relation("ContactNoteCreatedBy")
 
@@ -239,19 +240,23 @@ model Conversation {
   updatedAt                      DateTime             @updatedAt @map("updated_at")
 
   assignedUser UserProfile?      @relation("AssignedUserConversations", fields: [workspaceId, assignedUserId], references: [workspaceId, id], onDelete: NoAction)
+  aiControlUpdatedBy UserProfile? @relation("AiControlUpdatedByConversations", fields: [workspaceId, aiControlUpdatedById], references: [workspaceId, id], onDelete: NoAction)
+  activeAgentSession AiAgentSession? @relation("ActiveAgentSessionConversation", fields: [workspaceId, activeAgentSessionId], references: [workspaceId, id], onDelete: SetNull)
   channel      Channel           @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
   contact      Contact           @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
   department   Department?       @relation(fields: [workspaceId, departmentId], references: [workspaceId, id], onDelete: NoAction)
   messages     Message[]
   tags         ConversationTag[]
   contactNotes ContactNote[]     @relation("ContactNoteConversation")
-  aiSessions   AiAgentSession[]
+  aiSessions   AiAgentSession[]  @relation("AiAgentSessionConversation")
   aiRuns       AiAgentRun[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, channelId, contactId])
   @@index([workspaceId, status, lastMessageAt])
   @@index([workspaceId, assignedUserId])
+  @@index([workspaceId, aiControlUpdatedById])
+  @@index([workspaceId, activeAgentSessionId])
   @@map("conversations")
 }
 
@@ -566,8 +571,9 @@ model AiAgentSession {
   updatedAt      DateTime             @updatedAt @map("updated_at")
 
   agent        AiAgent      @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
-  conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
-  runs         AiAgentRun[]
+  conversation           Conversation   @relation("AiAgentSessionConversation", fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  runs                   AiAgentRun[]
+  activeForConversations Conversation[] @relation("ActiveAgentSessionConversation")
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, agentId, conversationId])

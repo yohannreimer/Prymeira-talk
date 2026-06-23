@@ -111,6 +111,13 @@ CREATE INDEX "ai_agent_runs_workspace_id_agent_id_created_at_idx" ON "ai_agent_r
 CREATE INDEX "ai_agent_runs_workspace_id_conversation_id_created_at_idx" ON "ai_agent_runs"("workspace_id", "conversation_id", "created_at");
 CREATE INDEX "ai_agent_runs_workspace_id_status_idx" ON "ai_agent_runs"("workspace_id", "status");
 
+CREATE INDEX "conversations_workspace_id_ai_control_updated_by_id_idx" ON "conversations"("workspace_id", "ai_control_updated_by_id");
+CREATE INDEX "conversations_workspace_id_active_agent_session_id_idx" ON "conversations"("workspace_id", "active_agent_session_id");
+
+ALTER TABLE "conversations" ADD CONSTRAINT "conversations_workspace_id_ai_control_updated_by_id_fkey" FOREIGN KEY ("workspace_id", "ai_control_updated_by_id") REFERENCES "user_profiles"("workspace_id", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
+
+ALTER TABLE "conversations" ADD CONSTRAINT "conversations_workspace_id_active_agent_session_id_fkey" FOREIGN KEY ("workspace_id", "active_agent_session_id") REFERENCES "ai_agent_sessions"("workspace_id", "id") ON DELETE SET NULL ("active_agent_session_id") ON UPDATE CASCADE;
+
 ALTER TABLE "ai_knowledge_sources" ADD CONSTRAINT "ai_knowledge_sources_workspace_id_agent_id_fkey" FOREIGN KEY ("workspace_id", "agent_id") REFERENCES "ai_agents"("workspace_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 ALTER TABLE "ai_agent_sessions" ADD CONSTRAINT "ai_agent_sessions_workspace_id_agent_id_fkey" FOREIGN KEY ("workspace_id", "agent_id") REFERENCES "ai_agents"("workspace_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
