@@ -65,6 +65,33 @@ export type ConversationStatus = z.infer<typeof conversationStatusSchema>;
 export const conversationPrioritySchema = z.enum(["low", "normal", "high"]);
 export type ConversationPriority = z.infer<typeof conversationPrioritySchema>;
 
+export const aiControlStatusSchema = z.enum(["agent_allowed", "human_controlled"]);
+export type AiControlStatus = z.infer<typeof aiControlStatusSchema>;
+
+export const aiAgentStatusSchema = z.enum(["active", "inactive"]);
+export type AiAgentStatus = z.infer<typeof aiAgentStatusSchema>;
+
+export const aiProviderModeSchema = z.enum(["prymeira_managed", "workspace_key"]);
+export type AiProviderMode = z.infer<typeof aiProviderModeSchema>;
+
+export const aiAgentSessionStatusSchema = z.enum(["active", "paused_by_human", "handoff_requested", "closed"]);
+export type AiAgentSessionStatus = z.infer<typeof aiAgentSessionStatusSchema>;
+
+export const aiAgentRunStatusSchema = z.enum(["completed", "handoff_requested", "failed", "skipped"]);
+export type AiAgentRunStatus = z.infer<typeof aiAgentRunStatusSchema>;
+
+export const aiAgentAllowedActionSchema = z.enum([
+  "send_message",
+  "add_tag",
+  "remove_tag",
+  "change_priority",
+  "create_internal_note",
+  "assign_user",
+  "assign_department",
+  "request_handoff"
+]);
+export type AiAgentAllowedAction = z.infer<typeof aiAgentAllowedActionSchema>;
+
 export const messageDirectionSchema = z.enum(["inbound", "outbound"]);
 export type MessageDirection = z.infer<typeof messageDirectionSchema>;
 export const messageTypeSchema = z.enum(["text", "image", "audio", "file", "template", "system", "internal_note"]);
@@ -135,9 +162,80 @@ export const conversationSchema = z.object({
   lastMessageAt: z.string().datetime().nullable(),
   lastMessagePreview: z.string().nullable(),
   unreadCount: z.number().int().min(0),
-  priority: conversationPrioritySchema
+  priority: conversationPrioritySchema,
+  aiControlStatus: aiControlStatusSchema.optional(),
+  activeAgentName: z.string().nullable().optional(),
+  activeAgentSessionStatus: aiAgentSessionStatusSchema.nullable().optional(),
+  handoffReason: z.string().nullable().optional()
 });
 export type ConversationDto = z.infer<typeof conversationSchema>;
+
+export const aiAgentSchema = z.object({
+  id: z.string().min(1),
+  workspaceId: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().nullable(),
+  status: aiAgentStatusSchema,
+  providerMode: aiProviderModeSchema,
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  systemPrompt: z.string(),
+  behaviorConfig: z.record(z.string(), z.unknown()),
+  handoffConfig: z.record(z.string(), z.unknown()),
+  limitsConfig: z.record(z.string(), z.unknown()),
+  allowedActions: z.array(aiAgentAllowedActionSchema),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+export type AiAgentDto = z.infer<typeof aiAgentSchema>;
+
+export const aiKnowledgeSourceSchema = z.object({
+  id: z.string().min(1),
+  workspaceId: z.string().min(1),
+  agentId: z.string().min(1),
+  type: z.enum(["faq", "text", "file"]),
+  title: z.string().min(1),
+  content: z.string().nullable(),
+  fileUrl: z.string().nullable(),
+  fileName: z.string().nullable(),
+  mimeType: z.string().nullable(),
+  status: z.enum(["ready", "processing", "failed"]),
+  metadata: z.record(z.string(), z.unknown()),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+export type AiKnowledgeSourceDto = z.infer<typeof aiKnowledgeSourceSchema>;
+
+export const aiAgentSessionSchema = z.object({
+  id: z.string().min(1),
+  workspaceId: z.string().min(1),
+  agentId: z.string().min(1),
+  conversationId: z.string().min(1),
+  status: aiAgentSessionStatusSchema,
+  messageCount: z.number().int().min(0),
+  lastRunAt: z.string().datetime().nullable(),
+  handoffReason: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+export type AiAgentSessionDto = z.infer<typeof aiAgentSessionSchema>;
+
+export const aiAgentRunSchema = z.object({
+  id: z.string().min(1),
+  workspaceId: z.string().min(1),
+  agentId: z.string().min(1),
+  sessionId: z.string().min(1).nullable(),
+  conversationId: z.string().min(1).nullable(),
+  trigger: z.enum(["automation", "manual_test"]),
+  input: z.record(z.string(), z.unknown()),
+  output: z.record(z.string(), z.unknown()),
+  actions: z.array(z.record(z.string(), z.unknown())),
+  status: aiAgentRunStatusSchema,
+  confidence: z.number().min(0).max(1).nullable(),
+  errorMessage: z.string().nullable(),
+  createdAt: z.string().datetime()
+});
+export type AiAgentRunDto = z.infer<typeof aiAgentRunSchema>;
 
 export const messageSchema = z.object({
   id: z.string().min(1),

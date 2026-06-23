@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  aiAgentRunSchema,
+  aiAgentSchema,
+  aiAgentSessionSchema,
   channelProviderSchema,
   channelSchema,
   contactBoardMembershipSchema,
@@ -87,6 +90,95 @@ describe("domain schemas", () => {
     expect(parsed.channelProvider).toBe("meta_cloud");
     expect(parsed.customerServiceWindowExpiresAt).toBe("2026-05-21T12:00:00.000Z");
     expect(parsed.metaServiceWindowOpen).toBe(true);
+  });
+
+  it("accepts AI control fields on conversations", () => {
+    const conversation = conversationSchema.parse({
+      id: "conversation_1",
+      workspaceId: "workspace_a",
+      channelId: "channel_1",
+      contactId: "contact_1",
+      status: "open",
+      assignedUserId: null,
+      departmentId: null,
+      lastMessageAt: null,
+      lastMessagePreview: null,
+      unreadCount: 0,
+      priority: "normal",
+      aiControlStatus: "human_controlled",
+      activeAgentName: "Secretaria IA",
+      activeAgentSessionStatus: "paused_by_human",
+      handoffReason: null
+    });
+
+    expect(conversation.aiControlStatus).toBe("human_controlled");
+    expect(conversation.activeAgentName).toBe("Secretaria IA");
+    expect(conversation.activeAgentSessionStatus).toBe("paused_by_human");
+    expect(conversation.handoffReason).toBeNull();
+  });
+
+  it("accepts an AI agent DTO with behavior and action controls", () => {
+    const agent = aiAgentSchema.parse({
+      id: "agent_1",
+      workspaceId: "workspace_a",
+      name: "Secretaria IA",
+      description: "Atende perguntas iniciais",
+      status: "active",
+      providerMode: "workspace_key",
+      provider: "openai",
+      model: "gpt-4.1-mini",
+      systemPrompt: "Responda com clareza.",
+      behaviorConfig: { tone: "friendly" },
+      handoffConfig: { afterAttempts: 2 },
+      limitsConfig: { maxMessages: 10 },
+      allowedActions: ["send_message", "add_tag", "create_internal_note"],
+      createdAt: "2026-06-23T19:00:00.000Z",
+      updatedAt: "2026-06-23T19:00:00.000Z"
+    });
+
+    expect(agent.providerMode).toBe("workspace_key");
+    expect(agent.allowedActions).toEqual(["send_message", "add_tag", "create_internal_note"]);
+  });
+
+  it("accepts an AI session DTO with handoff requested status", () => {
+    const session = aiAgentSessionSchema.parse({
+      id: "session_1",
+      workspaceId: "workspace_a",
+      agentId: "agent_1",
+      conversationId: "conversation_1",
+      status: "handoff_requested",
+      messageCount: 4,
+      lastRunAt: "2026-06-23T19:05:00.000Z",
+      handoffReason: "Cliente pediu atendimento humano",
+      createdAt: "2026-06-23T19:00:00.000Z",
+      updatedAt: "2026-06-23T19:05:00.000Z"
+    });
+
+    expect(session.status).toBe("handoff_requested");
+    expect(session.messageCount).toBe(4);
+  });
+
+  it("accepts an AI run DTO with automation trigger and completed output", () => {
+    const run = aiAgentRunSchema.parse({
+      id: "run_1",
+      workspaceId: "workspace_a",
+      agentId: "agent_1",
+      sessionId: "session_1",
+      conversationId: "conversation_1",
+      trigger: "automation",
+      input: { message: "Oi" },
+      output: { reply: "Ola! Como posso ajudar?" },
+      actions: [{ type: "send_message", body: "Ola! Como posso ajudar?" }],
+      status: "completed",
+      confidence: 0.92,
+      errorMessage: null,
+      createdAt: "2026-06-23T19:06:00.000Z"
+    });
+
+    expect(run.trigger).toBe("automation");
+    expect(run.status).toBe("completed");
+    expect(run.confidence).toBe(0.92);
+    expect(run.actions).toHaveLength(1);
   });
 
   it("rejects a conversation with a negative unread count", () => {

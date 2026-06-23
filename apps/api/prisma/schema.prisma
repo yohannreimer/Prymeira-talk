@@ -78,6 +78,52 @@ enum CampaignStatus {
   failed
 }
 
+enum AiAgentStatus {
+  active
+  inactive
+}
+
+enum AiProviderMode {
+  prymeira_managed
+  workspace_key
+}
+
+enum AiKnowledgeSourceType {
+  faq
+  text
+  file
+}
+
+enum AiKnowledgeSourceStatus {
+  ready
+  processing
+  failed
+}
+
+enum AiAgentSessionStatus {
+  active
+  paused_by_human
+  handoff_requested
+  closed
+}
+
+enum AiAgentRunStatus {
+  completed
+  handoff_requested
+  failed
+  skipped
+}
+
+enum AiAgentRunTrigger {
+  automation
+  manual_test
+}
+
+enum AiControlStatus {
+  agent_allowed
+  human_controlled
+}
+
 model WorkspaceMirror {
   workspaceId String   @id @map("workspace_id")
   name        String?
@@ -185,6 +231,10 @@ model Conversation {
   customerServiceWindowExpiresAt DateTime?            @map("customer_service_window_expires_at")
   unreadCount                    Int                  @default(0) @map("unread_count")
   priority                       ConversationPriority @default(normal)
+  aiControlStatus                AiControlStatus      @default(agent_allowed) @map("ai_control_status")
+  aiControlUpdatedAt             DateTime?            @map("ai_control_updated_at")
+  aiControlUpdatedById           String?              @map("ai_control_updated_by_id") @db.Uuid
+  activeAgentSessionId           String?              @map("active_agent_session_id") @db.Uuid
   createdAt                      DateTime             @default(now()) @map("created_at")
   updatedAt                      DateTime             @updatedAt @map("updated_at")
 
@@ -195,6 +245,8 @@ model Conversation {
   messages     Message[]
   tags         ConversationTag[]
   contactNotes ContactNote[]     @relation("ContactNoteConversation")
+  aiSessions   AiAgentSession[]
+  aiRuns       AiAgentRun[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, channelId, contactId])
@@ -450,6 +502,102 @@ model CampaignRecipient {
   @@unique([workspaceId, campaignId, audienceKey])
   @@index([workspaceId, campaignId, status])
   @@map("campaign_recipients")
+}
+
+model AiAgent {
+  id             String         @id @default(uuid()) @db.Uuid
+  workspaceId    String         @map("workspace_id")
+  name           String
+  description    String?
+  status         AiAgentStatus  @default(inactive)
+  providerMode   AiProviderMode @default(prymeira_managed) @map("provider_mode")
+  provider       String         @default("simulated")
+  model          String         @default("prymeira-simulated")
+  systemPrompt   String         @map("system_prompt")
+  behaviorConfig Json           @default("{}") @map("behavior_config")
+  handoffConfig  Json           @default("{}") @map("handoff_config")
+  limitsConfig   Json           @default("{}") @map("limits_config")
+  allowedActions Json           @default("[]") @map("allowed_actions")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  knowledgeSources AiKnowledgeSource[]
+  sessions         AiAgentSession[]
+  runs             AiAgentRun[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, status])
+  @@map("ai_agents")
+}
+
+model AiKnowledgeSource {
+  id          String                  @id @default(uuid()) @db.Uuid
+  workspaceId String                  @map("workspace_id")
+  agentId     String                  @map("agent_id") @db.Uuid
+  type        AiKnowledgeSourceType
+  title       String
+  content     String?
+  fileUrl     String?                 @map("file_url")
+  fileName    String?                 @map("file_name")
+  mimeType    String?                 @map("mime_type")
+  status      AiKnowledgeSourceStatus @default(processing)
+  metadata    Json                    @default("{}")
+  createdAt   DateTime                @default(now()) @map("created_at")
+  updatedAt   DateTime                @updatedAt @map("updated_at")
+
+  agent AiAgent @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, agentId, status])
+  @@map("ai_knowledge_sources")
+}
+
+model AiAgentSession {
+  id             String               @id @default(uuid()) @db.Uuid
+  workspaceId    String               @map("workspace_id")
+  agentId        String               @map("agent_id") @db.Uuid
+  conversationId String               @map("conversation_id") @db.Uuid
+  status         AiAgentSessionStatus @default(active)
+  messageCount   Int                  @default(0) @map("message_count")
+  lastRunAt      DateTime?            @map("last_run_at")
+  handoffReason  String?              @map("handoff_reason")
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+
+  agent        AiAgent      @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  runs         AiAgentRun[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, agentId, conversationId])
+  @@index([workspaceId, conversationId, status])
+  @@map("ai_agent_sessions")
+}
+
+model AiAgentRun {
+  id             String            @id @default(uuid()) @db.Uuid
+  workspaceId    String            @map("workspace_id")
+  agentId        String            @map("agent_id") @db.Uuid
+  sessionId      String?           @map("session_id") @db.Uuid
+  conversationId String?           @map("conversation_id") @db.Uuid
+  trigger        AiAgentRunTrigger
+  input          Json              @default("{}")
+  output         Json              @default("{}")
+  actions        Json              @default("[]")
+  status         AiAgentRunStatus
+  confidence     Float?
+  errorMessage   String?           @map("error_message")
+  createdAt      DateTime          @default(now()) @map("created_at")
+
+  agent        AiAgent         @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
+  session      AiAgentSession? @relation(fields: [workspaceId, sessionId], references: [workspaceId, id], onDelete: SetNull)
+  conversation Conversation?   @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: SetNull)
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, agentId, createdAt])
+  @@index([workspaceId, conversationId, createdAt])
+  @@index([workspaceId, status])
+  @@map("ai_agent_runs")
 }
 
 model AiActionLog {
