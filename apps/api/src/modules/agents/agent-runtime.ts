@@ -193,6 +193,26 @@ export function createAgentRuntime(input: {
         return { status: "skipped", runId: run.id };
       }
 
+      const runInputPayload = {
+        workspaceId: runInput.workspaceId,
+        agentId: agent.id,
+        conversationId: conversation.id,
+        messageId: message.id,
+        trigger: runInput.trigger,
+        instruction: runInput.instruction ?? null
+      };
+      let contextSummary: Record<string, unknown> = {
+        contactId: conversation.contactId,
+        contactName: conversation.contact?.name ?? null,
+        channelId: conversation.channelId ?? conversation.channel?.id ?? null,
+        tagCount:
+          conversation.tags?.filter((item) => Boolean(item.tag?.name)).length ?? 0,
+        knowledgeCount: 0
+      };
+      let knowledgeMatches: Array<Record<string, unknown>> = [];
+      let providerOutput: AgentOutput | undefined;
+      let actionResults: Awaited<ReturnType<typeof executeAgentActions>> = [];
+
       const session = await prisma.aiAgentSession.upsert({
         where: {
           workspaceId_agentId_conversationId: {
@@ -213,53 +233,43 @@ export function createAgentRuntime(input: {
         }
       });
 
-      if (conversation.activeAgentSessionId !== session.id) {
-        await prisma.conversation.update({
-          where: {
-            workspaceId_id: {
-              workspaceId: runInput.workspaceId,
-              id: conversation.id
-            }
-          },
-          data: {
-            activeAgentSessionId: session.id
-          }
-        });
-        conversation.activeAgentSessionId = session.id;
-      }
-
-      const knowledge = await prisma.aiKnowledgeSource.findMany({
-        where: {
-          workspaceId: runInput.workspaceId,
-          agentId: agent.id,
-          status: "ready"
-        },
-        orderBy: [{ createdAt: "asc" }],
-        take: 8
-      });
-
-      const allowedActions = readAllowedActions(agent.allowedActions);
-      const context = buildContext(conversation, message, knowledge);
-      const runInputPayload = {
-        workspaceId: runInput.workspaceId,
-        agentId: agent.id,
-        conversationId: conversation.id,
-        messageId: message.id,
-        trigger: runInput.trigger,
-        instruction: runInput.instruction ?? null
-      };
-      const contextSummary = {
-        contactId: conversation.contactId,
-        contactName: conversation.contact?.name ?? null,
-        channelId: conversation.channelId ?? conversation.channel?.id ?? null,
-        tagCount: context.tags.length,
-        knowledgeCount: knowledge.length
-      };
-      const knowledgeMatches = knowledge.map((source) => ({ id: source.id, title: source.title }));
-      let providerOutput: AgentOutput | undefined;
-      let actionResults: Awaited<ReturnType<typeof executeAgentActions>> | undefined;
-
       try {
+        if (conversation.activeAgentSessionId !== session.id) {
+          await prisma.conversation.update({
+            where: {
+              workspaceId_id: {
+                workspaceId: runInput.workspaceId,
+                id: conversation.id
+              }
+            },
+            data: {
+              activeAgentSessionId: session.id
+            }
+          });
+          conversation.activeAgentSessionId = session.id;
+        }
+
+        const knowledge = await prisma.aiKnowledgeSource.findMany({
+          where: {
+            workspaceId: runInput.workspaceId,
+            agentId: agent.id,
+            status: "ready"
+          },
+          orderBy: [{ createdAt: "asc" }],
+          take: 8
+        });
+
+        const allowedActions = readAllowedActions(agent.allowedActions);
+        const context = buildContext(conversation, message, knowledge);
+        contextSummary = {
+          contactId: conversation.contactId,
+          contactName: conversation.contact?.name ?? null,
+          channelId: conversation.channelId ?? conversation.channel?.id ?? null,
+          tagCount: context.tags.length,
+          knowledgeCount: knowledge.length
+        };
+        knowledgeMatches = knowledge.map((source) => ({ id: source.id, title: source.title }));
+
         providerOutput = await provider.generate({
           model: agent.model,
           systemPrompt: agent.systemPrompt,

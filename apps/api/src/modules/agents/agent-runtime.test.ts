@@ -385,6 +385,45 @@ describe("createAgentRuntime", () => {
     });
   });
 
+  it("logs a failed run when knowledge lookup fails after session creation", async () => {
+    const prisma = buildPrisma({
+      aiKnowledgeSource: {
+        findMany: vi.fn().mockRejectedValue(new Error("Knowledge lookup failed."))
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Atendemos das 8h as 18h.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({ prisma, provider });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({ status: "failed", runId: ids.run });
+    expect(prisma.aiAgentSession.upsert).toHaveBeenCalled();
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        workspaceId: ids.workspace,
+        agentId: ids.agent,
+        sessionId: ids.session,
+        conversationId: ids.conversation,
+        model: "prymeira-simulated",
+        status: "failed",
+        errorMessage: "Knowledge lookup failed."
+      })
+    });
+  });
+
   it("logs a failed run without a conversation foreign key when conversation is missing", async () => {
     const prisma = buildPrisma({
       conversation: {
