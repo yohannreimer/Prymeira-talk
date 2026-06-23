@@ -54,6 +54,16 @@ describe("parseAgentOutput", () => {
       })
     ).toThrow("Invalid agent output.");
   });
+
+  it("throws a stable error when an action is missing a type", () => {
+    expect(() =>
+      parseAgentOutput({
+        confidence: 0.7,
+        handoff: { required: false, reason: null },
+        actions: [{ tagName: "Lead" }]
+      })
+    ).toThrow("Invalid agent output.");
+  });
 });
 
 describe("createSimulatedAgentProvider", () => {

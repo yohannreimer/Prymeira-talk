@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentToolExecutionError, executeAgentActions } from "./agent-tool-executor.js";
 import type { AgentToolExecutorPrismaLike } from "./agent-tool-executor.js";
+import type { AgentOutput } from "./provider-gateway.js";
 
 function buildPrisma(overrides: Partial<AgentToolExecutorPrismaLike> = {}) {
   return {
@@ -203,11 +204,12 @@ describe("executeAgentActions", () => {
 
   it("rejects actions missing type defensively", async () => {
     const prisma = buildPrisma();
+    const malformedActions = [{ tagName: "Atendido pela IA" }] as unknown as AgentOutput["actions"];
 
     await expect(
       executeAgentActions(prisma, {
         ...baseInput,
-        actions: [{ tagName: "Atendido pela IA" }]
+        actions: malformedActions
       })
     ).rejects.toMatchObject({
       code: "TOOL_INVALID_INPUT"

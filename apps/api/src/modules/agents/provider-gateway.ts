@@ -1,9 +1,15 @@
 import { z } from "zod";
 
+const agentActionSchema = z
+  .object({
+    type: z.string().trim().min(1)
+  })
+  .catchall(z.unknown());
+
 export const agentOutputSchema = z.object({
   confidence: z.number().min(0).max(1),
   reply: z.string().trim().min(1).nullable().optional(),
-  actions: z.array(z.record(z.string(), z.unknown())).default([]),
+  actions: z.array(agentActionSchema).default([]),
   handoff: z.object({
     required: z.boolean(),
     reason: z.string().nullable()
