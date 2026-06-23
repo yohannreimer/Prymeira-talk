@@ -119,7 +119,14 @@ describe("createAgentsService", () => {
   });
 
   it("rejects activating an agent when allowedActions does not include send_message", async () => {
-    const prisma = buildPrisma();
+    const prisma = buildPrisma({
+      aiAgent: {
+        findMany: vi.fn().mockResolvedValue([]),
+        findFirst: vi.fn().mockResolvedValue(baseAgent),
+        create: vi.fn(),
+        update: vi.fn()
+      }
+    });
     const service = createAgentsService(prisma);
 
     await expect(
@@ -147,11 +154,49 @@ describe("createAgentsService", () => {
     expect(prisma.aiAgent.update).not.toHaveBeenCalled();
   });
 
+  it("rejects activating an existing agent whose stored allowedActions lacks send_message", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findMany: vi.fn().mockResolvedValue([]),
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          allowedActions: ["add_tag"]
+        }),
+        create: vi.fn(),
+        update: vi.fn().mockImplementation(async (args) => ({
+          ...baseAgent,
+          allowedActions: ["add_tag"],
+          ...args.data
+        }))
+      }
+    });
+    const service = createAgentsService(prisma);
+
+    await expect(
+      service.updateAgent({
+        workspaceId: "workspace_a",
+        agentId,
+        data: {
+          status: "active"
+        }
+      })
+    ).rejects.toMatchObject({
+      code: "AGENT_INVALID_CONFIG"
+    });
+    expect(prisma.aiAgent.findFirst).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        id: agentId
+      }
+    });
+    expect(prisma.aiAgent.update).not.toHaveBeenCalled();
+  });
+
   it("creates a knowledge source for an existing agent, status ready", async () => {
     const prisma = buildPrisma({
       aiAgent: {
         findMany: vi.fn().mockResolvedValue([]),
-        findFirst: vi.fn().mockResolvedValue({ id: agentId, workspaceId: "workspace_a" }),
+        findFirst: vi.fn().mockResolvedValue(baseAgent),
         create: vi.fn(),
         update: vi.fn()
       }

@@ -53,9 +53,7 @@ type KnowledgeFindManyArgs = Parameters<PrismaClient["aiKnowledgeSource"]["findM
 export interface AgentsPrismaLike {
   aiAgent: {
     findMany(args: AgentFindManyArgs): Promise<AiAgentRecord[]>;
-    findFirst(
-      args: AgentFindFirstArgs
-    ): Promise<Pick<AiAgentRecord, "id" | "workspaceId"> | AiAgentRecord | null>;
+    findFirst(args: AgentFindFirstArgs): Promise<AiAgentRecord | null>;
     create(args: AgentCreateArgs): Promise<AiAgentRecord>;
     update(args: AgentUpdateArgs): Promise<AiAgentRecord>;
   };
@@ -239,11 +237,11 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
         allowedActions: AiAgentAllowedAction[];
       }>;
     }): Promise<AiAgentDto> {
+      const existingAgent = await ensureAgent(input);
       validateAgentConfig({
-        status: input.data.status,
-        allowedActions: input.data.allowedActions
+        status: input.data.status ?? existingAgent.status,
+        allowedActions: input.data.allowedActions ?? readAllowedActions(existingAgent.allowedActions)
       });
-      await ensureAgent(input);
 
       const description = nullableTrim(input.data.description);
       const agent = await prisma.aiAgent.update({
