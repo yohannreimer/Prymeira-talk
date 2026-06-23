@@ -1,4 +1,8 @@
-import type { AiAgentAllowedAction, ConversationPriority } from "@prymeira-talk/shared";
+import {
+  aiAgentAllowedActionSchema,
+  type AiAgentAllowedAction,
+  type ConversationPriority
+} from "@prymeira-talk/shared";
 import type { AgentOutput } from "./provider-gateway.js";
 
 type AgentAction = AgentOutput["actions"][number];
@@ -11,6 +15,7 @@ type ConversationRecord = {
 };
 
 export interface AgentToolExecutorPrismaLike {
+  $transaction<T>(callback: (tx: AgentToolExecutorPrismaLike) => Promise<T>): Promise<T>;
   conversation: {
     findUnique(args: {
       where: { workspaceId_id: { workspaceId: string; id: string } };
@@ -131,7 +136,7 @@ export async function executeAgentActions(
   }
 
   for (const action of input.actions) {
-    const actionType = getActionType(action);
+    const actionType = parseActionType(action);
 
     if (actionType === "send_message") {
       results.push({ type: actionType, status: "skipped" });
@@ -139,7 +144,7 @@ export async function executeAgentActions(
     }
 
     ensureAllowed(input.allowedActions, actionType);
-    await executeNonSendAction(prisma, input, await loadConversation(), action);
+    await executeNonSendAction(prisma, input, await loadConversation(), actionType, action);
     results.push({ type: actionType, status: "completed" });
   }
 
@@ -163,41 +168,37 @@ async function executeNonSendAction(
     actorUserId?: string | null;
   },
   conversation: ConversationRecord,
+  actionType: AgentActionType,
   action: AgentAction
 ) {
-  const actionType = getActionType(action);
-
-  if (actionType === "add_tag") {
-    await addTag(prisma, input, action);
-    return;
+  switch (actionType) {
+    case "add_tag":
+      await addTag(prisma, input, action);
+      return;
+    case "remove_tag":
+      await removeTag(prisma, input, action);
+      return;
+    case "change_priority":
+      await changePriority(prisma, input, getString(action, "priority"));
+      return;
+    case "create_internal_note":
+      await createInternalNote(prisma, input, conversation, action);
+      return;
+    case "assign_user":
+      await assignUser(prisma, input, action);
+      return;
+    case "assign_department":
+      await assignDepartment(prisma, input, action);
+      return;
+    case "request_handoff":
+      await requestHandoff(prisma, input, conversation, action);
+      return;
+    case "send_message":
+      throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "send_message is handled elsewhere.");
   }
 
-  if (actionType === "remove_tag") {
-    await removeTag(prisma, input, action);
-    return;
-  }
-
-  if (actionType === "change_priority") {
-    await changePriority(prisma, input, getString(action, "priority"));
-    return;
-  }
-
-  if (actionType === "create_internal_note") {
-    await createInternalNote(prisma, input, conversation, action);
-    return;
-  }
-
-  if (actionType === "assign_user") {
-    await assignUser(prisma, input, action);
-    return;
-  }
-
-  if (actionType === "assign_department") {
-    await assignDepartment(prisma, input, action);
-    return;
-  }
-
-  await requestHandoff(prisma, input, conversation, action);
+  const _exhaustive: never = actionType;
+  throw new AgentToolExecutionError("TOOL_INVALID_INPUT", `Unsupported agent action ${_exhaustive}.`);
 }
 
 async function addTag(
@@ -355,38 +356,45 @@ async function requestHandoff(
   const handoffReason = getString(action, "reason")?.trim() || "Agent requested human handoff.";
   const aiControlUpdatedAt = new Date();
 
-  await prisma.conversation.update({
-    where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
-    data: {
-      aiControlStatus: "human_controlled",
-      aiControlUpdatedAt,
-      aiControlUpdatedById: input.actorUserId ?? null
-    }
-  });
-
-  if (conversation.activeAgentSessionId) {
-    await prisma.aiAgentSession.update({
-      where: {
-        workspaceId_id: {
-          workspaceId: input.workspaceId,
-          id: conversation.activeAgentSessionId
-        }
-      },
+  await prisma.$transaction(async (tx) => {
+    await tx.conversation.update({
+      where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
       data: {
-        status: "handoff_requested",
-        handoffReason
+        aiControlStatus: "human_controlled",
+        aiControlUpdatedAt,
+        aiControlUpdatedById: input.actorUserId ?? null
       }
     });
-  }
+
+    if (conversation.activeAgentSessionId) {
+      await tx.aiAgentSession.update({
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: conversation.activeAgentSessionId
+          }
+        },
+        data: {
+          status: "handoff_requested",
+          handoffReason
+        }
+      });
+    }
+  });
 }
 
-function getActionType(action: AgentAction): AgentActionType {
+function parseActionType(action: AgentAction): AgentActionType {
   const actionType = action.type;
   if (typeof actionType !== "string") {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Action type is required.");
   }
 
-  return actionType as AgentActionType;
+  const parsedActionType = aiAgentAllowedActionSchema.safeParse(actionType);
+  if (!parsedActionType.success) {
+    throw new AgentToolExecutionError("TOOL_INVALID_INPUT", `Unsupported agent action ${actionType}.`);
+  }
+
+  return parsedActionType.data;
 }
 
 function getString(action: AgentAction, key: string) {

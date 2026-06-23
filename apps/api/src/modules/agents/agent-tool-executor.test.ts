@@ -4,7 +4,13 @@ import type { AgentToolExecutorPrismaLike } from "./agent-tool-executor.js";
 import type { AgentOutput } from "./provider-gateway.js";
 
 function buildPrisma(overrides: Partial<AgentToolExecutorPrismaLike> = {}) {
-  return {
+  let prisma: AgentToolExecutorPrismaLike;
+  const transaction = vi.fn(
+    <T,>(callback: Parameters<AgentToolExecutorPrismaLike["$transaction"]>[0]) => callback(prisma)
+  ) as AgentToolExecutorPrismaLike["$transaction"] & ReturnType<typeof vi.fn>;
+
+  prisma = {
+    $transaction: overrides.$transaction ?? transaction,
     conversation: {
       findUnique:
         overrides.conversation?.findUnique ??
@@ -42,6 +48,8 @@ function buildPrisma(overrides: Partial<AgentToolExecutorPrismaLike> = {}) {
       update: overrides.aiAgentSession?.update ?? vi.fn().mockResolvedValue({})
     }
   } satisfies AgentToolExecutorPrismaLike;
+
+  return prisma;
 }
 
 const baseInput = {
@@ -160,6 +168,17 @@ describe("executeAgentActions", () => {
     });
   });
 
+  it("uses one transaction when requesting handoff", async () => {
+    const prisma = buildPrisma();
+
+    await executeAgentActions(prisma, {
+      ...baseInput,
+      actions: [{ type: "request_handoff", reason: "Baixa confianca" }]
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects missing required input defensively", async () => {
     const prisma = buildPrisma();
 
@@ -215,5 +234,28 @@ describe("executeAgentActions", () => {
       code: "TOOL_INVALID_INPUT"
     });
     expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown action types before updating conversation or session", async () => {
+    const prisma = buildPrisma();
+    const malformedActions = [
+      { type: "escalate_to_moon", reason: "unknown action" }
+    ] as unknown as AgentOutput["actions"];
+    const malformedAllowedActions = [
+      ...baseInput.allowedActions,
+      "escalate_to_moon"
+    ] as unknown as typeof baseInput.allowedActions;
+
+    await expect(
+      executeAgentActions(prisma, {
+        ...baseInput,
+        allowedActions: malformedAllowedActions,
+        actions: malformedActions
+      })
+    ).rejects.toMatchObject({
+      code: "TOOL_INVALID_INPUT"
+    });
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+    expect(prisma.aiAgentSession.update).not.toHaveBeenCalled();
   });
 });
