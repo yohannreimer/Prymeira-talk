@@ -790,7 +790,8 @@ describe("automation runner", () => {
     const agentRuntime = {
       runForMessage: vi.fn().mockResolvedValue({
         status: "completed",
-        runId: "agent-run-1"
+        runId: "agent-run-1",
+        message: "Agent replied with the configured business plan guidance."
       })
     };
     const runner = createAutomationRunner({ prisma, agentRuntime });
@@ -817,7 +818,7 @@ describe("automation runner", () => {
           nodeId: "agent-1",
           status: "completed",
           branch: "completed",
-          message: "Agent runtime completed.",
+          message: "Agent replied with the configured business plan guidance.",
           runId: "agent-run-1"
         }
       ]

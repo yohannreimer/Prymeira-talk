@@ -5,6 +5,7 @@ import { z } from "zod";
 import { toChannelDto } from "../channels/channels.service.js";
 import {
   createAutomationRunner,
+  type AutomationRunnerAgentRuntime,
   type AutomationRunnerEvolution,
   type AutomationRunnerPrisma
 } from "../automations/automation-runner.js";
@@ -23,6 +24,7 @@ import {
 
 export interface EvolutionRoutesOptions {
   webhookSecret: string;
+  agentRuntime?: AutomationRunnerAgentRuntime;
   evolution?: AutomationRunnerEvolution;
 }
 
@@ -341,6 +343,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
 ) => {
   const automationRunner = createAutomationRunner({
     prisma: app.prisma as unknown as AutomationRunnerPrisma,
+    agentRuntime: options.agentRuntime,
     evolution: options.evolution,
     realtime: app.realtime
   });

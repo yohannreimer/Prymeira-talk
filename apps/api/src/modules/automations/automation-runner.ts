@@ -166,6 +166,7 @@ export interface AutomationRunnerAgentRuntime {
   }): Promise<{
     status: "completed" | "handoff_requested" | "skipped" | "failed";
     runId?: string;
+    message?: string;
   }>;
 }
 
@@ -733,7 +734,7 @@ async function executeNode(
 
     return {
       result: resultFor(node, actionStatus, {
-        message: `Agent runtime ${runtimeResult.status}.`,
+        message: runtimeResult.message ?? `Agent runtime ${runtimeResult.status}.`,
         branch: runtimeResult.status,
         runId: runtimeResult.runId
       }),

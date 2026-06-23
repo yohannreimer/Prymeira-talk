@@ -85,6 +85,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(realtimeRoutes);
   await app.register(evolutionRoutes, {
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,
+    agentRuntime,
     evolution: evolutionRuntime
   });
   await app.register(metaWebhooksRoutes);
