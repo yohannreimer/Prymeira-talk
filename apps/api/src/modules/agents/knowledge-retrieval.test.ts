@@ -64,6 +64,30 @@ describe("selectRelevantKnowledge", () => {
     expect(result.total).toBe(2);
   });
 
+  it("does not treat duration questions as pricing questions because they use quanto", () => {
+    const result = selectRelevantKnowledge({
+      latestMessage: "Quanto tempo leva a implantacao?",
+      conversationHistory: "",
+      instruction: null,
+      sources: [
+        {
+          id: "prices",
+          title: "Tabela de precos",
+          content: "Plano profissional custa R$ 199 por mes.",
+          metadata: { category: "precos" }
+        },
+        {
+          id: "onboarding",
+          title: "Guia de onboarding",
+          content: "A implantacao leva 7 dias uteis com treinamento.",
+          metadata: { category: "onboarding" }
+        }
+      ]
+    });
+
+    expect(result.selected.map((source) => source.id)).toEqual(["onboarding"]);
+  });
+
   it("marks oversized documents as snippets", () => {
     const longContent = `${"Plano profissional custa R$ 199 por mes. ".repeat(500)}Detalhes finais.`;
 

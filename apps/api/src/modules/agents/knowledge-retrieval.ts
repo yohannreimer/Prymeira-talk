@@ -40,7 +40,7 @@ const CATEGORY_ALIASES: Record<string, string[]> = {
     "precos",
     "valor",
     "valores",
-    "quanto",
+    "quanto custa",
     "custa",
     "custo",
     "custos",
