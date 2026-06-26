@@ -103,9 +103,14 @@ export function createOpenAiCompatibleAgentProvider(
         throw new Error("OpenAI-compatible provider returned an invalid response shape.");
       }
 
+      const content = providerResponse.data.choices[0].message.content;
+      if (content.trim().length === 0) {
+        throw new Error("OpenAI-compatible provider returned empty content.");
+      }
+
       let parsedContent: unknown;
       try {
-        parsedContent = JSON.parse(providerResponse.data.choices[0].message.content);
+        parsedContent = JSON.parse(content);
       } catch {
         throw new Error("OpenAI-compatible provider returned invalid JSON content.");
       }

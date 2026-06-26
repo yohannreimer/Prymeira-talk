@@ -311,6 +311,40 @@ describe("createOpenAiCompatibleAgentProvider", () => {
     ).rejects.toThrow("Invalid agent output.");
   });
 
+  it.each(["", "  \n\t  "])(
+    "throws a clear error when provider content is empty or whitespace",
+    async (content) => {
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content
+                }
+              }
+            ]
+          })
+        )
+      );
+      const provider = createOpenAiCompatibleAgentProvider({
+        baseUrl: "https://provider.example",
+        apiKey: "secret-api-key",
+        chatModel: "configured-chat-model",
+        fetchImpl: fetchMock
+      });
+
+      await expect(
+        provider.generate({
+          model: "runtime-model",
+          systemPrompt: "Atenda clientes da Prymeira Talk.",
+          userPrompt: "Ola",
+          context: {}
+        })
+      ).rejects.toThrow("OpenAI-compatible provider returned empty content.");
+    }
+  );
+
   it("throws on non-OK provider responses with the status in the message", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ error: "quota exceeded" }), { status: 429 })
