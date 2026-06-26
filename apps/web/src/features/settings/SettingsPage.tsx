@@ -239,7 +239,16 @@ export function SettingsPage() {
   function validateAiProviderSettings() {
     if (!aiProviderForm.enabled) return null;
 
-    if (!aiProviderForm.baseUrl.trim()) return "Informe a Base URL do provider de IA.";
+    try {
+      const baseUrl = new URL(aiProviderForm.baseUrl.trim());
+
+      if (baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") {
+        return "Informe uma Base URL valida para a IA.";
+      }
+    } catch {
+      return "Informe uma Base URL valida para a IA.";
+    }
+
     if (!aiProviderForm.chatModel.trim()) return "Informe o modelo de chat.";
     if (!aiProviderForm.apiKey.trim() && !aiProviderForm.storedSecrets.apiKey) {
       return "Informe a API Key do provider de IA.";
@@ -551,6 +560,7 @@ export function SettingsPage() {
               autoComplete="off"
               onChange={(event) => updateAiProviderForm({ baseUrl: event.target.value })}
               required={aiProviderForm.enabled}
+              type="url"
               value={aiProviderForm.baseUrl}
             />
           </label>
@@ -565,6 +575,9 @@ export function SettingsPage() {
               type="password"
               value={aiProviderForm.apiKey}
             />
+            {aiProviderForm.storedSecrets.apiKey ? (
+              <span className="list-note">Deixe em branco para manter a chave salva.</span>
+            ) : null}
           </label>
 
           <label className="form-field">
