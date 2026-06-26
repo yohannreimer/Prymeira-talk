@@ -2320,6 +2320,29 @@ export async function apiCreateAgentKnowledge(
   );
 }
 
+export async function apiUploadAgentKnowledge(
+  getToken: () => Promise<string | null>,
+  agentId: string,
+  body: {
+    title: string;
+    category: string;
+    fileName: string;
+    mimeType: string;
+    base64Content: string;
+  }
+): Promise<AiKnowledgeSourceDto> {
+  return fetchJson(
+    getToken,
+    `/agents/${agentId}/knowledge/upload`,
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseKnowledgeSource,
+    "Failed to upload agent knowledge"
+  );
+}
+
 export async function apiGetCrmSyncActions(
   getToken: () => Promise<string | null>,
   contactId?: string

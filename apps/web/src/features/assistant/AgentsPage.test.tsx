@@ -13,7 +13,8 @@ vi.mock("../../app/api", () => ({
   apiCreateAgentKnowledge: vi.fn(),
   apiGetAgentKnowledge: vi.fn(),
   apiGetAgents: vi.fn(async () => []),
-  apiUpdateAgent: vi.fn()
+  apiUpdateAgent: vi.fn(),
+  apiUploadAgentKnowledge: vi.fn()
 }));
 
 afterEach(() => {
@@ -28,6 +29,9 @@ describe("AgentsPage", () => {
     expect(html).toContain("Novo agente");
     expect(html).toContain("Prompt do sistema");
     expect(html).toContain("Conhecimento");
+    expect(html).toContain("Arquivo PDF ou texto");
+    expect(html).toContain("Adicionar documento");
+    expect(html).toContain("Precos");
     expect(html).toContain("FAQ");
     expect(html).toContain("Texto");
   });

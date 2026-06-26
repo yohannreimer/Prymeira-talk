@@ -5,6 +5,7 @@ import {
   apiGetAgentKnowledge,
   apiGetAgents,
   apiUpdateAgent,
+  apiUploadAgentKnowledge,
   type AiAgentAllowedAction,
   type AiAgentDto,
   type AiKnowledgeSourceDto
@@ -41,6 +42,33 @@ type KnowledgeFormState = {
   content: string;
 };
 
+type KnowledgeUploadCategory =
+  | "precos"
+  | "produto"
+  | "faq"
+  | "politicas"
+  | "onboarding"
+  | "comercial"
+  | "suporte"
+  | "outro";
+
+type KnowledgeUploadFormState = {
+  title: string;
+  category: KnowledgeUploadCategory;
+  file: File | null;
+};
+
+const knowledgeUploadCategories: Array<{ value: KnowledgeUploadCategory; label: string }> = [
+  { value: "precos", label: "Precos" },
+  { value: "produto", label: "Produto" },
+  { value: "faq", label: "FAQ" },
+  { value: "politicas", label: "Politicas" },
+  { value: "onboarding", label: "Onboarding" },
+  { value: "comercial", label: "Comercial" },
+  { value: "suporte", label: "Suporte" },
+  { value: "outro", label: "Outro" }
+];
+
 function emptyAgentForm(): AgentFormState {
   return {
     name: "Agente de atendimento",
@@ -56,6 +84,14 @@ function emptyKnowledgeForm(): KnowledgeFormState {
   };
 }
 
+function emptyKnowledgeUploadForm(): KnowledgeUploadFormState {
+  return {
+    title: "",
+    category: "precos",
+    file: null
+  };
+}
+
 function agentStatusLabel(status: AiAgentDto["status"]) {
   return status === "active" ? "Ativo" : "Inativo";
 }
@@ -66,6 +102,28 @@ function knowledgeTypeLabel(type: AiKnowledgeSourceDto["type"]) {
   return "Arquivo";
 }
 
+function readKnowledgeCategory(source: AiKnowledgeSourceDto) {
+  const metadata = source.metadata;
+  if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
+    return null;
+  }
+
+  const category = (metadata as Record<string, unknown>).category;
+  return typeof category === "string" ? category : null;
+}
+
+async function fileToBase64(file: File) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+
+  return btoa(binary);
+}
+
 export function AgentsPage() {
   const { getToken } = useTalkAuth();
   const [agents, setAgents] = useState<AiAgentDto[]>([]);
@@ -73,10 +131,13 @@ export function AgentsPage() {
   const [agentForm, setAgentForm] = useState<AgentFormState>(emptyAgentForm);
   const [knowledge, setKnowledge] = useState<AiKnowledgeSourceDto[]>([]);
   const [knowledgeForm, setKnowledgeForm] = useState<KnowledgeFormState>(emptyKnowledgeForm);
+  const [knowledgeUploadForm, setKnowledgeUploadForm] =
+    useState<KnowledgeUploadFormState>(emptyKnowledgeUploadForm);
   const [isLoadingAgents, setIsLoadingAgents] = useState(true);
   const [isLoadingKnowledge, setIsLoadingKnowledge] = useState(false);
   const [isSavingAgent, setIsSavingAgent] = useState(false);
   const [isSavingKnowledge, setIsSavingKnowledge] = useState(false);
+  const [isUploadingKnowledge, setIsUploadingKnowledge] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -221,6 +282,38 @@ export function AgentsPage() {
     }
   }
 
+  async function uploadKnowledge(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedAgent || !knowledgeUploadForm.file) {
+      setError("Selecione um agente e um arquivo.");
+      return;
+    }
+
+    setIsUploadingKnowledge(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const file = knowledgeUploadForm.file;
+      const createdSource = await apiUploadAgentKnowledge(getToken, selectedAgent.id, {
+        title: knowledgeUploadForm.title.trim() || file.name,
+        category: knowledgeUploadForm.category,
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream",
+        base64Content: await fileToBase64(file)
+      });
+
+      setKnowledge((current) => [createdSource, ...current]);
+      setKnowledgeUploadForm(emptyKnowledgeUploadForm());
+      setNotice("Documento adicionado ao agente.");
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "Nao foi possivel enviar o documento.");
+    } finally {
+      setIsUploadingKnowledge(false);
+    }
+  }
+
   return (
     <section className="module-page" aria-label="Agentes">
       <header className="module-header">
@@ -324,6 +417,59 @@ export function AgentsPage() {
               <span>{selectedAgent ? `${knowledge.length} fontes` : "Selecione um agente"}</span>
             </div>
 
+            <form className="module-form" onSubmit={(event) => void uploadKnowledge(event)}>
+              <label className="form-field">
+                Categoria
+                <select
+                  value={knowledgeUploadForm.category}
+                  onChange={(event) => setKnowledgeUploadForm((current) => ({
+                    ...current,
+                    category: event.target.value as KnowledgeUploadCategory
+                  }))}
+                  disabled={!selectedAgent}
+                >
+                  {knowledgeUploadCategories.map((category) => (
+                    <option key={category.value} value={category.value}>
+                      {category.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                Titulo do documento
+                <input
+                  value={knowledgeUploadForm.title}
+                  onChange={(event) => setKnowledgeUploadForm((current) => ({
+                    ...current,
+                    title: event.target.value
+                  }))}
+                  placeholder="Tabela de precos"
+                  disabled={!selectedAgent}
+                />
+              </label>
+              <label className="form-field">
+                Arquivo PDF ou texto
+                <input
+                  accept="application/pdf,text/plain,.txt"
+                  disabled={!selectedAgent}
+                  key={knowledgeUploadForm.file ? "selected-file" : "empty-file"}
+                  onChange={(event) => setKnowledgeUploadForm((current) => ({
+                    ...current,
+                    file: event.target.files?.[0] ?? null
+                  }))}
+                  type="file"
+                />
+              </label>
+              <button
+                className="secondary-button"
+                type="submit"
+                disabled={!selectedAgent || !knowledgeUploadForm.file || isUploadingKnowledge}
+              >
+                <Plus size={15} />
+                {isUploadingKnowledge ? "Enviando" : "Adicionar documento"}
+              </button>
+            </form>
+
             <form className="module-form" onSubmit={(event) => void addKnowledge(event)}>
               <label className="form-field">
                 Tipo
@@ -371,21 +517,28 @@ export function AgentsPage() {
               {!isLoadingKnowledge && selectedAgent && knowledge.length === 0 ? (
                 <p className="list-note">Nenhuma fonte cadastrada para este agente.</p>
               ) : null}
-              {knowledge.map((source) => (
-                <article className="assistant-log-card" key={source.id}>
-                  <div className="assistant-log-header">
-                    <span className="status-badge status-badge--bot">
-                      {source.type === "faq" ? <HelpCircle size={12} /> : <FileText size={12} />}
-                      {knowledgeTypeLabel(source.type)}
-                    </span>
-                    <span className={`status-badge status-badge--${source.status === "ready" ? "open" : "waiting"}`}>
-                      {source.status}
-                    </span>
-                  </div>
-                  <strong>{source.title}</strong>
-                  {source.content ? <p className="assistant-log-result">{source.content}</p> : null}
-                </article>
-              ))}
+              {knowledge.map((source) => {
+                const category = readKnowledgeCategory(source);
+
+                return (
+                  <article className="assistant-log-card" key={source.id}>
+                    <div className="assistant-log-header">
+                      <span className="status-badge status-badge--bot">
+                        {source.type === "faq" ? <HelpCircle size={12} /> : <FileText size={12} />}
+                        {knowledgeTypeLabel(source.type)}
+                      </span>
+                      {category ? (
+                        <span className="status-badge status-badge--bot">{category}</span>
+                      ) : null}
+                      <span className={`status-badge status-badge--${source.status === "ready" ? "open" : "waiting"}`}>
+                        {source.status}
+                      </span>
+                    </div>
+                    <strong>{source.title}</strong>
+                    {source.content ? <p className="assistant-log-result">{source.content}</p> : null}
+                  </article>
+                );
+              })}
             </div>
           </section>
         </div>
