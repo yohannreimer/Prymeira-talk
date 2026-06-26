@@ -206,6 +206,15 @@ describe("createAgentRuntime", () => {
       orderBy: [{ createdAt: "desc" }],
       take: 80
     });
+    expect(prisma.aiKnowledgeSource.findMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        agentId: ids.agent,
+        status: "ready"
+      },
+      orderBy: [{ createdAt: "desc" }],
+      take: 50
+    });
     expect(provider.generate).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "prymeira-simulated",

@@ -164,14 +164,21 @@ export function selectRelevantKnowledge(input: {
   instruction: string | null | undefined;
   sources: KnowledgeRetrievalSource[];
 }): KnowledgeRetrievalResult {
-  const query = normalize(
-    [input.instruction, input.conversationHistory, input.latestMessage].filter(Boolean).join("\n")
-  );
-  const queryTokens = toTokenSet(query);
-  const detectedCategories = detectCategories(query);
+  const primaryQuery = normalize([input.instruction, input.latestMessage].filter(Boolean).join("\n"));
+  const historyQuery = normalize(input.conversationHistory ?? "");
+  const primaryCategories = detectCategories(primaryQuery);
+  const historyCategories = detectCategories(historyQuery);
+  const retrievalQuery: RetrievalQuery = {
+    primary: primaryQuery,
+    history: historyQuery,
+    primaryTokens: toTokenSet(primaryQuery),
+    historyTokens: toTokenSet(historyQuery),
+    primaryCategories,
+    activeCategories: primaryCategories.size > 0 ? primaryCategories : historyCategories
+  };
 
   const rankedSources = input.sources
-    .map((source, index) => scoreSource(source, index, query, queryTokens, detectedCategories))
+    .map((source, index) => scoreSource(source, index, retrievalQuery))
     .filter((source): source is ScoredKnowledgeSource => source !== null)
     .sort((left, right) => right.score - left.score || left.index - right.index)
     .slice(0, MAX_SELECTED_SOURCES)
@@ -187,12 +194,19 @@ type ScoredKnowledgeSource = SelectedKnowledgeSource & {
   index: number;
 };
 
+type RetrievalQuery = {
+  primary: string;
+  history: string;
+  primaryTokens: Set<string>;
+  historyTokens: Set<string>;
+  primaryCategories: Set<string>;
+  activeCategories: Set<string>;
+};
+
 function scoreSource(
   source: KnowledgeRetrievalSource,
   index: number,
-  query: string,
-  queryTokens: Set<string>,
-  detectedCategories: Set<string>
+  query: RetrievalQuery
 ): ScoredKnowledgeSource | null {
   const metadata = readMetadata(source.metadata);
   const category = normalizeCategory(metadata.category);
@@ -201,28 +215,60 @@ function scoreSource(
   const content = source.content ?? "";
   const normalizedContent = normalize(content);
   const reasons = new Set<KnowledgeRetrievalReason>();
+  const evidenceTerms = new Set<string>();
+  const allowHistorySignal =
+    query.primaryCategories.size === 0 || Boolean(category && query.activeCategories.has(category));
   let score = 0;
 
-  if (category && detectedCategories.has(category)) {
+  if (category && query.activeCategories.has(category)) {
     score += 50;
     reasons.add("category_match");
+    for (const alias of CATEGORY_ALIASES[category] ?? []) {
+      evidenceTerms.add(alias);
+    }
   }
 
-  const keywordMatches = keywords.filter((keyword) => query.includes(keyword));
+  const primaryKeywordMatches = keywords.filter((keyword) => query.primary.includes(keyword));
+  const historyKeywordMatches = allowHistorySignal
+    ? keywords.filter((keyword) => query.history.includes(keyword))
+    : [];
+  const keywordMatches = Array.from(new Set([...primaryKeywordMatches, ...historyKeywordMatches]));
   if (keywordMatches.length > 0) {
-    score += Math.min(30, keywordMatches.length * 15);
+    score += Math.min(
+      30,
+      primaryKeywordMatches.length * 15 + historyKeywordMatches.length * 4
+    );
     reasons.add("keyword_match");
+    for (const keyword of keywordMatches) {
+      evidenceTerms.add(keyword);
+    }
   }
 
-  if (hasTitleMatch(title, queryTokens, detectedCategories)) {
+  if (hasTitleMatch(title, query.primaryTokens, query.activeCategories)) {
     score += 18;
     reasons.add("title_match");
   }
 
-  const overlapCount = countContentOverlap(normalizedContent, queryTokens);
+  const primaryOverlapCount = countContentOverlap(normalizedContent, query.primaryTokens);
+  const historyOverlapCount = allowHistorySignal
+    ? countContentOverlap(normalizedContent, query.historyTokens)
+    : 0;
+  const overlapCount = primaryOverlapCount + Math.min(2, historyOverlapCount);
   if (overlapCount >= 2) {
     score += Math.min(20, overlapCount * 4);
     reasons.add("content_overlap");
+    for (const token of query.primaryTokens) {
+      if (normalizedContent.includes(token)) {
+        evidenceTerms.add(token);
+      }
+    }
+    if (allowHistorySignal) {
+      for (const token of query.historyTokens) {
+        if (normalizedContent.includes(token)) {
+          evidenceTerms.add(token);
+        }
+      }
+    }
   }
 
   if (reasons.size === 0) {
@@ -235,14 +281,43 @@ function scoreSource(
   return {
     id: source.id,
     title: source.title,
-    content:
-      includedAs === "full_document" ? content : content.slice(0, MAX_FULL_DOCUMENT_LENGTH),
+    content: selectContentForProvider(content, includedAs, Array.from(evidenceTerms)),
     category,
     score,
     reasons: Array.from(reasons),
     includedAs,
     index
   };
+}
+
+function selectContentForProvider(
+  content: string,
+  includedAs: SelectedKnowledgeSource["includedAs"],
+  evidenceTerms: string[]
+) {
+  if (includedAs === "full_document") {
+    return content;
+  }
+
+  const start = findSnippetStart(content, evidenceTerms);
+  return content.slice(start, start + MAX_FULL_DOCUMENT_LENGTH);
+}
+
+function findSnippetStart(content: string, evidenceTerms: string[]) {
+  const normalizedContent = normalize(content);
+  const terms = evidenceTerms
+    .map(normalize)
+    .filter((term) => term.length >= 4)
+    .sort((left, right) => right.length - left.length);
+
+  for (const term of terms) {
+    const index = normalizedContent.indexOf(term);
+    if (index >= 0) {
+      return Math.max(0, index - 600);
+    }
+  }
+
+  return 0;
 }
 
 function detectCategories(query: string) {

@@ -268,8 +268,8 @@ export function createAgentRuntime(input: {
               agentId: agent.id,
               status: "ready"
             },
-            orderBy: [{ createdAt: "asc" }],
-            take: 8
+            orderBy: [{ createdAt: "desc" }],
+            take: 50
           }),
           buildConversationContext(prisma, {
             workspaceId: runInput.workspaceId,

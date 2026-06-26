@@ -67,7 +67,8 @@ describe("selectRelevantKnowledge", () => {
   it("does not treat duration questions as pricing questions because they use quanto", () => {
     const result = selectRelevantKnowledge({
       latestMessage: "Quanto tempo leva a implantacao?",
-      conversationHistory: "",
+      conversationHistory:
+        "[2026-06-23T18:00:00.000Z] cliente: Antes eu tinha perguntado sobre preco e mensalidade.",
       instruction: null,
       sources: [
         {
@@ -89,7 +90,7 @@ describe("selectRelevantKnowledge", () => {
   });
 
   it("marks oversized documents as snippets", () => {
-    const longContent = `${"Plano profissional custa R$ 199 por mes. ".repeat(500)}Detalhes finais.`;
+    const longContent = `${"Trecho geral sem valores. ".repeat(900)}Preco do plano profissional: R$ 199 por mes. Detalhes finais.`;
 
     const result = selectRelevantKnowledge({
       latestMessage: "Qual o preco do plano profissional?",
@@ -108,5 +109,6 @@ describe("selectRelevantKnowledge", () => {
     expect(result.selected).toHaveLength(1);
     expect(result.selected[0]?.includedAs).toBe("snippet");
     expect(result.selected[0]?.content.length).toBeLessThanOrEqual(18_000);
+    expect(result.selected[0]?.content).toContain("Preco do plano profissional");
   });
 });
