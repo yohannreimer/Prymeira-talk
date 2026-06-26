@@ -61,6 +61,18 @@ function statusLabel(status: ConversationDto["status"]) {
   return labels[status];
 }
 
+export function aiControlLabel(
+  conversation: Pick<ConversationDto, "aiControlStatus" | "activeAgentName">
+) {
+  if (conversation.aiControlStatus === "human_controlled") return "Humano no controle";
+  if (conversation.activeAgentName) return `IA ativa: ${conversation.activeAgentName}`;
+  return "IA liberada";
+}
+
+export function aiControlActionLabel(conversation: Pick<ConversationDto, "aiControlStatus">) {
+  return conversation.aiControlStatus === "human_controlled" ? "Liberar IA" : "Assumir";
+}
+
 function priorityLabel(priority: ConversationDto["priority"]) {
   const labels: Record<ConversationDto["priority"], string> = {
     low: "Baixa",
@@ -982,6 +994,16 @@ export function InboxPage() {
     await runAction({ action: "remove_tag", tagId });
   }
 
+  async function toggleAiControl() {
+    if (!selectedConversation) return;
+
+    await runAction({
+      action: selectedConversation.aiControlStatus === "human_controlled"
+        ? "release_ai_control"
+        : "assume_ai_control"
+    });
+  }
+
   async function handleCreateLead() {
     if (!selectedConversation) return;
 
@@ -1110,9 +1132,22 @@ export function InboxPage() {
             </h2>
           </div>
           {selectedConversation ? (
-            <span className={`status-badge status-badge--${selectedConversation.status}`}>
-              {statusLabel(selectedConversation.status)}
-            </span>
+            <div className="conversation-ai-control module-header-actions" aria-label="Controle da IA">
+              <span className="status-badge status-badge--bot">
+                {aiControlLabel(selectedConversation)}
+              </span>
+              <button
+                className="secondary-button"
+                disabled={isRunningAction}
+                onClick={() => void toggleAiControl()}
+                type="button"
+              >
+                {aiControlActionLabel(selectedConversation)}
+              </button>
+              <span className={`status-badge status-badge--${selectedConversation.status}`}>
+                {statusLabel(selectedConversation.status)}
+              </span>
+            </div>
           ) : null}
         </header>
 

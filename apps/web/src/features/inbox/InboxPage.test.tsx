@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  aiControlActionLabel,
+  aiControlLabel,
   applyComposerMarker,
   insertComposerText,
   metaClosedWindowMessage,
@@ -20,6 +22,19 @@ describe("messageDisplayText", () => {
     expect(messageDisplayText({ body: null, type: "image" })).toBe("Imagem recebida");
     expect(messageDisplayText({ body: null, type: "audio" })).toBe("Audio recebido");
     expect(messageDisplayText({ body: null, type: "file" })).toBe("Arquivo recebido");
+  });
+});
+
+describe("AI control helpers", () => {
+  it("labels AI control states", () => {
+    expect(aiControlLabel({ aiControlStatus: "human_controlled", activeAgentName: null })).toBe("Humano no controle");
+    expect(aiControlLabel({ aiControlStatus: "agent_allowed", activeAgentName: "Secretaria IA" })).toBe("IA ativa: Secretaria IA");
+    expect(aiControlLabel({ aiControlStatus: "agent_allowed", activeAgentName: null })).toBe("IA liberada");
+  });
+
+  it("chooses the correct AI control action label", () => {
+    expect(aiControlActionLabel({ aiControlStatus: "human_controlled" })).toBe("Liberar IA");
+    expect(aiControlActionLabel({ aiControlStatus: "agent_allowed" })).toBe("Assumir");
   });
 });
 
