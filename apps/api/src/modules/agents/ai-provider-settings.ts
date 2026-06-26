@@ -1,6 +1,7 @@
-import type { Prisma } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 
 const OPENAI_COMPATIBLE_PROVIDER = "openai_compatible";
+type IntegrationConfigFindUniqueArgs = Parameters<PrismaClient["integrationConfig"]["findUnique"]>[0];
 
 interface IntegrationConfigRecord {
   mode: string;
@@ -13,7 +14,7 @@ export type OpenAiCompatibleSettings =
 
 export interface AiProviderSettingsPrismaLike {
   integrationConfig: {
-    findUnique(args: unknown): Promise<IntegrationConfigRecord | null>;
+    findUnique(args: IntegrationConfigFindUniqueArgs): Promise<IntegrationConfigRecord | null>;
   };
 }
 
@@ -33,6 +34,17 @@ function getStringSetting(settings: Prisma.JsonObject, key: string) {
 
 function stripTrailingSlashes(value: string) {
   return value.replace(/\/+$/, "");
+}
+
+function normalizeBaseUrl(value: string) {
+  const normalized = stripTrailingSlashes(value);
+
+  try {
+    const url = new URL(normalized);
+    return url.protocol === "http:" || url.protocol === "https:" ? normalized : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function resolveOpenAiCompatibleSettings(
@@ -63,9 +75,9 @@ export async function resolveOpenAiCompatibleSettings(
   const baseUrl = getStringSetting(config.settings, "baseUrl");
   const apiKey = getStringSetting(config.settings, "apiKey");
   const chatModel = getStringSetting(config.settings, "chatModel");
-  const normalizedBaseUrl = baseUrl ? stripTrailingSlashes(baseUrl) : null;
+  const normalizedBaseUrl = baseUrl ? normalizeBaseUrl(baseUrl) : null;
 
-  if (!normalizedBaseUrl || !apiKey || !chatModel) {
+  if (!normalizedBaseUrl || !apiKey || apiKey === "[redacted]" || !chatModel) {
     return { active: false, reason: "incomplete" };
   }
 

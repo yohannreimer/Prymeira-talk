@@ -27,7 +27,7 @@ const openAiCompatibleSettingsSchema = z.object({
   baseUrl: z.string().trim().optional(),
   apiKey: z.string().trim().optional(),
   chatModel: z.string().trim().optional()
-});
+}).strict();
 
 const updateSettingsBodySchema = z.union([
   z.object({

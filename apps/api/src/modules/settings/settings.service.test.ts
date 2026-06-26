@@ -376,6 +376,56 @@ describe("settings service", () => {
     }));
   });
 
+  it("validates OpenAI-compatible real mode against existing settings when no settings are supplied", async () => {
+    const existingOpenAiConfig = {
+      id: "config_openai_compatible",
+      workspaceId: "local_workspace",
+      provider: "openai_compatible",
+      mode: "simulated" as const,
+      status: "configured",
+      settings: {
+        baseUrl: "https://openai.example/v1",
+        apiKey: "stored-provider-key",
+        chatModel: "gpt-4.1-mini"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    };
+    const upsert = vi.fn().mockImplementation(async (args) => ({
+      ...existingOpenAiConfig,
+      ...args.update,
+      updatedAt: new Date("2026-06-02T12:05:00.000Z")
+    }));
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockImplementation(async (args) =>
+          "provider" in (args.where ?? {}) ? [existingOpenAiConfig] : [existingOpenAiConfig]
+        ),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    const result = await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "openai_compatible",
+      mode: "real"
+    });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({
+        mode: "real",
+        status: "configured"
+      })
+    }));
+    expect(result.integrations[0]?.settings).toMatchObject({
+      baseUrl: "https://openai.example/v1",
+      apiKey: "[redacted]",
+      chatModel: "gpt-4.1-mini"
+    });
+  });
+
   it("preserves existing Meta Cloud secrets when masked or omitted in updates", async () => {
     const existingMetaConfig = {
       id: "config_meta",
@@ -814,6 +864,29 @@ describe("settings routes", () => {
       expect(response.json()).toEqual(expect.objectContaining({
         code: "SETTINGS_META_CLOUD_INCOMPLETE"
       }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects unknown OpenAI-compatible setting keys from the API", async () => {
+    const { app } = await buildSettingsApp();
+
+    try {
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/settings",
+        payload: {
+          provider: "openai_compatible",
+          mode: "simulated",
+          settings: {
+            api_key: "typo"
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({ error: "Invalid settings request." });
     } finally {
       await app.close();
     }

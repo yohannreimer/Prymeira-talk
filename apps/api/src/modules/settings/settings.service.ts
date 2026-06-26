@@ -302,7 +302,9 @@ export function createSettingsService(prisma: PrismaLike) {
       mode: IntegrationMode;
       settings?: Prisma.InputJsonValue;
     }): Promise<SettingsDto> {
-      const existingConfig = input.settings
+      const shouldLoadExistingConfig = input.settings !== undefined ||
+        (input.provider === "openai_compatible" && input.mode === "real");
+      const existingConfig = shouldLoadExistingConfig
         ? (await prisma.integrationConfig.findMany({
             where: {
               workspaceId: input.workspaceId,
@@ -312,8 +314,9 @@ export function createSettingsService(prisma: PrismaLike) {
           }))[0]
         : undefined;
       const settings = mergeIntegrationSettings(input.provider, existingConfig?.settings, input.settings);
-      assertMetaCloudSettingsConfigured(input.provider, input.mode, settings);
-      assertOpenAiCompatibleSettingsConfigured(input.provider, input.mode, settings);
+      const settingsForValidation = (settings ?? existingConfig?.settings) as Prisma.InputJsonValue | undefined;
+      assertMetaCloudSettingsConfigured(input.provider, input.mode, settingsForValidation);
+      assertOpenAiCompatibleSettingsConfigured(input.provider, input.mode, settingsForValidation);
       const updatedConfig = await prisma.integrationConfig.upsert({
         where: {
           workspaceId_provider: {

@@ -90,4 +90,46 @@ describe("resolveOpenAiCompatibleSettings", () => {
 
     expect(result).toEqual({ active: false, reason: "incomplete" });
   });
+
+  it("returns incomplete when the API key is redacted", async () => {
+    const prisma = {
+      integrationConfig: {
+        findUnique: vi.fn().mockResolvedValue({
+          mode: "real",
+          settings: {
+            baseUrl: "https://api.openai.example/v1",
+            apiKey: "[redacted]",
+            chatModel: "gpt-4.1-mini"
+          }
+        })
+      }
+    };
+
+    const result = await resolveOpenAiCompatibleSettings(prisma, {
+      workspaceId: "workspace_a"
+    });
+
+    expect(result).toEqual({ active: false, reason: "incomplete" });
+  });
+
+  it("returns incomplete when baseUrl is invalid", async () => {
+    const prisma = {
+      integrationConfig: {
+        findUnique: vi.fn().mockResolvedValue({
+          mode: "real",
+          settings: {
+            baseUrl: "not a url",
+            apiKey: "provider-secret",
+            chatModel: "gpt-4.1-mini"
+          }
+        })
+      }
+    };
+
+    const result = await resolveOpenAiCompatibleSettings(prisma, {
+      workspaceId: "workspace_a"
+    });
+
+    expect(result).toEqual({ active: false, reason: "incomplete" });
+  });
 });
