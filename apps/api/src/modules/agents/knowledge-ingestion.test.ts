@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { ingestKnowledgeUpload } from "./knowledge-ingestion.js";
+import {
+  ingestKnowledgeUpload,
+  MAX_KNOWLEDGE_TEXT_CHARS,
+  MAX_KNOWLEDGE_UPLOAD_BYTES
+} from "./knowledge-ingestion.js";
 
 vi.mock("pdf-parse", () => ({
   PDFParse: vi.fn().mockImplementation(function MockPDFParse() {
@@ -60,6 +64,39 @@ describe("ingestKnowledgeUpload", () => {
     ).rejects.toThrow("Unsupported knowledge file type.");
   });
 
+  it("rejects inconsistent file extension and mime type", async () => {
+    await expect(
+      ingestKnowledgeUpload({
+        fileName: "precos.pdf",
+        mimeType: "text/plain",
+        base64Content: Buffer.from("Plano Operacao R$ 299").toString("base64"),
+        category: "precos"
+      })
+    ).rejects.toThrow("Unsupported knowledge file type.");
+  });
+
+  it("rejects invalid base64 payloads", async () => {
+    await expect(
+      ingestKnowledgeUpload({
+        fileName: "precos.txt",
+        mimeType: "text/plain",
+        base64Content: "%%%not-base64%%%",
+        category: "precos"
+      })
+    ).rejects.toThrow("Invalid knowledge file content.");
+  });
+
+  it("rejects uploaded files above the byte limit", async () => {
+    await expect(
+      ingestKnowledgeUpload({
+        fileName: "precos.txt",
+        mimeType: "text/plain",
+        base64Content: Buffer.alloc(MAX_KNOWLEDGE_UPLOAD_BYTES + 1, "a").toString("base64"),
+        category: "precos"
+      })
+    ).rejects.toThrow("Knowledge file is too large.");
+  });
+
   it("rejects non plain-text text uploads", async () => {
     await expect(
       ingestKnowledgeUpload({
@@ -69,6 +106,17 @@ describe("ingestKnowledgeUpload", () => {
         category: "produto"
       })
     ).rejects.toThrow("Unsupported knowledge file type.");
+  });
+
+  it("rejects extracted text above the char limit", async () => {
+    await expect(
+      ingestKnowledgeUpload({
+        fileName: "grande.txt",
+        mimeType: "text/plain",
+        base64Content: Buffer.from("x".repeat(MAX_KNOWLEDGE_TEXT_CHARS + 1)).toString("base64"),
+        category: "outro"
+      })
+    ).rejects.toThrow("Knowledge file text is too large.");
   });
 
   it("rejects files without readable text", async () => {

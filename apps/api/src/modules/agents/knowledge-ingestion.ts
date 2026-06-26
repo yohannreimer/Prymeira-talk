@@ -12,6 +12,9 @@ export type KnowledgeCategory =
 
 type SourceKind = "pdf" | "text";
 
+export const MAX_KNOWLEDGE_UPLOAD_BYTES = 2 * 1024 * 1024;
+export const MAX_KNOWLEDGE_TEXT_CHARS = 20_000;
+
 export type KnowledgeIngestionMetadata = {
   category: KnowledgeCategory;
   sourceKind: SourceKind;
@@ -45,10 +48,51 @@ async function extractPdfText(buffer: Buffer) {
     const result = await parser.getText();
     return result.text;
   } catch {
-    return "";
+    throw new Error("Knowledge file could not be read.");
   } finally {
     await parser.destroy();
   }
+}
+
+function decodeBase64Content(value: string) {
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized) || normalized.length % 4 !== 0) {
+    throw new Error("Invalid knowledge file content.");
+  }
+
+  const buffer = Buffer.from(normalized, "base64");
+  if (buffer.toString("base64") !== normalized) {
+    throw new Error("Invalid knowledge file content.");
+  }
+
+  if (buffer.byteLength === 0) {
+    throw new Error("Knowledge file did not contain readable text.");
+  }
+
+  if (buffer.byteLength > MAX_KNOWLEDGE_UPLOAD_BYTES) {
+    throw new Error("Knowledge file is too large.");
+  }
+
+  return buffer;
+}
+
+function getSourceKind(input: { fileName: string; mimeType: string }): SourceKind {
+  const lowerFileName = input.fileName.toLocaleLowerCase("pt-BR");
+  const lowerMimeType = input.mimeType.toLocaleLowerCase("pt-BR");
+  const isPdfExtension = lowerFileName.endsWith(".pdf");
+  const isTextExtension = lowerFileName.endsWith(".txt");
+  const isPdfMime = lowerMimeType === "application/pdf";
+  const isTextMime = lowerMimeType === "text/plain";
+
+  if (isPdfExtension && isPdfMime) {
+    return "pdf";
+  }
+
+  if (isTextExtension && isTextMime) {
+    return "text";
+  }
+
+  throw new Error("Unsupported knowledge file type.");
 }
 
 export async function ingestKnowledgeUpload(input: {
@@ -60,22 +104,17 @@ export async function ingestKnowledgeUpload(input: {
   content: string;
   metadata: KnowledgeIngestionMetadata;
 }> {
-  const buffer = Buffer.from(input.base64Content, "base64");
-  const lowerFileName = input.fileName.toLocaleLowerCase("pt-BR");
-  const lowerMimeType = input.mimeType.toLocaleLowerCase("pt-BR");
-  const isPdf = lowerMimeType === "application/pdf" || lowerFileName.endsWith(".pdf");
-  const isText = lowerMimeType === "text/plain" || lowerFileName.endsWith(".txt");
-
-  if (!isPdf && !isText) {
-    throw new Error("Unsupported knowledge file type.");
-  }
-
-  const sourceKind: SourceKind = isPdf ? "pdf" : "text";
-  const rawText = isPdf ? await extractPdfText(buffer) : buffer.toString("utf8");
+  const buffer = decodeBase64Content(input.base64Content);
+  const sourceKind = getSourceKind(input);
+  const rawText = sourceKind === "pdf" ? await extractPdfText(buffer) : buffer.toString("utf8");
   const content = normalizeExtractedText(rawText);
 
   if (!content) {
     throw new Error("Knowledge file did not contain readable text.");
+  }
+
+  if (content.length > MAX_KNOWLEDGE_TEXT_CHARS) {
+    throw new Error("Knowledge file text is too large.");
   }
 
   return {
@@ -83,7 +122,7 @@ export async function ingestKnowledgeUpload(input: {
     metadata: {
       category: input.category,
       sourceKind,
-      extractionMethod: isPdf ? "pdf-parse" : "plain-text",
+      extractionMethod: sourceKind === "pdf" ? "pdf-parse" : "plain-text",
       extractedAt: new Date().toISOString(),
       keywords: deriveKeywords(content),
       textCharCount: content.length

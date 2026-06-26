@@ -3,7 +3,10 @@ import { z } from "zod";
 import { canPerform } from "../access/roles.js";
 import { AgentsServiceError, createAgentsService } from "./agents.service.js";
 import type { AgentsPrismaLike } from "./agents.service.js";
-import { ingestKnowledgeUpload } from "./knowledge-ingestion.js";
+import {
+  ingestKnowledgeUpload,
+  MAX_KNOWLEDGE_UPLOAD_BYTES
+} from "./knowledge-ingestion.js";
 
 const uuidSchema = z.string().uuid();
 
@@ -63,6 +66,8 @@ const uploadKnowledgeBodySchema = z.object({
   mimeType: z.string().trim().min(1).max(160),
   base64Content: z.string().trim().min(1)
 });
+
+const uploadKnowledgeBodyLimit = Math.ceil(MAX_KNOWLEDGE_UPLOAD_BYTES * 1.38) + 2048;
 
 function handleAgentsError(reply: FastifyReply, error: unknown) {
   if (error instanceof AgentsServiceError) {
@@ -178,41 +183,44 @@ export const agentsRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/agents/:agentId/knowledge/upload", async (request, reply) => {
-    if (!requireAgentManage(request.talk.role, reply)) {
-      return reply;
-    }
-
-    const params = agentParamsSchema.safeParse(request.params);
-    const body = uploadKnowledgeBodySchema.safeParse(request.body);
-    if (!params.success || !body.success) {
-      return reply.code(400).send({ error: "Invalid knowledge upload request." });
-    }
-
-    try {
-      const ingestion = await ingestKnowledgeUpload(body.data);
-      const source = await service.createKnowledgeSource({
-        workspaceId: request.talk.workspaceId,
-        agentId: params.data.agentId,
-        type: ingestion.metadata.sourceKind === "pdf" ? "file" : "text",
-        title: body.data.title,
-        content: ingestion.content,
-        fileName: body.data.fileName,
-        mimeType: body.data.mimeType,
-        metadata: ingestion.metadata
-      });
-
-      return reply.code(201).send(source);
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        (error.message.includes("Unsupported knowledge file") ||
-          error.message.includes("Knowledge file"))
-      ) {
-        return reply.code(400).send({ error: error.message });
+  app.post(
+    "/agents/:agentId/knowledge/upload",
+    { bodyLimit: uploadKnowledgeBodyLimit },
+    async (request, reply) => {
+      if (!requireAgentManage(request.talk.role, reply)) {
+        return reply;
       }
 
-      return handleAgentsError(reply, error);
+      const params = agentParamsSchema.safeParse(request.params);
+      const body = uploadKnowledgeBodySchema.safeParse(request.body);
+      if (!params.success || !body.success) {
+        return reply.code(400).send({ error: "Invalid knowledge upload request." });
+      }
+
+      try {
+        const ingestion = await ingestKnowledgeUpload(body.data);
+        const source = await service.createKnowledgeSource({
+          workspaceId: request.talk.workspaceId,
+          agentId: params.data.agentId,
+          type: ingestion.metadata.sourceKind === "pdf" ? "file" : "text",
+          title: body.data.title,
+          content: ingestion.content,
+          fileName: body.data.fileName,
+          mimeType: body.data.mimeType,
+          metadata: ingestion.metadata
+        });
+
+        return reply.code(201).send(source);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.toLocaleLowerCase("pt-BR").includes("knowledge file")
+        ) {
+          return reply.code(400).send({ error: error.message });
+        }
+
+        return handleAgentsError(reply, error);
+      }
     }
-  });
+  );
 };
