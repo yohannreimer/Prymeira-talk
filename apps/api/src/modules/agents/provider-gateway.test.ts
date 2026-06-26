@@ -245,7 +245,13 @@ describe("createOpenAiCompatibleAgentProvider", () => {
                   confidence: 0.74,
                   reply: "Vou verificar com uma pessoa do time.",
                   handoff: { required: true, reason: "Informacao insuficiente." },
-                  sources: [{ title: "Documento interno" }]
+                  sources: [
+                    {
+                      id: "doc_1",
+                      title: "Documento interno",
+                      category: "policy"
+                    }
+                  ]
                 })
               }
             }
@@ -271,8 +277,80 @@ describe("createOpenAiCompatibleAgentProvider", () => {
       confidence: 0.74,
       reply: "Vou verificar com uma pessoa do time.",
       actions: [],
-      handoff: { required: true, reason: "Informacao insuficiente." }
+      handoff: { required: true, reason: "Informacao insuficiente." },
+      sources: [
+        {
+          id: "doc_1",
+          title: "Documento interno",
+          category: "policy"
+        }
+      ]
     });
+  });
+
+  it("throws a sanitized error when the provider response body is invalid JSON", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockRejectedValue(new Error("raw parser detail"))
+    } as unknown as Response);
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example",
+      apiKey: "secret-api-key",
+      chatModel: "configured-chat-model",
+      fetchImpl: fetchMock
+    });
+
+    await expect(
+      provider.generate({
+        model: "runtime-model",
+        systemPrompt: "Atenda clientes da Prymeira Talk.",
+        userPrompt: "Ola",
+        context: {}
+      })
+    ).rejects.toThrow("OpenAI-compatible provider returned invalid JSON response.");
+  });
+
+  it("throws a sanitized error when the provider response shape is invalid", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [] }))
+    );
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example",
+      apiKey: "secret-api-key",
+      chatModel: "configured-chat-model",
+      fetchImpl: fetchMock
+    });
+
+    await expect(
+      provider.generate({
+        model: "runtime-model",
+        systemPrompt: "Atenda clientes da Prymeira Talk.",
+        userPrompt: "Ola",
+        context: {}
+      })
+    ).rejects.toThrow("OpenAI-compatible provider returned invalid JSON response.");
+  });
+
+  it("throws a sanitized error when the provider request fails before a response", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new Error("provider-specific network detail"));
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example",
+      apiKey: "secret-api-key",
+      chatModel: "configured-chat-model",
+      fetchImpl: fetchMock
+    });
+
+    await expect(
+      provider.generate({
+        model: "runtime-model",
+        systemPrompt: "Atenda clientes da Prymeira Talk.",
+        userPrompt: "Ola",
+        context: {}
+      })
+    ).rejects.toThrow("OpenAI-compatible provider request failed.");
   });
 
   it("throws when provider content is not valid structured JSON", async () => {

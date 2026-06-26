@@ -6,6 +6,14 @@ const agentActionSchema = z
   })
   .catchall(z.unknown());
 
+const agentSourceSchema = z
+  .object({
+    id: z.string().optional(),
+    title: z.string().optional(),
+    category: z.string().optional()
+  })
+  .catchall(z.unknown());
+
 export const agentOutputSchema = z.object({
   confidence: z.number().min(0).max(1),
   reply: z.string().trim().min(1).nullable().optional(),
@@ -13,7 +21,8 @@ export const agentOutputSchema = z.object({
   handoff: z.object({
     required: z.boolean(),
     reason: z.string().nullable()
-  })
+  }),
+  sources: z.array(agentSourceSchema).optional()
 });
 
 export type AgentOutput = z.infer<typeof agentOutputSchema>;
@@ -65,31 +74,36 @@ export function createOpenAiCompatibleAgentProvider(
 
   return {
     async generate(agentInput) {
-      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${input.apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: input.chatModel,
-          temperature: 0.2,
-          response_format: { type: "json_object" },
-          messages: [
-            {
-              role: "system",
-              content: buildOpenAiCompatibleSystemPrompt(agentInput.systemPrompt)
-            },
-            {
-              role: "user",
-              content: JSON.stringify({
-                userPrompt: agentInput.userPrompt,
-                context: agentInput.context
-              })
-            }
-          ]
-        })
-      });
+      let response: Response;
+      try {
+        response = await fetchImpl(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${input.apiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: input.chatModel,
+            temperature: 0.2,
+            response_format: { type: "json_object" },
+            messages: [
+              {
+                role: "system",
+                content: buildOpenAiCompatibleSystemPrompt(agentInput.systemPrompt)
+              },
+              {
+                role: "user",
+                content: JSON.stringify({
+                  userPrompt: agentInput.userPrompt,
+                  context: agentInput.context
+                })
+              }
+            ]
+          })
+        });
+      } catch {
+        throw new Error("OpenAI-compatible provider request failed.");
+      }
 
       if (!response.ok) {
         throw new Error(
@@ -97,10 +111,16 @@ export function createOpenAiCompatibleAgentProvider(
         );
       }
 
-      const payload = await response.json();
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        throw new Error("OpenAI-compatible provider returned invalid JSON response.");
+      }
+
       const providerResponse = openAiCompatibleResponseSchema.safeParse(payload);
       if (!providerResponse.success) {
-        throw new Error("OpenAI-compatible provider returned an invalid response shape.");
+        throw new Error("OpenAI-compatible provider returned invalid JSON response.");
       }
 
       const content = providerResponse.data.choices[0].message.content;
