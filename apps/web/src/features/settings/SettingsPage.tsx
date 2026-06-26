@@ -29,6 +29,16 @@ interface MetaCloudFormState {
   };
 }
 
+interface AiProviderFormState {
+  enabled: boolean;
+  baseUrl: string;
+  apiKey: string;
+  chatModel: string;
+  storedSecrets: {
+    apiKey: boolean;
+  };
+}
+
 const emptyMetaForm: MetaCloudFormState = {
   enabled: false,
   connectionMode: "direct",
@@ -45,6 +55,16 @@ const emptyMetaForm: MetaCloudFormState = {
     webhookVerifyToken: false,
     appSecret: false,
     evolutionApiKey: false
+  }
+};
+
+const emptyAiProviderForm: AiProviderFormState = {
+  enabled: false,
+  baseUrl: "https://api.openai.com/v1",
+  apiKey: "",
+  chatModel: "gpt-4.1-mini",
+  storedSecrets: {
+    apiKey: false
   }
 };
 
@@ -84,6 +104,25 @@ function getMetaCloudForm(settings: SettingsDto): MetaCloudFormState {
   };
 }
 
+function getAiProviderForm(settings: SettingsDto): AiProviderFormState {
+  const integration = settings.integrations.find((config) => config.provider === "openai_compatible");
+  const integrationSettings = asSettingsRecord(integration?.settings);
+
+  return {
+    enabled: integration?.mode === "real",
+    baseUrl: typeof integrationSettings.baseUrl === "string"
+      ? integrationSettings.baseUrl
+      : emptyAiProviderForm.baseUrl,
+    apiKey: "",
+    chatModel: typeof integrationSettings.chatModel === "string"
+      ? integrationSettings.chatModel
+      : emptyAiProviderForm.chatModel,
+    storedSecrets: {
+      apiKey: hasStoredSecret(integrationSettings.apiKey)
+    }
+  };
+}
+
 function setTrimmedValue(target: Record<string, unknown>, key: string, value: string) {
   const trimmed = value.trim();
 
@@ -97,6 +136,7 @@ export function SettingsPage() {
   const [settings, setSettings] = useState<SettingsDto | null>(null);
   const [auditLog, setAuditLog] = useState<AuditLogDto[]>([]);
   const [metaForm, setMetaForm] = useState<MetaCloudFormState>(emptyMetaForm);
+  const [aiProviderForm, setAiProviderForm] = useState<AiProviderFormState>(emptyAiProviderForm);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isSyncingTemplates, setIsSyncingTemplates] = useState(false);
@@ -115,6 +155,7 @@ export function SettingsPage() {
       setSettings(nextSettings);
       setAuditLog(nextAuditLog);
       setMetaForm(getMetaCloudForm(nextSettings));
+      setAiProviderForm(getAiProviderForm(nextSettings));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar ajustes.");
     } finally {
@@ -140,6 +181,10 @@ export function SettingsPage() {
     setMetaForm((current) => ({ ...current, ...partial }));
   }
 
+  function updateAiProviderForm(partial: Partial<AiProviderFormState>) {
+    setAiProviderForm((current) => ({ ...current, ...partial }));
+  }
+
   function buildMetaSettingsPayload() {
     const nextSettings: Record<string, unknown> = {
       enabled: metaForm.enabled,
@@ -154,6 +199,16 @@ export function SettingsPage() {
     setTrimmedValue(nextSettings, "evolutionBaseUrl", metaForm.evolutionBaseUrl);
     setTrimmedValue(nextSettings, "evolutionApiKey", metaForm.evolutionApiKey);
     setTrimmedValue(nextSettings, "evolutionInstanceName", metaForm.evolutionInstanceName);
+
+    return nextSettings;
+  }
+
+  function buildAiProviderSettingsPayload() {
+    const nextSettings: Record<string, unknown> = {};
+
+    setTrimmedValue(nextSettings, "baseUrl", aiProviderForm.baseUrl);
+    setTrimmedValue(nextSettings, "apiKey", aiProviderForm.apiKey);
+    setTrimmedValue(nextSettings, "chatModel", aiProviderForm.chatModel);
 
     return nextSettings;
   }
@@ -181,6 +236,18 @@ export function SettingsPage() {
     return null;
   }
 
+  function validateAiProviderSettings() {
+    if (!aiProviderForm.enabled) return null;
+
+    if (!aiProviderForm.baseUrl.trim()) return "Informe a Base URL do provider de IA.";
+    if (!aiProviderForm.chatModel.trim()) return "Informe o modelo de chat.";
+    if (!aiProviderForm.apiKey.trim() && !aiProviderForm.storedSecrets.apiKey) {
+      return "Informe a API Key do provider de IA.";
+    }
+
+    return null;
+  }
+
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
@@ -204,6 +271,36 @@ export function SettingsPage() {
       setMetaForm(getMetaCloudForm(nextSettings));
       setAuditLog(await apiGetAuditLog(getToken));
       setNotice(metaForm.enabled ? "WhatsApp API Oficial Meta ativada." : "WhatsApp API Oficial Meta desativada.");
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Não foi possível salvar ajustes.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function saveAiProviderSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setNotice(null);
+
+    const validationError = validateAiProviderSettings();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    setIsSaving(true);
+
+    try {
+      const nextSettings = await apiUpdateSettings(getToken, {
+        provider: "openai_compatible",
+        mode: aiProviderForm.enabled ? "real" : "simulated",
+        settings: buildAiProviderSettingsPayload()
+      });
+      setSettings(nextSettings);
+      setAiProviderForm(getAiProviderForm(nextSettings));
+      setAuditLog(await apiGetAuditLog(getToken));
+      setNotice(aiProviderForm.enabled ? "Provider de IA ativado." : "Provider de IA desativado.");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Não foi possível salvar ajustes.");
     } finally {
@@ -428,6 +525,65 @@ export function SettingsPage() {
             </div>
           </form>
         </div>
+
+        <form className="module-panel module-form compact-form" onSubmit={(event) => void saveAiProviderSettings(event)}>
+          <div className="panel-title-row">
+            <h2>Provider de IA</h2>
+            <span className={`status-badge status-badge--${aiProviderForm.enabled ? "open" : "waiting"}`}>
+              {aiProviderForm.enabled ? "Ativo" : "Simulado"}
+            </span>
+          </div>
+
+          <label className="form-field">
+            Modo
+            <select
+              onChange={(event) => updateAiProviderForm({ enabled: event.target.value === "real" })}
+              value={aiProviderForm.enabled ? "real" : "simulated"}
+            >
+              <option value="simulated">Simulado</option>
+              <option value="real">Real</option>
+            </select>
+          </label>
+
+          <label className="form-field">
+            Base URL
+            <input
+              autoComplete="off"
+              onChange={(event) => updateAiProviderForm({ baseUrl: event.target.value })}
+              required={aiProviderForm.enabled}
+              value={aiProviderForm.baseUrl}
+            />
+          </label>
+
+          <label className="form-field">
+            API Key
+            <input
+              autoComplete="new-password"
+              onChange={(event) => updateAiProviderForm({ apiKey: event.target.value })}
+              placeholder={aiProviderForm.storedSecrets.apiKey ? "Chave salva" : "sk-..."}
+              required={aiProviderForm.enabled && !aiProviderForm.storedSecrets.apiKey}
+              type="password"
+              value={aiProviderForm.apiKey}
+            />
+          </label>
+
+          <label className="form-field">
+            Modelo de chat
+            <input
+              autoComplete="off"
+              onChange={(event) => updateAiProviderForm({ chatModel: event.target.value })}
+              required={aiProviderForm.enabled}
+              value={aiProviderForm.chatModel}
+            />
+          </label>
+
+          <div className="module-header-actions">
+            <button className="primary-button" type="submit" disabled={isSaving}>
+              <Save size={16} />
+              Salvar IA
+            </button>
+          </div>
+        </form>
 
         <div className="module-panel">
           <div className="panel-title-row">
