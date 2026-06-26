@@ -3,6 +3,11 @@ import {
   executeAgentActions,
   type AgentToolExecutorPrismaLike
 } from "./agent-tool-executor.js";
+import {
+  buildConversationContext,
+  type ConversationContext,
+  type ConversationContextBuilderPrismaLike
+} from "./conversation-context-builder.js";
 import type { AgentOutput, AgentProvider } from "./provider-gateway.js";
 
 type JsonValue = unknown;
@@ -82,6 +87,7 @@ type AgentRuntimePrismaLike = Omit<
   };
   message: {
     findFirst(args: unknown): Promise<MessageRecord | null>;
+    findMany: ConversationContextBuilderPrismaLike["message"]["findMany"];
     create(args: unknown): Promise<unknown>;
   };
   aiAgentRun: {
@@ -249,24 +255,31 @@ export function createAgentRuntime(input: {
           conversation.activeAgentSessionId = session.id;
         }
 
-        const knowledge = await prisma.aiKnowledgeSource.findMany({
-          where: {
+        const [knowledge, conversationContext] = await Promise.all([
+          prisma.aiKnowledgeSource.findMany({
+            where: {
+              workspaceId: runInput.workspaceId,
+              agentId: agent.id,
+              status: "ready"
+            },
+            orderBy: [{ createdAt: "asc" }],
+            take: 8
+          }),
+          buildConversationContext(prisma, {
             workspaceId: runInput.workspaceId,
-            agentId: agent.id,
-            status: "ready"
-          },
-          orderBy: [{ createdAt: "asc" }],
-          take: 8
-        });
+            conversationId: conversation.id
+          })
+        ]);
 
         const allowedActions = readAllowedActions(agent.allowedActions);
-        const context = buildContext(conversation, message, knowledge);
+        const context = buildContext(conversation, message, knowledge, conversationContext);
         contextSummary = {
           contactId: conversation.contactId,
           contactName: conversation.contact?.name ?? null,
           channelId: conversation.channelId ?? conversation.channel?.id ?? null,
           tagCount: context.tags.length,
-          knowledgeCount: knowledge.length
+          knowledgeCount: knowledge.length,
+          conversationMessageCount: conversationContext.messages.length
         };
         knowledgeMatches = knowledge.map((source) => ({ id: source.id, title: source.title }));
 
@@ -438,10 +451,13 @@ function buildUserPrompt(messageBody: string | null | undefined, instruction: st
 function buildContext(
   conversation: ConversationRecord,
   message: MessageRecord,
-  knowledge: KnowledgeSourceRecord[]
+  knowledge: KnowledgeSourceRecord[],
+  conversationContext: ConversationContext
 ) {
   return {
     messageBody: message.body ?? "",
+    conversationHistory: conversationContext.formattedHistory,
+    conversationMessages: conversationContext.messages,
     message: {
       id: message.id,
       type: message.type ?? null,

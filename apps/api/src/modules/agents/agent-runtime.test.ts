@@ -65,6 +65,28 @@ const baseMessage = {
   createdAt: now
 };
 
+const baseConversationMessages = [
+  {
+    id: "message_previous_inbound",
+    workspaceId: ids.workspace,
+    conversationId: ids.conversation,
+    direction: "inbound",
+    type: "text",
+    body: "Oi, voces atendem hoje?",
+    createdAt: new Date("2026-06-23T17:58:00.000Z")
+  },
+  {
+    id: "message_previous_outbound",
+    workspaceId: ids.workspace,
+    conversationId: ids.conversation,
+    direction: "outbound",
+    type: "text",
+    body: "Sim, atendemos das 8h as 18h.",
+    createdAt: new Date("2026-06-23T17:59:00.000Z")
+  },
+  baseMessage
+];
+
 function buildProvider(output: Awaited<ReturnType<AgentProvider["generate"]>>): AgentProvider {
   return {
     generate: vi.fn().mockResolvedValue(output)
@@ -145,6 +167,7 @@ function buildPrisma(overrides: Record<string, any> = {}) {
     },
     message: {
       findFirst: vi.fn().mockResolvedValue(baseMessage),
+      findMany: vi.fn().mockResolvedValue(baseConversationMessages),
       create: vi.fn().mockResolvedValue({ id: "outbound_1" })
     },
     aiAgentRun: {
@@ -174,6 +197,14 @@ describe("createAgentRuntime", () => {
     });
 
     expect(result).toEqual({ status: "completed", runId: ids.run });
+    expect(prisma.message.findMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        conversationId: ids.conversation
+      },
+      orderBy: [{ createdAt: "asc" }],
+      take: 80
+    });
     expect(provider.generate).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "prymeira-simulated",
@@ -181,9 +212,31 @@ describe("createAgentRuntime", () => {
         userPrompt: "Oi, qual o horario?",
         context: expect.objectContaining({
           messageBody: "Oi, qual o horario?",
+          conversationHistory: expect.stringContaining("cliente: Oi, voces atendem hoje?"),
+          conversationMessages: expect.arrayContaining([
+            expect.objectContaining({
+              id: "message_previous_inbound",
+              label: "cliente",
+              body: "Oi, voces atendem hoje?"
+            }),
+            expect.objectContaining({
+              id: "message_previous_outbound",
+              label: "atendente",
+              body: "Sim, atendemos das 8h as 18h."
+            })
+          ]),
           contact: expect.objectContaining({ name: "Maria", phone: "5511999999999" }),
           tags: ["Lead"],
           knowledge: [{ title: "Horario", content: "Atendemos das 8h as 18h." }]
+        })
+      })
+    );
+    expect(provider.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          conversationHistory: expect.stringContaining(
+            "atendente: Sim, atendemos das 8h as 18h."
+          )
         })
       })
     );
