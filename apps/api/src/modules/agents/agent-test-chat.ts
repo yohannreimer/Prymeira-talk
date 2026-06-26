@@ -1,0 +1,194 @@
+import {
+  resolveOpenAiCompatibleSettings,
+  type AiProviderSettingsPrismaLike,
+  type OpenAiCompatibleSettings
+} from "./ai-provider-settings.js";
+import {
+  isDocumentDependentQuestion,
+  selectRelevantKnowledge,
+  type KnowledgeRetrievalSource
+} from "./knowledge-retrieval.js";
+import {
+  createOpenAiCompatibleAgentProvider,
+  type AgentOutput,
+  type AgentProvider
+} from "./provider-gateway.js";
+
+type JsonValue = unknown;
+
+type AgentRecord = {
+  id: string;
+  workspaceId: string;
+  model: string;
+  systemPrompt: string;
+  handoffConfig?: JsonValue;
+};
+
+type KnowledgeSourceRecord = {
+  id: string;
+  title: string;
+  content: string | null;
+  metadata?: JsonValue;
+};
+
+export type AgentTestChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+export type AgentTestChatResult = {
+  message: AgentTestChatMessage;
+  output: AgentOutput;
+  knowledgeMatches: Array<Record<string, unknown>>;
+};
+
+export interface AgentTestChatPrismaLike {
+  aiAgent: {
+    findFirst(args: unknown): Promise<AgentRecord | null>;
+  };
+  aiKnowledgeSource: {
+    findMany(args: unknown): Promise<KnowledgeSourceRecord[]>;
+  };
+  integrationConfig: AiProviderSettingsPrismaLike["integrationConfig"];
+}
+
+export class AgentTestChatError extends Error {
+  constructor(
+    public readonly code: "AGENT_NOT_FOUND" | "TEST_CHAT_INVALID_MESSAGES",
+    message: string
+  ) {
+    super(message);
+    this.name = "AgentTestChatError";
+  }
+}
+
+export function createAgentTestChatService(input: {
+  prisma: AgentTestChatPrismaLike;
+  provider: AgentProvider;
+  providerFactory?: (settings: Extract<OpenAiCompatibleSettings, { active: true }>) => AgentProvider;
+}) {
+  const { prisma, provider } = input;
+
+  return {
+    async sendMessage(runInput: {
+      workspaceId: string;
+      agentId: string;
+      messages: AgentTestChatMessage[];
+    }): Promise<AgentTestChatResult> {
+      const latestUserMessage = [...runInput.messages].reverse().find((message) => message.role === "user");
+      if (!latestUserMessage || latestUserMessage.content.trim().length === 0) {
+        throw new AgentTestChatError(
+          "TEST_CHAT_INVALID_MESSAGES",
+          "Test chat requires at least one user message."
+        );
+      }
+
+      const agent = await prisma.aiAgent.findFirst({
+        where: {
+          workspaceId: runInput.workspaceId,
+          id: runInput.agentId
+        }
+      });
+
+      if (!agent) {
+        throw new AgentTestChatError("AGENT_NOT_FOUND", "Agent not found.");
+      }
+
+      const knowledge = await prisma.aiKnowledgeSource.findMany({
+        where: {
+          workspaceId: runInput.workspaceId,
+          agentId: agent.id,
+          status: "ready"
+        },
+        orderBy: [{ createdAt: "desc" }],
+        take: 50
+      });
+      const conversationHistory = formatTestConversationHistory(runInput.messages);
+      const knowledgeSelection = selectRelevantKnowledge({
+        latestMessage: latestUserMessage.content,
+        conversationHistory,
+        instruction: null,
+        sources: knowledge.map(toRetrievalSource)
+      });
+      const knowledgeMatches = knowledgeSelection.selected.map((source) => ({
+        id: source.id,
+        title: source.title,
+        category: source.category,
+        score: source.score,
+        reasons: source.reasons,
+        includedAs: source.includedAs
+      }));
+
+      const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
+        workspaceId: runInput.workspaceId
+      });
+      const runProvider = providerSettings.active
+        ? (input.providerFactory ?? createOpenAiCompatibleAgentProvider)(providerSettings)
+        : provider;
+      const model = providerSettings.active ? providerSettings.chatModel : agent.model;
+
+      const output =
+        isDocumentDependentQuestion(`${latestUserMessage.content}\n${conversationHistory}`) &&
+        knowledgeSelection.selected.length === 0
+          ? createDocumentRequiredHandoffOutput()
+          : await runProvider.generate({
+              model,
+              systemPrompt: agent.systemPrompt,
+              userPrompt: latestUserMessage.content,
+              context: {
+                messageBody: latestUserMessage.content,
+                conversationHistory,
+                conversationMessages: runInput.messages,
+                testMode: true,
+                knowledge: knowledgeSelection.selected.map((source) => ({
+                  title: source.title,
+                  content: source.content
+                }))
+              }
+            });
+
+      return {
+        message: {
+          role: "assistant",
+          content: output.reply?.trim() || "Vou chamar uma pessoa do time para continuar este teste."
+        },
+        output,
+        knowledgeMatches
+      };
+    }
+  };
+}
+
+function formatTestConversationHistory(messages: AgentTestChatMessage[]) {
+  return messages
+    .filter((message) => message.content.trim().length > 0)
+    .map((message) => `${message.role === "user" ? "cliente" : "atendente"}: ${message.content.trim()}`)
+    .join("\n");
+}
+
+function createDocumentRequiredHandoffOutput(): AgentOutput {
+  const reason = "No relevant document found for a document-dependent question.";
+
+  return {
+    confidence: 0.2,
+    reply: "Vou chamar uma pessoa do time para confirmar essa informacao com seguranca.",
+    actions: [{ type: "request_handoff", reason }],
+    handoff: {
+      required: true,
+      reason
+    }
+  };
+}
+
+function toRetrievalSource(source: KnowledgeSourceRecord): KnowledgeRetrievalSource {
+  return {
+    id: source.id,
+    title: source.title,
+    content: source.content,
+    metadata: isRecord(source.metadata) ? source.metadata : null
+  };
+}
+
+function isRecord(value: JsonValue): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

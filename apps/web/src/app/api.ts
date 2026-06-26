@@ -121,6 +121,17 @@ export interface ConversationActionResultDto {
   };
 }
 
+export interface AgentTestChatMessageDto {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AgentTestChatResultDto {
+  message: AgentTestChatMessageDto;
+  output: unknown;
+  knowledgeMatches: Array<Record<string, unknown>>;
+}
+
 export type AutomationStatus = "enabled" | "disabled";
 
 export interface AutomationActionDto {
@@ -870,6 +881,25 @@ function parseAgent(data: unknown): AiAgentDto {
 
 function parseKnowledgeSource(data: unknown): AiKnowledgeSourceDto {
   return aiKnowledgeSourceSchema.parse(data);
+}
+
+function parseAgentTestChatResult(data: unknown): AgentTestChatResultDto {
+  const payload = data as Partial<AgentTestChatResultDto>;
+  const message = payload.message ?? { role: "assistant", content: "" };
+
+  return {
+    message: {
+      role: message.role === "user" ? "user" : "assistant",
+      content: String(message.content ?? "")
+    },
+    output: payload.output ?? {},
+    knowledgeMatches: Array.isArray(payload.knowledgeMatches)
+      ? payload.knowledgeMatches.filter(
+          (item): item is Record<string, unknown> =>
+            typeof item === "object" && item !== null && !Array.isArray(item)
+        )
+      : []
+  };
 }
 
 function parseCrmSyncAction(data: unknown): CrmSyncActionDto {
@@ -2340,6 +2370,25 @@ export async function apiUploadAgentKnowledge(
     },
     parseKnowledgeSource,
     "Failed to upload agent knowledge"
+  );
+}
+
+export async function apiSendAgentTestChatMessage(
+  getToken: () => Promise<string | null>,
+  agentId: string,
+  body: {
+    messages: AgentTestChatMessageDto[];
+  }
+): Promise<AgentTestChatResultDto> {
+  return fetchJson(
+    getToken,
+    `/agents/${agentId}/test-chat`,
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseAgentTestChatResult,
+    "Failed to send agent test message"
   );
 }
 

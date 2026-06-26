@@ -1,12 +1,18 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { canPerform } from "../access/roles.js";
+import {
+  AgentTestChatError,
+  createAgentTestChatService,
+  type AgentTestChatPrismaLike
+} from "./agent-test-chat.js";
 import { AgentsServiceError, createAgentsService } from "./agents.service.js";
 import type { AgentsPrismaLike } from "./agents.service.js";
 import {
   ingestKnowledgeUpload,
   MAX_KNOWLEDGE_UPLOAD_BYTES
 } from "./knowledge-ingestion.js";
+import { createSimulatedAgentProvider } from "./provider-gateway.js";
 
 const uuidSchema = z.string().uuid();
 
@@ -69,6 +75,18 @@ const uploadKnowledgeBodySchema = z.object({
 
 const uploadKnowledgeBodyLimit = Math.ceil(MAX_KNOWLEDGE_UPLOAD_BYTES * 1.38) + 2048;
 
+const testChatBodySchema = z.object({
+  messages: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().trim().min(1).max(4000)
+      })
+    )
+    .min(1)
+    .max(40)
+});
+
 function handleAgentsError(reply: FastifyReply, error: unknown) {
   if (error instanceof AgentsServiceError) {
     return reply.code(error.code === "AGENT_INVALID_CONFIG" ? 400 : 404).send({
@@ -78,6 +96,17 @@ function handleAgentsError(reply: FastifyReply, error: unknown) {
   }
 
   throw error;
+}
+
+function handleAgentTestChatError(reply: FastifyReply, error: unknown) {
+  if (error instanceof AgentTestChatError) {
+    return reply.code(error.code === "AGENT_NOT_FOUND" ? 404 : 400).send({
+      code: error.code,
+      error: error.message
+    });
+  }
+
+  return handleAgentsError(reply, error);
 }
 
 function requireAgentManage(role: Parameters<typeof canPerform>[0], reply: FastifyReply) {
@@ -94,6 +123,10 @@ function requireAgentManage(role: Parameters<typeof canPerform>[0], reply: Fasti
 
 export const agentsRoutes: FastifyPluginAsync = async (app) => {
   const service = createAgentsService(app.prisma as unknown as AgentsPrismaLike);
+  const testChatService = createAgentTestChatService({
+    prisma: app.prisma as unknown as AgentTestChatPrismaLike,
+    provider: createSimulatedAgentProvider()
+  });
 
   app.get("/agents", async (request) =>
     service.listAgents({ workspaceId: request.talk.workspaceId })
@@ -223,4 +256,26 @@ export const agentsRoutes: FastifyPluginAsync = async (app) => {
       }
     }
   );
+
+  app.post("/agents/:agentId/test-chat", async (request, reply) => {
+    if (!requireAgentManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = agentParamsSchema.safeParse(request.params);
+    const body = testChatBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid agent test chat request." });
+    }
+
+    try {
+      return await testChatService.sendMessage({
+        workspaceId: request.talk.workspaceId,
+        agentId: params.data.agentId,
+        messages: body.data.messages
+      });
+    } catch (error) {
+      return handleAgentTestChatError(reply, error);
+    }
+  });
 };

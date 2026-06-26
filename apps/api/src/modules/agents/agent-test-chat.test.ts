@@ -1,0 +1,175 @@
+import { describe, expect, it, vi } from "vitest";
+import { createAgentTestChatService } from "./agent-test-chat.js";
+import type { AgentProvider } from "./provider-gateway.js";
+
+const baseAgent = {
+  id: "00000000-0000-4000-8000-000000000101",
+  workspaceId: "workspace_a",
+  model: "prymeira-simulated",
+  systemPrompt: "Atenda como secretaria.",
+  handoffConfig: { confidenceThreshold: 0.55 }
+};
+
+function buildProvider(output: Awaited<ReturnType<AgentProvider["generate"]>>): AgentProvider {
+  return {
+    generate: vi.fn().mockResolvedValue(output)
+  };
+}
+
+function buildPrisma(overrides: Record<string, any> = {}) {
+  return {
+    aiAgent: {
+      findFirst: overrides.aiAgent?.findFirst ?? vi.fn().mockResolvedValue(baseAgent)
+    },
+    aiKnowledgeSource: {
+      findMany:
+        overrides.aiKnowledgeSource?.findMany ??
+        vi.fn().mockResolvedValue([
+          {
+            id: "knowledge_price",
+            title: "Tabela de precos",
+            content: "Plano profissional custa R$ 199 por mes.",
+            metadata: { category: "precos", keywords: ["plano profissional", "mensalidade"] }
+          }
+        ])
+    },
+    integrationConfig: {
+      findUnique: overrides.integrationConfig?.findUnique ?? vi.fn().mockResolvedValue(null)
+    }
+  };
+}
+
+describe("createAgentTestChatService", () => {
+  it("generates a test reply with chat history and selected knowledge", async () => {
+    const prisma = buildPrisma();
+    const provider = buildProvider({
+      confidence: 0.91,
+      reply: "O plano profissional custa R$ 199 por mes.",
+      actions: [],
+      handoff: { required: false, reason: null },
+      sources: [{ id: "knowledge_price", title: "Tabela de precos", category: "precos" }]
+    });
+    const service = createAgentTestChatService({ prisma, provider });
+
+    const result = await service.sendMessage({
+      workspaceId: "workspace_a",
+      agentId: baseAgent.id,
+      messages: [
+        { role: "user", content: "Oi, tudo bem?" },
+        { role: "assistant", content: "Tudo bem, como posso ajudar?" },
+        { role: "user", content: "Quanto custa o plano profissional?" }
+      ]
+    });
+
+    expect(result.message).toEqual({
+      role: "assistant",
+      content: "O plano profissional custa R$ 199 por mes."
+    });
+    expect(result.knowledgeMatches).toEqual([
+      expect.objectContaining({
+        id: "knowledge_price",
+        category: "precos",
+        reasons: expect.arrayContaining(["category_match"])
+      })
+    ]);
+    expect(provider.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "prymeira-simulated",
+        systemPrompt: "Atenda como secretaria.",
+        userPrompt: "Quanto custa o plano profissional?",
+        context: expect.objectContaining({
+          conversationHistory: expect.stringContaining("cliente: Oi, tudo bem?"),
+          conversationMessages: expect.arrayContaining([
+            expect.objectContaining({ role: "assistant", content: "Tudo bem, como posso ajudar?" })
+          ]),
+          knowledge: [
+            {
+              title: "Tabela de precos",
+              content: "Plano profissional custa R$ 199 por mes."
+            }
+          ]
+        })
+      })
+    );
+  });
+
+  it("uses the real provider when workspace settings are active", async () => {
+    const prisma = buildPrisma({
+      integrationConfig: {
+        findUnique: vi.fn().mockResolvedValue({
+          mode: "real",
+          settings: {
+            baseUrl: "https://api.openai.com/v1",
+            apiKey: "sk-test",
+            chatModel: "gpt-4.1-mini"
+          }
+        })
+      }
+    });
+    const fallbackProvider = buildProvider({
+      confidence: 0.8,
+      reply: "Fallback.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const realProvider = buildProvider({
+      confidence: 0.93,
+      reply: "Resposta real.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const providerFactory = vi.fn(() => realProvider);
+    const service = createAgentTestChatService({
+      prisma,
+      provider: fallbackProvider,
+      providerFactory
+    });
+
+    const result = await service.sendMessage({
+      workspaceId: "workspace_a",
+      agentId: baseAgent.id,
+      messages: [{ role: "user", content: "Qual o preco?" }]
+    });
+
+    expect(result.message.content).toBe("Resposta real.");
+    expect(providerFactory).toHaveBeenCalledWith({
+      active: true,
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      chatModel: "gpt-4.1-mini"
+    });
+    expect(fallbackProvider.generate).not.toHaveBeenCalled();
+    expect(realProvider.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "gpt-4.1-mini"
+      })
+    );
+  });
+
+  it("requests handoff instead of inventing document-dependent answers without knowledge", async () => {
+    const prisma = buildPrisma({
+      aiKnowledgeSource: {
+        findMany: vi.fn().mockResolvedValue([])
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Inventaria um preco.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const service = createAgentTestChatService({ prisma, provider });
+
+    const result = await service.sendMessage({
+      workspaceId: "workspace_a",
+      agentId: baseAgent.id,
+      messages: [{ role: "user", content: "Qual o preco?" }]
+    });
+
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(result.message.content).toBe(
+      "Vou chamar uma pessoa do time para confirmar essa informacao com seguranca."
+    );
+    expect(result.output.handoff.required).toBe(true);
+  });
+});

@@ -4,8 +4,10 @@ import {
   apiCreateAgentKnowledge,
   apiGetAgentKnowledge,
   apiGetAgents,
+  apiSendAgentTestChatMessage,
   apiUpdateAgent,
   apiUploadAgentKnowledge,
+  type AgentTestChatMessageDto,
   type AiAgentAllowedAction,
   type AiAgentDto,
   type AiKnowledgeSourceDto
@@ -16,7 +18,9 @@ import {
   HelpCircle,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
+  Send,
   ShieldCheck
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -133,11 +137,14 @@ export function AgentsPage() {
   const [knowledgeForm, setKnowledgeForm] = useState<KnowledgeFormState>(emptyKnowledgeForm);
   const [knowledgeUploadForm, setKnowledgeUploadForm] =
     useState<KnowledgeUploadFormState>(emptyKnowledgeUploadForm);
+  const [testMessages, setTestMessages] = useState<AgentTestChatMessageDto[]>([]);
+  const [testMessageBody, setTestMessageBody] = useState("");
   const [isLoadingAgents, setIsLoadingAgents] = useState(true);
   const [isLoadingKnowledge, setIsLoadingKnowledge] = useState(false);
   const [isSavingAgent, setIsSavingAgent] = useState(false);
   const [isSavingKnowledge, setIsSavingKnowledge] = useState(false);
   const [isUploadingKnowledge, setIsUploadingKnowledge] = useState(false);
+  const [isSendingTestMessage, setIsSendingTestMessage] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -201,6 +208,8 @@ export function AgentsPage() {
     setSelectedAgentId(null);
     setAgentForm(emptyAgentForm());
     setKnowledge([]);
+    setTestMessages([]);
+    setTestMessageBody("");
     setNotice(null);
     setError(null);
   }
@@ -211,6 +220,8 @@ export function AgentsPage() {
       name: agent.name,
       systemPrompt: agent.systemPrompt
     });
+    setTestMessages([]);
+    setTestMessageBody("");
     setNotice(null);
     setError(null);
   }
@@ -314,6 +325,51 @@ export function AgentsPage() {
     }
   }
 
+  async function sendTestMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedAgent) {
+      setError("Salve ou selecione um agente antes de testar.");
+      return;
+    }
+
+    const content = testMessageBody.trim();
+    if (!content) {
+      return;
+    }
+
+    const nextMessages: AgentTestChatMessageDto[] = [
+      ...testMessages,
+      { role: "user", content }
+    ];
+    setTestMessages(nextMessages);
+    setTestMessageBody("");
+    setIsSendingTestMessage(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const result = await apiSendAgentTestChatMessage(getToken, selectedAgent.id, {
+        messages: nextMessages
+      });
+
+      setTestMessages((current) => [...current, result.message]);
+    } catch (testError) {
+      setTestMessages(testMessages);
+      setTestMessageBody(content);
+      setError(testError instanceof Error ? testError.message : "Nao foi possivel testar o agente.");
+    } finally {
+      setIsSendingTestMessage(false);
+    }
+  }
+
+  function resetTestChat() {
+    setTestMessages([]);
+    setTestMessageBody("");
+    setError(null);
+    setNotice(null);
+  }
+
   return (
     <section className="module-page" aria-label="Agentes">
       <header className="module-header">
@@ -410,6 +466,61 @@ export function AgentsPage() {
               {isSavingAgent ? "Salvando" : selectedAgent ? "Salvar alteracoes" : "Criar agente"}
             </button>
           </form>
+
+          <section className="module-panel" aria-label="Teste do agente">
+            <div className="panel-title-row">
+              <h2>Teste do agente</h2>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={resetTestChat}
+                disabled={testMessages.length === 0 && !testMessageBody}
+              >
+                <RotateCcw size={14} />
+                Resetar teste
+              </button>
+            </div>
+
+            <div className="assistant-log-list" aria-label="Chat de teste do agente">
+              {testMessages.length === 0 ? (
+                <p className="list-note">Nenhuma mensagem neste teste.</p>
+              ) : null}
+              {testMessages.map((message, index) => (
+                <article
+                  className="assistant-log-card"
+                  key={`${message.role}-${index}-${message.content.slice(0, 12)}`}
+                >
+                  <div className="assistant-log-header">
+                    <span className={`status-badge status-badge--${message.role === "user" ? "open" : "bot"}`}>
+                      {message.role === "user" ? "Voce" : "Agente"}
+                    </span>
+                  </div>
+                  <p className="assistant-log-result">{message.content}</p>
+                </article>
+              ))}
+            </div>
+
+            <form className="module-form" onSubmit={(event) => void sendTestMessage(event)}>
+              <label className="form-field">
+                Mensagem de teste
+                <textarea
+                  value={testMessageBody}
+                  onChange={(event) => setTestMessageBody(event.target.value)}
+                  placeholder="Oi, tudo bem?"
+                  disabled={!selectedAgent || isSendingTestMessage}
+                  rows={3}
+                />
+              </label>
+              <button
+                className="secondary-button"
+                type="submit"
+                disabled={!selectedAgent || !testMessageBody.trim() || isSendingTestMessage}
+              >
+                <Send size={15} />
+                {isSendingTestMessage ? "Enviando" : "Enviar teste"}
+              </button>
+            </form>
+          </section>
 
           <section className="module-panel" aria-label="Conhecimento">
             <div className="panel-title-row">
