@@ -3,6 +3,7 @@ import { z } from "zod";
 import { canPerform } from "../access/roles.js";
 import { AgentsServiceError, createAgentsService } from "./agents.service.js";
 import type { AgentsPrismaLike } from "./agents.service.js";
+import { ingestKnowledgeUpload } from "./knowledge-ingestion.js";
 
 const uuidSchema = z.string().uuid();
 
@@ -42,6 +43,25 @@ const createKnowledgeSourceBodySchema = z.object({
   fileUrl: z.string().trim().max(1000).nullable().optional(),
   fileName: z.string().trim().max(240).nullable().optional(),
   mimeType: z.string().trim().max(160).nullable().optional()
+});
+
+const knowledgeCategorySchema = z.enum([
+  "precos",
+  "produto",
+  "faq",
+  "politicas",
+  "onboarding",
+  "comercial",
+  "suporte",
+  "outro"
+]);
+
+const uploadKnowledgeBodySchema = z.object({
+  title: z.string().trim().min(1).max(160),
+  category: knowledgeCategorySchema,
+  fileName: z.string().trim().min(1).max(240),
+  mimeType: z.string().trim().min(1).max(160),
+  base64Content: z.string().trim().min(1)
 });
 
 function handleAgentsError(reply: FastifyReply, error: unknown) {
@@ -154,6 +174,44 @@ export const agentsRoutes: FastifyPluginAsync = async (app) => {
 
       return reply.code(201).send(source);
     } catch (error) {
+      return handleAgentsError(reply, error);
+    }
+  });
+
+  app.post("/agents/:agentId/knowledge/upload", async (request, reply) => {
+    if (!requireAgentManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = agentParamsSchema.safeParse(request.params);
+    const body = uploadKnowledgeBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid knowledge upload request." });
+    }
+
+    try {
+      const ingestion = await ingestKnowledgeUpload(body.data);
+      const source = await service.createKnowledgeSource({
+        workspaceId: request.talk.workspaceId,
+        agentId: params.data.agentId,
+        type: ingestion.metadata.sourceKind === "pdf" ? "file" : "text",
+        title: body.data.title,
+        content: ingestion.content,
+        fileName: body.data.fileName,
+        mimeType: body.data.mimeType,
+        metadata: ingestion.metadata
+      });
+
+      return reply.code(201).send(source);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes("Unsupported knowledge file") ||
+          error.message.includes("Knowledge file"))
+      ) {
+        return reply.code(400).send({ error: error.message });
+      }
+
       return handleAgentsError(reply, error);
     }
   });

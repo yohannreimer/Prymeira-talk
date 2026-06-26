@@ -208,7 +208,11 @@ describe("createAgentsService", () => {
       agentId,
       type: "faq",
       title: "Horario",
-      content: "Atendemos das 8h as 18h."
+      content: "Atendemos das 8h as 18h.",
+      metadata: {
+        category: "precos",
+        sourceKind: "text"
+      }
     });
 
     expect(source).toEqual(
@@ -231,7 +235,11 @@ describe("createAgentsService", () => {
         agentId,
         type: "faq",
         title: "Horario",
-        status: "ready"
+        status: "ready",
+        metadata: {
+          category: "precos",
+          sourceKind: "text"
+        }
       })
     });
   });

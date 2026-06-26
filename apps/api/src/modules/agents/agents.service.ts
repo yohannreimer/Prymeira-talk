@@ -292,6 +292,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       fileUrl?: string | null;
       fileName?: string | null;
       mimeType?: string | null;
+      metadata?: Prisma.InputJsonValue;
     }): Promise<AiKnowledgeSourceDto> {
       await ensureAgent(input);
 
@@ -306,7 +307,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
           fileName: nullableTrim(input.fileName) ?? null,
           mimeType: nullableTrim(input.mimeType) ?? null,
           status: "ready",
-          metadata: {}
+          metadata: input.metadata ?? {}
         }
       });
 
