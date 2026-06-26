@@ -6,6 +6,8 @@ const workspaceId = process.env.PRYMEIRA_LOCAL_WORKSPACE_ID ?? "local_workspace"
 type DemoMessage = [MessageDirection, string, Date];
 
 const channelId = "10000000-0000-4000-8000-000000000001";
+const demoAgentId = "80000000-0000-4000-8000-000000000001";
+const demoKnowledgeSourceId = "81000000-0000-4000-8000-000000000001";
 
 const users = [
   {
@@ -164,6 +166,10 @@ function hoursAgo(hours: number) {
 async function clearDemoWorkspaceData() {
   const workspaceIds = Array.from(new Set([workspaceId, "local_workspace"]));
 
+  await prisma.aiAgentRun.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.aiAgentSession.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.aiKnowledgeSource.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
+  await prisma.aiAgent.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
   await prisma.conversationTag.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
   await prisma.message.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
   await prisma.contactNote.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
@@ -194,6 +200,59 @@ async function main() {
       name: "Prymeira Demo",
       plan: "local",
       limits: { conversations: 50, agents: 5 }
+    }
+  });
+
+  const demoAgent = await prisma.aiAgent.upsert({
+    where: {
+      workspaceId_id: {
+        workspaceId,
+        id: demoAgentId
+      }
+    },
+    update: {
+      description: "Agente autonomo de onboarding e triagem.",
+      status: "active",
+      systemPrompt: "Voce e a Secretaria IA da Prymeira Talk. Responda com clareza e encaminhe quando nao souber.",
+      allowedActions: ["send_message", "add_tag", "create_internal_note", "request_handoff"]
+    },
+    create: {
+      id: demoAgentId,
+      workspaceId,
+      name: "Secretaria IA",
+      description: "Agente autonomo de onboarding e triagem.",
+      status: "active",
+      providerMode: "prymeira_managed",
+      provider: "simulated",
+      model: "prymeira-simulated",
+      systemPrompt: "Voce e a Secretaria IA da Prymeira Talk. Responda com clareza e encaminhe quando nao souber.",
+      behaviorConfig: {},
+      handoffConfig: { confidenceThreshold: 0.55 },
+      limitsConfig: { maxMessagesPerSession: 12 },
+      allowedActions: ["send_message", "add_tag", "create_internal_note", "request_handoff"]
+    }
+  });
+
+  await prisma.aiKnowledgeSource.upsert({
+    where: {
+      workspaceId_id: {
+        workspaceId,
+        id: demoKnowledgeSourceId
+      }
+    },
+    update: {
+      content: "Atendemos em horario comercial e encaminhamos demandas complexas para o time.",
+      status: "ready"
+    },
+    create: {
+      id: demoKnowledgeSourceId,
+      workspaceId,
+      agentId: demoAgent.id,
+      type: "faq",
+      title: "Horario de atendimento",
+      content: "Atendemos em horario comercial e encaminhamos demandas complexas para o time.",
+      status: "ready",
+      metadata: {}
     }
   });
 

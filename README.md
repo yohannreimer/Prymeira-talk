@@ -121,10 +121,11 @@ Then open `http://localhost:5176` with `VITE_LOCAL_AUTH_BYPASS=true` and verify:
 - Atendimento keeps the three-panel layout and receives realtime messages/contact context updates;
 - Contacts can create/edit contacts and board stage moves update cards;
 - Channels can run the simulated QR flow and test inbound action;
-- Automations can run a manual test and show run history;
+- Agentes can create a Secretaria IA, add FAQ knowledge, and appear in Automacoes;
+- Automations can run a manual test, show run history, and select Secretaria IA in the "Executar agente" block;
+- Atendimento shows AI status and can Assumir or Liberar IA for a conversation;
 - Campaigns can resolve recipients and send simulated recipients;
 - Reports reflect local conversations, campaigns, automations, channels, departments, and tags;
-- Assistant creates a simulated action result;
 - CRM creates simulated sync history;
 - Settings show integration config and audit log entries.
 
