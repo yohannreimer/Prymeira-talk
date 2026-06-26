@@ -34,6 +34,7 @@ export async function buildConversationContext(
     workspaceId: string;
     conversationId: string;
     limit?: number;
+    includeInternalNotes?: boolean;
   }
 ): Promise<ConversationContext> {
   const messages = await prisma.message.findMany({
@@ -41,11 +42,14 @@ export async function buildConversationContext(
       workspaceId: input.workspaceId,
       conversationId: input.conversationId
     },
-    orderBy: [{ createdAt: "asc" }],
+    orderBy: [{ createdAt: "desc" }],
     take: input.limit ?? DEFAULT_MESSAGE_LIMIT
   });
 
-  const normalizedMessages = messages.map(normalizeConversationMessage);
+  const normalizedMessages = messages
+    .map(normalizeConversationMessage)
+    .filter((message) => input.includeInternalNotes || message.type !== "internal_note")
+    .sort(compareMessagesChronologically);
 
   return {
     messages: normalizedMessages,
@@ -96,4 +100,14 @@ function normalizeCreatedAt(value: ConversationMessageRecord["createdAt"]) {
   }
 
   return value ?? null;
+}
+
+function compareMessagesChronologically(
+  left: NormalizedConversationMessage,
+  right: NormalizedConversationMessage
+) {
+  const leftTime = left.createdAt ? Date.parse(left.createdAt) : Number.POSITIVE_INFINITY;
+  const rightTime = right.createdAt ? Date.parse(right.createdAt) : Number.POSITIVE_INFINITY;
+
+  return leftTime - rightTime;
 }

@@ -202,7 +202,7 @@ describe("createAgentRuntime", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation
       },
-      orderBy: [{ createdAt: "asc" }],
+      orderBy: [{ createdAt: "desc" }],
       take: 80
     });
     expect(provider.generate).toHaveBeenCalledWith(

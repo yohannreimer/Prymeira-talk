@@ -39,7 +39,7 @@ describe("buildConversationContext", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation
       },
-      orderBy: [{ createdAt: "asc" }],
+      orderBy: [{ createdAt: "desc" }],
       take: 80
     });
     expect(result.messages).toEqual([
@@ -68,7 +68,53 @@ describe("buildConversationContext", () => {
     );
   });
 
-  it("labels internal notes and omits empty bodies from formatted history", async () => {
+  it("loads the latest messages first and formats them chronologically", async () => {
+    const prisma = {
+      message: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "message_recent",
+            direction: "inbound",
+            type: "text",
+            body: "Mensagem mais recente.",
+            createdAt: new Date("2026-06-23T18:03:00.000Z")
+          },
+          {
+            id: "message_previous",
+            direction: "outbound",
+            type: "text",
+            body: "Mensagem anterior.",
+            createdAt: new Date("2026-06-23T18:02:00.000Z")
+          }
+        ])
+      }
+    };
+
+    const result = await buildConversationContext(prisma, {
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      limit: 2
+    });
+
+    expect(prisma.message.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ createdAt: "desc" }],
+        take: 2
+      })
+    );
+    expect(result.messages.map((message) => message.id)).toEqual([
+      "message_previous",
+      "message_recent"
+    ]);
+    expect(result.formattedHistory).toBe(
+      [
+        "[2026-06-23T18:02:00.000Z] atendente: Mensagem anterior.",
+        "[2026-06-23T18:03:00.000Z] cliente: Mensagem mais recente."
+      ].join("\n")
+    );
+  });
+
+  it("omits internal notes and empty bodies from the default LLM context", async () => {
     const prisma = {
       message: {
         findMany: vi.fn().mockResolvedValue([
@@ -104,12 +150,6 @@ describe("buildConversationContext", () => {
 
     expect(result.messages).toEqual([
       expect.objectContaining({
-        id: "message_1",
-        label: "nota interna",
-        body: "Cliente prefere retorno a tarde.",
-        createdAt: "2026-06-23T18:02:00.000Z"
-      }),
-      expect.objectContaining({
         id: "message_2",
         label: "cliente",
         body: "   ",
@@ -120,6 +160,37 @@ describe("buildConversationContext", () => {
         label: "sistema",
         body: null,
         createdAt: null
+      })
+    ]);
+    expect(result.formattedHistory).toBe("");
+  });
+
+  it("can include internal notes when explicitly requested", async () => {
+    const prisma = {
+      message: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "message_1",
+            direction: "outbound",
+            type: "internal_note",
+            body: "Cliente prefere retorno a tarde.",
+            createdAt: new Date("2026-06-23T18:02:00.000Z")
+          }
+        ])
+      }
+    };
+
+    const result = await buildConversationContext(prisma, {
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      includeInternalNotes: true
+    });
+
+    expect(result.messages).toEqual([
+      expect.objectContaining({
+        id: "message_1",
+        label: "nota interna",
+        body: "Cliente prefere retorno a tarde."
       })
     ]);
     expect(result.formattedHistory).toBe(
