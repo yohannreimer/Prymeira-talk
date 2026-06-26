@@ -110,6 +110,7 @@ const SECRET_SETTING_KEYS = new Set([
   "webhookVerifyToken",
   "appSecret",
   "evolutionApiKey",
+  "apiKey",
   "token",
   "secret"
 ]);
@@ -189,7 +190,8 @@ function mergeIntegrationSettings(
 
   const previous = isSettingsRecord(previousSettings) ? previousSettings as Record<string, unknown> : {};
   const incoming = nextSettings as Record<string, unknown>;
-  const merged = provider === "meta_cloud"
+  const shouldMergeExisting = provider === "meta_cloud" || provider === "openai_compatible";
+  const merged = shouldMergeExisting
     ? { ...previous, ...incoming }
     : { ...incoming };
 
@@ -248,6 +250,27 @@ function assertMetaCloudSettingsConfigured(
   }
 }
 
+function assertOpenAiCompatibleSettingsConfigured(
+  provider: string,
+  mode: IntegrationMode,
+  settings: Prisma.InputJsonValue | undefined
+) {
+  if (provider !== "openai_compatible" || mode !== "real") {
+    return;
+  }
+
+  const record = isSettingsRecord(settings) ? settings as Record<string, unknown> : {};
+  const requiredKeys = ["baseUrl", "apiKey", "chatModel"];
+  const missingKey = requiredKeys.find((key) => !getStringSetting(record, key));
+
+  if (missingKey) {
+    throw new SettingsValidationError(
+      "SETTINGS_OPENAI_COMPATIBLE_INCOMPLETE",
+      `OpenAI-compatible provider setting ${missingKey} is required when the integration is active.`
+    );
+  }
+}
+
 export function createSettingsService(prisma: PrismaLike) {
   const readSettingsParts = async (workspaceId: string) => {
     const [workspace, integrations] = await Promise.all([
@@ -290,6 +313,7 @@ export function createSettingsService(prisma: PrismaLike) {
         : undefined;
       const settings = mergeIntegrationSettings(input.provider, existingConfig?.settings, input.settings);
       assertMetaCloudSettingsConfigured(input.provider, input.mode, settings);
+      assertOpenAiCompatibleSettingsConfigured(input.provider, input.mode, settings);
       const updatedConfig = await prisma.integrationConfig.upsert({
         where: {
           workspaceId_provider: {

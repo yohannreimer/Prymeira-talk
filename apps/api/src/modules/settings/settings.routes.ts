@@ -23,6 +23,11 @@ const metaSettingsSchema = z.object({
   evolutionApiKey: z.string().trim().min(1).optional(),
   evolutionInstanceName: z.string().trim().min(1).optional()
 });
+const openAiCompatibleSettingsSchema = z.object({
+  baseUrl: z.string().trim().optional(),
+  apiKey: z.string().trim().optional(),
+  chatModel: z.string().trim().optional()
+});
 
 const updateSettingsBodySchema = z.union([
   z.object({
@@ -31,7 +36,14 @@ const updateSettingsBodySchema = z.union([
     settings: metaSettingsSchema
   }),
   z.object({
-    provider: z.string().trim().min(1).max(80).refine((provider) => provider !== "meta_cloud"),
+    provider: z.literal("openai_compatible"),
+    mode: integrationModeSchema,
+    settings: openAiCompatibleSettingsSchema.optional()
+  }),
+  z.object({
+    provider: z.string().trim().min(1).max(80).refine(
+      (provider) => provider !== "meta_cloud" && provider !== "openai_compatible"
+    ),
     mode: integrationModeSchema,
     settings: genericSettingsSchema.optional()
   })

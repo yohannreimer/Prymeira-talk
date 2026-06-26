@@ -242,6 +242,140 @@ describe("settings service", () => {
     });
   });
 
+  it("stores OpenAI-compatible provider config and masks the API key", async () => {
+    const upsert = vi.fn().mockResolvedValue({
+      id: "config_openai_compatible",
+      workspaceId: "local_workspace",
+      provider: "openai_compatible",
+      mode: "real",
+      status: "configured",
+      settings: {
+        baseUrl: "https://api.openai.example/v1",
+        apiKey: "provider-secret",
+        chatModel: "gpt-4.1-mini"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    });
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockResolvedValue([]),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    const result = await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "openai_compatible",
+      mode: "real",
+      settings: {
+        baseUrl: "https://api.openai.example/v1",
+        apiKey: "provider-secret",
+        chatModel: "gpt-4.1-mini"
+      }
+    });
+
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
+        provider: "openai_compatible",
+        mode: "real",
+        settings: expect.objectContaining({
+          baseUrl: "https://api.openai.example/v1",
+          apiKey: "provider-secret",
+          chatModel: "gpt-4.1-mini"
+        })
+      }),
+      update: expect.objectContaining({
+        settings: expect.objectContaining({
+          baseUrl: "https://api.openai.example/v1",
+          apiKey: "provider-secret",
+          chatModel: "gpt-4.1-mini"
+        })
+      })
+    }));
+    expect(result.integrations[0]?.settings).toMatchObject({
+      baseUrl: "https://api.openai.example/v1",
+      apiKey: "[redacted]",
+      chatModel: "gpt-4.1-mini"
+    });
+  });
+
+  it("preserves existing OpenAI-compatible API key when masked or empty in updates", async () => {
+    const existingOpenAiConfig = {
+      id: "config_openai_compatible",
+      workspaceId: "local_workspace",
+      provider: "openai_compatible",
+      mode: "real" as const,
+      status: "configured",
+      settings: {
+        baseUrl: "https://old-openai.example/v1",
+        apiKey: "stored-provider-key",
+        chatModel: "gpt-4.1-mini"
+      },
+      createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T12:00:00.000Z")
+    };
+    const upsert = vi.fn().mockImplementation(async (args) => ({
+      ...existingOpenAiConfig,
+      ...args.update,
+      updatedAt: new Date("2026-06-02T12:05:00.000Z")
+    }));
+
+    const prisma = createMockPrisma({
+      integrationConfig: {
+        findMany: vi.fn().mockImplementation(async (args) =>
+          "provider" in (args.where ?? {}) ? [existingOpenAiConfig] : []
+        ),
+        upsert
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "openai_compatible",
+      mode: "real",
+      settings: {
+        baseUrl: "https://new-openai.example/v1",
+        apiKey: "[redacted]",
+        chatModel: "gpt-4.1"
+      }
+    });
+
+    expect(upsert).toHaveBeenLastCalledWith(expect.objectContaining({
+      update: expect.objectContaining({
+        settings: expect.objectContaining({
+          baseUrl: "https://new-openai.example/v1",
+          apiKey: "stored-provider-key",
+          chatModel: "gpt-4.1"
+        })
+      })
+    }));
+
+    await service.updateIntegrationMode({
+      workspaceId: "local_workspace",
+      provider: "openai_compatible",
+      mode: "real",
+      settings: {
+        baseUrl: "https://newer-openai.example/v1",
+        apiKey: "",
+        chatModel: "gpt-4.1-nano"
+      }
+    });
+
+    expect(upsert).toHaveBeenLastCalledWith(expect.objectContaining({
+      update: expect.objectContaining({
+        settings: expect.objectContaining({
+          baseUrl: "https://newer-openai.example/v1",
+          apiKey: "stored-provider-key",
+          chatModel: "gpt-4.1-nano"
+        })
+      })
+    }));
+  });
+
   it("preserves existing Meta Cloud secrets when masked or omitted in updates", async () => {
     const existingMetaConfig = {
       id: "config_meta",
