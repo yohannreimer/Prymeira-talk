@@ -8,6 +8,11 @@ import {
   type ConversationContext,
   type ConversationContextBuilderPrismaLike
 } from "./conversation-context-builder.js";
+import {
+  selectRelevantKnowledge,
+  type KnowledgeRetrievalSource,
+  type SelectedKnowledgeSource
+} from "./knowledge-retrieval.js";
 import type { AgentOutput, AgentProvider } from "./provider-gateway.js";
 
 type JsonValue = unknown;
@@ -59,6 +64,7 @@ type KnowledgeSourceRecord = {
   id: string;
   title: string;
   content: string | null;
+  metadata?: JsonValue;
 };
 
 type AgentSessionRecord = {
@@ -272,16 +278,35 @@ export function createAgentRuntime(input: {
         ]);
 
         const allowedActions = readAllowedActions(agent.allowedActions);
-        const context = buildContext(conversation, message, knowledge, conversationContext);
+        const knowledgeSelection = selectRelevantKnowledge({
+          latestMessage: message.body,
+          conversationHistory: conversationContext.formattedHistory,
+          instruction: runInput.instruction,
+          sources: knowledge.map(toRetrievalSource)
+        });
+        const context = buildContext(
+          conversation,
+          message,
+          knowledgeSelection.selected,
+          conversationContext
+        );
         contextSummary = {
           contactId: conversation.contactId,
           contactName: conversation.contact?.name ?? null,
           channelId: conversation.channelId ?? conversation.channel?.id ?? null,
           tagCount: context.tags.length,
-          knowledgeCount: knowledge.length,
+          knowledgeCount: knowledgeSelection.selected.length,
+          knowledgeTotal: knowledgeSelection.total,
           conversationMessageCount: conversationContext.messages.length
         };
-        knowledgeMatches = knowledge.map((source) => ({ id: source.id, title: source.title }));
+        knowledgeMatches = knowledgeSelection.selected.map((source) => ({
+          id: source.id,
+          title: source.title,
+          category: source.category,
+          score: source.score,
+          reasons: source.reasons,
+          includedAs: source.includedAs
+        }));
 
         providerOutput = await provider.generate({
           model: agent.model,
@@ -451,7 +476,7 @@ function buildUserPrompt(messageBody: string | null | undefined, instruction: st
 function buildContext(
   conversation: ConversationRecord,
   message: MessageRecord,
-  knowledge: KnowledgeSourceRecord[],
+  knowledge: Pick<SelectedKnowledgeSource, "title" | "content">[],
   conversationContext: ConversationContext
 ) {
   return {
@@ -484,6 +509,15 @@ function buildContext(
       title: source.title,
       content: source.content
     }))
+  };
+}
+
+function toRetrievalSource(source: KnowledgeSourceRecord): KnowledgeRetrievalSource {
+  return {
+    id: source.id,
+    title: source.title,
+    content: source.content,
+    metadata: isRecord(source.metadata) ? source.metadata : null
   };
 }
 

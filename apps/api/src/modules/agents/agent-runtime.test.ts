@@ -61,7 +61,7 @@ const baseMessage = {
   conversationId: ids.conversation,
   direction: "inbound",
   type: "text",
-  body: "Oi, qual o horario?",
+  body: "Oi, quanto custa o plano profissional?",
   createdAt: now
 };
 
@@ -144,8 +144,9 @@ function buildPrisma(overrides: Record<string, any> = {}) {
       findMany: vi.fn().mockResolvedValue([
         {
           id: "knowledge_1",
-          title: "Horario",
-          content: "Atendemos das 8h as 18h.",
+          title: "Tabela de precos",
+          content: "Plano profissional custa R$ 199 por mes.",
+          metadata: { category: "precos", keywords: ["plano profissional", "mensalidade"] },
           status: "ready"
         }
       ])
@@ -182,7 +183,7 @@ describe("createAgentRuntime", () => {
     const prisma = buildPrisma();
     const provider = buildProvider({
       confidence: 0.84,
-      reply: "Atendemos das 8h as 18h.",
+      reply: "O plano profissional custa R$ 199 por mes.",
       actions: [{ type: "add_tag", tagName: "Atendido pela IA" }],
       handoff: { required: false, reason: null }
     });
@@ -209,9 +210,9 @@ describe("createAgentRuntime", () => {
       expect.objectContaining({
         model: "prymeira-simulated",
         systemPrompt: "Atenda bem.",
-        userPrompt: "Oi, qual o horario?",
+        userPrompt: "Oi, quanto custa o plano profissional?",
         context: expect.objectContaining({
-          messageBody: "Oi, qual o horario?",
+          messageBody: "Oi, quanto custa o plano profissional?",
           conversationHistory: expect.stringContaining("cliente: Oi, voces atendem hoje?"),
           conversationMessages: expect.arrayContaining([
             expect.objectContaining({
@@ -227,7 +228,12 @@ describe("createAgentRuntime", () => {
           ]),
           contact: expect.objectContaining({ name: "Maria", phone: "5511999999999" }),
           tags: ["Lead"],
-          knowledge: [{ title: "Horario", content: "Atendemos das 8h as 18h." }]
+          knowledge: [
+            {
+              title: "Tabela de precos",
+              content: "Plano profissional custa R$ 199 por mes."
+            }
+          ]
         })
       })
     );
@@ -246,7 +252,7 @@ describe("createAgentRuntime", () => {
         conversationId: ids.conversation,
         direction: "outbound",
         type: "text",
-        body: "Atendemos das 8h as 18h.",
+        body: "O plano profissional custa R$ 199 por mes.",
         status: "pending",
         sentByUserId: null,
         metadata: { source: "ai_agent", agentId: ids.agent }
@@ -261,8 +267,17 @@ describe("createAgentRuntime", () => {
         model: "prymeira-simulated",
         status: "completed",
         confidence: 0.84,
-        contextSummary: expect.objectContaining({ knowledgeCount: 1 }),
-        knowledgeMatches: [{ id: "knowledge_1", title: "Horario" }]
+        contextSummary: expect.objectContaining({ knowledgeCount: 1, knowledgeTotal: 1 }),
+        knowledgeMatches: [
+          expect.objectContaining({
+            id: "knowledge_1",
+            title: "Tabela de precos",
+            category: "precos",
+            score: expect.any(Number),
+            reasons: expect.arrayContaining(["category_match", "keyword_match"]),
+            includedAs: "full_document"
+          })
+        ]
       })
     });
   });
@@ -432,8 +447,16 @@ describe("createAgentRuntime", () => {
         output: expect.objectContaining({
           reply: "Vou registrar uma etiqueta."
         }),
-        contextSummary: expect.objectContaining({ knowledgeCount: 1 }),
-        knowledgeMatches: [{ id: "knowledge_1", title: "Horario" }]
+        contextSummary: expect.objectContaining({ knowledgeCount: 1, knowledgeTotal: 1 }),
+        knowledgeMatches: [
+          expect.objectContaining({
+            id: "knowledge_1",
+            title: "Tabela de precos",
+            category: "precos",
+            reasons: expect.arrayContaining(["category_match"]),
+            includedAs: "full_document"
+          })
+        ]
       })
     });
   });
