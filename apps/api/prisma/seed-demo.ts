@@ -164,7 +164,7 @@ function hoursAgo(hours: number) {
 }
 
 async function clearDemoWorkspaceData() {
-  const workspaceIds = Array.from(new Set([workspaceId, "local_workspace"]));
+  const workspaceIds = Array.from(new Set([workspaceId, "local_workspace", "demo_workspace"]));
 
   await prisma.aiAgentRun.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
   await prisma.aiAgentSession.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
