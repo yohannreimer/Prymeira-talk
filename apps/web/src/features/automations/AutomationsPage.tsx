@@ -24,11 +24,13 @@ import {
 import {
   apiCreateAutomation,
   apiDeleteAutomation,
+  apiGetAgents,
   apiGetContacts,
   apiGetAutomationRuns,
   apiGetAutomations,
   apiTestAutomation,
   apiUpdateAutomation,
+  type AiAgentDto,
   type AutomationActionDto,
   type AutomationRuleDto,
   type AutomationRunDto
@@ -223,6 +225,7 @@ export function buildAutomationSavePayload(
 export function AutomationsPage() {
   const { getToken } = useTalkAuth();
   const [viewMode, setViewMode] = useState<AutomationViewMode>("hub");
+  const [agents, setAgents] = useState<AiAgentDto[]>([]);
   const [automations, setAutomations] = useState<AutomationRuleDto[]>([]);
   const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
   const [draftVersion, setDraftVersion] = useState(0);
@@ -267,11 +270,15 @@ export function AutomationsPage() {
       setError(null);
 
       try {
-        const nextAutomations = await apiGetAutomations(getToken);
+        const [nextAutomations, nextAgents] = await Promise.all([
+          apiGetAutomations(getToken),
+          apiGetAgents(getToken).catch(() => [])
+        ]);
 
         if (!isMounted) return;
 
         setAutomations(nextAutomations);
+        setAgents(nextAgents);
         setSelectedAutomationId((current) =>
           nextAutomations.some((automation) => automation.id === current)
             ? current
@@ -566,6 +573,7 @@ export function AutomationsPage() {
 
   return (
     <AutomationsPageView
+      agents={agents}
       automations={automations}
       canvasTriggerLabel={canvasTriggerLabel}
       draftVersion={draftVersion}
@@ -609,6 +617,7 @@ export function AutomationsPage() {
 }
 
 interface AutomationsPageViewProps {
+  agents: AiAgentDto[];
   automations: AutomationRuleDto[];
   canvasTriggerLabel: string;
   draftVersion: number;
@@ -650,6 +659,7 @@ interface AutomationsPageViewProps {
 }
 
 export function AutomationsPageView({
+  agents,
   automations,
   canvasTriggerLabel,
   draftVersion,
@@ -715,6 +725,7 @@ export function AutomationsPageView({
 
       {shouldShowEditor ? (
         <AutomationEditorView
+          agents={agents}
           canvasTriggerLabel={canvasTriggerLabel}
           draftVersion={draftVersion}
           form={form}
@@ -855,6 +866,7 @@ export function AutomationHubView({
 }
 
 export function AutomationEditorView({
+  agents,
   canvasTriggerLabel,
   draftVersion,
   form,
@@ -886,6 +898,7 @@ export function AutomationEditorView({
   simulationContacts,
   simulationMessageBody
 }: {
+  agents: AiAgentDto[];
   canvasTriggerLabel: string;
   draftVersion: number;
   form: AutomationFormState;
@@ -1037,6 +1050,7 @@ export function AutomationEditorView({
       <div className="automation-editor-body">
         <div className="automation-editor-canvas-area">
           <AutomationCanvas
+            agents={agents}
             key={selectedAutomation?.id ?? `new-automation-${draftVersion}`}
             onChange={onCanvasChange}
             value={selectedAutomation?.actions}

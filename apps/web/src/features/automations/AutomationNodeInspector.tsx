@@ -2,10 +2,12 @@ import { automationBlockCatalog, type AutomationBlockType } from "@prymeira-talk
 import { Upload } from "lucide-react";
 import { useState } from "react";
 import { apiUploadAutomationAsset } from "../../app/api";
+import type { AiAgentDto } from "../../app/api";
 import { useTalkAuth } from "../../app/auth";
 import type { AutomationCanvasNode } from "./automationFlow";
 
 interface AutomationNodeInspectorProps {
+  agents: AiAgentDto[];
   node: AutomationCanvasNode | null;
   onConfigChange: (nodeId: string, config: Record<string, unknown>) => void;
   onTypeChange?: (nodeId: string, type: AutomationBlockType) => void;
@@ -59,7 +61,7 @@ function updateConfigValue(
   });
 }
 
-export function AutomationNodeInspector({ node, onConfigChange, onTypeChange }: AutomationNodeInspectorProps) {
+export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeChange }: AutomationNodeInspectorProps) {
   const { getToken } = useTalkAuth();
   const [uploadingNodeId, setUploadingNodeId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -87,6 +89,7 @@ export function AutomationNodeInspector({ node, onConfigChange, onTypeChange }: 
   const showsBoardStage = type === "move_board_stage";
   const showsKeywordTrigger = type === "trigger_keyword";
   const showsReengagementTrigger = type === "trigger_reengagement";
+  const showsRunAgent = type === "run_agent";
   const triggerBlocks = automationBlockCatalog.filter(
     (block) => block.category === "trigger" && block.support === "supported"
   );
@@ -95,7 +98,8 @@ export function AutomationNodeInspector({ node, onConfigChange, onTypeChange }: 
     showsMessage ||
     showsFile ||
     showsTag ||
-    showsBoardStage;
+    showsBoardStage ||
+    showsRunAgent;
 
   async function uploadAutomationFile(file: File | null) {
     if (!file || !node) return;
@@ -272,6 +276,34 @@ export function AutomationNodeInspector({ node, onConfigChange, onTypeChange }: 
               onChange={(event) => updateConfigValue(node, "stageLabel", event.target.value, onConfigChange)}
               placeholder="Ex: Proposta enviada"
               value={readConfigValue(config, "stageLabel")}
+            />
+          </label>
+        </div>
+      ) : null}
+
+      {showsRunAgent ? (
+        <div className="automation-inspector-fields">
+          <label className="form-field">
+            <span>Agente</span>
+            <select
+              onChange={(event) => updateConfigValue(node, "agentId", event.target.value, onConfigChange)}
+              value={readConfigValue(config, "agentId")}
+            >
+              <option value="">Selecione um agente</option>
+              {agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="form-field">
+            <span>Instrucao desta etapa</span>
+            <textarea
+              aria-label="Instrucao desta etapa"
+              onChange={(event) => updateConfigValue(node, "instruction", event.target.value, onConfigChange)}
+              rows={4}
+              value={readConfigValue(config, "instruction")}
             />
           </label>
         </div>

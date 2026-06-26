@@ -22,7 +22,7 @@ import {
 } from "@prymeira-talk/shared";
 import { Plus, SlidersHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AutomationActionDto } from "../../app/api";
+import type { AiAgentDto, AutomationActionDto } from "../../app/api";
 import { AutomationBlockLibrary } from "./AutomationBlockLibrary";
 import { AutomationNode } from "./AutomationNode";
 import { AutomationNodeInspector } from "./AutomationNodeInspector";
@@ -37,6 +37,7 @@ import {
 } from "./automationFlow";
 
 interface AutomationCanvasProps {
+  agents: AiAgentDto[];
   value?: unknown;
   onChange: (payload: AutomationFlowDefinition) => void;
   variant?: "editor" | "focus";
@@ -167,7 +168,7 @@ export function automationCanvasStateFromValue(value: unknown): AutomationCanvas
   return canvasStateFromFlow(createDefaultAutomationFlow());
 }
 
-export function AutomationCanvas({ value, onChange, variant = "editor" }: AutomationCanvasProps) {
+export function AutomationCanvas({ agents, value, onChange, variant = "editor" }: AutomationCanvasProps) {
   const initialState = useMemo(() => automationCanvasStateFromValue(value), [value]);
   const [nodes, setNodes] = useState<AutomationCanvasNode[]>(initialState.nodes);
   const [edges, setEdges] = useState<AutomationCanvasEdge[]>(initialState.edges);
@@ -357,6 +358,7 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
             {isFocusInspectorOpen ? (
               <div className="automation-focus-inspector">
                 <AutomationNodeInspector
+                  agents={agents}
                   node={selectedNode}
                   onConfigChange={updateConfig}
                   onTypeChange={updateNodeType}
@@ -369,6 +371,7 @@ export function AutomationCanvas({ value, onChange, variant = "editor" }: Automa
 
       {isFocusMode ? null : (
         <AutomationNodeInspector
+          agents={agents}
           node={selectedNode}
           onConfigChange={updateConfig}
           onTypeChange={updateNodeType}

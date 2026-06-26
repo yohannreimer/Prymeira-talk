@@ -13,6 +13,7 @@ import {
   defaultAutomationEventKey,
   mergeAutomationRun
 } from "./AutomationsPage";
+import { AutomationBlockLibrary } from "./AutomationBlockLibrary";
 import { automationCanvasStateFromValue } from "./AutomationCanvas";
 import { keywordConfigToInputValue, keywordInputToConfig } from "./AutomationNodeInspector";
 import {
@@ -59,6 +60,24 @@ const baseAutomation: AutomationRuleDto = {
   actions: graphActions,
   createdAt: "2026-05-22T12:00:00.000Z",
   updatedAt: "2026-05-22T12:00:00.000Z"
+};
+
+const baseAgent = {
+  id: "00000000-0000-4000-8000-000000000101",
+  workspaceId: "workspace-1",
+  name: "Secretaria IA",
+  description: null,
+  status: "active",
+  providerMode: "prymeira_managed",
+  provider: "simulated",
+  model: "prymeira-simulated",
+  systemPrompt: "Atenda.",
+  behaviorConfig: {},
+  handoffConfig: {},
+  limitsConfig: {},
+  allowedActions: ["send_message"],
+  createdAt: "2026-06-23T18:00:00.000Z",
+  updatedAt: "2026-06-23T18:00:00.000Z"
 };
 
 afterEach(() => {
@@ -298,6 +317,7 @@ async function renderAutomationsPageContainer({
 
     return {
       ...original,
+      apiGetAgents: vi.fn().mockResolvedValue([baseAgent]),
       apiGetAutomationRuns: vi.fn().mockResolvedValue([]),
       apiGetAutomations: vi.fn().mockResolvedValue(automations),
       apiUpdateAutomation: apiUpdateAutomationMock
@@ -346,6 +366,10 @@ async function renderAutomationsPageContainer({
 }
 
 describe("AutomationsPage navigation", () => {
+  it("shows the run agent automation block", () => {
+    expect(hasText(AutomationBlockLibrary({ onSelect: vi.fn() }), "Executar agente")).toBe(true);
+  });
+
   it("opens on the hub and enters the editor when a flow is selected", async () => {
     const page = await renderAutomationsPageContainer();
 
