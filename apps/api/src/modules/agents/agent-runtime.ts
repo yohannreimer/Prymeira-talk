@@ -1,5 +1,10 @@
 import { aiAgentAllowedActionSchema, type AiAgentAllowedAction } from "@prymeira-talk/shared";
 import {
+  resolveOpenAiCompatibleSettings,
+  type AiProviderSettingsPrismaLike,
+  type OpenAiCompatibleSettings
+} from "./ai-provider-settings.js";
+import {
   executeAgentActions,
   type AgentToolExecutorPrismaLike
 } from "./agent-tool-executor.js";
@@ -9,11 +14,16 @@ import {
   type ConversationContextBuilderPrismaLike
 } from "./conversation-context-builder.js";
 import {
+  isDocumentDependentQuestion,
   selectRelevantKnowledge,
   type KnowledgeRetrievalSource,
   type SelectedKnowledgeSource
 } from "./knowledge-retrieval.js";
-import type { AgentOutput, AgentProvider } from "./provider-gateway.js";
+import {
+  createOpenAiCompatibleAgentProvider,
+  type AgentOutput,
+  type AgentProvider
+} from "./provider-gateway.js";
 
 type JsonValue = unknown;
 type AgentRunStatus = "completed" | "handoff_requested" | "failed" | "skipped";
@@ -81,6 +91,7 @@ type AgentRuntimePrismaLike = Omit<
   aiAgent: {
     findFirst(args: unknown): Promise<AiAgentRecord | null>;
   };
+  integrationConfig: AiProviderSettingsPrismaLike["integrationConfig"];
   aiKnowledgeSource: {
     findMany(args: unknown): Promise<KnowledgeSourceRecord[]>;
   };
@@ -109,6 +120,7 @@ export type AgentRuntimeResult = {
 export function createAgentRuntime(input: {
   prisma: AgentRuntimePrismaLike;
   provider: AgentProvider;
+  providerFactory?: (settings: Extract<OpenAiCompatibleSettings, { active: true }>) => AgentProvider;
 }) {
   const { prisma, provider } = input;
 
@@ -223,6 +235,7 @@ export function createAgentRuntime(input: {
       };
       let knowledgeMatches: Array<Record<string, unknown>> = [];
       let providerOutput: AgentOutput | undefined;
+      let runModel = agent.model;
       let actionResults: Awaited<ReturnType<typeof executeAgentActions>> = [];
 
       const session = await prisma.aiAgentSession.upsert({
@@ -308,12 +321,29 @@ export function createAgentRuntime(input: {
           includedAs: source.includedAs
         }));
 
-        providerOutput = await provider.generate({
-          model: agent.model,
-          systemPrompt: agent.systemPrompt,
-          userPrompt: buildUserPrompt(message.body, runInput.instruction),
-          context
+        const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
+          workspaceId: runInput.workspaceId
         });
+        const runProvider = providerSettings.active
+          ? (input.providerFactory ?? createOpenAiCompatibleAgentProvider)(providerSettings)
+          : provider;
+        runModel = providerSettings.active ? providerSettings.chatModel : agent.model;
+
+        if (
+          isDocumentDependentQuestion(
+            `${message.body ?? ""}\n${conversationContext.formattedHistory}`
+          ) &&
+          knowledgeSelection.selected.length === 0
+        ) {
+          providerOutput = createDocumentRequiredHandoffOutput();
+        } else {
+          providerOutput = await runProvider.generate({
+            model: runModel,
+            systemPrompt: agent.systemPrompt,
+            userPrompt: buildUserPrompt(message.body, runInput.instruction),
+            context
+          });
+        }
 
         const confidenceThreshold = readConfidenceThreshold(agent.handoffConfig);
         const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
@@ -380,7 +410,7 @@ export function createAgentRuntime(input: {
           input: runInputPayload,
           contextSummary,
           knowledgeMatches,
-          model: agent.model,
+          model: runModel,
           output: providerOutput,
           actions: actionResults,
           confidence: providerOutput.confidence,
@@ -398,7 +428,7 @@ export function createAgentRuntime(input: {
           input: runInputPayload,
           contextSummary,
           knowledgeMatches,
-          model: agent.model,
+          model: runModel,
           output: providerOutput,
           actions: actionResults,
           confidence: providerOutput?.confidence,
@@ -509,6 +539,20 @@ function buildContext(
       title: source.title,
       content: source.content
     }))
+  };
+}
+
+function createDocumentRequiredHandoffOutput(): AgentOutput {
+  const reason = "No relevant document found for a document-dependent question.";
+
+  return {
+    confidence: 0.2,
+    reply: "Vou chamar uma pessoa do time para confirmar essa informacao com seguranca.",
+    actions: [{ type: "request_handoff", reason }],
+    handoff: {
+      required: true,
+      reason
+    }
   };
 }
 

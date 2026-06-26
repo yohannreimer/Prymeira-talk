@@ -140,6 +140,9 @@ function buildPrisma(overrides: Record<string, any> = {}) {
     aiAgent: {
       findFirst: vi.fn().mockResolvedValue(baseAgent)
     },
+    integrationConfig: {
+      findUnique: overrides.integrationConfig?.findUnique ?? vi.fn().mockResolvedValue(null)
+    },
     aiKnowledgeSource: {
       findMany: vi.fn().mockResolvedValue([
         {
@@ -287,6 +290,108 @@ describe("createAgentRuntime", () => {
             includedAs: "full_document"
           })
         ]
+      })
+    });
+  });
+
+  it("uses the real OpenAI-compatible provider when workspace settings are active", async () => {
+    const prisma = buildPrisma({
+      integrationConfig: {
+        findUnique: vi.fn().mockResolvedValue({
+          mode: "real",
+          settings: {
+            baseUrl: "https://api.openai.com/v1",
+            apiKey: "sk-test",
+            chatModel: "gpt-4.1-mini"
+          }
+        })
+      }
+    });
+    const fallbackProvider = buildProvider({
+      confidence: 0.84,
+      reply: "Fallback.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const realProvider = buildProvider({
+      confidence: 0.92,
+      reply: "O plano profissional custa R$ 199 por mes.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const providerFactory = vi.fn(() => realProvider);
+    const runtime = createAgentRuntime({
+      prisma,
+      provider: fallbackProvider,
+      providerFactory
+    });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({ status: "completed", runId: ids.run });
+    expect(providerFactory).toHaveBeenCalledWith({
+      active: true,
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      chatModel: "gpt-4.1-mini"
+    });
+    expect(fallbackProvider.generate).not.toHaveBeenCalled();
+    expect(realProvider.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "gpt-4.1-mini"
+      })
+    );
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        model: "gpt-4.1-mini",
+        status: "completed",
+        confidence: 0.92
+      })
+    });
+  });
+
+  it("requests handoff for document-dependent questions without relevant knowledge", async () => {
+    const prisma = buildPrisma({
+      aiKnowledgeSource: {
+        findMany: vi.fn().mockResolvedValue([])
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Inventaria um preco.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({ prisma, provider });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({ status: "handoff_requested", runId: ids.run });
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        status: "handoff_requested",
+        confidence: 0.2,
+        knowledgeMatches: [],
+        output: expect.objectContaining({
+          reply: "Vou chamar uma pessoa do time para confirmar essa informacao com seguranca.",
+          handoff: expect.objectContaining({
+            required: true
+          })
+        })
       })
     });
   });

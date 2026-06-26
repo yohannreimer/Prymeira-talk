@@ -190,6 +190,11 @@ export function selectRelevantKnowledge(input: {
   };
 }
 
+export function isDocumentDependentQuestion(value: string | null | undefined) {
+  const categories = detectCategories(normalize(value ?? ""));
+  return Array.from(categories).some((category) => category === "precos" || category === "politicas");
+}
+
 type ScoredKnowledgeSource = SelectedKnowledgeSource & {
   index: number;
 };
