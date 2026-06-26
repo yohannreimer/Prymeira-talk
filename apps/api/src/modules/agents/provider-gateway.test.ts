@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { createSimulatedAgentProvider, parseAgentOutput } from "./provider-gateway.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  createOpenAiCompatibleAgentProvider,
+  createSimulatedAgentProvider,
+  parseAgentOutput
+} from "./provider-gateway.js";
 
 describe("parseAgentOutput", () => {
   it("parses valid structured agent output", () => {
@@ -118,5 +122,213 @@ describe("createSimulatedAgentProvider", () => {
     );
     expect(output.reply).toContain("Prymeira Talk");
     expect(output.actions).toEqual([{ type: "add_tag", tagName: "Atendido pela IA" }]);
+  });
+});
+
+describe("createOpenAiCompatibleAgentProvider", () => {
+  it("posts to the chat completions endpoint with authorization and JSON headers", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  confidence: 0.91,
+                  reply: "Claro, posso ajudar.",
+                  actions: [],
+                  handoff: { required: false, reason: null }
+                })
+              }
+            }
+          ]
+        })
+      )
+    );
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example/v1///",
+      apiKey: "secret-api-key",
+      chatModel: "configured-chat-model",
+      fetchImpl: fetchMock
+    });
+
+    await provider.generate({
+      model: "runtime-model",
+      systemPrompt: "Atenda clientes da Prymeira Talk.",
+      userPrompt: "Ola",
+      context: { conversationHistory: ["mensagem anterior"] }
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe("https://provider.example/v1/chat/completions");
+    expect(init).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret-api-key",
+          "Content-Type": "application/json"
+        }
+      })
+    );
+  });
+
+  it("sends the configured chat model, JSON response format, and prompt payload", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  confidence: 0.87,
+                  reply: "Resposta estruturada.",
+                  actions: [],
+                  handoff: { required: false, reason: null }
+                })
+              }
+            }
+          ]
+        })
+      )
+    );
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example",
+      apiKey: "secret-api-key",
+      chatModel: "configured-chat-model",
+      fetchImpl: fetchMock
+    });
+
+    await provider.generate({
+      model: "runtime-model",
+      systemPrompt: "Voce e o agente oficial.",
+      userPrompt: "Qual o prazo?",
+      context: { selectedDocuments: [{ title: "Politica", body: "Sem prazo definido." }] }
+    });
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body));
+    expect(body).toEqual(
+      expect.objectContaining({
+        model: "configured-chat-model",
+        temperature: 0.2,
+        response_format: { type: "json_object" }
+      })
+    );
+    expect(body.model).not.toBe("runtime-model");
+    expect(body.messages).toHaveLength(2);
+    expect(body.messages[0]).toEqual(
+      expect.objectContaining({
+        role: "system",
+        content: expect.stringContaining("Voce e o agente oficial.")
+      })
+    );
+    expect(body.messages[0].content).toContain("respond only valid JSON");
+    expect(body.messages[0].content).toContain("sources");
+    expect(body.messages[1]).toEqual({
+      role: "user",
+      content: JSON.stringify({
+        userPrompt: "Qual o prazo?",
+        context: { selectedDocuments: [{ title: "Politica", body: "Sem prazo definido." }] }
+      })
+    });
+  });
+
+  it("parses choices[0].message.content as JSON and validates agent output", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  confidence: 0.74,
+                  reply: "Vou verificar com uma pessoa do time.",
+                  handoff: { required: true, reason: "Informacao insuficiente." },
+                  sources: [{ title: "Documento interno" }]
+                })
+              }
+            }
+          ]
+        })
+      )
+    );
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example",
+      apiKey: "secret-api-key",
+      chatModel: "configured-chat-model",
+      fetchImpl: fetchMock
+    });
+
+    const output = await provider.generate({
+      model: "runtime-model",
+      systemPrompt: "Atenda clientes da Prymeira Talk.",
+      userPrompt: "Pode garantir esse preco?",
+      context: {}
+    });
+
+    expect(output).toEqual({
+      confidence: 0.74,
+      reply: "Vou verificar com uma pessoa do time.",
+      actions: [],
+      handoff: { required: true, reason: "Informacao insuficiente." }
+    });
+  });
+
+  it("throws when provider content is not valid structured JSON", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  confidence: 1.5,
+                  reply: "",
+                  actions: [{ tagName: "Lead" }],
+                  handoff: { required: "no", reason: null }
+                })
+              }
+            }
+          ]
+        })
+      )
+    );
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example",
+      apiKey: "secret-api-key",
+      chatModel: "configured-chat-model",
+      fetchImpl: fetchMock
+    });
+
+    await expect(
+      provider.generate({
+        model: "runtime-model",
+        systemPrompt: "Atenda clientes da Prymeira Talk.",
+        userPrompt: "Ola",
+        context: {}
+      })
+    ).rejects.toThrow("Invalid agent output.");
+  });
+
+  it("throws on non-OK provider responses with the status in the message", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: "quota exceeded" }), { status: 429 })
+    );
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example",
+      apiKey: "secret-api-key",
+      chatModel: "configured-chat-model",
+      fetchImpl: fetchMock
+    });
+
+    await expect(
+      provider.generate({
+        model: "runtime-model",
+        systemPrompt: "Atenda clientes da Prymeira Talk.",
+        userPrompt: "Ola",
+        context: {}
+      })
+    ).rejects.toThrow("OpenAI-compatible provider request failed with status 429.");
   });
 });
