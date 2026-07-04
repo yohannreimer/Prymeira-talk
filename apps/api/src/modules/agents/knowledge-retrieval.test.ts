@@ -108,7 +108,7 @@ describe("selectRelevantKnowledge", () => {
 
     expect(result.selected).toHaveLength(1);
     expect(result.selected[0]?.includedAs).toBe("snippet");
-    expect(result.selected[0]?.content.length).toBeLessThanOrEqual(18_000);
+    expect(result.selected[0]?.content.length).toBeLessThanOrEqual(8_000);
     expect(result.selected[0]?.content).toContain("Preço do plano profissional");
   });
 });

@@ -14,14 +14,18 @@ const agentSourceSchema = z
   })
   .catchall(z.unknown());
 
+const agentHandoffSchema = z
+  .object({
+    required: z.boolean().default(false),
+    reason: z.string().nullable().optional().transform((reason) => reason ?? null)
+  })
+  .default({ required: false, reason: null });
+
 export const agentOutputSchema = z.object({
-  confidence: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1).default(0.72),
   reply: z.string().trim().min(1).nullable().optional(),
   actions: z.array(agentActionSchema).default([]),
-  handoff: z.object({
-    required: z.boolean(),
-    reason: z.string().nullable()
-  }),
+  handoff: agentHandoffSchema,
   sources: z.array(agentSourceSchema).optional()
 });
 
@@ -58,12 +62,28 @@ const openAiCompatibleResponseSchema = z.object({
 });
 
 export function parseAgentOutput(value: unknown): AgentOutput {
-  const result = agentOutputSchema.safeParse(value);
+  const result = agentOutputSchema.safeParse(normalizeAgentOutputShape(value));
   if (!result.success) {
     throw new Error("Invalid agent output.");
   }
 
   return result.data;
+}
+
+function normalizeAgentOutputShape(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+
+  const record = value as Record<string, unknown>;
+  const alternateReply = record.reply ?? record.answer ?? record.message ?? record.content;
+
+  return {
+    ...record,
+    ...(record.reply === undefined && typeof alternateReply === "string"
+      ? { reply: alternateReply }
+      : {})
+  };
 }
 
 export function createOpenAiCompatibleAgentProvider(
@@ -128,16 +148,91 @@ export function createOpenAiCompatibleAgentProvider(
         throw new Error("OpenAI-compatible provider returned empty content.");
       }
 
-      let parsedContent: unknown;
-      try {
-        parsedContent = JSON.parse(content);
-      } catch {
-        throw new Error("OpenAI-compatible provider returned invalid JSON content.");
-      }
-
-      return parseAgentOutput(parsedContent);
+      return parseAgentOutputContent(content);
     }
   };
+}
+
+function parseAgentOutputContent(content: string): AgentOutput {
+  const trimmedContent = content.trim();
+
+  try {
+    const parsedContent = JSON.parse(trimmedContent) as unknown;
+    return parseAgentOutput(parsedContent);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+
+    const jsonCandidate = extractFirstJsonObject(trimmedContent);
+    if (jsonCandidate) {
+      try {
+        const parsedCandidate = JSON.parse(jsonCandidate) as unknown;
+        return parseAgentOutput(parsedCandidate);
+      } catch (candidateError) {
+        if (!(candidateError instanceof SyntaxError)) {
+          throw candidateError;
+        }
+      }
+    }
+  }
+
+  return parseAgentOutput({
+    confidence: 0.62,
+    reply: trimmedContent,
+    actions: [],
+    handoff: {
+      required: false,
+      reason: null
+    }
+  });
+}
+
+function extractFirstJsonObject(value: string) {
+  const start = value.indexOf("{");
+  if (start < 0) {
+    return null;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      continue;
+    }
+
+    if (char === "{") {
+      depth += 1;
+    }
+
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return value.slice(start, index + 1);
+      }
+    }
+  }
+
+  return null;
 }
 
 function buildOpenAiCompatibleSystemPrompt(systemPrompt: string): string {

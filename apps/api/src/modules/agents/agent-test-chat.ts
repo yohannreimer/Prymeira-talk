@@ -154,10 +154,11 @@ export function createAgentTestChatService(input: {
               }))
             }
           });
-        } catch {
+        } catch (error) {
+          const detail = error instanceof Error ? ` Detalhe: ${error.message}` : "";
           throw new AgentTestChatError(
             "AGENT_PROVIDER_FAILED",
-            "Não foi possível obter resposta do provedor de IA. Verifique a chave, modelo e URL em Ajustes."
+            `Não foi possível obter resposta do provedor de IA. Verifique a chave, modelo e URL em Ajustes.${detail}`
           );
         }
       }

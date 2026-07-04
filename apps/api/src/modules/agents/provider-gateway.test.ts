@@ -46,6 +46,17 @@ describe("parseAgentOutput", () => {
       actions: [],
       handoff: { required: false, reason: null }
     });
+
+    expect(
+      parseAgentOutput({
+        reply: "Sou a Maria, secretária comercial da Prymeira."
+      })
+    ).toEqual({
+      confidence: 0.72,
+      reply: "Sou a Maria, secretária comercial da Prymeira.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
   });
 
   it("throws a stable error for malformed output", () => {
@@ -285,6 +296,79 @@ describe("createOpenAiCompatibleAgentProvider", () => {
           category: "policy"
         }
       ]
+    });
+  });
+
+  it("accepts fenced JSON content from the provider", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  '```json\n{"confidence":0.88,"reply":"Sou a Maria, da Prymeira.","actions":[]}\n```'
+              }
+            }
+          ]
+        })
+      )
+    );
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example",
+      apiKey: "secret-api-key",
+      chatModel: "configured-chat-model",
+      fetchImpl: fetchMock
+    });
+
+    await expect(
+      provider.generate({
+        model: "runtime-model",
+        systemPrompt: "Atenda clientes da Prymeira Talk.",
+        userPrompt: "Quem é você?",
+        context: {}
+      })
+    ).resolves.toEqual({
+      confidence: 0.88,
+      reply: "Sou a Maria, da Prymeira.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+  });
+
+  it("falls back to plain text when compatible providers ignore JSON mode", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "Sou a Maria, secretária comercial da Prymeira."
+              }
+            }
+          ]
+        })
+      )
+    );
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example",
+      apiKey: "secret-api-key",
+      chatModel: "configured-chat-model",
+      fetchImpl: fetchMock
+    });
+
+    await expect(
+      provider.generate({
+        model: "runtime-model",
+        systemPrompt: "Atenda clientes da Prymeira Talk.",
+        userPrompt: "Quem é você?",
+        context: {}
+      })
+    ).resolves.toEqual({
+      confidence: 0.62,
+      reply: "Sou a Maria, secretária comercial da Prymeira.",
+      actions: [],
+      handoff: { required: false, reason: null }
     });
   });
 

@@ -192,7 +192,8 @@ describe("createAgentTestChatService", () => {
       })
     ).rejects.toMatchObject({
       code: "AGENT_PROVIDER_FAILED",
-      message: "Não foi possível obter resposta do provedor de IA. Verifique a chave, modelo e URL em Ajustes."
+      message:
+        "Não foi possível obter resposta do provedor de IA. Verifique a chave, modelo e URL em Ajustes. Detalhe: provider exploded"
     } satisfies Pick<AgentTestChatError, "code" | "message">);
   });
 });

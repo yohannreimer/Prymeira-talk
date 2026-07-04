@@ -31,8 +31,8 @@ export type KnowledgeRetrievalResult = {
   total: number;
 };
 
-const MAX_SELECTED_SOURCES = 4;
-const MAX_FULL_DOCUMENT_LENGTH = 18_000;
+const MAX_SELECTED_SOURCES = 3;
+const MAX_FULL_DOCUMENT_LENGTH = 8_000;
 
 const CATEGORY_ALIASES: Record<string, string[]> = {
   precos: [
