@@ -36,6 +36,22 @@ describe("ingestKnowledgeUpload", () => {
     expect(result.metadata.extractedAt).toEqual(expect.any(String));
   });
 
+  it("accepts txt uploads with a generic browser mime type", async () => {
+    const result = await ingestKnowledgeUpload({
+      fileName: "base-produtos.txt",
+      mimeType: "application/octet-stream",
+      base64Content: Buffer.from("Produtos Prymeira\nTalk e CRM").toString("base64"),
+      category: "produto"
+    });
+
+    expect(result.content).toBe("Produtos Prymeira Talk e CRM");
+    expect(result.metadata).toMatchObject({
+      category: "produto",
+      sourceKind: "text",
+      extractionMethod: "plain-text"
+    });
+  });
+
   it("extracts normalized PDF text with metadata", async () => {
     const result = await ingestKnowledgeUpload({
       fileName: "politicas.pdf",

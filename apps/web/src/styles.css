@@ -2477,6 +2477,95 @@ select:disabled {
   -webkit-box-orient: vertical;
 }
 
+.agent-knowledge-panel,
+.agent-test-panel {
+  align-content: start;
+}
+
+.knowledge-source-list {
+  display: grid;
+  gap: 8px;
+}
+
+.knowledge-source-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+}
+
+.knowledge-source-card small {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.knowledge-composer {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: 14px;
+}
+
+.panel-title-row.compact h3 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 0.96rem;
+}
+
+.knowledge-form-grid {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.34fr) minmax(220px, 1fr);
+  gap: 12px;
+}
+
+.agent-test-chat {
+  display: grid;
+  gap: 10px;
+  min-height: 180px;
+  padding: 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: linear-gradient(180deg, var(--color-surface-subtle), rgba(255, 255, 255, 0.78));
+}
+
+.agent-test-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.agent-test-message {
+  display: grid;
+  gap: 8px;
+  max-width: min(760px, 88%);
+  padding: 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+}
+
+.agent-test-message--user {
+  justify-self: end;
+}
+
+.agent-test-message--assistant {
+  justify-self: start;
+}
+
+.agent-test-message .assistant-log-result {
+  display: block;
+  overflow: visible;
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+  -webkit-line-clamp: unset;
+}
+
 .automation-rule-list {
   display: flex;
   flex-direction: column;
@@ -5195,7 +5284,8 @@ select:disabled {
   .board-create-form,
   .board-edit-form,
   .board-stage-form,
-  .board-add-form {
+  .board-add-form,
+  .knowledge-form-grid {
     grid-template-columns: 1fr;
   }
 

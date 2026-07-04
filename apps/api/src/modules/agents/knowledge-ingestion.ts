@@ -82,7 +82,9 @@ function getSourceKind(input: { fileName: string; mimeType: string }): SourceKin
   const isPdfExtension = lowerFileName.endsWith(".pdf");
   const isTextExtension = lowerFileName.endsWith(".txt");
   const isPdfMime = lowerMimeType === "application/pdf";
-  const isTextMime = lowerMimeType === "text/plain";
+  const isGenericMime =
+    lowerMimeType === "application/octet-stream" || lowerMimeType === "text/plain;charset=utf-8";
+  const isTextMime = lowerMimeType === "text/plain" || isGenericMime;
 
   if (isPdfExtension && isPdfMime) {
     return "pdf";

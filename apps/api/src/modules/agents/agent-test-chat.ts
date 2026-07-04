@@ -54,7 +54,10 @@ export interface AgentTestChatPrismaLike {
 
 export class AgentTestChatError extends Error {
   constructor(
-    public readonly code: "AGENT_NOT_FOUND" | "TEST_CHAT_INVALID_MESSAGES",
+    public readonly code:
+      | "AGENT_NOT_FOUND"
+      | "TEST_CHAT_INVALID_MESSAGES"
+      | "AGENT_PROVIDER_FAILED",
     message: string
   ) {
     super(message);
@@ -127,25 +130,37 @@ export function createAgentTestChatService(input: {
         : provider;
       const model = providerSettings.active ? providerSettings.chatModel : agent.model;
 
-      const output =
+      let output: AgentOutput;
+
+      if (
         isDocumentDependentQuestion(`${latestUserMessage.content}\n${conversationHistory}`) &&
         knowledgeSelection.selected.length === 0
-          ? createDocumentRequiredHandoffOutput()
-          : await runProvider.generate({
-              model,
-              systemPrompt: agent.systemPrompt,
-              userPrompt: latestUserMessage.content,
-              context: {
-                messageBody: latestUserMessage.content,
-                conversationHistory,
-                conversationMessages: runInput.messages,
-                testMode: true,
-                knowledge: knowledgeSelection.selected.map((source) => ({
-                  title: source.title,
-                  content: source.content
-                }))
-              }
-            });
+      ) {
+        output = createDocumentRequiredHandoffOutput();
+      } else {
+        try {
+          output = await runProvider.generate({
+            model,
+            systemPrompt: agent.systemPrompt,
+            userPrompt: latestUserMessage.content,
+            context: {
+              messageBody: latestUserMessage.content,
+              conversationHistory,
+              conversationMessages: runInput.messages,
+              testMode: true,
+              knowledge: knowledgeSelection.selected.map((source) => ({
+                title: source.title,
+                content: source.content
+              }))
+            }
+          });
+        } catch {
+          throw new AgentTestChatError(
+            "AGENT_PROVIDER_FAILED",
+            "Não foi possível obter resposta do provedor de IA. Verifique a chave, modelo e URL em Ajustes."
+          );
+        }
+      }
 
       return {
         message: {

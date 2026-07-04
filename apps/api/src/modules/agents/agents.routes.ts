@@ -100,7 +100,10 @@ function handleAgentsError(reply: FastifyReply, error: unknown) {
 
 function handleAgentTestChatError(reply: FastifyReply, error: unknown) {
   if (error instanceof AgentTestChatError) {
-    return reply.code(error.code === "AGENT_NOT_FOUND" ? 404 : 400).send({
+    const statusCode =
+      error.code === "AGENT_NOT_FOUND" ? 404 : error.code === "AGENT_PROVIDER_FAILED" ? 502 : 400;
+
+    return reply.code(statusCode).send({
       code: error.code,
       error: error.message
     });
@@ -119,6 +122,21 @@ function requireAgentManage(role: Parameters<typeof canPerform>[0], reply: Fasti
     error: "Agent management permission required."
   });
   return false;
+}
+
+function isKnowledgeUploadError(error: unknown): error is Error {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return [
+    "Invalid knowledge file content.",
+    "Unsupported knowledge file type.",
+    "Knowledge file could not be read.",
+    "Knowledge file did not contain readable text.",
+    "Knowledge file is too large.",
+    "Knowledge file text is too large."
+  ].includes(error.message);
 }
 
 export const agentsRoutes: FastifyPluginAsync = async (app) => {
@@ -245,10 +263,7 @@ export const agentsRoutes: FastifyPluginAsync = async (app) => {
 
         return reply.code(201).send(source);
       } catch (error) {
-        if (
-          error instanceof Error &&
-          error.message.toLocaleLowerCase("pt-BR").includes("knowledge file")
-        ) {
+        if (isKnowledgeUploadError(error)) {
           return reply.code(400).send({ error: error.message });
         }
 

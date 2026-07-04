@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAgentTestChatService } from "./agent-test-chat.js";
+import { AgentTestChatError, createAgentTestChatService } from "./agent-test-chat.js";
 import type { AgentProvider } from "./provider-gateway.js";
 
 const baseAgent = {
@@ -171,5 +171,28 @@ describe("createAgentTestChatService", () => {
       "Vou chamar uma pessoa do time para confirmar essa informação com segurança."
     );
     expect(result.output.handoff.required).toBe(true);
+  });
+
+  it("returns a controlled error when the provider fails", async () => {
+    const prisma = buildPrisma({
+      aiKnowledgeSource: {
+        findMany: vi.fn().mockResolvedValue([])
+      }
+    });
+    const provider: AgentProvider = {
+      generate: vi.fn().mockRejectedValue(new Error("provider exploded"))
+    };
+    const service = createAgentTestChatService({ prisma, provider });
+
+    await expect(
+      service.sendMessage({
+        workspaceId: "workspace_a",
+        agentId: baseAgent.id,
+        messages: [{ role: "user", content: "Me fale mais sobre os produtos da Prymeira." }]
+      })
+    ).rejects.toMatchObject({
+      code: "AGENT_PROVIDER_FAILED",
+      message: "Não foi possível obter resposta do provedor de IA. Verifique a chave, modelo e URL em Ajustes."
+    } satisfies Pick<AgentTestChatError, "code" | "message">);
   });
 });

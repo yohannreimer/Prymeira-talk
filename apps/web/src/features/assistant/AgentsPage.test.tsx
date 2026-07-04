@@ -33,10 +33,11 @@ describe("AgentsPage", () => {
     expect(html).toContain("Mensagem de teste");
     expect(html).toContain("Resetar teste");
     expect(html).toContain("Conhecimento");
-    expect(html).toContain("Arquivo PDF ou texto");
-    expect(html).toContain("Adicionar documento");
+    expect(html).toContain("Fontes de conhecimento salvas");
+    expect(html).toContain("Arquivo PDF ou TXT");
+    expect(html).toContain("Subir documento");
+    expect(html).toContain("Adicionar conhecimento");
     expect(html).toContain("Preços");
     expect(html).toContain("FAQ");
-    expect(html).toContain("Texto");
   });
 });
