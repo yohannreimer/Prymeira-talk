@@ -70,7 +70,7 @@ export const uploadsRoutes: FastifyPluginAsync<UploadsRoutesOptions> = async (ap
     }).safeParse(request.params);
 
     if (!params.success) {
-      return reply.code(404).send({ error: "Arquivo nao encontrado." });
+      return reply.code(404).send({ error: "Arquivo não encontrado." });
     }
 
     const filePath = path.join(
@@ -87,7 +87,7 @@ export const uploadsRoutes: FastifyPluginAsync<UploadsRoutesOptions> = async (ap
         .type(contentTypeForFileName(params.data.fileName))
         .send(fileBuffer);
     } catch {
-      return reply.code(404).send({ error: "Arquivo nao encontrado." });
+      return reply.code(404).send({ error: "Arquivo não encontrado." });
     }
   }
 

@@ -287,7 +287,7 @@ export function ContactsPage() {
         );
       } catch (loadError) {
         if (!isMounted) return;
-        setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar contatos.");
+        setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar contatos.");
       } finally {
         if (isMounted) {
           setIsLoading(false);
@@ -337,7 +337,7 @@ export function ContactsPage() {
         );
       } catch (loadError) {
         if (!isMounted) return;
-        setBoardError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar boards.");
+        setBoardError(loadError instanceof Error ? loadError.message : "Não foi possível carregar boards.");
       } finally {
         if (isMounted) {
           setIsBoardLoading(false);
@@ -376,7 +376,7 @@ export function ContactsPage() {
         setBoardContacts(nextBoardContacts);
       } catch (loadError) {
         if (!isMounted) return;
-        setBoardError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar o board.");
+        setBoardError(loadError instanceof Error ? loadError.message : "Não foi possível carregar o board.");
       } finally {
         if (isMounted) {
           setIsBoardLoading(false);
@@ -586,7 +586,7 @@ export function ContactsPage() {
       setCreateForm(emptyForm);
       setSaveMessage("Contato criado.");
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "Nao foi possivel criar o contato.");
+      setError(createError instanceof Error ? createError.message : "Não foi possível criar o contato.");
     } finally {
       setIsSaving(false);
     }
@@ -607,7 +607,7 @@ export function ContactsPage() {
       setSelectedContactId(contact.id);
       setSaveMessage("Contato atualizado.");
     } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : "Nao foi possivel atualizar o contato.");
+      setError(updateError instanceof Error ? updateError.message : "Não foi possível atualizar o contato.");
     } finally {
       setIsSaving(false);
     }
@@ -630,7 +630,7 @@ export function ContactsPage() {
       window.history.pushState({ module: "atendimento", conversation: conversation.id }, "", `${url.pathname}${url.search}${url.hash}`);
       window.dispatchEvent(new PopStateEvent("popstate"));
     } catch (startError) {
-      setError(startError instanceof Error ? startError.message : "Nao foi possivel iniciar a conversa.");
+      setError(startError instanceof Error ? startError.message : "Não foi possível iniciar a conversa.");
     } finally {
       setIsStartingConversation(false);
     }
@@ -689,7 +689,7 @@ export function ContactsPage() {
       setBoardPanelMode(null);
       setSaveMessage("Board criado.");
     } catch (createError) {
-      setBoardError(createError instanceof Error ? createError.message : "Nao foi possivel criar o board.");
+      setBoardError(createError instanceof Error ? createError.message : "Não foi possível criar o board.");
     } finally {
       setIsBoardSaving(false);
     }
@@ -725,7 +725,7 @@ export function ContactsPage() {
       setBoardPanelMode(null);
       setSaveMessage("Board atualizado.");
     } catch (updateError) {
-      setBoardError(updateError instanceof Error ? updateError.message : "Nao foi possivel atualizar o board.");
+      setBoardError(updateError instanceof Error ? updateError.message : "Não foi possível atualizar o board.");
     } finally {
       setIsBoardSaving(false);
     }
@@ -751,7 +751,7 @@ export function ContactsPage() {
       setBoardPanelMode(nextBoards.length > 0 ? null : "create-board");
       setSaveMessage("Board apagado.");
     } catch (deleteError) {
-      setBoardError(deleteError instanceof Error ? deleteError.message : "Nao foi possivel apagar o board.");
+      setBoardError(deleteError instanceof Error ? deleteError.message : "Não foi possível apagar o board.");
     } finally {
       setIsBoardSaving(false);
     }
@@ -785,7 +785,7 @@ export function ContactsPage() {
       setBoardPanelMode(null);
       setSaveMessage("Etapa criada.");
     } catch (createError) {
-      setBoardError(createError instanceof Error ? createError.message : "Nao foi possivel criar a etapa.");
+      setBoardError(createError instanceof Error ? createError.message : "Não foi possível criar a etapa.");
     } finally {
       setIsBoardSaving(false);
     }
@@ -813,7 +813,7 @@ export function ContactsPage() {
       updateSelectedBoardStages(stages);
       setSaveMessage("Etapa atualizada.");
     } catch (updateError) {
-      setBoardError(updateError instanceof Error ? updateError.message : "Nao foi possivel atualizar a etapa.");
+      setBoardError(updateError instanceof Error ? updateError.message : "Não foi possível atualizar a etapa.");
     } finally {
       setIsBoardSaving(false);
     }
@@ -840,7 +840,7 @@ export function ContactsPage() {
       updateSelectedBoardStages(boardStages.filter((currentStage) => currentStage.id !== result.stageId));
       setSaveMessage("Etapa apagada.");
     } catch (deleteError) {
-      setBoardError(deleteError instanceof Error ? deleteError.message : "Nao foi possivel apagar a etapa.");
+      setBoardError(deleteError instanceof Error ? deleteError.message : "Não foi possível apagar a etapa.");
     } finally {
       setIsBoardSaving(false);
     }
@@ -873,7 +873,7 @@ export function ContactsPage() {
 
       updateSelectedBoardStages(stages);
     } catch (reorderError) {
-      setBoardError(reorderError instanceof Error ? reorderError.message : "Nao foi possivel reordenar etapas.");
+      setBoardError(reorderError instanceof Error ? reorderError.message : "Não foi possível reordenar etapas.");
     } finally {
       setIsBoardSaving(false);
     }
@@ -911,7 +911,7 @@ export function ContactsPage() {
       setBoardPanelMode(null);
       setSaveMessage("Contato adicionado ao board.");
     } catch (addError) {
-      setBoardError(addError instanceof Error ? addError.message : "Nao foi possivel adicionar ao board.");
+      setBoardError(addError instanceof Error ? addError.message : "Não foi possível adicionar ao board.");
     } finally {
       setIsBoardSaving(false);
     }
@@ -947,7 +947,7 @@ export function ContactsPage() {
       );
       setSelectedContactId(nextMembership.contactId);
     } catch (moveError) {
-      setBoardError(moveError instanceof Error ? moveError.message : "Nao foi possivel mover no board.");
+      setBoardError(moveError instanceof Error ? moveError.message : "Não foi possível mover no board.");
     } finally {
       setIsBoardSaving(false);
     }
@@ -982,7 +982,7 @@ export function ContactsPage() {
       );
       setSaveMessage("Contato removido do board.");
     } catch (removeError) {
-      setBoardError(removeError instanceof Error ? removeError.message : "Nao foi possivel remover do board.");
+      setBoardError(removeError instanceof Error ? removeError.message : "Não foi possível remover do board.");
     } finally {
       setIsBoardSaving(false);
     }
@@ -1052,7 +1052,7 @@ export function ContactsPage() {
             value={search}
           />
         </label>
-        <div className="segmented-control" aria-label="Visualizacao de contatos">
+        <div className="segmented-control" aria-label="Visualização de contatos">
           <button
             className={viewMode === "list" ? "is-active" : ""}
             onClick={() => setViewMode("list")}
@@ -1259,7 +1259,7 @@ export function ContactsPage() {
                           />
                         </label>
                         <label>
-                          Descricao
+                          Descrição
                           <input
                             disabled={isBoardSaving}
                             onChange={(event) =>
@@ -1299,7 +1299,7 @@ export function ContactsPage() {
                           />
                         </label>
                         <label>
-                          Descricao
+                          Descrição
                           <input
                             disabled={!selectedBoard || isBoardSaving}
                             onChange={(event) =>

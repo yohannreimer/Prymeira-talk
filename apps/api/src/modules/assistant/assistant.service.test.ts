@@ -29,8 +29,8 @@ const baseAction = {
   userId: null,
   actionType: "summary",
   mode: "simulated" as const,
-  input: { transcript: "Cliente quer saber preco." },
-  result: { summary: "Cliente pediu informacoes de preco.", mode: "simulated" },
+  input: { transcript: "Cliente quer saber preço." },
+  result: { summary: "Cliente pediu informações de preço.", mode: "simulated" },
   status: "completed",
   createdAt: new Date("2026-05-21T14:00:00.000Z")
 };
@@ -91,7 +91,7 @@ describe("assistant service", () => {
       actionType,
       conversationId,
       contactId,
-      input: { transcript: "Cliente quer saber preco." }
+      input: { transcript: "Cliente quer saber preço." }
     });
 
     expect(action).toEqual(
@@ -152,7 +152,7 @@ describe("assistant service", () => {
         actionType: "summary",
         conversationId,
         contactId,
-        input: { transcript: "Cliente quer saber preco." }
+        input: { transcript: "Cliente quer saber preço." }
       })
     ).rejects.toMatchObject({ code: "ASSISTANT_CONVERSATION_NOT_FOUND" });
     expect(prisma.aiActionLog.create).not.toHaveBeenCalled();

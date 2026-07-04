@@ -547,7 +547,7 @@ function createDocumentRequiredHandoffOutput(): AgentOutput {
 
   return {
     confidence: 0.2,
-    reply: "Vou chamar uma pessoa do time para confirmar essa informacao com seguranca.",
+    reply: "Vou chamar uma pessoa do time para confirmar essa informação com segurança.",
     actions: [{ type: "request_handoff", reason }],
     handoff: {
       required: true,

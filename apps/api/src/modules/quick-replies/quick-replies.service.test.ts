@@ -7,7 +7,7 @@ const quickReply = {
   id: "00000000-0000-4000-8000-000000000901",
   workspaceId,
   title: "Boas-vindas",
-  body: "Ola! Como posso ajudar?",
+  body: "Olá! Como posso ajudar?",
   category: "Atendimento",
   createdAt: new Date("2026-05-24T12:00:00.000Z"),
   updatedAt: new Date("2026-05-24T12:00:00.000Z")
@@ -58,7 +58,7 @@ describe("quick replies routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/quick-replies",
-      payload: { title: "Boas-vindas", body: "Ola!", category: "Atendimento" }
+      payload: { title: "Boas-vindas", body: "Olá!", category: "Atendimento" }
     });
 
     expect(response.statusCode).toBe(201);
@@ -66,7 +66,7 @@ describe("quick replies routes", () => {
       data: {
         workspaceId,
         title: "Boas-vindas",
-        body: "Ola!",
+        body: "Olá!",
         category: "Atendimento"
       }
     });
@@ -110,7 +110,7 @@ describe("quick replies routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/quick-replies",
-      payload: { title: "", body: "Ola!" }
+      payload: { title: "", body: "Olá!" }
     });
 
     expect(response.statusCode).toBe(400);

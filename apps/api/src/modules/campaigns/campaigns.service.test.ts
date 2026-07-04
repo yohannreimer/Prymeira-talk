@@ -53,10 +53,10 @@ const secondContactId = "00000000-0000-4000-8000-000000000204";
 const baseCampaign = {
   id: campaignId,
   workspaceId: "workspace_a",
-  name: "Reativacao VIP",
+  name: "Reativação VIP",
   status: "draft" as const,
   audience: { type: "board", boardId },
-  messageBody: "Oi {{name}}, temos uma novidade para voce.",
+  messageBody: "Oi {{name}}, temos uma novidade para você.",
   templates: [],
   fallbackName: "cliente",
   cadence: {
@@ -82,7 +82,7 @@ const baseRecipients = [
     result: {
       mode: "simulated",
       result: "sent_simulated",
-      messagePreview: "Oi Ana, temos uma novidade para voce."
+      messagePreview: "Oi Ana, temos uma novidade para você."
     },
     createdAt: new Date("2026-05-21T12:01:00.000Z"),
     updatedAt: new Date("2026-05-21T12:01:00.000Z"),
@@ -104,7 +104,7 @@ const baseRecipients = [
     result: {
       mode: "simulated",
       result: "sent_simulated",
-      messagePreview: "Oi Bruno, temos uma novidade para voce."
+      messagePreview: "Oi Bruno, temos uma novidade para você."
     },
     createdAt: new Date("2026-05-21T12:01:00.000Z"),
     updatedAt: new Date("2026-05-21T12:01:00.000Z"),
@@ -1442,7 +1442,7 @@ describe("campaigns service", () => {
       workspaceId: "workspace_a",
       campaignId,
       data: {
-        name: "Reativacao editada",
+        name: "Reativação editada",
         scheduledAt: null
       }
     });
@@ -1618,7 +1618,7 @@ describe("campaigns routes", () => {
       method: "POST" as const,
       url: "/campaigns",
       payload: {
-        name: "Reativacao VIP",
+        name: "Reativação VIP",
         audience: { type: "board", boardId },
         messageBody: "Oi {{name}}"
       }

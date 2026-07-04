@@ -699,7 +699,7 @@ describe("channels service", () => {
     if (!(error instanceof Error)) {
       throw new Error("Expected an Error instance.");
     }
-    expect(error.message).toContain("ativacao da licenca");
+    expect(error.message).toContain("ativação da licenca");
     expect(prisma.channel.update).not.toHaveBeenCalled();
   });
 

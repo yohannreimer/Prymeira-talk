@@ -319,7 +319,7 @@ describe("Evolution client", () => {
                 },
                 {
                   type: "BODY",
-                  text: "Ola {{1}}, sua conta esta pronta."
+                  text: "Olá {{1}}, sua conta está pronta."
                 }
               ]
             },
@@ -360,7 +360,7 @@ describe("Evolution client", () => {
         language: "pt_BR",
         status: "APPROVED",
         category: "MARKETING",
-        preview: "Ola {{1}}, sua conta esta pronta.",
+        preview: "Olá {{1}}, sua conta está pronta.",
         components: [
           {
             type: "HEADER",
@@ -368,7 +368,7 @@ describe("Evolution client", () => {
           },
           {
             type: "BODY",
-            text: "Ola {{1}}, sua conta esta pronta."
+            text: "Olá {{1}}, sua conta está pronta."
           }
         ]
       },

@@ -10,14 +10,14 @@ describe("selectRelevantKnowledge", () => {
       sources: [
         {
           id: "prices",
-          title: "Tabela de precos",
-          content: "Plano profissional custa R$ 199 por mes. Inclui automacoes e atendimento.",
+          title: "Tabela de preços",
+          content: "Plano profissional custa R$ 199 por mês. Inclui automações e atendimento.",
           metadata: { category: "precos", keywords: ["plano profissional", "mensalidade"] }
         },
         {
           id: "policies",
-          title: "Politicas de cancelamento",
-          content: "Cancelamentos podem ser feitos com aviso previo de 30 dias.",
+          title: "Políticas de cancelamento",
+          content: "Cancelamentos podem ser feitos com aviso prévio de 30 dias.",
           metadata: { category: "politicas", keywords: ["cancelamento"] }
         }
       ]
@@ -27,8 +27,8 @@ describe("selectRelevantKnowledge", () => {
     expect(result.selected[0]).toEqual(
       expect.objectContaining({
         id: "prices",
-        title: "Tabela de precos",
-        content: "Plano profissional custa R$ 199 por mes. Inclui automacoes e atendimento.",
+        title: "Tabela de preços",
+        content: "Plano profissional custa R$ 199 por mês. Inclui automações e atendimento.",
         category: "precos",
         includedAs: "full_document"
       })
@@ -47,14 +47,14 @@ describe("selectRelevantKnowledge", () => {
       sources: [
         {
           id: "prices",
-          title: "Tabela de precos",
-          content: "Plano profissional custa R$ 199 por mes.",
+          title: "Tabela de preços",
+          content: "Plano profissional custa R$ 199 por mês.",
           metadata: { category: "precos", keywords: ["mensalidade"] }
         },
         {
           id: "product",
           title: "Recursos do produto",
-          content: "O produto organiza conversas de WhatsApp com automacoes.",
+          content: "O produto organiza conversas de WhatsApp com automações.",
           metadata: { category: "produto", keywords: ["automacoes"] }
         }
       ]
@@ -66,21 +66,21 @@ describe("selectRelevantKnowledge", () => {
 
   it("does not treat duration questions as pricing questions because they use quanto", () => {
     const result = selectRelevantKnowledge({
-      latestMessage: "Quanto tempo leva a implantacao?",
+      latestMessage: "Quanto tempo leva a implantação?",
       conversationHistory:
-        "[2026-06-23T18:00:00.000Z] cliente: Antes eu tinha perguntado sobre preco e mensalidade.",
+        "[2026-06-23T18:00:00.000Z] cliente: Antes eu tinha perguntado sobre preço e mensalidade.",
       instruction: null,
       sources: [
         {
           id: "prices",
-          title: "Tabela de precos",
-          content: "Plano profissional custa R$ 199 por mes.",
+          title: "Tabela de preços",
+          content: "Plano profissional custa R$ 199 por mês.",
           metadata: { category: "precos" }
         },
         {
           id: "onboarding",
           title: "Guia de onboarding",
-          content: "A implantacao leva 7 dias uteis com treinamento.",
+          content: "A implantação leva 7 dias uteis com treinamento.",
           metadata: { category: "onboarding" }
         }
       ]
@@ -90,16 +90,16 @@ describe("selectRelevantKnowledge", () => {
   });
 
   it("marks oversized documents as snippets", () => {
-    const longContent = `${"Trecho geral sem valores. ".repeat(900)}Preco do plano profissional: R$ 199 por mes. Detalhes finais.`;
+    const longContent = `${"Trecho geral sem valores. ".repeat(900)}Preço do plano profissional: R$ 199 por mês. Detalhes finais.`;
 
     const result = selectRelevantKnowledge({
-      latestMessage: "Qual o preco do plano profissional?",
+      latestMessage: "Qual o preço do plano profissional?",
       conversationHistory: "",
       instruction: null,
       sources: [
         {
           id: "long_prices",
-          title: "Precos",
+          title: "Preços",
           content: longContent,
           metadata: { category: "precos" }
         }
@@ -109,6 +109,6 @@ describe("selectRelevantKnowledge", () => {
     expect(result.selected).toHaveLength(1);
     expect(result.selected[0]?.includedAs).toBe("snippet");
     expect(result.selected[0]?.content.length).toBeLessThanOrEqual(18_000);
-    expect(result.selected[0]?.content).toContain("Preco do plano profissional");
+    expect(result.selected[0]?.content).toContain("Preço do plano profissional");
   });
 });

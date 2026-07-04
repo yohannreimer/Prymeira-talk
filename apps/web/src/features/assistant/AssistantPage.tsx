@@ -23,7 +23,7 @@ export function AssistantPage() {
   const [actionType, setActionType] = useState<AssistantActionType>("summary");
   const [conversationId, setConversationId] = useState("");
   const [contactId, setContactId] = useState("");
-  const [prompt, setPrompt] = useState("Cliente quer saber preco e prazo de implantacao.");
+  const [prompt, setPrompt] = useState("Cliente quer saber preço e prazo de implantação.");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);

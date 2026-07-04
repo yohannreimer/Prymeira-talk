@@ -72,7 +72,7 @@ const baseConversationMessages = [
     conversationId: ids.conversation,
     direction: "inbound",
     type: "text",
-    body: "Oi, voces atendem hoje?",
+    body: "Oi, vocês atendem hoje?",
     createdAt: new Date("2026-06-23T17:58:00.000Z")
   },
   {
@@ -147,7 +147,7 @@ function buildPrisma(overrides: Record<string, any> = {}) {
       findMany: vi.fn().mockResolvedValue([
         {
           id: "knowledge_1",
-          title: "Tabela de precos",
+          title: "Tabela de preços",
           content: "Plano profissional custa R$ 199 por mes.",
           metadata: { category: "precos", keywords: ["plano profissional", "mensalidade"] },
           status: "ready"
@@ -225,12 +225,12 @@ describe("createAgentRuntime", () => {
         userPrompt: "Oi, quanto custa o plano profissional?",
         context: expect.objectContaining({
           messageBody: "Oi, quanto custa o plano profissional?",
-          conversationHistory: expect.stringContaining("cliente: Oi, voces atendem hoje?"),
+          conversationHistory: expect.stringContaining("cliente: Oi, vocês atendem hoje?"),
           conversationMessages: expect.arrayContaining([
             expect.objectContaining({
               id: "message_previous_inbound",
               label: "cliente",
-              body: "Oi, voces atendem hoje?"
+              body: "Oi, vocês atendem hoje?"
             }),
             expect.objectContaining({
               id: "message_previous_outbound",
@@ -242,7 +242,7 @@ describe("createAgentRuntime", () => {
           tags: ["Lead"],
           knowledge: [
             {
-              title: "Tabela de precos",
+              title: "Tabela de preços",
               content: "Plano profissional custa R$ 199 por mes."
             }
           ]
@@ -283,7 +283,7 @@ describe("createAgentRuntime", () => {
         knowledgeMatches: [
           expect.objectContaining({
             id: "knowledge_1",
-            title: "Tabela de precos",
+            title: "Tabela de preços",
             category: "precos",
             score: expect.any(Number),
             reasons: expect.arrayContaining(["category_match", "keyword_match"]),
@@ -364,7 +364,7 @@ describe("createAgentRuntime", () => {
     });
     const provider = buildProvider({
       confidence: 0.84,
-      reply: "Inventaria um preco.",
+      reply: "Inventaria um preço.",
       actions: [],
       handoff: { required: false, reason: null }
     });
@@ -387,7 +387,7 @@ describe("createAgentRuntime", () => {
         confidence: 0.2,
         knowledgeMatches: [],
         output: expect.objectContaining({
-          reply: "Vou chamar uma pessoa do time para confirmar essa informacao com seguranca.",
+          reply: "Vou chamar uma pessoa do time para confirmar essa informação com segurança.",
           handoff: expect.objectContaining({
             required: true
           })
@@ -408,7 +408,7 @@ describe("createAgentRuntime", () => {
     });
     const provider = buildProvider({
       confidence: 0.84,
-      reply: "Ola!",
+      reply: "Olá!",
       actions: [],
       handoff: { required: false, reason: null }
     });
@@ -441,7 +441,7 @@ describe("createAgentRuntime", () => {
     const provider = buildProvider({
       confidence: 0.32,
       reply: "Vou chamar uma pessoa do time.",
-      actions: [{ type: "request_handoff", reason: "Baixa confianca." }],
+      actions: [{ type: "request_handoff", reason: "Baixa confiança." }],
       handoff: { required: false, reason: null }
     });
     const runtime = createAgentRuntime({ prisma, provider });
@@ -461,7 +461,7 @@ describe("createAgentRuntime", () => {
       where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.session } },
       data: expect.objectContaining({
         status: "handoff_requested",
-        handoffReason: "Baixa confianca.",
+        handoffReason: "Baixa confiança.",
         messageCount: { increment: 1 }
       })
     });
@@ -565,7 +565,7 @@ describe("createAgentRuntime", () => {
         knowledgeMatches: [
           expect.objectContaining({
             id: "knowledge_1",
-            title: "Tabela de precos",
+            title: "Tabela de preços",
             category: "precos",
             reasons: expect.arrayContaining(["category_match"]),
             includedAs: "full_document"
@@ -623,7 +623,7 @@ describe("createAgentRuntime", () => {
     });
     const provider = buildProvider({
       confidence: 0.84,
-      reply: "Ola!",
+      reply: "Olá!",
       actions: [],
       handoff: { required: false, reason: null }
     });
@@ -659,7 +659,7 @@ describe("createAgentRuntime", () => {
     });
     const provider = buildProvider({
       confidence: 0.84,
-      reply: "Ola!",
+      reply: "Olá!",
       actions: [],
       handoff: { required: false, reason: null }
     });

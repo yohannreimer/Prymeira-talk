@@ -41,7 +41,7 @@ const departments = [
 
 const tags = [
   { id: "40000000-0000-4000-8000-000000000001", name: "Quente", color: "#d9534f" },
-  { id: "40000000-0000-4000-8000-000000000002", name: "Renovacao", color: "#24564a" },
+  { id: "40000000-0000-4000-8000-000000000002", name: "Renovação", color: "#24564a" },
   { id: "40000000-0000-4000-8000-000000000003", name: "Suporte", color: "#4f6f9f" }
 ];
 
@@ -211,21 +211,21 @@ async function main() {
       }
     },
     update: {
-      description: "Agente autonomo de onboarding e triagem.",
+      description: "Agente autônomo de onboarding e triagem.",
       status: "active",
-      systemPrompt: "Voce e a Secretaria IA da Prymeira Talk. Responda com clareza e encaminhe quando nao souber.",
+      systemPrompt: "Você e a Secretaria IA da Prymeira Talk. Responda com clareza e encaminhe quando não souber.",
       allowedActions: ["send_message", "add_tag", "create_internal_note", "request_handoff"]
     },
     create: {
       id: demoAgentId,
       workspaceId,
       name: "Secretaria IA",
-      description: "Agente autonomo de onboarding e triagem.",
+      description: "Agente autônomo de onboarding e triagem.",
       status: "active",
       providerMode: "prymeira_managed",
       provider: "simulated",
       model: "prymeira-simulated",
-      systemPrompt: "Voce e a Secretaria IA da Prymeira Talk. Responda com clareza e encaminhe quando nao souber.",
+      systemPrompt: "Você e a Secretaria IA da Prymeira Talk. Responda com clareza e encaminhe quando não souber.",
       behaviorConfig: {},
       handoffConfig: { confidenceThreshold: 0.55 },
       limitsConfig: { maxMessagesPerSession: 12 },
@@ -241,7 +241,7 @@ async function main() {
       }
     },
     update: {
-      content: "Atendemos em horario comercial e encaminhamos demandas complexas para o time.",
+      content: "Atendemos em horário comercial e encaminhamos demandas complexas para o time.",
       status: "ready"
     },
     create: {
@@ -249,8 +249,8 @@ async function main() {
       workspaceId,
       agentId: demoAgent.id,
       type: "faq",
-      title: "Horario de atendimento",
-      content: "Atendemos em horario comercial e encaminhamos demandas complexas para o time.",
+      title: "Horário de atendimento",
+      content: "Atendemos em horário comercial e encaminhamos demandas complexas para o time.",
       status: "ready",
       metadata: {}
     }

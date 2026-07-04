@@ -897,7 +897,7 @@ describe("Evolution webhook routes", () => {
         data: expect.objectContaining({
           providerMessageId: "provider_audio_1",
           type: "audio",
-          body: "Audio recebido",
+          body: "Áudio recebido",
           mediaUrl: "data:audio/ogg;base64,YXVkaW8="
         })
       });

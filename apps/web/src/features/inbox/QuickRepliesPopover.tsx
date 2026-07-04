@@ -79,7 +79,7 @@ export function QuickRepliesPopover({
       }
       startCreate();
     } catch (submitError) {
-      setMutationError(quickReplyMutationErrorMessage(submitError, "Nao foi possivel salvar mensagem padrao."));
+      setMutationError(quickReplyMutationErrorMessage(submitError, "Não foi possível salvar mensagem padrão."));
     } finally {
       setIsSubmitting(false);
     }
@@ -93,21 +93,21 @@ export function QuickRepliesPopover({
     try {
       await onDelete(id);
     } catch (deleteError) {
-      setMutationError(quickReplyMutationErrorMessage(deleteError, "Nao foi possivel apagar mensagem padrao."));
+      setMutationError(quickReplyMutationErrorMessage(deleteError, "Não foi possível apagar mensagem padrão."));
     } finally {
       setDeletingReplyId(null);
     }
   }
 
   return (
-    <div className="quick-replies-popover" aria-label="Mensagens padrao">
+    <div className="quick-replies-popover" aria-label="Mensagens padrão">
       <div className="quick-replies-header">
-        <strong>Mensagens padrao</strong>
+        <strong>Mensagens padrão</strong>
         <button
           type="button"
           className="composer-tool"
           onClick={startCreate}
-          aria-label="Nova mensagem padrao"
+          aria-label="Nova mensagem padrão"
           disabled={isMutating}
         >
           <Plus size={15} aria-hidden="true" />
@@ -139,7 +139,7 @@ export function QuickRepliesPopover({
               type="button"
               className="icon-button"
               onClick={() => startEdit(reply)}
-              aria-label="Editar mensagem padrao"
+              aria-label="Editar mensagem padrão"
               disabled={isMutating}
             >
               <Pencil size={14} aria-hidden="true" />
@@ -148,7 +148,7 @@ export function QuickRepliesPopover({
               type="button"
               className="icon-button danger"
               onClick={() => void handleDelete(reply.id)}
-              aria-label="Apagar mensagem padrao"
+              aria-label="Apagar mensagem padrão"
               disabled={isMutating}
             >
               <Trash2 size={14} aria-hidden="true" />
@@ -159,7 +159,7 @@ export function QuickRepliesPopover({
       <form className="quick-reply-form" onSubmit={submit}>
         <input
           required
-          placeholder="Titulo"
+          placeholder="Título"
           value={title}
           onChange={(event) => setTitle(event.target.value)}
           disabled={isSubmitting}

@@ -179,7 +179,7 @@ export function ChannelsPage() {
         setMetaProviderKey((current) => current || metaSettings.providerKey);
       } catch (loadError) {
         if (!isMounted) return;
-        setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar canais.");
+        setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar canais.");
       } finally {
         if (isMounted) {
           setIsLoading(false);
@@ -306,7 +306,7 @@ export function ChannelsPage() {
       })
       .catch(() => {
         if (!isCancelled) {
-          setQrRenderError("Nao foi possivel renderizar o QR recebido.");
+          setQrRenderError("Não foi possível renderizar o QR recebido.");
         }
       });
 
@@ -337,7 +337,7 @@ export function ChannelsPage() {
     }
 
     if (createProvider === "meta_cloud" && !metaCreateSettings.enabled) {
-      setError("A integracao Meta Cloud nao esta habilitada.");
+      setError("A integração Meta Cloud não esta habilitada.");
       return;
     }
 
@@ -373,7 +373,7 @@ export function ChannelsPage() {
         setNewChannelName("");
         setMetaPhoneNumber("");
         setNotice(channel.status === "failed"
-          ? "Canal Meta oficial criado, mas o webhook nao foi configurado na Evolution."
+          ? "Canal Meta oficial criado, mas o webhook não foi configurado na Evolution."
           : "Canal Meta oficial criado e webhook configurado.");
         return;
       }
@@ -398,7 +398,7 @@ export function ChannelsPage() {
       setQrDrawerOpen(true);
       setNotice("Sessao QR iniciada.");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Nao foi possivel criar o canal.");
+      setError(actionError instanceof Error ? actionError.message : "Não foi possível criar o canal.");
     } finally {
       setIsSaving(false);
     }
@@ -450,7 +450,7 @@ export function ChannelsPage() {
   }
 
   async function deleteChannel(channel: ChannelDto) {
-    const confirmed = window.confirm(`Apagar o canal "${channelTitle(channel)}"? Esta acao remove as conversas ligadas a este canal.`);
+    const confirmed = window.confirm(`Apagar o canal "${channelTitle(channel)}"? Esta ação remove as conversas ligadas a este canal.`);
     if (!confirmed) return;
 
     setIsSaving(true);
@@ -500,7 +500,7 @@ export function ChannelsPage() {
       setSelectedChannelId(result.channel.id);
       setNotice("Mensagem inbound de teste enviada para a fila.");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "Nao foi possivel atualizar o canal.");
+      setError(actionError instanceof Error ? actionError.message : "Não foi possível atualizar o canal.");
     } finally {
       setIsSaving(false);
     }
@@ -578,7 +578,7 @@ export function ChannelsPage() {
                     <small>{channelProviderLabel(channel)}</small>
                   </span>
                   <span className="channel-row-phone">
-                    {channel.phoneNumber ?? "Numero ainda nao identificado"}
+                    {channel.phoneNumber ?? "Número ainda não identificado"}
                   </span>
                 </button>
                 <div className="channel-row-actions">
@@ -682,12 +682,12 @@ export function ChannelsPage() {
                       onChange={(event) => setMetaProviderKey(event.target.value)}
                       placeholder={metaCreateSettings.connectionMode === "evolution_official"
                         ? "instancia-oficial-na-evolution"
-                        : "ID do numero no WhatsApp Cloud API"}
+                        : "ID do número no WhatsApp Cloud API"}
                       value={metaProviderKey}
                     />
                   </div>
                   <div className="context-card">
-                    <label className="field-label" htmlFor="meta-phone-number">Numero exibido</label>
+                    <label className="field-label" htmlFor="meta-phone-number">Número exibido</label>
                     <input
                       className="text-input"
                       id="meta-phone-number"

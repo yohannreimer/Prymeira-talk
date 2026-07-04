@@ -158,7 +158,7 @@ describe("executeAgentActions", () => {
 
     await executeAgentActions(prisma, {
       ...baseInput,
-      actions: [{ type: "request_handoff", reason: "Baixa confianca" }]
+      actions: [{ type: "request_handoff", reason: "Baixa confiança" }]
     });
 
     expect(prisma.conversation.update).toHaveBeenCalledWith({
@@ -172,7 +172,7 @@ describe("executeAgentActions", () => {
       where: { workspaceId_id: { workspaceId: "workspace_a", id: "session_1" } },
       data: expect.objectContaining({
         status: "handoff_requested",
-        handoffReason: "Baixa confianca"
+        handoffReason: "Baixa confiança"
       })
     });
   });
@@ -182,7 +182,7 @@ describe("executeAgentActions", () => {
 
     await executeAgentActions(prisma, {
       ...baseInput,
-      actions: [{ type: "request_handoff", reason: "Baixa confianca" }]
+      actions: [{ type: "request_handoff", reason: "Baixa confiança" }]
     });
 
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
@@ -208,7 +208,7 @@ describe("executeAgentActions", () => {
     const results = await executeAgentActions(prisma, {
       ...baseInput,
       allowedActions: ["send_message"],
-      actions: [{ type: "send_message", body: "Ola!" }]
+      actions: [{ type: "send_message", body: "Olá!" }]
     });
 
     expect(results).toEqual([{ type: "send_message", status: "skipped" }]);

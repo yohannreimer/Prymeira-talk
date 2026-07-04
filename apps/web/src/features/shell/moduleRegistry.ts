@@ -48,7 +48,7 @@ export const talkModules: TalkModule[] = [
   },
   {
     key: "automacoes",
-    label: "Automacoes",
+    label: "Automações",
     Icon: Workflow
   },
   {
@@ -58,7 +58,7 @@ export const talkModules: TalkModule[] = [
   },
   {
     key: "relatorios",
-    label: "Relatorios",
+    label: "Relatórios",
     Icon: BarChart3
   },
   {

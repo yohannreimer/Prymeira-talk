@@ -989,7 +989,7 @@ export function createConversationsService(
 
       if (input.action === "request_ai_suggestion") {
         aiSuggestion =
-          "Sugestao: responda confirmando o pedido, recapitule o proximo passo e ofereca ajuda objetiva.";
+          "Sugestão: responda confirmando o pedido, recapitule o próximo passo e ofereça ajuda objetiva.";
         await prisma.aiActionLog.create({
           data: {
             workspaceId: input.workspaceId,

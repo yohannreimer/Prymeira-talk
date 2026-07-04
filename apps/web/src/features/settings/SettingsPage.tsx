@@ -506,7 +506,7 @@ export function SettingsPage() {
                       />
                     </label>
                     <p className="list-note">
-                      Os Instance names ficam em Canais, um por numero oficial Meta.
+                      Os Instance names ficam em Canais, um por número oficial Meta.
                     </p>
                   </>
                 )}

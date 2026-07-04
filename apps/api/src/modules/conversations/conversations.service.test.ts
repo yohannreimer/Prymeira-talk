@@ -1579,7 +1579,7 @@ describe("conversations service", () => {
         })
       })
     );
-    expect(aiResult.aiSuggestion).toContain("Sugestao");
+    expect(aiResult.aiSuggestion).toContain("Sugestão");
     expect(prisma.crmSyncAction.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({

@@ -399,7 +399,7 @@ export function createChannelsService(
           if (isEvolutionLicenseRequiredError(error)) {
             throw new ChannelsServiceError(
               "EVOLUTION_LICENSE_REQUIRED",
-              "Evolution API 2.4.0+ exige ativacao da licenca antes de criar sessoes WhatsApp. Ative a instancia no Evolution Manager ou configure a licenca no container da Evolution e tente novamente.",
+              "Evolution API 2.4.0+ exige ativação da licenca antes de criar sessoes WhatsApp. Ative a instancia no Evolution Manager ou configure a licenca no container da Evolution e tente novamente.",
               503
             );
           }

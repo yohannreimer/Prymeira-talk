@@ -128,7 +128,7 @@ describe("reports service", () => {
       { key: "conversations", label: "Conversas", value: 4, helper: "2 abertas" },
       { key: "messages", label: "Mensagens", value: 5, helper: "3 inbound" },
       { key: "campaignRecipients", label: "Disparos", value: 3, helper: "2 sent_simulated" },
-      { key: "automationRuns", label: "Automacoes", value: 2, helper: "2 completed" }
+      { key: "automationRuns", label: "Automações", value: 2, helper: "2 completed" }
     ]);
     expect(overview.conversationsByStatus).toEqual([
       { key: "open", label: "Abertas", value: 2 },

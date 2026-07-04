@@ -214,7 +214,7 @@ describe("crm service", () => {
     const action = await service.createLead({
       workspaceId: "workspace_a",
       contactId,
-      title: "Quer proposta de implantacao",
+      title: "Quer proposta de implantação",
       vinculaToken: "clerk-token"
     });
 
@@ -436,7 +436,7 @@ describe("crm service", () => {
       service.createLead({
         workspaceId: "workspace_a",
         contactId,
-        title: "Quer proposta de implantacao",
+        title: "Quer proposta de implantação",
         vinculaToken: "clerk-token"
       })
     ).rejects.toMatchObject({

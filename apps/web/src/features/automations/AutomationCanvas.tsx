@@ -299,7 +299,7 @@ export function AutomationCanvas({ agents, value, onChange, variant = "editor" }
 
       <div
         className={`automation-canvas-surface ${isFocusMode ? "is-focus-mode" : ""}`}
-        aria-label="Canvas da automacao"
+        aria-label="Canvas da automação"
       >
         <ReactFlow
           edges={edges}

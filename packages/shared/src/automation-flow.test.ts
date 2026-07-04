@@ -30,7 +30,7 @@ describe("automation flow contract", () => {
           id: "message-1",
           type: "send_message",
           position: { x: 260, y: 0 },
-          data: { title: "Enviar mensagem", config: { text: "Ola!" } }
+          data: { title: "Enviar mensagem", config: { text: "Olá!" } }
         }
       ],
       edges: [{ id: "edge-1", source: "trigger-1", target: "message-1" }]
@@ -54,7 +54,7 @@ describe("automation flow contract", () => {
           id: "message-1",
           type: "send_message",
           position: { x: 260, y: 0 },
-          data: { title: "Enviar mensagem", config: { text: "Ola!" } }
+          data: { title: "Enviar mensagem", config: { text: "Olá!" } }
         }
       ],
       edges: [
@@ -96,7 +96,7 @@ describe("automation flow contract", () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.errors).toContain("O bloco Classificar mensagem ainda nao pode ser usado em fluxos ativos.");
+    expect(result.errors).toContain("O bloco Classificar mensagem ainda não pode ser usado em fluxos ativos.");
   });
 
   it("requires at least one trigger node", () => {
@@ -108,7 +108,7 @@ describe("automation flow contract", () => {
             id: "message-1",
             type: "send_message",
             position: { x: 260, y: 0 },
-            data: { title: "Enviar mensagem", config: { text: "Ola!" } }
+            data: { title: "Enviar mensagem", config: { text: "Olá!" } }
           }
         ],
         edges: []
@@ -135,7 +135,7 @@ describe("automation flow contract", () => {
             id: "trigger-2",
             type: "trigger_keyword",
             position: { x: 260, y: 0 },
-            data: { title: "Palavra-chave", config: { keyword: "preco" } }
+            data: { title: "Palavra-chave", config: { keyword: "preço" } }
           }
         ],
         edges: []
@@ -162,7 +162,7 @@ describe("automation flow contract", () => {
             id: "message-1",
             type: "send_message",
             position: { x: 260, y: 0 },
-            data: { title: "Enviar mensagem", config: { text: "Ola!" } }
+            data: { title: "Enviar mensagem", config: { text: "Olá!" } }
           }
         ],
         edges: [{ id: "edge-1", source: "message-1", target: "trigger-1" }]
@@ -171,7 +171,7 @@ describe("automation flow contract", () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.errors).toContain("O gatilho nao pode receber conexoes.");
+    expect(result.errors).toContain("O gatilho não pode receber conexões.");
   });
 
   it("rejects duplicate edge ids", () => {
@@ -189,7 +189,7 @@ describe("automation flow contract", () => {
             id: "message-1",
             type: "send_message",
             position: { x: 260, y: 0 },
-            data: { title: "Enviar mensagem", config: { text: "Ola!" } }
+            data: { title: "Enviar mensagem", config: { text: "Olá!" } }
           }
         ],
         edges: [

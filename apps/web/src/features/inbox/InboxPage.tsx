@@ -205,9 +205,9 @@ function fileToDataUrl(file: File) {
         return;
       }
 
-      reject(new Error("Nao foi possivel ler o arquivo."));
+      reject(new Error("Não foi possível ler o arquivo."));
     });
-    reader.addEventListener("error", () => reject(new Error("Nao foi possivel ler o arquivo.")));
+    reader.addEventListener("error", () => reject(new Error("Não foi possível ler o arquivo.")));
     reader.readAsDataURL(file);
   });
 }
@@ -220,7 +220,7 @@ export function messageDisplayText(message: Pick<MessageDto, "body" | "type">) {
   const labels: Record<MessageDto["type"], string> = {
     text: "Mensagem sem texto.",
     image: "Imagem recebida",
-    audio: "Audio recebido",
+    audio: "Áudio recebido",
     file: "Arquivo recebido",
     template: "Template recebido",
     system: "Evento do sistema",
@@ -244,7 +244,7 @@ export function outboundStatusLabel(message: Pick<MessageDto, "direction" | "id"
 }
 
 export const metaClosedWindowMessage =
-  "A janela de atendimento esta fechada. Escolha um template aprovado da Meta para continuar.";
+  "A janela de atendimento está fechada. Escolha um template aprovado da Meta para continuar.";
 
 export function metaServiceWindowSendError(
   conversation: Pick<ConversationDto, "channelProvider" | "metaServiceWindowOpen"> | null | undefined
@@ -276,11 +276,11 @@ export function messageMediaLabel(message: Pick<MessageDto, "mediaUrl" | "type">
   const kind = messageMediaKind(message);
   const labels: Record<MessageMediaKind, string> = {
     image: "Abrir imagem",
-    audio: "Reproduzir audio",
-    file: message.mediaUrl && isVideoMediaUrl(message.mediaUrl) ? "Baixar video" : "Baixar arquivo"
+    audio: "Reproduzir áudio",
+    file: message.mediaUrl && isVideoMediaUrl(message.mediaUrl) ? "Baixar vídeo" : "Baixar arquivo"
   };
 
-  return kind ? labels[kind] : "Abrir midia";
+  return kind ? labels[kind] : "Abrir mídia";
 }
 
 function MessageMediaPreview(props: { message: MessageDto }) {
@@ -445,7 +445,7 @@ export function InboxPage() {
         if (isMounted) setQuickReplies(nextReplies);
       })
       .catch((loadError: unknown) => {
-        if (isMounted) setQuickRepliesError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar mensagens padrao.");
+        if (isMounted) setQuickRepliesError(loadError instanceof Error ? loadError.message : "Não foi possível carregar mensagens padrão.");
       })
       .finally(() => {
         if (isMounted) setIsQuickRepliesLoading(false);
@@ -504,7 +504,7 @@ export function InboxPage() {
         );
       } catch (loadError) {
         if (!isMounted) return;
-        setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar conversas.");
+        setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar conversas.");
       } finally {
         if (isMounted) {
           setIsLoading(false);
@@ -541,7 +541,7 @@ export function InboxPage() {
         window.requestAnimationFrame(scrollMessageThreadToBottom);
       } catch (loadError) {
         if (!isMounted) return;
-        setMessageError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar mensagens.");
+        setMessageError(loadError instanceof Error ? loadError.message : "Não foi possível carregar mensagens.");
       } finally {
         if (isMounted) {
           setIsLoadingMessages(false);
@@ -578,7 +578,7 @@ export function InboxPage() {
         setContactContext(nextContext);
       } catch (loadError) {
         if (!isMounted) return;
-        setContextError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar contexto.");
+        setContextError(loadError instanceof Error ? loadError.message : "Não foi possível carregar contexto.");
       } finally {
         if (isMounted) {
           setIsLoadingContext(false);
@@ -807,7 +807,7 @@ export function InboxPage() {
       );
     } catch (sendError) {
       if (selectedConversationIdRef.current === targetConversationId) {
-        setMessageError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar a mensagem.");
+        setMessageError(sendError instanceof Error ? sendError.message : "Não foi possível enviar a mensagem.");
         setMessages((current) =>
           current.map((message) =>
             message.id === optimisticMessage.id
@@ -841,7 +841,7 @@ export function InboxPage() {
 
     const caption = draft.trim();
     const mediaUrl = await fileToDataUrl(file).catch((fileError: unknown) => {
-      setMessageError(fileError instanceof Error ? fileError.message : "Nao foi possivel ler o arquivo.");
+      setMessageError(fileError instanceof Error ? fileError.message : "Não foi possível ler o arquivo.");
       return null;
     });
 
@@ -912,7 +912,7 @@ export function InboxPage() {
       );
     } catch (sendError) {
       if (selectedConversationIdRef.current === targetConversationId) {
-        setMessageError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar o arquivo.");
+        setMessageError(sendError instanceof Error ? sendError.message : "Não foi possível enviar o arquivo.");
         setMessages((current) =>
           current.map((message) =>
             message.id === optimisticMessage.id
@@ -942,7 +942,7 @@ export function InboxPage() {
       return result;
     } catch (actionError) {
       if (selectedConversationIdRef.current === targetConversationId) {
-        setContextError(actionError instanceof Error ? actionError.message : "Nao foi possivel executar a acao.");
+        setContextError(actionError instanceof Error ? actionError.message : "Não foi possível executar a ação.");
       }
       return null;
     } finally {
@@ -1025,7 +1025,7 @@ export function InboxPage() {
       );
     } catch (leadError) {
       setContextError(
-        leadError instanceof Error ? leadError.message : "Nao foi possivel enviar o lead ao CRM."
+        leadError instanceof Error ? leadError.message : "Não foi possível enviar o lead ao CRM."
       );
     } finally {
       setIsRunningAction(false);
@@ -1154,7 +1154,7 @@ export function InboxPage() {
         {selectedConversation ? (
           <div
             className="message-thread"
-            aria-label="Historico da conversa"
+            aria-label="Histórico da conversa"
             onScroll={() => {
               if (isMessageThreadNearBottom()) {
                 setNewMessagesBelow(0);
@@ -1165,7 +1165,7 @@ export function InboxPage() {
             {isLoadingMessages ? <p className="thread-note">Carregando mensagens...</p> : null}
             {messageError ? <p className="error-note">{messageError}</p> : null}
             {!isLoadingMessages && messages.length === 0 ? (
-              <p className="thread-note">Ainda nao ha mensagens nesta conversa.</p>
+              <p className="thread-note">Ainda não ha mensagens nesta conversa.</p>
             ) : null}
             {messages.map((message) => (
               <article

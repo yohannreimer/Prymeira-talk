@@ -20,7 +20,7 @@ describe("messageDisplayText", () => {
 
   it("uses media labels when the message has no text body", () => {
     expect(messageDisplayText({ body: null, type: "image" })).toBe("Imagem recebida");
-    expect(messageDisplayText({ body: null, type: "audio" })).toBe("Audio recebido");
+    expect(messageDisplayText({ body: null, type: "audio" })).toBe("Áudio recebido");
     expect(messageDisplayText({ body: null, type: "file" })).toBe("Arquivo recebido");
   });
 });
@@ -41,10 +41,10 @@ describe("AI control helpers", () => {
 describe("messageMediaLabel", () => {
   it("names media actions by message type", () => {
     expect(messageMediaLabel({ mediaUrl: "https://cdn.test/a.jpg", type: "image" })).toBe("Abrir imagem");
-    expect(messageMediaLabel({ mediaUrl: "https://cdn.test/a.ogg", type: "audio" })).toBe("Reproduzir audio");
+    expect(messageMediaLabel({ mediaUrl: "https://cdn.test/a.ogg", type: "audio" })).toBe("Reproduzir áudio");
     expect(messageMediaLabel({ mediaUrl: "https://cdn.test/a.pdf", type: "file" })).toBe("Baixar arquivo");
-    expect(messageMediaLabel({ mediaUrl: "https://cdn.test/a.mp4", type: "file" })).toBe("Baixar video");
-    expect(messageMediaLabel({ mediaUrl: "data:video/mp4;base64,dmZk", type: "file" })).toBe("Baixar video");
+    expect(messageMediaLabel({ mediaUrl: "https://cdn.test/a.mp4", type: "file" })).toBe("Baixar vídeo");
+    expect(messageMediaLabel({ mediaUrl: "data:video/mp4;base64,dmZk", type: "file" })).toBe("Baixar vídeo");
   });
 });
 
@@ -141,7 +141,7 @@ describe("quick reply helpers", () => {
       id: "reply-1",
       workspaceId: "workspace-1",
       title: "Boas-vindas",
-      body: "Ola, seja bem-vindo",
+      body: "Olá, seja bem-vindo",
       category: "Atendimento",
       createdAt: "2026-05-24T12:00:00.000Z",
       updatedAt: "2026-05-24T12:00:00.000Z"

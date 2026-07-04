@@ -15,14 +15,14 @@ describe("buildConversationContext", () => {
             id: "message_1",
             direction: "inbound",
             type: "text",
-            body: "Oi, voces atendem hoje?",
+            body: "Oi, vocês atendem hoje?",
             createdAt: new Date("2026-06-23T18:00:00.000Z")
           },
           {
             id: "message_2",
             direction: "outbound",
             type: "text",
-            body: "Sim, atendemos ate as 18h.",
+            body: "Sim, atendemos até as 18h.",
             createdAt: "2026-06-23T18:01:00.000Z"
           }
         ])
@@ -48,7 +48,7 @@ describe("buildConversationContext", () => {
         direction: "inbound",
         type: "text",
         label: "cliente",
-        body: "Oi, voces atendem hoje?",
+        body: "Oi, vocês atendem hoje?",
         createdAt: "2026-06-23T18:00:00.000Z"
       },
       {
@@ -56,14 +56,14 @@ describe("buildConversationContext", () => {
         direction: "outbound",
         type: "text",
         label: "atendente",
-        body: "Sim, atendemos ate as 18h.",
+        body: "Sim, atendemos até as 18h.",
         createdAt: "2026-06-23T18:01:00.000Z"
       }
     ]);
     expect(result.formattedHistory).toBe(
       [
-        "[2026-06-23T18:00:00.000Z] cliente: Oi, voces atendem hoje?",
-        "[2026-06-23T18:01:00.000Z] atendente: Sim, atendemos ate as 18h."
+        "[2026-06-23T18:00:00.000Z] cliente: Oi, vocês atendem hoje?",
+        "[2026-06-23T18:01:00.000Z] atendente: Sim, atendemos até as 18h."
       ].join("\n")
     );
   });

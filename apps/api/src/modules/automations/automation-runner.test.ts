@@ -76,7 +76,7 @@ const baseRule = {
         id: "send-1",
         type: "send_message",
         position: { x: 260, y: 0 },
-        data: { title: "Enviar mensagem", config: { message: "Ola! Como posso ajudar?" } }
+        data: { title: "Enviar mensagem", config: { message: "Olá! Como posso ajudar?" } }
       },
       {
         id: "tag-1",
@@ -121,14 +121,14 @@ function createMockPrisma(overrides: Partial<AutomationRunnerPrisma> = {}) {
         id: "00000000-0000-4000-8000-000000000202",
         providerMessageId: "wamid-outbound",
         direction: "outbound",
-        body: "Ola! Como posso ajudar?",
+        body: "Olá! Como posso ajudar?",
         status: "sent"
       })
     },
     conversation: {
       update: vi.fn().mockResolvedValue({
         ...conversation,
-        lastMessagePreview: "Ola! Como posso ajudar?"
+        lastMessagePreview: "Olá! Como posso ajudar?"
       }),
       updateMany: vi.fn().mockResolvedValue({ count: 1 })
     },
@@ -185,7 +185,7 @@ describe("automation runner", () => {
     expect(evolutionClient.sendText).toHaveBeenCalledWith({
       instanceName: "talk-instance",
       number: "5547991396920",
-      text: "Ola! Como posso ajudar?"
+      text: "Olá! Como posso ajudar?"
     });
     expect(prisma.message.findUnique).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -198,7 +198,7 @@ describe("automation runner", () => {
         conversationId,
         direction: "outbound",
         type: "text",
-        body: "Ola! Como posso ajudar?",
+        body: "Olá! Como posso ajudar?",
         providerMessageId: "wamid-outbound",
         status: "sent"
       })
@@ -292,13 +292,13 @@ describe("automation runner", () => {
             id: "trigger-1",
             type: "trigger_keyword",
             position: { x: 0, y: 0 },
-            data: { title: "Palavra-chave", config: { keywordInput: "catalogo, comprar, suporte," } }
+            data: { title: "Palavra-chave", config: { keywordInput: "catálogo, comprar, suporte," } }
           },
           {
             id: "send-1",
             type: "send_message",
             position: { x: 260, y: 0 },
-            data: { title: "Enviar mensagem", config: { message: "Te mando as opcoes agora." } }
+            data: { title: "Enviar mensagem", config: { message: "Te mando as opções agora." } }
           }
         ],
         edges: [{ id: "edge-1", source: "trigger-1", target: "send-1" }]
@@ -325,7 +325,7 @@ describe("automation runner", () => {
     expect(evolutionClient.sendText).toHaveBeenCalledWith({
       instanceName: "talk-instance",
       number: "5547991396920",
-      text: "Te mando as opcoes agora."
+      text: "Te mando as opções agora."
     });
     expect(runs[0]?.result).toMatchObject({
       actionResults: [
@@ -351,7 +351,7 @@ describe("automation runner", () => {
             id: "send-1",
             type: "send_message",
             position: { x: 260, y: 0 },
-            data: { title: "Enviar mensagem", config: { message: "Ola!" } }
+            data: { title: "Enviar mensagem", config: { message: "Olá!" } }
           }
         ],
         edges: [{ id: "edge-1", source: "trigger-1", target: "send-1" }]
@@ -403,7 +403,7 @@ describe("automation runner", () => {
             id: "send-1",
             type: "send_message",
             position: { x: 260, y: 0 },
-            data: { title: "Enviar mensagem", config: { message: "Ola!" } }
+            data: { title: "Enviar mensagem", config: { message: "Olá!" } }
           }
         ],
         edges: [{ id: "edge-1", source: "trigger-1", target: "send-1" }]
@@ -438,7 +438,7 @@ describe("automation runner", () => {
     expect(evolutionClient.sendText).toHaveBeenCalledWith({
       instanceName: "talk-instance",
       number: "5547991396920",
-      text: "Ola!"
+      text: "Olá!"
     });
   });
 
@@ -473,7 +473,7 @@ describe("automation runner", () => {
             id: "tag-1",
             type: "add_tag",
             position: { x: 520, y: 80 },
-            data: { title: "Adicionar tag", config: { tagName: "Nao comprar" } }
+            data: { title: "Adicionar tag", config: { tagName: "Não comprar" } }
           }
         ],
         edges: [
@@ -612,7 +612,7 @@ describe("automation runner", () => {
             id: "trigger-1",
             type: "trigger_reengagement",
             position: { x: 0, y: 0 },
-            data: { title: "Retorno apos pausa", config: { pauseDays: 3 } }
+            data: { title: "Retorno após pausa", config: { pauseDays: 3 } }
           },
           {
             id: "move-1",
@@ -699,19 +699,19 @@ describe("automation runner", () => {
             id: "time-condition",
             type: "condition_time",
             position: { x: 520, y: 0 },
-            data: { title: "Horario comercial", config: { startTime: "08:00", endTime: "18:00" } }
+            data: { title: "Horário comercial", config: { startTime: "08:00", endTime: "18:00" } }
           },
           {
             id: "send-yes",
             type: "send_message",
             position: { x: 780, y: -80 },
-            data: { title: "Enviar dentro do horario", config: { message: "Estamos online" } }
+            data: { title: "Enviar dentro do horário", config: { message: "Estamos online" } }
           },
           {
             id: "send-no",
             type: "send_message",
             position: { x: 780, y: 80 },
-            data: { title: "Enviar fora do horario", config: { message: "Voltamos amanha" } }
+            data: { title: "Enviar fora do horário", config: { message: "Voltamos amanhã" } }
           }
         ],
         edges: [

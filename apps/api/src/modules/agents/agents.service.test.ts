@@ -42,7 +42,7 @@ const baseKnowledgeSource = {
   workspaceId: "workspace_a",
   agentId,
   type: "faq" as const,
-  title: "Horario",
+  title: "Horário",
   content: "Atendemos das 8h as 18h.",
   fileUrl: null,
   fileName: null,
@@ -207,7 +207,7 @@ describe("createAgentsService", () => {
       workspaceId: "workspace_a",
       agentId,
       type: "faq",
-      title: "Horario",
+      title: "Horário",
       content: "Atendemos das 8h as 18h.",
       metadata: {
         category: "precos",
@@ -219,7 +219,7 @@ describe("createAgentsService", () => {
       expect.objectContaining({
         agentId,
         type: "faq",
-        title: "Horario",
+        title: "Horário",
         status: "ready"
       })
     );
@@ -234,7 +234,7 @@ describe("createAgentsService", () => {
         workspaceId: "workspace_a",
         agentId,
         type: "faq",
-        title: "Horario",
+        title: "Horário",
         status: "ready",
         metadata: {
           category: "precos",
@@ -254,7 +254,7 @@ describe("createAgentsService", () => {
         agentId,
         type: "text",
         title: "Base",
-        content: "Conteudo"
+        content: "Conteúdo"
       })
     ).rejects.toMatchObject({
       code: "AGENT_NOT_FOUND"
@@ -265,7 +265,7 @@ describe("createAgentsService", () => {
         agentId,
         type: "text",
         title: "Base",
-        content: "Conteudo"
+        content: "Conteúdo"
       })
     ).rejects.toBeInstanceOf(AgentsServiceError);
     expect(prisma.aiKnowledgeSource.create).not.toHaveBeenCalled();

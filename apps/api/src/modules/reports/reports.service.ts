@@ -433,7 +433,7 @@ export function createReportsService(prisma: PrismaLike) {
           ),
           metric(
             "automationRuns",
-            "Automacoes",
+            "Automações",
             totalAutomationRuns,
             automationMetrics[0] ? `${automationMetrics[0].value} ${automationMetrics[0].label}` : "0 runs"
           )

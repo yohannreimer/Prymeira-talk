@@ -110,7 +110,7 @@ describe("createSimulatedAgentProvider", () => {
     const output = await provider.generate({
       model: "simulated",
       systemPrompt: "Atenda clientes da Prymeira Talk.",
-      userPrompt: "Qual o horario de atendimento?",
+      userPrompt: "Qual o horário de atendimento?",
       context: {}
     });
 
@@ -155,7 +155,7 @@ describe("createOpenAiCompatibleAgentProvider", () => {
     await provider.generate({
       model: "runtime-model",
       systemPrompt: "Atenda clientes da Prymeira Talk.",
-      userPrompt: "Ola",
+      userPrompt: "Olá",
       context: { conversationHistory: ["mensagem anterior"] }
     });
 
@@ -201,9 +201,9 @@ describe("createOpenAiCompatibleAgentProvider", () => {
 
     await provider.generate({
       model: "runtime-model",
-      systemPrompt: "Voce e o agente oficial.",
+      systemPrompt: "Você e o agente oficial.",
       userPrompt: "Qual o prazo?",
-      context: { selectedDocuments: [{ title: "Politica", body: "Sem prazo definido." }] }
+      context: { selectedDocuments: [{ title: "Política", body: "Sem prazo definido." }] }
     });
 
     const [, init] = fetchMock.mock.calls[0] ?? [];
@@ -220,7 +220,7 @@ describe("createOpenAiCompatibleAgentProvider", () => {
     expect(body.messages[0]).toEqual(
       expect.objectContaining({
         role: "system",
-        content: expect.stringContaining("Voce e o agente oficial.")
+        content: expect.stringContaining("Você e o agente oficial.")
       })
     );
     expect(body.messages[0].content).toContain("respond only valid JSON");
@@ -229,7 +229,7 @@ describe("createOpenAiCompatibleAgentProvider", () => {
       role: "user",
       content: JSON.stringify({
         userPrompt: "Qual o prazo?",
-        context: { selectedDocuments: [{ title: "Politica", body: "Sem prazo definido." }] }
+        context: { selectedDocuments: [{ title: "Política", body: "Sem prazo definido." }] }
       })
     });
   });
@@ -244,7 +244,7 @@ describe("createOpenAiCompatibleAgentProvider", () => {
                 content: JSON.stringify({
                   confidence: 0.74,
                   reply: "Vou verificar com uma pessoa do time.",
-                  handoff: { required: true, reason: "Informacao insuficiente." },
+                  handoff: { required: true, reason: "Informação insuficiente." },
                   sources: [
                     {
                       id: "doc_1",
@@ -269,7 +269,7 @@ describe("createOpenAiCompatibleAgentProvider", () => {
     const output = await provider.generate({
       model: "runtime-model",
       systemPrompt: "Atenda clientes da Prymeira Talk.",
-      userPrompt: "Pode garantir esse preco?",
+      userPrompt: "Pode garantir esse preço?",
       context: {}
     });
 
@@ -277,7 +277,7 @@ describe("createOpenAiCompatibleAgentProvider", () => {
       confidence: 0.74,
       reply: "Vou verificar com uma pessoa do time.",
       actions: [],
-      handoff: { required: true, reason: "Informacao insuficiente." },
+      handoff: { required: true, reason: "Informação insuficiente." },
       sources: [
         {
           id: "doc_1",
@@ -305,7 +305,7 @@ describe("createOpenAiCompatibleAgentProvider", () => {
       provider.generate({
         model: "runtime-model",
         systemPrompt: "Atenda clientes da Prymeira Talk.",
-        userPrompt: "Ola",
+        userPrompt: "Olá",
         context: {}
       })
     ).rejects.toThrow("OpenAI-compatible provider returned invalid JSON response.");
@@ -326,7 +326,7 @@ describe("createOpenAiCompatibleAgentProvider", () => {
       provider.generate({
         model: "runtime-model",
         systemPrompt: "Atenda clientes da Prymeira Talk.",
-        userPrompt: "Ola",
+        userPrompt: "Olá",
         context: {}
       })
     ).rejects.toThrow("OpenAI-compatible provider returned invalid JSON response.");
@@ -347,7 +347,7 @@ describe("createOpenAiCompatibleAgentProvider", () => {
       provider.generate({
         model: "runtime-model",
         systemPrompt: "Atenda clientes da Prymeira Talk.",
-        userPrompt: "Ola",
+        userPrompt: "Olá",
         context: {}
       })
     ).rejects.toThrow("OpenAI-compatible provider request failed.");
@@ -383,7 +383,7 @@ describe("createOpenAiCompatibleAgentProvider", () => {
       provider.generate({
         model: "runtime-model",
         systemPrompt: "Atenda clientes da Prymeira Talk.",
-        userPrompt: "Ola",
+        userPrompt: "Olá",
         context: {}
       })
     ).rejects.toThrow("Invalid agent output.");
@@ -416,7 +416,7 @@ describe("createOpenAiCompatibleAgentProvider", () => {
         provider.generate({
           model: "runtime-model",
           systemPrompt: "Atenda clientes da Prymeira Talk.",
-          userPrompt: "Ola",
+          userPrompt: "Olá",
           context: {}
         })
       ).rejects.toThrow("OpenAI-compatible provider returned empty content.");
@@ -438,7 +438,7 @@ describe("createOpenAiCompatibleAgentProvider", () => {
       provider.generate({
         model: "runtime-model",
         systemPrompt: "Atenda clientes da Prymeira Talk.",
-        userPrompt: "Ola",
+        userPrompt: "Olá",
         context: {}
       })
     ).rejects.toThrow("OpenAI-compatible provider request failed with status 429.");

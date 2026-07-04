@@ -17,7 +17,7 @@ const categoryLabels: Record<AutomationBlockCategory, string> = {
   decision: "Decisoes",
   time: "Tempo",
   crm: "CRM",
-  integration: "Integracoes",
+  integration: "Integrações",
   control: "Controle"
 };
 
@@ -55,7 +55,7 @@ export function AutomationBlockLibrary({ disabledReason, onSelect }: AutomationB
                   const supportReason =
                     block.support === "supported"
                       ? null
-                      : `${block.label} ainda nao executa em automacoes reais`;
+                      : `${block.label} ainda não executa em automações reais`;
                   const reason = supportReason ?? disabledReason?.(block) ?? null;
 
                   return (

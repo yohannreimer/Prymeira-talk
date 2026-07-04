@@ -546,7 +546,7 @@ describe("AutomationsPage navigation", () => {
           position: { x: 280, y: 0 },
           data: {
             title: "Enviar mensagem",
-            config: { message: "Ola pelo fluxo" }
+            config: { message: "Olá pelo fluxo" }
           }
         }
       ],
@@ -628,7 +628,7 @@ describe("automation form helpers", () => {
           trigger: "message.received",
           conditionSummary: "Condicao editada",
           actionType: "send_message",
-          actionLabel: "Enviar saudacao em modo simulado"
+          actionLabel: "Enviar saudação em modo simulado"
         },
         baseAutomation
       )
@@ -681,7 +681,7 @@ describe("automation form helpers", () => {
           id: "trigger-schedule-1",
           type: "trigger_schedule",
           position: { x: 0, y: 0 },
-          data: { title: "Horario/agendamento", config: {} }
+          data: { title: "Horário/agendamento", config: {} }
         }
       ],
       edges: []
@@ -728,18 +728,18 @@ describe("automation API helpers", () => {
 
 describe("automation flow helpers", () => {
   it("normalizes keyword trigger input into multiple keywords", () => {
-    expect(keywordInputToConfig("catalogo, preço\nsuporte,,  proposta ")).toEqual({
-      keywordInput: "catalogo, preço\nsuporte,,  proposta ",
-      keywords: ["catalogo", "preço", "suporte", "proposta"]
+    expect(keywordInputToConfig("catálogo, preço\nsuporte,,  proposta ")).toEqual({
+      keywordInput: "catálogo, preço\nsuporte,,  proposta ",
+      keywords: ["catálogo", "preço", "suporte", "proposta"]
     });
   });
 
   it("formats keyword trigger config from raw, multiple and legacy single values", () => {
-    expect(keywordConfigToInputValue({ keywordInput: "catalogo, catálogo, catalogos," })).toBe(
-      "catalogo, catálogo, catalogos,"
+    expect(keywordConfigToInputValue({ keywordInput: "catálogo, catálogo, catálogos," })).toBe(
+      "catálogo, catálogo, catálogos,"
     );
-    expect(keywordConfigToInputValue({ keywords: ["catalogo", "preço"] })).toBe("catalogo, preço");
-    expect(keywordConfigToInputValue({ keyword: "catalogo" })).toBe("catalogo");
+    expect(keywordConfigToInputValue({ keywords: ["catálogo", "preço"] })).toBe("catálogo, preço");
+    expect(keywordConfigToInputValue({ keyword: "catálogo" })).toBe("catálogo");
   });
 
   it("creates a default version 1 flow with a first-message trigger", () => {
@@ -843,7 +843,7 @@ describe("automation flow helpers", () => {
 
   it("imports every legacy action into a graph instead of dropping later actions", () => {
     const state = automationCanvasStateFromValue([
-      { type: "send_message", label: "Enviar saudacao", config: { text: "Ola" } },
+      { type: "send_message", label: "Enviar saudação", config: { text: "Olá" } },
       { type: "add_tag", label: "Marcar lead", config: { tagName: "Lead" } },
       { type: "create_crm_note", label: "Registrar nota", config: { note: "Entrada antiga" } }
     ]);

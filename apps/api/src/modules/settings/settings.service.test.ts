@@ -696,7 +696,7 @@ describe("settings Meta Evolution template routes", () => {
             language: "pt_BR",
             status: "APPROVED",
             category: "MARKETING",
-            components: [{ type: "BODY", text: "Ola {{1}}, tudo certo?" }]
+            components: [{ type: "BODY", text: "Olá {{1}}, tudo certo?" }]
           }
         ]
       }), {
@@ -751,8 +751,8 @@ describe("settings Meta Evolution template routes", () => {
             language: "pt_BR",
             status: "APPROVED",
             category: "MARKETING",
-            preview: "Ola {{1}}, tudo certo?",
-            components: [{ type: "BODY", text: "Ola {{1}}, tudo certo?" }]
+            preview: "Olá {{1}}, tudo certo?",
+            components: [{ type: "BODY", text: "Olá {{1}}, tudo certo?" }]
           }
         ],
         raw: {
@@ -763,7 +763,7 @@ describe("settings Meta Evolution template routes", () => {
               language: "pt_BR",
               status: "APPROVED",
               category: "MARKETING",
-              components: [{ type: "BODY", text: "Ola {{1}}, tudo certo?" }]
+              components: [{ type: "BODY", text: "Olá {{1}}, tudo certo?" }]
             }
           ]
         }

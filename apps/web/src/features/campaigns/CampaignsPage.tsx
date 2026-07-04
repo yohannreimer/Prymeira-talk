@@ -182,7 +182,7 @@ async function parseAudienceFile(file: File): Promise<ImportedAudienceRow[]> {
 
   const rows = utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
   const headers = rows[0] ? Object.keys(rows[0]) : [];
-  const phoneColumn = findColumn(headers, [/telefone/, /phone/, /celular/, /whats/, /numero/, /número/]);
+  const phoneColumn = findColumn(headers, [/telefone/, /phone/, /celular/, /whats/, /número/, /número/]);
   const nameColumn = findColumn(headers, [/^nome$/, /name/, /cliente/, /contato/]);
 
   if (!phoneColumn) return [];
@@ -421,7 +421,7 @@ export function CampaignsPage() {
         }
       } catch (loadError) {
         if (isMounted) {
-          setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar disparos.");
+          setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar disparos.");
         }
       } finally {
         if (isMounted) {
@@ -526,7 +526,7 @@ export function CampaignsPage() {
         }
       } catch (loadError) {
         if (isMounted) {
-          setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar resultados.");
+          setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar resultados.");
         }
       } finally {
         if (isMounted) {
@@ -604,7 +604,7 @@ export function CampaignsPage() {
       return null;
     }
     if (sendMode === "evolution" && cleanTemplates.length === 0) {
-      setError("Escreva pelo menos uma mensagem para enviar por numero nao oficial.");
+      setError("Escreva pelo menos uma mensagem para enviar por número não oficial.");
       setIsSaving(false);
       return null;
     }
@@ -641,7 +641,7 @@ export function CampaignsPage() {
       setNotice("Disparo salvo.");
       return savedCampaign;
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Nao foi possivel salvar disparo.");
+      setError(saveError instanceof Error ? saveError.message : "Não foi possível salvar disparo.");
       return null;
     } finally {
       setIsSaving(false);
@@ -666,7 +666,7 @@ export function CampaignsPage() {
       setAudiencePreview(contacts);
       setNotice(`${contacts.length} contatos prontos para o disparo.`);
     } catch (resolveError) {
-      setError(resolveError instanceof Error ? resolveError.message : "Nao foi possivel resolver audiencia.");
+      setError(resolveError instanceof Error ? resolveError.message : "Não foi possível resolver audiência.");
     } finally {
       setIsSaving(false);
     }
@@ -696,7 +696,7 @@ export function CampaignsPage() {
       setRecipients(nextRecipients);
       setNotice(`${result.recipientsCreated} mensagens colocadas na fila simulada.`);
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : "Nao foi possivel simular envio.");
+      setError(sendError instanceof Error ? sendError.message : "Não foi possível simular envio.");
     } finally {
       setIsSaving(false);
     }
@@ -704,7 +704,7 @@ export function CampaignsPage() {
 
   async function sendReal() {
     if (selectedEvolutionChannelIds.length === 0) {
-      setError("Escolha pelo menos um numero nao oficial para enviar.");
+      setError("Escolha pelo menos um número não oficial para enviar.");
       return;
     }
 
@@ -716,7 +716,7 @@ export function CampaignsPage() {
 
     if (!campaign) return;
 
-    const shouldSend = window.confirm("Enviar mensagens reais pelo WhatsApp para esta audiencia?");
+    const shouldSend = window.confirm("Enviar mensagens reais pelo WhatsApp para esta audiência?");
     if (!shouldSend) return;
 
     setIsSaving(true);
@@ -734,7 +734,7 @@ export function CampaignsPage() {
       setRecipients(nextRecipients);
       setNotice(`${result.recipientsSent ?? 0} mensagens reais enviadas. ${result.recipientsFailed ?? 0} falharam.`);
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar campanha real.");
+      setError(sendError instanceof Error ? sendError.message : "Não foi possível enviar campanha real.");
     } finally {
       setIsSaving(false);
     }
@@ -763,7 +763,7 @@ export function CampaignsPage() {
     }
 
     if (selectedMetaChannelIds.length === 0) {
-      setError("Escolha pelo menos um numero oficial Meta para enviar.");
+      setError("Escolha pelo menos um número oficial Meta para enviar.");
       return;
     }
 
@@ -773,7 +773,7 @@ export function CampaignsPage() {
 
     if (!campaign) return;
 
-    const shouldSend = window.confirm("Enviar template aprovado da Meta para esta audiencia?");
+    const shouldSend = window.confirm("Enviar template aprovado da Meta para esta audiência?");
     if (!shouldSend) return;
 
     setIsSaving(true);
@@ -796,7 +796,7 @@ export function CampaignsPage() {
       setRecipients(nextRecipients);
       setNotice(`${result.recipientsSent ?? 0} templates Meta enviados. ${result.recipientsFailed ?? 0} falharam.`);
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : "Nao foi possivel enviar template Meta.");
+      setError(sendError instanceof Error ? sendError.message : "Não foi possível enviar template Meta.");
     } finally {
       setIsSaving(false);
     }
@@ -821,10 +821,10 @@ export function CampaignsPage() {
       setNotice(
         templates.length > 0
           ? `${templates.length} templates Meta encontrados na Evolution.`
-          : "A Evolution nao retornou templates para esta instancia."
+          : "A Evolution não retornou templates para esta instancia."
       );
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar templates da Evolution.");
+      setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar templates da Evolution.");
     } finally {
       setIsMetaTemplatesLoading(false);
     }
@@ -854,7 +854,7 @@ export function CampaignsPage() {
     const rows = await parseAudienceFile(file);
 
     if (rows.length === 0) {
-      setError("Nao encontrei uma coluna de telefone/WhatsApp na planilha.");
+      setError("Não encontrei uma coluna de telefone/WhatsApp na planilha.");
       return;
     }
 
@@ -1040,7 +1040,7 @@ export function CampaignsPage() {
             {form.audienceSource === "board" ? (
               <div className="campaign-audience-grid">
                 <label className="form-field">
-                  <span>Board de audiencia</span>
+                  <span>Board de audiência</span>
                   <select
                     onChange={(event) => setForm((current) => ({ ...current, boardId: event.target.value, stageId: "" }))}
                     required
@@ -1115,11 +1115,11 @@ export function CampaignsPage() {
 
           <section className="campaign-builder-section">
             <div className="panel-title-row">
-              <h2>Numeros de envio</h2>
+              <h2>Números de envio</h2>
               <span>
                 {sendMode === "meta_cloud"
                   ? `${selectedMetaChannelIds.length} oficiais`
-                  : `${selectedEvolutionChannelIds.length} nao oficiais`}
+                  : `${selectedEvolutionChannelIds.length} não oficiais`}
               </span>
             </div>
             <div className="segmented-control">
@@ -1128,7 +1128,7 @@ export function CampaignsPage() {
                 onClick={() => setSendMode("evolution")}
                 type="button"
               >
-                Nao oficial
+                Não oficial
               </button>
               <button
                 className={sendMode === "meta_cloud" ? "is-active" : ""}
@@ -1142,7 +1142,7 @@ export function CampaignsPage() {
 
             {sendMode === "evolution" ? (
               evolutionChannels.length > 0 ? (
-                <div className="campaign-channel-picker" aria-label="Numeros nao oficiais">
+                <div className="campaign-channel-picker" aria-label="Números não oficiais">
                   {evolutionChannels.map((channel) => (
                     <label className="campaign-channel-option" key={channel.id}>
                       <input
@@ -1156,7 +1156,7 @@ export function CampaignsPage() {
                       />
                       <span>
                         <strong>{channelLabel(channel)}</strong>
-                        <small>{channel.phoneNumber ?? "Numero ainda nao identificado"}</small>
+                        <small>{channel.phoneNumber ?? "Número ainda não identificado"}</small>
                       </span>
                     </label>
                   ))}
@@ -1165,7 +1165,7 @@ export function CampaignsPage() {
                 <p className="list-note">Conecte um canal Evolution API para enviar mensagem livre.</p>
               )
             ) : metaChannels.length > 0 ? (
-              <div className="campaign-channel-picker" aria-label="Numeros oficiais Meta">
+              <div className="campaign-channel-picker" aria-label="Números oficiais Meta">
                 {metaChannels.map((channel) => (
                   <label className="campaign-channel-option" key={channel.id}>
                     <input
@@ -1198,7 +1198,7 @@ export function CampaignsPage() {
               <span>{form.templates.filter((template) => template.trim()).length} templates</span>
             </div>
             <label className="form-field">
-              <span>Nome padrao quando vier vazio</span>
+              <span>Nome padrão quando vier vazio</span>
               <input
                 onChange={(event) => setForm((current) => ({ ...current, fallbackName: event.target.value }))}
                 value={form.fallbackName}
@@ -1263,7 +1263,7 @@ export function CampaignsPage() {
                   <div className="meta-template-picker-header">
                     <div>
                       <strong>Templates da Evolution</strong>
-                      <span>Escolha um template aprovado e mapeie as variaveis antes de enviar.</span>
+                      <span>Escolha um template aprovado e mapeie as variáveis antes de enviar.</span>
                     </div>
                     <button
                       className="secondary-button"
@@ -1312,7 +1312,7 @@ export function CampaignsPage() {
                     {metaPreviewText || selectedMetaTemplate.preview || "Template sem corpo de mensagem."}
                   </div>
                   {selectedMetaVariableIndexes.length > 0 ? (
-                    <div className="meta-variable-list" aria-label="Mapeamento das variaveis Meta">
+                    <div className="meta-variable-list" aria-label="Mapeamento das variáveis Meta">
                       {metaVariableMappings.map((mapping) => (
                         <div className="meta-variable-row" key={mapping.index}>
                           <span className="status-badge status-badge--closed">{`{{${mapping.index}}}`}</span>
@@ -1322,7 +1322,7 @@ export function CampaignsPage() {
                             })}
                             value={mapping.mode}
                           >
-                            <option value="field">Coluna da audiencia</option>
+                            <option value="field">Coluna da audiência</option>
                             <option value="fixed">Valor fixo</option>
                           </select>
                           {mapping.mode === "field" ? (
@@ -1350,7 +1350,7 @@ export function CampaignsPage() {
                       ))}
                     </div>
                   ) : (
-                    <p className="list-note">Este template nao possui variaveis numericas no corpo.</p>
+                    <p className="list-note">Este template não possui variáveis numericas no corpo.</p>
                   )}
                 </div>
               ) : (
@@ -1476,7 +1476,7 @@ export function CampaignsPage() {
                 <dd>
                   {sendMode === "meta_cloud"
                     ? `${selectedMetaChannelIds.length} oficiais`
-                    : `${selectedEvolutionChannelIds.length} nao oficiais`}
+                    : `${selectedEvolutionChannelIds.length} não oficiais`}
                 </dd>
               </div>
               <div>
@@ -1486,7 +1486,7 @@ export function CampaignsPage() {
             </dl>
             <button className="secondary-button" disabled={isSaving} onClick={resolveAudience} type="button">
               <CalendarClock size={14} aria-hidden="true" />
-              Resolver audiencia
+              Resolver audiência
             </button>
           </section>
 

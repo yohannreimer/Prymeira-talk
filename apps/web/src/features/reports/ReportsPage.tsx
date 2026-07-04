@@ -71,9 +71,9 @@ function reportRows(overview: ReportsOverviewDto) {
   return [
     { section: "Indicadores", rows: overview.cards },
     { section: "Conversas por status", rows: overview.conversationsByStatus },
-    { section: "Mensagens por direcao", rows: overview.messagesByDirection },
+    { section: "Mensagens por direção", rows: overview.messagesByDirection },
     { section: "Resultados de disparos", rows: overview.campaignResults },
-    { section: "Runs de automacao", rows: overview.automationRuns },
+    { section: "Runs de automação", rows: overview.automationRuns },
     { section: "Departamentos", rows: overview.breakdowns.departments },
     { section: "Tags", rows: overview.breakdowns.tags },
     { section: "Canais", rows: overview.breakdowns.channels }
@@ -100,10 +100,10 @@ function exportOverviewCsv(overview: ReportsOverviewDto) {
 }
 
 function periodLabel(filters: ReportFiltersDto) {
-  const preset = periodPresets.find((item) => item.key === filters.preset)?.label ?? "Periodo";
+  const preset = periodPresets.find((item) => item.key === filters.preset)?.label ?? "Período";
 
   if (filters.startDate || filters.endDate) {
-    return `${preset}: ${filters.startDate ?? "..."} ate ${filters.endDate ?? "..."}`;
+    return `${preset}: ${filters.startDate ?? "..."} até ${filters.endDate ?? "..."}`;
   }
 
   return preset;
@@ -346,7 +346,7 @@ export function ReportsPage() {
 
       {error ? <p className="error-note">{error}</p> : null}
 
-      <section className="module-panel reports-control-panel" aria-label="Filtros de relatorios">
+      <section className="module-panel reports-control-panel" aria-label="Filtros de relatórios">
         <div className="reports-period-buttons">
           {periodPresets.map((preset) => (
             <button
@@ -455,7 +455,7 @@ export function ReportsPage() {
           rows={overview?.conversationsByStatus ?? []}
         />
         <BarSection
-          title="Mensagens por direcao"
+          title="Mensagens por direção"
           subtitle="Inbound vs outbound"
           rows={overview?.messagesByDirection ?? []}
         />
@@ -465,8 +465,8 @@ export function ReportsPage() {
           rows={overview?.campaignResults ?? []}
         />
         <BarSection
-          title="Runs de automacao"
-          subtitle="Execucoes"
+          title="Runs de automação"
+          subtitle="Execuções"
           rows={overview?.automationRuns ?? []}
         />
       </div>

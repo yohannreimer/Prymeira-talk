@@ -9,7 +9,7 @@ vi.mock("pdf-parse", () => ({
   PDFParse: vi.fn().mockImplementation(function MockPDFParse() {
     return {
       getText: vi.fn(async () => ({
-        text: "Politica   Comercial\n\nTrocas em ate 7 dias"
+        text: "Política   Comercial\n\nTrocas em até 7 dias"
       })),
       destroy: vi.fn(async () => {})
     };
@@ -21,11 +21,11 @@ describe("ingestKnowledgeUpload", () => {
     const result = await ingestKnowledgeUpload({
       fileName: "precos.txt",
       mimeType: "text/plain",
-      base64Content: Buffer.from("Plano  Operacao\nR$ 299").toString("base64"),
+      base64Content: Buffer.from("Plano  Operação\nR$ 299").toString("base64"),
       category: "precos"
     });
 
-    expect(result.content).toBe("Plano Operacao R$ 299");
+    expect(result.content).toBe("Plano Operação R$ 299");
     expect(result.metadata).toMatchObject({
       category: "precos",
       sourceKind: "text",
@@ -44,7 +44,7 @@ describe("ingestKnowledgeUpload", () => {
       category: "politicas"
     });
 
-    expect(result.content).toBe("Politica Comercial Trocas em ate 7 dias");
+    expect(result.content).toBe("Política Comercial Trocas em até 7 dias");
     expect(result.metadata).toMatchObject({
       category: "politicas",
       sourceKind: "pdf",
@@ -69,7 +69,7 @@ describe("ingestKnowledgeUpload", () => {
       ingestKnowledgeUpload({
         fileName: "precos.pdf",
         mimeType: "text/plain",
-        base64Content: Buffer.from("Plano Operacao R$ 299").toString("base64"),
+        base64Content: Buffer.from("Plano Operação R$ 299").toString("base64"),
         category: "precos"
       })
     ).rejects.toThrow("Unsupported knowledge file type.");

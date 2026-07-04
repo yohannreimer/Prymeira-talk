@@ -85,7 +85,7 @@ const emptyForm: AutomationFormState = {
   trigger: "message.received",
   conditionSummary: "Quando uma mensagem inbound chegar",
   actionType: "send_message",
-  actionLabel: "Enviar saudacao em modo simulado"
+  actionLabel: "Enviar saudação em modo simulado"
 };
 
 function mergeAutomation(
@@ -143,7 +143,7 @@ function automationRunSummary(result: unknown) {
   }
 
   if (result.skippedReason === "trigger_not_matched") {
-    return "Gatilho avaliado, mas nao correspondeu a este evento.";
+    return "Gatilho avaliado, mas não correspondeu a este evento.";
   }
 
   const actionResults = Array.isArray(result.actionResults) ? result.actionResults : [];
@@ -201,7 +201,7 @@ function toFormState(automation: AutomationRuleDto): AutomationFormState {
     trigger: automation.trigger,
     conditionSummary: conditionSummary(automation.conditions),
     actionType: firstAction?.type ?? "send_message",
-    actionLabel: firstAction ? actionLabel(firstAction) : "Enviar saudacao em modo simulado"
+    actionLabel: firstAction ? actionLabel(firstAction) : "Enviar saudação em modo simulado"
   };
 }
 
@@ -238,7 +238,7 @@ export function AutomationsPage() {
   const [runEventKey, setRunEventKey] = useState("");
   const [simulationContacts, setSimulationContacts] = useState<ContactDto[]>([]);
   const [simulationContactId, setSimulationContactId] = useState("");
-  const [simulationMessageBody, setSimulationMessageBody] = useState("Mensagem de simulacao da automacao.");
+  const [simulationMessageBody, setSimulationMessageBody] = useState("Mensagem de simulação da automação.");
   const [isSimulationContactsLoading, setIsSimulationContactsLoading] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -288,7 +288,7 @@ export function AutomationsPage() {
         setIsHistoryOpen(false);
       } catch (loadError) {
         if (!isMounted) return;
-        setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar automacoes.");
+        setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar automações.");
       } finally {
         if (isMounted) {
           setIsLoading(false);
@@ -346,7 +346,7 @@ export function AutomationsPage() {
         }
       } catch (loadError) {
         if (isMounted) {
-          setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar historico.");
+          setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar histórico.");
         }
       } finally {
         if (isMounted) {
@@ -382,7 +382,7 @@ export function AutomationsPage() {
       })
       .catch((contactsError) => {
         if (isMounted) {
-          setError(contactsError instanceof Error ? contactsError.message : "Nao foi possivel carregar contatos.");
+          setError(contactsError instanceof Error ? contactsError.message : "Não foi possível carregar contatos.");
         }
       })
       .finally(() => {
@@ -451,9 +451,9 @@ export function AutomationsPage() {
       setSelectedAutomationId(savedAutomation.id);
       setIsHistoryOpen(false);
       setViewMode("editor");
-      setNotice("Automacao salva no runner local.");
+      setNotice("Automação salva no runner local.");
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Nao foi possivel salvar automacao.");
+      setError(saveError instanceof Error ? saveError.message : "Não foi possível salvar automação.");
     } finally {
       setIsSaving(false);
     }
@@ -483,11 +483,11 @@ export function AutomationsPage() {
       setSelectedAutomationId(updatedAutomation.id);
       setNotice(
         updatedAutomation.status === "enabled"
-          ? "Automacao habilitada para testes locais."
-          : "Automacao pausada."
+          ? "Automação habilitada para testes locais."
+          : "Automação pausada."
       );
     } catch (toggleError) {
-      setError(toggleError instanceof Error ? toggleError.message : "Nao foi possivel alterar status.");
+      setError(toggleError instanceof Error ? toggleError.message : "Não foi possível alterar status.");
     } finally {
       setIsSaving(false);
     }
@@ -499,7 +499,7 @@ export function AutomationsPage() {
     const shouldDelete =
       typeof window === "undefined"
         ? true
-        : window.confirm(`Apagar o fluxo "${selectedAutomation.name}"? Essa acao nao pode ser desfeita.`);
+        : window.confirm(`Apagar o fluxo "${selectedAutomation.name}"? Essa ação não pode ser desfeita.`);
 
     if (!shouldDelete) return;
 
@@ -515,9 +515,9 @@ export function AutomationsPage() {
       setRuns([]);
       setIsHistoryOpen(false);
       setViewMode("hub");
-      setNotice("Automacao apagada.");
+      setNotice("Automação apagada.");
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : "Nao foi possivel apagar automacao.");
+      setError(deleteError instanceof Error ? deleteError.message : "Não foi possível apagar automação.");
     } finally {
       setIsSaving(false);
     }
@@ -543,7 +543,7 @@ export function AutomationsPage() {
       setRuns((current) => mergeAutomationRun(current, run));
       setNotice("Teste local concluido pelo runner.");
     } catch (testError) {
-      setError(testError instanceof Error ? testError.message : "Nao foi possivel testar automacao.");
+      setError(testError instanceof Error ? testError.message : "Não foi possível testar automação.");
     } finally {
       setIsTesting(false);
     }
@@ -559,13 +559,13 @@ export function AutomationsPage() {
     try {
       const run = await apiTestAutomation(getToken, selectedAutomation.id, {
         contactId: simulationContactId,
-        messageBody: simulationMessageBody.trim() || "Mensagem de simulacao da automacao."
+        messageBody: simulationMessageBody.trim() || "Mensagem de simulação da automação."
       });
 
       setRuns((current) => mergeAutomationRun(current, run));
-      setNotice("Simulacao real enviada para o contato selecionado.");
+      setNotice("Simulação real enviada para o contato selecionado.");
     } catch (simulationError) {
-      setError(simulationError instanceof Error ? simulationError.message : "Nao foi possivel simular automacao.");
+      setError(simulationError instanceof Error ? simulationError.message : "Não foi possível simular automação.");
     } finally {
       setIsRealSimulating(false);
     }
@@ -702,7 +702,7 @@ export function AutomationsPageView({
   const shouldShowEditor = viewMode === "editor" || viewMode === "focus";
 
   return (
-    <section className="module-page automations-page" aria-label="Automacoes">
+    <section className="module-page automations-page" aria-label="Automações">
       <header className="module-header">
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <div>
@@ -826,7 +826,7 @@ export function AutomationHubView({
           <Zap size={28} aria-hidden="true" />
         </div>
         <h2>Nenhum fluxo criado</h2>
-        <p>Crie o primeiro fluxo para organizar boas-vindas, retornos e automacoes de atendimento.</p>
+        <p>Crie o primeiro fluxo para organizar boas-vindas, retornos e automações de atendimento.</p>
         <button className="primary-button" type="button" onClick={onCreate}>
           <Plus size={16} aria-hidden="true" />
           Criar fluxo
@@ -840,7 +840,7 @@ export function AutomationHubView({
       <div className="automation-hub-toolbar">
         <div>
           <h2>Fluxos</h2>
-          <p>{isLoading ? "Carregando automacoes" : `${automations.length} fluxo${automations.length === 1 ? "" : "s"}`}</p>
+          <p>{isLoading ? "Carregando automações" : `${automations.length} fluxo${automations.length === 1 ? "" : "s"}`}</p>
         </div>
       </div>
 
@@ -1143,7 +1143,7 @@ function AutomationHistoryDrawer({
 
       <div className="automation-real-simulation">
         <div className="automation-real-simulation-heading">
-          <strong>Simulacao real</strong>
+          <strong>Simulação real</strong>
           <small>Envia WhatsApp de verdade quando o fluxo tiver envio.</small>
         </div>
         <label className="form-field">

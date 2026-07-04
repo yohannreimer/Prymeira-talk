@@ -168,16 +168,16 @@ export function createSimulatedAgentProvider(): AgentProvider {
       if (shouldHandoff) {
         return parseAgentOutput({
           reply:
-            "Vou chamar uma pessoa do time para continuar este atendimento com mais seguranca.",
+            "Vou chamar uma pessoa do time para continuar este atendimento com mais segurança.",
           confidence: 0.32,
           handoff: {
             required: true,
-            reason: "Baixa confianca ou sinal de irritacao do cliente."
+            reason: "Baixa confiança ou sinal de irritação do cliente."
           },
           actions: [
             {
               type: "request_handoff",
-              reason: "Baixa confianca ou sinal de irritacao do cliente."
+              reason: "Baixa confiança ou sinal de irritação do cliente."
             }
           ]
         });
@@ -185,7 +185,7 @@ export function createSimulatedAgentProvider(): AgentProvider {
 
       return parseAgentOutput({
         reply:
-          "Sou o assistente simulado da Prymeira Talk. Posso ajudar com informacoes objetivas e encaminhar o atendimento quando necessario.",
+          "Sou o assistente simulado da Prymeira Talk. Posso ajudar com informações objetivas e encaminhar o atendimento quando necessário.",
         confidence: 0.84,
         actions: [{ type: "add_tag", tagName: "Atendido pela IA" }],
         handoff: {

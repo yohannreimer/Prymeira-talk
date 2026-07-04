@@ -34,7 +34,7 @@ const baseRule = {
   status: "enabled" as const,
   trigger: "message.received",
   conditions: { summary: "Quando uma mensagem inbound chegar" },
-  actions: [{ type: "send_message", label: "Enviar saudacao" }],
+  actions: [{ type: "send_message", label: "Enviar saudação" }],
   createdAt: new Date("2026-05-21T10:00:00.000Z"),
   updatedAt: new Date("2026-05-21T10:00:00.000Z")
 };
@@ -291,7 +291,7 @@ describe("automations service", () => {
             id: "message-1",
             type: "send_message",
             position: { x: 260, y: 0 },
-            data: { title: "Enviar mensagem", config: { text: "Ola!" } }
+            data: { title: "Enviar mensagem", config: { text: "Olá!" } }
           }
         ],
         edges: [{ id: "edge-1", source: "trigger-1", target: "message-1" }]
@@ -382,7 +382,7 @@ describe("automations routes", () => {
       payload: {
         name: "Boas-vindas local",
         trigger: "message.received",
-        actions: [{ type: "send_message", label: "Enviar saudacao" }]
+        actions: [{ type: "send_message", label: "Enviar saudação" }]
       }
     },
     {
@@ -435,7 +435,7 @@ describe("automations routes", () => {
           payload: {
             name: "Boas-vindas local",
             trigger: "message.received",
-            actions: [{ type: "send_message", label: "Enviar saudacao" }]
+            actions: [{ type: "send_message", label: "Enviar saudação" }]
           }
         });
         const patchResponse = await app.inject({

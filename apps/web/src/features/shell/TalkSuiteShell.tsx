@@ -63,7 +63,7 @@ export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
 
   return (
     <main className={`talk-suite-shell${sidebarExpanded ? " sidebar-expanded" : ""}`}>
-      <aside className="app-rail" aria-label="Navegacao principal">
+      <aside className="app-rail" aria-label="Navegação principal">
         <div className="rail-logo">
           <Bot size={22} aria-hidden="true" />
         </div>

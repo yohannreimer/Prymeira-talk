@@ -101,7 +101,7 @@ export function CrmPage() {
     try {
       setActions(await apiGetCrmSyncActions(getToken, nextContactId || undefined));
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar CRM.");
+      setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar CRM.");
     } finally {
       setIsLoading(false);
     }
@@ -128,7 +128,7 @@ export function CrmPage() {
       setActions((current) => [syncAction, ...current]);
       setNotice(`${actionLabel(syncAction.actionType)} em modo ${modeLabel(syncAction.mode).toLowerCase()}.`);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Nao foi possivel executar acao CRM.");
+      setError(saveError instanceof Error ? saveError.message : "Não foi possível executar ação CRM.");
     } finally {
       setIsSaving(false);
     }
@@ -160,7 +160,7 @@ export function CrmPage() {
         <article className="crm-summary-item">
           <span>Leads enviados</span>
           <strong>{metrics.leads}</strong>
-          <small>Cliques no botao Lead do atendimento</small>
+          <small>Cliques no botão Lead do atendimento</small>
         </article>
         <article className="crm-summary-item">
           <span>Notas criadas</span>
@@ -168,23 +168,23 @@ export function CrmPage() {
           <small>Registros enviados ou preparados para o CRM</small>
         </article>
         <article className="crm-summary-item">
-          <span>Sincronizacoes reais</span>
+          <span>Sincronizações reais</span>
           <strong>{metrics.real}</strong>
           <small>Chamadas confirmadas pelo Vincula</small>
         </article>
         <article className={`crm-summary-item ${metrics.needsAttention ? "is-warning" : ""}`}>
           <span>Atencao</span>
           <strong>{metrics.needsAttention}</strong>
-          <small>{metrics.needsAttention ? "Itens que nao finalizaram" : "Nenhuma pendencia registrada"}</small>
+          <small>{metrics.needsAttention ? "Itens que não finalizaram" : "Nenhuma pendência registrada"}</small>
         </article>
       </section>
 
       <div className="crm-dashboard-grid">
-        <section className="module-panel crm-activity-panel" aria-label="Ultimas sincronizacoes">
+        <section className="module-panel crm-activity-panel" aria-label="Ultimas sincronizações">
           <div className="panel-title-row">
             <div>
-              <h2>Ultimas sincronizacoes</h2>
-              <p>Historico do que o Talk enviou para o Vincula.</p>
+              <h2>Ultimas sincronizações</h2>
+              <p>Histórico do que o Talk enviou para o Vincula.</p>
             </div>
             <form
               className="crm-filter-form"
@@ -208,8 +208,8 @@ export function CrmPage() {
             {actions.length === 0 ? (
               <div className="crm-empty-state">
                 <BriefcaseBusiness size={28} />
-                <strong>Nenhuma sincronizacao ainda</strong>
-                <p>Quando voce clicar em Lead no atendimento, o resultado aparece aqui.</p>
+                <strong>Nenhuma sincronização ainda</strong>
+                <p>Quando você clicar em Lead no atendimento, o resultado aparece aqui.</p>
               </div>
             ) : null}
 
@@ -248,7 +248,7 @@ export function CrmPage() {
           </div>
         </section>
 
-        <aside className="module-panel crm-guide-panel" aria-label="Como usar a integracao">
+        <aside className="module-panel crm-guide-panel" aria-label="Como usar a integração">
           <div className="panel-title-row">
             <h2>Como usar</h2>
             <Activity size={18} />
@@ -264,7 +264,7 @@ export function CrmPage() {
             </li>
             <li>
               <strong>Acompanhe aqui</strong>
-              <span>Use este painel para conferir IDs, modo real e historico.</span>
+              <span>Use este painel para conferir IDs, modo real e histórico.</span>
             </li>
           </ol>
 
@@ -286,7 +286,7 @@ export function CrmPage() {
             </form>
             <form className="module-form compact-form" onSubmit={(event) => void runAction(event, "lead")}>
               <label className="form-field">
-                Titulo do lead
+                Título do lead
                 <input value={leadTitle} onChange={(event) => setLeadTitle(event.target.value)} required />
               </label>
               <button className="secondary-button" type="submit" disabled={isSaving || !contactId}>
@@ -310,7 +310,7 @@ export function CrmPage() {
             <Building2 size={18} />
             <div>
               <strong>Empresa no Vincula</strong>
-              <p>Quando o contato tem empresa no Talk, a integracao tenta reutilizar ou criar a empresa e ligar o contato nela.</p>
+              <p>Quando o contato tem empresa no Talk, a integração tenta reutilizar ou criar a empresa e ligar o contato nela.</p>
             </div>
           </div>
         </aside>

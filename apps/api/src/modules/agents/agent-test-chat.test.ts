@@ -27,7 +27,7 @@ function buildPrisma(overrides: Record<string, any> = {}) {
         vi.fn().mockResolvedValue([
           {
             id: "knowledge_price",
-            title: "Tabela de precos",
+            title: "Tabela de preços",
             content: "Plano profissional custa R$ 199 por mes.",
             metadata: { category: "precos", keywords: ["plano profissional", "mensalidade"] }
           }
@@ -47,7 +47,7 @@ describe("createAgentTestChatService", () => {
       reply: "O plano profissional custa R$ 199 por mes.",
       actions: [],
       handoff: { required: false, reason: null },
-      sources: [{ id: "knowledge_price", title: "Tabela de precos", category: "precos" }]
+      sources: [{ id: "knowledge_price", title: "Tabela de preços", category: "precos" }]
     });
     const service = createAgentTestChatService({ prisma, provider });
 
@@ -84,7 +84,7 @@ describe("createAgentTestChatService", () => {
           ]),
           knowledge: [
             {
-              title: "Tabela de precos",
+              title: "Tabela de preços",
               content: "Plano profissional custa R$ 199 por mes."
             }
           ]
@@ -128,7 +128,7 @@ describe("createAgentTestChatService", () => {
     const result = await service.sendMessage({
       workspaceId: "workspace_a",
       agentId: baseAgent.id,
-      messages: [{ role: "user", content: "Qual o preco?" }]
+      messages: [{ role: "user", content: "Qual o preço?" }]
     });
 
     expect(result.message.content).toBe("Resposta real.");
@@ -154,7 +154,7 @@ describe("createAgentTestChatService", () => {
     });
     const provider = buildProvider({
       confidence: 0.84,
-      reply: "Inventaria um preco.",
+      reply: "Inventaria um preço.",
       actions: [],
       handoff: { required: false, reason: null }
     });
@@ -163,12 +163,12 @@ describe("createAgentTestChatService", () => {
     const result = await service.sendMessage({
       workspaceId: "workspace_a",
       agentId: baseAgent.id,
-      messages: [{ role: "user", content: "Qual o preco?" }]
+      messages: [{ role: "user", content: "Qual o preço?" }]
     });
 
     expect(provider.generate).not.toHaveBeenCalled();
     expect(result.message.content).toBe(
-      "Vou chamar uma pessoa do time para confirmar essa informacao com seguranca."
+      "Vou chamar uma pessoa do time para confirmar essa informação com segurança."
     );
     expect(result.output.handoff.required).toBe(true);
   });

@@ -515,8 +515,8 @@ function InboxScreenshot() {
 function ContatosScreenshot() {
   return <ScreenshotVisual src="/screenshots/contatos.jpg" alt="Lista de contatos do Prymeira Talk" />;
 }
-function AutomacoesScreenshot() {
-  return <ScreenshotVisual src="/screenshots/automacoes.jpg" alt="Editor visual de automações do Prymeira Talk" />;
+function AutomaçõesScreenshot() {
+  return <ScreenshotVisual src="/screenshots/automações.jpg" alt="Editor visual de automações do Prymeira Talk" />;
 }
 function DisparosScreenshot() {
   return <ScreenshotVisual src="/screenshots/disparos.jpg" alt="Disparos e campanhas do Prymeira Talk" />;
@@ -546,7 +546,7 @@ const FEATURES = [
     label: 'Automações',
     headline: 'Fluxos que trabalham enquanto sua equipe descansa.',
     body: 'Monte automações visuais para triagem, respostas fora do horário, redistribuição de fila e muito mais — sem escrever uma linha de código.',
-    Visual: AutomacoesScreenshot,
+    Visual: AutomaçõesScreenshot,
   },
   {
     id: 'campaigns',

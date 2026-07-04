@@ -63,10 +63,10 @@ type KnowledgeUploadFormState = {
 };
 
 const knowledgeUploadCategories: Array<{ value: KnowledgeUploadCategory; label: string }> = [
-  { value: "precos", label: "Precos" },
+  { value: "precos", label: "Preços" },
   { value: "produto", label: "Produto" },
   { value: "faq", label: "FAQ" },
-  { value: "politicas", label: "Politicas" },
+  { value: "politicas", label: "Políticas" },
   { value: "onboarding", label: "Onboarding" },
   { value: "comercial", label: "Comercial" },
   { value: "suporte", label: "Suporte" },
@@ -172,7 +172,7 @@ export function AgentsPage() {
         systemPrompt: firstAgent.systemPrompt
       } : emptyAgentForm());
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar agentes.");
+      setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar agentes.");
     } finally {
       setIsLoadingAgents(false);
     }
@@ -185,7 +185,7 @@ export function AgentsPage() {
     try {
       setKnowledge(await apiGetAgentKnowledge(getToken, agentId));
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Nao foi possivel carregar conhecimento.");
+      setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar conhecimento.");
     } finally {
       setIsLoadingKnowledge(false);
     }
@@ -258,7 +258,7 @@ export function AgentsPage() {
       });
       setNotice("Agente criado.");
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Nao foi possivel salvar o agente.");
+      setError(saveError instanceof Error ? saveError.message : "Não foi possível salvar o agente.");
     } finally {
       setIsSavingAgent(false);
     }
@@ -287,7 +287,7 @@ export function AgentsPage() {
       setKnowledgeForm(emptyKnowledgeForm());
       setNotice("Conhecimento adicionado.");
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Nao foi possivel adicionar conhecimento.");
+      setError(saveError instanceof Error ? saveError.message : "Não foi possível adicionar conhecimento.");
     } finally {
       setIsSavingKnowledge(false);
     }
@@ -319,7 +319,7 @@ export function AgentsPage() {
       setKnowledgeUploadForm(emptyKnowledgeUploadForm());
       setNotice("Documento adicionado ao agente.");
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "Nao foi possivel enviar o documento.");
+      setError(uploadError instanceof Error ? uploadError.message : "Não foi possível enviar o documento.");
     } finally {
       setIsUploadingKnowledge(false);
     }
@@ -357,7 +357,7 @@ export function AgentsPage() {
     } catch (testError) {
       setTestMessages(testMessages);
       setTestMessageBody(content);
-      setError(testError instanceof Error ? testError.message : "Nao foi possivel testar o agente.");
+      setError(testError instanceof Error ? testError.message : "Não foi possível testar o agente.");
     } finally {
       setIsSendingTestMessage(false);
     }
@@ -408,7 +408,7 @@ export function AgentsPage() {
                 <Bot size={24} />
               </div>
               <h3>Nenhum agente</h3>
-              <p>Crie o primeiro agente autonomo para usar em automacoes e atendimento.</p>
+              <p>Crie o primeiro agente autônomo para usar em automações e atendimento.</p>
             </div>
           ) : null}
 
@@ -440,7 +440,7 @@ export function AgentsPage() {
               <h2>{selectedAgent ? "Editar agente" : "Novo agente"}</h2>
               <span className="status-badge status-badge--bot">
                 <ShieldCheck size={12} />
-                {defaultAllowedActions.length} acoes padrao
+                {defaultAllowedActions.length} ações padrão
               </span>
             </div>
             <label className="form-field">
@@ -463,7 +463,7 @@ export function AgentsPage() {
             </label>
             <button className="primary-button" type="submit" disabled={isSavingAgent}>
               <Save size={15} />
-              {isSavingAgent ? "Salvando" : selectedAgent ? "Salvar alteracoes" : "Criar agente"}
+              {isSavingAgent ? "Salvando" : selectedAgent ? "Salvar alterações" : "Criar agente"}
             </button>
           </form>
 
@@ -492,7 +492,7 @@ export function AgentsPage() {
                 >
                   <div className="assistant-log-header">
                     <span className={`status-badge status-badge--${message.role === "user" ? "open" : "bot"}`}>
-                      {message.role === "user" ? "Voce" : "Agente"}
+                      {message.role === "user" ? "Você" : "Agente"}
                     </span>
                   </div>
                   <p className="assistant-log-result">{message.content}</p>
@@ -547,14 +547,14 @@ export function AgentsPage() {
                 </select>
               </label>
               <label className="form-field">
-                Titulo do documento
+                Título do documento
                 <input
                   value={knowledgeUploadForm.title}
                   onChange={(event) => setKnowledgeUploadForm((current) => ({
                     ...current,
                     title: event.target.value
                   }))}
-                  placeholder="Tabela de precos"
+                  placeholder="Tabela de preços"
                   disabled={!selectedAgent}
                 />
               </label>
@@ -597,21 +597,21 @@ export function AgentsPage() {
                 </select>
               </label>
               <label className="form-field">
-                Titulo
+                Título
                 <input
                   value={knowledgeForm.title}
                   onChange={(event) => setKnowledgeForm((current) => ({ ...current, title: event.target.value }))}
-                  placeholder={knowledgeForm.type === "faq" ? "Como remarcar um horario?" : "Politica de atendimento"}
+                  placeholder={knowledgeForm.type === "faq" ? "Como remarcar um horário?" : "Política de atendimento"}
                   disabled={!selectedAgent}
                   required
                 />
               </label>
               <label className="form-field">
-                Conteudo
+                Conteúdo
                 <textarea
                   value={knowledgeForm.content}
                   onChange={(event) => setKnowledgeForm((current) => ({ ...current, content: event.target.value }))}
-                  placeholder="Resposta, instrucoes ou texto de referencia para o agente."
+                  placeholder="Resposta, instruções ou texto de referência para o agente."
                   disabled={!selectedAgent}
                   required
                   rows={5}

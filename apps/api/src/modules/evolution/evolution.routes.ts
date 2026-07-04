@@ -232,9 +232,9 @@ function extractMessageContent(message: unknown): {
   if (audioMimetype || audioUrl) {
     return {
       type: "audio",
-      body: "Audio recebido",
+      body: "Áudio recebido",
       mediaUrl: audioUrl,
-      preview: "Audio recebido"
+      preview: "Áudio recebido"
     };
   }
 

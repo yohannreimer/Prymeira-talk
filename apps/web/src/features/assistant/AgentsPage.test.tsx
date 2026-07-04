@@ -35,7 +35,7 @@ describe("AgentsPage", () => {
     expect(html).toContain("Conhecimento");
     expect(html).toContain("Arquivo PDF ou texto");
     expect(html).toContain("Adicionar documento");
-    expect(html).toContain("Precos");
+    expect(html).toContain("Preços");
     expect(html).toContain("FAQ");
     expect(html).toContain("Texto");
   });

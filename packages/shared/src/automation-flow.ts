@@ -79,39 +79,39 @@ export interface AutomationBlockDefinition {
 
 export const automationBlockCatalog: AutomationBlockDefinition[] = [
   { type: "trigger_first_message", category: "trigger", label: "Primeira mensagem", description: "Dispara quando o contato nunca falou antes.", support: "supported" },
-  { type: "trigger_reengagement", category: "trigger", label: "Retorno apos pausa", description: "Dispara quando o contato volta apos X dias sem mensagem.", support: "supported" },
+  { type: "trigger_reengagement", category: "trigger", label: "Retorno após pausa", description: "Dispara quando o contato volta após X dias sem mensagem.", support: "supported" },
   { type: "trigger_keyword", category: "trigger", label: "Palavra-chave", description: "Dispara por texto recebido.", support: "supported" },
   { type: "trigger_tag_added", category: "trigger", label: "Tag adicionada", description: "Dispara quando uma tag entra no contato.", support: "visual_only" },
   { type: "trigger_board_stage_changed", category: "trigger", label: "Etapa alterada", description: "Dispara quando o contato muda de etapa.", support: "visual_only" },
   { type: "trigger_conversation_closed", category: "trigger", label: "Conversa encerrada", description: "Dispara quando atendimento fecha.", support: "visual_only" },
-  { type: "trigger_schedule", category: "trigger", label: "Horario/agendamento", description: "Dispara por horario configurado.", support: "visual_only" },
+  { type: "trigger_schedule", category: "trigger", label: "Horário/agendamento", description: "Dispara por horário configurado.", support: "visual_only" },
   { type: "trigger_webhook", category: "trigger", label: "Webhook externo", description: "Dispara por evento externo.", support: "coming_soon" },
   { type: "send_message", category: "communication", label: "Enviar mensagem", description: "Envia texto pelo WhatsApp.", support: "supported" },
-  { type: "send_quick_reply", category: "communication", label: "Enviar mensagem padrao", description: "Usa uma mensagem padrao salva.", support: "supported" },
+  { type: "send_quick_reply", category: "communication", label: "Enviar mensagem padrão", description: "Usa uma mensagem padrão salva.", support: "supported" },
   { type: "send_image", category: "communication", label: "Enviar imagem", description: "Envia imagem.", support: "supported" },
   { type: "send_file", category: "communication", label: "Enviar arquivo", description: "Envia documento/arquivo.", support: "supported" },
-  { type: "send_audio", category: "communication", label: "Enviar audio", description: "Envia audio gravado.", support: "visual_only" },
+  { type: "send_audio", category: "communication", label: "Enviar áudio", description: "Envia áudio gravado.", support: "visual_only" },
   { type: "ask_open_reply", category: "communication", label: "Pedir resposta", description: "Pede uma resposta aberta.", support: "supported" },
-  { type: "ask_options", category: "communication", label: "Pedir escolha", description: "Mostra opcoes para o contato.", support: "visual_only" },
+  { type: "ask_options", category: "communication", label: "Pedir escolha", description: "Mostra opções para o contato.", support: "visual_only" },
   { type: "send_template", category: "communication", label: "Enviar template", description: "Envia template aprovado.", support: "coming_soon" },
   { type: "notify_team", category: "communication", label: "Notificar equipe", description: "Cria alerta interno.", support: "visual_only" },
-  { type: "condition_tag", category: "decision", label: "Condicao por tag", description: "Ramifica por tag.", support: "supported" },
-  { type: "condition_channel", category: "decision", label: "Condicao por canal", description: "Ramifica por canal.", support: "supported" },
-  { type: "condition_time", category: "decision", label: "Condicao por horario", description: "Ramifica por horario.", support: "supported" },
-  { type: "condition_text", category: "decision", label: "Condicao por texto", description: "Ramifica por texto recebido.", support: "supported" },
-  { type: "condition_board_stage", category: "decision", label: "Condicao por etapa", description: "Ramifica por etapa do CRM.", support: "supported" },
-  { type: "condition_assignee", category: "decision", label: "Condicao por responsavel", description: "Ramifica por responsavel.", support: "visual_only" },
-  { type: "condition_source", category: "decision", label: "Condicao por origem", description: "Ramifica por origem.", support: "visual_only" },
-  { type: "condition_status", category: "decision", label: "Condicao por status", description: "Ramifica por status da conversa.", support: "visual_only" },
+  { type: "condition_tag", category: "decision", label: "Condição por tag", description: "Ramifica por tag.", support: "supported" },
+  { type: "condition_channel", category: "decision", label: "Condição por canal", description: "Ramifica por canal.", support: "supported" },
+  { type: "condition_time", category: "decision", label: "Condição por horário", description: "Ramifica por horário.", support: "supported" },
+  { type: "condition_text", category: "decision", label: "Condição por texto", description: "Ramifica por texto recebido.", support: "supported" },
+  { type: "condition_board_stage", category: "decision", label: "Condição por etapa", description: "Ramifica por etapa do CRM.", support: "supported" },
+  { type: "condition_assignee", category: "decision", label: "Condição por responsável", description: "Ramifica por responsável.", support: "visual_only" },
+  { type: "condition_source", category: "decision", label: "Condição por origem", description: "Ramifica por origem.", support: "visual_only" },
+  { type: "condition_status", category: "decision", label: "Condição por status", description: "Ramifica por status da conversa.", support: "visual_only" },
   { type: "wait_time", category: "time", label: "Aguardar tempo", description: "Espera minutos/horas/dias.", support: "visual_only" },
-  { type: "wait_until", category: "time", label: "Aguardar ate horario", description: "Espera horario especifico.", support: "visual_only" },
+  { type: "wait_until", category: "time", label: "Aguardar até horário", description: "Espera horário específico.", support: "visual_only" },
   { type: "wait_reply", category: "time", label: "Aguardar resposta", description: "Espera resposta do contato.", support: "visual_only" },
-  { type: "limit_repetition", category: "time", label: "Limitar repeticao", description: "Evita repeticao em janela.", support: "visual_only" },
-  { type: "business_hours", category: "time", label: "Horario comercial", description: "Respeita janela de atendimento.", support: "visual_only" },
+  { type: "limit_repetition", category: "time", label: "Limitar repetição", description: "Evita repetição em janela.", support: "visual_only" },
+  { type: "business_hours", category: "time", label: "Horário comercial", description: "Respeita janela de atendimento.", support: "visual_only" },
   { type: "add_tag", category: "crm", label: "Adicionar tag", description: "Adiciona tag.", support: "supported" },
   { type: "remove_tag", category: "crm", label: "Remover tag", description: "Remove tag.", support: "supported" },
   { type: "move_board_stage", category: "crm", label: "Mover no CRM", description: "Move contato para etapa.", support: "supported" },
-  { type: "assign_user", category: "crm", label: "Atribuir responsavel", description: "Define responsavel.", support: "supported" },
+  { type: "assign_user", category: "crm", label: "Atribuir responsável", description: "Define responsável.", support: "supported" },
   { type: "change_priority", category: "crm", label: "Alterar prioridade", description: "Altera prioridade.", support: "supported" },
   { type: "create_internal_note", category: "crm", label: "Criar nota interna", description: "Cria nota no contato.", support: "supported" },
   { type: "close_conversation", category: "crm", label: "Fechar conversa", description: "Fecha atendimento.", support: "supported" },
@@ -121,11 +121,11 @@ export const automationBlockCatalog: AutomationBlockDefinition[] = [
   { type: "ai_classify_message", category: "integration", label: "Classificar mensagem", description: "Classifica com IA.", support: "coming_soon" },
   { type: "ai_generate_summary", category: "integration", label: "Gerar resumo", description: "Resume conversa com IA.", support: "coming_soon" },
   { type: "ai_suggest_reply", category: "integration", label: "Sugerir resposta", description: "Sugere resposta com IA.", support: "coming_soon" },
-  { type: "run_agent", category: "integration", label: "Executar agente", description: "Aciona um agente de IA autonomo nesta conversa.", support: "supported" },
+  { type: "run_agent", category: "integration", label: "Executar agente", description: "Aciona um agente de IA autônomo nesta conversa.", support: "supported" },
   { type: "enrich_contact", category: "integration", label: "Enriquecer contato", description: "Busca dados externos.", support: "coming_soon" },
   { type: "external_system", category: "integration", label: "Sistema externo", description: "Envia para sistema externo.", support: "coming_soon" },
-  { type: "end_flow", category: "control", label: "Finalizar fluxo", description: "Encerra automacao.", support: "supported" },
-  { type: "skip_step", category: "control", label: "Pular etapa", description: "Pula proximo passo.", support: "visual_only" },
+  { type: "end_flow", category: "control", label: "Finalizar fluxo", description: "Encerra automação.", support: "supported" },
+  { type: "skip_step", category: "control", label: "Pular etapa", description: "Pula próximo passo.", support: "visual_only" },
   { type: "dedupe_guard", category: "control", label: "Evitar duplicidade", description: "Bloqueia duplicidade.", support: "visual_only" },
   { type: "mark_error", category: "control", label: "Marcar erro", description: "Registra falha.", support: "visual_only" },
   { type: "log_event", category: "control", label: "Registrar evento", description: "Registra evento no run.", support: "supported" }
@@ -185,12 +185,12 @@ export function validateAutomationFlowForStatus(
 
     const block = getAutomationBlock(node.type);
     if (!block) {
-      errors.push(`O bloco ${node.type} nao existe.`);
+      errors.push(`O bloco ${node.type} não existe.`);
       continue;
     }
 
     if (status === "enabled" && block.support !== "supported") {
-      errors.push(`O bloco ${block.label} ainda nao pode ser usado em fluxos ativos.`);
+      errors.push(`O bloco ${block.label} ainda não pode ser usado em fluxos ativos.`);
     }
   }
 
@@ -221,7 +221,7 @@ export function validateAutomationFlowForStatus(
 
     const targetNode = flow.nodes.find((node) => node.id === edge.target);
     if (targetNode && getAutomationBlock(targetNode.type)?.category === "trigger") {
-      errors.push("O gatilho nao pode receber conexoes.");
+      errors.push("O gatilho não pode receber conexões.");
     }
   }
 

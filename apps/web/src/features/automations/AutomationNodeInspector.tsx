@@ -68,9 +68,9 @@ export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeCh
 
   if (!node) {
     return (
-      <aside className="automation-node-inspector" aria-label="Configuracao do bloco">
+      <aside className="automation-node-inspector" aria-label="Configuração do bloco">
         <div className="automation-panel-heading">
-          <h3>Configuracao</h3>
+          <h3>Configuração</h3>
         </div>
         <div className="automation-inspector-empty">
           <strong>Selecione um bloco</strong>
@@ -117,14 +117,14 @@ export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeCh
         mediaUrl: result.url
       });
     } catch (error) {
-      setUploadError(error instanceof Error ? error.message : "Nao foi possivel enviar o arquivo.");
+      setUploadError(error instanceof Error ? error.message : "Não foi possível enviar o arquivo.");
     } finally {
       setUploadingNodeId(null);
     }
   }
 
   return (
-    <aside className="automation-node-inspector" aria-label="Configuracao do bloco">
+    <aside className="automation-node-inspector" aria-label="Configuração do bloco">
       <div className="automation-panel-heading">
         <h3>Configurar</h3>
         {node.data.support !== "supported" ? (
@@ -157,7 +157,7 @@ export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeCh
 
           {type === "trigger_first_message" ? (
             <p className="list-note">
-              Executa somente quando essa conversa ainda nao tinha mensagens inbound anteriores.
+              Executa somente quando essa conversa ainda não tinha mensagens inbound anteriores.
             </p>
           ) : null}
 
@@ -191,7 +191,7 @@ export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeCh
                     ...keywordInputToConfig(event.target.value)
                   });
                 }}
-                placeholder={"Ex: catalogo\npreco\nsuporte"}
+                placeholder={"Ex: catálogo\npreço\nsuporte"}
                 rows={4}
                 value={keywordConfigToInputValue(config)}
               />
@@ -202,7 +202,7 @@ export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeCh
 
       {showsMessage ? (
         <label className="form-field">
-          <span>{type === "send_quick_reply" ? "Mensagem padrao" : "Mensagem"}</span>
+          <span>{type === "send_quick_reply" ? "Mensagem padrão" : "Mensagem"}</span>
           <textarea
             onChange={(event) => updateConfigValue(node, "message", event.target.value, onConfigChange)}
             placeholder="Escreva o texto enviado ao contato"
@@ -311,7 +311,7 @@ export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeCh
 
       {!hasSupportedInputs ? (
         <p className="list-note">
-          Este bloco ainda nao tem campos editaveis nesta primeira versao do canvas.
+          Este bloco ainda não tem campos editaveis nesta primeira versao do canvas.
         </p>
       ) : null}
     </aside>
