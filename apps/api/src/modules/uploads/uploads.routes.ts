@@ -5,6 +5,8 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 const MAX_AUTOMATION_ASSET_BYTES = 15 * 1024 * 1024;
+const safeWorkspaceIdSchema = z.string().trim().min(1).max(160).regex(/^[a-zA-Z0-9_-]+$/);
+const safeStoredFileNameSchema = z.string().trim().min(1).max(260).regex(/^[a-zA-Z0-9._-]+$/);
 
 const uploadAutomationAssetBodySchema = z.object({
   fileName: z.string().trim().min(1).max(180),
@@ -65,20 +67,20 @@ export interface UploadsRoutesOptions {
 export const uploadsRoutes: FastifyPluginAsync<UploadsRoutesOptions> = async (app, options) => {
   async function serveAutomationAsset(request: FastifyRequest, reply: FastifyReply) {
     const params = z.object({
-      workspaceId: z.string().trim().min(1).max(160),
-      fileName: z.string().trim().min(1).max(260)
+      workspaceId: safeWorkspaceIdSchema,
+      fileName: safeStoredFileNameSchema.refine((fileName) => !fileName.includes(".."))
     }).safeParse(request.params);
 
     if (!params.success) {
       return reply.code(404).send({ error: "Arquivo não encontrado." });
     }
 
-    const filePath = path.join(
-      options.uploadDir,
-      "automations",
-      params.data.workspaceId,
-      params.data.fileName
-    );
+    const workspaceDir = path.resolve(options.uploadDir, "automations", params.data.workspaceId);
+    const filePath = path.resolve(workspaceDir, params.data.fileName);
+
+    if (!filePath.startsWith(`${workspaceDir}${path.sep}`)) {
+      return reply.code(404).send({ error: "Arquivo não encontrado." });
+    }
 
     try {
       const fileBuffer = await readFile(filePath);

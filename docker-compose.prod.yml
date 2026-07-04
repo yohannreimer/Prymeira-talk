@@ -33,6 +33,8 @@ services:
       API_PORT: 3002
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${PRYMEIRA_TALK_POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-prymeira_talk}
       CORS_ORIGINS: https://talk.prymeiradigital.com.br
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-300}
+      RATE_LIMIT_TIME_WINDOW: ${RATE_LIMIT_TIME_WINDOW:-1 minute}
       PRYMEIRA_ACCOUNT_API_URL: https://hub.prymeiradigital.com.br/api
       PRYMEIRA_LOCAL_AUTH_BYPASS: "false"
       PRYMEIRA_LOCAL_WORKSPACE_ID: local_workspace

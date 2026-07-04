@@ -31,6 +31,7 @@ export type { AiAgentAllowedAction, AiAgentDto, AiKnowledgeSourceDto } from "@pr
 
 const apiUrl = readConfigValue("VITE_API_URL") ?? "http://localhost:3002";
 const localAuthBypass = readConfigValue("VITE_LOCAL_AUTH_BYPASS") === "true";
+const realtimeAuthProtocol = "prymeira-talk-auth";
 
 export interface ContactBoardWithStagesDto extends ContactBoardDto {
   stages: ContactBoardStageDto[];
@@ -2535,16 +2536,19 @@ export async function apiGetAuditLog(
   );
 }
 
-export function buildRealtimeUrl(token: string | null) {
+export function buildRealtimeAuthProtocols(token: string | null) {
   const realtimeToken = token ?? (localAuthBypass ? "local-dev-bypass" : null);
 
   if (!realtimeToken) {
     throw new Error("Missing realtime auth token.");
   }
 
+  return [realtimeAuthProtocol, realtimeToken];
+}
+
+export function buildRealtimeUrl() {
   const url = new URL(apiUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = `${url.pathname.replace(/\/$/, "")}/realtime`;
-  url.searchParams.set("token", realtimeToken);
   return url.toString();
 }

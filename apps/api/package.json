@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
+    "@fastify/rate-limit": "^11.1.0",
     "@fastify/websocket": "^11.2.0",
     "@prisma/client": "^6.19.0",
     "@prymeira-talk/shared": "workspace:*",

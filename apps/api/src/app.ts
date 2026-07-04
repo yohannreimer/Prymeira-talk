@@ -1,4 +1,5 @@
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
 import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
@@ -34,11 +35,46 @@ export interface CreateAppOptions {
 }
 
 export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
-  const app = Fastify({ logger: options.logger ?? true });
+  const app = Fastify({ logger: options.logger ?? true, trustProxy: true });
+  const allowedCorsOrigins = env.CORS_ORIGINS.split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 
   await app.register(cors, {
     methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
-    origin: env.CORS_ORIGINS.split(",").map((origin) => origin.trim())
+    origin(origin, callback) {
+      if (!origin || allowedCorsOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(null, false);
+    }
+  });
+
+  await app.register(rateLimit, {
+    global: true,
+    max: env.RATE_LIMIT_MAX,
+    timeWindow: env.RATE_LIMIT_TIME_WINDOW,
+    errorResponseBuilder(_request, context) {
+      const error = new Error(`Too many requests. Try again in ${context.after}.`);
+      (error as Error & { statusCode: number }).statusCode = context.statusCode;
+      return error;
+    }
+  });
+
+  app.setErrorHandler((error, _request, reply) => {
+    const maybeHttpError = error as Error & { statusCode?: number };
+    if (maybeHttpError.statusCode === 429) {
+      return reply.status(429).send({
+        error: {
+          code: "RATE_LIMITED",
+          message: maybeHttpError.message
+        }
+      });
+    }
+
+    return reply.send(error);
   });
 
   if (options.prismaEnabled !== false) {

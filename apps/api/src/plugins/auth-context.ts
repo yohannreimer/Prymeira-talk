@@ -14,6 +14,8 @@ const workspaceAccessSchema = z.object({
   product_role: z.string().optional()
 });
 
+const realtimeAuthProtocol = "prymeira-talk-auth";
+
 declare module "fastify" {
   interface FastifyRequest {
     talk: {
@@ -77,19 +79,41 @@ function isPublicPath(pathname: string) {
   );
 }
 
+function normalizeHeaderValue(header: string | string[] | undefined) {
+  if (Array.isArray(header)) {
+    return header.join(",");
+  }
+
+  return header;
+}
+
+function readRealtimeProtocolToken(header: string | string[] | undefined) {
+  const value = normalizeHeaderValue(header);
+  if (!value) {
+    return null;
+  }
+
+  const protocols = value
+    .split(",")
+    .map((protocol) => protocol.trim())
+    .filter(Boolean);
+  const authProtocolIndex = protocols.indexOf(realtimeAuthProtocol);
+  const token = authProtocolIndex >= 0 ? protocols[authProtocolIndex + 1] : null;
+
+  return token && token.length > 0 ? token : null;
+}
+
 function readBearerToken(request: FastifyRequest, pathname: string) {
   const header = request.headers.authorization;
   if (header?.startsWith("Bearer ")) {
     return header.slice("Bearer ".length);
   }
 
-  // Browser WebSocket handshakes cannot send Authorization headers, so query
-  // token support is scoped to the realtime handshake path.
   if (pathname !== "/realtime") {
     return null;
   }
 
-  return new URL(request.url, "http://localhost").searchParams.get("token");
+  return readRealtimeProtocolToken(request.headers["sec-websocket-protocol"]);
 }
 
 function normalizeRole(role: string | undefined): "owner" | "manager" | "agent" {

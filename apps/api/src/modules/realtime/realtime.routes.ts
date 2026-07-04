@@ -3,6 +3,8 @@ import type { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
 import { createRealtimeHub } from "./realtime-hub.js";
 
+const realtimeAuthProtocol = "prymeira-talk-auth";
+
 declare module "fastify" {
   interface FastifyInstance {
     realtime: ReturnType<typeof createRealtimeHub>;
@@ -10,7 +12,13 @@ declare module "fastify" {
 }
 
 const realtimeRoutesPlugin: FastifyPluginAsync = async (app) => {
-  await app.register(websocket);
+  await app.register(websocket, {
+    options: {
+      handleProtocols: (protocols: Set<string>) => {
+        return protocols.has(realtimeAuthProtocol) ? realtimeAuthProtocol : false;
+      }
+    }
+  });
 
   const hub = createRealtimeHub();
   app.decorate("realtime", hub);

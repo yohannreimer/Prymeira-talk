@@ -1,6 +1,6 @@
 import { realtimeEventSchema, type RealtimeEvent } from "@prymeira-talk/shared";
 import { useEffect } from "react";
-import { buildRealtimeUrl } from "../../app/api";
+import { buildRealtimeAuthProtocols, buildRealtimeUrl } from "../../app/api";
 
 export function useRealtimeEvents(input: {
   token: string | null;
@@ -10,14 +10,16 @@ export function useRealtimeEvents(input: {
 
   useEffect(() => {
     let realtimeUrl: string;
+    let realtimeProtocols: string[];
 
     try {
-      realtimeUrl = buildRealtimeUrl(token);
+      realtimeUrl = buildRealtimeUrl();
+      realtimeProtocols = buildRealtimeAuthProtocols(token);
     } catch {
       return;
     }
 
-    const socket = new WebSocket(realtimeUrl);
+    const socket = new WebSocket(realtimeUrl, realtimeProtocols);
     socket.onmessage = (message) => {
       const event = realtimeEventSchema.parse(JSON.parse(message.data));
       onEvent(event);

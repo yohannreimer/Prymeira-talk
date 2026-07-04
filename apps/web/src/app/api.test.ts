@@ -7,14 +7,13 @@ afterEach(() => {
 });
 
 describe("buildRealtimeUrl", () => {
-  it("preserves the API base path for websocket connections", async () => {
+  it("preserves the API base path without putting bearer tokens in the URL", async () => {
     vi.stubEnv("VITE_API_URL", "https://talk.prymeiradigital.com.br/api");
 
-    const { buildRealtimeUrl } = await import("./api");
+    const { buildRealtimeAuthProtocols, buildRealtimeUrl } = await import("./api");
 
-    expect(buildRealtimeUrl("token_1")).toBe(
-      "wss://talk.prymeiradigital.com.br/api/realtime?token=token_1"
-    );
+    expect(buildRealtimeUrl()).toBe("wss://talk.prymeiradigital.com.br/api/realtime");
+    expect(buildRealtimeAuthProtocols("token_1")).toEqual(["prymeira-talk-auth", "token_1"]);
   });
 });
 

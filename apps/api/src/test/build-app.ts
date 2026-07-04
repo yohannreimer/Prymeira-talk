@@ -10,7 +10,10 @@ export async function buildApp(
     {
       API_HOST: "127.0.0.1",
       API_PORT: 0,
+      NODE_ENV: "test",
       CORS_ORIGINS: "http://localhost:5176",
+      RATE_LIMIT_MAX: 300,
+      RATE_LIMIT_TIME_WINDOW: "1 minute",
       DATABASE_URL: "postgresql://postgres:postgres@localhost:54329/prymeira_talk",
       PRYMEIRA_ACCOUNT_API_URL: "http://localhost:3001",
       PRYMEIRA_LOCAL_AUTH_BYPASS: false,

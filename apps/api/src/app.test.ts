@@ -1,5 +1,6 @@
-import { rm } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import type { Socket } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { buildApp } from "./test/build-app.js";
 
@@ -183,6 +184,58 @@ describe("app", () => {
       expect(response.statusCode).toBe(401);
       expect(requireProductAccess).not.toHaveBeenCalled();
       expect(fetchProducts).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not authenticate realtime with a query token", async () => {
+    const requireProductAccess = vi.fn();
+    const fetchProducts = vi.fn();
+    const app = await buildApp(
+      {},
+      { authEnabled: true, requireProductAccess, fetch: fetchProducts }
+    );
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/realtime?token=abc" });
+
+      expect(response.statusCode).toBe(401);
+      expect(requireProductAccess).not.toHaveBeenCalled();
+      expect(fetchProducts).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("authenticates realtime with a websocket protocol token", async () => {
+    const requireProductAccess = vi.fn(async () => ({
+      allowed: true,
+      product_key: "talk",
+      status: "active",
+      reason: "allowed",
+      workspace_id: "workspace_ws",
+      product_role: "agent"
+    }));
+    const fetchProducts = vi.fn();
+    const app = await buildApp(
+      {},
+      { authEnabled: true, requireProductAccess, fetch: fetchProducts }
+    );
+
+    try {
+      await app.ready();
+      const socket = await app.injectWS("/realtime", {
+        socket: { remoteAddress: "127.0.0.1" } as Socket,
+        headers: { "sec-websocket-protocol": "prymeira-talk-auth, token_ws" }
+      });
+
+      expect(requireProductAccess).toHaveBeenCalledWith("talk", {
+        accountApiUrl: "http://localhost:3001",
+        clerkToken: "token_ws"
+      });
+
+      socket.terminate();
     } finally {
       await app.close();
     }
@@ -400,6 +453,31 @@ describe("app", () => {
       expect(publicResponse.statusCode).toBe(200);
       expect(publicResponse.headers["content-type"]).toContain("application/pdf");
       expect(publicResponse.body).toBe("pdf test");
+    } finally {
+      await app.close();
+      await rm(uploadDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not serve automation uploads outside the automations directory", async () => {
+    const uploadDir = `tmp/test-uploads-${randomUUID()}`;
+    await mkdir(`${uploadDir}/automations`, { recursive: true });
+    await writeFile(`${uploadDir}/automations/secret.txt`, "do not expose");
+    const app = await buildApp(
+      {
+        TALK_UPLOAD_DIR: uploadDir
+      },
+      { authEnabled: false, prismaEnabled: false }
+    );
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/uploads/automations/workspace_a/%2e%2e%2fsecret.txt"
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.body).not.toBe("do not expose");
     } finally {
       await app.close();
       await rm(uploadDir, { recursive: true, force: true });

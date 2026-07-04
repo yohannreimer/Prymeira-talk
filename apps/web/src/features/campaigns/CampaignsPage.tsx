@@ -2,7 +2,7 @@ import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto } from "@prymeira-talk/shared";
 import { CalendarClock, Gauge, Play, Plus, RefreshCw, Save, Send, Upload, X, Zap } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { read, utils } from "xlsx";
+import { readSheet } from "read-excel-file/browser";
 import {
   apiCreateCampaign,
   apiGetBoards,
@@ -173,26 +173,70 @@ function findColumn(headers: string[], patterns: RegExp[]) {
   return headers.find((header) => patterns.some((pattern) => pattern.test(header.toLowerCase())));
 }
 
-async function parseAudienceFile(file: File): Promise<ImportedAudienceRow[]> {
-  const buffer = await file.arrayBuffer();
-  const workbook = read(buffer, { type: "array" });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+function parseCsvRows(text: string): unknown[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let inQuotes = false;
 
-  if (!sheet) return [];
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const nextChar = text[index + 1];
 
-  const rows = utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
-  const headers = rows[0] ? Object.keys(rows[0]) : [];
+    if (char === '"' && inQuotes && nextChar === '"') {
+      cell += '"';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      row.push(cell);
+      cell = "";
+      continue;
+    }
+
+    if ((char === "\n" || char === "\r") && !inQuotes) {
+      if (char === "\r" && nextChar === "\n") {
+        index += 1;
+      }
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+      continue;
+    }
+
+    cell += char;
+  }
+
+  row.push(cell);
+  rows.push(row);
+
+  return rows.filter((currentRow) => currentRow.some((value) => value.trim().length > 0));
+}
+
+function parseAudienceRows(rows: unknown[][]): ImportedAudienceRow[] {
+  const [headerRow, ...dataRows] = rows;
+  const headers = (headerRow ?? []).map(normalizeCell);
   const phoneColumn = findColumn(headers, [/telefone/, /phone/, /celular/, /whats/, /número/, /número/]);
   const nameColumn = findColumn(headers, [/^nome$/, /name/, /cliente/, /contato/]);
 
   if (!phoneColumn) return [];
 
-  return rows
+  const phoneIndex = headers.indexOf(phoneColumn);
+  const nameIndex = nameColumn ? headers.indexOf(nameColumn) : -1;
+
+  return dataRows
     .map((row) => {
-      const phone = normalizeCell(row[phoneColumn]);
-      const name = nameColumn ? normalizeCell(row[nameColumn]) : "";
+      const phone = normalizeCell(row[phoneIndex]);
+      const name = nameIndex >= 0 ? normalizeCell(row[nameIndex]) : "";
       const fields = Object.fromEntries(
-        Object.entries(row).map(([key, value]) => [key, normalizeCell(value)])
+        headers.map((header, index) => [header, normalizeCell(row[index])])
       );
 
       return {
@@ -202,6 +246,15 @@ async function parseAudienceFile(file: File): Promise<ImportedAudienceRow[]> {
       };
     })
     .filter((row) => row.phone.length > 0);
+}
+
+async function parseAudienceFile(file: File): Promise<ImportedAudienceRow[]> {
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  const rows = extension === "csv"
+    ? parseCsvRows(await file.text())
+    : await readSheet(file);
+
+  return parseAudienceRows(rows);
 }
 
 function resultPreview(result: unknown) {
