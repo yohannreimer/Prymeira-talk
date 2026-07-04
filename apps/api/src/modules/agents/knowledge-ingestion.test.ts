@@ -52,6 +52,21 @@ describe("ingestKnowledgeUpload", () => {
     });
   });
 
+  it("accepts larger plain text knowledge bases under the extracted text limit", async () => {
+    const largeBase = `Produto Prymeira Talk\n${"Atendimento com automações e agentes. ".repeat(850)}`;
+
+    const result = await ingestKnowledgeUpload({
+      fileName: "base-completa.txt",
+      mimeType: "text/plain",
+      base64Content: Buffer.from(largeBase).toString("base64"),
+      category: "produto"
+    });
+
+    expect(result.content.length).toBeGreaterThan(20_000);
+    expect(result.content.length).toBeLessThan(MAX_KNOWLEDGE_TEXT_CHARS);
+    expect(result.metadata.textCharCount).toBe(result.content.length);
+  });
+
   it("extracts normalized PDF text with metadata", async () => {
     const result = await ingestKnowledgeUpload({
       fileName: "politicas.pdf",
@@ -77,7 +92,7 @@ describe("ingestKnowledgeUpload", () => {
         base64Content: Buffer.from("x").toString("base64"),
         category: "produto"
       })
-    ).rejects.toThrow("Unsupported knowledge file type.");
+    ).rejects.toThrow("Tipo de arquivo de conhecimento não suportado.");
   });
 
   it("rejects inconsistent file extension and mime type", async () => {
@@ -88,7 +103,7 @@ describe("ingestKnowledgeUpload", () => {
         base64Content: Buffer.from("Plano Operação R$ 299").toString("base64"),
         category: "precos"
       })
-    ).rejects.toThrow("Unsupported knowledge file type.");
+    ).rejects.toThrow("Tipo de arquivo de conhecimento não suportado.");
   });
 
   it("rejects invalid base64 payloads", async () => {
@@ -99,7 +114,7 @@ describe("ingestKnowledgeUpload", () => {
         base64Content: "%%%not-base64%%%",
         category: "precos"
       })
-    ).rejects.toThrow("Invalid knowledge file content.");
+    ).rejects.toThrow("O conteúdo do arquivo de conhecimento é inválido.");
   });
 
   it("rejects uploaded files above the byte limit", async () => {
@@ -110,7 +125,7 @@ describe("ingestKnowledgeUpload", () => {
         base64Content: Buffer.alloc(MAX_KNOWLEDGE_UPLOAD_BYTES + 1, "a").toString("base64"),
         category: "precos"
       })
-    ).rejects.toThrow("Knowledge file is too large.");
+    ).rejects.toThrow("O arquivo de conhecimento é muito grande.");
   });
 
   it("rejects non plain-text text uploads", async () => {
@@ -121,7 +136,7 @@ describe("ingestKnowledgeUpload", () => {
         base64Content: Buffer.from("<p>Produto</p>").toString("base64"),
         category: "produto"
       })
-    ).rejects.toThrow("Unsupported knowledge file type.");
+    ).rejects.toThrow("Tipo de arquivo de conhecimento não suportado.");
   });
 
   it("rejects extracted text above the char limit", async () => {
@@ -132,7 +147,7 @@ describe("ingestKnowledgeUpload", () => {
         base64Content: Buffer.from("x".repeat(MAX_KNOWLEDGE_TEXT_CHARS + 1)).toString("base64"),
         category: "outro"
       })
-    ).rejects.toThrow("Knowledge file text is too large.");
+    ).rejects.toThrow("O texto extraído do arquivo de conhecimento é muito grande.");
   });
 
   it("rejects files without readable text", async () => {
@@ -143,6 +158,6 @@ describe("ingestKnowledgeUpload", () => {
         base64Content: Buffer.from(" \n\t ").toString("base64"),
         category: "outro"
       })
-    ).rejects.toThrow("Knowledge file did not contain readable text.");
+    ).rejects.toThrow("O arquivo de conhecimento não contém texto legível.");
   });
 });

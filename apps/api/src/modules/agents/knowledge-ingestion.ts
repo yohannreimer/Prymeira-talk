@@ -13,7 +13,7 @@ export type KnowledgeCategory =
 type SourceKind = "pdf" | "text";
 
 export const MAX_KNOWLEDGE_UPLOAD_BYTES = 2 * 1024 * 1024;
-export const MAX_KNOWLEDGE_TEXT_CHARS = 20_000;
+export const MAX_KNOWLEDGE_TEXT_CHARS = 500_000;
 
 export type KnowledgeIngestionMetadata = {
   category: KnowledgeCategory;
@@ -48,7 +48,7 @@ async function extractPdfText(buffer: Buffer) {
     const result = await parser.getText();
     return result.text;
   } catch {
-    throw new Error("Knowledge file could not be read.");
+    throw new Error("Não foi possível ler o arquivo de conhecimento.");
   } finally {
     await parser.destroy();
   }
@@ -57,20 +57,20 @@ async function extractPdfText(buffer: Buffer) {
 function decodeBase64Content(value: string) {
   const normalized = value.trim();
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized) || normalized.length % 4 !== 0) {
-    throw new Error("Invalid knowledge file content.");
+    throw new Error("O conteúdo do arquivo de conhecimento é inválido.");
   }
 
   const buffer = Buffer.from(normalized, "base64");
   if (buffer.toString("base64") !== normalized) {
-    throw new Error("Invalid knowledge file content.");
+    throw new Error("O conteúdo do arquivo de conhecimento é inválido.");
   }
 
   if (buffer.byteLength === 0) {
-    throw new Error("Knowledge file did not contain readable text.");
+    throw new Error("O arquivo de conhecimento não contém texto legível.");
   }
 
   if (buffer.byteLength > MAX_KNOWLEDGE_UPLOAD_BYTES) {
-    throw new Error("Knowledge file is too large.");
+    throw new Error("O arquivo de conhecimento é muito grande.");
   }
 
   return buffer;
@@ -94,7 +94,7 @@ function getSourceKind(input: { fileName: string; mimeType: string }): SourceKin
     return "text";
   }
 
-  throw new Error("Unsupported knowledge file type.");
+  throw new Error("Tipo de arquivo de conhecimento não suportado.");
 }
 
 export async function ingestKnowledgeUpload(input: {
@@ -112,11 +112,11 @@ export async function ingestKnowledgeUpload(input: {
   const content = normalizeExtractedText(rawText);
 
   if (!content) {
-    throw new Error("Knowledge file did not contain readable text.");
+    throw new Error("O arquivo de conhecimento não contém texto legível.");
   }
 
   if (content.length > MAX_KNOWLEDGE_TEXT_CHARS) {
-    throw new Error("Knowledge file text is too large.");
+    throw new Error("O texto extraído do arquivo de conhecimento é muito grande.");
   }
 
   return {

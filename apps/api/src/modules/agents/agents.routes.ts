@@ -130,12 +130,12 @@ function isKnowledgeUploadError(error: unknown): error is Error {
   }
 
   return [
-    "Invalid knowledge file content.",
-    "Unsupported knowledge file type.",
-    "Knowledge file could not be read.",
-    "Knowledge file did not contain readable text.",
-    "Knowledge file is too large.",
-    "Knowledge file text is too large."
+    "O conteúdo do arquivo de conhecimento é inválido.",
+    "Tipo de arquivo de conhecimento não suportado.",
+    "Não foi possível ler o arquivo de conhecimento.",
+    "O arquivo de conhecimento não contém texto legível.",
+    "O arquivo de conhecimento é muito grande.",
+    "O texto extraído do arquivo de conhecimento é muito grande."
   ].includes(error.message);
 }
 
