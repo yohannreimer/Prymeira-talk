@@ -7,6 +7,7 @@ import {
   apiSendAgentTestChatMessage,
   apiUpdateAgent,
   apiUploadAgentKnowledge,
+  ApiRequestError,
   type AgentTestChatMessageDto,
   type AiAgentAllowedAction,
   type AiAgentDto,
@@ -66,6 +67,8 @@ type KnowledgeUploadFormState = {
 };
 
 type KnowledgeInputMode = "file" | "text";
+
+type AgentTestDebugState = Record<string, unknown> | null;
 
 const knowledgeUploadCategories: Array<{ value: KnowledgeUploadCategory; label: string }> = [
   { value: "precos", label: "Preços" },
@@ -148,6 +151,16 @@ async function fileToBase64(file: File) {
   return btoa(binary);
 }
 
+function formatAgentTestDebug(debug: AgentTestDebugState) {
+  if (!debug) {
+    return JSON.stringify({
+      status: "Nenhum teste executado nesta sessão."
+    }, null, 2);
+  }
+
+  return JSON.stringify(debug, null, 2);
+}
+
 export function AgentsPage() {
   const { getToken } = useTalkAuth();
   const [agents, setAgents] = useState<AiAgentDto[]>([]);
@@ -160,6 +173,7 @@ export function AgentsPage() {
   const [knowledgeInputMode, setKnowledgeInputMode] = useState<KnowledgeInputMode>("file");
   const [testMessages, setTestMessages] = useState<AgentTestChatMessageDto[]>([]);
   const [testMessageBody, setTestMessageBody] = useState("");
+  const [testDebug, setTestDebug] = useState<AgentTestDebugState>(null);
   const [isLoadingAgents, setIsLoadingAgents] = useState(true);
   const [isLoadingKnowledge, setIsLoadingKnowledge] = useState(false);
   const [isSavingAgent, setIsSavingAgent] = useState(false);
@@ -231,6 +245,7 @@ export function AgentsPage() {
     setKnowledge([]);
     setTestMessages([]);
     setTestMessageBody("");
+    setTestDebug(null);
     setNotice(null);
     setError(null);
   }
@@ -243,6 +258,7 @@ export function AgentsPage() {
     });
     setTestMessages([]);
     setTestMessageBody("");
+    setTestDebug(null);
     setNotice(null);
     setError(null);
   }
@@ -375,9 +391,18 @@ export function AgentsPage() {
       });
 
       setTestMessages((current) => [...current, result.message]);
+      setTestDebug(result.debug ?? {
+        knowledgeMatches: result.knowledgeMatches,
+        output: result.output
+      });
     } catch (testError) {
       setTestMessages(testMessages);
       setTestMessageBody(content);
+      setTestDebug(testError instanceof ApiRequestError && testError.debug
+        ? testError.debug
+        : {
+          error: testError instanceof Error ? testError.message : "Erro desconhecido no teste."
+        });
       setError(testError instanceof Error ? testError.message : "Não foi possível testar o agente.");
     } finally {
       setIsSendingTestMessage(false);
@@ -387,6 +412,7 @@ export function AgentsPage() {
   function resetTestChat() {
     setTestMessages([]);
     setTestMessageBody("");
+    setTestDebug(null);
     setError(null);
     setNotice(null);
   }
@@ -698,6 +724,11 @@ export function AgentsPage() {
                 </article>
               ))}
             </div>
+
+            <details className="agent-test-debug">
+              <summary>Logs do teste</summary>
+              <pre>{formatAgentTestDebug(testDebug)}</pre>
+            </details>
 
             <form className="module-form" onSubmit={(event) => void sendTestMessage(event)}>
               <label className="form-field">

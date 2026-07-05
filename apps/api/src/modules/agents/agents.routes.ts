@@ -105,7 +105,8 @@ function handleAgentTestChatError(reply: FastifyReply, error: unknown) {
 
     return reply.code(statusCode).send({
       code: error.code,
-      error: error.message
+      error: error.message,
+      ...(error.debug ? { debug: error.debug } : {})
     });
   }
 

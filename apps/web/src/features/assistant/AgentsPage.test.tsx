@@ -9,6 +9,11 @@ vi.mock("../../app/auth", () => ({
 }));
 
 vi.mock("../../app/api", () => ({
+  ApiRequestError: class ApiRequestError extends Error {
+    constructor(message: string, public readonly debug?: Record<string, unknown>) {
+      super(message);
+    }
+  },
   apiCreateAgent: vi.fn(),
   apiCreateAgentKnowledge: vi.fn(),
   apiGetAgentKnowledge: vi.fn(),
@@ -32,6 +37,7 @@ describe("AgentsPage", () => {
     expect(html).toContain("Teste do agente");
     expect(html).toContain("Mensagem de teste");
     expect(html).toContain("Resetar teste");
+    expect(html).toContain("Logs do teste");
     expect(html).toContain("Conhecimento");
     expect(html).toContain("Fontes de conhecimento salvas");
     expect(html).toContain("Arquivo PDF ou TXT");

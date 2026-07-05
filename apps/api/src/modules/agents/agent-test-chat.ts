@@ -40,6 +40,25 @@ export type AgentTestChatResult = {
   message: AgentTestChatMessage;
   output: AgentOutput;
   knowledgeMatches: Array<Record<string, unknown>>;
+  debug: AgentTestChatDebug;
+};
+
+export type AgentTestChatDebug = {
+  providerMode: "real" | "simulated";
+  model: string;
+  totalKnowledgeSources: number;
+  selectedKnowledgeSources: number;
+  selectedKnowledgeCharacters: number;
+  conversationMessages: number;
+  conversationCharacters: number;
+  knowledgeMatches: Array<Record<string, unknown>>;
+  output?: {
+    confidence: number;
+    handoffRequired: boolean;
+    handoffReason: string | null;
+    replyCharacters: number;
+  };
+  providerError?: string;
 };
 
 export interface AgentTestChatPrismaLike {
@@ -58,7 +77,8 @@ export class AgentTestChatError extends Error {
       | "AGENT_NOT_FOUND"
       | "TEST_CHAT_INVALID_MESSAGES"
       | "AGENT_PROVIDER_FAILED",
-    message: string
+    message: string,
+    public readonly debug?: AgentTestChatDebug
   ) {
     super(message);
     this.name = "AgentTestChatError";
@@ -129,6 +149,19 @@ export function createAgentTestChatService(input: {
         ? (input.providerFactory ?? createOpenAiCompatibleAgentProvider)(providerSettings)
         : provider;
       const model = providerSettings.active ? providerSettings.chatModel : agent.model;
+      const debugBase: AgentTestChatDebug = {
+        providerMode: providerSettings.active ? "real" : "simulated",
+        model,
+        totalKnowledgeSources: knowledgeSelection.total,
+        selectedKnowledgeSources: knowledgeSelection.selected.length,
+        selectedKnowledgeCharacters: knowledgeSelection.selected.reduce(
+          (total, source) => total + source.content.length,
+          0
+        ),
+        conversationMessages: runInput.messages.length,
+        conversationCharacters: conversationHistory.length,
+        knowledgeMatches
+      };
 
       let output: AgentOutput;
 
@@ -156,12 +189,28 @@ export function createAgentTestChatService(input: {
           });
         } catch (error) {
           const detail = error instanceof Error ? ` Detalhe: ${error.message}` : "";
+          const providerError =
+            error instanceof Error ? error.message : "Erro desconhecido do provedor.";
           throw new AgentTestChatError(
             "AGENT_PROVIDER_FAILED",
-            `Não foi possível obter resposta do provedor de IA. Verifique a chave, modelo e URL em Ajustes.${detail}`
+            `Não foi possível obter resposta do provedor de IA. Verifique a chave, modelo e URL em Ajustes.${detail}`,
+            {
+              ...debugBase,
+              providerError
+            }
           );
         }
       }
+
+      const debug: AgentTestChatDebug = {
+        ...debugBase,
+        output: {
+          confidence: output.confidence,
+          handoffRequired: output.handoff.required,
+          handoffReason: output.handoff.reason,
+          replyCharacters: output.reply?.length ?? 0
+        }
+      };
 
       return {
         message: {
@@ -169,7 +218,8 @@ export function createAgentTestChatService(input: {
           content: output.reply?.trim() || "Vou chamar uma pessoa do time para continuar este teste."
         },
         output,
-        knowledgeMatches
+        knowledgeMatches,
+        debug
       };
     }
   };

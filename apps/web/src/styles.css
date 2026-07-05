@@ -2566,6 +2566,34 @@ select:disabled {
   -webkit-line-clamp: unset;
 }
 
+.agent-test-debug {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+}
+
+.agent-test-debug summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.agent-test-debug pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  border-top: 1px solid var(--color-border-subtle);
+  padding: 12px;
+  color: var(--color-text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .automation-rule-list {
   display: flex;
   flex-direction: column;

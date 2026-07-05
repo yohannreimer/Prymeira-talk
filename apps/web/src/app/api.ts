@@ -33,6 +33,10 @@ const apiUrl = readConfigValue("VITE_API_URL") ?? "http://localhost:3002";
 const localAuthBypass = readConfigValue("VITE_LOCAL_AUTH_BYPASS") === "true";
 const realtimeAuthProtocol = "prymeira-talk-auth";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export interface ContactBoardWithStagesDto extends ContactBoardDto {
   stages: ContactBoardStageDto[];
 }
@@ -131,6 +135,7 @@ export interface AgentTestChatResultDto {
   message: AgentTestChatMessageDto;
   output: unknown;
   knowledgeMatches: Array<Record<string, unknown>>;
+  debug?: Record<string, unknown>;
 }
 
 export type AutomationStatus = "enabled" | "disabled";
@@ -887,6 +892,7 @@ function parseKnowledgeSource(data: unknown): AiKnowledgeSourceDto {
 function parseAgentTestChatResult(data: unknown): AgentTestChatResultDto {
   const payload = data as Partial<AgentTestChatResultDto>;
   const message = payload.message ?? { role: "assistant", content: "" };
+  const debug = isRecord(payload.debug) ? payload.debug : undefined;
 
   return {
     message: {
@@ -899,7 +905,8 @@ function parseAgentTestChatResult(data: unknown): AgentTestChatResultDto {
           (item): item is Record<string, unknown> =>
             typeof item === "object" && item !== null && !Array.isArray(item)
         )
-      : []
+      : [],
+    ...(debug ? { debug } : {})
   };
 }
 
@@ -1042,28 +1049,51 @@ async function fetchJson<T>(
   });
 
   if (!response.ok) {
-    throw new Error(await readApiErrorMessage(response, errorLabel));
+    const payload = await readApiErrorPayload(response, errorLabel);
+    throw new ApiRequestError(payload.message, payload.debug);
   }
 
   return parse(await response.json());
 }
 
 export async function readApiErrorMessage(response: Response, fallbackLabel: string) {
+  return (await readApiErrorPayload(response, fallbackLabel)).message;
+}
+
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly debug?: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
+async function readApiErrorPayload(response: Response, fallbackLabel: string) {
   try {
     const data = await response.clone().json() as unknown;
 
     if (data && typeof data === "object" && "error" in data) {
-      const error = (data as { error?: unknown }).error;
+      const record = data as Record<string, unknown>;
+      const error = record.error;
+      const debug = isRecord(record.debug) ? record.debug : undefined;
 
       if (typeof error === "string" && error.trim().length > 0) {
-        return error;
+        return {
+          message: error,
+          debug
+        };
       }
     }
   } catch {
     // Non-JSON error bodies fall back to the HTTP status message.
   }
 
-  return `${fallbackLabel}: ${response.status}`;
+  return {
+    message: `${fallbackLabel}: ${response.status}`,
+    debug: undefined
+  };
 }
 
 export async function apiGetConversations(

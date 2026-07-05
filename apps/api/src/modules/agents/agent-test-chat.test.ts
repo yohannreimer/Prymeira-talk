@@ -72,6 +72,20 @@ describe("createAgentTestChatService", () => {
         reasons: expect.arrayContaining(["category_match"])
       })
     ]);
+    expect(result.debug).toEqual(expect.objectContaining({
+      providerMode: "simulated",
+      model: "prymeira-simulated",
+      totalKnowledgeSources: 1,
+      selectedKnowledgeSources: 1,
+      selectedKnowledgeCharacters: "Plano profissional custa R$ 199 por mes.".length,
+      conversationMessages: 3,
+      knowledgeMatches: result.knowledgeMatches,
+      output: expect.objectContaining({
+        confidence: 0.91,
+        handoffRequired: false,
+        handoffReason: null
+      })
+    }));
     expect(provider.generate).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "prymeira-simulated",
@@ -193,7 +207,12 @@ describe("createAgentTestChatService", () => {
     ).rejects.toMatchObject({
       code: "AGENT_PROVIDER_FAILED",
       message:
-        "Não foi possível obter resposta do provedor de IA. Verifique a chave, modelo e URL em Ajustes. Detalhe: provider exploded"
-    } satisfies Pick<AgentTestChatError, "code" | "message">);
+        "Não foi possível obter resposta do provedor de IA. Verifique a chave, modelo e URL em Ajustes. Detalhe: provider exploded",
+      debug: expect.objectContaining({
+        providerError: "provider exploded",
+        totalKnowledgeSources: 0,
+        selectedKnowledgeSources: 0
+      })
+    } satisfies Partial<AgentTestChatError>);
   });
 });
