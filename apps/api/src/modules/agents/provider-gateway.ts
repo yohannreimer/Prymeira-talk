@@ -87,9 +87,9 @@ function normalizeAgentOutputShape(value: unknown) {
     record.data
   ].find(isRecord);
   const outputRecord = nested ? { ...record, ...nested } : record;
-  const alternateReply = readReply(outputRecord);
   const confidence = normalizeConfidence(outputRecord.confidence ?? outputRecord.score);
   const actions = normalizeActions(outputRecord.actions);
+  const alternateReply = readReply(outputRecord) ?? readReplyFromActions(actions);
   const handoff = normalizeHandoff(
     outputRecord.handoff ?? outputRecord.shouldHandoff ?? outputRecord.handoffRequired
   );
@@ -151,18 +151,61 @@ function normalizeActions(value: unknown) {
 
   return value.map((action) => {
     if (typeof action === "string") {
-      return { type: action };
+      return { type: normalizeActionType(action) };
     }
 
-    if (isRecord(action) && typeof action.action === "string" && action.type === undefined) {
+    if (!isRecord(action)) {
+      return action;
+    }
+
+    const actionType =
+      typeof action.type === "string"
+        ? action.type
+        : typeof action.action === "string"
+          ? action.action
+          : undefined;
+
+    if (actionType) {
       return {
         ...action,
-        type: action.action
+        type: normalizeActionType(actionType)
       };
     }
 
     return action;
   });
+}
+
+function normalizeActionType(type: string) {
+  return ["reply", "send_reply", "respond"].includes(type.trim().toLocaleLowerCase("en-US"))
+    ? "send_message"
+    : type;
+}
+
+function readReplyFromActions(actions: unknown[] | undefined) {
+  if (!actions) {
+    return undefined;
+  }
+
+  for (const action of actions) {
+    if (!isRecord(action) || action.type !== "send_message") {
+      continue;
+    }
+
+    const reply =
+      action.reply ??
+      action.message ??
+      action.body ??
+      action.text ??
+      action.content ??
+      action.answer;
+
+    if (typeof reply === "string" && reply.trim()) {
+      return reply;
+    }
+  }
+
+  return undefined;
 }
 
 function normalizeHandoff(value: unknown) {

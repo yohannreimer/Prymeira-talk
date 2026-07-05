@@ -392,12 +392,19 @@ function parseActionType(action: AgentAction): AgentActionType {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Action type is required.");
   }
 
-  const parsedActionType = aiAgentAllowedActionSchema.safeParse(actionType);
+  const normalizedActionType = normalizeActionType(actionType);
+  const parsedActionType = aiAgentAllowedActionSchema.safeParse(normalizedActionType);
   if (!parsedActionType.success) {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", `Unsupported agent action ${actionType}.`);
   }
 
   return parsedActionType.data;
+}
+
+function normalizeActionType(actionType: string) {
+  return ["reply", "send_reply", "respond"].includes(actionType.trim().toLocaleLowerCase("en-US"))
+    ? "send_message"
+    : actionType;
 }
 
 function getString(action: AgentAction, key: string) {

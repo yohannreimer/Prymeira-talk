@@ -79,6 +79,21 @@ describe("parseAgentOutput", () => {
       })
     ).toThrow("Invalid agent output.");
   });
+
+  it("normalizes reply actions into a sendable reply", () => {
+    const output = parseAgentOutput({
+      confidence: 0.82,
+      actions: [{ type: "reply", message: "Olá, tudo certo?" }],
+      handoff: { required: false, reason: null }
+    });
+
+    expect(output).toEqual({
+      confidence: 0.82,
+      reply: "Olá, tudo certo?",
+      actions: [{ type: "send_message", message: "Olá, tudo certo?" }],
+      handoff: { required: false, reason: null }
+    });
+  });
 });
 
 describe("createSimulatedAgentProvider", () => {

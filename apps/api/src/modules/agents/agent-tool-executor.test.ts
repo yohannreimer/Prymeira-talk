@@ -215,6 +215,19 @@ describe("executeAgentActions", () => {
     expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
   });
 
+  it("skips reply actions because provider replies are sent from the reply field", async () => {
+    const prisma = buildPrisma();
+
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      allowedActions: ["send_message"],
+      actions: [{ type: "reply", message: "Olá, tudo certo?" }]
+    });
+
+    expect(results).toEqual([{ type: "send_message", status: "skipped" }]);
+    expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
+  });
+
   it("accepts add_tag name as an alias for tagName", async () => {
     const prisma = buildPrisma();
 
