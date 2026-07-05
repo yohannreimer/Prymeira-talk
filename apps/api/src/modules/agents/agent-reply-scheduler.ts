@@ -64,6 +64,7 @@ export function createAgentReplyScheduler(input: {
   const pollIntervalMs = input.pollIntervalMs ?? 5_000;
   const batchSize = input.batchSize ?? 20;
   let timer: NodeJS.Timeout | null = null;
+  const wakeTimers = new Set<NodeJS.Timeout>();
   let isProcessing = false;
 
   async function scheduleActiveSessionForMessage(scheduleInput: {
@@ -125,6 +126,7 @@ export function createAgentReplyScheduler(input: {
         lastError: null
       }
     });
+    scheduleWake(scheduledAt, now);
 
     return { scheduled: true as const, scheduledAt };
   }
@@ -231,11 +233,29 @@ export function createAgentReplyScheduler(input: {
 
   function stop() {
     if (!timer) {
+      for (const wakeTimer of wakeTimers) {
+        clearTimeout(wakeTimer);
+      }
+      wakeTimers.clear();
       return;
     }
 
     clearInterval(timer);
     timer = null;
+    for (const wakeTimer of wakeTimers) {
+      clearTimeout(wakeTimer);
+    }
+    wakeTimers.clear();
+  }
+
+  function scheduleWake(scheduledAt: Date, now: Date) {
+    const delayMs = Math.max(0, scheduledAt.getTime() - now.getTime() + 100);
+    const wakeTimer = setTimeout(() => {
+      wakeTimers.delete(wakeTimer);
+      void processDueReplies();
+    }, delayMs);
+    wakeTimers.add(wakeTimer);
+    wakeTimer.unref?.();
   }
 
   return {

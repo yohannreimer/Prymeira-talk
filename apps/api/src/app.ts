@@ -103,6 +103,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     role: request.talk.role
   }));
 
+  await app.register(realtimeRoutes);
+
   const evolutionRuntime = createEvolutionRuntime({
     mode: env.EVOLUTION_MODE,
     publicTalkUrl: env.PUBLIC_TALK_URL,
@@ -117,7 +119,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
       : createAgentRuntime({
           prisma: app.prisma as unknown as Parameters<typeof createAgentRuntime>[0]["prisma"],
           provider: createSimulatedAgentProvider(),
-          evolution: evolutionRuntime
+          evolution: evolutionRuntime,
+          realtime: app.realtime
         });
   const agentReplyScheduler =
     options.prismaEnabled === false || !agentRuntime
@@ -133,7 +136,6 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     });
   }
 
-  await app.register(realtimeRoutes);
   await app.register(evolutionRoutes, {
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,
     agentRuntime,

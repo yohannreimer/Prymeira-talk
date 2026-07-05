@@ -172,7 +172,19 @@ function buildPrisma(overrides: Record<string, any> = {}) {
     message: {
       findFirst: vi.fn().mockResolvedValue(baseMessage),
       findMany: vi.fn().mockResolvedValue(baseConversationMessages),
-      create: vi.fn().mockResolvedValue({ id: "outbound_1" })
+      create: vi.fn().mockResolvedValue({
+        id: "outbound_1",
+        workspaceId: ids.workspace,
+        conversationId: ids.conversation,
+        providerMessageId: "evo-out-1",
+        direction: "outbound",
+        type: "text",
+        body: "O plano profissional custa R$ 199 por mes.",
+        mediaUrl: null,
+        status: "sent",
+        sentByUserId: null,
+        createdAt: now
+      })
     },
     aiAgentRun: {
       create: vi.fn().mockResolvedValue({ id: ids.run, status: "completed" })
@@ -451,9 +463,11 @@ describe("createAgentRuntime", () => {
       handoff: { required: false, reason: null }
     });
     const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-out-1" });
+    const realtime = { publish: vi.fn() };
     const runtime = createAgentRuntime({
       prisma,
       provider,
+      realtime,
       evolution: {
         mode: "real",
         client: { sendText }
@@ -476,6 +490,17 @@ describe("createAgentRuntime", () => {
     expect(prisma.message.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         providerMessageId: "evo-out-1",
+        status: "sent"
+      })
+    });
+    expect(realtime.publish).toHaveBeenCalledWith({
+      type: "message.created",
+      workspaceId: ids.workspace,
+      payload: expect.objectContaining({
+        id: "outbound_1",
+        conversationId: ids.conversation,
+        direction: "outbound",
+        body: "O plano profissional custa R$ 199 por mes.",
         status: "sent"
       })
     });

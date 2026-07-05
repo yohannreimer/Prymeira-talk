@@ -1,4 +1,4 @@
-import { aiAgentAllowedActionSchema, type AiAgentAllowedAction } from "@prymeira-talk/shared";
+import { aiAgentAllowedActionSchema, type AiAgentAllowedAction, type MessageDto } from "@prymeira-talk/shared";
 import {
   resolveOpenAiCompatibleSettings,
   type AiProviderSettingsPrismaLike,
@@ -24,6 +24,7 @@ import {
   type AgentOutput,
   type AgentProvider
 } from "./provider-gateway.js";
+import { toMessageDto } from "../conversations/conversations.service.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 
 type JsonValue = unknown;
@@ -66,10 +67,14 @@ type MessageRecord = {
   id: string;
   workspaceId: string;
   conversationId: string;
-  direction?: string;
-  type?: string;
-  body?: string | null;
-  createdAt?: Date | string;
+  providerMessageId?: string | null;
+  direction: MessageDto["direction"];
+  type: MessageDto["type"];
+  body: string | null;
+  mediaUrl?: string | null;
+  status: MessageDto["status"];
+  sentByUserId?: string | null;
+  createdAt: Date | string;
 };
 
 type KnowledgeSourceRecord = {
@@ -107,7 +112,7 @@ type AgentRuntimePrismaLike = Omit<
   message: {
     findFirst(args: unknown): Promise<MessageRecord | null>;
     findMany: ConversationContextBuilderPrismaLike["message"]["findMany"];
-    create(args: unknown): Promise<unknown>;
+    create(args: unknown): Promise<MessageRecord>;
   };
   aiAgentRun: {
     create(args: unknown): Promise<{ id: string; status: AgentRunStatus }>;
@@ -126,11 +131,16 @@ type AgentRuntimeEvolution = {
   client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText"> | null;
 };
 
+type AgentRuntimeRealtime = {
+  publish(event: unknown): void;
+};
+
 export function createAgentRuntime(input: {
   prisma: AgentRuntimePrismaLike;
   provider: AgentProvider;
   providerFactory?: (settings: Extract<OpenAiCompatibleSettings, { active: true }>) => AgentProvider;
   evolution?: AgentRuntimeEvolution;
+  realtime?: AgentRuntimeRealtime;
 }) {
   const { prisma, provider } = input;
 
@@ -477,7 +487,7 @@ export function createAgentRuntime(input: {
 
         if (!handoffReason && providerOutput.reply && allowedActions.includes("send_message")) {
           const providerSend = await sendAgentReplyToProvider(input.evolution, conversation, providerOutput.reply);
-          await prisma.message.create({
+          const outboundMessage = await prisma.message.create({
             data: {
               workspaceId: runInput.workspaceId,
               conversationId: conversation.id,
@@ -492,6 +502,11 @@ export function createAgentRuntime(input: {
                 agentId: agent.id
               }
             }
+          });
+          input.realtime?.publish({
+            type: "message.created",
+            workspaceId: runInput.workspaceId,
+            payload: toMessageDto(outboundMessage)
           });
           await prisma.conversation.update({
             where: {

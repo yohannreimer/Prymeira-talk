@@ -42,6 +42,57 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentReplyScheduler", () => {
+  it("wakes processing when a scheduled reply becomes due", async () => {
+    vi.useFakeTimers();
+    const prisma = buildPrisma({
+      aiAgentPendingReply: {
+        upsert: vi.fn().mockResolvedValue({ id: ids.pending }),
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: ids.pending,
+            workspaceId: ids.workspace,
+            agentId: ids.agent,
+            sessionId: ids.session,
+            conversationId: ids.conversation,
+            lastMessageId: ids.firstMessage,
+            instruction: null,
+            attempts: 0
+          }
+        ]),
+        update: vi.fn().mockResolvedValue({ id: ids.pending }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 })
+      }
+    });
+    const agentRuntime = {
+      runForMessage: vi.fn().mockResolvedValue({ status: "completed", runId: "run_1" })
+    };
+    const scheduler = createAgentReplyScheduler({
+      prisma,
+      agentRuntime,
+      debounceMs: 1_000,
+      pollIntervalMs: 60_000
+    });
+
+    await scheduler.scheduleActiveSessionForMessage({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.firstMessage,
+      now: new Date("2026-07-05T12:00:00.000Z")
+    });
+    await vi.advanceTimersByTimeAsync(1_100);
+
+    expect(agentRuntime.runForMessage).toHaveBeenCalledWith({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.firstMessage,
+      trigger: "automation",
+      instruction: null
+    });
+    scheduler.stop();
+    vi.useRealTimers();
+  });
+
   it("debounces active agent replies by updating the pending reply window", async () => {
     const prisma = buildPrisma();
     const agentRuntime = {
