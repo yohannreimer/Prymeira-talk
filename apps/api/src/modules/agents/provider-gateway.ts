@@ -64,7 +64,11 @@ const openAiCompatibleResponseSchema = z.object({
 export function parseAgentOutput(value: unknown): AgentOutput {
   const result = agentOutputSchema.safeParse(normalizeAgentOutputShape(value));
   if (!result.success) {
-    throw new Error("Invalid agent output.");
+    const issues = result.error.issues
+      .map((issue) => `${issue.path.join(".") || "output"}: ${issue.message}`)
+      .slice(0, 4)
+      .join("; ");
+    throw new Error(`Invalid agent output.${issues ? ` ${issues}` : ""}`);
   }
 
   return result.data;
@@ -76,14 +80,161 @@ function normalizeAgentOutputShape(value: unknown) {
   }
 
   const record = value as Record<string, unknown>;
-  const alternateReply = record.reply ?? record.answer ?? record.message ?? record.content;
+  const nested = [
+    record.response,
+    record.output,
+    record.result,
+    record.data
+  ].find(isRecord);
+  const outputRecord = nested ? { ...record, ...nested } : record;
+  const alternateReply = readReply(outputRecord);
+  const confidence = normalizeConfidence(outputRecord.confidence ?? outputRecord.score);
+  const actions = normalizeActions(outputRecord.actions);
+  const handoff = normalizeHandoff(
+    outputRecord.handoff ?? outputRecord.shouldHandoff ?? outputRecord.handoffRequired
+  );
+  const sources = normalizeSources(outputRecord.sources ?? outputRecord.citations);
 
   return {
-    ...record,
-    ...(record.reply === undefined && typeof alternateReply === "string"
+    ...outputRecord,
+    ...(outputRecord.reply === undefined && typeof alternateReply === "string"
       ? { reply: alternateReply }
-      : {})
+      : {}),
+    ...(confidence !== undefined ? { confidence } : {}),
+    ...(actions !== undefined ? { actions } : {}),
+    ...(handoff !== undefined ? { handoff } : {}),
+    ...(sources !== undefined ? { sources } : {})
   };
+}
+
+function readReply(record: Record<string, unknown>) {
+  const directReply = record.reply ?? record.answer ?? record.message ?? record.content ?? record.text;
+  if (typeof directReply === "string") {
+    return directReply;
+  }
+
+  if (isRecord(directReply)) {
+    const nestedReply =
+      directReply.reply ??
+      directReply.answer ??
+      directReply.message ??
+      directReply.content ??
+      directReply.text;
+    return typeof nestedReply === "string" ? nestedReply : undefined;
+  }
+
+  return undefined;
+}
+
+function normalizeConfidence(value: unknown) {
+  const confidence = typeof value === "number"
+    ? value
+    : typeof value === "string"
+      ? Number.parseFloat(value)
+      : Number.NaN;
+
+  if (!Number.isFinite(confidence)) {
+    return undefined;
+  }
+
+  if (confidence > 1 && confidence <= 100) {
+    return confidence / 100;
+  }
+
+  return confidence;
+}
+
+function normalizeActions(value: unknown) {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value.map((action) => {
+    if (typeof action === "string") {
+      return { type: action };
+    }
+
+    if (isRecord(action) && typeof action.action === "string" && action.type === undefined) {
+      return {
+        ...action,
+        type: action.action
+      };
+    }
+
+    return action;
+  });
+}
+
+function normalizeHandoff(value: unknown) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const booleanValue = normalizeBoolean(value);
+  if (booleanValue !== null) {
+    return {
+      required: booleanValue,
+      reason: null
+    };
+  }
+
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const required =
+    normalizeBoolean(value.required) ??
+    normalizeBoolean(value.isRequired) ??
+    normalizeBoolean(value.needed) ??
+    false;
+  const reason = typeof value.reason === "string" && value.reason.trim().length > 0
+    ? value.reason
+    : typeof value.message === "string" && value.message.trim().length > 0
+      ? value.message
+      : null;
+
+  return {
+    ...value,
+    required,
+    reason
+  };
+}
+
+function normalizeSources(value: unknown) {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value.map((source) => {
+    if (typeof source === "string") {
+      return { title: source };
+    }
+
+    return source;
+  });
+}
+
+function normalizeBoolean(value: unknown) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "sim", "yes", "1"].includes(normalized)) {
+      return true;
+    }
+
+    if (["false", "nao", "não", "no", "0"].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function createOpenAiCompatibleAgentProvider(
