@@ -251,6 +251,7 @@ describe("createAgentRuntime", () => {
             })
           ]),
           contact: expect.objectContaining({ name: "Maria", phone: "5511999999999" }),
+          allowedActions: ["send_message", "add_tag", "request_handoff"],
           tags: ["Lead"],
           knowledge: [
             {
@@ -674,7 +675,7 @@ describe("createAgentRuntime", () => {
     });
   });
 
-  it("logs a failed run when action execution fails after session creation", async () => {
+  it("logs skipped action execution issues without blocking the reply", async () => {
     const prisma = buildPrisma({
       conversation: {
         findUnique: vi.fn().mockResolvedValue({
@@ -701,11 +702,17 @@ describe("createAgentRuntime", () => {
     });
 
     expect(result).toEqual({
-      status: "failed",
-      runId: ids.run,
-      message: "Tag name is required."
+      status: "completed",
+      runId: ids.run
     });
-    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.message.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        workspaceId: ids.workspace,
+        conversationId: ids.conversation,
+        direction: "outbound",
+        body: "Vou registrar uma etiqueta."
+      })
+    });
     expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         workspaceId: ids.workspace,
@@ -713,9 +720,15 @@ describe("createAgentRuntime", () => {
         sessionId: ids.session,
         conversationId: ids.conversation,
         model: "prymeira-simulated",
-        status: "failed",
+        status: "completed",
         confidence: 0.84,
-        errorMessage: "Tag name is required.",
+        actions: [
+          {
+            type: "add_tag",
+            status: "skipped",
+            reason: "Tag name is required."
+          }
+        ],
         output: expect.objectContaining({
           reply: "Vou registrar uma etiqueta."
         }),

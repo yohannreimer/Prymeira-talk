@@ -94,6 +94,27 @@ describe("parseAgentOutput", () => {
       handoff: { required: false, reason: null }
     });
   });
+
+  it("normalizes common model action aliases", () => {
+    const output = parseAgentOutput({
+      confidence: 0.82,
+      reply: "Posso te mostrar os planos.",
+      actions: [
+        { type: "respond_message", message: "Posso te mostrar os planos." },
+        { type: "offer_handoff_to_sales", message: "Quer falar com o comercial?" },
+        { type: "add_contact_tag", tag: "Lead quente" },
+        { type: "create_note", note: "Cliente perguntou sobre planos." }
+      ],
+      handoff: { required: false, reason: null }
+    });
+
+    expect(output.actions).toEqual([
+      { type: "send_message", message: "Posso te mostrar os planos." },
+      { type: "send_message", message: "Quer falar com o comercial?" },
+      { type: "add_tag", tag: "Lead quente" },
+      { type: "create_internal_note", note: "Cliente perguntou sobre planos." }
+    ]);
+  });
 });
 
 describe("createSimulatedAgentProvider", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AgentToolExecutionError, executeAgentActions } from "./agent-tool-executor.js";
+import { executeAgentActions } from "./agent-tool-executor.js";
 import type {
   AgentToolExecutorPrismaLike,
   AgentToolExecutorTransactionLike
@@ -129,27 +129,23 @@ describe("executeAgentActions", () => {
     });
   });
 
-  it("rejects a non-send action before executing when it is not allowed", async () => {
+  it("skips a non-send action before executing when it is not allowed", async () => {
     const prisma = buildPrisma();
 
-    await expect(
-      executeAgentActions(prisma, {
-        workspaceId: "workspace_a",
-        conversationId: "conv_1",
-        allowedActions: ["send_message"],
-        actions: [{ type: "add_tag", tagName: "Atendido pela IA" }]
-      })
-    ).rejects.toMatchObject({
-      code: "TOOL_NOT_ALLOWED"
+    const results = await executeAgentActions(prisma, {
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      allowedActions: ["send_message"],
+      actions: [{ type: "add_tag", tagName: "Atendido pela IA" }]
     });
-    await expect(
-      executeAgentActions(prisma, {
-        workspaceId: "workspace_a",
-        conversationId: "conv_1",
-        allowedActions: ["send_message"],
-        actions: [{ type: "add_tag", tagName: "Atendido pela IA" }]
-      })
-    ).rejects.toBeInstanceOf(AgentToolExecutionError);
+
+    expect(results).toEqual([
+      {
+        type: "add_tag",
+        status: "skipped",
+        reason: "Agent action add_tag is not allowed."
+      }
+    ]);
     expect(prisma.tag.upsert).not.toHaveBeenCalled();
   });
 
@@ -188,17 +184,21 @@ describe("executeAgentActions", () => {
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects missing required input defensively", async () => {
+  it("skips missing required input defensively", async () => {
     const prisma = buildPrisma();
 
-    await expect(
-      executeAgentActions(prisma, {
-        ...baseInput,
-        actions: [{ type: "create_internal_note", body: "   " }]
-      })
-    ).rejects.toMatchObject({
-      code: "TOOL_INVALID_INPUT"
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      actions: [{ type: "create_internal_note", body: "   " }]
     });
+
+    expect(results).toEqual([
+      {
+        type: "create_internal_note",
+        status: "skipped",
+        reason: "Note body is required."
+      }
+    ]);
     expect(prisma.contactNote.create).not.toHaveBeenCalled();
   });
 
@@ -228,6 +228,35 @@ describe("executeAgentActions", () => {
     expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
   });
 
+  it("skips unsupported model-invented actions instead of failing the run", async () => {
+    const prisma = buildPrisma();
+
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      allowedActions: ["send_message"],
+      actions: [
+        { type: "offer_magic_discount", reason: "unknown" },
+        { type: "add_tag", tagName: "" }
+      ]
+    });
+
+    expect(results).toEqual([
+      {
+        type: "unsupported",
+        status: "skipped",
+        rawType: "offer_magic_discount",
+        reason: "Unsupported agent action offer_magic_discount."
+      },
+      {
+        type: "add_tag",
+        status: "skipped",
+        reason: "Agent action add_tag is not allowed."
+      }
+    ]);
+    expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
+    expect(prisma.tag.upsert).not.toHaveBeenCalled();
+  });
+
   it("accepts add_tag name as an alias for tagName", async () => {
     const prisma = buildPrisma();
 
@@ -247,18 +276,22 @@ describe("executeAgentActions", () => {
     const prisma = buildPrisma();
     const malformedActions = [{ tagName: "Atendido pela IA" }] as unknown as AgentOutput["actions"];
 
-    await expect(
-      executeAgentActions(prisma, {
-        ...baseInput,
-        actions: malformedActions
-      })
-    ).rejects.toMatchObject({
-      code: "TOOL_INVALID_INPUT"
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      actions: malformedActions
     });
+
+    expect(results).toEqual([
+      {
+        type: "unsupported",
+        status: "skipped",
+        reason: "Action type is required."
+      }
+    ]);
     expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
   });
 
-  it("rejects unknown action types before updating conversation or session", async () => {
+  it("skips unknown action types before updating conversation or session", async () => {
     const prisma = buildPrisma();
     const malformedActions = [
       { type: "escalate_to_moon", reason: "unknown action" }
@@ -268,15 +301,20 @@ describe("executeAgentActions", () => {
       "escalate_to_moon"
     ] as unknown as typeof baseInput.allowedActions;
 
-    await expect(
-      executeAgentActions(prisma, {
-        ...baseInput,
-        allowedActions: malformedAllowedActions,
-        actions: malformedActions
-      })
-    ).rejects.toMatchObject({
-      code: "TOOL_INVALID_INPUT"
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      allowedActions: malformedAllowedActions,
+      actions: malformedActions
     });
+
+    expect(results).toEqual([
+      {
+        type: "unsupported",
+        status: "skipped",
+        rawType: "escalate_to_moon",
+        reason: "Unsupported agent action escalate_to_moon."
+      }
+    ]);
     expect(prisma.conversation.update).not.toHaveBeenCalled();
     expect(prisma.aiAgentSession.update).not.toHaveBeenCalled();
   });

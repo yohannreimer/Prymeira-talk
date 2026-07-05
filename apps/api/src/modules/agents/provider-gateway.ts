@@ -177,9 +177,75 @@ function normalizeActions(value: unknown) {
 }
 
 function normalizeActionType(type: string) {
-  return ["reply", "send_reply", "respond"].includes(type.trim().toLocaleLowerCase("en-US"))
-    ? "send_message"
-    : type;
+  const normalized = type.trim().toLocaleLowerCase("en-US").replace(/[^a-z0-9]+/g, "_");
+
+  if (
+    [
+      "reply",
+      "send_reply",
+      "respond",
+      "respond_message",
+      "response",
+      "answer",
+      "message",
+      "send_text",
+      "send_whatsapp_message",
+      "offer_handoff",
+      "offer_handoff_to_sales",
+      "offer_human_handoff",
+      "offer_sales_contact"
+    ].includes(normalized)
+  ) {
+    return "send_message";
+  }
+
+  if (
+    [
+      "request_handoff",
+      "request_handoff_to_sales",
+      "handoff",
+      "handoff_to_sales",
+      "human_handoff",
+      "transfer_to_human",
+      "transfer_to_sales",
+      "escalate_to_human",
+      "escalate_to_sales",
+      "call_human",
+      "chamar_humano"
+    ].includes(normalized)
+  ) {
+    return "request_handoff";
+  }
+
+  if (["add_tag", "add_contact_tag", "tag_contact", "tag_conversation", "tag"].includes(normalized)) {
+    return "add_tag";
+  }
+
+  if (["remove_tag", "remove_contact_tag", "untag", "delete_tag"].includes(normalized)) {
+    return "remove_tag";
+  }
+
+  if (
+    ["create_internal_note", "internal_note", "create_note", "add_note", "note"].includes(
+      normalized
+    )
+  ) {
+    return "create_internal_note";
+  }
+
+  if (["change_priority", "set_priority", "priority"].includes(normalized)) {
+    return "change_priority";
+  }
+
+  if (["assign_user", "assign_to_user", "assign_agent"].includes(normalized)) {
+    return "assign_user";
+  }
+
+  if (["assign_department", "assign_to_department", "assign_team"].includes(normalized)) {
+    return "assign_department";
+  }
+
+  return type;
 }
 
 function readReplyFromActions(actions: unknown[] | undefined) {
@@ -439,6 +505,11 @@ function buildOpenAiCompatibleSystemPrompt(systemPrompt: string): string {
     "- use selected documents when relevant",
     "- do not invent prices, policies, deadlines, guarantees, legal terms",
     "- if insufficient basis, request human handoff",
+    "- use only supported action types from context.allowedActions",
+    "- supported action type names are: send_message, add_tag, remove_tag, change_priority, create_internal_note, assign_user, assign_department, request_handoff",
+    "- for tags use {\"type\":\"add_tag\",\"tagName\":\"...\"}",
+    "- for internal notes use {\"type\":\"create_internal_note\",\"body\":\"...\"}",
+    "- do not use action names like reply, respond_message, offer_handoff_to_sales, create_note, or add_contact_tag",
     '- required JSON shape: {"confidence": number between 0 and 1, "reply": string or null, "actions": array of objects with "type", "handoff": {"required": boolean, "reason": string or null}, "sources": array of cited selected documents or empty array}'
   ].join("\n");
 }

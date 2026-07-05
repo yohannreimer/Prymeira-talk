@@ -426,7 +426,8 @@ export function createAgentRuntime(input: {
           conversation,
           message,
           knowledgeSelection.selected,
-          conversationContext
+          conversationContext,
+          allowedActions
         );
         contextSummary = {
           contactId: conversation.contactId,
@@ -644,12 +645,14 @@ function buildContext(
   conversation: ConversationRecord,
   message: MessageRecord,
   knowledge: Pick<SelectedKnowledgeSource, "title" | "content">[],
-  conversationContext: ConversationContext
+  conversationContext: ConversationContext,
+  allowedActions: readonly AiAgentAllowedAction[]
 ) {
   return {
     messageBody: message.body ?? "",
     conversationHistory: conversationContext.formattedHistory,
     conversationMessages: conversationContext.messages,
+    allowedActions,
     message: {
       id: message.id,
       type: message.type ?? null,

@@ -7,6 +7,7 @@ import type { AgentOutput } from "./provider-gateway.js";
 
 type AgentAction = AgentOutput["actions"][number];
 type AgentActionType = AiAgentAllowedAction;
+type AgentActionResultType = AgentActionType | "unsupported";
 
 type ConversationRecord = {
   id: string;
@@ -99,8 +100,10 @@ export class AgentToolExecutionError extends Error {
 }
 
 export type AgentToolExecutionResult = {
-  type: AgentActionType;
+  type: AgentActionResultType;
   status: "completed" | "skipped";
+  reason?: string;
+  rawType?: string;
 };
 
 export async function executeAgentActions(
@@ -139,28 +142,56 @@ export async function executeAgentActions(
   }
 
   for (const action of input.actions) {
-    const actionType = parseActionType(action);
+    const parsedAction = parseActionType(action);
+
+    if (!parsedAction.actionType) {
+      results.push({
+        type: "unsupported",
+        status: "skipped",
+        ...(parsedAction.rawType ? { rawType: parsedAction.rawType } : {}),
+        reason: parsedAction.reason
+      });
+      continue;
+    }
+
+    const { actionType } = parsedAction;
 
     if (actionType === "send_message") {
       results.push({ type: actionType, status: "skipped" });
       continue;
     }
 
-    ensureAllowed(input.allowedActions, actionType);
-    await executeNonSendAction(prisma, input, await loadConversation(), actionType, action);
-    results.push({ type: actionType, status: "completed" });
+    const allowedReason = getAllowedFailureReason(input.allowedActions, actionType);
+    if (allowedReason) {
+      results.push({ type: actionType, status: "skipped", reason: allowedReason });
+      continue;
+    }
+
+    try {
+      await executeNonSendAction(prisma, input, await loadConversation(), actionType, action);
+      results.push({ type: actionType, status: "completed" });
+    } catch (error) {
+      if (error instanceof AgentToolExecutionError && error.code !== "CONVERSATION_NOT_FOUND") {
+        results.push({ type: actionType, status: "skipped", reason: error.message });
+        continue;
+      }
+
+      throw error;
+    }
   }
 
   return results;
 }
 
-function ensureAllowed(allowedActions: readonly AiAgentAllowedAction[], action: AiAgentAllowedAction) {
+function getAllowedFailureReason(
+  allowedActions: readonly AiAgentAllowedAction[],
+  action: AiAgentAllowedAction
+) {
   if (!allowedActions.includes(action)) {
-    throw new AgentToolExecutionError(
-      "TOOL_NOT_ALLOWED",
-      `Agent action ${action} is not allowed.`
-    );
+    return `Agent action ${action} is not allowed.`;
   }
+
+  return null;
 }
 
 async function executeNonSendAction(
@@ -182,7 +213,7 @@ async function executeNonSendAction(
       await removeTag(prisma, input, action);
       return;
     case "change_priority":
-      await changePriority(prisma, input, getString(action, "priority"));
+      await changePriority(prisma, input, getFirstString(action, ["priority", "value"]));
       return;
     case "create_internal_note":
       await createInternalNote(prisma, input, conversation, action);
@@ -209,7 +240,7 @@ async function addTag(
   input: { workspaceId: string; conversationId: string },
   action: AgentAction
 ) {
-  const name = (getString(action, "tagName") ?? getString(action, "name"))?.trim();
+  const name = getFirstString(action, ["tagName", "name", "tag", "label"])?.trim();
   if (!name) {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Tag name is required.");
   }
@@ -251,7 +282,7 @@ async function removeTag(
   input: { workspaceId: string; conversationId: string },
   action: AgentAction
 ) {
-  const tagId = getString(action, "tagId")?.trim();
+  const tagId = getFirstString(action, ["tagId", "id"])?.trim();
   if (!tagId) {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Tag ID is required.");
   }
@@ -286,7 +317,7 @@ async function createInternalNote(
   conversation: ConversationRecord,
   action: AgentAction
 ) {
-  const body = getString(action, "body")?.trim();
+  const body = getFirstString(action, ["body", "note", "message", "content", "text"])?.trim();
   if (!body) {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Note body is required.");
   }
@@ -307,7 +338,7 @@ async function assignUser(
   input: { workspaceId: string; conversationId: string },
   action: AgentAction
 ) {
-  const userId = getString(action, "userId")?.trim();
+  const userId = getFirstString(action, ["userId", "id"])?.trim();
   if (!userId) {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "User ID is required.");
   }
@@ -331,7 +362,7 @@ async function assignDepartment(
   input: { workspaceId: string; conversationId: string },
   action: AgentAction
 ) {
-  const departmentId = getString(action, "departmentId")?.trim();
+  const departmentId = getFirstString(action, ["departmentId", "id"])?.trim();
   if (!departmentId) {
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Department ID is required.");
   }
@@ -356,7 +387,9 @@ async function requestHandoff(
   conversation: ConversationRecord,
   action: AgentAction
 ) {
-  const handoffReason = getString(action, "reason")?.trim() || "Agent requested human handoff.";
+  const handoffReason =
+    getFirstString(action, ["reason", "message", "body", "note", "content"])?.trim() ||
+    "Agent requested human handoff.";
   const aiControlUpdatedAt = new Date();
 
   await prisma.$transaction(async (tx: AgentToolExecutorTransactionLike) => {
@@ -386,28 +419,120 @@ async function requestHandoff(
   });
 }
 
-function parseActionType(action: AgentAction): AgentActionType {
+function parseActionType(action: AgentAction): {
+  actionType: AgentActionType | null;
+  rawType?: string;
+  reason: string;
+} {
   const actionType = action.type;
   if (typeof actionType !== "string") {
-    throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Action type is required.");
+    return {
+      actionType: null,
+      reason: "Action type is required."
+    };
   }
 
   const normalizedActionType = normalizeActionType(actionType);
   const parsedActionType = aiAgentAllowedActionSchema.safeParse(normalizedActionType);
   if (!parsedActionType.success) {
-    throw new AgentToolExecutionError("TOOL_INVALID_INPUT", `Unsupported agent action ${actionType}.`);
+    return {
+      actionType: null,
+      rawType: actionType,
+      reason: `Unsupported agent action ${actionType}.`
+    };
   }
 
-  return parsedActionType.data;
+  return {
+    actionType: parsedActionType.data,
+    ...(normalizedActionType !== actionType ? { rawType: actionType } : {}),
+    reason: ""
+  };
 }
 
 function normalizeActionType(actionType: string) {
-  return ["reply", "send_reply", "respond"].includes(actionType.trim().toLocaleLowerCase("en-US"))
-    ? "send_message"
-    : actionType;
+  const normalized = actionType.trim().toLocaleLowerCase("en-US").replace(/[^a-z0-9]+/g, "_");
+
+  if (
+    [
+      "reply",
+      "send_reply",
+      "respond",
+      "respond_message",
+      "response",
+      "answer",
+      "message",
+      "send_text",
+      "send_whatsapp_message",
+      "offer_handoff",
+      "offer_handoff_to_sales",
+      "offer_human_handoff",
+      "offer_sales_contact"
+    ].includes(normalized)
+  ) {
+    return "send_message";
+  }
+
+  if (
+    [
+      "request_handoff",
+      "request_handoff_to_sales",
+      "handoff",
+      "handoff_to_sales",
+      "human_handoff",
+      "transfer_to_human",
+      "transfer_to_sales",
+      "escalate_to_human",
+      "escalate_to_sales",
+      "call_human",
+      "chamar_humano"
+    ].includes(normalized)
+  ) {
+    return "request_handoff";
+  }
+
+  if (["add_tag", "add_contact_tag", "tag_contact", "tag_conversation", "tag"].includes(normalized)) {
+    return "add_tag";
+  }
+
+  if (["remove_tag", "remove_contact_tag", "untag", "delete_tag"].includes(normalized)) {
+    return "remove_tag";
+  }
+
+  if (
+    ["create_internal_note", "internal_note", "create_note", "add_note", "note"].includes(
+      normalized
+    )
+  ) {
+    return "create_internal_note";
+  }
+
+  if (["change_priority", "set_priority", "priority"].includes(normalized)) {
+    return "change_priority";
+  }
+
+  if (["assign_user", "assign_to_user", "assign_agent"].includes(normalized)) {
+    return "assign_user";
+  }
+
+  if (["assign_department", "assign_to_department", "assign_team"].includes(normalized)) {
+    return "assign_department";
+  }
+
+  return actionType;
 }
 
 function getString(action: AgentAction, key: string) {
   const value = action[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function getFirstString(action: AgentAction, keys: string[]) {
+  for (const key of keys) {
+    const value = getString(action, key);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+
+  return undefined;
 }
