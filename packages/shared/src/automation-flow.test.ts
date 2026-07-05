@@ -9,6 +9,7 @@ import {
 describe("automation flow contract", () => {
   it("contains the first-cut supported blocks", () => {
     expect(getAutomationBlock("trigger_first_message")?.support).toBe("supported");
+    expect(getAutomationBlock("trigger_message_received")?.support).toBe("supported");
     expect(getAutomationBlock("send_message")?.support).toBe("supported");
     expect(getAutomationBlock("send_file")?.support).toBe("supported");
     expect(getAutomationBlock("add_tag")?.support).toBe("supported");

@@ -747,6 +747,9 @@ async function executeNode(
     return {
       result: resultFor(node, actionStatus, {
         message: runtimeResult.message ?? `Agent runtime ${runtimeResult.status}.`,
+        ...(runtimeResult.status === "failed"
+          ? { error: runtimeResult.message ?? "Agent runtime failed." }
+          : {}),
         branch: runtimeResult.status,
         sessionId: runtimeResult.sessionId
       }),
@@ -774,6 +777,10 @@ async function triggerMatches(
   context: ExecuteContext,
   node: AutomationNodeDefinition
 ) {
+  if (node.type === "trigger_message_received") {
+    return true;
+  }
+
   if (node.type === "trigger_first_message") {
     const previousInboundCount = await options.prisma.message.count({
       where: {

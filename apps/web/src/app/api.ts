@@ -2305,6 +2305,7 @@ export async function apiCreateAgent(
   body: {
     name: string;
     description?: string | null;
+    status?: AiAgentDto["status"];
     systemPrompt: string;
     allowedActions?: AiAgentAllowedAction[];
   }

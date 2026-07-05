@@ -165,8 +165,24 @@ export function createAgentRuntime(input: {
         })
       ]);
 
-      if (!activeAgent || !conversation || !message || message.conversationId !== conversation.id) {
-        return { status: "failed", message: "Agent, conversation, or message was not found." };
+      if (!activeAgent) {
+        const inactiveAgent = await prisma.aiAgent.findFirst({
+          where: {
+            workspaceId: runInput.workspaceId,
+            id: runInput.agentId
+          }
+        });
+
+        return {
+          status: "failed",
+          message: inactiveAgent
+            ? "O agente selecionado está inativo. Ative o agente antes de usar em automações."
+            : "Agent was not found."
+        };
+      }
+
+      if (!conversation || !message || message.conversationId !== conversation.id) {
+        return { status: "failed", message: "Conversation or message was not found." };
       }
 
       if (conversation.aiControlStatus === "human_controlled") {

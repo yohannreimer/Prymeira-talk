@@ -34,6 +34,7 @@ const allowedActionSchema = z.enum([
 const createAgentBodySchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).nullable().optional(),
+  status: z.enum(["active", "inactive"]).optional(),
   systemPrompt: z.string().trim().min(10).max(8000),
   allowedActions: z.array(allowedActionSchema).optional()
 });

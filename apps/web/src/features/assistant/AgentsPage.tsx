@@ -41,6 +41,7 @@ const defaultSystemPrompt =
 
 type AgentFormState = {
   name: string;
+  status: AiAgentDto["status"];
   systemPrompt: string;
 };
 
@@ -84,6 +85,7 @@ const knowledgeUploadCategories: Array<{ value: KnowledgeUploadCategory; label: 
 function emptyAgentForm(): AgentFormState {
   return {
     name: "Agente de atendimento",
+    status: "inactive",
     systemPrompt: defaultSystemPrompt
   };
 }
@@ -204,6 +206,7 @@ export function AgentsPage() {
       setSelectedAgentId(firstAgent?.id ?? null);
       setAgentForm(firstAgent ? {
         name: firstAgent.name,
+        status: firstAgent.status,
         systemPrompt: firstAgent.systemPrompt
       } : emptyAgentForm());
     } catch (loadError) {
@@ -254,6 +257,7 @@ export function AgentsPage() {
     setSelectedAgentId(agent.id);
     setAgentForm({
       name: agent.name,
+      status: agent.status,
       systemPrompt: agent.systemPrompt
     });
     setTestMessages([]);
@@ -273,6 +277,7 @@ export function AgentsPage() {
       if (selectedAgent) {
         const updatedAgent = await apiUpdateAgent(getToken, selectedAgent.id, {
           name: agentForm.name,
+          status: agentForm.status,
           systemPrompt: agentForm.systemPrompt
         });
 
@@ -283,6 +288,7 @@ export function AgentsPage() {
 
       const createdAgent = await apiCreateAgent(getToken, {
         name: agentForm.name,
+        status: agentForm.status,
         systemPrompt: agentForm.systemPrompt,
         allowedActions: defaultAllowedActions
       });
@@ -291,6 +297,7 @@ export function AgentsPage() {
       setSelectedAgentId(createdAgent.id);
       setAgentForm({
         name: createdAgent.name,
+        status: createdAgent.status,
         systemPrompt: createdAgent.systemPrompt
       });
       setNotice("Agente criado.");
@@ -498,6 +505,21 @@ export function AgentsPage() {
                 placeholder="Agente comercial"
                 required
               />
+            </label>
+            <label className="form-field">
+              Status do agente
+              <select
+                value={agentForm.status}
+                onChange={(event) =>
+                  setAgentForm((current) => ({
+                    ...current,
+                    status: event.target.value as AiAgentDto["status"]
+                  }))
+                }
+              >
+                <option value="inactive">Inativo</option>
+                <option value="active">Ativo</option>
+              </select>
             </label>
             <label className="form-field">
               Prompt do sistema

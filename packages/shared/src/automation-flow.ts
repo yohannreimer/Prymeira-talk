@@ -15,6 +15,7 @@ export const automationBlockCategorySchema = z.enum([
 export type AutomationBlockCategory = z.infer<typeof automationBlockCategorySchema>;
 
 export const automationBlockTypeSchema = z.enum([
+  "trigger_message_received",
   "trigger_first_message",
   "trigger_reengagement",
   "trigger_keyword",
@@ -78,6 +79,7 @@ export interface AutomationBlockDefinition {
 }
 
 export const automationBlockCatalog: AutomationBlockDefinition[] = [
+  { type: "trigger_message_received", category: "trigger", label: "Mensagem recebida", description: "Dispara em toda mensagem inbound recebida.", support: "supported" },
   { type: "trigger_first_message", category: "trigger", label: "Primeira mensagem", description: "Dispara quando o contato nunca falou antes.", support: "supported" },
   { type: "trigger_reengagement", category: "trigger", label: "Retorno após pausa", description: "Dispara quando o contato volta após X dias sem mensagem.", support: "supported" },
   { type: "trigger_keyword", category: "trigger", label: "Palavra-chave", description: "Dispara por texto recebido.", support: "supported" },

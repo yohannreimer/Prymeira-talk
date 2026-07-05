@@ -118,6 +118,27 @@ describe("createAgentsService", () => {
     });
   });
 
+  it("can create an active agent when message sending is allowed", async () => {
+    const prisma = buildPrisma();
+    const service = createAgentsService(prisma);
+
+    const agent = await service.createAgent({
+      workspaceId: "workspace_a",
+      name: "Secretaria IA",
+      status: "active",
+      systemPrompt: "Atenda com clareza.",
+      allowedActions: ["send_message"]
+    });
+
+    expect(agent.status).toBe("active");
+    expect(prisma.aiAgent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        status: "active",
+        allowedActions: ["send_message"]
+      })
+    });
+  });
+
   it("rejects activating an agent when allowedActions does not include send_message", async () => {
     const prisma = buildPrisma({
       aiAgent: {

@@ -196,18 +196,20 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       workspaceId: string;
       name: string;
       description?: string | null;
+      status?: AiAgentStatus;
       systemPrompt: string;
       allowedActions?: AiAgentAllowedAction[];
     }): Promise<AiAgentDto> {
       const allowedActions = input.allowedActions ?? ["send_message"];
-      validateAgentConfig({ status: "inactive", allowedActions });
+      const status = input.status ?? "inactive";
+      validateAgentConfig({ status, allowedActions });
 
       const agent = await prisma.aiAgent.create({
         data: {
           workspaceId: input.workspaceId,
           name: input.name.trim(),
           description: nullableTrim(input.description) ?? null,
-          status: "inactive",
+          status,
           providerMode: "prymeira_managed",
           provider: "simulated",
           model: "prymeira-simulated",

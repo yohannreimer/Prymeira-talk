@@ -98,7 +98,7 @@ export function replaceAutomationNodeType(
 
 export function createDefaultAutomationFlow(): AutomationFlowDefinition {
   return flowToAutomationPayload(
-    [createAutomationNode("trigger_first_message", { x: 80, y: 180 })],
+    [createAutomationNode("trigger_message_received", { x: 80, y: 180 })],
     []
   );
 }

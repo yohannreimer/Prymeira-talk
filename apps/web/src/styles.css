@@ -1785,6 +1785,32 @@ select:disabled {
   font-size: 11px;
 }
 
+.automation-run-log {
+  min-width: 0;
+}
+
+.automation-run-log summary {
+  cursor: pointer;
+  color: var(--color-brand-700);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.automation-run-log pre {
+  max-height: 220px;
+  margin: 6px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .automation-hub {
   display: grid;
   gap: 16px;

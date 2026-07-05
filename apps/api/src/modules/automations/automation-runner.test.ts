@@ -824,6 +824,73 @@ describe("automation runner", () => {
     });
   });
 
+  it("activates an AI agent on every received message when using the received-message trigger", async () => {
+    const agentRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          {
+            id: "trigger-1",
+            type: "trigger_message_received",
+            position: { x: 0, y: 0 },
+            data: { title: "Mensagem recebida", config: {} }
+          },
+          {
+            id: "agent-1",
+            type: "run_agent",
+            position: { x: 260, y: 0 },
+            data: {
+              title: "Ativar agente",
+              config: { agentId, instruction: "Responda usando o histórico da conversa." }
+            }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "trigger-1", target: "agent-1" }]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) },
+      message: {
+        findUnique: vi.fn().mockResolvedValue({ ...currentMessage, conversation }),
+        count: vi.fn().mockResolvedValue(3),
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: vi.fn()
+      }
+    } as Partial<AutomationRunnerPrisma>);
+    const agentRuntime = {
+      activateForMessage: vi.fn().mockResolvedValue({
+        status: "completed",
+        sessionId: "agent-session-received",
+        message: "Agent session activated."
+      })
+    };
+    const runner = createAutomationRunner({ prisma, agentRuntime });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:agent-existing-conversation"
+    });
+
+    expect(agentRuntime.activateForMessage).toHaveBeenCalledWith({
+      workspaceId,
+      agentId,
+      conversationId,
+      messageId,
+      instruction: "Responda usando o histórico da conversa."
+    });
+    expect(prisma.message.count).not.toHaveBeenCalled();
+    expect(runs[0]?.status).toBe("completed");
+    expect(runs[0]?.result).toMatchObject({
+      triggerNodeId: "trigger-1",
+      actionResults: [
+        { nodeId: "trigger-1", type: "trigger_message_received", status: "completed" },
+        { nodeId: "agent-1", type: "run_agent", status: "completed" }
+      ]
+    });
+  });
+
   it("fails a run_agent step when the agent ID is missing", async () => {
     const agentRule = {
       ...baseRule,
@@ -861,6 +928,53 @@ describe("automation runner", () => {
       actionResults: [
         { nodeId: "trigger-1", status: "completed" },
         { nodeId: "agent-1", status: "failed", error: "Agent ID is required." }
+      ]
+    });
+  });
+
+  it("stores the agent runtime failure message as the run error", async () => {
+    const agentRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          baseRule.actions.nodes[0],
+          {
+            id: "agent-1",
+            type: "run_agent",
+            position: { x: 260, y: 0 },
+            data: { title: "Ativar agente", config: { agentId } }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "trigger-1", target: "agent-1" }]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
+    } as Partial<AutomationRunnerPrisma>);
+    const agentRuntime = {
+      activateForMessage: vi.fn().mockResolvedValue({
+        status: "failed",
+        message: "O agente selecionado está inativo. Ative o agente antes de usar em automações."
+      })
+    };
+    const runner = createAutomationRunner({ prisma, agentRuntime });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:agent-runtime-failed"
+    });
+
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.result).toMatchObject({
+      actionResults: [
+        { nodeId: "trigger-1", status: "completed" },
+        {
+          nodeId: "agent-1",
+          status: "failed",
+          error: "O agente selecionado está inativo. Ative o agente antes de usar em automações."
+        }
       ]
     });
   });

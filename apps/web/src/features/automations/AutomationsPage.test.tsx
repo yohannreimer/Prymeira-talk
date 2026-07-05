@@ -214,9 +214,11 @@ function depsChanged(previous: readonly unknown[] | undefined, next: readonly un
 }
 
 async function renderAutomationsPageContainer({
-  automations = [baseAutomation]
+  automations = [baseAutomation],
+  runs = []
 }: {
   automations?: AutomationRuleDto[];
+  runs?: AutomationRunDto[];
 } = {}) {
   let ComponentUnderTest: (() => ReactElement) | null = null;
   let tree: ReactNode = null;
@@ -318,7 +320,7 @@ async function renderAutomationsPageContainer({
     return {
       ...original,
       apiGetAgents: vi.fn().mockResolvedValue([baseAgent]),
-      apiGetAutomationRuns: vi.fn().mockResolvedValue([]),
+      apiGetAutomationRuns: vi.fn().mockResolvedValue(runs),
       apiGetAutomations: vi.fn().mockResolvedValue(automations),
       apiUpdateAutomation: apiUpdateAutomationMock
     };
@@ -523,6 +525,36 @@ describe("AutomationsPage navigation", () => {
     expect(
       findElement(page.expandedTree, (element) => element.type === "h2" && hasText(element, /Teste & histórico/i))
     ).not.toBeNull();
+  });
+
+  it("shows automation run failure details in the history log", async () => {
+    const failedRun = {
+      ...baseRun,
+      id: "run-failed",
+      status: "failed",
+      result: {
+        mode: "real",
+        actionResults: [
+          { nodeId: "trigger-1", type: "trigger_keyword", status: "completed" },
+          {
+            nodeId: "agent-1",
+            type: "run_agent",
+            status: "failed",
+            error: "O agente selecionado está inativo. Ative o agente antes de usar em automações."
+          }
+        ]
+      }
+    } satisfies AutomationRunDto;
+    const page = await renderAutomationsPageContainer({ runs: [failedRun] });
+
+    clickButton(page.expandedTree, /Boas-vindas/i);
+    await page.settle();
+    clickButton(page.expandedTree, /Histórico/i);
+    await page.settle();
+
+    expect(hasText(page.expandedTree, "O agente selecionado está inativo. Ative o agente antes de usar em automações.")).toBe(true);
+    expect(hasText(page.expandedTree, "Ver log")).toBe(true);
+    expect(hasText(page.expandedTree, '"nodeId": "agent-1"')).toBe(true);
   });
 
   it("preserves unsaved canvas edits after toggling flow status", async () => {
@@ -749,8 +781,8 @@ describe("automation flow helpers", () => {
       version: 1,
       nodes: [
         {
-          type: "trigger_first_message",
-          data: { title: "Primeira mensagem", config: {} }
+          type: "trigger_message_received",
+          data: { title: "Mensagem recebida", config: {} }
         }
       ],
       edges: []
@@ -836,6 +868,9 @@ describe("automation flow helpers", () => {
   });
 
   it("returns the shared block catalog", () => {
+    expect(supportedBlockTypes()).toContainEqual(
+      expect.objectContaining({ type: "trigger_message_received", support: "supported" })
+    );
     expect(supportedBlockTypes()).toContainEqual(
       expect.objectContaining({ type: "trigger_first_message", support: "supported" })
     );

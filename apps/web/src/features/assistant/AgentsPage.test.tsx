@@ -33,6 +33,9 @@ describe("AgentsPage", () => {
 
     expect(html).toContain("Agentes");
     expect(html).toContain("Novo agente");
+    expect(html).toContain("Status do agente");
+    expect(html).toContain("Inativo");
+    expect(html).toContain("Ativo");
     expect(html).toContain("Prompt do sistema");
     expect(html).toContain("Teste do agente");
     expect(html).toContain("Mensagem de teste");

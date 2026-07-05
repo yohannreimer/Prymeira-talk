@@ -410,6 +410,38 @@ describe("createAgentRuntime", () => {
     expect(prisma.message.create).not.toHaveBeenCalled();
   });
 
+  it("explains activation failures when the selected agent is inactive", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({ ...baseAgent, status: "inactive" })
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Olá!",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({ prisma, provider });
+
+    const result = await runtime.activateForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message
+    });
+
+    expect(result).toEqual({
+      status: "failed",
+      message: "O agente selecionado está inativo. Ative o agente antes de usar em automações."
+    });
+    expect(prisma.aiAgentSession.upsert).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+
   it("sends agent replies through Evolution in real mode", async () => {
     const prisma = buildPrisma();
     const provider = buildProvider({

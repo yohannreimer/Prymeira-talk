@@ -90,6 +90,8 @@ export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeCh
   const showsKeywordTrigger = type === "trigger_keyword";
   const showsReengagementTrigger = type === "trigger_reengagement";
   const showsRunAgent = type === "run_agent";
+  const selectedAgentId = readConfigValue(config, "agentId");
+  const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
   const triggerBlocks = automationBlockCatalog.filter(
     (block) => block.category === "trigger" && block.support === "supported"
   );
@@ -154,6 +156,12 @@ export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeCh
               ))}
             </select>
           </label>
+
+          {type === "trigger_message_received" ? (
+            <p className="list-note">
+              Executa em toda mensagem inbound enquanto o fluxo estiver ativo.
+            </p>
+          ) : null}
 
           {type === "trigger_first_message" ? (
             <p className="list-note">
@@ -292,11 +300,14 @@ export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeCh
               <option value="">Selecione um agente</option>
               {agents.map((agent) => (
                 <option key={agent.id} value={agent.id}>
-                  {agent.name}
+                  {agent.name} {agent.status === "inactive" ? "(inativo)" : ""}
                 </option>
               ))}
             </select>
           </label>
+          {selectedAgent?.status === "inactive" ? (
+            <p className="error-note">Este agente está inativo. Ative o agente antes de usar em automações.</p>
+          ) : null}
           <label className="form-field">
             <span>Instrução desta etapa</span>
             <textarea

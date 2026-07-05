@@ -70,6 +70,7 @@ interface AutomationSavePayload {
 export type AutomationViewMode = "hub" | "editor" | "focus";
 
 const triggerByBlockType: Partial<Record<AutomationBlockType, string>> = {
+  trigger_message_received: "message.received",
   trigger_first_message: "message.received",
   trigger_reengagement: "message.received",
   trigger_keyword: "message.received",
@@ -152,7 +153,9 @@ function automationRunSummary(result: unknown) {
   );
 
   if (failedAction) {
-    return typeof failedAction.error === "string" ? failedAction.error : "Uma etapa falhou.";
+    if (typeof failedAction.error === "string") return failedAction.error;
+    if (typeof failedAction.message === "string") return failedAction.message;
+    return "Uma etapa falhou.";
   }
 
   const completedCount = actionResults.filter(
@@ -164,6 +167,20 @@ function automationRunSummary(result: unknown) {
   }
 
   return "Run registrado sem etapas executadas.";
+}
+
+function automationRunLog(run: AutomationRunDto) {
+  return JSON.stringify(
+    {
+      id: run.id,
+      status: run.status,
+      eventKey: run.eventKey,
+      input: run.input,
+      result: run.result
+    },
+    null,
+    2
+  );
 }
 
 export function automationActionsToTrigger(
@@ -1195,6 +1212,10 @@ function AutomationHistoryDrawer({
             <strong>{run.eventKey}</strong>
             <p>{automationRunSummary(run.result)}</p>
             <small>{formatAutomationRunDate(run.updatedAt)}</small>
+            <details className="automation-run-log">
+              <summary>Ver log</summary>
+              <pre>{automationRunLog(run)}</pre>
+            </details>
           </article>
         ))}
       </div>
