@@ -959,6 +959,76 @@ describe("automation runner", () => {
     });
   });
 
+  it("runs the AI agent immediately when the runtime can send the reply", async () => {
+    const agentRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          {
+            id: "trigger-1",
+            type: "trigger_message_received",
+            position: { x: 0, y: 0 },
+            data: { title: "Mensagem recebida", config: {} }
+          },
+          {
+            id: "agent-1",
+            type: "run_agent",
+            position: { x: 260, y: 0 },
+            data: {
+              title: "Ativar agente",
+              config: { agentId, instruction: "Responda agora." }
+            }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "trigger-1", target: "agent-1" }]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
+    } as Partial<AutomationRunnerPrisma>);
+    const agentRuntime = {
+      activateForMessage: vi.fn(),
+      runForMessage: vi.fn().mockResolvedValue({
+        status: "completed",
+        runId: "agent-run-1"
+      })
+    };
+    const agentReplyScheduler = {
+      scheduleActiveSessionForMessage: vi.fn()
+    };
+    const runner = createAutomationRunner({ prisma, agentRuntime, agentReplyScheduler });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:agent-immediate"
+    });
+
+    expect(agentRuntime.runForMessage).toHaveBeenCalledWith({
+      workspaceId,
+      agentId,
+      conversationId,
+      messageId,
+      trigger: "automation",
+      instruction: "Responda agora."
+    });
+    expect(agentRuntime.activateForMessage).not.toHaveBeenCalled();
+    expect(agentReplyScheduler.scheduleActiveSessionForMessage).not.toHaveBeenCalled();
+    expect(runs[0]?.status).toBe("completed");
+    expect(runs[0]?.result).toMatchObject({
+      actionResults: [
+        { nodeId: "trigger-1", status: "completed" },
+        {
+          nodeId: "agent-1",
+          status: "completed",
+          branch: "completed",
+          runId: "agent-run-1"
+        }
+      ]
+    });
+  });
+
   it("fails a run_agent step when the agent ID is missing", async () => {
     const agentRule = {
       ...baseRule,
