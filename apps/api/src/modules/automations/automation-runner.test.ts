@@ -891,6 +891,74 @@ describe("automation runner", () => {
     });
   });
 
+  it("records the scheduled reply window after activating an AI agent", async () => {
+    const agentRule = {
+      ...baseRule,
+      actions: {
+        version: 1,
+        nodes: [
+          {
+            id: "trigger-1",
+            type: "trigger_message_received",
+            position: { x: 0, y: 0 },
+            data: { title: "Mensagem recebida", config: {} }
+          },
+          {
+            id: "agent-1",
+            type: "run_agent",
+            position: { x: 260, y: 0 },
+            data: {
+              title: "Ativar agente",
+              config: { agentId }
+            }
+          }
+        ],
+        edges: [{ id: "edge-1", source: "trigger-1", target: "agent-1" }]
+      }
+    };
+    const prisma = createMockPrisma({
+      automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
+    } as Partial<AutomationRunnerPrisma>);
+    const agentRuntime = {
+      activateForMessage: vi.fn().mockResolvedValue({
+        status: "completed",
+        sessionId: "agent-session-scheduled",
+        message: "Agent session activated."
+      })
+    };
+    const agentReplyScheduler = {
+      scheduleActiveSessionForMessage: vi.fn().mockResolvedValue({
+        scheduled: true,
+        scheduledAt: new Date("2026-05-24T12:00:40.000Z")
+      })
+    };
+    const runner = createAutomationRunner({ prisma, agentRuntime, agentReplyScheduler });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:agent-scheduled"
+    });
+
+    expect(agentReplyScheduler.scheduleActiveSessionForMessage).toHaveBeenCalledWith({
+      workspaceId,
+      conversationId,
+      messageId
+    });
+    expect(runs[0]?.status).toBe("completed");
+    expect(runs[0]?.result).toMatchObject({
+      actionResults: [
+        { nodeId: "trigger-1", status: "completed" },
+        {
+          nodeId: "agent-1",
+          status: "completed",
+          replyScheduled: true,
+          replyScheduledAt: "2026-05-24T12:00:40.000Z"
+        }
+      ]
+    });
+  });
+
   it("fails a run_agent step when the agent ID is missing", async () => {
     const agentRule = {
       ...baseRule,

@@ -47,6 +47,7 @@ export interface AgentReplySchedulerRuntime {
   }): Promise<{
     status: "completed" | "handoff_requested" | "skipped" | "failed";
     runId?: string;
+    message?: string;
   }>;
 }
 
@@ -171,6 +172,12 @@ export function createAgentReplyScheduler(input: {
             trigger: "automation",
             instruction: pendingReply.instruction ?? null
           });
+          const terminalStatus =
+            run.status === "failed" || run.status === "skipped" ? run.status : "completed";
+          const terminalError =
+            run.status === "failed" || run.status === "skipped"
+              ? run.message ?? `Agent reply ${run.status}.`
+              : null;
 
           await input.prisma.aiAgentPendingReply.updateMany({
             where: {
@@ -180,9 +187,9 @@ export function createAgentReplyScheduler(input: {
               lockedAt: now
             },
             data: {
-              status: "completed",
+              status: terminalStatus,
               lockedAt: null,
-              lastError: null
+              lastError: terminalError
             }
           });
           results.push({ id: pendingReply.id, status: run.status, runId: run.runId });

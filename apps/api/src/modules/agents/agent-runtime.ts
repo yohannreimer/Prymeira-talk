@@ -33,6 +33,7 @@ type AgentRunTrigger = "automation" | "manual_test";
 type AiAgentRecord = {
   id: string;
   workspaceId: string;
+  status?: string;
   model: string;
   systemPrompt: string;
   handoffConfig: JsonValue;
@@ -280,10 +281,15 @@ export function createAgentRuntime(input: {
         }));
 
       if (!agent) {
-        return { status: "failed" };
+        return { status: "failed", message: "Agent was not found." };
       }
 
       if (!activeAgent || !conversation || !message) {
+        const errorMessage = activeAgent
+          ? "Conversation or message was not found."
+          : agent.status === "inactive"
+            ? "O agente selecionado está inativo. Ative o agente antes de usar em automações."
+            : "Agent, conversation, or message was not found.";
         const run = await createRun({
           workspaceId: runInput.workspaceId,
           agentId: agent.id,
@@ -292,9 +298,9 @@ export function createAgentRuntime(input: {
           input: runInput,
           model: agent.model,
           status: "failed",
-          errorMessage: "Agent, conversation, or message was not found."
+          errorMessage
         });
-        return { status: "failed", runId: run.id };
+        return { status: "failed", runId: run.id, message: errorMessage };
       }
 
       if (message.conversationId !== conversation.id) {
@@ -308,10 +314,11 @@ export function createAgentRuntime(input: {
           status: "failed",
           errorMessage: "Message does not belong to the conversation."
         });
-        return { status: "failed", runId: run.id };
+        return { status: "failed", runId: run.id, message: "Message does not belong to the conversation." };
       }
 
       if (conversation.aiControlStatus === "human_controlled") {
+        const errorMessage = "Conversation is controlled by a human.";
         const run = await createRun({
           workspaceId: runInput.workspaceId,
           agentId: agent.id,
@@ -320,9 +327,9 @@ export function createAgentRuntime(input: {
           input: runInput,
           model: agent.model,
           status: "skipped",
-          errorMessage: "Conversation is controlled by a human."
+          errorMessage
         });
-        return { status: "skipped", runId: run.id };
+        return { status: "skipped", runId: run.id, message: errorMessage };
       }
 
       const runInputPayload = {
@@ -464,6 +471,10 @@ export function createAgentRuntime(input: {
           actions: providerOutput.actions
         });
 
+        if (!handoffReason && allowedActions.includes("send_message") && !providerOutput.reply) {
+          throw new Error("Agent did not produce a reply.");
+        }
+
         if (!handoffReason && providerOutput.reply && allowedActions.includes("send_message")) {
           const providerSend = await sendAgentReplyToProvider(input.evolution, conversation, providerOutput.reply);
           await prisma.message.create({
@@ -529,6 +540,7 @@ export function createAgentRuntime(input: {
 
         return { status, runId: run.id };
       } catch (error) {
+        const errorMessage = getErrorMessage(error);
         const run = await createRun({
           workspaceId: runInput.workspaceId,
           agentId: agent.id,
@@ -543,10 +555,10 @@ export function createAgentRuntime(input: {
           actions: actionResults,
           confidence: providerOutput?.confidence,
           status: "failed",
-          errorMessage: getErrorMessage(error)
+          errorMessage
         });
 
-        return { status: "failed", runId: run.id };
+        return { status: "failed", runId: run.id, message: errorMessage };
       }
     }
   };

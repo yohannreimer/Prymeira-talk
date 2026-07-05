@@ -31,7 +31,10 @@ export interface EvolutionRoutesOptions {
       workspaceId: string;
       conversationId: string;
       messageId: string;
-    }): Promise<unknown>;
+    }): Promise<{
+      scheduled: boolean;
+      scheduledAt?: Date | string;
+    }>;
   };
 }
 
@@ -351,6 +354,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
   const automationRunner = createAutomationRunner({
     prisma: app.prisma as unknown as AutomationRunnerPrisma,
     agentRuntime: options.agentRuntime,
+    agentReplyScheduler: options.agentReplyScheduler,
     evolution: options.evolution,
     realtime: app.realtime
   });

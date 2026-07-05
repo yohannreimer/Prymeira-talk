@@ -557,6 +557,33 @@ describe("AutomationsPage navigation", () => {
     expect(hasText(page.expandedTree, '"nodeId": "agent-1"')).toBe(true);
   });
 
+  it("summarizes scheduled agent replies in the automation history", async () => {
+    const scheduledRun = {
+      ...baseRun,
+      result: {
+        mode: "real",
+        actionResults: [
+          { nodeId: "trigger-1", type: "trigger_message_received", status: "completed" },
+          {
+            nodeId: "agent-1",
+            type: "run_agent",
+            status: "completed",
+            replyScheduled: true,
+            replyScheduledAt: "2026-05-22T12:00:40.000Z"
+          }
+        ]
+      }
+    } satisfies AutomationRunDto;
+    const page = await renderAutomationsPageContainer({ runs: [scheduledRun] });
+
+    clickButton(page.expandedTree, /Boas-vindas/i);
+    await page.settle();
+    clickButton(page.expandedTree, /Histórico/i);
+    await page.settle();
+
+    expect(hasText(page.expandedTree, "Resposta do agente agendada para")).toBe(true);
+  });
+
   it("preserves unsaved canvas edits after toggling flow status", async () => {
     const page = await renderAutomationsPageContainer();
 

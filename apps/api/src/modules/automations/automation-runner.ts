@@ -169,9 +169,21 @@ export interface AutomationRunnerAgentRuntime {
   }>;
 }
 
+export interface AutomationRunnerAgentReplyScheduler {
+  scheduleActiveSessionForMessage(input: {
+    workspaceId: string;
+    conversationId: string;
+    messageId: string;
+  }): Promise<{
+    scheduled: boolean;
+    scheduledAt?: Date | string;
+  }>;
+}
+
 export interface AutomationRunnerOptions {
   prisma: AutomationRunnerPrisma;
   agentRuntime?: AutomationRunnerAgentRuntime;
+  agentReplyScheduler?: AutomationRunnerAgentReplyScheduler;
   evolution?: AutomationRunnerEvolution;
   realtime?: AutomationRunnerRealtime;
 }
@@ -743,12 +755,36 @@ async function executeNode(
         : runtimeResult.status === "completed"
           ? "success"
           : undefined;
+    let replySchedule: Awaited<
+      ReturnType<AutomationRunnerAgentReplyScheduler["scheduleActiveSessionForMessage"]>
+    > | null = null;
+
+    if (runtimeResult.status === "completed" && options.agentReplyScheduler) {
+      replySchedule = await options.agentReplyScheduler.scheduleActiveSessionForMessage({
+        workspaceId: context.message.workspaceId,
+        conversationId: context.conversation.id,
+        messageId: context.message.id
+      });
+    }
 
     return {
       result: resultFor(node, actionStatus, {
         message: runtimeResult.message ?? `Agent runtime ${runtimeResult.status}.`,
         ...(runtimeResult.status === "failed"
           ? { error: runtimeResult.message ?? "Agent runtime failed." }
+          : {}),
+        ...(replySchedule
+          ? {
+              replyScheduled: replySchedule.scheduled,
+              ...(replySchedule.scheduledAt
+                ? {
+                    replyScheduledAt:
+                      replySchedule.scheduledAt instanceof Date
+                        ? replySchedule.scheduledAt.toISOString()
+                        : replySchedule.scheduledAt
+                  }
+                : {})
+            }
           : {}),
         branch: runtimeResult.status,
         sessionId: runtimeResult.sessionId

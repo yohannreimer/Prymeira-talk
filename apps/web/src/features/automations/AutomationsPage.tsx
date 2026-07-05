@@ -158,6 +158,17 @@ function automationRunSummary(result: unknown) {
     return "Uma etapa falhou.";
   }
 
+  const scheduledReplyAction = actionResults.find(
+    (item): item is Record<string, unknown> =>
+      isRecord(item) && item.type === "run_agent" && item.replyScheduled === true
+  );
+
+  if (scheduledReplyAction) {
+    return typeof scheduledReplyAction.replyScheduledAt === "string"
+      ? `Resposta do agente agendada para ${formatAutomationRunDate(scheduledReplyAction.replyScheduledAt)}.`
+      : "Resposta do agente agendada.";
+  }
+
   const completedCount = actionResults.filter(
     (item) => isRecord(item) && item.status === "completed"
   ).length;

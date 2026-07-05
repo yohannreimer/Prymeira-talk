@@ -547,7 +547,11 @@ describe("createAgentRuntime", () => {
       trigger: "automation"
     });
 
-    expect(result).toEqual({ status: "skipped", runId: ids.run });
+    expect(result).toEqual({
+      status: "skipped",
+      runId: ids.run,
+      message: "Conversation is controlled by a human."
+    });
     expect(provider.generate).not.toHaveBeenCalled();
     expect(prisma.aiAgentSession.upsert).not.toHaveBeenCalled();
     expect(prisma.message.create).not.toHaveBeenCalled();
@@ -671,7 +675,11 @@ describe("createAgentRuntime", () => {
       trigger: "automation"
     });
 
-    expect(result).toEqual({ status: "failed", runId: ids.run });
+    expect(result).toEqual({
+      status: "failed",
+      runId: ids.run,
+      message: "Tag name is required."
+    });
     expect(prisma.message.create).not.toHaveBeenCalled();
     expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -722,7 +730,11 @@ describe("createAgentRuntime", () => {
       trigger: "automation"
     });
 
-    expect(result).toEqual({ status: "failed", runId: ids.run });
+    expect(result).toEqual({
+      status: "failed",
+      runId: ids.run,
+      message: "Knowledge lookup failed."
+    });
     expect(prisma.aiAgentSession.upsert).toHaveBeenCalled();
     expect(provider.generate).not.toHaveBeenCalled();
     expect(prisma.message.create).not.toHaveBeenCalled();
@@ -735,6 +747,42 @@ describe("createAgentRuntime", () => {
         model: "prymeira-simulated",
         status: "failed",
         errorMessage: "Knowledge lookup failed."
+      })
+    });
+  });
+
+  it("logs a failed run when the provider does not produce a reply", async () => {
+    const prisma = buildPrisma();
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: null,
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({ prisma, provider });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({
+      status: "failed",
+      runId: ids.run,
+      message: "Agent did not produce a reply."
+    });
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        status: "failed",
+        confidence: 0.9,
+        errorMessage: "Agent did not produce a reply.",
+        output: expect.objectContaining({
+          reply: null
+        })
       })
     });
   });
@@ -762,7 +810,11 @@ describe("createAgentRuntime", () => {
       trigger: "automation"
     });
 
-    expect(result).toEqual({ status: "failed", runId: ids.run });
+    expect(result).toEqual({
+      status: "failed",
+      runId: ids.run,
+      message: "Conversation or message was not found."
+    });
     expect(provider.generate).not.toHaveBeenCalled();
     expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -770,7 +822,7 @@ describe("createAgentRuntime", () => {
         agentId: ids.agent,
         conversationId: null,
         status: "failed",
-        errorMessage: "Agent, conversation, or message was not found."
+        errorMessage: "Conversation or message was not found."
       })
     });
   });
@@ -798,7 +850,7 @@ describe("createAgentRuntime", () => {
       trigger: "automation"
     });
 
-    expect(result).toEqual({ status: "failed" });
+    expect(result).toEqual({ status: "failed", message: "Agent was not found." });
     expect(aiAgentFindFirst).toHaveBeenCalledTimes(2);
     expect(provider.generate).not.toHaveBeenCalled();
     expect(prisma.aiAgentRun.create).not.toHaveBeenCalled();

@@ -198,4 +198,54 @@ describe("createAgentReplyScheduler", () => {
       })
     });
   });
+
+  it("keeps failed agent runs visible on the pending reply record", async () => {
+    const prisma = buildPrisma({
+      aiAgentPendingReply: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: ids.pending,
+            workspaceId: ids.workspace,
+            agentId: ids.agent,
+            sessionId: ids.session,
+            conversationId: ids.conversation,
+            lastMessageId: ids.secondMessage,
+            instruction: null,
+            attempts: 0
+          }
+        ]),
+        update: vi.fn().mockResolvedValue({ id: ids.pending }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 })
+      }
+    });
+    const agentRuntime = {
+      runForMessage: vi.fn().mockResolvedValue({
+        status: "failed",
+        runId: "run_failed",
+        message: "OpenAI-compatible provider returned an invalid response."
+      })
+    };
+    const scheduler = createAgentReplyScheduler({
+      prisma,
+      agentRuntime,
+      debounceMs: 40_000
+    });
+
+    const results = await scheduler.processDueReplies({ now: new Date("2026-07-05T12:01:06.000Z") });
+
+    expect(results).toEqual([{ id: ids.pending, status: "failed", runId: "run_failed" }]);
+    expect(prisma.aiAgentPendingReply.updateMany).toHaveBeenLastCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        id: ids.pending,
+        status: "processing",
+        lockedAt: new Date("2026-07-05T12:01:06.000Z")
+      },
+      data: expect.objectContaining({
+        status: "failed",
+        lockedAt: null,
+        lastError: "OpenAI-compatible provider returned an invalid response."
+      })
+    });
+  });
 });
