@@ -298,20 +298,24 @@ export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeCh
             </select>
           </label>
           <label className="form-field">
-            <span>Instrucao desta etapa</span>
+            <span>Instrução desta etapa</span>
             <textarea
-              aria-label="Instrucao desta etapa"
+              aria-label="Instrução desta etapa"
               onChange={(event) => updateConfigValue(node, "instruction", event.target.value, onConfigChange)}
+              placeholder="Opcional. Ex: conduza para teste, responda dúvidas comerciais e peça handoff quando faltar contexto."
               rows={4}
               value={readConfigValue(config, "instruction")}
             />
           </label>
+          <p className="list-note">
+            O agente fica ativo na conversa e responde após agrupar mensagens por alguns segundos.
+          </p>
         </div>
       ) : null}
 
       {!hasSupportedInputs ? (
         <p className="list-note">
-          Este bloco ainda não tem campos editaveis nesta primeira versao do canvas.
+          Este bloco ainda não tem campos editáveis nesta primeira versão do canvas.
         </p>
       ) : null}
     </aside>

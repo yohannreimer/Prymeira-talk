@@ -156,16 +156,15 @@ export interface AutomationRunnerEvolution {
 }
 
 export interface AutomationRunnerAgentRuntime {
-  runForMessage(input: {
+  activateForMessage(input: {
     workspaceId: string;
     agentId: string;
     conversationId: string;
     messageId: string;
-    trigger: "automation";
     instruction?: string | null;
   }): Promise<{
     status: "completed" | "handoff_requested" | "skipped" | "failed";
-    runId?: string;
+    sessionId?: string;
     message?: string;
   }>;
 }
@@ -194,6 +193,7 @@ interface ActionResult {
   mode?: "real";
   message?: string;
   runId?: string;
+  sessionId?: string;
   error?: string;
 }
 
@@ -726,12 +726,11 @@ async function executeNode(
       };
     }
 
-    const runtimeResult = await options.agentRuntime.runForMessage({
+    const runtimeResult = await options.agentRuntime.activateForMessage({
       workspaceId: context.message.workspaceId,
       agentId,
       conversationId: context.conversation.id,
       messageId: context.message.id,
-      trigger: "automation",
       instruction
     });
     const actionStatus =
@@ -749,7 +748,7 @@ async function executeNode(
       result: resultFor(node, actionStatus, {
         message: runtimeResult.message ?? `Agent runtime ${runtimeResult.status}.`,
         branch: runtimeResult.status,
-        runId: runtimeResult.runId
+        sessionId: runtimeResult.sessionId
       }),
       branch: graphBranch,
       branchExact: runtimeResult.status === "handoff_requested",

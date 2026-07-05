@@ -24,6 +24,7 @@ import {
   type AgentOutput,
   type AgentProvider
 } from "./provider-gateway.js";
+import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 
 type JsonValue = unknown;
 type AgentRunStatus = "completed" | "handoff_requested" | "failed" | "skipped";
@@ -115,16 +116,107 @@ type AgentRuntimePrismaLike = Omit<
 export type AgentRuntimeResult = {
   status: AgentRunStatus;
   runId?: string;
+  sessionId?: string;
+  message?: string;
+};
+
+type AgentRuntimeEvolution = {
+  mode: EvolutionRuntime["mode"];
+  client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText"> | null;
 };
 
 export function createAgentRuntime(input: {
   prisma: AgentRuntimePrismaLike;
   provider: AgentProvider;
   providerFactory?: (settings: Extract<OpenAiCompatibleSettings, { active: true }>) => AgentProvider;
+  evolution?: AgentRuntimeEvolution;
 }) {
   const { prisma, provider } = input;
 
   return {
+    async activateForMessage(runInput: {
+      workspaceId: string;
+      agentId: string;
+      conversationId: string;
+      messageId: string;
+      instruction?: string | null;
+    }): Promise<AgentRuntimeResult> {
+      const [activeAgent, conversation, message] = await Promise.all([
+        prisma.aiAgent.findFirst({
+          where: {
+            workspaceId: runInput.workspaceId,
+            id: runInput.agentId,
+            status: "active"
+          }
+        }),
+        prisma.conversation.findUnique({
+          where: {
+            workspaceId_id: {
+              workspaceId: runInput.workspaceId,
+              id: runInput.conversationId
+            }
+          }
+        }),
+        prisma.message.findFirst({
+          where: {
+            workspaceId: runInput.workspaceId,
+            id: runInput.messageId
+          }
+        })
+      ]);
+
+      if (!activeAgent || !conversation || !message || message.conversationId !== conversation.id) {
+        return { status: "failed", message: "Agent, conversation, or message was not found." };
+      }
+
+      if (conversation.aiControlStatus === "human_controlled") {
+        return { status: "skipped", message: "Conversation is controlled by a human." };
+      }
+
+      const metadata = runInput.instruction?.trim()
+        ? { instruction: runInput.instruction.trim() }
+        : {};
+      const session = await prisma.aiAgentSession.upsert({
+        where: {
+          workspaceId_agentId_conversationId: {
+            workspaceId: runInput.workspaceId,
+            agentId: activeAgent.id,
+            conversationId: conversation.id
+          }
+        },
+        create: {
+          workspaceId: runInput.workspaceId,
+          agentId: activeAgent.id,
+          conversationId: conversation.id,
+          status: "active",
+          metadata
+        },
+        update: {
+          status: "active",
+          metadata
+        }
+      });
+
+      await prisma.conversation.update({
+        where: {
+          workspaceId_id: {
+            workspaceId: runInput.workspaceId,
+            id: conversation.id
+          }
+        },
+        data: {
+          activeAgentSessionId: session.id,
+          aiControlStatus: "agent_allowed"
+        }
+      });
+
+      return {
+        status: "completed",
+        sessionId: session.id,
+        message: "Agent session activated."
+      };
+    },
+
     async runForMessage(runInput: {
       workspaceId: string;
       agentId: string;
@@ -357,6 +449,7 @@ export function createAgentRuntime(input: {
         });
 
         if (!handoffReason && providerOutput.reply && allowedActions.includes("send_message")) {
+          const providerSend = await sendAgentReplyToProvider(input.evolution, conversation, providerOutput.reply);
           await prisma.message.create({
             data: {
               workspaceId: runInput.workspaceId,
@@ -364,7 +457,8 @@ export function createAgentRuntime(input: {
               direction: "outbound",
               type: "text",
               body: providerOutput.reply,
-              status: "pending",
+              providerMessageId: providerSend?.providerMessageId ?? undefined,
+              status: providerSend ? "sent" : "pending",
               sentByUserId: null,
               metadata: {
                 source: "ai_agent",
@@ -540,6 +634,25 @@ function buildContext(
       content: source.content
     }))
   };
+}
+
+async function sendAgentReplyToProvider(
+  evolution: AgentRuntimeEvolution | undefined,
+  conversation: ConversationRecord,
+  reply: string
+) {
+  const instanceName = conversation.channel?.providerKey;
+  const number = conversation.contact?.phone;
+
+  if (evolution?.mode !== "real" || !evolution.client || !instanceName || !number) {
+    return null;
+  }
+
+  return await evolution.client.sendText({
+    instanceName,
+    number,
+    text: reply
+  });
 }
 
 function createDocumentRequiredHandoffOutput(): AgentOutput {

@@ -6,6 +6,7 @@ import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
+import { createAgentReplyScheduler } from "./modules/agents/agent-reply-scheduler.js";
 import { agentsRoutes } from "./modules/agents/agents.routes.js";
 import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.js";
 import { automationsRoutes } from "./modules/automations/automations.routes.js";
@@ -115,13 +116,28 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
       ? undefined
       : createAgentRuntime({
           prisma: app.prisma as unknown as Parameters<typeof createAgentRuntime>[0]["prisma"],
-          provider: createSimulatedAgentProvider()
+          provider: createSimulatedAgentProvider(),
+          evolution: evolutionRuntime
         });
+  const agentReplyScheduler =
+    options.prismaEnabled === false || !agentRuntime
+      ? undefined
+      : createAgentReplyScheduler({
+          prisma: app.prisma as unknown as Parameters<typeof createAgentReplyScheduler>[0]["prisma"],
+          agentRuntime
+        });
+  agentReplyScheduler?.start();
+  if (agentReplyScheduler) {
+    app.addHook("onClose", async () => {
+      agentReplyScheduler.stop();
+    });
+  }
 
   await app.register(realtimeRoutes);
   await app.register(evolutionRoutes, {
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,
     agentRuntime,
+    agentReplyScheduler,
     evolution: evolutionRuntime
   });
   await app.register(metaWebhooksRoutes);

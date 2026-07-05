@@ -26,6 +26,13 @@ export interface EvolutionRoutesOptions {
   webhookSecret: string;
   agentRuntime?: AutomationRunnerAgentRuntime;
   evolution?: AutomationRunnerEvolution;
+  agentReplyScheduler?: {
+    scheduleActiveSessionForMessage(input: {
+      workspaceId: string;
+      conversationId: string;
+      messageId: string;
+    }): Promise<unknown>;
+  };
 }
 
 const evolutionWebhookParamsSchema = z.object({
@@ -689,6 +696,14 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           eventKey: `message.received:${message.providerMessageId ?? message.id}`
         }).catch((error: unknown) => {
           request.log.error({ error }, "Failed to run message automations.");
+        });
+
+        await options.agentReplyScheduler?.scheduleActiveSessionForMessage({
+          workspaceId,
+          conversationId: message.conversationId,
+          messageId: message.id
+        }).catch((error: unknown) => {
+          request.log.error({ error }, "Failed to schedule agent reply.");
         });
       }
 

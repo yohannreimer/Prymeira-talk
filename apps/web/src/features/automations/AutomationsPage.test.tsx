@@ -367,7 +367,7 @@ async function renderAutomationsPageContainer({
 
 describe("AutomationsPage navigation", () => {
   it("shows the run agent automation block", () => {
-    expect(hasText(AutomationBlockLibrary({ onSelect: vi.fn() }), "Executar agente")).toBe(true);
+    expect(hasText(AutomationBlockLibrary({ onSelect: vi.fn() }), "Ativar agente")).toBe(true);
   });
 
   it("opens on the hub and enters the editor when a flow is selected", async () => {

@@ -356,6 +356,99 @@ describe("createAgentRuntime", () => {
     });
   });
 
+  it("activates an agent session for continuous automation replies without generating immediately", async () => {
+    const prisma = buildPrisma();
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Olá!",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({ prisma, provider });
+
+    const result = await runtime.activateForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      instruction: "Atenda como secretária comercial."
+    });
+
+    expect(result).toEqual({
+      status: "completed",
+      sessionId: ids.session,
+      message: "Agent session activated."
+    });
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.aiAgentSession.upsert).toHaveBeenCalledWith({
+      where: {
+        workspaceId_agentId_conversationId: {
+          workspaceId: ids.workspace,
+          agentId: ids.agent,
+          conversationId: ids.conversation
+        }
+      },
+      create: expect.objectContaining({
+        workspaceId: ids.workspace,
+        agentId: ids.agent,
+        conversationId: ids.conversation,
+        status: "active",
+        metadata: { instruction: "Atenda como secretária comercial." }
+      }),
+      update: expect.objectContaining({
+        status: "active",
+        metadata: { instruction: "Atenda como secretária comercial." }
+      })
+    });
+    expect(prisma.conversation.update).toHaveBeenCalledWith({
+      where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.conversation } },
+      data: {
+        activeAgentSessionId: ids.session,
+        aiControlStatus: "agent_allowed"
+      }
+    });
+    expect(prisma.message.create).not.toHaveBeenCalled();
+  });
+
+  it("sends agent replies through Evolution in real mode", async () => {
+    const prisma = buildPrisma();
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "O plano profissional custa R$ 199 por mes.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-out-1" });
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      evolution: {
+        mode: "real",
+        client: { sendText }
+      }
+    });
+
+    await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(sendText).toHaveBeenCalledWith({
+      instanceName: "instancia",
+      number: "5511999999999",
+      text: "O plano profissional custa R$ 199 por mes."
+    });
+    expect(prisma.message.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        providerMessageId: "evo-out-1",
+        status: "sent"
+      })
+    });
+  });
+
   it("requests handoff for document-dependent questions without relevant knowledge", async () => {
     const prisma = buildPrisma({
       aiKnowledgeSource: {

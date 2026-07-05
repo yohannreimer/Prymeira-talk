@@ -250,6 +250,7 @@ model Conversation {
   contactNotes ContactNote[]     @relation("ContactNoteConversation")
   aiSessions   AiAgentSession[]  @relation("AiAgentSessionConversation")
   aiRuns       AiAgentRun[]
+  aiPendingReplies AiAgentPendingReply[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, channelId, contactId])
@@ -529,6 +530,7 @@ model AiAgent {
   knowledgeSources AiKnowledgeSource[]
   sessions         AiAgentSession[]
   runs             AiAgentRun[]
+  pendingReplies   AiAgentPendingReply[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status])
@@ -573,12 +575,40 @@ model AiAgentSession {
   agent        AiAgent      @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
   conversation           Conversation   @relation("AiAgentSessionConversation", fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
   runs                   AiAgentRun[]
+  pendingReplies         AiAgentPendingReply[]
   activeForConversations Conversation[] @relation("ActiveAgentSessionConversation")
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, agentId, conversationId])
   @@index([workspaceId, conversationId, status])
   @@map("ai_agent_sessions")
+}
+
+model AiAgentPendingReply {
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @map("workspace_id")
+  conversationId String    @map("conversation_id") @db.Uuid
+  agentId        String    @map("agent_id") @db.Uuid
+  sessionId      String?   @map("session_id") @db.Uuid
+  lastMessageId  String    @map("last_message_id") @db.Uuid
+  instruction    String?
+  scheduledAt    DateTime  @map("scheduled_at")
+  status         String    @default("pending")
+  attempts       Int       @default(0)
+  lockedAt       DateTime? @map("locked_at")
+  lastError      String?   @map("last_error")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  agent        AiAgent         @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
+  conversation Conversation    @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  session      AiAgentSession? @relation(fields: [workspaceId, sessionId], references: [workspaceId, id], onDelete: SetNull)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, conversationId])
+  @@index([status, scheduledAt])
+  @@index([workspaceId, agentId])
+  @@map("ai_agent_pending_replies")
 }
 
 model AiAgentRun {

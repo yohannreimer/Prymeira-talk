@@ -764,7 +764,7 @@ describe("automation runner", () => {
     });
   });
 
-  it("runs an AI agent with the selected agent and instruction", async () => {
+  it("activates an AI agent with the selected agent and instruction", async () => {
     const agentRule = {
       ...baseRule,
       actions: {
@@ -788,10 +788,10 @@ describe("automation runner", () => {
       automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
     } as Partial<AutomationRunnerPrisma>);
     const agentRuntime = {
-      runForMessage: vi.fn().mockResolvedValue({
+      activateForMessage: vi.fn().mockResolvedValue({
         status: "completed",
-        runId: "agent-run-1",
-        message: "Agent replied with the configured business plan guidance."
+        sessionId: "agent-session-1",
+        message: "Agent session activated."
       })
     };
     const runner = createAutomationRunner({ prisma, agentRuntime });
@@ -802,12 +802,11 @@ describe("automation runner", () => {
       eventKey: "message.received:agent"
     });
 
-    expect(agentRuntime.runForMessage).toHaveBeenCalledWith({
+    expect(agentRuntime.activateForMessage).toHaveBeenCalledWith({
       workspaceId,
       agentId,
       conversationId,
       messageId,
-      trigger: "automation",
       instruction: "Responda com foco nos planos empresariais."
     });
     expect(runs[0]?.status).toBe("completed");
@@ -818,8 +817,8 @@ describe("automation runner", () => {
           nodeId: "agent-1",
           status: "completed",
           branch: "completed",
-          message: "Agent replied with the configured business plan guidance.",
-          runId: "agent-run-1"
+          message: "Agent session activated.",
+          sessionId: "agent-session-1"
         }
       ]
     });
@@ -846,7 +845,7 @@ describe("automation runner", () => {
       automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
     } as Partial<AutomationRunnerPrisma>);
     const agentRuntime = {
-      runForMessage: vi.fn()
+      activateForMessage: vi.fn()
     };
     const runner = createAutomationRunner({ prisma, agentRuntime });
 
@@ -856,7 +855,7 @@ describe("automation runner", () => {
       eventKey: "message.received:agent-missing-id"
     });
 
-    expect(agentRuntime.runForMessage).not.toHaveBeenCalled();
+    expect(agentRuntime.activateForMessage).not.toHaveBeenCalled();
     expect(runs[0]?.status).toBe("failed");
     expect(runs[0]?.result).toMatchObject({
       actionResults: [
@@ -896,9 +895,9 @@ describe("automation runner", () => {
       automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
     } as Partial<AutomationRunnerPrisma>);
     const agentRuntime = {
-      runForMessage: vi.fn().mockResolvedValue({
+      activateForMessage: vi.fn().mockResolvedValue({
         status: "skipped",
-        runId: "agent-run-skipped",
+        sessionId: "agent-session-skipped",
         message: "Conversation is currently human-controlled."
       })
     };
@@ -918,7 +917,7 @@ describe("automation runner", () => {
           status: "skipped",
           branch: "skipped",
           message: "Conversation is currently human-controlled.",
-          runId: "agent-run-skipped"
+          sessionId: "agent-session-skipped"
         }
       ]
     });
@@ -954,9 +953,9 @@ describe("automation runner", () => {
       automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
     } as Partial<AutomationRunnerPrisma>);
     const agentRuntime = {
-      runForMessage: vi.fn().mockResolvedValue({
+      activateForMessage: vi.fn().mockResolvedValue({
         status: "handoff_requested",
-        runId: "agent-run-handoff"
+        sessionId: "agent-session-handoff"
       })
     };
     const runner = createAutomationRunner({ prisma, agentRuntime });
@@ -974,7 +973,7 @@ describe("automation runner", () => {
           nodeId: "agent-1",
           status: "completed",
           branch: "handoff_requested",
-          runId: "agent-run-handoff"
+          sessionId: "agent-session-handoff"
         }
       ]
     });
@@ -1017,9 +1016,9 @@ describe("automation runner", () => {
       automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
     } as Partial<AutomationRunnerPrisma>);
     const agentRuntime = {
-      runForMessage: vi.fn().mockResolvedValue({
+      activateForMessage: vi.fn().mockResolvedValue({
         status: "handoff_requested",
-        runId: "agent-run-handoff"
+        sessionId: "agent-session-handoff"
       })
     };
     const runner = createAutomationRunner({ prisma, agentRuntime });
@@ -1038,7 +1037,7 @@ describe("automation runner", () => {
           nodeId: "agent-1",
           status: "completed",
           branch: "handoff_requested",
-          runId: "agent-run-handoff"
+          sessionId: "agent-session-handoff"
         },
         { nodeId: "handoff-log", status: "completed" }
       ]
