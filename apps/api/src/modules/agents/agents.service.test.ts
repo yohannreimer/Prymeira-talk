@@ -5,6 +5,9 @@ import type { AgentsPrismaLike } from "./agents.service.js";
 const now = new Date("2026-06-23T18:00:00.000Z");
 const agentId = "00000000-0000-4000-8000-000000000101";
 const knowledgeSourceId = "00000000-0000-4000-8000-000000000201";
+const tagIdA = "00000000-0000-4000-8000-000000000301";
+const tagIdB = "00000000-0000-4000-8000-000000000302";
+const tagIdC = "00000000-0000-4000-8000-000000000303";
 
 type MockPrisma = {
   aiAgent: {
@@ -17,6 +20,14 @@ type MockPrisma = {
     findMany: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
   };
+  tag: {
+    count: ReturnType<typeof vi.fn>;
+  };
+  aiAgentAllowedTag: {
+    deleteMany: ReturnType<typeof vi.fn>;
+    createMany: ReturnType<typeof vi.fn>;
+  };
+  $transaction: ReturnType<typeof vi.fn>;
 };
 
 const baseAgent = {
@@ -54,7 +65,7 @@ const baseKnowledgeSource = {
 };
 
 function buildPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & AgentsPrismaLike {
-  return {
+  const prisma = {
     aiAgent: {
       findMany: overrides.aiAgent?.findMany ?? vi.fn().mockResolvedValue([]),
       findFirst: overrides.aiAgent?.findFirst ?? vi.fn().mockResolvedValue(null),
@@ -79,11 +90,77 @@ function buildPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & AgentsPr
           ...baseKnowledgeSource,
           ...args.data
         }))
-    }
+    },
+    tag: {
+      count: overrides.tag?.count ?? vi.fn().mockResolvedValue(0)
+    },
+    aiAgentAllowedTag: {
+      deleteMany: overrides.aiAgentAllowedTag?.deleteMany ?? vi.fn().mockResolvedValue({ count: 0 }),
+      createMany: overrides.aiAgentAllowedTag?.createMany ?? vi.fn().mockResolvedValue({ count: 0 })
+    },
+    $transaction: overrides.$transaction ?? vi.fn()
   } as MockPrisma & AgentsPrismaLike;
+
+  prisma.$transaction.mockImplementation(async (callback) => callback(prisma));
+
+  return prisma;
 }
 
 describe("createAgentsService", () => {
+  it("returns allowed tags from agent relations when listing agents", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            ...baseAgent,
+            allowedTags: [
+              {
+                tag: {
+                  id: tagIdB,
+                  name: "VIP",
+                  color: "#f97316",
+                  useGuide: "Use para clientes prioritários.",
+                  isActive: true
+                }
+              },
+              {
+                tag: {
+                  id: tagIdC,
+                  name: "Arquivada",
+                  color: "#64748b",
+                  useGuide: "Não deve aparecer.",
+                  isActive: false
+                }
+              }
+            ]
+          }
+        ]),
+        findFirst: vi.fn(),
+        create: vi.fn(),
+        update: vi.fn()
+      }
+    });
+    const service = createAgentsService(prisma);
+
+    const agents = await service.listAgents({ workspaceId: "workspace_a" });
+
+    expect(agents[0]?.allowedTags).toEqual([
+      {
+        id: tagIdB,
+        name: "VIP",
+        color: "#f97316",
+        useGuide: "Use para clientes prioritários."
+      }
+    ]);
+    expect(prisma.aiAgent.findMany).toHaveBeenCalledWith({
+      where: { workspaceId: "workspace_a" },
+      orderBy: [{ createdAt: "asc" }],
+      include: expect.objectContaining({
+        allowedTags: expect.any(Object)
+      })
+    });
+  });
+
   it("creates an inactive agent with safe defaults", async () => {
     const prisma = buildPrisma();
     const service = createAgentsService(prisma);
@@ -208,9 +285,133 @@ describe("createAgentsService", () => {
       where: {
         workspaceId: "workspace_a",
         id: agentId
-      }
+      },
+      include: expect.objectContaining({
+        allowedTags: expect.any(Object)
+      })
     });
     expect(prisma.aiAgent.update).not.toHaveBeenCalled();
+  });
+
+  it("replaces allowed tags when updating an agent", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findMany: vi.fn().mockResolvedValue([]),
+        findFirst: vi
+          .fn()
+          .mockResolvedValueOnce(baseAgent)
+          .mockResolvedValueOnce({
+            ...baseAgent,
+            allowedTags: [
+              {
+                tag: {
+                  id: tagIdA,
+                  name: "Lead quente",
+                  color: "#dc2626",
+                  useGuide: "Use quando houver intenção clara.",
+                  isActive: true
+                }
+              },
+              {
+                tag: {
+                  id: tagIdB,
+                  name: "VIP",
+                  color: "#f97316",
+                  useGuide: "Use para clientes prioritários.",
+                  isActive: true
+                }
+              }
+            ]
+          }),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue(baseAgent)
+      },
+      tag: {
+        count: vi.fn().mockResolvedValue(2)
+      }
+    });
+    const service = createAgentsService(prisma);
+
+    const agent = await service.updateAgent({
+      workspaceId: "workspace_a",
+      agentId,
+      data: {
+        allowedTagIds: [tagIdA, tagIdB, tagIdA]
+      }
+    });
+
+    expect(agent.allowedTags).toEqual([
+      {
+        id: tagIdA,
+        name: "Lead quente",
+        color: "#dc2626",
+        useGuide: "Use quando houver intenção clara."
+      },
+      {
+        id: tagIdB,
+        name: "VIP",
+        color: "#f97316",
+        useGuide: "Use para clientes prioritários."
+      }
+    ]);
+    expect(prisma.tag.count).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        id: { in: [tagIdA, tagIdB] },
+        isActive: true
+      }
+    });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.aiAgentAllowedTag.deleteMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        agentId
+      }
+    });
+    expect(prisma.aiAgentAllowedTag.createMany).toHaveBeenCalledWith({
+      data: [
+        { workspaceId: "workspace_a", agentId, tagId: tagIdA },
+        { workspaceId: "workspace_a", agentId, tagId: tagIdB }
+      ]
+    });
+  });
+
+  it("rejects replacing allowed tags with missing or inactive tags", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findMany: vi.fn().mockResolvedValue([]),
+        findFirst: vi.fn().mockResolvedValue(baseAgent),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue(baseAgent)
+      },
+      tag: {
+        count: vi.fn().mockResolvedValue(1)
+      }
+    });
+    const service = createAgentsService(prisma);
+
+    await expect(
+      service.updateAgent({
+        workspaceId: "workspace_a",
+        agentId,
+        data: {
+          allowedTagIds: [tagIdA, tagIdC]
+        }
+      })
+    ).rejects.toMatchObject({
+      code: "AGENT_INVALID_CONFIG",
+      message: "Allowed tags must exist and be active."
+    });
+    expect(prisma.tag.count).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        id: { in: [tagIdA, tagIdC] },
+        isActive: true
+      }
+    });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.aiAgentAllowedTag.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.aiAgentAllowedTag.createMany).not.toHaveBeenCalled();
   });
 
   it("creates a knowledge source for an existing agent, status ready", async () => {
@@ -248,7 +449,10 @@ describe("createAgentsService", () => {
       where: {
         workspaceId: "workspace_a",
         id: agentId
-      }
+      },
+      include: expect.objectContaining({
+        allowedTags: expect.any(Object)
+      })
     });
     expect(prisma.aiKnowledgeSource.create).toHaveBeenCalledWith({
       data: expect.objectContaining({

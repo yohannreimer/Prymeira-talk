@@ -36,7 +36,8 @@ const createAgentBodySchema = z.object({
   description: z.string().trim().max(500).nullable().optional(),
   status: z.enum(["active", "inactive"]).optional(),
   systemPrompt: z.string().trim().min(10).max(8000),
-  allowedActions: z.array(allowedActionSchema).optional()
+  allowedActions: z.array(allowedActionSchema).optional(),
+  allowedTagIds: z.array(uuidSchema).max(100).optional()
 });
 
 const updateAgentBodySchema = createAgentBodySchema

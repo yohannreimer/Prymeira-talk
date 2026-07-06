@@ -9,6 +9,16 @@ type DateLike = Date | string;
 type AiAgentStatus = "active" | "inactive";
 type AiKnowledgeSourceType = "faq" | "text" | "file";
 
+type AgentAllowedTagRecord = {
+  tag: {
+    id: string;
+    name: string;
+    color: string;
+    useGuide: string;
+    isActive: boolean;
+  };
+};
+
 type AiAgentRecord = {
   id: string;
   workspaceId: string;
@@ -25,6 +35,7 @@ type AiAgentRecord = {
   allowedActions: Prisma.JsonValue;
   createdAt: DateLike;
   updatedAt: DateLike;
+  allowedTags?: AgentAllowedTagRecord[];
 };
 
 type AiKnowledgeSourceRecord = {
@@ -49,6 +60,20 @@ type AgentFindManyArgs = Parameters<PrismaClient["aiAgent"]["findMany"]>[0];
 type AgentUpdateArgs = Parameters<PrismaClient["aiAgent"]["update"]>[0];
 type KnowledgeCreateArgs = Parameters<PrismaClient["aiKnowledgeSource"]["create"]>[0];
 type KnowledgeFindManyArgs = Parameters<PrismaClient["aiKnowledgeSource"]["findMany"]>[0];
+type TagCountArgs = Parameters<PrismaClient["tag"]["count"]>[0];
+type AgentAllowedTagCreateManyArgs = Parameters<
+  PrismaClient["aiAgentAllowedTag"]["createMany"]
+>[0];
+type AgentAllowedTagDeleteManyArgs = Parameters<
+  PrismaClient["aiAgentAllowedTag"]["deleteMany"]
+>[0];
+
+type AgentsTransactionPrismaLike = {
+  aiAgentAllowedTag: {
+    deleteMany(args: AgentAllowedTagDeleteManyArgs): Promise<unknown>;
+    createMany(args: AgentAllowedTagCreateManyArgs): Promise<unknown>;
+  };
+};
 
 export interface AgentsPrismaLike {
   aiAgent: {
@@ -61,6 +86,11 @@ export interface AgentsPrismaLike {
     findMany(args: KnowledgeFindManyArgs): Promise<AiKnowledgeSourceRecord[]>;
     create(args: KnowledgeCreateArgs): Promise<AiKnowledgeSourceRecord>;
   };
+  tag: {
+    count(args: TagCountArgs): Promise<number>;
+  };
+  aiAgentAllowedTag: AgentsTransactionPrismaLike["aiAgentAllowedTag"];
+  $transaction<T>(callback: (tx: AgentsTransactionPrismaLike) => Promise<T>): Promise<T>;
 }
 
 export class AgentsServiceError extends Error {
@@ -83,6 +113,13 @@ const allowedActionValues = new Set<AiAgentAllowedAction>([
   "assign_department",
   "request_handoff"
 ]);
+
+const agentInclude = {
+  allowedTags: {
+    include: { tag: true },
+    orderBy: { tag: { name: "asc" } }
+  }
+} as const;
 
 function toIsoString(value: DateLike) {
   return value instanceof Date ? value.toISOString() : value;
@@ -127,7 +164,15 @@ function toAgentDto(record: AiAgentRecord): AiAgentDto {
     handoffConfig: toRecord(record.handoffConfig),
     limitsConfig: toRecord(record.limitsConfig),
     allowedActions: readAllowedActions(record.allowedActions),
-    allowedTags: [],
+    allowedTags:
+      record.allowedTags
+        ?.filter((item) => item.tag.isActive)
+        .map((item) => ({
+          id: item.tag.id,
+          name: item.tag.name,
+          color: item.tag.color,
+          useGuide: item.tag.useGuide
+        })) ?? [],
     createdAt: toIsoString(record.createdAt),
     updatedAt: toIsoString(record.updatedAt)
   };
@@ -168,12 +213,57 @@ function validateAgentConfig(input: {
 }
 
 export function createAgentsService(prisma: AgentsPrismaLike) {
+  async function replaceAllowedTags(input: {
+    workspaceId: string;
+    agentId: string;
+    tagIds: string[];
+  }) {
+    const uniqueTagIds = [...new Set(input.tagIds)];
+
+    if (uniqueTagIds.length > 0) {
+      const existingActiveTags = await prisma.tag.count({
+        where: {
+          workspaceId: input.workspaceId,
+          id: { in: uniqueTagIds },
+          isActive: true
+        }
+      });
+
+      if (existingActiveTags !== uniqueTagIds.length) {
+        throw new AgentsServiceError(
+          "AGENT_INVALID_CONFIG",
+          "Allowed tags must exist and be active."
+        );
+      }
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.aiAgentAllowedTag.deleteMany({
+        where: {
+          workspaceId: input.workspaceId,
+          agentId: input.agentId
+        }
+      });
+
+      if (uniqueTagIds.length > 0) {
+        await tx.aiAgentAllowedTag.createMany({
+          data: uniqueTagIds.map((tagId) => ({
+            workspaceId: input.workspaceId,
+            agentId: input.agentId,
+            tagId
+          }))
+        });
+      }
+    });
+  }
+
   async function ensureAgent(input: { workspaceId: string; agentId: string }) {
     const agent = await prisma.aiAgent.findFirst({
       where: {
         workspaceId: input.workspaceId,
         id: input.agentId
-      }
+      },
+      include: agentInclude
     });
 
     if (!agent) {
@@ -187,7 +277,8 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
     async listAgents(input: { workspaceId: string }): Promise<AiAgentDto[]> {
       const agents = await prisma.aiAgent.findMany({
         where: { workspaceId: input.workspaceId },
-        orderBy: [{ createdAt: "asc" }]
+        orderBy: [{ createdAt: "asc" }],
+        include: agentInclude
       });
 
       return agents.map(toAgentDto);
@@ -200,6 +291,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       status?: AiAgentStatus;
       systemPrompt: string;
       allowedActions?: AiAgentAllowedAction[];
+      allowedTagIds?: string[];
     }): Promise<AiAgentDto> {
       const allowedActions = input.allowedActions ?? ["send_message"];
       const status = input.status ?? "inactive";
@@ -226,6 +318,21 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
         }
       });
 
+      if (input.allowedTagIds !== undefined) {
+        await replaceAllowedTags({
+          workspaceId: input.workspaceId,
+          agentId: agent.id,
+          tagIds: input.allowedTagIds
+        });
+
+        return toAgentDto(
+          await ensureAgent({
+            workspaceId: input.workspaceId,
+            agentId: agent.id
+          })
+        );
+      }
+
       return toAgentDto(agent);
     },
 
@@ -238,6 +345,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
         status: AiAgentStatus;
         systemPrompt: string;
         allowedActions: AiAgentAllowedAction[];
+        allowedTagIds: string[];
       }>;
     }): Promise<AiAgentDto> {
       const existingAgent = await ensureAgent(input);
@@ -264,8 +372,19 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
           ...(input.data.allowedActions !== undefined
             ? { allowedActions: input.data.allowedActions }
             : {})
-        }
+        },
+        include: agentInclude
       });
+
+      if (input.data.allowedTagIds !== undefined) {
+        await replaceAllowedTags({
+          workspaceId: input.workspaceId,
+          agentId: input.agentId,
+          tagIds: input.data.allowedTagIds
+        });
+
+        return toAgentDto(await ensureAgent(input));
+      }
 
       return toAgentDto(agent);
     },
