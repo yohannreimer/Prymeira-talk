@@ -246,21 +246,23 @@ describe("createOpenAiCompatibleAgentProvider", () => {
       fetchImpl: fetchMock
     });
 
+    const providerContext = {
+      selectedDocuments: [{ title: "Política", body: "Sem prazo definido." }],
+      allowedTags: [
+        {
+          id: "tag_hot_lead",
+          name: "Lead quente",
+          color: "#f97316",
+          useGuide: "Use quando o cliente demonstrar intenção clara de compra."
+        }
+      ]
+    };
+
     await provider.generate({
       model: "runtime-model",
       systemPrompt: "Você e o agente oficial.",
       userPrompt: "Qual o prazo?",
-      context: {
-        selectedDocuments: [{ title: "Política", body: "Sem prazo definido." }],
-        allowedTags: [
-          {
-            id: "tag_hot_lead",
-            name: "Lead quente",
-            color: "#f97316",
-            useGuide: "Use quando o cliente demonstrar intenção clara de compra."
-          }
-        ]
-      }
+      context: providerContext
     });
 
     const [, init] = fetchMock.mock.calls[0] ?? [];
@@ -285,22 +287,16 @@ describe("createOpenAiCompatibleAgentProvider", () => {
     expect(body.messages[0].content).toContain("choose tagName only from context.allowedTags[].name");
     expect(body.messages[0].content).toContain("if context.allowedTags is empty, do not call add_tag");
     expect(body.messages[0].content).toContain("use create_internal_note for conversation-specific details");
-    expect(body.messages[1]).toEqual({
-      role: "user",
-      content: JSON.stringify({
-        userPrompt: "Qual o prazo?",
-        context: {
-          selectedDocuments: [{ title: "Política", body: "Sem prazo definido." }],
-          allowedTags: [
-            {
-              id: "tag_hot_lead",
-              name: "Lead quente",
-              color: "#f97316",
-              useGuide: "Use quando o cliente demonstrar intenção clara de compra."
-            }
-          ]
-        }
-      })
+    expect(body.messages[1].role).toBe("user");
+    const userContent = String(body.messages[1].content);
+    const allowedTagsBlockMarker = "\n\nAllowed tags:\n";
+    expect(userContent).toContain(
+      `${allowedTagsBlockMarker}- Lead quente: Use quando o cliente demonstrar intenção clara de compra.`
+    );
+    const jsonPayload = userContent.slice(0, userContent.indexOf(allowedTagsBlockMarker));
+    expect(JSON.parse(jsonPayload)).toEqual({
+      userPrompt: "Qual o prazo?",
+      context: providerContext
     });
   });
 

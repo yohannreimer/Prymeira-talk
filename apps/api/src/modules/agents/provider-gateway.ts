@@ -373,10 +373,10 @@ export function createOpenAiCompatibleAgentProvider(
               },
               {
                 role: "user",
-                content: JSON.stringify({
-                  userPrompt: agentInput.userPrompt,
-                  context: agentInput.context
-                })
+                content: buildOpenAiCompatibleUserContent(
+                  agentInput.userPrompt,
+                  agentInput.context
+                )
               }
             ]
           })
@@ -514,6 +514,36 @@ function buildOpenAiCompatibleSystemPrompt(systemPrompt: string): string {
     "- do not use action names like reply, respond_message, offer_handoff_to_sales, create_note, or add_contact_tag",
     '- required JSON shape: {"confidence": number between 0 and 1, "reply": string or null, "actions": array of objects with "type", "handoff": {"required": boolean, "reason": string or null}, "sources": array of cited selected documents or empty array}'
   ].join("\n");
+}
+
+function buildOpenAiCompatibleUserContent(
+  userPrompt: string,
+  context: Record<string, unknown>
+) {
+  const jsonPayload = JSON.stringify({
+    userPrompt,
+    context
+  });
+  const allowedTagsBlock = buildAllowedTagsContextBlock(context.allowedTags);
+
+  return [jsonPayload, allowedTagsBlock].filter(Boolean).join("\n\n");
+}
+
+function buildAllowedTagsContextBlock(value: unknown) {
+  if (!Array.isArray(value)) {
+    return "";
+  }
+
+  const lines = value.flatMap((tag) => {
+    if (!isRecord(tag) || typeof tag.name !== "string" || tag.name.trim().length === 0) {
+      return [];
+    }
+
+    const useGuide = typeof tag.useGuide === "string" ? tag.useGuide : "";
+    return [`- ${tag.name}: ${useGuide}`];
+  });
+
+  return lines.length > 0 ? ["Allowed tags:", ...lines].join("\n") : "";
 }
 
 export function createSimulatedAgentProvider(): AgentProvider {
