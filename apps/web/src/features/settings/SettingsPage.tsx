@@ -2,12 +2,16 @@ import { useTalkAuth } from "../../app/auth";
 import { PlugZap, RefreshCw, Save, Settings2 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
+  apiCreateTag,
   apiGetAuditLog,
   apiGetSettings,
+  apiGetTags,
   apiSyncMetaTemplates,
   apiUpdateSettings,
+  apiUpdateTag,
   type AuditLogDto,
-  type SettingsDto
+  type SettingsDto,
+  type TagDto
 } from "../../app/api";
 
 interface MetaCloudFormState {
@@ -39,6 +43,12 @@ interface AiProviderFormState {
   };
 }
 
+interface TagFormState {
+  name: string;
+  color: string;
+  useGuide: string;
+}
+
 const emptyMetaForm: MetaCloudFormState = {
   enabled: false,
   connectionMode: "direct",
@@ -67,6 +77,16 @@ const emptyAiProviderForm: AiProviderFormState = {
     apiKey: false
   }
 };
+
+const emptyTagForm: TagFormState = {
+  name: "",
+  color: "#2f6b57",
+  useGuide: ""
+};
+
+function sortTags(tags: TagDto[]) {
+  return [...tags].sort((first, second) => first.name.localeCompare(second.name, "pt-BR"));
+}
 
 function asSettingsRecord(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -135,10 +155,14 @@ export function SettingsPage() {
   const { getToken } = useTalkAuth();
   const [settings, setSettings] = useState<SettingsDto | null>(null);
   const [auditLog, setAuditLog] = useState<AuditLogDto[]>([]);
+  const [tags, setTags] = useState<TagDto[]>([]);
   const [metaForm, setMetaForm] = useState<MetaCloudFormState>(emptyMetaForm);
   const [aiProviderForm, setAiProviderForm] = useState<AiProviderFormState>(emptyAiProviderForm);
+  const [tagForm, setTagForm] = useState<TagFormState>(emptyTagForm);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSavingTag, setIsSavingTag] = useState(false);
+  const [savingTagId, setSavingTagId] = useState<string | null>(null);
   const [isSyncingTemplates, setIsSyncingTemplates] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -148,12 +172,14 @@ export function SettingsPage() {
     setError(null);
 
     try {
-      const [nextSettings, nextAuditLog] = await Promise.all([
+      const [nextSettings, nextAuditLog, nextTags] = await Promise.all([
         apiGetSettings(getToken),
-        apiGetAuditLog(getToken)
+        apiGetAuditLog(getToken),
+        apiGetTags(getToken)
       ]);
       setSettings(nextSettings);
       setAuditLog(nextAuditLog);
+      setTags(sortTags(nextTags));
       setMetaForm(getMetaCloudForm(nextSettings));
       setAiProviderForm(getAiProviderForm(nextSettings));
     } catch (loadError) {
@@ -183,6 +209,10 @@ export function SettingsPage() {
 
   function updateAiProviderForm(partial: Partial<AiProviderFormState>) {
     setAiProviderForm((current) => ({ ...current, ...partial }));
+  }
+
+  function updateTagForm(partial: Partial<TagFormState>) {
+    setTagForm((current) => ({ ...current, ...partial }));
   }
 
   function buildMetaSettingsPayload() {
@@ -330,6 +360,60 @@ export function SettingsPage() {
       setError(syncError instanceof Error ? syncError.message : "Não foi possível sincronizar templates.");
     } finally {
       setIsSyncingTemplates(false);
+    }
+  }
+
+  async function createTag(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setNotice(null);
+
+    const name = tagForm.name.trim();
+    const useGuide = tagForm.useGuide.trim();
+
+    if (!name) {
+      setError("Informe o nome da tag.");
+      return;
+    }
+
+    if (!useGuide) {
+      setError("Informe quando usar a tag.");
+      return;
+    }
+
+    setIsSavingTag(true);
+
+    try {
+      const nextTag = await apiCreateTag(getToken, {
+        name,
+        color: tagForm.color,
+        useGuide
+      });
+      setTags((current) => sortTags([...current, nextTag]));
+      setTagForm(emptyTagForm);
+      setNotice("Tag da IA criada.");
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "Não foi possível criar a tag.");
+    } finally {
+      setIsSavingTag(false);
+    }
+  }
+
+  async function toggleTagStatus(tag: TagDto) {
+    setError(null);
+    setNotice(null);
+    setSavingTagId(tag.id);
+
+    try {
+      const nextTag = await apiUpdateTag(getToken, tag.id, { isActive: !tag.isActive });
+      setTags((current) => sortTags(current.map((currentTag) => (
+        currentTag.id === nextTag.id ? nextTag : currentTag
+      ))));
+      setNotice(nextTag.isActive ? "Tag da IA ativada." : "Tag da IA desativada.");
+    } catch (toggleError) {
+      setError(toggleError instanceof Error ? toggleError.message : "Não foi possível atualizar a tag.");
+    } finally {
+      setSavingTagId(null);
     }
   }
 
@@ -597,6 +681,91 @@ export function SettingsPage() {
             </button>
           </div>
         </form>
+
+        <div className="module-panel">
+          <div className="panel-title-row">
+            <h2>Tags da IA</h2>
+            <span>{tags.length} tags</span>
+          </div>
+
+          <form className="module-form compact-form tag-settings-form" onSubmit={(event) => void createTag(event)}>
+            <label className="form-field">
+              Nome da tag
+              <input
+                autoComplete="off"
+                onChange={(event) => updateTagForm({ name: event.target.value })}
+                placeholder="Lead quente"
+                required
+                value={tagForm.name}
+              />
+            </label>
+
+            <label className="form-field">
+              Cor
+              <input
+                aria-label="Cor"
+                onChange={(event) => updateTagForm({ color: event.target.value })}
+                type="color"
+                value={tagForm.color}
+              />
+            </label>
+
+            <label className="form-field tag-settings-form__guide">
+              Quando usar
+              <textarea
+                onChange={(event) => updateTagForm({ useGuide: event.target.value })}
+                placeholder="Quando o cliente demonstrar intenção clara de compra."
+                required
+                rows={4}
+                value={tagForm.useGuide}
+              />
+            </label>
+
+            <div className="module-header-actions tag-settings-form__actions">
+              <button className="primary-button" type="submit" disabled={isSavingTag}>
+                <Save size={16} />
+                Criar tag
+              </button>
+            </div>
+          </form>
+
+          {tags.length === 0 ? (
+            <p className="list-note">Nenhuma tag global cadastrada.</p>
+          ) : (
+            <div className="settings-tag-list">
+              {tags.map((tag) => (
+                <div key={tag.id} className="settings-tag-row">
+                  <div className="settings-tag-row__main">
+                    <span
+                      className="settings-tag-swatch"
+                      style={{ backgroundColor: tag.color }}
+                      aria-hidden="true"
+                    />
+                    <div>
+                      <strong>{tag.name}</strong>
+                      <p>{tag.useGuide}</p>
+                    </div>
+                  </div>
+                  <div className="settings-tag-row__meta">
+                    <span className={`status-badge status-badge--${tag.isActive ? "open" : "waiting"}`}>
+                      {tag.isActive ? "Ativa" : "Inativa"}
+                    </span>
+                    <span>{tag.agentCount ?? 0} agentes</span>
+                    <span>{tag.conversationCount ?? 0} conversas</span>
+                  </div>
+                  <button
+                    className="secondary-button"
+                    disabled={savingTagId === tag.id}
+                    onClick={() => void toggleTagStatus(tag)}
+                    type="button"
+                  >
+                    {tag.isActive ? "Desativar" : "Ativar"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         <div className="module-panel">
           <div className="panel-title-row">
