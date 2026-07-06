@@ -69,6 +69,13 @@ type AgentAllowedTagDeleteManyArgs = Parameters<
 >[0];
 
 type AgentsTransactionPrismaLike = {
+  aiAgent: {
+    create(args: AgentCreateArgs): Promise<AiAgentRecord>;
+    update(args: AgentUpdateArgs): Promise<AiAgentRecord>;
+  };
+  tag: {
+    count(args: TagCountArgs): Promise<number>;
+  };
   aiAgentAllowedTag: {
     deleteMany(args: AgentAllowedTagDeleteManyArgs): Promise<unknown>;
     createMany(args: AgentAllowedTagCreateManyArgs): Promise<unknown>;
@@ -213,47 +220,72 @@ function validateAgentConfig(input: {
 }
 
 export function createAgentsService(prisma: AgentsPrismaLike) {
-  async function replaceAllowedTags(input: {
+  function normalizeAllowedTagIds(tagIds: string[]) {
+    return [...new Set(tagIds)];
+  }
+
+  async function assertAllowedTagsExist(input: {
+    tx: Pick<AgentsTransactionPrismaLike, "tag">;
+    workspaceId: string;
+    tagIds: string[];
+  }) {
+    if (input.tagIds.length === 0) {
+      return;
+    }
+
+    const existingActiveTags = await input.tx.tag.count({
+      where: {
+        workspaceId: input.workspaceId,
+        id: { in: input.tagIds },
+        isActive: true
+      }
+    });
+
+    if (existingActiveTags !== input.tagIds.length) {
+      throw new AgentsServiceError(
+        "AGENT_INVALID_CONFIG",
+        "Allowed tags must exist and be active."
+      );
+    }
+  }
+
+  async function createAllowedTags(input: {
+    tx: Pick<AgentsTransactionPrismaLike, "aiAgentAllowedTag">;
     workspaceId: string;
     agentId: string;
     tagIds: string[];
   }) {
-    const uniqueTagIds = [...new Set(input.tagIds)];
-
-    if (uniqueTagIds.length > 0) {
-      const existingActiveTags = await prisma.tag.count({
-        where: {
-          workspaceId: input.workspaceId,
-          id: { in: uniqueTagIds },
-          isActive: true
-        }
-      });
-
-      if (existingActiveTags !== uniqueTagIds.length) {
-        throw new AgentsServiceError(
-          "AGENT_INVALID_CONFIG",
-          "Allowed tags must exist and be active."
-        );
-      }
+    if (input.tagIds.length === 0) {
+      return;
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.aiAgentAllowedTag.deleteMany({
-        where: {
-          workspaceId: input.workspaceId,
-          agentId: input.agentId
-        }
-      });
+    await input.tx.aiAgentAllowedTag.createMany({
+      data: input.tagIds.map((tagId) => ({
+        workspaceId: input.workspaceId,
+        agentId: input.agentId,
+        tagId
+      }))
+    });
+  }
 
-      if (uniqueTagIds.length > 0) {
-        await tx.aiAgentAllowedTag.createMany({
-          data: uniqueTagIds.map((tagId) => ({
-            workspaceId: input.workspaceId,
-            agentId: input.agentId,
-            tagId
-          }))
-        });
+  async function replaceAllowedTags(input: {
+    tx: Pick<AgentsTransactionPrismaLike, "aiAgentAllowedTag">;
+    workspaceId: string;
+    agentId: string;
+    tagIds: string[];
+  }) {
+    await input.tx.aiAgentAllowedTag.deleteMany({
+      where: {
+        workspaceId: input.workspaceId,
+        agentId: input.agentId
       }
+    });
+
+    await createAllowedTags({
+      tx: input.tx,
+      workspaceId: input.workspaceId,
+      agentId: input.agentId,
+      tagIds: input.tagIds
     });
   }
 
@@ -296,8 +328,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       const allowedActions = input.allowedActions ?? ["send_message"];
       const status = input.status ?? "inactive";
       validateAgentConfig({ status, allowedActions });
-
-      const agent = await prisma.aiAgent.create({
+      const createArgs = {
         data: {
           workspaceId: input.workspaceId,
           name: input.name.trim(),
@@ -316,13 +347,26 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
           },
           allowedActions
         }
-      });
+      } satisfies AgentCreateArgs;
 
       if (input.allowedTagIds !== undefined) {
-        await replaceAllowedTags({
-          workspaceId: input.workspaceId,
-          agentId: agent.id,
-          tagIds: input.allowedTagIds
+        const uniqueTagIds = normalizeAllowedTagIds(input.allowedTagIds);
+        const agent = await prisma.$transaction(async (tx) => {
+          await assertAllowedTagsExist({
+            tx,
+            workspaceId: input.workspaceId,
+            tagIds: uniqueTagIds
+          });
+
+          const createdAgent = await tx.aiAgent.create(createArgs);
+          await createAllowedTags({
+            tx,
+            workspaceId: input.workspaceId,
+            agentId: createdAgent.id,
+            tagIds: uniqueTagIds
+          });
+
+          return createdAgent;
         });
 
         return toAgentDto(
@@ -333,6 +377,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
         );
       }
 
+      const agent = await prisma.aiAgent.create(createArgs);
       return toAgentDto(agent);
     },
 
@@ -355,7 +400,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       });
 
       const description = nullableTrim(input.data.description);
-      const agent = await prisma.aiAgent.update({
+      const updateArgs = {
         where: {
           workspaceId_id: {
             workspaceId: input.workspaceId,
@@ -374,18 +419,30 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
             : {})
         },
         include: agentInclude
-      });
+      } satisfies AgentUpdateArgs;
 
       if (input.data.allowedTagIds !== undefined) {
-        await replaceAllowedTags({
-          workspaceId: input.workspaceId,
-          agentId: input.agentId,
-          tagIds: input.data.allowedTagIds
+        const uniqueTagIds = normalizeAllowedTagIds(input.data.allowedTagIds);
+        await prisma.$transaction(async (tx) => {
+          await assertAllowedTagsExist({
+            tx,
+            workspaceId: input.workspaceId,
+            tagIds: uniqueTagIds
+          });
+
+          await tx.aiAgent.update(updateArgs);
+          await replaceAllowedTags({
+            tx,
+            workspaceId: input.workspaceId,
+            agentId: input.agentId,
+            tagIds: uniqueTagIds
+          });
         });
 
         return toAgentDto(await ensureAgent(input));
       }
 
+      const agent = await prisma.aiAgent.update(updateArgs);
       return toAgentDto(agent);
     },
 

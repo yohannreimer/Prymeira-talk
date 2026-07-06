@@ -101,7 +101,15 @@ function buildPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & AgentsPr
     $transaction: overrides.$transaction ?? vi.fn()
   } as MockPrisma & AgentsPrismaLike;
 
-  prisma.$transaction.mockImplementation(async (callback) => callback(prisma));
+  prisma.$transaction.mockImplementation(async (callback) => {
+    const tx = {
+      aiAgent: prisma.aiAgent,
+      tag: prisma.tag,
+      aiAgentAllowedTag: prisma.aiAgentAllowedTag
+    };
+
+    return callback(tx);
+  });
 
   return prisma;
 }
@@ -214,6 +222,37 @@ describe("createAgentsService", () => {
         allowedActions: ["send_message"]
       })
     });
+  });
+
+  it("rejects creating an agent with missing or inactive allowed tags before creating", async () => {
+    const prisma = buildPrisma({
+      tag: {
+        count: vi.fn().mockResolvedValue(1)
+      }
+    });
+    const service = createAgentsService(prisma);
+
+    await expect(
+      service.createAgent({
+        workspaceId: "workspace_a",
+        name: "Secretaria IA",
+        systemPrompt: "Atenda com clareza.",
+        allowedTagIds: [tagIdA, tagIdC]
+      })
+    ).rejects.toMatchObject({
+      code: "AGENT_INVALID_CONFIG",
+      message: "Allowed tags must exist and be active."
+    });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.tag.count).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        id: { in: [tagIdA, tagIdC] },
+        isActive: true
+      }
+    });
+    expect(prisma.aiAgent.create).not.toHaveBeenCalled();
+    expect(prisma.aiAgentAllowedTag.createMany).not.toHaveBeenCalled();
   });
 
   it("rejects activating an agent when allowedActions does not include send_message", async () => {
@@ -362,6 +401,23 @@ describe("createAgentsService", () => {
       }
     });
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.aiAgent.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: agentId
+        }
+      },
+      data: {},
+      include: expect.objectContaining({
+        allowedTags: expect.any(Object)
+      })
+    });
+    const transactionCallback = prisma.$transaction.mock.calls[0]?.[0];
+    expect(transactionCallback).toBeDefined();
+    expect(prisma.aiAgent.update.mock.invocationCallOrder[0]).toBeGreaterThan(
+      prisma.$transaction.mock.invocationCallOrder[0]
+    );
     expect(prisma.aiAgentAllowedTag.deleteMany).toHaveBeenCalledWith({
       where: {
         workspaceId: "workspace_a",
@@ -409,7 +465,47 @@ describe("createAgentsService", () => {
         isActive: true
       }
     });
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.aiAgentAllowedTag.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.aiAgentAllowedTag.createMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects updating fields with missing or inactive allowed tags before updating", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findMany: vi.fn().mockResolvedValue([]),
+        findFirst: vi.fn().mockResolvedValue(baseAgent),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue(baseAgent)
+      },
+      tag: {
+        count: vi.fn().mockResolvedValue(1)
+      }
+    });
+    const service = createAgentsService(prisma);
+
+    await expect(
+      service.updateAgent({
+        workspaceId: "workspace_a",
+        agentId,
+        data: {
+          name: "Novo nome",
+          allowedTagIds: [tagIdA, tagIdC]
+        }
+      })
+    ).rejects.toMatchObject({
+      code: "AGENT_INVALID_CONFIG",
+      message: "Allowed tags must exist and be active."
+    });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.tag.count).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        id: { in: [tagIdA, tagIdC] },
+        isActive: true
+      }
+    });
+    expect(prisma.aiAgent.update).not.toHaveBeenCalled();
     expect(prisma.aiAgentAllowedTag.deleteMany).not.toHaveBeenCalled();
     expect(prisma.aiAgentAllowedTag.createMany).not.toHaveBeenCalled();
   });
