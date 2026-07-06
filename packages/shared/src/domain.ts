@@ -170,6 +170,28 @@ export const conversationSchema = z.object({
 });
 export type ConversationDto = z.infer<typeof conversationSchema>;
 
+export const tagSchema = z.object({
+  id: z.string().min(1),
+  workspaceId: z.string().min(1),
+  name: z.string().min(1),
+  color: z.string().min(1),
+  useGuide: z.string(),
+  isActive: z.boolean(),
+  agentCount: z.number().int().min(0).optional(),
+  conversationCount: z.number().int().min(0).optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+export type TagDto = z.infer<typeof tagSchema>;
+
+export const agentAllowedTagSchema = tagSchema.pick({
+  id: true,
+  name: true,
+  color: true,
+  useGuide: true
+});
+export type AgentAllowedTagDto = z.infer<typeof agentAllowedTagSchema>;
+
 export const aiAgentSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
@@ -184,6 +206,7 @@ export const aiAgentSchema = z.object({
   handoffConfig: z.record(z.string(), z.unknown()),
   limitsConfig: z.record(z.string(), z.unknown()),
   allowedActions: z.array(aiAgentAllowedActionSchema),
+  allowedTags: z.array(agentAllowedTagSchema).default([]),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });

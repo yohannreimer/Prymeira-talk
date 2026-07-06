@@ -291,10 +291,13 @@ model Tag {
   workspaceId String   @map("workspace_id")
   name        String
   color       String
+  useGuide    String   @default("") @map("use_guide")
+  isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  conversations ConversationTag[]
+  conversations  ConversationTag[]
+  allowedAgents  AiAgentAllowedTag[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, name])
@@ -531,10 +534,25 @@ model AiAgent {
   sessions         AiAgentSession[]
   runs             AiAgentRun[]
   pendingReplies   AiAgentPendingReply[]
+  allowedTags      AiAgentAllowedTag[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status])
   @@map("ai_agents")
+}
+
+model AiAgentAllowedTag {
+  workspaceId String   @map("workspace_id")
+  agentId     String   @map("agent_id") @db.Uuid
+  tagId       String   @map("tag_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  agent AiAgent @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
+  tag   Tag     @relation(fields: [workspaceId, tagId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@id([workspaceId, agentId, tagId])
+  @@index([workspaceId, tagId])
+  @@map("ai_agent_allowed_tags")
 }
 
 model AiKnowledgeSource {

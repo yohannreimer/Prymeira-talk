@@ -12,7 +12,8 @@ import {
   conversationSchema,
   integrationModeSchema,
   messageSchema,
-  suiteModuleSchema
+  suiteModuleSchema,
+  tagSchema
 } from "./domain.js";
 import { realtimeEventSchema } from "./realtime";
 
@@ -138,6 +139,56 @@ describe("domain schemas", () => {
 
     expect(agent.providerMode).toBe("workspace_key");
     expect(agent.allowedActions).toEqual(["send_message", "add_tag", "create_internal_note"]);
+  });
+
+  it("parses workspace tag catalog DTOs", () => {
+    const tag = tagSchema.parse({
+      id: "tag_1",
+      workspaceId: "workspace_a",
+      name: "Lead quente",
+      color: "#2f6b57",
+      useGuide: "Quando o cliente pedir preço, proposta ou demonstração.",
+      isActive: true,
+      agentCount: 1,
+      conversationCount: 3,
+      createdAt: "2026-07-05T12:00:00.000Z",
+      updatedAt: "2026-07-05T12:00:00.000Z"
+    });
+
+    expect(tag.name).toBe("Lead quente");
+    expect(tag.useGuide).toContain("preço");
+  });
+
+  it("parses agents with selected allowed tags", () => {
+    const agent = aiAgentSchema.parse({
+      id: "agent_1",
+      workspaceId: "workspace_a",
+      name: "Prymeira Vendedora",
+      description: null,
+      status: "active",
+      providerMode: "prymeira_managed",
+      provider: "simulated",
+      model: "prymeira-simulated",
+      systemPrompt: "Atenda bem.",
+      behaviorConfig: {},
+      handoffConfig: {},
+      limitsConfig: {},
+      allowedActions: ["send_message", "add_tag"],
+      allowedTags: [
+        {
+          id: "tag_1",
+          name: "Lead quente",
+          color: "#2f6b57",
+          useGuide: "Quando o cliente pedir preço, proposta ou demonstração."
+        }
+      ],
+      createdAt: "2026-07-05T12:00:00.000Z",
+      updatedAt: "2026-07-05T12:00:00.000Z"
+    });
+
+    expect(agent.allowedTags).toEqual([
+      expect.objectContaining({ name: "Lead quente" })
+    ]);
   });
 
   it("accepts an AI session DTO with handoff requested status", () => {
