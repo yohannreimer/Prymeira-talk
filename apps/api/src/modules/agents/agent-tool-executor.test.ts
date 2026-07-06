@@ -69,6 +69,20 @@ const baseInput = {
     "change_priority",
     "create_internal_note",
     "request_handoff"
+  ] as const,
+  allowedTags: [
+    {
+      id: "tag_allowed_ai",
+      name: "Atendido pela IA",
+      color: "#24564a",
+      useGuide: "Use quando a IA respondeu ao cliente."
+    },
+    {
+      id: "tag_hot_lead",
+      name: "Lead quente",
+      color: "#f97316",
+      useGuide: "Use quando o cliente demonstrar intenção clara de compra."
+    }
   ] as const
 };
 
@@ -90,27 +104,19 @@ describe("executeAgentActions", () => {
       { type: "change_priority", status: "completed" },
       { type: "create_internal_note", status: "completed" }
     ]);
-    expect(prisma.tag.upsert).toHaveBeenCalledWith({
-      where: { workspaceId_name: { workspaceId: "workspace_a", name: "Atendido pela IA" } },
-      create: {
-        workspaceId: "workspace_a",
-        name: "Atendido pela IA",
-        color: "#24564a"
-      },
-      update: {}
-    });
+    expect(prisma.tag.upsert).not.toHaveBeenCalled();
     expect(prisma.conversationTag.upsert).toHaveBeenCalledWith({
       where: {
         workspaceId_conversationId_tagId: {
           workspaceId: "workspace_a",
           conversationId: "conv_1",
-          tagId: "tag_1"
+          tagId: "tag_allowed_ai"
         }
       },
       create: {
         workspaceId: "workspace_a",
         conversationId: "conv_1",
-        tagId: "tag_1"
+        tagId: "tag_allowed_ai"
       },
       update: {}
     });
@@ -262,14 +268,65 @@ describe("executeAgentActions", () => {
 
     await executeAgentActions(prisma, {
       ...baseInput,
-      actions: [{ type: "add_tag", name: "  Onboarding  " }]
+      actions: [{ type: "add_tag", name: "  Atendido pela IA  " }]
     });
 
-    expect(prisma.tag.upsert).toHaveBeenCalledWith(
+    expect(prisma.tag.upsert).not.toHaveBeenCalled();
+    expect(prisma.conversationTag.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { workspaceId_name: { workspaceId: "workspace_a", name: "Onboarding" } }
+        where: expect.objectContaining({
+          workspaceId_conversationId_tagId: expect.objectContaining({
+            tagId: "tag_allowed_ai"
+          })
+        })
       })
     );
+  });
+
+  it("matches allowed tag names ignoring case, accents, and extra spaces", async () => {
+    const prisma = buildPrisma();
+
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      actions: [{ type: "add_tag", tagName: " lead quente " }]
+    });
+
+    expect(results).toEqual([{ type: "add_tag", status: "completed" }]);
+    expect(prisma.tag.upsert).not.toHaveBeenCalled();
+    expect(prisma.conversationTag.upsert).toHaveBeenCalledWith({
+      where: {
+        workspaceId_conversationId_tagId: {
+          workspaceId: "workspace_a",
+          conversationId: "conv_1",
+          tagId: "tag_hot_lead"
+        }
+      },
+      create: {
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        tagId: "tag_hot_lead"
+      },
+      update: {}
+    });
+  });
+
+  it("skips add_tag when the requested tag is outside the agent allowed tag list", async () => {
+    const prisma = buildPrisma();
+
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      actions: [{ type: "add_tag", tagName: "VIP" }]
+    });
+
+    expect(results).toEqual([
+      {
+        type: "add_tag",
+        status: "skipped",
+        reason: "Agent tag VIP is not in this agent's allowed tag list."
+      }
+    ]);
+    expect(prisma.tag.upsert).not.toHaveBeenCalled();
+    expect(prisma.conversationTag.upsert).not.toHaveBeenCalled();
   });
 
   it("rejects actions missing type defensively", async () => {

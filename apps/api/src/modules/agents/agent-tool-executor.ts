@@ -9,6 +9,13 @@ type AgentAction = AgentOutput["actions"][number];
 type AgentActionType = AiAgentAllowedAction;
 type AgentActionResultType = AgentActionType | "unsupported";
 
+type AllowedAgentTag = {
+  id: string;
+  name: string;
+  color?: string | null;
+  useGuide?: string | null;
+};
+
 type ConversationRecord = {
   id: string;
   contactId: string;
@@ -112,6 +119,7 @@ export async function executeAgentActions(
     workspaceId: string;
     conversationId: string;
     allowedActions: readonly AiAgentAllowedAction[];
+    allowedTags?: readonly AllowedAgentTag[];
     actions: readonly AgentAction[];
     actorUserId?: string | null;
   }
@@ -199,6 +207,7 @@ async function executeNonSendAction(
   input: {
     workspaceId: string;
     conversationId: string;
+    allowedTags?: readonly AllowedAgentTag[];
     actorUserId?: string | null;
   },
   conversation: ConversationRecord,
@@ -237,7 +246,11 @@ async function executeNonSendAction(
 
 async function addTag(
   prisma: AgentToolExecutorPrismaLike,
-  input: { workspaceId: string; conversationId: string },
+  input: {
+    workspaceId: string;
+    conversationId: string;
+    allowedTags?: readonly AllowedAgentTag[];
+  },
   action: AgentAction
 ) {
   const name = getFirstString(action, ["tagName", "name", "tag", "label"])?.trim();
@@ -245,36 +258,40 @@ async function addTag(
     throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Tag name is required.");
   }
 
-  const tag = await prisma.tag.upsert({
-    where: {
-      workspaceId_name: {
-        workspaceId: input.workspaceId,
-        name
-      }
-    },
-    create: {
-      workspaceId: input.workspaceId,
-      name,
-      color: "#24564a"
-    },
-    update: {}
-  });
+  const allowedTag = (input.allowedTags ?? []).find(
+    (tag) => normalizeTagName(tag.name) === normalizeTagName(name)
+  );
+  if (!allowedTag) {
+    throw new AgentToolExecutionError(
+      "TOOL_INVALID_INPUT",
+      `Agent tag ${name} is not in this agent's allowed tag list.`
+    );
+  }
 
   await prisma.conversationTag.upsert({
     where: {
       workspaceId_conversationId_tagId: {
         workspaceId: input.workspaceId,
         conversationId: input.conversationId,
-        tagId: tag.id
+        tagId: allowedTag.id
       }
     },
     create: {
       workspaceId: input.workspaceId,
       conversationId: input.conversationId,
-      tagId: tag.id
+      tagId: allowedTag.id
     },
     update: {}
   });
+}
+
+function normalizeTagName(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
 }
 
 async function removeTag(

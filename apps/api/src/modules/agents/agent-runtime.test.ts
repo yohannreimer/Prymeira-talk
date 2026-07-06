@@ -30,7 +30,27 @@ const baseAgent = {
   behaviorConfig: {},
   handoffConfig: { confidenceThreshold: 0.55 },
   limitsConfig: { maxMessagesPerSession: 12 },
-  allowedActions: ["send_message", "add_tag", "request_handoff"]
+  allowedActions: ["send_message", "add_tag", "request_handoff"],
+  allowedTags: [
+    {
+      tag: {
+        id: "tag_allowed_ai",
+        name: "Atendido pela IA",
+        color: "#24564a",
+        useGuide: "Use quando a IA respondeu ao cliente.",
+        isActive: true
+      }
+    },
+    {
+      tag: {
+        id: "tag_inactive",
+        name: "Tag inativa",
+        color: "#6b7280",
+        useGuide: "Nao deve aparecer para o agente.",
+        isActive: false
+      }
+    }
+  ]
 };
 
 const baseConversation = {
@@ -229,6 +249,19 @@ describe("createAgentRuntime", () => {
     });
 
     expect(result).toEqual({ status: "completed", runId: ids.run });
+    expect(prisma.aiAgent.findFirst).toHaveBeenCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        id: ids.agent,
+        status: "active"
+      },
+      include: {
+        allowedTags: {
+          include: { tag: true },
+          orderBy: { tag: { name: "asc" } }
+        }
+      }
+    });
     expect(prisma.message.findMany).toHaveBeenCalledWith({
       where: {
         workspaceId: ids.workspace,
@@ -268,6 +301,14 @@ describe("createAgentRuntime", () => {
           ]),
           contact: expect.objectContaining({ name: "Maria", phone: "5511999999999" }),
           allowedActions: ["send_message", "add_tag", "request_handoff"],
+          allowedTags: [
+            {
+              id: "tag_allowed_ai",
+              name: "Atendido pela IA",
+              color: "#24564a",
+              useGuide: "Use quando a IA respondeu ao cliente."
+            }
+          ],
           tags: ["Lead"],
           knowledge: [
             {
@@ -299,6 +340,22 @@ describe("createAgentRuntime", () => {
         metadata: { source: "ai_agent", agentId: ids.agent }
       })
     });
+    expect(prisma.tag.upsert).not.toHaveBeenCalled();
+    expect(prisma.conversationTag.upsert).toHaveBeenCalledWith({
+      where: {
+        workspaceId_conversationId_tagId: {
+          workspaceId: ids.workspace,
+          conversationId: ids.conversation,
+          tagId: "tag_allowed_ai"
+        }
+      },
+      create: {
+        workspaceId: ids.workspace,
+        conversationId: ids.conversation,
+        tagId: "tag_allowed_ai"
+      },
+      update: {}
+    });
     expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         workspaceId: ids.workspace,
@@ -308,7 +365,11 @@ describe("createAgentRuntime", () => {
         model: "prymeira-simulated",
         status: "completed",
         confidence: 0.84,
-        contextSummary: expect.objectContaining({ knowledgeCount: 1, knowledgeTotal: 1 }),
+        contextSummary: expect.objectContaining({
+          allowedTagCount: 1,
+          knowledgeCount: 1,
+          knowledgeTotal: 1
+        }),
         knowledgeMatches: [
           expect.objectContaining({
             id: "knowledge_1",

@@ -250,7 +250,17 @@ describe("createOpenAiCompatibleAgentProvider", () => {
       model: "runtime-model",
       systemPrompt: "Você e o agente oficial.",
       userPrompt: "Qual o prazo?",
-      context: { selectedDocuments: [{ title: "Política", body: "Sem prazo definido." }] }
+      context: {
+        selectedDocuments: [{ title: "Política", body: "Sem prazo definido." }],
+        allowedTags: [
+          {
+            id: "tag_hot_lead",
+            name: "Lead quente",
+            color: "#f97316",
+            useGuide: "Use quando o cliente demonstrar intenção clara de compra."
+          }
+        ]
+      }
     });
 
     const [, init] = fetchMock.mock.calls[0] ?? [];
@@ -272,11 +282,24 @@ describe("createOpenAiCompatibleAgentProvider", () => {
     );
     expect(body.messages[0].content).toContain("respond only valid JSON");
     expect(body.messages[0].content).toContain("sources");
+    expect(body.messages[0].content).toContain("choose tagName only from context.allowedTags[].name");
+    expect(body.messages[0].content).toContain("if context.allowedTags is empty, do not call add_tag");
+    expect(body.messages[0].content).toContain("use create_internal_note for conversation-specific details");
     expect(body.messages[1]).toEqual({
       role: "user",
       content: JSON.stringify({
         userPrompt: "Qual o prazo?",
-        context: { selectedDocuments: [{ title: "Política", body: "Sem prazo definido." }] }
+        context: {
+          selectedDocuments: [{ title: "Política", body: "Sem prazo definido." }],
+          allowedTags: [
+            {
+              id: "tag_hot_lead",
+              name: "Lead quente",
+              color: "#f97316",
+              useGuide: "Use quando o cliente demonstrar intenção clara de compra."
+            }
+          ]
+        }
       })
     });
   });

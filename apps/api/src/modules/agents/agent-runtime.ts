@@ -39,6 +39,22 @@ type AiAgentRecord = {
   systemPrompt: string;
   handoffConfig: JsonValue;
   allowedActions: JsonValue;
+  allowedTags?: Array<{
+    tag?: {
+      id: string;
+      name: string;
+      color: string | null;
+      useGuide: string | null;
+      isActive: boolean;
+    } | null;
+  }>;
+};
+
+type AllowedAgentTag = {
+  id: string;
+  name: string;
+  color: string | null;
+  useGuide: string | null;
 };
 
 type ConversationRecord = {
@@ -135,6 +151,13 @@ type AgentRuntimeRealtime = {
   publish(event: unknown): void;
 };
 
+const agentInclude = {
+  allowedTags: {
+    include: { tag: true },
+    orderBy: { tag: { name: "asc" } }
+  }
+} as const;
+
 export function createAgentRuntime(input: {
   prisma: AgentRuntimePrismaLike;
   provider: AgentProvider;
@@ -158,7 +181,8 @@ export function createAgentRuntime(input: {
             workspaceId: runInput.workspaceId,
             id: runInput.agentId,
             status: "active"
-          }
+          },
+          include: agentInclude
         }),
         prisma.conversation.findUnique({
           where: {
@@ -258,7 +282,8 @@ export function createAgentRuntime(input: {
             workspaceId: runInput.workspaceId,
             id: runInput.agentId,
             status: "active"
-          }
+          },
+          include: agentInclude
         }),
         prisma.conversation.findUnique({
           where: {
@@ -416,6 +441,7 @@ export function createAgentRuntime(input: {
         ]);
 
         const allowedActions = readAllowedActions(agent.allowedActions);
+        const allowedTags = toAllowedTags(agent);
         const knowledgeSelection = selectRelevantKnowledge({
           latestMessage: message.body,
           conversationHistory: conversationContext.formattedHistory,
@@ -427,13 +453,15 @@ export function createAgentRuntime(input: {
           message,
           knowledgeSelection.selected,
           conversationContext,
-          allowedActions
+          allowedActions,
+          allowedTags
         );
         contextSummary = {
           contactId: conversation.contactId,
           contactName: conversation.contact?.name ?? null,
           channelId: conversation.channelId ?? conversation.channel?.id ?? null,
           tagCount: context.tags.length,
+          allowedTagCount: allowedTags.length,
           knowledgeCount: knowledgeSelection.selected.length,
           knowledgeTotal: knowledgeSelection.total,
           conversationMessageCount: conversationContext.messages.length
@@ -479,6 +507,7 @@ export function createAgentRuntime(input: {
           workspaceId: runInput.workspaceId,
           conversationId: conversation.id,
           allowedActions,
+          allowedTags,
           actions: providerOutput.actions
         });
 
@@ -669,6 +698,19 @@ function readAllowedActions(value: JsonValue): AiAgentAllowedAction[] {
   });
 }
 
+function toAllowedTags(agent: Pick<AiAgentRecord, "allowedTags">): AllowedAgentTag[] {
+  return (
+    agent.allowedTags
+      ?.filter((item) => item.tag?.isActive)
+      .map((item) => ({
+        id: item.tag!.id,
+        name: item.tag!.name,
+        color: item.tag!.color,
+        useGuide: item.tag!.useGuide
+      })) ?? []
+  );
+}
+
 function readConfidenceThreshold(value: JsonValue) {
   if (!isRecord(value)) {
     return 0.55;
@@ -687,13 +729,15 @@ function buildContext(
   message: MessageRecord,
   knowledge: Pick<SelectedKnowledgeSource, "title" | "content">[],
   conversationContext: ConversationContext,
-  allowedActions: readonly AiAgentAllowedAction[]
+  allowedActions: readonly AiAgentAllowedAction[],
+  allowedTags: readonly AllowedAgentTag[]
 ) {
   return {
     messageBody: message.body ?? "",
     conversationHistory: conversationContext.formattedHistory,
     conversationMessages: conversationContext.messages,
     allowedActions,
+    allowedTags,
     message: {
       id: message.id,
       type: message.type ?? null,

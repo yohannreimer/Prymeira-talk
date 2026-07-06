@@ -7,7 +7,27 @@ const baseAgent = {
   workspaceId: "workspace_a",
   model: "prymeira-simulated",
   systemPrompt: "Atenda como secretaria.",
-  handoffConfig: { confidenceThreshold: 0.55 }
+  handoffConfig: { confidenceThreshold: 0.55 },
+  allowedTags: [
+    {
+      tag: {
+        id: "tag_hot_lead",
+        name: "Lead quente",
+        color: "#f97316",
+        useGuide: "Use quando o cliente demonstrar intenção clara de compra.",
+        isActive: true
+      }
+    },
+    {
+      tag: {
+        id: "tag_inactive",
+        name: "Tag inativa",
+        color: "#6b7280",
+        useGuide: "Nao deve aparecer para o agente.",
+        isActive: false
+      }
+    }
+  ]
 };
 
 function buildProvider(output: Awaited<ReturnType<AgentProvider["generate"]>>): AgentProvider {
@@ -65,6 +85,18 @@ describe("createAgentTestChatService", () => {
       role: "assistant",
       content: "O plano profissional custa R$ 199 por mes."
     });
+    expect(prisma.aiAgent.findFirst).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        id: baseAgent.id
+      },
+      include: {
+        allowedTags: {
+          include: { tag: true },
+          orderBy: { tag: { name: "asc" } }
+        }
+      }
+    });
     expect(result.knowledgeMatches).toEqual([
       expect.objectContaining({
         id: "knowledge_price",
@@ -80,6 +112,7 @@ describe("createAgentTestChatService", () => {
       selectedKnowledgeCharacters: "Plano profissional custa R$ 199 por mes.".length,
       conversationMessages: 3,
       knowledgeMatches: result.knowledgeMatches,
+      allowedTags: ["Lead quente"],
       output: expect.objectContaining({
         confidence: 0.91,
         handoffRequired: false,
@@ -96,6 +129,14 @@ describe("createAgentTestChatService", () => {
           conversationMessages: expect.arrayContaining([
             expect.objectContaining({ role: "assistant", content: "Tudo bem, como posso ajudar?" })
           ]),
+          allowedTags: [
+            {
+              id: "tag_hot_lead",
+              name: "Lead quente",
+              color: "#f97316",
+              useGuide: "Use quando o cliente demonstrar intenção clara de compra."
+            }
+          ],
           knowledge: [
             {
               title: "Tabela de preços",

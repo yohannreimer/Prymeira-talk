@@ -507,7 +507,9 @@ function buildOpenAiCompatibleSystemPrompt(systemPrompt: string): string {
     "- if insufficient basis, request human handoff",
     "- use only supported action types from context.allowedActions",
     "- supported action type names are: send_message, add_tag, remove_tag, change_priority, create_internal_note, assign_user, assign_department, request_handoff",
-    "- for tags use {\"type\":\"add_tag\",\"tagName\":\"...\"}",
+    "- for tags use {\"type\":\"add_tag\",\"tagName\":\"...\"} and choose tagName only from context.allowedTags[].name",
+    "- if context.allowedTags is empty, do not call add_tag",
+    "- use create_internal_note for conversation-specific details that should not become a reusable tag",
     "- for internal notes use {\"type\":\"create_internal_note\",\"body\":\"...\"}",
     "- do not use action names like reply, respond_message, offer_handoff_to_sales, create_note, or add_contact_tag",
     '- required JSON shape: {"confidence": number between 0 and 1, "reply": string or null, "actions": array of objects with "type", "handoff": {"required": boolean, "reason": string or null}, "sources": array of cited selected documents or empty array}'

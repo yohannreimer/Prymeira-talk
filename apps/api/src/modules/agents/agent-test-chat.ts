@@ -22,6 +22,22 @@ type AgentRecord = {
   model: string;
   systemPrompt: string;
   handoffConfig?: JsonValue;
+  allowedTags?: Array<{
+    tag?: {
+      id: string;
+      name: string;
+      color: string | null;
+      useGuide: string | null;
+      isActive: boolean;
+    } | null;
+  }>;
+};
+
+type AllowedAgentTag = {
+  id: string;
+  name: string;
+  color: string | null;
+  useGuide: string | null;
 };
 
 type KnowledgeSourceRecord = {
@@ -51,6 +67,7 @@ export type AgentTestChatDebug = {
   selectedKnowledgeCharacters: number;
   conversationMessages: number;
   conversationCharacters: number;
+  allowedTags: string[];
   knowledgeMatches: Array<Record<string, unknown>>;
   output?: {
     confidence: number;
@@ -85,6 +102,13 @@ export class AgentTestChatError extends Error {
   }
 }
 
+const agentInclude = {
+  allowedTags: {
+    include: { tag: true },
+    orderBy: { tag: { name: "asc" } }
+  }
+} as const;
+
 export function createAgentTestChatService(input: {
   prisma: AgentTestChatPrismaLike;
   provider: AgentProvider;
@@ -110,7 +134,8 @@ export function createAgentTestChatService(input: {
         where: {
           workspaceId: runInput.workspaceId,
           id: runInput.agentId
-        }
+        },
+        include: agentInclude
       });
 
       if (!agent) {
@@ -141,6 +166,7 @@ export function createAgentTestChatService(input: {
         reasons: source.reasons,
         includedAs: source.includedAs
       }));
+      const allowedTags = toAllowedTags(agent);
 
       const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
         workspaceId: runInput.workspaceId
@@ -160,6 +186,7 @@ export function createAgentTestChatService(input: {
         ),
         conversationMessages: runInput.messages.length,
         conversationCharacters: conversationHistory.length,
+        allowedTags: allowedTags.map((tag) => tag.name),
         knowledgeMatches
       };
 
@@ -180,6 +207,7 @@ export function createAgentTestChatService(input: {
               messageBody: latestUserMessage.content,
               conversationHistory,
               conversationMessages: runInput.messages,
+              allowedTags,
               testMode: true,
               knowledge: knowledgeSelection.selected.map((source) => ({
                 title: source.title,
@@ -253,6 +281,19 @@ function toRetrievalSource(source: KnowledgeSourceRecord): KnowledgeRetrievalSou
     content: source.content,
     metadata: isRecord(source.metadata) ? source.metadata : null
   };
+}
+
+function toAllowedTags(agent: Pick<AgentRecord, "allowedTags">): AllowedAgentTag[] {
+  return (
+    agent.allowedTags
+      ?.filter((item) => item.tag?.isActive)
+      .map((item) => ({
+        id: item.tag!.id,
+        name: item.tag!.name,
+        color: item.tag!.color,
+        useGuide: item.tag!.useGuide
+      })) ?? []
+  );
 }
 
 function isRecord(value: JsonValue): value is Record<string, unknown> {
