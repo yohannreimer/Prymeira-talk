@@ -2506,11 +2506,16 @@ select:disabled {
   gap: 10px;
 }
 
+.settings-tag-row__main > div {
+  min-width: 0;
+}
+
 .settings-tag-row__main strong,
 .settings-tag-row__main p {
   display: block;
   min-width: 0;
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .settings-tag-row__main strong {
@@ -5505,6 +5510,19 @@ select:disabled {
 
   .module-page {
     padding: 20px;
+  }
+
+  .settings-tag-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .settings-tag-row__meta {
+    justify-content: flex-start;
+  }
+
+  .settings-tag-row > .secondary-button {
+    justify-self: flex-start;
   }
 
   .module-header {

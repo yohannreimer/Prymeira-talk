@@ -435,8 +435,8 @@ export function SettingsPage() {
         </div>
       </header>
 
-      {error ? <p className="error-note">{error}</p> : null}
-      {notice ? <p className="success-note">{notice}</p> : null}
+      {error ? <p className="error-note" role="alert">{error}</p> : null}
+      {notice ? <p className="success-note" role="status" aria-live="polite">{notice}</p> : null}
 
       <div className="ops-grid">
         <div className="module-panel">
