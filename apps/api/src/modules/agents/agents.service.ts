@@ -127,6 +127,7 @@ function toAgentDto(record: AiAgentRecord): AiAgentDto {
     handoffConfig: toRecord(record.handoffConfig),
     limitsConfig: toRecord(record.limitsConfig),
     allowedActions: readAllowedActions(record.allowedActions),
+    allowedTags: [],
     createdAt: toIsoString(record.createdAt),
     updatedAt: toIsoString(record.updatedAt)
   };

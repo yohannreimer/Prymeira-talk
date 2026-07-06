@@ -23,6 +23,7 @@ import { metaWebhooksRoutes } from "./modules/meta/meta.webhooks.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 import { reportsRoutes } from "./modules/reports/reports.routes.js";
 import { settingsRoutes } from "./modules/settings/settings.routes.js";
+import { tagsRoutes } from "./modules/tags/tags.routes.js";
 import { teamRoutes } from "./modules/team/team.routes.js";
 import { quickRepliesRoutes } from "./modules/quick-replies/quick-replies.routes.js";
 import { uploadsRoutes } from "./modules/uploads/uploads.routes.js";
@@ -156,6 +157,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(campaignsRoutes, { evolution: evolutionRuntime });
   await app.register(reportsRoutes);
   await app.register(teamRoutes);
+  await app.register(tagsRoutes);
   await app.register(agentsRoutes);
   await app.register(assistantRoutes);
   await app.register(crmRoutes, {
