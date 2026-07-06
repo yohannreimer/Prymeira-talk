@@ -18,6 +18,20 @@ vi.mock("../../app/api", () => ({
   apiCreateAgentKnowledge: vi.fn(),
   apiGetAgentKnowledge: vi.fn(),
   apiGetAgents: vi.fn(async () => []),
+  apiGetTags: vi.fn(async () => [
+    {
+      id: "tag-1",
+      workspaceId: "workspace-1",
+      name: "Lead quente",
+      color: "#2f6b57",
+      useGuide: "Quando o cliente pedir preço, proposta ou demonstração.",
+      isActive: true,
+      agentCount: 1,
+      conversationCount: 3,
+      createdAt: "2026-07-05T12:00:00.000Z",
+      updatedAt: "2026-07-05T12:00:00.000Z"
+    }
+  ]),
   apiSendAgentTestChatMessage: vi.fn(),
   apiUpdateAgent: vi.fn(),
   apiUploadAgentKnowledge: vi.fn()
@@ -37,6 +51,8 @@ describe("AgentsPage", () => {
     expect(html).toContain("Inativo");
     expect(html).toContain("Ativo");
     expect(html).toContain("Prompt do sistema");
+    expect(html).toContain("Tags permitidas");
+    expect(html).toContain("Selecione as tags que este agente pode aplicar.");
     expect(html).toContain("Teste do agente");
     expect(html).toContain("Mensagem de teste");
     expect(html).toContain("Resetar teste");

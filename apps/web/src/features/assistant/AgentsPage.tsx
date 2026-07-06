@@ -4,6 +4,7 @@ import {
   apiCreateAgentKnowledge,
   apiGetAgentKnowledge,
   apiGetAgents,
+  apiGetTags,
   apiSendAgentTestChatMessage,
   apiUpdateAgent,
   apiUploadAgentKnowledge,
@@ -11,7 +12,8 @@ import {
   type AgentTestChatMessageDto,
   type AiAgentAllowedAction,
   type AiAgentDto,
-  type AiKnowledgeSourceDto
+  type AiKnowledgeSourceDto,
+  type TagDto
 } from "../../app/api";
 import {
   BookOpen,
@@ -43,6 +45,7 @@ type AgentFormState = {
   name: string;
   status: AiAgentDto["status"];
   systemPrompt: string;
+  allowedTagIds: string[];
 };
 
 type KnowledgeFormState = {
@@ -86,7 +89,17 @@ function emptyAgentForm(): AgentFormState {
   return {
     name: "Agente de atendimento",
     status: "inactive",
-    systemPrompt: defaultSystemPrompt
+    systemPrompt: defaultSystemPrompt,
+    allowedTagIds: []
+  };
+}
+
+function agentFormFromAgent(agent: AiAgentDto): AgentFormState {
+  return {
+    name: agent.name,
+    status: agent.status,
+    systemPrompt: agent.systemPrompt,
+    allowedTagIds: agent.allowedTags.map((tag) => tag.id)
   };
 }
 
@@ -166,6 +179,7 @@ function formatAgentTestDebug(debug: AgentTestDebugState) {
 export function AgentsPage() {
   const { getToken } = useTalkAuth();
   const [agents, setAgents] = useState<AiAgentDto[]>([]);
+  const [tags, setTags] = useState<TagDto[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [agentForm, setAgentForm] = useState<AgentFormState>(emptyAgentForm);
   const [knowledge, setKnowledge] = useState<AiKnowledgeSourceDto[]>([]);
@@ -195,8 +209,12 @@ export function AgentsPage() {
     setError(null);
 
     try {
-      const loadedAgents = await apiGetAgents(getToken);
+      const [loadedAgents, loadedTags] = await Promise.all([
+        apiGetAgents(getToken),
+        apiGetTags(getToken)
+      ]);
       setAgents(loadedAgents);
+      setTags(loadedTags.filter((tag) => tag.isActive));
 
       if (selectedAgentId && loadedAgents.some((agent) => agent.id === selectedAgentId)) {
         return;
@@ -204,11 +222,7 @@ export function AgentsPage() {
 
       const firstAgent = loadedAgents[0] ?? null;
       setSelectedAgentId(firstAgent?.id ?? null);
-      setAgentForm(firstAgent ? {
-        name: firstAgent.name,
-        status: firstAgent.status,
-        systemPrompt: firstAgent.systemPrompt
-      } : emptyAgentForm());
+      setAgentForm(firstAgent ? agentFormFromAgent(firstAgent) : emptyAgentForm());
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar agentes.");
     } finally {
@@ -255,11 +269,7 @@ export function AgentsPage() {
 
   function selectAgent(agent: AiAgentDto) {
     setSelectedAgentId(agent.id);
-    setAgentForm({
-      name: agent.name,
-      status: agent.status,
-      systemPrompt: agent.systemPrompt
-    });
+    setAgentForm(agentFormFromAgent(agent));
     setTestMessages([]);
     setTestMessageBody("");
     setTestDebug(null);
@@ -278,10 +288,12 @@ export function AgentsPage() {
         const updatedAgent = await apiUpdateAgent(getToken, selectedAgent.id, {
           name: agentForm.name,
           status: agentForm.status,
-          systemPrompt: agentForm.systemPrompt
+          systemPrompt: agentForm.systemPrompt,
+          allowedTagIds: agentForm.allowedTagIds
         });
 
         setAgents((current) => current.map((agent) => agent.id === updatedAgent.id ? updatedAgent : agent));
+        setAgentForm(agentFormFromAgent(updatedAgent));
         setNotice("Agente atualizado.");
         return;
       }
@@ -290,16 +302,13 @@ export function AgentsPage() {
         name: agentForm.name,
         status: agentForm.status,
         systemPrompt: agentForm.systemPrompt,
-        allowedActions: defaultAllowedActions
+        allowedActions: defaultAllowedActions,
+        allowedTagIds: agentForm.allowedTagIds
       });
 
       setAgents((current) => [createdAgent, ...current]);
       setSelectedAgentId(createdAgent.id);
-      setAgentForm({
-        name: createdAgent.name,
-        status: createdAgent.status,
-        systemPrompt: createdAgent.systemPrompt
-      });
+      setAgentForm(agentFormFromAgent(createdAgent));
       setNotice("Agente criado.");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Não foi possível salvar o agente.");
@@ -424,6 +433,15 @@ export function AgentsPage() {
     setNotice(null);
   }
 
+  function toggleAllowedTag(tagId: string) {
+    setAgentForm((current) => ({
+      ...current,
+      allowedTagIds: current.allowedTagIds.includes(tagId)
+        ? current.allowedTagIds.filter((currentTagId) => currentTagId !== tagId)
+        : [...current.allowedTagIds, tagId]
+    }));
+  }
+
   return (
     <section className="module-page" aria-label="Agentes">
       <header className="module-header">
@@ -530,6 +548,48 @@ export function AgentsPage() {
                 rows={7}
               />
             </label>
+            <section className="agent-tag-selector" aria-label="Tags permitidas">
+              <div className="panel-title-row compact">
+                <div>
+                  <h3>Tags permitidas</h3>
+                  <p>Selecione as tags que este agente pode aplicar.</p>
+                </div>
+                <span>{agentForm.allowedTagIds.length} selecionadas</span>
+              </div>
+
+              {tags.length === 0 ? (
+                <p className="list-note">Crie tags em Ajustes antes de selecionar.</p>
+              ) : (
+                <div className="tag-option-grid">
+                  {tags.map((tag) => {
+                    const isSelected = agentForm.allowedTagIds.includes(tag.id);
+
+                    return (
+                      <label
+                        className={`tag-option-card${isSelected ? " is-selected" : ""}`}
+                        key={tag.id}
+                        style={isSelected ? { borderColor: tag.color } : undefined}
+                      >
+                        <input
+                          checked={isSelected}
+                          onChange={() => toggleAllowedTag(tag.id)}
+                          type="checkbox"
+                        />
+                        <span
+                          className="settings-tag-swatch"
+                          style={{ backgroundColor: tag.color }}
+                          aria-hidden="true"
+                        />
+                        <span className="tag-option-card__body">
+                          <strong style={{ color: tag.color }}>{tag.name}</strong>
+                          <span>{tag.useGuide}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
             <button className="primary-button" type="submit" disabled={isSavingAgent}>
               <Save size={15} />
               {isSavingAgent ? "Salvando" : selectedAgent ? "Salvar alterações" : "Criar agente"}
