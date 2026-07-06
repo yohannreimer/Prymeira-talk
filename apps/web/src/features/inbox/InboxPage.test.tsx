@@ -9,6 +9,7 @@ import {
   messageDisplayText,
   messageMediaKind,
   messageMediaLabel,
+  needsHumanAttention,
   outboundStatusLabel
 } from "./InboxPage";
 import { quickReplyMatchesQuery, quickReplyMutationErrorMessage } from "./QuickRepliesPopover";
@@ -35,6 +36,30 @@ describe("AI control helpers", () => {
   it("chooses the correct AI control action label", () => {
     expect(aiControlActionLabel({ aiControlStatus: "human_controlled" })).toBe("Liberar IA");
     expect(aiControlActionLabel({ aiControlStatus: "agent_allowed" })).toBe("Assumir");
+  });
+
+  it("detects conversations that need human attention", () => {
+    expect(
+      needsHumanAttention({
+        aiControlStatus: "human_controlled",
+        activeAgentSessionStatus: "handoff_requested",
+        handoffReason: "Baixa confiança"
+      })
+    ).toBe(true);
+    expect(
+      needsHumanAttention({
+        aiControlStatus: "human_controlled",
+        activeAgentSessionStatus: null,
+        handoffReason: "Cliente pediu atendimento humano"
+      })
+    ).toBe(true);
+    expect(
+      needsHumanAttention({
+        aiControlStatus: "agent_allowed",
+        activeAgentSessionStatus: "active",
+        handoffReason: null
+      })
+    ).toBe(false);
   });
 });
 

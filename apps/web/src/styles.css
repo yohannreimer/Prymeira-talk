@@ -4345,6 +4345,15 @@ select:disabled {
   background: var(--color-brand-50);
 }
 
+.conversation-card.needs-human-attention {
+  background: #fff7df;
+  box-shadow: 0 0 0 1px rgba(178, 116, 23, 0.26), var(--shadow-card-hover);
+}
+
+.conversation-card.needs-human-attention .conversation-avatar {
+  background: #8a5b12;
+}
+
 .conv-avatar-wrap {
   position: relative;
   flex-shrink: 0;
@@ -4401,6 +4410,16 @@ select:disabled {
   font-weight: 600;
   background: var(--color-brand-50);
   color: var(--color-brand-600);
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+.conv-human-tag {
+  font-size: 10px;
+  font-weight: 800;
+  background: #ffe9a8;
+  color: #76500f;
   padding: 1px 7px;
   border-radius: var(--radius-full);
   white-space: nowrap;
@@ -5224,12 +5243,29 @@ select:disabled {
   gap: 10px;
 }
 
+.notes-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.context-note {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle);
+  padding: 8px 10px;
+}
+
 .notes-list p {
+  margin: 0;
   color: #293c35;
   font-size: 0.86rem;
+  line-height: 1.35;
 }
 
 .notes-list time {
+  display: block;
+  margin-top: 4px;
   color: #788880;
   font-size: 0.72rem;
 }

@@ -24,7 +24,7 @@ import {
   type AgentOutput,
   type AgentProvider
 } from "./provider-gateway.js";
-import { toMessageDto } from "../conversations/conversations.service.js";
+import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 
 type JsonValue = unknown;
@@ -538,6 +538,8 @@ export function createAgentRuntime(input: {
           }
         });
 
+        await publishConversationUpdated(runInput.workspaceId, conversation.id);
+
         const run = await createRun({
           workspaceId: runInput.workspaceId,
           agentId: agent.id,
@@ -578,6 +580,45 @@ export function createAgentRuntime(input: {
       }
     }
   };
+
+  async function publishConversationUpdated(workspaceId: string, conversationId: string) {
+    if (!input.realtime) {
+      return;
+    }
+
+    const updatedConversation = await prisma.conversation.findUnique({
+      where: {
+        workspaceId_id: {
+          workspaceId,
+          id: conversationId
+        }
+      },
+      include: {
+        assignedUser: { select: { displayName: true } },
+        channel: { select: { displayName: true, phoneNumber: true, provider: true } },
+        contact: { select: { name: true, phone: true } },
+        department: { select: { name: true } },
+        activeAgentSession: {
+          select: {
+            status: true,
+            handoffReason: true,
+            agent: { select: { name: true } }
+          }
+        },
+        tags: { include: { tag: true } }
+      }
+    });
+
+    if (!updatedConversation) {
+      return;
+    }
+
+    input.realtime.publish({
+      type: "conversation.updated",
+      workspaceId,
+      payload: toConversationDto(updatedConversation as Parameters<typeof toConversationDto>[0])
+    });
+  }
 
   async function createRun(input: {
     workspaceId: string;

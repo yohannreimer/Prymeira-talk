@@ -73,6 +73,15 @@ export function aiControlActionLabel(conversation: Pick<ConversationDto, "aiCont
   return conversation.aiControlStatus === "human_controlled" ? "Liberar IA" : "Assumir";
 }
 
+export function needsHumanAttention(
+  conversation: Pick<ConversationDto, "aiControlStatus" | "activeAgentSessionStatus" | "handoffReason">
+) {
+  return (
+    conversation.activeAgentSessionStatus === "handoff_requested" ||
+    (conversation.aiControlStatus === "human_controlled" && Boolean(conversation.handoffReason))
+  );
+}
+
 function priorityLabel(priority: ConversationDto["priority"]) {
   const labels: Record<ConversationDto["priority"], string> = {
     low: "Baixa",
@@ -362,8 +371,11 @@ export function InboxPage() {
   const selectedConversationIdRef = useRef<string | null>(null);
   const conversationsRef = useRef<ConversationDto[]>([]);
   const messageThreadRef = useRef<HTMLDivElement | null>(null);
+  const pendingThreadScrollRef = useRef<ScrollBehavior | null>(null);
+  const userReadingHistoryRef = useRef(false);
   const draftTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [acknowledgedHandoffIds, setAcknowledgedHandoffIds] = useState<Set<string>>(() => new Set());
   const getFreshToken = useCallback(async () => {
     const nextToken = await getToken();
     setToken(nextToken);
@@ -378,13 +390,18 @@ export function InboxPage() {
     return thread.scrollHeight - thread.scrollTop - thread.clientHeight < 96;
   }
 
-  function scrollMessageThreadToBottom() {
+  function scrollMessageThreadToBottom(behavior: ScrollBehavior = "smooth") {
     const thread = messageThreadRef.current;
 
     if (!thread) return;
 
-    thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" });
+    thread.scrollTo({ top: thread.scrollHeight, behavior });
+    userReadingHistoryRef.current = false;
     setNewMessagesBelow(0);
+  }
+
+  function scheduleMessageThreadScroll(behavior: ScrollBehavior = "smooth") {
+    pendingThreadScrollRef.current = behavior;
   }
 
   function setDraftSelection(selectionStart: number, selectionEnd: number) {
@@ -538,7 +555,8 @@ export function InboxPage() {
 
         setMessages(nextMessages);
         setNewMessagesBelow(0);
-        window.requestAnimationFrame(scrollMessageThreadToBottom);
+        userReadingHistoryRef.current = false;
+        scheduleMessageThreadScroll("auto");
       } catch (loadError) {
         if (!isMounted) return;
         setMessageError(loadError instanceof Error ? loadError.message : "Não foi possível carregar mensagens.");
@@ -620,7 +638,7 @@ export function InboxPage() {
 
     if (event.type === "message.created") {
       const isSelectedConversation = event.payload.conversationId === selectedConversationIdRef.current;
-      const shouldStickToBottom = isMessageThreadNearBottom();
+      const shouldStickToBottom = isMessageThreadNearBottom() || !userReadingHistoryRef.current;
 
       setMessages((current) => {
         if (!isSelectedConversation) return current;
@@ -628,8 +646,8 @@ export function InboxPage() {
       });
 
       if (isSelectedConversation) {
-        if (shouldStickToBottom) {
-          window.requestAnimationFrame(scrollMessageThreadToBottom);
+        if (shouldStickToBottom || event.payload.direction === "outbound") {
+          scheduleMessageThreadScroll("smooth");
         } else if (event.payload.direction === "inbound") {
           setNewMessagesBelow((current) => current + 1);
         }
@@ -675,6 +693,20 @@ export function InboxPage() {
     if (event.type !== "conversation.updated") return;
 
     setConversations((current) => upsertConversation(current, event.payload));
+    if (event.payload.id === selectedConversationIdRef.current) {
+      refreshSelectedContext(event.payload.id);
+      if (needsHumanAttention(event.payload)) {
+        setAcknowledgedHandoffIds((current) => new Set(current).add(event.payload.id));
+      }
+    } else {
+      setAcknowledgedHandoffIds((current) => {
+        const next = new Set(current);
+        if (!needsHumanAttention(event.payload)) {
+          next.delete(event.payload.id);
+        }
+        return next;
+      });
+    }
 
     setSelectedConversationId((current) => current ?? event.payload.id);
   }, [refreshSelectedContext]);
@@ -713,6 +745,21 @@ export function InboxPage() {
     () => visibleConversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
     [visibleConversations, selectedConversationId]
   );
+
+  useEffect(() => {
+    if (!pendingThreadScrollRef.current) return;
+
+    const behavior = pendingThreadScrollRef.current;
+    pendingThreadScrollRef.current = null;
+
+    window.requestAnimationFrame(() => scrollMessageThreadToBottom(behavior));
+  }, [messages.length, selectedConversationId]);
+
+  useEffect(() => {
+    if (!selectedConversation || !needsHumanAttention(selectedConversation)) return;
+
+    setAcknowledgedHandoffIds((current) => new Set(current).add(selectedConversation.id));
+  }, [selectedConversation]);
 
   useEffect(() => {
     if (!selectedConversation || selectedConversation.unreadCount === 0) return;
@@ -776,7 +823,7 @@ export function InboxPage() {
           : conversation
       )
     );
-    window.requestAnimationFrame(scrollMessageThreadToBottom);
+    scheduleMessageThreadScroll("smooth");
 
     try {
       const createdMessage = await apiCreateConversationMessage(
@@ -880,7 +927,7 @@ export function InboxPage() {
           : conversation
       )
     );
-    window.requestAnimationFrame(scrollMessageThreadToBottom);
+    scheduleMessageThreadScroll("smooth");
 
     try {
       const createdMessage = await apiCreateConversationMessage(
@@ -1078,15 +1125,28 @@ export function InboxPage() {
           {!isLoading && visibleConversations.length === 0 ? (
             <p className="list-note">Nenhuma conversa encontrada para este canal.</p>
           ) : null}
-          {visibleConversations.map((conversation) => (
+          {visibleConversations.map((conversation) => {
+            const conversationNeedsHuman = needsHumanAttention(conversation);
+            const showHumanAttention =
+              conversationNeedsHuman &&
+              conversation.id !== selectedConversationId &&
+              !acknowledgedHandoffIds.has(conversation.id);
+
+            return (
             <button
               aria-label={`Abrir conversa com ${contactDisplayName(conversation)}`}
               className={[
                 "conversation-card",
-                conversation.id === selectedConversationId ? "is-selected" : ""
+                conversation.id === selectedConversationId ? "is-selected" : "",
+                showHumanAttention ? "needs-human-attention" : ""
               ].filter(Boolean).join(" ")}
               key={conversation.id}
-              onClick={() => setSelectedConversationId(conversation.id)}
+              onClick={() => {
+                setSelectedConversationId(conversation.id);
+                if (conversationNeedsHuman) {
+                  setAcknowledgedHandoffIds((current) => new Set(current).add(conversation.id));
+                }
+              }}
               type="button"
             >
               <div className="conv-avatar-wrap">
@@ -1100,6 +1160,9 @@ export function InboxPage() {
                     <strong>{contactDisplayName(conversation)}</strong>
                     {conversation.departmentName ? (
                       <span className="conv-dept-tag">{conversation.departmentName}</span>
+                    ) : null}
+                    {conversationNeedsHuman ? (
+                      <span className="conv-human-tag">Humano necessário</span>
                     ) : null}
                   </span>
                   <span className="conv-meta-right">
@@ -1117,7 +1180,8 @@ export function InboxPage() {
                 </span>
               </span>
             </button>
-          ))}
+            );
+          })}
         </div>
       </section>
 
@@ -1157,7 +1221,10 @@ export function InboxPage() {
             aria-label="Histórico da conversa"
             onScroll={() => {
               if (isMessageThreadNearBottom()) {
+                userReadingHistoryRef.current = false;
                 setNewMessagesBelow(0);
+              } else {
+                userReadingHistoryRef.current = true;
               }
             }}
             ref={messageThreadRef}
@@ -1192,7 +1259,11 @@ export function InboxPage() {
               </article>
             ))}
             {newMessagesBelow > 0 ? (
-              <button className="new-messages-pill" onClick={scrollMessageThreadToBottom} type="button">
+              <button
+                className="new-messages-pill"
+                onClick={() => scrollMessageThreadToBottom("smooth")}
+                type="button"
+              >
                 {newMessagesBelow === 1 ? "1 nova mensagem abaixo" : `${newMessagesBelow} novas mensagens abaixo`}
               </button>
             ) : null}
@@ -1427,6 +1498,18 @@ export function InboxPage() {
         <div className="context-card">
           <div className="context-card-title">Notas internas</div>
           {contextError ? <p className="error-note compact">{contextError}</p> : null}
+          {contactContext?.notes.length ? (
+            <div className="notes-list">
+              {contactContext.notes.map((note) => (
+                <article className="context-note" key={note.id}>
+                  <p>{note.body}</p>
+                  <time>{formatNoteDate(note.createdAt)}</time>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <span className="context-empty-label">Sem notas</span>
+          )}
           <form className="quick-note-form" onSubmit={handleAddNote}>
             <input
               aria-label="Nova nota"

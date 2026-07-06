@@ -38,8 +38,22 @@ const baseConversation = {
   workspaceId: ids.workspace,
   contactId: ids.contact,
   channelId: "00000000-0000-4000-8000-000000000801",
+  status: "open",
+  assignedUserId: null,
+  departmentId: null,
+  assignedUser: null,
+  department: null,
+  lastMessageAt: now,
+  lastMessagePreview: "Oi, quanto custa o plano profissional?",
+  unreadCount: 0,
+  priority: "normal",
   aiControlStatus: "agent_allowed",
   activeAgentSessionId: null,
+  activeAgentSession: {
+    status: "active",
+    handoffReason: null,
+    agent: { name: "Secretaria IA" }
+  },
   contact: {
     id: ids.contact,
     name: "Maria",
@@ -49,6 +63,8 @@ const baseConversation = {
   },
   channel: {
     id: "00000000-0000-4000-8000-000000000801",
+    displayName: "WhatsApp",
+    phoneNumber: "5511888888888",
     provider: "evolution",
     providerKey: "instancia"
   },
@@ -503,6 +519,15 @@ describe("createAgentRuntime", () => {
         direction: "outbound",
         body: "O plano profissional custa R$ 199 por mes.",
         status: "sent"
+      })
+    });
+    expect(realtime.publish).toHaveBeenCalledWith({
+      type: "conversation.updated",
+      workspaceId: ids.workspace,
+      payload: expect.objectContaining({
+        id: ids.conversation,
+        activeAgentName: "Secretaria IA",
+        lastMessagePreview: "Oi, quanto custa o plano profissional?"
       })
     });
   });
