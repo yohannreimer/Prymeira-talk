@@ -11,6 +11,8 @@ import {
   contactSchema,
   conversationSchema,
   messageSchema,
+  tagSchema,
+  type AgentAllowedTagDto,
   type AiAgentAllowedAction,
   type AiAgentDto,
   type AiKnowledgeSourceDto,
@@ -23,11 +25,18 @@ import {
   type ContactBoardStageDto,
   type ContactDto,
   type ConversationDto,
-  type MessageDto
+  type MessageDto,
+  type TagDto
 } from "@prymeira-talk/shared";
 import { readConfigValue } from "./runtime-config";
 
-export type { AiAgentAllowedAction, AiAgentDto, AiKnowledgeSourceDto } from "@prymeira-talk/shared";
+export type {
+  AgentAllowedTagDto,
+  AiAgentAllowedAction,
+  AiAgentDto,
+  AiKnowledgeSourceDto,
+  TagDto
+} from "@prymeira-talk/shared";
 
 const apiUrl = readConfigValue("VITE_API_URL") ?? "http://localhost:3002";
 const localAuthBypass = readConfigValue("VITE_LOCAL_AUTH_BYPASS") === "true";
@@ -883,6 +892,10 @@ function parseAssistantAction(data: unknown): AssistantActionDto {
 
 function parseAgent(data: unknown): AiAgentDto {
   return aiAgentSchema.parse(data);
+}
+
+export function parseTag(data: unknown): TagDto {
+  return tagSchema.parse(data);
 }
 
 function parseKnowledgeSource(data: unknown): AiKnowledgeSourceDto {
@@ -2288,6 +2301,61 @@ export async function apiCreateAssistantAction(
   );
 }
 
+export async function apiGetTags(
+  getToken: () => Promise<string | null>
+): Promise<TagDto[]> {
+  return fetchJson(
+    getToken,
+    "/tags",
+    {},
+    (data) => tagSchema.array().parse(data),
+    "Failed to load tags"
+  );
+}
+
+export async function apiCreateTag(
+  getToken: () => Promise<string | null>,
+  body: {
+    name: string;
+    color: string;
+    useGuide: string;
+    isActive?: boolean;
+  }
+): Promise<TagDto> {
+  return fetchJson(
+    getToken,
+    "/tags",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseTag,
+    "Failed to create tag"
+  );
+}
+
+export async function apiUpdateTag(
+  getToken: () => Promise<string | null>,
+  tagId: string,
+  body: Partial<{
+    name: string;
+    color: string;
+    useGuide: string;
+    isActive: boolean;
+  }>
+): Promise<TagDto> {
+  return fetchJson(
+    getToken,
+    `/tags/${tagId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    },
+    parseTag,
+    "Failed to update tag"
+  );
+}
+
 export async function apiGetAgents(
   getToken: () => Promise<string | null>
 ): Promise<AiAgentDto[]> {
@@ -2308,6 +2376,7 @@ export async function apiCreateAgent(
     status?: AiAgentDto["status"];
     systemPrompt: string;
     allowedActions?: AiAgentAllowedAction[];
+    allowedTagIds?: string[];
   }
 ): Promise<AiAgentDto> {
   return fetchJson(
@@ -2330,6 +2399,7 @@ export async function apiUpdateAgent(
     description: string | null;
     systemPrompt: string;
     allowedActions: AiAgentAllowedAction[];
+    allowedTagIds: string[];
     status: AiAgentDto["status"];
   }>
 ): Promise<AiAgentDto> {

@@ -233,3 +233,174 @@ describe("board administration API helpers", () => {
     );
   });
 });
+
+describe("tag catalog API helpers", () => {
+  const tag = {
+    id: "tag-1",
+    workspaceId: "workspace_a",
+    name: "Lead quente",
+    color: "#2f6b57",
+    useGuide: "Quando o cliente pedir preço ou demonstração.",
+    isActive: true,
+    agentCount: 1,
+    conversationCount: 3,
+    createdAt: "2026-07-05T12:00:00.000Z",
+    updatedAt: "2026-07-05T12:00:00.000Z"
+  };
+
+  it("calls tag catalog endpoints with correct methods and parses responses", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([tag]), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ...tag, name: "Aguardando comercial" }), {
+          status: 201,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ...tag, isActive: false }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+
+    const { apiCreateTag, apiGetTags, apiUpdateTag } = await import("./api");
+
+    await expect(apiGetTags(async () => null)).resolves.toEqual([tag]);
+    await expect(
+      apiCreateTag(async () => null, {
+        name: "Aguardando comercial",
+        color: "#7c3aed",
+        useGuide: "Quando precisa de atendimento humano.",
+        isActive: true
+      })
+    ).resolves.toMatchObject({ name: "Aguardando comercial" });
+    await expect(
+      apiUpdateTag(async () => null, "tag-1", {
+        isActive: false
+      })
+    ).resolves.toMatchObject({ id: "tag-1", isActive: false });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:3002/tags",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer local-dev-bypass" })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:3002/tags",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "Aguardando comercial",
+          color: "#7c3aed",
+          useGuide: "Quando precisa de atendimento humano.",
+          isActive: true
+        })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "http://localhost:3002/tags/tag-1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ isActive: false })
+      })
+    );
+  });
+});
+
+describe("agent API helpers", () => {
+  const agent = {
+    id: "agent-1",
+    workspaceId: "workspace_a",
+    name: "Prymeira Vendedora",
+    description: null,
+    status: "active",
+    providerMode: "prymeira_managed",
+    provider: "simulated",
+    model: "prymeira-simulated",
+    systemPrompt: "Atenda bem.",
+    behaviorConfig: {},
+    handoffConfig: {},
+    limitsConfig: {},
+    allowedActions: ["send_message", "add_tag"],
+    allowedTags: [
+      {
+        id: "tag-1",
+        name: "Lead quente",
+        color: "#2f6b57",
+        useGuide: "Quando o cliente pedir preço ou demonstração."
+      }
+    ],
+    createdAt: "2026-07-05T12:00:00.000Z",
+    updatedAt: "2026-07-05T12:00:00.000Z"
+  };
+
+  it("sends allowed tag ids through create and update agent bodies", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(agent), {
+          status: 201,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(agent), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+
+    const { apiCreateAgent, apiUpdateAgent } = await import("./api");
+
+    await apiCreateAgent(async () => null, {
+      name: "Prymeira Vendedora",
+      systemPrompt: "Atenda bem.",
+      allowedActions: ["send_message", "add_tag"],
+      allowedTagIds: ["tag-1", "tag-2"]
+    });
+    await apiUpdateAgent(async () => null, "agent-1", {
+      allowedTagIds: ["tag-2"]
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:3002/agents",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "Prymeira Vendedora",
+          systemPrompt: "Atenda bem.",
+          allowedActions: ["send_message", "add_tag"],
+          allowedTagIds: ["tag-1", "tag-2"]
+        })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:3002/agents/agent-1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ allowedTagIds: ["tag-2"] })
+      })
+    );
+  });
+});
