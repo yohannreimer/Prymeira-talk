@@ -216,7 +216,12 @@ export function AgentsPage() {
       setAgents(loadedAgents);
       setTags(loadedTags.filter((tag) => tag.isActive));
 
-      if (selectedAgentId && loadedAgents.some((agent) => agent.id === selectedAgentId)) {
+      const refreshedSelectedAgent = selectedAgentId
+        ? loadedAgents.find((agent) => agent.id === selectedAgentId) ?? null
+        : null;
+
+      if (refreshedSelectedAgent) {
+        setAgentForm(agentFormFromAgent(refreshedSelectedAgent));
         return;
       }
 
