@@ -296,19 +296,37 @@ function normalizeTagName(value: string) {
 
 async function removeTag(
   prisma: AgentToolExecutorPrismaLike,
-  input: { workspaceId: string; conversationId: string },
+  input: {
+    workspaceId: string;
+    conversationId: string;
+    allowedTags?: readonly AllowedAgentTag[];
+  },
   action: AgentAction
 ) {
-  const tagId = getFirstString(action, ["tagId", "id"])?.trim();
-  if (!tagId) {
-    throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Tag ID is required.");
+  const requestedTagId = getFirstString(action, ["tagId", "id"])?.trim();
+  const requestedTagName = getFirstString(action, ["tagName", "name", "tag", "label"])?.trim();
+  const requestedTag = requestedTagId || requestedTagName;
+  if (!requestedTag) {
+    throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Tag ID or name is required.");
+  }
+
+  const allowedTag = requestedTagId
+    ? (input.allowedTags ?? []).find((tag) => tag.id === requestedTagId)
+    : (input.allowedTags ?? []).find(
+        (tag) => normalizeTagName(tag.name) === normalizeTagName(requestedTagName ?? "")
+      );
+  if (!allowedTag) {
+    throw new AgentToolExecutionError(
+      "TOOL_INVALID_INPUT",
+      `Agent tag ${requestedTag} is not in this agent's allowed tag list.`
+    );
   }
 
   await prisma.conversationTag.deleteMany({
     where: {
       workspaceId: input.workspaceId,
       conversationId: input.conversationId,
-      tagId
+      tagId: allowedTag.id
     }
   });
 }

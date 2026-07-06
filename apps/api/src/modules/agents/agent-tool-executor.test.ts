@@ -66,6 +66,7 @@ const baseInput = {
   conversationId: "conv_1",
   allowedActions: [
     "add_tag",
+    "remove_tag",
     "change_priority",
     "create_internal_note",
     "request_handoff"
@@ -327,6 +328,42 @@ describe("executeAgentActions", () => {
     ]);
     expect(prisma.tag.upsert).not.toHaveBeenCalled();
     expect(prisma.conversationTag.upsert).not.toHaveBeenCalled();
+  });
+
+  it("removes only allowed tags using the canonical allowed tag id", async () => {
+    const prisma = buildPrisma();
+
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      actions: [{ type: "remove_tag", name: " lead quente " }]
+    });
+
+    expect(results).toEqual([{ type: "remove_tag", status: "completed" }]);
+    expect(prisma.conversationTag.deleteMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        tagId: "tag_hot_lead"
+      }
+    });
+  });
+
+  it("skips remove_tag when the requested tag is outside the agent allowed tag list", async () => {
+    const prisma = buildPrisma();
+
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      actions: [{ type: "remove_tag", tagId: "tag_not_allowed" }]
+    });
+
+    expect(results).toEqual([
+      {
+        type: "remove_tag",
+        status: "skipped",
+        reason: "Agent tag tag_not_allowed is not in this agent's allowed tag list."
+      }
+    ]);
+    expect(prisma.conversationTag.deleteMany).not.toHaveBeenCalled();
   });
 
   it("rejects actions missing type defensively", async () => {
