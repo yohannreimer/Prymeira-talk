@@ -179,6 +179,15 @@ function statusFilter(scope: BoardSyncScope) {
   return undefined;
 }
 
+function isRecoverableRuleConflict(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error.code === "P2002" || error.code === "P2025")
+  );
+}
+
 export function createBoardRulesService(
   prisma: BoardRulesPrismaLike,
   options: BoardRulesServiceOptions = {}
@@ -348,7 +357,11 @@ export function createBoardRulesService(
             publish: input.publish
           })
         );
-      } catch {
+      } catch (error) {
+        if (!isRecoverableRuleConflict(error)) {
+          throw error;
+        }
+
         result.conflicts += 1;
       }
     }

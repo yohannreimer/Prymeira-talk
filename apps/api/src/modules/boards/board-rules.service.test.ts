@@ -426,6 +426,38 @@ describe("board rules service", () => {
     });
   });
 
+  it("counts recoverable Prisma races as sync conflicts", async () => {
+    const prisma = createMockPrisma({
+      contactBoardMembership: {
+        ...createMockPrisma().contactBoardMembership,
+        upsert: vi
+          .fn<BoardRulesPrismaLike["contactBoardMembership"]["upsert"]>()
+          .mockRejectedValue(Object.assign(new Error("Unique conflict"), { code: "P2002" }))
+      }
+    });
+    const service = createBoardRulesService(prisma, { now: () => ruleAppliedAt });
+
+    await expect(
+      service.syncBoardRules({ workspaceId, boardId, scope: "active" })
+    ).resolves.toEqual({ evaluated: 0, added: 0, moved: 0, ignored: 0, conflicts: 1 });
+  });
+
+  it("rethrows unexpected rule application errors", async () => {
+    const prisma = createMockPrisma({
+      contactBoardMembership: {
+        ...createMockPrisma().contactBoardMembership,
+        upsert: vi
+          .fn<BoardRulesPrismaLike["contactBoardMembership"]["upsert"]>()
+          .mockRejectedValue(new Error("Database unavailable"))
+      }
+    });
+    const service = createBoardRulesService(prisma, { now: () => ruleAppliedAt });
+
+    await expect(
+      service.syncBoardRules({ workspaceId, boardId, scope: "active" })
+    ).rejects.toThrow("Database unavailable");
+  });
+
   it("maps a missing board during sync to the existing board not found error", async () => {
     const prisma = createMockPrisma({
       contactBoard: {
