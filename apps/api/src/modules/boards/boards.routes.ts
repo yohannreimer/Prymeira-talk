@@ -1,5 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
+import { createBoardRulesService } from "./board-rules.service.js";
+import type { BoardRulesPrismaLike } from "./board-rules.service.js";
 import { BoardsServiceError, createBoardsService } from "./boards.service.js";
 import type { PrismaLike } from "./boards.service.js";
 
@@ -60,6 +62,10 @@ const updateStageBodySchema = z
 
 const reorderStagesBodySchema = z.object({
   stageIds: uuidParamSchema.array()
+});
+
+const syncBoardRulesBodySchema = z.object({
+  scope: z.enum(["active", "closed", "all"])
 });
 
 const createMembershipBodySchema = z.object({
@@ -127,6 +133,7 @@ function handleBoardsError(reply: FastifyReply, error: unknown) {
 
 export const boardsRoutes: FastifyPluginAsync = async (app) => {
   const service = createBoardsService(app.prisma as unknown as PrismaLike);
+  const rulesService = createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike);
 
   app.get("/boards", async (request) =>
     service.listBoards({ workspaceId: request.talk.workspaceId })
@@ -198,6 +205,26 @@ export const boardsRoutes: FastifyPluginAsync = async (app) => {
       return await service.listBoardContacts({
         workspaceId: request.talk.workspaceId,
         boardId: params.data.boardId
+      });
+    } catch (error) {
+      return handleBoardsError(reply, error);
+    }
+  });
+
+  app.post("/boards/:boardId/sync-rules", async (request, reply) => {
+    const params = boardParamsSchema.safeParse(request.params);
+    const body = syncBoardRulesBodySchema.safeParse(request.body);
+
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid board sync request." });
+    }
+
+    try {
+      return await rulesService.syncBoardRules({
+        workspaceId: request.talk.workspaceId,
+        boardId: params.data.boardId,
+        scope: body.data.scope,
+        publish: (event) => app.realtime.publish(event)
       });
     } catch (error) {
       return handleBoardsError(reply, error);
