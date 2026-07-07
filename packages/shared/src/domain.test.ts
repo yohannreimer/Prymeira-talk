@@ -497,6 +497,47 @@ describe("domain schemas", () => {
     ).toBe(2);
   });
 
+  it("defaults old-shape contact boards to non-primary without channels", () => {
+    const board = contactBoardSchema.parse({
+      id: "board_1",
+      workspaceId: "workspace_1",
+      name: "Pre-vendas",
+      description: null,
+      createdAt: "2026-05-21T00:00:00.000Z"
+    });
+
+    expect(board.isPrimaryPipeline).toBe(false);
+    expect(board.channels).toEqual([]);
+  });
+
+  it("defaults old-shape contact board stages to no tag triggers", () => {
+    const stage = contactBoardStageSchema.parse({
+      id: "stage_1",
+      workspaceId: "workspace_1",
+      boardId: "board_1",
+      name: "Proposta enviada",
+      color: "#DFF3EA",
+      order: 2
+    });
+
+    expect(stage.tagTriggers).toEqual([]);
+  });
+
+  it("defaults old-shape board memberships to manual movement metadata", () => {
+    const membership = contactBoardMembershipSchema.parse({
+      id: "membership_1",
+      workspaceId: "workspace_1",
+      contactId: "contact_1",
+      boardId: "board_1",
+      stageId: "stage_1",
+      isPrimary: true,
+      updatedAt: "2026-05-21T00:00:00.000Z"
+    });
+
+    expect(membership.lastMovedBy).toBe("manual");
+    expect(membership.lastRuleAppliedAt).toBe(null);
+  });
+
   it("validates enriched contact board data with channels and primary pipeline flag", () => {
     expect(
       contactBoardSchema.parse({

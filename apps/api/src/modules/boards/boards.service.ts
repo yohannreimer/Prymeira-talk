@@ -1,7 +1,11 @@
 import type { PrismaClient } from "@prisma/client";
 import type {
+  ChannelProvider,
+  ContactBoardMoveSource,
+  ContactBoardChannelSummaryDto,
   ContactBoardDto,
   ContactBoardMembershipDto,
+  ContactBoardStageTagDto,
   ContactBoardStageDto,
   ContactDto
 } from "@prymeira-talk/shared";
@@ -14,6 +18,15 @@ interface BoardRecord {
   workspaceId: string;
   name: string;
   description: string | null;
+  isPrimaryPipeline?: boolean | null;
+  channels?: Array<{
+    channel: {
+      id: string;
+      displayName: string | null;
+      provider: ChannelProvider;
+      phoneNumber: string | null;
+    };
+  }>;
   createdAt: DateLike;
 }
 
@@ -24,6 +37,14 @@ interface StageRecord {
   name: string;
   color: string;
   order: number;
+  tagTriggers?: Array<{
+    tag: {
+      id: string;
+      name: string;
+      color: string;
+      isActive: boolean;
+    };
+  }>;
 }
 
 interface MembershipRecord {
@@ -33,6 +54,8 @@ interface MembershipRecord {
   boardId: string;
   stageId: string;
   isPrimary: boolean;
+  lastMovedBy?: ContactBoardMoveSource | null;
+  lastRuleAppliedAt?: DateLike | null;
   updatedAt: DateLike;
 }
 
@@ -144,7 +167,10 @@ export class BoardsServiceError extends Error {
   }
 }
 
-function toIsoString(value: DateLike) {
+function toIsoString(value: DateLike): string;
+function toIsoString(value: DateLike | null): string | null;
+function toIsoString(value: DateLike | null) {
+  if (value === null) return null;
   return value instanceof Date ? value.toISOString() : value;
 }
 
@@ -156,23 +182,42 @@ function normalizeOptional(value: string | undefined) {
 }
 
 function toBoardDto(record: BoardRecord): ContactBoardDto {
+  const channels: ContactBoardChannelSummaryDto[] =
+    record.channels?.map(({ channel }) => ({
+      id: channel.id,
+      displayName: channel.displayName,
+      provider: channel.provider,
+      phoneNumber: channel.phoneNumber
+    })) ?? [];
+
   return {
     id: record.id,
     workspaceId: record.workspaceId,
     name: record.name,
     description: record.description,
+    isPrimaryPipeline: record.isPrimaryPipeline ?? false,
+    channels,
     createdAt: toIsoString(record.createdAt)
   };
 }
 
 function toStageDto(record: StageRecord): ContactBoardStageDto {
+  const tagTriggers: ContactBoardStageTagDto[] =
+    record.tagTriggers?.map(({ tag }) => ({
+      id: tag.id,
+      name: tag.name,
+      color: tag.color,
+      isActive: tag.isActive
+    })) ?? [];
+
   return {
     id: record.id,
     workspaceId: record.workspaceId,
     boardId: record.boardId,
     name: record.name,
     color: record.color,
-    order: record.order
+    order: record.order,
+    tagTriggers
   };
 }
 
@@ -184,6 +229,8 @@ function toMembershipDto(record: MembershipRecord): ContactBoardMembershipDto {
     boardId: record.boardId,
     stageId: record.stageId,
     isPrimary: record.isPrimary,
+    lastMovedBy: record.lastMovedBy ?? "manual",
+    lastRuleAppliedAt: toIsoString(record.lastRuleAppliedAt ?? null),
     updatedAt: toIsoString(record.updatedAt)
   };
 }

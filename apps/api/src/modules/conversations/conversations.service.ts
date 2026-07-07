@@ -1,5 +1,10 @@
 import type { ConversationStatus, PrismaClient } from "@prisma/client";
-import type { ContactBoardMembershipDto, ConversationDto, MessageDto } from "@prymeira-talk/shared";
+import type {
+  ContactBoardMembershipDto,
+  ContactBoardMoveSource,
+  ConversationDto,
+  MessageDto
+} from "@prymeira-talk/shared";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import type { MetaClient } from "../meta/meta.client.js";
 
@@ -162,6 +167,8 @@ interface BoardMembershipRecord {
   boardId: string;
   stageId: string;
   isPrimary: boolean;
+  lastMovedBy?: ContactBoardMoveSource | null;
+  lastRuleAppliedAt?: DateLike | null;
   updatedAt: DateLike;
   board?: {
     name: string;
@@ -325,7 +332,10 @@ interface ConversationsServiceOptions {
   } | null;
 }
 
-function toIsoString(value: DateLike) {
+function toIsoString(value: DateLike): string;
+function toIsoString(value: DateLike | null): string | null;
+function toIsoString(value: DateLike | null) {
+  if (value === null) return null;
   return value instanceof Date ? value.toISOString() : value;
 }
 
@@ -422,6 +432,8 @@ function toBoardMembershipDto(record: BoardMembershipRecord): ContactBoardMember
     boardId: record.boardId,
     stageId: record.stageId,
     isPrimary: record.isPrimary,
+    lastMovedBy: record.lastMovedBy ?? "manual",
+    lastRuleAppliedAt: toIsoString(record.lastRuleAppliedAt ?? null),
     updatedAt: toIsoString(record.updatedAt)
   };
 }
