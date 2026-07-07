@@ -117,4 +117,24 @@ export const tagsRoutes: FastifyPluginAsync = async (app) => {
       return handleTagsError(reply, error);
     }
   });
+
+  app.delete("/tags/:tagId", async (request, reply) => {
+    if (!requireTagManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = paramsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid tag delete request." });
+    }
+
+    try {
+      return await service.deleteTag({
+        workspaceId: request.talk.workspaceId,
+        tagId: params.data.tagId
+      });
+    } catch (error) {
+      return handleTagsError(reply, error);
+    }
+  });
 };

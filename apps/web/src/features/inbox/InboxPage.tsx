@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ConversationDto, MessageDto, RealtimeEvent } from "@prymeira-talk/shared";
-import { Bot, CheckCircle2, Download, MessageSquare, Plus, StickyNote, UserCheck, X } from "lucide-react";
+import { Bot, CheckCircle2, Download, History, MessageSquare, Plus, StickyNote, UserCheck, X } from "lucide-react";
 import type { ChangeEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -356,6 +356,7 @@ export function InboxPage() {
   const [contextError, setContextError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
+  const [notesHistoryOpen, setNotesHistoryOpen] = useState(false);
   const [tagDraft, setTagDraft] = useState("");
   const [selectedChannelFilter, setSelectedChannelFilter] = useState("all");
   const [isSending, setIsSending] = useState(false);
@@ -745,6 +746,13 @@ export function InboxPage() {
     () => visibleConversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
     [visibleConversations, selectedConversationId]
   );
+  const contextNotes = contactContext?.notes ?? [];
+  const visibleNotes = notesHistoryOpen ? contextNotes : contextNotes.slice(0, 2);
+  const hiddenNoteCount = Math.max(0, contextNotes.length - visibleNotes.length);
+
+  useEffect(() => {
+    setNotesHistoryOpen(false);
+  }, [selectedConversationId]);
 
   useEffect(() => {
     if (!pendingThreadScrollRef.current) return;
@@ -1496,16 +1504,39 @@ export function InboxPage() {
 
         {/* Card notas */}
         <div className="context-card">
-          <div className="context-card-title">Notas internas</div>
+          <div className="context-card-title-row">
+            <div className="context-card-title">Notas internas</div>
+            {contextNotes.length > 2 ? (
+              <button
+                aria-expanded={notesHistoryOpen}
+                className="context-title-action"
+                onClick={() => setNotesHistoryOpen((current) => !current)}
+                title={notesHistoryOpen ? "Mostrar menos notas" : "Mostrar histórico de notas"}
+                type="button"
+              >
+                <History size={13} aria-hidden="true" />
+                <span>{notesHistoryOpen ? "Recentes" : `${contextNotes.length}`}</span>
+              </button>
+            ) : null}
+          </div>
           {contextError ? <p className="error-note compact">{contextError}</p> : null}
-          {contactContext?.notes.length ? (
-            <div className="notes-list">
-              {contactContext.notes.map((note) => (
+          {contextNotes.length ? (
+            <div className={`notes-list${notesHistoryOpen ? " notes-list--history" : ""}`}>
+              {visibleNotes.map((note) => (
                 <article className="context-note" key={note.id}>
                   <p>{note.body}</p>
                   <time>{formatNoteDate(note.createdAt)}</time>
                 </article>
               ))}
+              {!notesHistoryOpen && hiddenNoteCount > 0 ? (
+                <button
+                  className="notes-history-button"
+                  onClick={() => setNotesHistoryOpen(true)}
+                  type="button"
+                >
+                  Ver mais {hiddenNoteCount} notas
+                </button>
+              ) : null}
             </div>
           ) : (
             <span className="context-empty-label">Sem notas</span>

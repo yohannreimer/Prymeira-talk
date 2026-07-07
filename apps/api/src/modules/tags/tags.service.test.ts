@@ -28,6 +28,7 @@ type MockPrisma = {
     findMany: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
   };
 };
 
@@ -46,7 +47,10 @@ function buildPrisma(overrides: Partial<MockPrisma["tag"]> = {}): MockPrisma & T
         vi.fn().mockImplementation(async (args) => ({
           ...baseTag,
           ...args.data
-        }))
+        })),
+      delete:
+        overrides.delete ??
+        vi.fn().mockResolvedValue(baseTag)
     }
   } as MockPrisma & TagsPrismaLike;
 }
@@ -201,6 +205,33 @@ describe("createTagsService", () => {
       }
     });
   });
+
+  it("deletes tags inside the workspace", async () => {
+    const prisma = buildPrisma();
+    const service = createTagsService(prisma);
+
+    const tag = await service.deleteTag({ workspaceId, tagId });
+
+    expect(tag).toEqual(
+      expect.objectContaining({
+        id: tagId,
+        name: "VIP",
+        agentCount: 2,
+        conversationCount: 5
+      })
+    );
+    expect(prisma.tag.delete).toHaveBeenCalledWith({
+      where: { workspaceId_id: { workspaceId, id: tagId } },
+      include: {
+        _count: {
+          select: {
+            allowedAgents: true,
+            conversations: true
+          }
+        }
+      }
+    });
+  });
 });
 
 describe("tags routes", () => {
@@ -292,6 +323,34 @@ describe("tags routes", () => {
         data: expect.objectContaining({ isActive: false })
       })
     );
+  });
+
+  it("deletes tags for managers", async () => {
+    const prisma = buildPrisma();
+    const app = await createApp({ prisma });
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/tags/${tagId}`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(prisma.tag.delete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { workspaceId_id: { workspaceId, id: tagId } }
+      })
+    );
+  });
+
+  it("requires automation management permission to delete tags", async () => {
+    const prisma = buildPrisma({ delete: vi.fn() });
+    const app = await createApp({ role: "agent", prisma });
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/tags/${tagId}`
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(prisma.tag.delete).not.toHaveBeenCalled();
   });
 
   it("rejects invalid tag update requests", async () => {

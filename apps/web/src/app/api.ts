@@ -2356,6 +2356,21 @@ export async function apiUpdateTag(
   );
 }
 
+export async function apiDeleteTag(
+  getToken: () => Promise<string | null>,
+  tagId: string
+): Promise<TagDto> {
+  return fetchJson(
+    getToken,
+    `/tags/${tagId}`,
+    {
+      method: "DELETE"
+    },
+    parseTag,
+    "Failed to delete tag"
+  );
+}
+
 export async function apiGetAgents(
   getToken: () => Promise<string | null>
 ): Promise<AiAgentDto[]> {

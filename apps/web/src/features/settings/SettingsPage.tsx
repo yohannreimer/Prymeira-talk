@@ -1,8 +1,9 @@
 import { useTalkAuth } from "../../app/auth";
-import { PlugZap, RefreshCw, Save, Settings2 } from "lucide-react";
+import { Activity, Bot, Cable, PlugZap, RefreshCw, Save, Settings2, Tags, Trash2 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   apiCreateTag,
+  apiDeleteTag,
   apiGetAuditLog,
   apiGetSettings,
   apiGetTags,
@@ -417,8 +418,31 @@ export function SettingsPage() {
     }
   }
 
+  async function deleteTag(tag: TagDto) {
+    const usageCount = (tag.agentCount ?? 0) + (tag.conversationCount ?? 0);
+    const confirmation = usageCount > 0
+      ? `Excluir "${tag.name}"? Ela sera removida de ${tag.agentCount ?? 0} agentes e ${tag.conversationCount ?? 0} conversas.`
+      : `Excluir "${tag.name}"?`;
+
+    if (!window.confirm(confirmation)) return;
+
+    setError(null);
+    setNotice(null);
+    setSavingTagId(tag.id);
+
+    try {
+      const deletedTag = await apiDeleteTag(getToken, tag.id);
+      setTags((current) => current.filter((currentTag) => currentTag.id !== deletedTag.id));
+      setNotice("Tag da IA excluida.");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Não foi possível excluir a tag.");
+    } finally {
+      setSavingTagId(null);
+    }
+  }
+
   return (
-    <section className="module-page" aria-label="Ajustes">
+    <section className="module-page settings-page" aria-label="Ajustes">
       <header className="module-header">
         <div>
           <p className="eyebrow">Prymeira Talk</p>
@@ -438,8 +462,44 @@ export function SettingsPage() {
       {error ? <p className="error-note" role="alert">{error}</p> : null}
       {notice ? <p className="success-note" role="status" aria-live="polite">{notice}</p> : null}
 
-      <div className="ops-grid">
-        <div className="module-panel">
+      <div className="settings-overview-grid" aria-label="Resumo dos ajustes">
+        <div className="settings-overview-card">
+          <Settings2 size={18} aria-hidden="true" />
+          <span>Workspace</span>
+          <strong>{settings?.workspace.name ?? "Sem nome"}</strong>
+          <small>{settings?.workspace.plan ?? "Free"}</small>
+        </div>
+        <div className="settings-overview-card">
+          <Bot size={18} aria-hidden="true" />
+          <span>Provider de IA</span>
+          <strong>{aiProviderForm.enabled ? "Real" : "Simulado"}</strong>
+          <small>{aiProviderForm.chatModel || "Modelo não definido"}</small>
+        </div>
+        <div className="settings-overview-card">
+          <Cable size={18} aria-hidden="true" />
+          <span>WhatsApp Meta</span>
+          <strong>{metaForm.enabled ? "Ativa" : "Inativa"}</strong>
+          <small>{metaForm.connectionMode === "direct" ? "Direto na Meta" : "Via Evolution"}</small>
+        </div>
+        <div className="settings-overview-card">
+          <Tags size={18} aria-hidden="true" />
+          <span>Tags oficiais</span>
+          <strong>{tags.length}</strong>
+          <small>{tags.filter((tag) => tag.isActive).length} ativas</small>
+        </div>
+      </div>
+
+      <div className="settings-workbench">
+        <nav className="settings-nav" aria-label="Seções de ajustes">
+          <a href="#settings-workspace"><Settings2 size={15} aria-hidden="true" />Workspace</a>
+          <a href="#settings-ai"><Bot size={15} aria-hidden="true" />Provider de IA</a>
+          <a href="#settings-whatsapp"><Cable size={15} aria-hidden="true" />WhatsApp Meta</a>
+          <a href="#settings-tags"><Tags size={15} aria-hidden="true" />Tags da IA</a>
+          <a href="#settings-audit"><Activity size={15} aria-hidden="true" />Auditoria</a>
+        </nav>
+
+        <div className="settings-stack">
+        <div className="module-panel settings-card" id="settings-workspace">
           <div className="panel-title-row">
             <h2>Workspace</h2>
             {settings ? (
@@ -472,7 +532,7 @@ export function SettingsPage() {
             </div>
           )}
 
-          <form className="module-form compact-form" onSubmit={(event) => void saveSettings(event)}>
+          <form className="module-form compact-form settings-card-form" id="settings-whatsapp" onSubmit={(event) => void saveSettings(event)}>
             <div className="panel-title-row" style={{ paddingBottom: 0 }}>
               <h2>WhatsApp API Oficial Meta</h2>
               <div className="segmented-control" aria-label="Status da Meta">
@@ -619,7 +679,7 @@ export function SettingsPage() {
           </form>
         </div>
 
-        <form className="module-panel module-form compact-form" onSubmit={(event) => void saveAiProviderSettings(event)}>
+        <form className="module-panel module-form settings-card" id="settings-ai" onSubmit={(event) => void saveAiProviderSettings(event)}>
           <div className="panel-title-row">
             <h2>Provider de IA</h2>
             <span className={`status-badge status-badge--${aiProviderForm.enabled ? "open" : "waiting"}`}>
@@ -682,7 +742,7 @@ export function SettingsPage() {
           </div>
         </form>
 
-        <div className="module-panel">
+        <div className="module-panel settings-card" id="settings-tags">
           <div className="panel-title-row">
             <h2>Tags da IA</h2>
             <span>{tags.length} tags</span>
@@ -753,21 +813,33 @@ export function SettingsPage() {
                     <span>{tag.agentCount ?? 0} agentes</span>
                     <span>{tag.conversationCount ?? 0} conversas</span>
                   </div>
-                  <button
-                    className="secondary-button"
-                    disabled={savingTagId === tag.id}
-                    onClick={() => void toggleTagStatus(tag)}
-                    type="button"
-                  >
-                    {tag.isActive ? "Desativar" : "Ativar"}
-                  </button>
+                  <div className="settings-tag-row__actions">
+                    <button
+                      className="secondary-button"
+                      disabled={savingTagId === tag.id}
+                      onClick={() => void toggleTagStatus(tag)}
+                      type="button"
+                    >
+                      {tag.isActive ? "Desativar" : "Ativar"}
+                    </button>
+                    <button
+                      aria-label={`Excluir tag ${tag.name}`}
+                      className="icon-button danger-icon-button"
+                      disabled={savingTagId === tag.id}
+                      onClick={() => void deleteTag(tag)}
+                      title="Excluir tag"
+                      type="button"
+                    >
+                      <Trash2 size={15} aria-hidden="true" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
           )}
         </div>
 
-        <div className="module-panel">
+        <div className="module-panel settings-card" id="settings-audit">
           <div className="panel-title-row">
             <h2>Audit log</h2>
             <span>{auditLog.length} eventos</span>
@@ -784,6 +856,7 @@ export function SettingsPage() {
               </div>
             ))}
           </div>
+        </div>
         </div>
       </div>
     </section>

@@ -1,5 +1,5 @@
 import { useTalkAuth } from "../../app/auth";
-import { Download, FileText, RefreshCw } from "lucide-react";
+import { BarChart3, CalendarDays, Download, FileText, MessageSquare, RefreshCw, Send, Workflow } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   apiGetReportsOverview,
@@ -168,7 +168,7 @@ function BarSection(input: { title: string; subtitle: string; rows: ReportMetric
   const maxValue = maxMetricValue(input.rows);
 
   return (
-    <div className="module-panel">
+    <div className="module-panel report-card">
       <div className="panel-title-row">
         <h2>{input.title}</h2>
         <span>{input.subtitle}</span>
@@ -191,7 +191,7 @@ function BarSection(input: { title: string; subtitle: string; rows: ReportMetric
 
 function BreakdownTable(input: { title: string; rows: ReportMetricDto[] }) {
   return (
-    <div className="module-panel">
+    <div className="module-panel report-card">
       <div className="panel-title-row">
         <h2>{input.title}</h2>
         <button
@@ -231,6 +231,13 @@ function BreakdownTable(input: { title: string; rows: ReportMetricDto[] }) {
       </div>
     </div>
   );
+}
+
+function MetricIcon(input: { metricKey: string }) {
+  if (input.metricKey.includes("message")) return <MessageSquare size={18} aria-hidden="true" />;
+  if (input.metricKey.includes("campaign")) return <Send size={18} aria-hidden="true" />;
+  if (input.metricKey.includes("automation")) return <Workflow size={18} aria-hidden="true" />;
+  return <BarChart3 size={18} aria-hidden="true" />;
 }
 
 export function ReportsPage() {
@@ -346,22 +353,31 @@ export function ReportsPage() {
 
       {error ? <p className="error-note">{error}</p> : null}
 
-      <section className="module-panel reports-control-panel" aria-label="Filtros de relatórios">
-        <div className="reports-period-buttons">
-          {periodPresets.map((preset) => (
-            <button
-              className={currentFilters.preset === preset.key ? "is-active" : ""}
-              key={preset.key}
-              onClick={() => setFilters((current) => ({
-                ...current,
-                preset: preset.key,
-                ...(preset.key === "custom" ? {} : { startDate: undefined, endDate: undefined })
-              }))}
-              type="button"
-            >
-              {preset.label}
-            </button>
-          ))}
+      <section className="reports-command-panel" aria-label="Filtros de relatórios">
+        <div className="reports-command-primary">
+          <div className="reports-command-heading">
+            <CalendarDays size={18} aria-hidden="true" />
+            <div>
+              <span>Período</span>
+              <strong>{periodLabel(currentFilters)}</strong>
+            </div>
+          </div>
+          <div className="reports-period-buttons">
+            {periodPresets.map((preset) => (
+              <button
+                className={currentFilters.preset === preset.key ? "is-active" : ""}
+                key={preset.key}
+                onClick={() => setFilters((current) => ({
+                  ...current,
+                  preset: preset.key,
+                  ...(preset.key === "custom" ? {} : { startDate: undefined, endDate: undefined })
+                }))}
+                type="button"
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="reports-filter-grid">
           <label className="form-field">
@@ -436,14 +452,17 @@ export function ReportsPage() {
             </select>
           </label>
         </div>
-        <p className="reports-applied-period">{periodLabel(currentFilters)}</p>
       </section>
 
-      <div className="contacts-stats-row" aria-label="Indicadores">
+      <div className="reports-kpi-grid" aria-label="Indicadores">
         {(cards.length > 0 ? cards : loadingCards).map((card) => (
-          <div key={card.key} className="contacts-stat">
-            <strong>{formatNumber(card.value)}</strong>
+          <div key={card.key} className="reports-kpi-card">
+            <div className="reports-kpi-icon">
+              <MetricIcon metricKey={card.key} />
+            </div>
             <span>{card.label}</span>
+            <strong>{formatNumber(card.value)}</strong>
+            {card.helper ? <small>{card.helper}</small> : null}
           </div>
         ))}
       </div>
@@ -471,7 +490,7 @@ export function ReportsPage() {
         />
       </div>
 
-      <div className="module-panel reports-timeline-panel">
+      <div className="module-panel report-card reports-timeline-panel">
         <div className="panel-title-row">
           <h2>Série temporal</h2>
           <span>{overview?.timeSeries.length ?? 0} pontos</span>

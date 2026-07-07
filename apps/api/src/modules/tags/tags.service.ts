@@ -21,12 +21,14 @@ type TagRecord = {
 type TagFindManyArgs = Parameters<PrismaClient["tag"]["findMany"]>[0];
 type TagCreateArgs = Parameters<PrismaClient["tag"]["create"]>[0];
 type TagUpdateArgs = Parameters<PrismaClient["tag"]["update"]>[0];
+type TagDeleteArgs = Parameters<PrismaClient["tag"]["delete"]>[0];
 
 export interface TagsPrismaLike {
   tag: {
     findMany(args: TagFindManyArgs): Promise<TagRecord[]>;
     create(args: TagCreateArgs): Promise<TagRecord>;
     update(args: TagUpdateArgs): Promise<TagRecord>;
+    delete(args: TagDeleteArgs): Promise<TagRecord>;
   };
 }
 
@@ -147,6 +149,23 @@ export function createTagsService(prisma: TagsPrismaLike) {
             ? { useGuide: requiredTrim(input.data.useGuide, "useGuide") }
             : {}),
           ...(input.data.isActive !== undefined ? { isActive: input.data.isActive } : {})
+        },
+        include: tagCountInclude
+      });
+
+      return toTagDto(tag);
+    },
+
+    async deleteTag(input: {
+      workspaceId: string;
+      tagId: string;
+    }): Promise<TagDto> {
+      const tag = await prisma.tag.delete({
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: input.tagId
+          }
         },
         include: tagCountInclude
       });

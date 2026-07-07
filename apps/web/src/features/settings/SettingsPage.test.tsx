@@ -10,6 +10,7 @@ vi.mock("../../app/auth", () => ({
 
 vi.mock("../../app/api", () => ({
   apiCreateTag: vi.fn(),
+  apiDeleteTag: vi.fn(),
   apiGetAuditLog: vi.fn(async () => []),
   apiGetSettings: vi.fn(async () => ({
     workspace: {
