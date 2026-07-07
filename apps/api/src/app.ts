@@ -11,6 +11,7 @@ import { agentsRoutes } from "./modules/agents/agents.routes.js";
 import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.js";
 import { automationsRoutes } from "./modules/automations/automations.routes.js";
 import { assistantRoutes } from "./modules/assistant/assistant.routes.js";
+import { createBoardRulesService, type BoardRulesPrismaLike } from "./modules/boards/board-rules.service.js";
 import { boardsRoutes } from "./modules/boards/boards.routes.js";
 import { campaignsRoutes } from "./modules/campaigns/campaigns.routes.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
@@ -121,7 +122,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           prisma: app.prisma as unknown as Parameters<typeof createAgentRuntime>[0]["prisma"],
           provider: createSimulatedAgentProvider(),
           evolution: evolutionRuntime,
-          realtime: app.realtime
+          realtime: app.realtime,
+          boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike)
         });
   const agentReplyScheduler =
     options.prismaEnabled === false || !agentRuntime

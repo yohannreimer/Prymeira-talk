@@ -6,6 +6,7 @@ import {
 } from "./ai-provider-settings.js";
 import {
   executeAgentActions,
+  type AgentToolExecutionResult,
   type AgentToolExecutorPrismaLike
 } from "./agent-tool-executor.js";
 import {
@@ -151,6 +152,14 @@ type AgentRuntimeRealtime = {
   publish(event: unknown): void;
 };
 
+type AgentRuntimeBoardRules = {
+  applyBoardRulesForConversationTags(input: {
+    workspaceId: string;
+    conversationId: string;
+    publish?: (event: unknown) => void;
+  }): Promise<unknown>;
+};
+
 const agentInclude = {
   allowedTags: {
     include: { tag: true },
@@ -164,6 +173,7 @@ export function createAgentRuntime(input: {
   providerFactory?: (settings: Extract<OpenAiCompatibleSettings, { active: true }>) => AgentProvider;
   evolution?: AgentRuntimeEvolution;
   realtime?: AgentRuntimeRealtime;
+  boardRules?: AgentRuntimeBoardRules;
 }) {
   const { prisma, provider } = input;
 
@@ -510,6 +520,7 @@ export function createAgentRuntime(input: {
           allowedTags,
           actions: providerOutput.actions
         });
+        await applyBoardRulesForActionResults(runInput.workspaceId, actionResults);
 
         if (!handoffReason && allowedActions.includes("send_message") && !providerOutput.reply) {
           throw new Error("Agent did not produce a reply.");
@@ -647,6 +658,34 @@ export function createAgentRuntime(input: {
       workspaceId,
       payload: toConversationDto(updatedConversation as Parameters<typeof toConversationDto>[0])
     });
+  }
+
+  async function applyBoardRulesForActionResults(
+    workspaceId: string,
+    actionResults: AgentToolExecutionResult[]
+  ) {
+    if (!input.boardRules) {
+      return;
+    }
+
+    const conversationIds = [
+      ...new Set(
+        actionResults
+          .filter(
+            (result) =>
+              result.type === "add_tag" && result.status === "completed" && result.conversationId
+          )
+          .map((result) => result.conversationId as string)
+      )
+    ];
+
+    for (const conversationId of conversationIds) {
+      await input.boardRules.applyBoardRulesForConversationTags({
+        workspaceId,
+        conversationId,
+        publish: (event) => input.realtime?.publish(event)
+      });
+    }
   }
 
   async function createRun(input: {

@@ -8,6 +8,7 @@ import {
   type AutomationRunnerEvolution,
   type AutomationRunnerPrisma
 } from "./automation-runner.js";
+import { createBoardRulesService, type BoardRulesPrismaLike } from "../boards/board-rules.service.js";
 import { AutomationsServiceError, createAutomationsService } from "./automations.service.js";
 import type { PrismaLike } from "./automations.service.js";
 
@@ -205,7 +206,8 @@ export const automationsRoutes: FastifyPluginAsync<AutomationsRoutesOptions> = a
       prisma: app.prisma as unknown as AutomationRunnerPrisma,
       agentRuntime: options.agentRuntime,
       evolution: options.evolution,
-      realtime: app.realtime
+      realtime: app.realtime,
+      boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike)
     });
     const runs = await contactRunner.runForInboundMessage({
       workspaceId: input.workspaceId,

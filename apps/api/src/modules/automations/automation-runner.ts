@@ -405,6 +405,15 @@ function isWithinTimeWindow(date: Date, start: number, end: number) {
   return minutes >= start || minutes <= end;
 }
 
+function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
+  );
+}
+
 async function createOutboundText(
   options: AutomationRunnerOptions,
   context: ExecuteContext,
@@ -623,13 +632,20 @@ async function executeNode(
       },
       update: {}
     });
-    await options.prisma.conversationTag.create({
-      data: {
-        workspaceId: context.message.workspaceId,
-        conversationId: context.conversation.id,
-        tagId: tag.id
+    try {
+      await options.prisma.conversationTag.create({
+        data: {
+          workspaceId: context.message.workspaceId,
+          conversationId: context.conversation.id,
+          tagId: tag.id
+        }
+      });
+    } catch (error) {
+      if (!isPrismaKnownRequestErrorCode(error, "P2002")) {
+        throw error;
       }
-    }).catch(() => undefined);
+    }
+
     await options.boardRules?.applyBoardRulesForConversationTags({
       workspaceId: context.message.workspaceId,
       conversationId: context.conversation.id

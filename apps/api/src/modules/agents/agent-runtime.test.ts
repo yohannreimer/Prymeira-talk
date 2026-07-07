@@ -238,7 +238,16 @@ describe("createAgentRuntime", () => {
       actions: [{ type: "add_tag", tagName: "Atendido pela IA" }],
       handoff: { required: false, reason: null }
     });
-    const runtime = createAgentRuntime({ prisma, provider });
+    const boardRules = {
+      applyBoardRulesForConversationTags: vi.fn().mockResolvedValue({
+        evaluated: 1,
+        added: 1,
+        moved: 0,
+        ignored: 0,
+        conflicts: 0
+      })
+    };
+    const runtime = createAgentRuntime({ prisma, provider, boardRules });
 
     const result = await runtime.runForMessage({
       workspaceId: ids.workspace,
@@ -355,6 +364,11 @@ describe("createAgentRuntime", () => {
         tagId: "tag_allowed_ai"
       },
       update: {}
+    });
+    expect(boardRules.applyBoardRulesForConversationTags).toHaveBeenCalledWith({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      publish: expect.any(Function)
     });
     expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
       data: expect.objectContaining({

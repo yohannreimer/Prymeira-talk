@@ -296,6 +296,68 @@ describe("automation runner", () => {
     );
   });
 
+  it("runs board rules when add_tag hits an existing conversation tag", async () => {
+    const prisma = createMockPrisma({
+      conversationTag: {
+        ...createMockPrisma().conversationTag,
+        create: vi.fn().mockRejectedValue(Object.assign(new Error("Duplicate"), { code: "P2002" }))
+      }
+    } as Partial<AutomationRunnerPrisma>);
+    const boardRules = {
+      applyBoardRulesForConversationTags: vi.fn().mockResolvedValue({
+        evaluated: 1,
+        added: 0,
+        moved: 1,
+        ignored: 0,
+        conflicts: 0
+      })
+    };
+    const runner = createAutomationRunner({ prisma, boardRules });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:duplicate-tag"
+    });
+
+    expect(runs[0]?.status).toBe("completed");
+    expect(boardRules.applyBoardRulesForConversationTags).toHaveBeenCalledWith({
+      workspaceId,
+      conversationId
+    });
+  });
+
+  it("does not run board rules when add_tag fails before applying the tag", async () => {
+    const prisma = createMockPrisma({
+      conversationTag: {
+        ...createMockPrisma().conversationTag,
+        create: vi.fn().mockRejectedValue(new Error("Database unavailable"))
+      }
+    } as Partial<AutomationRunnerPrisma>);
+    const boardRules = {
+      applyBoardRulesForConversationTags: vi.fn()
+    };
+    const runner = createAutomationRunner({ prisma, boardRules });
+
+    const runs = await runner.runForInboundMessage({
+      workspaceId,
+      messageId,
+      eventKey: "message.received:tag-create-failed"
+    });
+
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.result).toMatchObject({
+      actionResults: expect.arrayContaining([
+        expect.objectContaining({
+          nodeId: "tag-1",
+          status: "failed",
+          error: "Database unavailable"
+        })
+      ])
+    });
+    expect(boardRules.applyBoardRulesForConversationTags).not.toHaveBeenCalled();
+  });
+
   it("matches keyword triggers when any configured keyword is present", async () => {
     const keywordRule = {
       ...baseRule,

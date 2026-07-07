@@ -9,6 +9,7 @@ import {
   type AutomationRunnerEvolution,
   type AutomationRunnerPrisma
 } from "../automations/automation-runner.js";
+import { createBoardRulesService, type BoardRulesPrismaLike } from "../boards/board-rules.service.js";
 import {
   buildPhoneLookupCandidates,
   normalizePhoneForStorage
@@ -356,7 +357,8 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
     agentRuntime: options.agentRuntime,
     agentReplyScheduler: options.agentReplyScheduler,
     evolution: options.evolution,
-    realtime: app.realtime
+    realtime: app.realtime,
+    boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike)
   });
 
   app.post("/webhooks/evolution/:workspaceId", async (request, reply) => {
