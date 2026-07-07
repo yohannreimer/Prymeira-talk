@@ -2,10 +2,8 @@ import type { PrismaClient } from "@prisma/client";
 import type {
   ChannelProvider,
   ContactBoardMoveSource,
-  ContactBoardChannelSummaryDto,
   ContactBoardDto,
   ContactBoardMembershipDto,
-  ContactBoardStageTagDto,
   ContactBoardStageDto,
   ContactDto
 } from "@prymeira-talk/shared";
@@ -18,16 +16,18 @@ interface BoardRecord {
   workspaceId: string;
   name: string;
   description: string | null;
-  isPrimaryPipeline?: boolean | null;
-  channels?: Array<{
-    channel: {
-      id: string;
-      displayName: string | null;
-      provider: ChannelProvider;
-      phoneNumber: string | null;
-    };
-  }>;
+  isPrimaryPipeline: boolean;
+  channels?: BoardChannelRecord[];
   createdAt: DateLike;
+}
+
+interface BoardChannelRecord {
+  channel: {
+    id: string;
+    displayName: string | null;
+    provider: ChannelProvider;
+    phoneNumber: string | null;
+  };
 }
 
 interface StageRecord {
@@ -37,14 +37,16 @@ interface StageRecord {
   name: string;
   color: string;
   order: number;
-  tagTriggers?: Array<{
-    tag: {
-      id: string;
-      name: string;
-      color: string;
-      isActive: boolean;
-    };
-  }>;
+  tagTriggers?: StageTagRecord[];
+}
+
+interface StageTagRecord {
+  tag: {
+    id: string;
+    name: string;
+    color: string;
+    isActive: boolean;
+  };
 }
 
 interface MembershipRecord {
@@ -74,11 +76,23 @@ type BoardCreateArgs = Parameters<PrismaClient["contactBoard"]["create"]>[0];
 type BoardFindFirstArgs = Parameters<PrismaClient["contactBoard"]["findFirst"]>[0];
 type BoardUpdateArgs = Parameters<PrismaClient["contactBoard"]["update"]>[0];
 type BoardDeleteArgs = Parameters<PrismaClient["contactBoard"]["delete"]>[0];
+type BoardChannelDeleteManyArgs = Parameters<
+  PrismaClient["contactBoardChannel"]["deleteMany"]
+>[0];
+type BoardChannelCreateManyArgs = Parameters<
+  PrismaClient["contactBoardChannel"]["createMany"]
+>[0];
 type StageCreateArgs = Parameters<PrismaClient["contactBoardStage"]["create"]>[0];
 type StageFindManyArgs = Parameters<PrismaClient["contactBoardStage"]["findMany"]>[0];
 type StageFindFirstArgs = Parameters<PrismaClient["contactBoardStage"]["findFirst"]>[0];
 type StageUpdateArgs = Parameters<PrismaClient["contactBoardStage"]["update"]>[0];
 type StageDeleteArgs = Parameters<PrismaClient["contactBoardStage"]["delete"]>[0];
+type StageTagDeleteManyArgs = Parameters<
+  PrismaClient["contactBoardStageTag"]["deleteMany"]
+>[0];
+type StageTagCreateManyArgs = Parameters<
+  PrismaClient["contactBoardStageTag"]["createMany"]
+>[0];
 type MembershipFindManyArgs = Parameters<PrismaClient["contactBoardMembership"]["findMany"]>[0];
 type MembershipFindFirstArgs = Parameters<PrismaClient["contactBoardMembership"]["findFirst"]>[0];
 type MembershipUpsertArgs = Parameters<PrismaClient["contactBoardMembership"]["upsert"]>[0];
@@ -91,10 +105,14 @@ type ContactFindUniqueArgs = Parameters<PrismaClient["contact"]["findUnique"]>[0
 interface BoardPersistenceLike {
   contactBoard: {
     findMany(args: BoardFindManyArgs): Promise<BoardWithStagesRecord[]>;
-    create(args: BoardCreateArgs): Promise<BoardRecord>;
+    create(args: BoardCreateArgs): Promise<BoardWithStagesRecord>;
     findFirst(args: BoardFindFirstArgs): Promise<BoardWithStagesRecord | null>;
     update(args: BoardUpdateArgs): Promise<BoardWithStagesRecord>;
     delete(args: BoardDeleteArgs): Promise<BoardRecord>;
+  };
+  contactBoardChannel: {
+    deleteMany(args: BoardChannelDeleteManyArgs): Promise<{ count: number }>;
+    createMany(args: BoardChannelCreateManyArgs): Promise<{ count: number }>;
   };
   contactBoardStage: {
     create(args: StageCreateArgs): Promise<StageRecord>;
@@ -102,6 +120,10 @@ interface BoardPersistenceLike {
     findFirst(args: StageFindFirstArgs): Promise<StageRecord | null>;
     update(args: StageUpdateArgs): Promise<StageRecord>;
     delete(args: StageDeleteArgs): Promise<StageRecord>;
+  };
+  contactBoardStageTag: {
+    deleteMany(args: StageTagDeleteManyArgs): Promise<{ count: number }>;
+    createMany(args: StageTagCreateManyArgs): Promise<{ count: number }>;
   };
   contactBoardMembership: {
     findMany(args: MembershipFindManyArgs): Promise<MembershipWithContactRecord[]>;
@@ -181,35 +203,59 @@ function normalizeOptional(value: string | undefined) {
   return normalized.length > 0 ? normalized : null;
 }
 
-function toBoardDto(record: BoardRecord): ContactBoardDto {
-  const channels: ContactBoardChannelSummaryDto[] =
-    record.channels?.map(({ channel }) => ({
-      id: channel.id,
-      displayName: channel.displayName,
-      provider: channel.provider,
-      phoneNumber: channel.phoneNumber
-    })) ?? [];
+const tagTriggerInclude = {
+  tagTriggers: {
+    include: {
+      tag: {
+        select: {
+          id: true,
+          name: true,
+          color: true,
+          isActive: true
+        }
+      }
+    }
+  }
+};
 
+const boardRuleInclude = {
+  channels: {
+    include: {
+      channel: {
+        select: {
+          id: true,
+          displayName: true,
+          provider: true,
+          phoneNumber: true
+        }
+      }
+    }
+  },
+  stages: {
+    orderBy: { order: "asc" as const },
+    include: tagTriggerInclude
+  }
+};
+
+function toBoardDto(record: BoardRecord): ContactBoardDto {
   return {
     id: record.id,
     workspaceId: record.workspaceId,
     name: record.name,
     description: record.description,
-    isPrimaryPipeline: record.isPrimaryPipeline ?? false,
-    channels,
+    isPrimaryPipeline: record.isPrimaryPipeline,
+    channels:
+      record.channels?.map((link) => ({
+        id: link.channel.id,
+        displayName: link.channel.displayName,
+        provider: link.channel.provider,
+        phoneNumber: link.channel.phoneNumber
+      })) ?? [],
     createdAt: toIsoString(record.createdAt)
   };
 }
 
 function toStageDto(record: StageRecord): ContactBoardStageDto {
-  const tagTriggers: ContactBoardStageTagDto[] =
-    record.tagTriggers?.map(({ tag }) => ({
-      id: tag.id,
-      name: tag.name,
-      color: tag.color,
-      isActive: tag.isActive
-    })) ?? [];
-
   return {
     id: record.id,
     workspaceId: record.workspaceId,
@@ -217,7 +263,13 @@ function toStageDto(record: StageRecord): ContactBoardStageDto {
     name: record.name,
     color: record.color,
     order: record.order,
-    tagTriggers
+    tagTriggers:
+      record.tagTriggers?.map((link) => ({
+        id: link.tag.id,
+        name: link.tag.name,
+        color: link.tag.color,
+        isActive: link.tag.isActive
+      })) ?? []
   };
 }
 
@@ -254,11 +306,7 @@ export function createBoardsService(prisma: PrismaLike) {
     async listBoards(input: { workspaceId: string }): Promise<ContactBoardWithStagesDto[]> {
       const boards = await prisma.contactBoard.findMany({
         where: { workspaceId: input.workspaceId },
-        include: {
-          stages: {
-            orderBy: { order: "asc" }
-          }
-        },
+        include: boardRuleInclude,
         orderBy: { createdAt: "asc" }
       });
 
@@ -269,16 +317,33 @@ export function createBoardsService(prisma: PrismaLike) {
       workspaceId: string;
       name: string;
       description?: string;
-    }): Promise<ContactBoardDto> {
+      channelIds?: string[];
+      isPrimaryPipeline?: boolean;
+    }): Promise<ContactBoardWithStagesDto> {
+      const channelIds = [...new Set(input.channelIds ?? [])];
       const board = await prisma.contactBoard.create({
         data: {
           workspaceId: input.workspaceId,
           name: input.name.trim(),
-          description: normalizeOptional(input.description) ?? null
-        }
+          description: normalizeOptional(input.description) ?? null,
+          isPrimaryPipeline: input.isPrimaryPipeline ?? false,
+          channels:
+            channelIds.length > 0
+              ? {
+                  createMany: {
+                    data: channelIds.map((channelId) => ({
+                      workspaceId: input.workspaceId,
+                      channelId
+                    })),
+                    skipDuplicates: true
+                  }
+                }
+              : undefined
+        },
+        include: boardRuleInclude
       });
 
-      return toBoardDto(board);
+      return toBoardWithStagesDto(board);
     },
 
     async updateBoard(input: {
@@ -286,8 +351,14 @@ export function createBoardsService(prisma: PrismaLike) {
       boardId: string;
       name?: string;
       description?: string;
+      channelIds?: string[];
+      isPrimaryPipeline?: boolean;
     }): Promise<ContactBoardWithStagesDto> {
-      const data: { name?: string; description?: string | null } = {};
+      const data: {
+        name?: string;
+        description?: string | null;
+        isPrimaryPipeline?: boolean;
+      } = {};
 
       if (input.name !== undefined) {
         data.name = input.name.trim();
@@ -295,6 +366,10 @@ export function createBoardsService(prisma: PrismaLike) {
 
       if (input.description !== undefined) {
         data.description = normalizeOptional(input.description) ?? null;
+      }
+
+      if (input.isPrimaryPipeline !== undefined) {
+        data.isPrimaryPipeline = input.isPrimaryPipeline;
       }
 
       const board = await prisma.contactBoard.update({
@@ -305,12 +380,38 @@ export function createBoardsService(prisma: PrismaLike) {
           }
         },
         data,
-        include: {
-          stages: {
-            orderBy: { order: "asc" }
-          }
-        }
+        include: boardRuleInclude
       });
+
+      if (input.channelIds !== undefined) {
+        const channelIds = [...new Set(input.channelIds)];
+        await prisma.$transaction(async (tx) => {
+          await tx.contactBoardChannel.deleteMany({
+            where: { workspaceId: input.workspaceId, boardId: input.boardId }
+          });
+          if (channelIds.length > 0) {
+            await tx.contactBoardChannel.createMany({
+              data: channelIds.map((channelId) => ({
+                workspaceId: input.workspaceId,
+                boardId: input.boardId,
+                channelId
+              })),
+              skipDuplicates: true
+            });
+          }
+        });
+
+        const refreshedBoard = await prisma.contactBoard.findFirst({
+          where: { workspaceId: input.workspaceId, id: input.boardId },
+          include: boardRuleInclude
+        });
+
+        if (!refreshedBoard) {
+          throw new BoardsServiceError("BOARD_NOT_FOUND", "Board not found.");
+        }
+
+        return toBoardWithStagesDto(refreshedBoard);
+      }
 
       return toBoardWithStagesDto(board);
     },
@@ -321,11 +422,7 @@ export function createBoardsService(prisma: PrismaLike) {
     }): Promise<BoardDeleteResultDto> {
       const board = await prisma.contactBoard.findFirst({
         where: { workspaceId: input.workspaceId, id: input.boardId },
-        include: {
-          stages: {
-            orderBy: { order: "asc" }
-          }
-        }
+        include: boardRuleInclude
       });
 
       if (!board) {
@@ -350,14 +447,11 @@ export function createBoardsService(prisma: PrismaLike) {
       name: string;
       color: string;
       order: number;
+      tagIds?: string[];
     }): Promise<ContactBoardStageDto> {
       const board = await prisma.contactBoard.findFirst({
         where: { workspaceId: input.workspaceId, id: input.boardId },
-        include: {
-          stages: {
-            orderBy: { order: "asc" }
-          }
-        }
+        include: boardRuleInclude
       });
 
       if (!board) {
@@ -371,8 +465,37 @@ export function createBoardsService(prisma: PrismaLike) {
           name: input.name.trim(),
           color: input.color.trim(),
           order: input.order
-        }
+        },
+        include: tagTriggerInclude
       });
+
+      const tagIds = [...new Set(input.tagIds ?? [])];
+      if (tagIds.length > 0) {
+        await prisma.contactBoardStageTag.createMany({
+          data: tagIds.map((tagId) => ({
+            workspaceId: input.workspaceId,
+            boardId: input.boardId,
+            stageId: stage.id,
+            tagId
+          })),
+          skipDuplicates: true
+        });
+
+        const stageWithTags = await prisma.contactBoardStage.findFirst({
+          where: {
+            workspaceId: input.workspaceId,
+            boardId: input.boardId,
+            id: stage.id
+          },
+          include: tagTriggerInclude
+        });
+
+        if (!stageWithTags) {
+          throw new BoardsServiceError("STAGE_NOT_FOUND", "Stage not found.");
+        }
+
+        return toStageDto(stageWithTags);
+      }
 
       return toStageDto(stage);
     },
@@ -383,6 +506,7 @@ export function createBoardsService(prisma: PrismaLike) {
       stageId: string;
       name?: string;
       color?: string;
+      tagIds?: string[];
     }): Promise<ContactBoardStageDto> {
       const stage = await prisma.contactBoardStage.findFirst({
         where: {
@@ -414,8 +538,48 @@ export function createBoardsService(prisma: PrismaLike) {
             id: input.stageId
           }
         },
-        data
+        data,
+        include: tagTriggerInclude
       });
+
+      if (input.tagIds !== undefined) {
+        const tagIds = [...new Set(input.tagIds)];
+        await prisma.$transaction(async (tx) => {
+          await tx.contactBoardStageTag.deleteMany({
+            where: {
+              workspaceId: input.workspaceId,
+              boardId: input.boardId,
+              stageId: input.stageId
+            }
+          });
+          if (tagIds.length > 0) {
+            await tx.contactBoardStageTag.createMany({
+              data: tagIds.map((tagId) => ({
+                workspaceId: input.workspaceId,
+                boardId: input.boardId,
+                stageId: input.stageId,
+                tagId
+              })),
+              skipDuplicates: true
+            });
+          }
+        });
+
+        const refreshedStage = await prisma.contactBoardStage.findFirst({
+          where: {
+            workspaceId: input.workspaceId,
+            boardId: input.boardId,
+            id: input.stageId
+          },
+          include: tagTriggerInclude
+        });
+
+        if (!refreshedStage) {
+          throw new BoardsServiceError("STAGE_NOT_FOUND", "Stage not found.");
+        }
+
+        return toStageDto(refreshedStage);
+      }
 
       return toStageDto(updatedStage);
     },
@@ -427,11 +591,7 @@ export function createBoardsService(prisma: PrismaLike) {
     }): Promise<ContactBoardStageDto[]> {
       const board = await prisma.contactBoard.findFirst({
         where: { workspaceId: input.workspaceId, id: input.boardId },
-        include: {
-          stages: {
-            orderBy: { order: "asc" }
-          }
-        }
+        include: boardRuleInclude
       });
 
       if (!board) {
@@ -531,11 +691,7 @@ export function createBoardsService(prisma: PrismaLike) {
     }): Promise<BoardContactsDto> {
       const board = await prisma.contactBoard.findFirst({
         where: { workspaceId: input.workspaceId, id: input.boardId },
-        include: {
-          stages: {
-            orderBy: { order: "asc" }
-          }
-        }
+        include: boardRuleInclude
       });
 
       if (!board) {
@@ -604,11 +760,15 @@ export function createBoardsService(prisma: PrismaLike) {
             contactId: input.contactId,
             boardId: input.boardId,
             stageId: input.stageId,
-            isPrimary
+            isPrimary,
+            lastMovedBy: "manual",
+            lastRuleAppliedAt: null
           },
           update: {
             stageId: input.stageId,
-            isPrimary
+            isPrimary,
+            lastMovedBy: "manual",
+            lastRuleAppliedAt: null
           },
           include: { contact: true }
         });
@@ -668,8 +828,17 @@ export function createBoardsService(prisma: PrismaLike) {
           },
           data:
             input.isPrimary === undefined
-              ? { stageId: input.stageId }
-              : { stageId: input.stageId, isPrimary: input.isPrimary },
+              ? {
+                  stageId: input.stageId,
+                  lastMovedBy: "manual",
+                  lastRuleAppliedAt: null
+                }
+              : {
+                  stageId: input.stageId,
+                  isPrimary: input.isPrimary,
+                  lastMovedBy: "manual",
+                  lastRuleAppliedAt: null
+                },
           include: { contact: true }
         });
 

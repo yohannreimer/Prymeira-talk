@@ -19,12 +19,20 @@ type MockPrisma = {
     update: ReturnType<typeof vi.fn<PrismaLike["contactBoard"]["update"]>>;
     delete: ReturnType<typeof vi.fn<PrismaLike["contactBoard"]["delete"]>>;
   };
+  contactBoardChannel: {
+    deleteMany: ReturnType<typeof vi.fn>;
+    createMany: ReturnType<typeof vi.fn>;
+  };
   contactBoardStage: {
     create: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["create"]>>;
     findMany: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["findMany"]>>;
     findFirst: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["findFirst"]>>;
     update: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["update"]>>;
     delete: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["delete"]>>;
+  };
+  contactBoardStageTag: {
+    deleteMany: ReturnType<typeof vi.fn>;
+    createMany: ReturnType<typeof vi.fn>;
   };
   contactBoardMembership: {
     findMany: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["findMany"]>>;
@@ -52,6 +60,7 @@ const baseBoard = {
   workspaceId: "workspace_a",
   name: "Pre-vendas",
   description: "Pipeline comercial",
+  isPrimaryPipeline: false,
   createdAt: new Date("2026-05-20T10:00:00.000Z"),
   updatedAt: new Date("2026-05-20T10:00:00.000Z")
 };
@@ -127,7 +136,10 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
         ]),
       create:
         overrides.contactBoard?.create ??
-        vi.fn<PrismaLike["contactBoard"]["create"]>().mockResolvedValue(baseBoard),
+        vi.fn<PrismaLike["contactBoard"]["create"]>().mockResolvedValue({
+          ...baseBoard,
+          stages: []
+        }),
       findFirst:
         overrides.contactBoard?.findFirst ??
         vi.fn<PrismaLike["contactBoard"]["findFirst"]>().mockResolvedValue({
@@ -144,6 +156,14 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
       delete:
         overrides.contactBoard?.delete ??
         vi.fn<PrismaLike["contactBoard"]["delete"]>().mockResolvedValue(baseBoard)
+    },
+    contactBoardChannel: {
+      deleteMany:
+        overrides.contactBoardChannel?.deleteMany ??
+        vi.fn().mockResolvedValue({ count: 0 }),
+      createMany:
+        overrides.contactBoardChannel?.createMany ??
+        vi.fn().mockResolvedValue({ count: 1 })
     },
     contactBoardStage: {
       create:
@@ -164,6 +184,14 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
       delete:
         overrides.contactBoardStage?.delete ??
         vi.fn<PrismaLike["contactBoardStage"]["delete"]>().mockResolvedValue(baseStages[0])
+    },
+    contactBoardStageTag: {
+      deleteMany:
+        overrides.contactBoardStageTag?.deleteMany ??
+        vi.fn().mockResolvedValue({ count: 0 }),
+      createMany:
+        overrides.contactBoardStageTag?.createMany ??
+        vi.fn().mockResolvedValue({ count: 1 })
     },
     contactBoardMembership: {
       findMany:
@@ -231,7 +259,100 @@ const aggregateBoardSchema = contactBoardSchema.extend({
   stages: contactBoardStageSchema.array()
 });
 
+const tagTriggerIncludeExpectation = {
+  tagTriggers: {
+    include: {
+      tag: {
+        select: {
+          id: true,
+          name: true,
+          color: true,
+          isActive: true
+        }
+      }
+    }
+  }
+};
+
+const boardRuleIncludeExpectation = {
+  channels: {
+    include: {
+      channel: {
+        select: {
+          id: true,
+          displayName: true,
+          provider: true,
+          phoneNumber: true
+        }
+      }
+    }
+  },
+  stages: {
+    orderBy: { order: "asc" },
+    include: tagTriggerIncludeExpectation
+  }
+};
+
 describe("boards service", () => {
+  it("creates a board with selected channels and primary pipeline setting", async () => {
+    const prisma = createMockPrisma();
+    const service = createBoardsService(prisma);
+
+    await service.createBoard({
+      workspaceId: "workspace_a",
+      name: "Vendas",
+      description: "",
+      channelIds: ["00000000-0000-4000-8000-000000000060"],
+      isPrimaryPipeline: true
+    });
+
+    expect(prisma.contactBoard.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          isPrimaryPipeline: true,
+          channels: {
+            createMany: {
+              data: [
+                {
+                  workspaceId: "workspace_a",
+                  channelId: "00000000-0000-4000-8000-000000000060"
+                }
+              ],
+              skipDuplicates: true
+            }
+          }
+        })
+      })
+    );
+  });
+
+  it("updates stage tag triggers by replacing mappings for that stage", async () => {
+    const prisma = createMockPrisma();
+    const service = createBoardsService(prisma);
+
+    await service.updateStage({
+      workspaceId: "workspace_a",
+      boardId,
+      stageId,
+      tagIds: ["00000000-0000-4000-8000-000000000070"]
+    });
+
+    expect(prisma.contactBoardStageTag.deleteMany).toHaveBeenCalledWith({
+      where: { workspaceId: "workspace_a", boardId, stageId }
+    });
+    expect(prisma.contactBoardStageTag.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          workspaceId: "workspace_a",
+          boardId,
+          stageId,
+          tagId: "00000000-0000-4000-8000-000000000070"
+        }
+      ],
+      skipDuplicates: true
+    });
+  });
+
   it("lists boards inside a workspace with stages ordered by sort order", async () => {
     const prisma = createMockPrisma();
     const service = createBoardsService(prisma);
@@ -240,11 +361,7 @@ describe("boards service", () => {
 
     expect(prisma.contactBoard.findMany).toHaveBeenCalledWith({
       where: { workspaceId: "workspace_a" },
-      include: {
-        stages: {
-          orderBy: { order: "asc" }
-        }
-      },
+      include: boardRuleIncludeExpectation,
       orderBy: { createdAt: "asc" }
     });
     expect(boards[0]?.stages.map((stage) => stage.name)).toEqual([
@@ -264,11 +381,7 @@ describe("boards service", () => {
 
     expect(prisma.contactBoard.findFirst).toHaveBeenCalledWith({
       where: { workspaceId: "workspace_a", id: boardId },
-      include: {
-        stages: {
-          orderBy: { order: "asc" }
-        }
-      }
+      include: boardRuleIncludeExpectation
     });
     expect(prisma.contactBoardMembership.findMany).toHaveBeenCalledWith({
       where: { workspaceId: "workspace_a", boardId },
@@ -320,11 +433,15 @@ describe("boards service", () => {
         contactId,
         boardId,
         stageId,
-        isPrimary: true
+        isPrimary: true,
+        lastMovedBy: "manual",
+        lastRuleAppliedAt: null
       },
       update: {
         stageId,
-        isPrimary: true
+        isPrimary: true,
+        lastMovedBy: "manual",
+        lastRuleAppliedAt: null
       },
       include: { contact: true }
     });
@@ -353,7 +470,12 @@ describe("boards service", () => {
           id: membershipId
         }
       },
-      data: { stageId: nextStageId, isPrimary: true },
+      data: {
+        stageId: nextStageId,
+        isPrimary: true,
+        lastMovedBy: "manual",
+        lastRuleAppliedAt: null
+      },
       include: { contact: true }
     });
   });
@@ -403,7 +525,11 @@ describe("boards service", () => {
           id: membershipId
         }
       },
-      data: { stageId: nextStageId },
+      data: {
+        stageId: nextStageId,
+        lastMovedBy: "manual",
+        lastRuleAppliedAt: null
+      },
       include: { contact: true }
     });
   });
@@ -456,11 +582,7 @@ describe("boards service", () => {
         name: "Vendas",
         description: null
       },
-      include: {
-        stages: {
-          orderBy: { order: "asc" }
-        }
-      }
+      include: boardRuleIncludeExpectation
     });
     expect(board.name).toBe("Vendas");
   });
@@ -476,11 +598,7 @@ describe("boards service", () => {
 
     expect(prisma.contactBoard.findFirst).toHaveBeenCalledWith({
       where: { workspaceId: "workspace_a", id: boardId },
-      include: {
-        stages: {
-          orderBy: { order: "asc" }
-        }
-      }
+      include: boardRuleIncludeExpectation
     });
     expect(prisma.contactBoard.delete).toHaveBeenCalledWith({
       where: {
@@ -516,7 +634,8 @@ describe("boards service", () => {
       data: {
         name: "Em atendimento",
         color: "#123456"
-      }
+      },
+      include: tagTriggerIncludeExpectation
     });
     expect(stage.name).toBe("Atualizada");
   });
