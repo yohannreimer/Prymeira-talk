@@ -1,5 +1,5 @@
 import { useTalkAuth } from "../../app/auth";
-import type { ConversationDto, MessageDto, RealtimeEvent } from "@prymeira-talk/shared";
+import type { ConversationDto, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
 import { Bot, CheckCircle2, Download, History, MessageSquare, Plus, StickyNote, UserCheck, X } from "lucide-react";
 import type { ChangeEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -11,6 +11,7 @@ import {
   apiGetConversationContext,
   apiGetConversationMessages,
   apiGetConversations,
+  apiGetTags,
   apiGetQuickReplies,
   apiMarkConversationRead,
   apiRunConversationAction,
@@ -377,7 +378,8 @@ export function InboxPage() {
   const [draft, setDraft] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
   const [notesHistoryOpen, setNotesHistoryOpen] = useState(false);
-  const [tagDraft, setTagDraft] = useState("");
+  const [tagCatalog, setTagCatalog] = useState<TagDto[]>([]);
+  const [selectedTagId, setSelectedTagId] = useState("");
   const [selectedQueueFilter, setSelectedQueueFilter] = useState<ConversationQueueFilter>("active");
   const [selectedChannelFilter, setSelectedChannelFilter] = useState("all");
   const [isSending, setIsSending] = useState(false);
@@ -402,6 +404,22 @@ export function InboxPage() {
     const nextToken = await getToken();
     setToken(nextToken);
     return nextToken;
+  }, [getToken]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    void apiGetTags(getToken)
+      .then((tags) => {
+        if (isMounted) {
+          setTagCatalog(tags.filter((tag) => tag.isActive));
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      isMounted = false;
+    };
   }, [getToken]);
 
   function isMessageThreadNearBottom() {
@@ -777,10 +795,21 @@ export function InboxPage() {
   const contextNotes = contactContext?.notes ?? [];
   const visibleNotes = notesHistoryOpen ? contextNotes : contextNotes.slice(0, 2);
   const hiddenNoteCount = Math.max(0, contextNotes.length - visibleNotes.length);
+  const availableTagOptions = useMemo(() => {
+    const appliedTagIds = new Set(contactContext?.tags.map((tag) => tag.id) ?? []);
+
+    return tagCatalog.filter((tag) => !appliedTagIds.has(tag.id));
+  }, [contactContext?.tags, tagCatalog]);
 
   useEffect(() => {
     setNotesHistoryOpen(false);
   }, [selectedConversationId]);
+
+  useEffect(() => {
+    setSelectedTagId((current) =>
+      availableTagOptions.some((tag) => tag.id === current) ? current : ""
+    );
+  }, [availableTagOptions]);
 
   useEffect(() => {
     if (!pendingThreadScrollRef.current) return;
@@ -1066,11 +1095,12 @@ export function InboxPage() {
   async function handleAddTag(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!tagDraft.trim()) return;
+    const tag = tagCatalog.find((currentTag) => currentTag.id === selectedTagId);
+    if (!tag) return;
 
-    const result = await runAction({ action: "add_tag", name: tagDraft.trim() });
+    const result = await runAction({ action: "add_tag", name: tag.name });
     if (result) {
-      setTagDraft("");
+      setSelectedTagId("");
     }
   }
 
@@ -1540,15 +1570,23 @@ export function InboxPage() {
             )}
           </div>
           <form className="tag-add-form" onSubmit={handleAddTag}>
-            <input
-              aria-label="Nova tag"
-              disabled={!selectedConversation || isRunningAction}
-              onChange={(event) => setTagDraft(event.target.value)}
-              placeholder="Adicionar tag..."
-              value={tagDraft}
-            />
+            <select
+              aria-label="Selecionar tag"
+              disabled={!selectedConversation || isRunningAction || availableTagOptions.length === 0}
+              onChange={(event) => setSelectedTagId(event.target.value)}
+              value={selectedTagId}
+            >
+              <option value="">
+                {availableTagOptions.length > 0 ? "Adicionar tag..." : "Todas as tags aplicadas"}
+              </option>
+              {availableTagOptions.map((tag) => (
+                <option key={tag.id} value={tag.id}>
+                  {tag.name}
+                </option>
+              ))}
+            </select>
             <button
-              disabled={!selectedConversation || !tagDraft.trim() || isRunningAction}
+              disabled={!selectedConversation || !selectedTagId || isRunningAction}
               type="submit"
             >
               Adicionar

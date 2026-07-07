@@ -264,6 +264,14 @@ export function ContactsPage() {
   }, [getToken]);
 
   useEffect(() => {
+    if (!saveMessage) return;
+
+    const timeoutId = window.setTimeout(() => setSaveMessage(null), 4200);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [saveMessage]);
+
+  useEffect(() => {
     let isMounted = true;
 
     void apiGetChannels(getToken)
@@ -912,6 +920,75 @@ export function ContactsPage() {
     }
   }
 
+  async function handleUpdateAllStages() {
+    if (!selectedBoardId || boardStages.length === 0) return;
+
+    const formsByStage = boardStages.reduce<Record<string, StageFormState>>((accumulator, stage) => {
+      accumulator[stage.id] = stageEditForms[stage.id] ?? {
+        name: stage.name,
+        color: stage.color,
+        tagIds: stage.tagTriggers.map((tag) => tag.id)
+      };
+
+      return accumulator;
+    }, {});
+    const nextStageTagIds = Object.fromEntries(
+      boardStages.map((stage) => [stage.id, formsByStage[stage.id]?.tagIds ?? []])
+    );
+    const hasInvalidStage = boardStages.some((stage) => {
+      const form = formsByStage[stage.id];
+
+      return !form?.name.trim() || !form.color.trim();
+    });
+    const hasDuplicateTag = boardStages.some((stage) =>
+      findDuplicateStageTag(nextStageTagIds, stage.id, formsByStage[stage.id]?.tagIds ?? [])
+    );
+
+    if (hasInvalidStage) {
+      setBoardError("Revise nome e cor das etapas antes de salvar.");
+      return;
+    }
+
+    if (hasDuplicateTag) {
+      setBoardError("Esta tag já está ligada a outra etapa deste board.");
+      return;
+    }
+
+    setIsBoardSaving(true);
+    setBoardError(null);
+    setSaveMessage(null);
+
+    try {
+      const updatedStages = await Promise.all(
+        boardStages.map(async (stage) => {
+          const form = formsByStage[stage.id];
+          const nextName = form.name.trim();
+          const nextColor = form.color.trim();
+          const currentTagIds = stage.tagTriggers.map((tag) => tag.id);
+          const hasChanges =
+            nextName !== stage.name ||
+            nextColor !== stage.color ||
+            form.tagIds.join("|") !== currentTagIds.join("|");
+
+          if (!hasChanges) return stage;
+
+          return apiUpdateBoardStage(getToken, selectedBoardId, stage.id, {
+            name: nextName,
+            color: nextColor,
+            tagIds: form.tagIds
+          });
+        })
+      );
+
+      updateSelectedBoardStages(updatedStages.sort((left, right) => left.order - right.order));
+      setSaveMessage("Etapas atualizadas.");
+    } catch (updateError) {
+      setBoardError(updateError instanceof Error ? updateError.message : "Não foi possível salvar as etapas.");
+    } finally {
+      setIsBoardSaving(false);
+    }
+  }
+
   async function handleSyncBoardRules(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -1375,16 +1452,29 @@ export function ContactsPage() {
                               ? "Nova etapa"
                               : boardPanelMode === "sync-rules"
                                 ? "Sincronizar regras"
-                                : "Adicionar contato"}
+                              : "Adicionar contato"}
                       </strong>
                       {boards.length > 0 ? (
-                        <button
-                          aria-label="Fechar painel"
-                          onClick={() => setBoardPanelMode(null)}
-                          type="button"
-                        >
-                          Fechar
-                        </button>
+                        <div className="board-panel-heading-actions">
+                          {boardPanelMode === "create-stage" && boardStages.length > 0 ? (
+                            <button
+                              className="panel-save-button"
+                              disabled={isBoardSaving}
+                              onClick={() => void handleUpdateAllStages()}
+                              type="button"
+                            >
+                              <Save size={15} aria-hidden="true" />
+                              Salvar atualizações
+                            </button>
+                          ) : null}
+                          <button
+                            aria-label="Fechar painel"
+                            onClick={() => setBoardPanelMode(null)}
+                            type="button"
+                          >
+                            Fechar
+                          </button>
+                        </div>
                       ) : null}
                     </div>
 
