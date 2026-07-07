@@ -2,12 +2,14 @@ import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto } from "@prymeira-talk/shared";
 import {
   Clock3,
+  Headphones,
   MailPlus,
   Plus,
   RefreshCw,
   Route,
   ShieldCheck,
   Trash2,
+  UserPlus,
   Users
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -101,6 +103,33 @@ function businessHoursPayload(mode: BusinessHoursMode) {
   return mode === "business"
     ? { mode, timezone: "America/Sao_Paulo", weekdays: [1, 2, 3, 4, 5], start: "09:00", end: "18:00" }
     : { mode };
+}
+
+function departmentBusinessHoursLabel(department: TeamDepartmentDto | null) {
+  const businessHours =
+    typeof department?.businessHours === "object" && department.businessHours !== null
+      ? department.businessHours as { mode?: unknown }
+      : {};
+  return businessHours.mode === "business" ? businessHoursLabels.business : businessHoursLabels.always_on;
+}
+
+function departmentSlaSummary(department: TeamDepartmentDto) {
+  const first = department.slaFirstResponseMinutes
+    ? `${department.slaFirstResponseMinutes}m primeira resposta`
+    : "sem SLA inicial";
+  const resolution = department.slaResolutionMinutes
+    ? `${department.slaResolutionMinutes}m resolução`
+    : "sem SLA resolução";
+  return `${first} · ${resolution}`;
+}
+
+function queueInitial(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || "FI";
 }
 
 export function TeamPage() {
@@ -520,200 +549,260 @@ export function TeamPage() {
                 onClick={() => setSelectedDepartmentId(department.id)}
                 type="button"
               >
-                <span>
-                  <strong>{department.name}</strong>
-                  <small>{distributionLabels[department.distributionMode]} · {department.members.length} membros</small>
+                <span className="team-dept-main">
+                  <span className="team-queue-avatar">{queueInitial(department.name)}</span>
+                  <span>
+                    <strong>{department.name}</strong>
+                    <small>{department.description || departmentSlaSummary(department)}</small>
+                  </span>
                 </span>
-                <span className="status-badge status-badge--closed">Ordem {department.routingOrder}</span>
+                <span className="team-dept-meta">
+                  <span>{distributionLabels[department.distributionMode]}</span>
+                  <span>{department.channelRules.length} canais</span>
+                  <span>{department.members.length} membros</span>
+                </span>
               </button>
             ))}
           </div>
         </div>
 
         <div className="module-panel team-queue-workbench">
-          <div className="panel-title-row">
-            <h2>{selectedDepartment ? selectedDepartment.name : "Configuração da fila"}</h2>
-            <span>{selectedDepartment ? `${selectedDepartment.channelRules.length} canais` : "Selecione uma fila"}</span>
-          </div>
-
           {selectedDepartment ? (
             <>
-              <form className="team-queue-form" onSubmit={(event) => void saveDepartment(event)}>
-                <label className="form-field">
-                  Nome
-                  <input
-                    disabled={isSaving}
-                    onChange={(event) => setDepartmentForm((current) => ({ ...current, name: event.target.value }))}
-                    value={departmentForm.name}
-                    required
-                  />
-                </label>
-                <label className="form-field">
-                  Descrição
-                  <input
-                    disabled={isSaving}
-                    onChange={(event) => setDepartmentForm((current) => ({ ...current, description: event.target.value }))}
-                    value={departmentForm.description}
-                    placeholder="Quando usar esta fila"
-                  />
-                </label>
-                <label className="form-field">
-                  Distribuição
-                  <select
-                    disabled={isSaving}
-                    onChange={(event) =>
-                      setDepartmentForm((current) => ({
-                        ...current,
-                        distributionMode: event.target.value as TeamDepartmentDto["distributionMode"]
-                      }))
-                    }
-                    value={departmentForm.distributionMode}
-                  >
-                    {Object.entries(distributionLabels).map(([value, label]) => (
-                      <option key={value} value={value}>{label}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="form-field">
-                  Ordem
-                  <input
-                    disabled={isSaving}
-                    min="0"
-                    onChange={(event) => setDepartmentForm((current) => ({ ...current, routingOrder: event.target.value }))}
-                    type="number"
-                    value={departmentForm.routingOrder}
-                  />
-                </label>
-                <label className="form-field">
-                  Horário
-                  <select
-                    disabled={isSaving}
-                    onChange={(event) =>
-                      setDepartmentForm((current) => ({
-                        ...current,
-                        businessHoursMode: event.target.value as BusinessHoursMode
-                      }))
-                    }
-                    value={departmentForm.businessHoursMode}
-                  >
-                    {Object.entries(businessHoursLabels).map(([value, label]) => (
-                      <option key={value} value={value}>{label}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="form-field">
-                  SLA 1a resposta
-                  <input
-                    disabled={isSaving}
-                    min="1"
-                    onChange={(event) =>
-                      setDepartmentForm((current) => ({ ...current, slaFirstResponseMinutes: event.target.value }))
-                    }
-                    placeholder="min"
-                    type="number"
-                    value={departmentForm.slaFirstResponseMinutes}
-                  />
-                </label>
-                <label className="form-field">
-                  SLA resolução
-                  <input
-                    disabled={isSaving}
-                    min="1"
-                    onChange={(event) =>
-                      setDepartmentForm((current) => ({ ...current, slaResolutionMinutes: event.target.value }))
-                    }
-                    placeholder="min"
-                    type="number"
-                    value={departmentForm.slaResolutionMinutes}
-                  />
-                </label>
-                <button className="secondary-button icon-button-label" disabled={isSaving || !departmentForm.name.trim()} type="submit">
-                  <Clock3 size={15} />
-                  Salvar fila
-                </button>
-              </form>
-
-              <div className="team-queue-sections">
-                <section>
-                  <div className="team-subtitle-row">
-                    <strong>Membros da fila</strong>
-                    <span>{selectedDepartment.members.length}</span>
+              <div className="team-workbench-header">
+                <div className="team-workbench-title">
+                  <span className="team-queue-avatar team-queue-avatar--large">
+                    {queueInitial(selectedDepartment.name)}
+                  </span>
+                  <div>
+                    <h2>{selectedDepartment.name}</h2>
+                    <p>{selectedDepartment.description || "Fila sem descrição"}</p>
                   </div>
-                  <form className="team-mini-form" onSubmit={(event) => void addMember(event)}>
-                    <select
-                      disabled={isSaving || availableMemberUsers.length === 0}
-                      value={memberForm.userId}
-                      onChange={(event) => setMemberForm((current) => ({ ...current, userId: event.target.value }))}
-                      aria-label="Usuário"
-                    >
-                      {availableMemberUsers.map((user) => (
-                        <option key={user.id} value={user.id}>{user.displayName}</option>
-                      ))}
-                    </select>
-                    <select
-                      disabled={isSaving}
-                      value={memberForm.role}
-                      onChange={(event) =>
-                        setMemberForm((current) => ({
-                          ...current,
-                          role: event.target.value as TeamDepartmentMemberDto["role"]
-                        }))
-                      }
-                      aria-label="Papel na fila"
-                    >
-                      <option value="agent">Atendente</option>
-                      <option value="supervisor">Supervisor</option>
-                    </select>
-                    <button className="secondary-button icon-button-label" disabled={isSaving || !memberForm.userId} type="submit">
-                      <Plus size={15} />
-                      Membro
+                </div>
+                <div className="team-workbench-badges" aria-label="Resumo da fila">
+                  <span>{distributionLabels[selectedDepartment.distributionMode]}</span>
+                  <span>{departmentBusinessHoursLabel(selectedDepartment)}</span>
+                  <span>{selectedDepartment.channelRules.length} canais</span>
+                  <span>{selectedDepartment.members.length} membros</span>
+                </div>
+              </div>
+
+              <div className="team-workbench-grid">
+                <section className="team-workbench-section team-workbench-section--rules">
+                  <div className="team-section-heading">
+                    <span className="team-section-icon">
+                      <Clock3 size={16} />
+                    </span>
+                    <div>
+                      <h3>Regras da fila</h3>
+                      <p>{departmentSlaSummary(selectedDepartment)}</p>
+                    </div>
+                  </div>
+                  <form className="team-queue-form" onSubmit={(event) => void saveDepartment(event)}>
+                    <label className="form-field">
+                      Nome
+                      <input
+                        disabled={isSaving}
+                        onChange={(event) => setDepartmentForm((current) => ({ ...current, name: event.target.value }))}
+                        value={departmentForm.name}
+                        required
+                      />
+                    </label>
+                    <label className="form-field team-form-field--wide">
+                      Descrição
+                      <input
+                        disabled={isSaving}
+                        onChange={(event) => setDepartmentForm((current) => ({ ...current, description: event.target.value }))}
+                        value={departmentForm.description}
+                        placeholder="Quando usar esta fila"
+                      />
+                    </label>
+                    <label className="form-field">
+                      Distribuição
+                      <select
+                        disabled={isSaving}
+                        onChange={(event) =>
+                          setDepartmentForm((current) => ({
+                            ...current,
+                            distributionMode: event.target.value as TeamDepartmentDto["distributionMode"]
+                          }))
+                        }
+                        value={departmentForm.distributionMode}
+                      >
+                        {Object.entries(distributionLabels).map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="form-field">
+                      Ordem
+                      <input
+                        disabled={isSaving}
+                        min="0"
+                        onChange={(event) => setDepartmentForm((current) => ({ ...current, routingOrder: event.target.value }))}
+                        type="number"
+                        value={departmentForm.routingOrder}
+                      />
+                    </label>
+                    <label className="form-field">
+                      Horário
+                      <select
+                        disabled={isSaving}
+                        onChange={(event) =>
+                          setDepartmentForm((current) => ({
+                            ...current,
+                            businessHoursMode: event.target.value as BusinessHoursMode
+                          }))
+                        }
+                        value={departmentForm.businessHoursMode}
+                      >
+                        {Object.entries(businessHoursLabels).map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="form-field">
+                      SLA 1a resposta
+                      <input
+                        disabled={isSaving}
+                        min="1"
+                        onChange={(event) =>
+                          setDepartmentForm((current) => ({ ...current, slaFirstResponseMinutes: event.target.value }))
+                        }
+                        placeholder="min"
+                        type="number"
+                        value={departmentForm.slaFirstResponseMinutes}
+                      />
+                    </label>
+                    <label className="form-field">
+                      SLA resolução
+                      <input
+                        disabled={isSaving}
+                        min="1"
+                        onChange={(event) =>
+                          setDepartmentForm((current) => ({ ...current, slaResolutionMinutes: event.target.value }))
+                        }
+                        placeholder="min"
+                        type="number"
+                        value={departmentForm.slaResolutionMinutes}
+                      />
+                    </label>
+                    <button className="secondary-button icon-button-label" disabled={isSaving || !departmentForm.name.trim()} type="submit">
+                      <Clock3 size={15} />
+                      Salvar regras
                     </button>
                   </form>
-                  <div className="team-chip-list">
-                    {selectedDepartment.members.length === 0 ? <p className="list-note">Sem membros nesta fila.</p> : null}
-                    {selectedDepartment.members.map((member) => (
-                      <span className="team-chip" key={member.userId}>
-                        <strong>{member.displayName ?? member.userId}</strong>
-                        <small>{member.role === "supervisor" ? "Supervisor" : "Atendente"} · {presenceLabel(member.presenceState)}</small>
-                        <button aria-label="Remover membro" onClick={() => void removeMember(member)} type="button">
+                </section>
+
+                <section className="team-workbench-section">
+                  <div className="team-section-heading">
+                    <span className="team-section-icon">
+                      <Route size={16} />
+                    </span>
+                    <div>
+                      <h3>Entrada</h3>
+                      <p>{selectedDepartment.channelRules.length} canais roteados</p>
+                    </div>
+                  </div>
+                  <form className="team-mini-form team-add-strip" onSubmit={(event) => void addChannelRule(event)}>
+                    <label className="form-field">
+                      Canal
+                      <select
+                        disabled={isSaving || availableRuleChannels.length === 0}
+                        value={channelRuleForm.channelId}
+                        onChange={(event) => setChannelRuleForm((current) => ({ ...current, channelId: event.target.value }))}
+                        aria-label="Canal"
+                      >
+                        {availableRuleChannels.length === 0 ? <option value="">Todos os canais vinculados</option> : null}
+                        {availableRuleChannels.map((channel) => (
+                          <option key={channel.id} value={channel.id}>{channelLabel(channel)}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button className="secondary-button icon-button-label" disabled={isSaving || !channelRuleForm.channelId} type="submit">
+                      <Route size={15} />
+                      Vincular
+                    </button>
+                  </form>
+                  <div className="team-resource-list">
+                    {selectedDepartment.channelRules.length === 0 ? <p className="team-empty-inline">Sem regra de canal.</p> : null}
+                    {selectedDepartment.channelRules.map((rule) => (
+                      <article className="team-resource-card" key={rule.id}>
+                        <span className="team-section-icon">
+                          <Route size={15} />
+                        </span>
+                        <div>
+                          <strong>{ruleChannelLabel(rule)}</strong>
+                          <small>{rule.enabled ? "Ativa" : "Inativa"}</small>
+                        </div>
+                        <button aria-label="Remover regra de canal" onClick={() => void removeChannelRule(rule.id)} type="button">
                           <Trash2 size={13} />
                         </button>
-                      </span>
+                      </article>
                     ))}
                   </div>
                 </section>
 
-                <section>
-                  <div className="team-subtitle-row">
-                    <strong>Canais que entram aqui</strong>
-                    <span>{selectedDepartment.channelRules.length}</span>
+                <section className="team-workbench-section">
+                  <div className="team-section-heading">
+                    <span className="team-section-icon">
+                      <Headphones size={16} />
+                    </span>
+                    <div>
+                      <h3>Atendimento</h3>
+                      <p>{selectedDepartment.members.length} responsáveis</p>
+                    </div>
                   </div>
-                  <form className="team-mini-form" onSubmit={(event) => void addChannelRule(event)}>
-                    <select
-                      disabled={isSaving || availableRuleChannels.length === 0}
-                      value={channelRuleForm.channelId}
-                      onChange={(event) => setChannelRuleForm((current) => ({ ...current, channelId: event.target.value }))}
-                      aria-label="Canal"
-                    >
-                      {availableRuleChannels.map((channel) => (
-                        <option key={channel.id} value={channel.id}>{channelLabel(channel)}</option>
-                      ))}
-                    </select>
-                    <button className="secondary-button icon-button-label" disabled={isSaving || !channelRuleForm.channelId} type="submit">
-                      <Route size={15} />
-                      Canal
+                  <form className="team-mini-form team-add-strip team-add-strip--member" onSubmit={(event) => void addMember(event)}>
+                    <label className="form-field">
+                      Usuário
+                      <select
+                        disabled={isSaving || availableMemberUsers.length === 0}
+                        value={memberForm.userId}
+                        onChange={(event) => setMemberForm((current) => ({ ...current, userId: event.target.value }))}
+                        aria-label="Usuário"
+                      >
+                        {availableMemberUsers.length === 0 ? <option value="">Todos já vinculados</option> : null}
+                        {availableMemberUsers.map((user) => (
+                          <option key={user.id} value={user.id}>{user.displayName}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="form-field">
+                      Papel
+                      <select
+                        disabled={isSaving}
+                        value={memberForm.role}
+                        onChange={(event) =>
+                          setMemberForm((current) => ({
+                            ...current,
+                            role: event.target.value as TeamDepartmentMemberDto["role"]
+                          }))
+                        }
+                        aria-label="Papel na fila"
+                      >
+                        <option value="agent">Atendente</option>
+                        <option value="supervisor">Supervisor</option>
+                      </select>
+                    </label>
+                    <button className="secondary-button icon-button-label" disabled={isSaving || !memberForm.userId} type="submit">
+                      <UserPlus size={15} />
+                      Adicionar
                     </button>
                   </form>
-                  <div className="team-chip-list">
-                    {selectedDepartment.channelRules.length === 0 ? <p className="list-note">Sem regra de canal.</p> : null}
-                    {selectedDepartment.channelRules.map((rule) => (
-                      <span className="team-chip" key={rule.id}>
-                        <strong>{ruleChannelLabel(rule)}</strong>
-                        <small>{rule.enabled ? "Ativa" : "Inativa"}</small>
-                        <button aria-label="Remover regra de canal" onClick={() => void removeChannelRule(rule.id)} type="button">
+                  <div className="team-resource-list">
+                    {selectedDepartment.members.length === 0 ? <p className="team-empty-inline">Sem membros nesta fila.</p> : null}
+                    {selectedDepartment.members.map((member) => (
+                      <article className="team-resource-card" key={member.userId}>
+                        <span className="team-resource-avatar">{queueInitial(member.displayName ?? member.userId)}</span>
+                        <div>
+                          <strong>{member.displayName ?? member.userId}</strong>
+                          <small>{member.role === "supervisor" ? "Supervisor" : "Atendente"} · {presenceLabel(member.presenceState)}</small>
+                        </div>
+                        <button aria-label="Remover membro" onClick={() => void removeMember(member)} type="button">
                           <Trash2 size={13} />
                         </button>
-                      </span>
+                      </article>
                     ))}
                   </div>
                 </section>
