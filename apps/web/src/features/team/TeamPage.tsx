@@ -213,7 +213,11 @@ export function TeamPage() {
         role: inviteForm.role
       });
       setInviteForm({ email: "", name: "", role: "member" });
-      setNotice(result.status === "active" ? "Acesso ao Talk liberado pelo Hub." : "Convite criado no Prymeira Hub.");
+      setNotice(
+        result.status === "active"
+          ? "Acesso ao Talk liberado pelo Hub."
+          : "Convite registrado no Hub. A pessoa pode entrar no Talk com esse email."
+      );
       await loadTeam();
     });
   }
