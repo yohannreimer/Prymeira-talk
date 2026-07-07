@@ -124,6 +124,11 @@ enum AiControlStatus {
   human_controlled
 }
 
+enum ContactBoardMoveSource {
+  manual
+  rule
+}
+
 model WorkspaceMirror {
   workspaceId String   @id @map("workspace_id")
   name        String?
@@ -169,7 +174,8 @@ model Channel {
   createdAt       DateTime        @default(now()) @map("created_at")
   updatedAt       DateTime        @updatedAt @map("updated_at")
 
-  conversations Conversation[]
+  conversations  Conversation[]
+  contactBoards  ContactBoardChannel[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, provider, providerKey])
@@ -296,8 +302,9 @@ model Tag {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  conversations  ConversationTag[]
-  allowedAgents  AiAgentAllowedTag[]
+  conversations       ConversationTag[]
+  allowedAgents       AiAgentAllowedTag[]
+  boardStageTriggers  ContactBoardStageTag[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, name])
@@ -323,11 +330,13 @@ model ContactBoard {
   workspaceId String   @map("workspace_id")
   name        String
   description String?
+  isPrimaryPipeline Boolean @default(false) @map("is_primary_pipeline")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   stages      ContactBoardStage[]
   memberships ContactBoardMembership[]
+  channels    ContactBoardChannel[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, name])
@@ -346,6 +355,7 @@ model ContactBoardStage {
 
   board       ContactBoard             @relation(fields: [workspaceId, boardId], references: [workspaceId, id], onDelete: Cascade)
   memberships ContactBoardMembership[]
+  tagTriggers ContactBoardStageTag[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, boardId, id])
@@ -361,6 +371,8 @@ model ContactBoardMembership {
   boardId     String   @map("board_id") @db.Uuid
   stageId     String   @map("stage_id") @db.Uuid
   isPrimary   Boolean  @default(false) @map("is_primary")
+  lastMovedBy       ContactBoardMoveSource @default(manual) @map("last_moved_by")
+  lastRuleAppliedAt DateTime?              @map("last_rule_applied_at")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
@@ -373,6 +385,35 @@ model ContactBoardMembership {
   @@index([workspaceId, contactId, isPrimary])
   @@index([workspaceId, boardId, stageId])
   @@map("contact_board_memberships")
+}
+
+model ContactBoardChannel {
+  workspaceId String   @map("workspace_id")
+  boardId     String   @map("board_id") @db.Uuid
+  channelId   String   @map("channel_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  board   ContactBoard @relation(fields: [workspaceId, boardId], references: [workspaceId, id], onDelete: Cascade)
+  channel Channel      @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@id([workspaceId, boardId, channelId])
+  @@index([workspaceId, channelId])
+  @@map("contact_board_channels")
+}
+
+model ContactBoardStageTag {
+  workspaceId String   @map("workspace_id")
+  boardId     String   @map("board_id") @db.Uuid
+  stageId     String   @map("stage_id") @db.Uuid
+  tagId       String   @map("tag_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  stage ContactBoardStage @relation(fields: [workspaceId, boardId, stageId], references: [workspaceId, boardId, id], onDelete: Cascade)
+  tag   Tag               @relation(fields: [workspaceId, tagId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@id([workspaceId, boardId, tagId])
+  @@index([workspaceId, boardId, stageId])
+  @@map("contact_board_stage_tags")
 }
 
 model ContactNote {

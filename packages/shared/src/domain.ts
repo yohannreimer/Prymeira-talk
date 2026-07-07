@@ -113,14 +113,32 @@ export const contactSchema = z.object({
 });
 export type ContactDto = z.infer<typeof contactSchema>;
 
+export const contactBoardChannelSummarySchema = z.object({
+  id: z.string().min(1),
+  displayName: z.string().nullable(),
+  provider: channelProviderSchema,
+  phoneNumber: z.string().nullable()
+});
+export type ContactBoardChannelSummaryDto = z.infer<typeof contactBoardChannelSummarySchema>;
+
 export const contactBoardSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
   name: z.string().min(1),
   description: z.string().nullable(),
+  isPrimaryPipeline: z.boolean().default(false),
+  channels: contactBoardChannelSummarySchema.array().default([]),
   createdAt: z.string().datetime()
 });
 export type ContactBoardDto = z.infer<typeof contactBoardSchema>;
+
+export const contactBoardStageTagSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  color: z.string().min(1),
+  isActive: z.boolean()
+});
+export type ContactBoardStageTagDto = z.infer<typeof contactBoardStageTagSchema>;
 
 export const contactBoardStageSchema = z.object({
   id: z.string().min(1),
@@ -128,9 +146,13 @@ export const contactBoardStageSchema = z.object({
   boardId: z.string().min(1),
   name: z.string().min(1),
   color: z.string().min(1),
-  order: z.number().int().min(0)
+  order: z.number().int().min(0),
+  tagTriggers: contactBoardStageTagSchema.array().default([])
 });
 export type ContactBoardStageDto = z.infer<typeof contactBoardStageSchema>;
+
+export const contactBoardMoveSourceSchema = z.enum(["manual", "rule"]);
+export type ContactBoardMoveSource = z.infer<typeof contactBoardMoveSourceSchema>;
 
 export const contactBoardMembershipSchema = z.object({
   id: z.string().min(1),
@@ -139,6 +161,8 @@ export const contactBoardMembershipSchema = z.object({
   boardId: z.string().min(1),
   stageId: z.string().min(1),
   isPrimary: z.boolean(),
+  lastMovedBy: contactBoardMoveSourceSchema.default("manual"),
+  lastRuleAppliedAt: z.string().datetime().nullable().default(null),
   updatedAt: z.string().datetime()
 });
 export type ContactBoardMembershipDto = z.infer<typeof contactBoardMembershipSchema>;

@@ -497,6 +497,74 @@ describe("domain schemas", () => {
     ).toBe(2);
   });
 
+  it("validates enriched contact board data with channels and primary pipeline flag", () => {
+    expect(
+      contactBoardSchema.parse({
+        id: "board_1",
+        workspaceId: "workspace_1",
+        name: "Vendas",
+        description: null,
+        isPrimaryPipeline: true,
+        channels: [
+          {
+            id: "channel_1",
+            displayName: "WhatsApp Vendas",
+            provider: "evolution",
+            phoneNumber: "+5511999990000"
+          }
+        ],
+        createdAt: "2026-07-07T12:00:00.000Z"
+      })
+    ).toMatchObject({
+      name: "Vendas",
+      isPrimaryPipeline: true,
+      channels: [{ id: "channel_1" }]
+    });
+  });
+
+  it("validates contact board stages with tag triggers", () => {
+    expect(
+      contactBoardStageSchema.parse({
+        id: "stage_1",
+        workspaceId: "workspace_1",
+        boardId: "board_1",
+        name: "Interesse forte",
+        color: "#d63a22",
+        order: 2,
+        tagTriggers: [
+          {
+            id: "tag_1",
+            name: "interesse_forte",
+            color: "#d63a22",
+            isActive: true
+          }
+        ]
+      })
+    ).toMatchObject({
+      name: "Interesse forte",
+      tagTriggers: [{ name: "interesse_forte" }]
+    });
+  });
+
+  it("validates board memberships with movement metadata", () => {
+    expect(
+      contactBoardMembershipSchema.parse({
+        id: "membership_1",
+        workspaceId: "workspace_1",
+        contactId: "contact_1",
+        boardId: "board_1",
+        stageId: "stage_1",
+        isPrimary: true,
+        lastMovedBy: "rule",
+        lastRuleAppliedAt: "2026-07-07T12:30:00.000Z",
+        updatedAt: "2026-07-07T12:31:00.000Z"
+      })
+    ).toMatchObject({
+      lastMovedBy: "rule",
+      lastRuleAppliedAt: "2026-07-07T12:30:00.000Z"
+    });
+  });
+
   it("validates contacts and integration mode", () => {
     expect(
       contactSchema.parse({
