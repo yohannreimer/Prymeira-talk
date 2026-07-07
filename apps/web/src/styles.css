@@ -2585,6 +2585,38 @@ select:disabled {
   min-width: 132px;
 }
 
+.team-ops-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.85fr) minmax(420px, 1.15fr);
+  gap: 16px;
+}
+
+.team-inline-form,
+.team-create-queue-form,
+.team-queue-form,
+.team-mini-form {
+  display: grid;
+  gap: 10px;
+}
+
+.team-inline-form {
+  grid-template-columns: minmax(180px, 1fr) minmax(150px, 0.75fr) minmax(120px, 0.5fr) auto;
+  align-items: end;
+}
+
+.team-routing-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.72fr) minmax(560px, 1.28fr);
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.team-create-queue-form {
+  grid-template-columns: minmax(150px, 1fr) minmax(120px, 0.65fr) minmax(105px, 0.55fr) auto;
+  align-items: end;
+  margin-bottom: 14px;
+}
+
 .automation-run-list,
 .automation-actions-editor,
 .campaign-list {
@@ -2604,17 +2636,179 @@ select:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  width: 100%;
   padding: 10px 12px;
+  border: 0;
   border-radius: var(--radius-md);
   background: var(--color-surface-subtle);
   font-size: 13px;
   font-weight: 500;
   color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
   transition: background var(--transition-fast);
 }
 
 .team-dept-row:hover {
   background: var(--color-brand-50);
+}
+
+.team-dept-row.is-selected {
+  background: var(--color-brand-50);
+  box-shadow: inset 3px 0 0 var(--color-brand-700);
+}
+
+.team-dept-row > span:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.team-dept-row strong {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 0.92rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-dept-row small {
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-queue-workbench {
+  min-width: 0;
+}
+
+.team-queue-form {
+  grid-template-columns: repeat(4, minmax(120px, 1fr)) auto;
+  align-items: end;
+}
+
+.team-queue-form .form-field:nth-child(2) {
+  grid-column: span 2;
+}
+
+.team-queue-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.team-queue-sections section {
+  min-width: 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle);
+  padding: 12px;
+}
+
+.team-subtitle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: var(--color-text-primary);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.team-subtitle-row span {
+  display: inline-flex;
+  min-width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--color-surface-card);
+  color: var(--color-text-secondary);
+  font-size: 0.74rem;
+}
+
+.team-mini-form {
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.55fr) auto;
+  align-items: end;
+}
+
+.team-mini-form select {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  padding: 10px 12px;
+  font-weight: 800;
+}
+
+.team-mini-form button {
+  min-height: 42px;
+}
+
+.team-chip-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.team-chip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  padding: 9px 10px;
+}
+
+.team-chip strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 0.88rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-chip small {
+  grid-column: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-chip button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.team-chip button:hover {
+  border-color: #efb7b7;
+  color: #9f2f2f;
 }
 
 .settings-info-rows {
@@ -6182,6 +6376,9 @@ select:disabled {
   .campaigns-layout,
   .crm-dashboard-grid,
   .ops-grid,
+  .team-ops-grid,
+  .team-routing-layout,
+  .team-queue-sections,
   .settings-overview-grid,
   .settings-workbench,
   .reports-command-panel,
@@ -6229,6 +6426,10 @@ select:disabled {
   .board-edit-form,
   .board-stage-form,
   .board-add-form,
+  .team-inline-form,
+  .team-create-queue-form,
+  .team-queue-form,
+  .team-mini-form,
   .knowledge-form-grid {
     grid-template-columns: 1fr;
   }
@@ -6414,6 +6615,16 @@ select:disabled {
 
   .team-role-cell select {
     min-width: 0;
+  }
+
+  .team-ops-grid,
+  .team-routing-layout {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  .team-queue-form .form-field:nth-child(2) {
+    grid-column: auto;
   }
 
   .report-timeline-row {

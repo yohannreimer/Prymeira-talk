@@ -15,6 +15,7 @@ import {
   normalizePhoneForStorage
 } from "../contacts/phone-normalization.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
+import { applyInboundDepartmentRouting, supportsDepartmentRouting } from "../team/team-routing.service.js";
 import {
   evolutionConnectionUpdateSchema,
   evolutionMessageStatusUpdateSchema,
@@ -656,6 +657,14 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             lastMessagePreview: messageContent.preview
           }
         });
+
+        if (!payload.data.key.fromMe && supportsDepartmentRouting(tx)) {
+          await applyInboundDepartmentRouting(tx, {
+            workspaceId,
+            conversationId: conversation.id,
+            channelId: channel.id
+          });
+        }
 
         const updatedConversation = await tx.conversation.findUnique({
           where: {

@@ -380,9 +380,63 @@ export interface TeamDepartmentDto {
   id: string;
   workspaceId: string;
   name: string;
+  description: string | null;
   routingOrder: number;
+  distributionMode: "manual" | "round_robin" | "least_open";
+  businessHours: unknown;
+  slaFirstResponseMinutes: number | null;
+  slaResolutionMinutes: number | null;
+  fallbackDepartmentId: string | null;
+  members: TeamDepartmentMemberDto[];
+  channelRules: TeamDepartmentChannelRuleDto[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TeamDepartmentMemberDto {
+  userId: string;
+  role: "supervisor" | "agent";
+  permissions: {
+    view: boolean;
+    reply: boolean;
+    transfer: boolean;
+    close: boolean;
+  };
+  displayName: string | null;
+  presenceState: string | null;
+  userRole: TeamUserRole | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeamDepartmentChannelRuleDto {
+  id: string;
+  channelId: string;
+  enabled: boolean;
+  priority: number;
+  channelName: string | null;
+  channelProvider: string | null;
+  channelPhoneNumber: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeamInviteResultDto {
+  status: "active" | "pending";
+  invitation?: {
+    id: string;
+    email: string;
+    role: string;
+    status: string;
+    productKeys: string[];
+    expiresAt: string | null;
+    createdAt: string | null;
+  };
+  member?: {
+    customerId: string | null;
+    role: string | null;
+    status: string | null;
+  };
 }
 
 export type AssistantActionType = "summary" | "suggested_reply";
@@ -905,14 +959,96 @@ function parseTeamUser(data: unknown): TeamUserDto {
 
 function parseTeamDepartment(data: unknown): TeamDepartmentDto {
   const payload = data as TeamDepartmentDto;
+  const distributionMode =
+    payload.distributionMode === "round_robin" || payload.distributionMode === "least_open"
+      ? payload.distributionMode
+      : "manual";
 
   return {
     id: String(payload.id ?? ""),
     workspaceId: String(payload.workspaceId ?? ""),
     name: String(payload.name ?? ""),
+    description: typeof payload.description === "string" ? payload.description : null,
     routingOrder: Number(payload.routingOrder ?? 0),
+    distributionMode,
+    businessHours: payload.businessHours ?? {},
+    slaFirstResponseMinutes:
+      typeof payload.slaFirstResponseMinutes === "number" ? payload.slaFirstResponseMinutes : null,
+    slaResolutionMinutes:
+      typeof payload.slaResolutionMinutes === "number" ? payload.slaResolutionMinutes : null,
+    fallbackDepartmentId: typeof payload.fallbackDepartmentId === "string" ? payload.fallbackDepartmentId : null,
+    members: Array.isArray(payload.members) ? payload.members.map(parseTeamDepartmentMember) : [],
+    channelRules: Array.isArray(payload.channelRules) ? payload.channelRules.map(parseTeamDepartmentChannelRule) : [],
     createdAt: String(payload.createdAt ?? ""),
     updatedAt: String(payload.updatedAt ?? "")
+  };
+}
+
+function parseTeamDepartmentMember(data: unknown): TeamDepartmentMemberDto {
+  const payload = data as TeamDepartmentMemberDto;
+  const permissions = payload.permissions ?? {};
+
+  return {
+    userId: String(payload.userId ?? ""),
+    role: payload.role === "supervisor" ? "supervisor" : "agent",
+    permissions: {
+      view: permissions.view !== false,
+      reply: permissions.reply !== false,
+      transfer: permissions.transfer !== false,
+      close: permissions.close !== false
+    },
+    displayName: typeof payload.displayName === "string" ? payload.displayName : null,
+    presenceState: typeof payload.presenceState === "string" ? payload.presenceState : null,
+    userRole:
+      payload.userRole === "owner" || payload.userRole === "manager" || payload.userRole === "agent"
+        ? payload.userRole
+        : null,
+    createdAt: String(payload.createdAt ?? ""),
+    updatedAt: String(payload.updatedAt ?? "")
+  };
+}
+
+function parseTeamDepartmentChannelRule(data: unknown): TeamDepartmentChannelRuleDto {
+  const payload = data as TeamDepartmentChannelRuleDto;
+
+  return {
+    id: String(payload.id ?? ""),
+    channelId: String(payload.channelId ?? ""),
+    enabled: payload.enabled !== false,
+    priority: Number(payload.priority ?? 0),
+    channelName: typeof payload.channelName === "string" ? payload.channelName : null,
+    channelProvider: typeof payload.channelProvider === "string" ? payload.channelProvider : null,
+    channelPhoneNumber: typeof payload.channelPhoneNumber === "string" ? payload.channelPhoneNumber : null,
+    createdAt: String(payload.createdAt ?? ""),
+    updatedAt: String(payload.updatedAt ?? "")
+  };
+}
+
+function parseTeamInviteResult(data: unknown): TeamInviteResultDto {
+  const payload = data as TeamInviteResultDto;
+
+  return {
+    status: payload.status === "active" ? "active" : "pending",
+    invitation: payload.invitation
+      ? {
+          id: String(payload.invitation.id ?? ""),
+          email: String(payload.invitation.email ?? ""),
+          role: String(payload.invitation.role ?? ""),
+          status: String(payload.invitation.status ?? ""),
+          productKeys: Array.isArray(payload.invitation.productKeys)
+            ? payload.invitation.productKeys.filter((item): item is string => typeof item === "string")
+            : [],
+          expiresAt: typeof payload.invitation.expiresAt === "string" ? payload.invitation.expiresAt : null,
+          createdAt: typeof payload.invitation.createdAt === "string" ? payload.invitation.createdAt : null
+        }
+      : undefined,
+    member: payload.member
+      ? {
+          customerId: typeof payload.member.customerId === "string" ? payload.member.customerId : null,
+          role: typeof payload.member.role === "string" ? payload.member.role : null,
+          status: typeof payload.member.status === "string" ? payload.member.status : null
+        }
+      : undefined
   };
 }
 
@@ -2290,7 +2426,13 @@ export async function apiCreateTeamDepartment(
   getToken: () => Promise<string | null>,
   body: {
     name: string;
+    description?: string | null;
     routingOrder?: number;
+    distributionMode?: TeamDepartmentDto["distributionMode"];
+    businessHours?: Record<string, unknown>;
+    slaFirstResponseMinutes?: number | null;
+    slaResolutionMinutes?: number | null;
+    fallbackDepartmentId?: string | null;
   }
 ): Promise<TeamDepartmentDto> {
   return fetchJson(
@@ -2302,6 +2444,130 @@ export async function apiCreateTeamDepartment(
     },
     parseTeamDepartment,
     "Failed to create team department"
+  );
+}
+
+export async function apiUpdateTeamDepartment(
+  getToken: () => Promise<string | null>,
+  departmentId: string,
+  body: Partial<{
+    name: string;
+    description: string | null;
+    routingOrder: number;
+    distributionMode: TeamDepartmentDto["distributionMode"];
+    businessHours: Record<string, unknown>;
+    slaFirstResponseMinutes: number | null;
+    slaResolutionMinutes: number | null;
+    fallbackDepartmentId: string | null;
+  }>
+): Promise<TeamDepartmentDto> {
+  return fetchJson(
+    getToken,
+    `/team/departments/${departmentId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    },
+    parseTeamDepartment,
+    "Failed to update team department"
+  );
+}
+
+export async function apiInviteTeamMember(
+  getToken: () => Promise<string | null>,
+  body: {
+    email: string;
+    name?: string;
+    role: "admin" | "member";
+  }
+): Promise<TeamInviteResultDto> {
+  return fetchJson(
+    getToken,
+    "/team/invitations",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseTeamInviteResult,
+    "Failed to invite team member"
+  );
+}
+
+export async function apiUpsertTeamDepartmentMember(
+  getToken: () => Promise<string | null>,
+  departmentId: string,
+  body: {
+    userId: string;
+    role: "supervisor" | "agent";
+    permissions: TeamDepartmentMemberDto["permissions"];
+  }
+): Promise<TeamDepartmentDto> {
+  return fetchJson(
+    getToken,
+    `/team/departments/${departmentId}/members`,
+    {
+      method: "PUT",
+      body: JSON.stringify(body)
+    },
+    parseTeamDepartment,
+    "Failed to update team department member"
+  );
+}
+
+export async function apiRemoveTeamDepartmentMember(
+  getToken: () => Promise<string | null>,
+  departmentId: string,
+  userId: string
+): Promise<{ departmentId: string; userId: string }> {
+  return fetchJson(
+    getToken,
+    `/team/departments/${departmentId}/members/${userId}`,
+    { method: "DELETE" },
+    (data) => {
+      const payload = data as { departmentId?: unknown; userId?: unknown };
+      return {
+        departmentId: String(payload.departmentId ?? ""),
+        userId: String(payload.userId ?? "")
+      };
+    },
+    "Failed to remove team department member"
+  );
+}
+
+export async function apiUpsertTeamDepartmentChannelRule(
+  getToken: () => Promise<string | null>,
+  departmentId: string,
+  body: {
+    channelId: string;
+    enabled: boolean;
+    priority?: number;
+  }
+): Promise<TeamDepartmentDto> {
+  return fetchJson(
+    getToken,
+    `/team/departments/${departmentId}/channel-rules`,
+    {
+      method: "PUT",
+      body: JSON.stringify(body)
+    },
+    parseTeamDepartment,
+    "Failed to update team department channel rule"
+  );
+}
+
+export async function apiRemoveTeamDepartmentChannelRule(
+  getToken: () => Promise<string | null>,
+  ruleId: string
+): Promise<{ ruleId: string }> {
+  return fetchJson(
+    getToken,
+    `/team/department-channel-rules/${ruleId}`,
+    { method: "DELETE" },
+    (data) => {
+      const payload = data as { ruleId?: unknown };
+      return { ruleId: String(payload.ruleId ?? "") };
+    },
+    "Failed to remove team department channel rule"
   );
 }
 

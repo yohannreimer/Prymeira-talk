@@ -6,6 +6,7 @@ import {
   normalizePhoneForStorage
 } from "../contacts/phone-normalization.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
+import { applyInboundDepartmentRouting, supportsDepartmentRouting } from "../team/team-routing.service.js";
 import { resolveMetaRuntime } from "./meta-runtime.js";
 
 const META_CLOUD_PROVIDER = "meta_cloud";
@@ -414,6 +415,14 @@ export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
               lastMessagePreview: inboundMessage.body
             }
           });
+
+          if (supportsDepartmentRouting(tx)) {
+            await applyInboundDepartmentRouting(tx, {
+              workspaceId,
+              conversationId: conversation.id,
+              channelId: channel.id
+            });
+          }
 
           const updatedConversation = await tx.conversation.findUnique({
             where: {

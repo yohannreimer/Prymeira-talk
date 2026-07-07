@@ -10,10 +10,21 @@ type MockPrisma = {
     findMany: any;
     findFirst: any;
     update: any;
+    upsert: any;
   };
   department: {
     findMany: any;
+    findFirst: any;
     create: any;
+    update: any;
+  };
+  departmentMember: {
+    upsert: any;
+    delete: any;
+  };
+  departmentChannelRule: {
+    upsert: any;
+    delete: any;
   };
 };
 
@@ -66,16 +77,72 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
           ...baseUsers[0],
           role: args.data.role,
           updatedAt: new Date("2026-05-21T13:10:00.000Z")
+        })),
+      upsert:
+        overrides.userProfile?.upsert ??
+        vi.fn().mockImplementation(async (args) => ({
+          ...baseUsers[0],
+          ...args.create,
+          ...args.update
         }))
     },
     department: {
       findMany: overrides.department?.findMany ?? vi.fn().mockResolvedValue([baseDepartment]),
+      findFirst: overrides.department?.findFirst ?? vi.fn().mockResolvedValue(baseDepartment),
       create:
         overrides.department?.create ??
         vi.fn().mockImplementation(async (args) => ({
           ...baseDepartment,
           ...args.data
+        })),
+      update:
+        overrides.department?.update ??
+        vi.fn().mockImplementation(async (args) => ({
+          ...baseDepartment,
+          ...args.data
         }))
+    },
+    departmentMember: {
+      upsert:
+        overrides.departmentMember?.upsert ??
+        vi.fn().mockImplementation(async (args) => ({
+          ...args.create,
+          createdAt: new Date("2026-05-21T13:20:00.000Z"),
+          updatedAt: new Date("2026-05-21T13:20:00.000Z")
+        })),
+      delete:
+        overrides.departmentMember?.delete ??
+        vi.fn().mockResolvedValue({
+          workspaceId: "workspace_a",
+          departmentId,
+          userId,
+          role: "agent",
+          permissions: {},
+          createdAt: new Date("2026-05-21T13:20:00.000Z"),
+          updatedAt: new Date("2026-05-21T13:20:00.000Z")
+        })
+    },
+    departmentChannelRule: {
+      upsert:
+        overrides.departmentChannelRule?.upsert ??
+        vi.fn().mockImplementation(async (args) => ({
+          id: "00000000-0000-4000-8000-000000000304",
+          ...args.create,
+          createdAt: new Date("2026-05-21T13:20:00.000Z"),
+          updatedAt: new Date("2026-05-21T13:20:00.000Z")
+        })),
+      delete:
+        overrides.departmentChannelRule?.delete ??
+        vi.fn().mockResolvedValue({
+          id: "00000000-0000-4000-8000-000000000304",
+          workspaceId: "workspace_a",
+          departmentId,
+          channelId: "00000000-0000-4000-8000-000000000305",
+          enabled: true,
+          priority: 0,
+          createdAt: new Date("2026-05-21T13:20:00.000Z"),
+          updatedAt: new Date("2026-05-21T13:20:00.000Z")
+        })
     }
   } as MockPrisma & PrismaLike;
 }
@@ -138,9 +205,70 @@ describe("team service", () => {
       data: {
         workspaceId: "workspace_a",
         name: "Comercial",
-        routingOrder: 10
-      }
+        description: null,
+        routingOrder: 10,
+        distributionMode: "manual",
+        businessHours: {},
+        slaFirstResponseMinutes: null,
+        slaResolutionMinutes: null,
+        fallbackDepartmentId: null
+      },
+      include: expect.any(Object)
     });
+  });
+
+  it("syncs the current Hub user into the workspace", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        customer: {
+          id: "hub_customer_1",
+          email: "ana@example.com",
+          name: "Ana Hub"
+        }
+      })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const prisma = createMockPrisma();
+    const service = createTeamService(prisma);
+
+    try {
+      const user = await service.syncCurrentUserProfile({
+        accountApiUrl: "https://hub.example/",
+        clerkToken: "token_a",
+        clerkUserId: "clerk_user_a",
+        workspaceId: "workspace_a",
+        role: "manager"
+      });
+
+      expect(user).toEqual(expect.objectContaining({ displayName: "Ana Hub" }));
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://hub.example/me/products",
+        expect.objectContaining({
+          headers: { Authorization: "Bearer token_a" },
+          signal: expect.any(AbortSignal)
+        })
+      );
+      expect(prisma.userProfile.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            workspaceId_clerkUserId: {
+              workspaceId: "workspace_a",
+              clerkUserId: "clerk_user_a"
+            }
+          },
+          update: { displayName: "Ana Hub" },
+          create: expect.objectContaining({
+            workspaceId: "workspace_a",
+            clerkUserId: "clerk_user_a",
+            role: "manager",
+            displayName: "Ana Hub"
+          })
+        })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -218,7 +346,8 @@ describe("team routes", () => {
       userProfile: {
         findMany: vi.fn(),
         findFirst: vi.fn().mockResolvedValue({ ...baseUsers[0], role: "owner" }),
-        update: vi.fn()
+        update: vi.fn(),
+        upsert: vi.fn()
       }
     });
     const { app } = await buildTeamApp({ role: "manager", prisma });

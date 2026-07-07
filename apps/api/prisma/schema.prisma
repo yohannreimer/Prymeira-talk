@@ -129,6 +129,17 @@ enum ContactBoardMoveSource {
   rule
 }
 
+enum DepartmentDistributionMode {
+  manual
+  round_robin
+  least_open
+}
+
+enum DepartmentMemberRole {
+  supervisor
+  agent
+}
+
 model WorkspaceMirror {
   workspaceId String   @id @map("workspace_id")
   name        String?
@@ -155,6 +166,7 @@ model UserProfile {
   aiControlUpdates      Conversation[] @relation("AiControlUpdatedByConversations")
   sentMessages          Message[]      @relation("UserSentMessages")
   contactNotes          ContactNote[]  @relation("ContactNoteCreatedBy")
+  departmentMemberships DepartmentMember[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, clerkUserId])
@@ -176,6 +188,7 @@ model Channel {
 
   conversations  Conversation[]
   contactBoards  ContactBoardChannel[]
+  departmentRules DepartmentChannelRule[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, provider, providerKey])
@@ -211,18 +224,66 @@ model Contact {
 }
 
 model Department {
-  id           String   @id @default(uuid()) @db.Uuid
-  workspaceId  String   @map("workspace_id")
-  name         String
-  routingOrder Int      @default(0) @map("routing_order")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  id                       String                     @id @default(uuid()) @db.Uuid
+  workspaceId              String                     @map("workspace_id")
+  name                     String
+  description              String?
+  routingOrder             Int                        @default(0) @map("routing_order")
+  distributionMode         DepartmentDistributionMode @default(manual) @map("distribution_mode")
+  businessHours            Json                       @default("{}") @map("business_hours")
+  slaFirstResponseMinutes  Int?                       @map("sla_first_response_minutes")
+  slaResolutionMinutes     Int?                       @map("sla_resolution_minutes")
+  fallbackDepartmentId     String?                    @map("fallback_department_id") @db.Uuid
+  lastAssignedMemberId     String?                    @map("last_assigned_member_id") @db.Uuid
+  createdAt                DateTime                   @default(now()) @map("created_at")
+  updatedAt                DateTime                   @updatedAt @map("updated_at")
 
   conversations Conversation[]
+  members       DepartmentMember[]
+  channelRules  DepartmentChannelRule[]
+  fallbackDepartment Department?  @relation("DepartmentFallback", fields: [workspaceId, fallbackDepartmentId], references: [workspaceId, id], onDelete: SetNull)
+  fallbackFor         Department[] @relation("DepartmentFallback")
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, name])
+  @@index([workspaceId, fallbackDepartmentId])
   @@map("departments")
+}
+
+model DepartmentMember {
+  workspaceId  String               @map("workspace_id")
+  departmentId String               @map("department_id") @db.Uuid
+  userId       String               @map("user_id") @db.Uuid
+  role         DepartmentMemberRole @default(agent)
+  permissions  Json                 @default("{}")
+  createdAt    DateTime             @default(now()) @map("created_at")
+  updatedAt    DateTime             @updatedAt @map("updated_at")
+
+  department Department  @relation(fields: [workspaceId, departmentId], references: [workspaceId, id], onDelete: Cascade)
+  user       UserProfile @relation(fields: [workspaceId, userId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@id([workspaceId, departmentId, userId])
+  @@index([workspaceId, userId])
+  @@map("department_members")
+}
+
+model DepartmentChannelRule {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspaceId  String   @map("workspace_id")
+  departmentId String   @map("department_id") @db.Uuid
+  channelId    String   @map("channel_id") @db.Uuid
+  enabled      Boolean  @default(true)
+  priority     Int      @default(0)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  department Department @relation(fields: [workspaceId, departmentId], references: [workspaceId, id], onDelete: Cascade)
+  channel    Channel    @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, channelId])
+  @@index([workspaceId, departmentId])
+  @@map("department_channel_rules")
 }
 
 model Conversation {

@@ -21,6 +21,8 @@ declare module "fastify" {
     talk: {
       workspaceId: string;
       role: "owner" | "manager" | "agent";
+      clerkToken?: string;
+      clerkUserId?: string | null;
     };
   }
 }
@@ -122,6 +124,22 @@ function normalizeRole(role: string | undefined): "owner" | "manager" | "agent" 
   return "agent";
 }
 
+function readClerkUserIdFromToken(clerkToken: string) {
+  const [, payload] = clerkToken.split(".");
+  if (!payload) return null;
+
+  try {
+    const normalizedPayload = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = JSON.parse(Buffer.from(normalizedPayload, "base64").toString("utf8")) as {
+      sub?: unknown;
+    };
+
+    return typeof decoded.sub === "string" ? decoded.sub : null;
+  } catch {
+    return null;
+  }
+}
+
 async function defaultRequireProductAccess(
   productKey: string,
   options: { accountApiUrl: string; clerkToken: string },
@@ -174,7 +192,9 @@ export const authContextPlugin = fp(
       if (options.localAuthBypass) {
         request.talk = {
           workspaceId: options.localAuthBypass.workspaceId,
-          role: options.localAuthBypass.role
+          role: options.localAuthBypass.role,
+          clerkToken,
+          clerkUserId: readClerkUserIdFromToken(clerkToken)
         };
         return;
       }
@@ -208,7 +228,9 @@ export const authContextPlugin = fp(
 
       request.talk = {
         workspaceId: parsedAccess.workspace_id,
-        role: normalizeRole(parsedAccess.product_role ?? parsedAccess.workspace_role)
+        role: normalizeRole(parsedAccess.product_role ?? parsedAccess.workspace_role),
+        clerkToken,
+        clerkUserId: readClerkUserIdFromToken(clerkToken)
       };
     });
   }
