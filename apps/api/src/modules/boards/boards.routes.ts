@@ -18,16 +18,26 @@ const membershipParamsSchema = z.object({
   membershipId: uuidParamSchema
 });
 
+const boardRuleFieldsSchema = z.object({
+  channelIds: uuidParamSchema.array().optional(),
+  isPrimaryPipeline: z.boolean().optional()
+});
+
+const stageRuleFieldsSchema = z.object({
+  tagIds: uuidParamSchema.array().optional()
+});
+
 const createBoardBodySchema = z.object({
   name: z.string().trim().min(1).max(200),
   description: z.string().max(500).optional()
-});
+}).merge(boardRuleFieldsSchema);
 
 const updateBoardBodySchema = z
   .object({
     name: z.string().trim().min(1).max(200).optional(),
     description: z.string().max(500).optional()
   })
+  .merge(boardRuleFieldsSchema)
   .refine((body) => Object.keys(body).length > 0, {
     message: "At least one field is required"
   });
@@ -36,13 +46,14 @@ const createStageBodySchema = z.object({
   name: z.string().trim().min(1).max(120),
   color: z.string().trim().min(1).max(40),
   order: z.number().int().min(0)
-});
+}).merge(stageRuleFieldsSchema);
 
 const updateStageBodySchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
     color: z.string().trim().min(1).max(40).optional()
   })
+  .merge(stageRuleFieldsSchema)
   .refine((body) => Object.keys(body).length > 0, {
     message: "At least one field is required"
   });

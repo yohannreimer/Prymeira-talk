@@ -77,6 +77,25 @@ export interface BoardMembershipDeleteResultDto {
   contactId: string;
 }
 
+export type BoardSyncScope = "active" | "closed" | "all";
+
+export interface BoardSyncResultDto {
+  evaluated: number;
+  added: number;
+  moved: number;
+  ignored: number;
+  conflicts: number;
+}
+
+type BoardRulePayload = Partial<{
+  channelIds: string[];
+  isPrimaryPipeline: boolean;
+}>;
+
+type StageRulePayload = Partial<{
+  tagIds: string[];
+}>;
+
 export interface ContactContextDto {
   primaryBoardStage: {
     membershipId: string;
@@ -540,6 +559,27 @@ function parseBoardMembershipDeleteResult(data: unknown): BoardMembershipDeleteR
     boardId: payload.boardId,
     contactId: payload.contactId
   };
+}
+
+function parseBoardSyncResult(data: unknown): BoardSyncResultDto {
+  const payload = data as Partial<BoardSyncResultDto>;
+  const result = {
+    evaluated: payload.evaluated,
+    added: payload.added,
+    moved: payload.moved,
+    ignored: payload.ignored,
+    conflicts: payload.conflicts
+  };
+
+  if (
+    !Object.values(result).every(
+      (value) => typeof value === "number" && Number.isInteger(value) && value >= 0
+    )
+  ) {
+    throw new Error("Invalid board sync response.");
+  }
+
+  return result as BoardSyncResultDto;
 }
 
 function parseContactContext(data: unknown): ContactContextDto {
@@ -1278,10 +1318,7 @@ export async function apiGetBoards(
 
 export async function apiCreateBoard(
   getToken: () => Promise<string | null>,
-  body: {
-    name: string;
-    description?: string;
-  }
+  body: { name: string; description?: string } & BoardRulePayload
 ): Promise<ContactBoardWithStagesDto> {
   return fetchJson(
     getToken,
@@ -1298,10 +1335,7 @@ export async function apiCreateBoard(
 export async function apiUpdateBoard(
   getToken: () => Promise<string | null>,
   boardId: string,
-  body: {
-    name?: string;
-    description?: string;
-  }
+  body: Partial<{ name: string; description: string }> & BoardRulePayload
 ): Promise<ContactBoardWithStagesDto> {
   return fetchJson(
     getToken,
@@ -1351,11 +1385,7 @@ export async function apiGetBoardContacts(
 export async function apiCreateBoardStage(
   getToken: () => Promise<string | null>,
   boardId: string,
-  body: {
-    name: string;
-    color: string;
-    order: number;
-  }
+  body: { name: string; color: string; order: number } & StageRulePayload
 ): Promise<ContactBoardStageDto> {
   return fetchJson(
     getToken,
@@ -1373,10 +1403,7 @@ export async function apiUpdateBoardStage(
   getToken: () => Promise<string | null>,
   boardId: string,
   stageId: string,
-  body: {
-    name?: string;
-    color?: string;
-  }
+  body: Partial<{ name: string; color: string }> & StageRulePayload
 ): Promise<ContactBoardStageDto> {
   return fetchJson(
     getToken,
@@ -1418,6 +1445,23 @@ export async function apiDeleteBoardStage(
     { method: "DELETE" },
     parseBoardStageDeleteResult,
     "Failed to delete board stage"
+  );
+}
+
+export async function apiSyncBoardRules(
+  getToken: () => Promise<string | null>,
+  boardId: string,
+  scope: BoardSyncScope
+): Promise<BoardSyncResultDto> {
+  return fetchJson(
+    getToken,
+    `/boards/${boardId}/sync-rules`,
+    {
+      method: "POST",
+      body: JSON.stringify({ scope })
+    },
+    parseBoardSyncResult,
+    "Invalid board sync response."
   );
 }
 

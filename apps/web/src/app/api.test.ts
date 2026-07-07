@@ -96,6 +96,15 @@ describe("board administration API helpers", () => {
       workspaceId: "workspace_a",
       name: "Vendas",
       description: null,
+      isPrimaryPipeline: true,
+      channels: [
+        {
+          id: "channel-1",
+          displayName: "WhatsApp Vendas",
+          provider: "evolution",
+          phoneNumber: "+5511999990000"
+        }
+      ],
       createdAt: "2026-05-24T12:00:00.000Z",
       stages: []
     };
@@ -105,7 +114,15 @@ describe("board administration API helpers", () => {
       boardId: "board-1",
       name: "Novo",
       color: "#24564a",
-      order: 0
+      order: 0,
+      tagTriggers: [{ id: "tag-1", name: "lead_quente", color: "#24564a", isActive: true }]
+    };
+    const syncResult = {
+      evaluated: 12,
+      added: 4,
+      moved: 2,
+      ignored: 6,
+      conflicts: 0
     };
     const membershipDelete = {
       ok: true,
@@ -162,6 +179,12 @@ describe("board administration API helpers", () => {
           status: 200,
           headers: { "content-type": "application/json" }
         })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(syncResult), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
       );
 
     vi.stubGlobal("fetch", fetchMock);
@@ -175,12 +198,18 @@ describe("board administration API helpers", () => {
       apiReorderBoardStages,
       apiDeleteBoardStage,
       apiRemoveBoardMembership,
-      apiDeleteBoard
+      apiDeleteBoard,
+      apiSyncBoardRules
     } = await import("./api");
 
     await expect(
-      apiCreateBoard(async () => null, { name: "Vendas", description: "" })
-    ).resolves.toMatchObject({ id: "board-1", name: "Vendas" });
+      apiCreateBoard(async () => null, {
+        name: "Vendas",
+        description: "",
+        channelIds: ["channel-1"],
+        isPrimaryPipeline: true
+      })
+    ).resolves.toMatchObject({ isPrimaryPipeline: true, channels: [{ id: "channel-1" }] });
     await expect(
       apiUpdateBoard(async () => null, "board-1", { name: "Comercial" })
     ).resolves.toMatchObject({ name: "Comercial" });
@@ -188,9 +217,10 @@ describe("board administration API helpers", () => {
       apiCreateBoardStage(async () => null, "board-1", {
         name: "Novo",
         color: "#24564a",
-        order: 0
+        order: 0,
+        tagIds: ["tag-1"]
       })
-    ).resolves.toMatchObject({ id: "stage-1" });
+    ).resolves.toMatchObject({ tagTriggers: [{ id: "tag-1" }] });
     await expect(
       apiUpdateBoardStage(async () => null, "board-1", "stage-1", {
         name: "Qualificado"
@@ -210,6 +240,9 @@ describe("board administration API helpers", () => {
       ok: true,
       boardId: "board-1"
     });
+    await expect(apiSyncBoardRules(async () => null, "board-1", "all")).resolves.toEqual(
+      syncResult
+    );
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
@@ -231,6 +264,10 @@ describe("board administration API helpers", () => {
       "http://localhost:3002/board-memberships/membership-1",
       expect.objectContaining({ method: "DELETE" })
     );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      channelIds: ["channel-1"],
+      isPrimaryPipeline: true
+    });
   });
 });
 
