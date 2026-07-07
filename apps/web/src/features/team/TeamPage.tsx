@@ -326,7 +326,7 @@ export function TeamPage() {
   }
 
   return (
-    <section className="module-page" aria-label="Equipe">
+    <section className="module-page team-page" aria-label="Equipe">
       <header className="module-header">
         <div>
           <p className="eyebrow">Prymeira Talk</p>
@@ -351,7 +351,7 @@ export function TeamPage() {
       {notice ? <p className="success-note">{notice}</p> : null}
 
       <div className="team-ops-grid">
-        <div className="module-panel">
+        <div className="module-panel team-access-panel">
           <div className="panel-title-row">
             <h2>Convites</h2>
             <span>Prymeira Hub</span>
@@ -398,7 +398,7 @@ export function TeamPage() {
           </form>
         </div>
 
-        <div className="module-panel">
+        <div className="module-panel team-users-panel">
           <div className="panel-title-row">
             <h2>Usuários</h2>
             <span>{users.length} registros</span>
@@ -452,7 +452,7 @@ export function TeamPage() {
       </div>
 
       <div className="team-routing-layout">
-        <div className="module-panel">
+        <div className="module-panel team-queue-list-panel">
           <div className="panel-title-row">
             <h2>Filas</h2>
             <span>{departments.length} departamentos</span>
