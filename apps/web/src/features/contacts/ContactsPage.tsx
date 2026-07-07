@@ -20,7 +20,8 @@ import type {
   ChannelDto,
   ContactBoardStageDto,
   ContactDto,
-  RealtimeEvent
+  RealtimeEvent,
+  TagDto
 } from "@prymeira-talk/shared";
 import {
   ChevronLeft,
@@ -46,6 +47,7 @@ import {
   apiGetBoards,
   apiGetChannels,
   apiGetContacts,
+  apiGetTags,
   apiMoveBoardMembership,
   apiRemoveBoardMembership,
   apiReorderBoardStages,
@@ -57,6 +59,7 @@ import {
   type BoardContactsDto,
   type ContactBoardWithStagesDto
 } from "../../app/api";
+import { findDuplicateStageTag, stageTagIdsByStage } from "./board-display";
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
 
 type ViewMode = "list" | "board";
@@ -72,11 +75,14 @@ interface ContactFormState {
 interface BoardFormState {
   name: string;
   description: string;
+  channelIds: string[];
+  isPrimaryPipeline: boolean;
 }
 
 interface StageFormState {
   name: string;
   color: string;
+  tagIds: string[];
 }
 
 const emptyForm: ContactFormState = {
@@ -88,12 +94,15 @@ const emptyForm: ContactFormState = {
 
 const emptyBoardForm: BoardFormState = {
   name: "",
-  description: ""
+  description: "",
+  channelIds: [],
+  isPrimaryPipeline: false
 };
 
 const emptyStageForm: StageFormState = {
   name: "",
-  color: "#24564a"
+  color: "#24564a",
+  tagIds: []
 };
 
 const emptyBoardStages: ContactBoardStageDto[] = [];
@@ -219,6 +228,7 @@ export function ContactsPage() {
   const [createDrawerOpen, setCreateDrawerOpen] = useState(false);
   const [activeBoardMembershipId, setActiveBoardMembershipId] = useState<string | null>(null);
   const [channels, setChannels] = useState<ChannelDto[]>([]);
+  const [tags, setTags] = useState<TagDto[]>([]);
   const [startChannelId, setStartChannelId] = useState("");
   const [isStartingConversation, setIsStartingConversation] = useState(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
@@ -353,6 +363,24 @@ export function ContactsPage() {
   }, [getToken, viewMode]);
 
   useEffect(() => {
+    if (viewMode !== "board") return;
+
+    let isMounted = true;
+
+    void apiGetTags(getToken)
+      .then((nextTags) => {
+        if (isMounted) {
+          setTags(nextTags);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [getToken, viewMode]);
+
+  useEffect(() => {
     if (viewMode !== "board" || !selectedBoardId) {
       setBoardContacts(null);
       return;
@@ -476,6 +504,7 @@ export function ContactsPage() {
   const loadedBoardContacts =
     boardContacts?.board.id === selectedBoardId ? boardContacts : null;
   const boardStages = loadedBoardContacts?.stages ?? selectedBoard?.stages ?? emptyBoardStages;
+  const stageTagIds = useMemo(() => stageTagIdsByStage(boardStages), [boardStages]);
   const loadedBoardStages = loadedBoardContacts?.stages ?? emptyBoardStages;
   const selectedStageBelongsToLoadedBoard = loadedBoardStages.some(
     (stage) => stage.id === addStageId
@@ -528,7 +557,9 @@ export function ContactsPage() {
       selectedBoard
         ? {
             name: selectedBoard.name,
-            description: selectedBoard.description ?? ""
+            description: selectedBoard.description ?? "",
+            channelIds: selectedBoard.channels.map((channel) => channel.id),
+            isPrimaryPipeline: selectedBoard.isPrimaryPipeline
           }
         : emptyBoardForm
     );
@@ -541,7 +572,8 @@ export function ContactsPage() {
           stage.id,
           {
             name: stage.name,
-            color: stage.color
+            color: stage.color,
+            tagIds: stage.tagTriggers.map((tag) => tag.id)
           }
         ])
       )
@@ -680,7 +712,9 @@ export function ContactsPage() {
     try {
       const board = await apiCreateBoard(getToken, {
         name,
-        description: newBoardForm.description
+        description: newBoardForm.description,
+        channelIds: newBoardForm.channelIds,
+        isPrimaryPipeline: newBoardForm.isPrimaryPipeline
       });
 
       replaceBoard(board);
@@ -710,7 +744,9 @@ export function ContactsPage() {
     try {
       const board = await apiUpdateBoard(getToken, selectedBoard.id, {
         name,
-        description: boardEditForm.description
+        description: boardEditForm.description,
+        channelIds: boardEditForm.channelIds,
+        isPrimaryPipeline: boardEditForm.isPrimaryPipeline
       });
 
       replaceBoard(board);
@@ -766,6 +802,10 @@ export function ContactsPage() {
     const color = newStageForm.color.trim();
 
     if (!name || !color) return;
+    if (findDuplicateStageTag(stageTagIds, "__new_stage", newStageForm.tagIds)) {
+      setBoardError("Esta tag já está ligada a outra etapa deste board.");
+      return;
+    }
 
     setIsBoardSaving(true);
     setBoardError(null);
@@ -775,7 +815,8 @@ export function ContactsPage() {
       const stage = await apiCreateBoardStage(getToken, selectedBoardId, {
         name,
         color,
-        order: boardStages.length
+        order: boardStages.length,
+        tagIds: newStageForm.tagIds
       });
       const stages = [...boardStages, stage].sort((left, right) => left.order - right.order);
 
@@ -796,6 +837,10 @@ export function ContactsPage() {
 
     const form = stageEditForms[stageId];
     if (!form?.name.trim() || !form.color.trim()) return;
+    if (findDuplicateStageTag(stageTagIds, stageId, form.tagIds)) {
+      setBoardError("Esta tag já está ligada a outra etapa deste board.");
+      return;
+    }
 
     setIsBoardSaving(true);
     setBoardError(null);
@@ -804,7 +849,8 @@ export function ContactsPage() {
     try {
       const stage = await apiUpdateBoardStage(getToken, selectedBoardId, stageId, {
         name: form.name,
-        color: form.color
+        color: form.color,
+        tagIds: form.tagIds
       });
       const stages = boardStages.map((currentStage) =>
         currentStage.id === stage.id ? stage : currentStage
@@ -1481,7 +1527,8 @@ export function ContactsPage() {
                                       [stage.id]: {
                                         ...(current[stage.id] ?? {
                                           name: stage.name,
-                                          color: stage.color
+                                          color: stage.color,
+                                          tagIds: stage.tagTriggers.map((tag) => tag.id)
                                         }),
                                         color: event.target.value
                                       }
@@ -1499,7 +1546,8 @@ export function ContactsPage() {
                                       [stage.id]: {
                                         ...(current[stage.id] ?? {
                                           name: stage.name,
-                                          color: stage.color
+                                          color: stage.color,
+                                          tagIds: stage.tagTriggers.map((tag) => tag.id)
                                         }),
                                         name: event.target.value
                                       }
