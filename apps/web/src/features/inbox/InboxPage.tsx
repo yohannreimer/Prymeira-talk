@@ -367,6 +367,7 @@ export function InboxPage() {
   const [token, setToken] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationDto[]>([]);
   const [messages, setMessages] = useState<MessageDto[]>([]);
+  const [messagesConversationId, setMessagesConversationId] = useState<string | null>(null);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
@@ -582,6 +583,7 @@ export function InboxPage() {
     async function loadMessages() {
       if (!selectedConversationId) {
         setMessages([]);
+        setMessagesConversationId(null);
         return;
       }
 
@@ -594,11 +596,14 @@ export function InboxPage() {
         if (!isMounted) return;
 
         setMessages(nextMessages);
+        setMessagesConversationId(selectedConversationId);
         setNewMessagesBelow(0);
         userReadingHistoryRef.current = false;
         scheduleMessageThreadScroll("auto");
       } catch (loadError) {
         if (!isMounted) return;
+        setMessages([]);
+        setMessagesConversationId(selectedConversationId);
         setMessageError(loadError instanceof Error ? loadError.message : "Não foi possível carregar mensagens.");
       } finally {
         if (isMounted) {
@@ -792,6 +797,8 @@ export function InboxPage() {
     () => visibleConversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
     [visibleConversations, selectedConversationId]
   );
+  const visibleMessages = messagesConversationId === selectedConversationId ? messages : [];
+  const isThreadTransitioning = Boolean(selectedConversationId) && messagesConversationId !== selectedConversationId;
   const contextNotes = contactContext?.notes ?? [];
   const visibleNotes = notesHistoryOpen ? contextNotes : contextNotes.slice(0, 2);
   const hiddenNoteCount = Math.max(0, contextNotes.length - visibleNotes.length);
@@ -1321,12 +1328,21 @@ export function InboxPage() {
             }}
             ref={messageThreadRef}
           >
-            {isLoadingMessages ? <p className="thread-note">Carregando mensagens...</p> : null}
+            {isThreadTransitioning ? (
+              <div className="message-thread-skeleton" aria-label="Abrindo conversa">
+                <span />
+                <span />
+                <span />
+              </div>
+            ) : null}
+            {isLoadingMessages && !isThreadTransitioning ? (
+              <p className="thread-note">Atualizando mensagens...</p>
+            ) : null}
             {messageError ? <p className="error-note">{messageError}</p> : null}
-            {!isLoadingMessages && messages.length === 0 ? (
+            {!isLoadingMessages && !isThreadTransitioning && visibleMessages.length === 0 ? (
               <p className="thread-note">Ainda não ha mensagens nesta conversa.</p>
             ) : null}
-            {messages.map((message) => (
+            {visibleMessages.map((message) => (
               <article
                 className={`message-bubble ${message.direction === "outbound" ? "is-outbound" : "is-inbound"}`}
                 key={message.id}
