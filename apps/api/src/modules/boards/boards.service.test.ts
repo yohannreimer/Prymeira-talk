@@ -54,6 +54,8 @@ const stageId = "00000000-0000-4000-8000-000000000020";
 const nextStageId = "00000000-0000-4000-8000-000000000021";
 const contactId = "00000000-0000-4000-8000-000000000030";
 const membershipId = "00000000-0000-4000-8000-000000000040";
+const channelId = "00000000-0000-4000-8000-000000000060";
+const tagId = "00000000-0000-4000-8000-000000000070";
 
 const baseBoard = {
   id: boardId,
@@ -113,6 +115,24 @@ const baseMembership = {
   createdAt: new Date("2026-05-20T12:45:00.000Z"),
   updatedAt: new Date("2026-05-20T12:45:00.000Z"),
   contact: baseContact
+};
+
+const baseBoardChannel = {
+  channel: {
+    id: channelId,
+    displayName: "WhatsApp Comercial",
+    provider: "evolution" as const,
+    phoneNumber: "+5511999999999"
+  }
+};
+
+const baseStageTag = {
+  tag: {
+    id: tagId,
+    name: "Quente",
+    color: "#d23f3f",
+    isActive: true
+  }
 };
 
 function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & PrismaLike {
@@ -327,16 +347,31 @@ describe("boards service", () => {
   });
 
   it("updates stage tag triggers by replacing mappings for that stage", async () => {
-    const prisma = createMockPrisma();
+    const prisma = createMockPrisma({
+      contactBoardStage: {
+        ...createMockPrisma().contactBoardStage,
+        findFirst: vi
+          .fn<PrismaLike["contactBoardStage"]["findFirst"]>()
+          .mockResolvedValueOnce(baseStages[0])
+          .mockResolvedValueOnce({
+            ...baseStages[0],
+            tagTriggers: [baseStageTag]
+          })
+      }
+    });
     const service = createBoardsService(prisma);
 
-    await service.updateStage({
+    const stage = await service.updateStage({
       workspaceId: "workspace_a",
       boardId,
       stageId,
-      tagIds: ["00000000-0000-4000-8000-000000000070"]
+      tagIds: [tagId]
     });
 
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.$transaction.mock.invocationCallOrder[0]).toBeLessThan(
+      prisma.contactBoardStage.update.mock.invocationCallOrder[0] ?? 0
+    );
     expect(prisma.contactBoardStageTag.deleteMany).toHaveBeenCalledWith({
       where: { workspaceId: "workspace_a", boardId, stageId }
     });
@@ -346,15 +381,138 @@ describe("boards service", () => {
           workspaceId: "workspace_a",
           boardId,
           stageId,
-          tagId: "00000000-0000-4000-8000-000000000070"
+          tagId
+        }
+      ]
+    });
+    expect(stage.tagTriggers).toEqual([
+      {
+        id: tagId,
+        name: "Quente",
+        color: "#d23f3f",
+        isActive: true
+      }
+    ]);
+  });
+
+  it("updates board channels inside the transaction and returns refreshed channel DTOs", async () => {
+    const prisma = createMockPrisma({
+      contactBoard: {
+        ...createMockPrisma().contactBoard,
+        findFirst: vi.fn<PrismaLike["contactBoard"]["findFirst"]>().mockResolvedValue({
+          ...baseBoard,
+          channels: [baseBoardChannel],
+          stages: baseStages
+        })
+      }
+    });
+    const service = createBoardsService(prisma);
+
+    const board = await service.updateBoard({
+      workspaceId: "workspace_a",
+      boardId,
+      name: "Vendas",
+      channelIds: [channelId, channelId]
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.$transaction.mock.invocationCallOrder[0]).toBeLessThan(
+      prisma.contactBoard.update.mock.invocationCallOrder[0] ?? 0
+    );
+    expect(prisma.contactBoard.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: boardId
+        }
+      },
+      data: { name: "Vendas" },
+      include: boardRuleIncludeExpectation
+    });
+    expect(prisma.contactBoardChannel.deleteMany).toHaveBeenCalledWith({
+      where: { workspaceId: "workspace_a", boardId }
+    });
+    expect(prisma.contactBoardChannel.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          workspaceId: "workspace_a",
+          boardId,
+          channelId
         }
       ],
       skipDuplicates: true
     });
+    expect(board.channels).toEqual([
+      {
+        id: channelId,
+        displayName: "WhatsApp Comercial",
+        provider: "evolution",
+        phoneNumber: "+5511999999999"
+      }
+    ]);
   });
 
-  it("lists boards inside a workspace with stages ordered by sort order", async () => {
-    const prisma = createMockPrisma();
+  it("creates a stage with tag triggers atomically and returns refreshed tag DTOs", async () => {
+    const prisma = createMockPrisma({
+      contactBoardStage: {
+        ...createMockPrisma().contactBoardStage,
+        findFirst: vi.fn<PrismaLike["contactBoardStage"]["findFirst"]>().mockResolvedValue({
+          ...baseStages[0],
+          tagTriggers: [baseStageTag]
+        })
+      }
+    });
+    const service = createBoardsService(prisma);
+
+    const stage = await service.createStage({
+      workspaceId: "workspace_a",
+      boardId,
+      name: "Novo",
+      color: "#24564a",
+      order: 0,
+      tagIds: [tagId, tagId]
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.$transaction.mock.invocationCallOrder[0]).toBeLessThan(
+      prisma.contactBoardStage.create.mock.invocationCallOrder[0] ?? 0
+    );
+    expect(prisma.contactBoardStageTag.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          workspaceId: "workspace_a",
+          boardId,
+          stageId,
+          tagId
+        }
+      ]
+    });
+    expect(stage.tagTriggers).toEqual([
+      {
+        id: tagId,
+        name: "Quente",
+        color: "#d23f3f",
+        isActive: true
+      }
+    ]);
+  });
+
+  it("lists boards inside a workspace with channels and tag triggers", async () => {
+    const prisma = createMockPrisma({
+      contactBoard: {
+        ...createMockPrisma().contactBoard,
+        findMany: vi.fn<PrismaLike["contactBoard"]["findMany"]>().mockResolvedValue([
+          {
+            ...baseBoard,
+            channels: [baseBoardChannel],
+            stages: [
+              { ...baseStages[1], tagTriggers: [] },
+              { ...baseStages[0], tagTriggers: [baseStageTag] }
+            ]
+          }
+        ])
+      }
+    });
     const service = createBoardsService(prisma);
 
     const boards = await service.listBoards({ workspaceId: "workspace_a" });
@@ -367,6 +525,22 @@ describe("boards service", () => {
     expect(boards[0]?.stages.map((stage) => stage.name)).toEqual([
       "Qualificado",
       "Novo"
+    ]);
+    expect(boards[0]?.channels).toEqual([
+      {
+        id: channelId,
+        displayName: "WhatsApp Comercial",
+        provider: "evolution",
+        phoneNumber: "+5511999999999"
+      }
+    ]);
+    expect(boards[0]?.stages[1]?.tagTriggers).toEqual([
+      {
+        id: tagId,
+        name: "Quente",
+        color: "#d23f3f",
+        isActive: true
+      }
     ]);
   });
 

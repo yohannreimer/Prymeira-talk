@@ -372,20 +372,19 @@ export function createBoardsService(prisma: PrismaLike) {
         data.isPrimaryPipeline = input.isPrimaryPipeline;
       }
 
-      const board = await prisma.contactBoard.update({
-        where: {
-          workspaceId_id: {
-            workspaceId: input.workspaceId,
-            id: input.boardId
-          }
-        },
-        data,
-        include: boardRuleInclude
-      });
-
       if (input.channelIds !== undefined) {
         const channelIds = [...new Set(input.channelIds)];
         await prisma.$transaction(async (tx) => {
+          await tx.contactBoard.update({
+            where: {
+              workspaceId_id: {
+                workspaceId: input.workspaceId,
+                id: input.boardId
+              }
+            },
+            data,
+            include: boardRuleInclude
+          });
           await tx.contactBoardChannel.deleteMany({
             where: { workspaceId: input.workspaceId, boardId: input.boardId }
           });
@@ -412,6 +411,17 @@ export function createBoardsService(prisma: PrismaLike) {
 
         return toBoardWithStagesDto(refreshedBoard);
       }
+
+      const board = await prisma.contactBoard.update({
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: input.boardId
+          }
+        },
+        data,
+        include: boardRuleInclude
+      });
 
       return toBoardWithStagesDto(board);
     },
@@ -458,29 +468,34 @@ export function createBoardsService(prisma: PrismaLike) {
         throw new BoardsServiceError("BOARD_NOT_FOUND", "Board not found.");
       }
 
-      const stage = await prisma.contactBoardStage.create({
-        data: {
-          workspaceId: input.workspaceId,
-          boardId: input.boardId,
-          name: input.name.trim(),
-          color: input.color.trim(),
-          order: input.order
-        },
-        include: tagTriggerInclude
-      });
-
       const tagIds = [...new Set(input.tagIds ?? [])];
-      if (tagIds.length > 0) {
-        await prisma.contactBoardStageTag.createMany({
-          data: tagIds.map((tagId) => ({
+      const stage = await prisma.$transaction(async (tx) => {
+        const createdStage = await tx.contactBoardStage.create({
+          data: {
             workspaceId: input.workspaceId,
             boardId: input.boardId,
-            stageId: stage.id,
-            tagId
-          })),
-          skipDuplicates: true
+            name: input.name.trim(),
+            color: input.color.trim(),
+            order: input.order
+          },
+          include: tagTriggerInclude
         });
 
+        if (tagIds.length > 0) {
+          await tx.contactBoardStageTag.createMany({
+            data: tagIds.map((tagId) => ({
+              workspaceId: input.workspaceId,
+              boardId: input.boardId,
+              stageId: createdStage.id,
+              tagId
+            }))
+          });
+        }
+
+        return createdStage;
+      });
+
+      if (tagIds.length > 0) {
         const stageWithTags = await prisma.contactBoardStage.findFirst({
           where: {
             workspaceId: input.workspaceId,
@@ -530,21 +545,20 @@ export function createBoardsService(prisma: PrismaLike) {
         data.color = input.color.trim();
       }
 
-      const updatedStage = await prisma.contactBoardStage.update({
-        where: {
-          workspaceId_boardId_id: {
-            workspaceId: input.workspaceId,
-            boardId: input.boardId,
-            id: input.stageId
-          }
-        },
-        data,
-        include: tagTriggerInclude
-      });
-
       if (input.tagIds !== undefined) {
         const tagIds = [...new Set(input.tagIds)];
         await prisma.$transaction(async (tx) => {
+          await tx.contactBoardStage.update({
+            where: {
+              workspaceId_boardId_id: {
+                workspaceId: input.workspaceId,
+                boardId: input.boardId,
+                id: input.stageId
+              }
+            },
+            data,
+            include: tagTriggerInclude
+          });
           await tx.contactBoardStageTag.deleteMany({
             where: {
               workspaceId: input.workspaceId,
@@ -559,8 +573,7 @@ export function createBoardsService(prisma: PrismaLike) {
                 boardId: input.boardId,
                 stageId: input.stageId,
                 tagId
-              })),
-              skipDuplicates: true
+              }))
             });
           }
         });
@@ -580,6 +593,18 @@ export function createBoardsService(prisma: PrismaLike) {
 
         return toStageDto(refreshedStage);
       }
+
+      const updatedStage = await prisma.contactBoardStage.update({
+        where: {
+          workspaceId_boardId_id: {
+            workspaceId: input.workspaceId,
+            boardId: input.boardId,
+            id: input.stageId
+          }
+        },
+        data,
+        include: tagTriggerInclude
+      });
 
       return toStageDto(updatedStage);
     },
