@@ -20,6 +20,10 @@ export const createMessageParamsSchema = z.object({
   conversationId: z.string().uuid()
 });
 
+const listConversationsQuerySchema = z.object({
+  status: z.enum(["active", "closed", "all"]).optional()
+});
+
 const createMessageBodySchema = z
   .object({
     body: z.string().trim().min(1).max(4000).optional(),
@@ -130,9 +134,17 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     evolution: options.evolution
   });
 
-  app.get("/conversations", async (request) =>
-    service.listConversations({ workspaceId: request.talk.workspaceId })
-  );
+  app.get("/conversations", async (request, reply) => {
+    const query = listConversationsQuerySchema.safeParse(request.query);
+    if (!query.success) {
+      return reply.code(400).send({ error: "Invalid conversations request." });
+    }
+
+    return service.listConversations({
+      workspaceId: request.talk.workspaceId,
+      status: query.data.status
+    });
+  });
 
   app.get("/conversations/:conversationId/messages", async (request, reply) => {
     const params = createMessageParamsSchema.safeParse(request.params);

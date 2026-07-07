@@ -309,6 +309,37 @@ describe("conversations service", () => {
     );
   });
 
+  it("can list closed conversations for the workspace", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+
+    await service.listConversations({ workspaceId: "workspace_a", status: "closed" });
+
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          workspaceId: "workspace_a",
+          status: "closed"
+        }
+      })
+    );
+  });
+
+  it("can list all conversations for the workspace", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+
+    await service.listConversations({ workspaceId: "workspace_a", status: "all" });
+
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          workspaceId: "workspace_a"
+        }
+      })
+    );
+  });
+
   it("creates outbound pending messages inside the caller workspace", async () => {
     const prisma = createMockPrisma({
       create: vi.fn<PrismaLike["message"]["create"]>().mockResolvedValue({

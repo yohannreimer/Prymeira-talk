@@ -5,6 +5,8 @@ export type ChannelFilterOption = {
   label: string;
 };
 
+export type ConversationQueueFilter = "active" | "closed" | "all";
+
 export function contactDisplayName(conversation: ConversationDto) {
   return conversation.contactName ?? conversation.contactPhone ?? `Contato ${conversation.contactId.slice(0, 8)}`;
 }
@@ -33,4 +35,16 @@ export function filterConversationsByChannel(
   if (selectedChannelId === "all") return conversations;
 
   return conversations.filter((conversation) => conversation.channelId === selectedChannelId);
+}
+
+export function filterConversationsByQueue(
+  conversations: ConversationDto[],
+  selectedQueue: ConversationQueueFilter
+) {
+  if (selectedQueue === "all") return conversations;
+  if (selectedQueue === "closed") {
+    return conversations.filter((conversation) => conversation.status === "closed");
+  }
+
+  return conversations.filter((conversation) => conversation.status !== "closed");
 }

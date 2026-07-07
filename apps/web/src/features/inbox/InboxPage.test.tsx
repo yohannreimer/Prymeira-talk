@@ -7,6 +7,7 @@ import {
   metaClosedWindowMessage,
   metaServiceWindowSendError,
   messageDisplayText,
+  messageMediaFallbackLabel,
   messageMediaKind,
   messageMediaLabel,
   needsHumanAttention,
@@ -70,6 +71,14 @@ describe("messageMediaLabel", () => {
     expect(messageMediaLabel({ mediaUrl: "https://cdn.test/a.pdf", type: "file" })).toBe("Baixar arquivo");
     expect(messageMediaLabel({ mediaUrl: "https://cdn.test/a.mp4", type: "file" })).toBe("Baixar vídeo");
     expect(messageMediaLabel({ mediaUrl: "data:video/mp4;base64,dmZk", type: "file" })).toBe("Baixar vídeo");
+  });
+});
+
+describe("messageMediaFallbackLabel", () => {
+  it("names the fallback action for media previews", () => {
+    expect(messageMediaFallbackLabel({ mediaUrl: "https://cdn.test/a.ogg", type: "audio" })).toBe("Abrir áudio");
+    expect(messageMediaFallbackLabel({ mediaUrl: "https://cdn.test/a.jpg", type: "image" })).toBe("Abrir imagem");
+    expect(messageMediaFallbackLabel({ mediaUrl: "https://cdn.test/a.pdf", type: "file" })).toBe("Baixar arquivo");
   });
 });
 

@@ -1110,11 +1110,19 @@ async function readApiErrorPayload(response: Response, fallbackLabel: string) {
 }
 
 export async function apiGetConversations(
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  filters: Partial<{
+    status: "active" | "closed" | "all";
+  }> = {}
 ): Promise<ConversationDto[]> {
   const token = await getRequiredToken(getToken);
+  const url = new URL(`${apiUrl}/conversations`);
 
-  const response = await fetch(`${apiUrl}/conversations`, {
+  if (filters.status) {
+    url.searchParams.set("status", filters.status);
+  }
+
+  const response = await fetch(url, {
     headers: {
       Authorization: `Bearer ${token}`
     }

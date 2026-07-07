@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { ConversationStatus, PrismaClient } from "@prisma/client";
 import type { ContactBoardMembershipDto, ConversationDto, MessageDto } from "@prymeira-talk/shared";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import type { MetaClient } from "../meta/meta.client.js";
@@ -449,6 +449,29 @@ export function createConversationsService(
   prisma: PrismaLike,
   options: ConversationsServiceOptions = {}
 ) {
+  type ConversationListStatus = "active" | "closed" | "all";
+  const activeConversationStatuses: ConversationStatus[] = ["open", "pending"];
+
+  function conversationListWhere(input: { workspaceId: string; status?: ConversationListStatus }) {
+    if (input.status === "closed") {
+      return {
+        workspaceId: input.workspaceId,
+        status: "closed" as const
+      };
+    }
+
+    if (input.status === "all") {
+      return {
+        workspaceId: input.workspaceId
+      };
+    }
+
+    return {
+      workspaceId: input.workspaceId,
+      status: { in: activeConversationStatuses }
+    };
+  }
+
   async function findConversation(input: {
     workspaceId: string;
     conversationId: string;
@@ -555,12 +578,12 @@ export function createConversationsService(
   }
 
   return {
-    async listConversations(input: { workspaceId: string }): Promise<ConversationDto[]> {
+    async listConversations(input: {
+      workspaceId: string;
+      status?: ConversationListStatus;
+    }): Promise<ConversationDto[]> {
       const conversations = await prisma.conversation.findMany({
-        where: {
-          workspaceId: input.workspaceId,
-          status: { in: ["open", "pending"] }
-        },
+        where: conversationListWhere(input),
         include: conversationDtoInclude,
         orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
         take: 50

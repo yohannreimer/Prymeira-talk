@@ -23,6 +23,8 @@ import {
 import {
   contactDisplayName,
   filterConversationsByChannel,
+  filterConversationsByQueue,
+  type ConversationQueueFilter,
   getChannelFilterOptions
 } from "./conversation-display";
 import { QuickRepliesPopover } from "./QuickRepliesPopover";
@@ -102,10 +104,6 @@ function formatNoteDate(value: string) {
 }
 
 function upsertConversation(list: ConversationDto[], conversation: ConversationDto) {
-  if (conversation.status === "closed") {
-    return list.filter((item) => item.id !== conversation.id);
-  }
-
   const withoutUpdated = list.filter((item) => item.id !== conversation.id);
   return [conversation, ...withoutUpdated];
 }
@@ -292,6 +290,17 @@ export function messageMediaLabel(message: Pick<MessageDto, "mediaUrl" | "type">
   return kind ? labels[kind] : "Abrir mídia";
 }
 
+export function messageMediaFallbackLabel(message: Pick<MessageDto, "mediaUrl" | "type">) {
+  const kind = messageMediaKind(message);
+  const labels: Record<MessageMediaKind, string> = {
+    image: "Abrir imagem",
+    audio: "Abrir áudio",
+    file: message.mediaUrl && isVideoMediaUrl(message.mediaUrl) ? "Baixar vídeo" : "Baixar arquivo"
+  };
+
+  return kind ? labels[kind] : "Abrir mídia";
+}
+
 function MessageMediaPreview(props: { message: MessageDto }) {
   const { message } = props;
   const kind = messageMediaKind(message);
@@ -315,12 +324,23 @@ function MessageMediaPreview(props: { message: MessageDto }) {
 
   if (kind === "audio") {
     return (
-      <audio
-        className="message-audio-player"
-        controls
-        preload="metadata"
-        src={message.mediaUrl}
-      />
+      <div className="message-audio-preview">
+        <audio
+          className="message-audio-player"
+          controls
+          preload="metadata"
+          src={message.mediaUrl}
+        />
+        <a
+          className="message-media-fallback"
+          href={message.mediaUrl}
+          rel="noreferrer"
+          target="_blank"
+        >
+          <Download size={14} aria-hidden="true" />
+          {messageMediaFallbackLabel(message)}
+        </a>
+      </div>
     );
   }
 
@@ -335,7 +355,7 @@ function MessageMediaPreview(props: { message: MessageDto }) {
       <Download size={16} aria-hidden="true" />
       <span>
         <strong>{messageDisplayText(message)}</strong>
-        <small>{messageMediaLabel(message)}</small>
+        <small>{messageMediaFallbackLabel(message)}</small>
       </span>
     </a>
   );
@@ -358,6 +378,7 @@ export function InboxPage() {
   const [noteDraft, setNoteDraft] = useState("");
   const [notesHistoryOpen, setNotesHistoryOpen] = useState(false);
   const [tagDraft, setTagDraft] = useState("");
+  const [selectedQueueFilter, setSelectedQueueFilter] = useState<ConversationQueueFilter>("active");
   const [selectedChannelFilter, setSelectedChannelFilter] = useState("all");
   const [isSending, setIsSending] = useState(false);
   const [isRunningAction, setIsRunningAction] = useState(false);
@@ -507,7 +528,7 @@ export function InboxPage() {
       setError(null);
 
       try {
-        const nextConversations = await apiGetConversations(getFreshToken);
+        const nextConversations = await apiGetConversations(getFreshToken, { status: selectedQueueFilter });
 
         if (!isMounted) return;
 
@@ -535,7 +556,7 @@ export function InboxPage() {
     return () => {
       isMounted = false;
     };
-  }, [getFreshToken]);
+  }, [getFreshToken, selectedQueueFilter]);
 
   useEffect(() => {
     let isMounted = true;
@@ -717,10 +738,17 @@ export function InboxPage() {
     onEvent: handleRealtimeEvent
   });
 
-  const channelFilterOptions = useMemo(() => getChannelFilterOptions(conversations), [conversations]);
+  const queueFilteredConversations = useMemo(
+    () => filterConversationsByQueue(conversations, selectedQueueFilter),
+    [conversations, selectedQueueFilter]
+  );
+  const channelFilterOptions = useMemo(
+    () => getChannelFilterOptions(queueFilteredConversations),
+    [queueFilteredConversations]
+  );
   const visibleConversations = useMemo(
-    () => filterConversationsByChannel(conversations, selectedChannelFilter),
-    [conversations, selectedChannelFilter]
+    () => filterConversationsByChannel(queueFilteredConversations, selectedChannelFilter),
+    [queueFilteredConversations, selectedChannelFilter]
   );
 
   useEffect(() => {
@@ -784,6 +812,7 @@ export function InboxPage() {
   }, [getFreshToken, selectedConversation]);
 
   const openCount = conversations.filter((conversation) => conversation.status === "open").length;
+  const closedCount = conversations.filter((conversation) => conversation.status === "closed").length;
   const unreadCount = conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
 
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
@@ -1107,6 +1136,31 @@ export function InboxPage() {
             <span>{unreadCount}</span>
             <p>Novas</p>
           </div>
+          <div>
+            <span>{closedCount}</span>
+            <p>Finalizadas</p>
+          </div>
+        </div>
+
+        <div className="queue-filter-row" aria-label="Filtrar por status da conversa">
+          {[
+            { id: "active" as const, label: "Ativas" },
+            { id: "closed" as const, label: "Finalizadas" },
+            { id: "all" as const, label: "Todas" }
+          ].map((option) => (
+            <button
+              aria-pressed={selectedQueueFilter === option.id}
+              className={[
+                "queue-filter-chip",
+                selectedQueueFilter === option.id ? "is-active" : ""
+              ].filter(Boolean).join(" ")}
+              key={option.id}
+              onClick={() => setSelectedQueueFilter(option.id)}
+              type="button"
+            >
+              {option.label}
+            </button>
+          ))}
         </div>
 
         <div className="channel-filter-row" aria-label="Filtrar por canal">

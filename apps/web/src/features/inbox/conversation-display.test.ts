@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   contactDisplayName,
   filterConversationsByChannel,
+  filterConversationsByQueue,
   getChannelFilterOptions
 } from "./conversation-display";
 
@@ -85,6 +86,30 @@ describe("conversation display helpers", () => {
       const beta = conversationFixture({ id: "conversation-2", channelId: "channel-beta-5678" });
 
       expect(filterConversationsByChannel([alpha, beta], "channel-beta-5678")).toEqual([beta]);
+    });
+  });
+
+  describe("filterConversationsByQueue", () => {
+    it("returns open and pending conversations for the active queue", () => {
+      const open = conversationFixture({ id: "conversation-open", status: "open" });
+      const pending = conversationFixture({ id: "conversation-pending", status: "pending" });
+      const closed = conversationFixture({ id: "conversation-closed", status: "closed" });
+
+      expect(filterConversationsByQueue([open, pending, closed], "active")).toEqual([open, pending]);
+    });
+
+    it("returns closed conversations for the closed queue", () => {
+      const open = conversationFixture({ id: "conversation-open", status: "open" });
+      const closed = conversationFixture({ id: "conversation-closed", status: "closed" });
+
+      expect(filterConversationsByQueue([open, closed], "closed")).toEqual([closed]);
+    });
+
+    it("returns every conversation for the all queue", () => {
+      const open = conversationFixture({ id: "conversation-open", status: "open" });
+      const closed = conversationFixture({ id: "conversation-closed", status: "closed" });
+
+      expect(filterConversationsByQueue([open, closed], "all")).toEqual([open, closed]);
     });
   });
 });
