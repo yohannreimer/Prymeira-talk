@@ -30,6 +30,7 @@ import {
   MessageSquarePlus,
   Pencil,
   Plus,
+  RefreshCw,
   Save,
   Search,
   Trash2,
@@ -52,18 +53,21 @@ import {
   apiRemoveBoardMembership,
   apiReorderBoardStages,
   apiStartContactConversation,
+  apiSyncBoardRules,
   apiUpdateBoard,
   apiUpdateBoardStage,
   apiUpdateContact,
+  type BoardSyncResultDto,
+  type BoardSyncScope,
   type BoardContactCardDto,
   type BoardContactsDto,
   type ContactBoardWithStagesDto
 } from "../../app/api";
-import { findDuplicateStageTag, stageTagIdsByStage } from "./board-display";
+import { findDuplicateStageTag, formatBoardChannelLabel, stageTagIdsByStage } from "./board-display";
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
 
 type ViewMode = "list" | "board";
-type BoardPanelMode = "create-board" | "edit-board" | "create-stage" | "add-contact" | null;
+type BoardPanelMode = "create-board" | "edit-board" | "create-stage" | "add-contact" | "sync-rules" | null;
 
 interface ContactFormState {
   name: string;
@@ -221,6 +225,8 @@ export function ContactsPage() {
   const [newStageForm, setNewStageForm] = useState<StageFormState>(emptyStageForm);
   const [stageEditForms, setStageEditForms] = useState<Record<string, StageFormState>>({});
   const [boardPanelMode, setBoardPanelMode] = useState<BoardPanelMode>(null);
+  const [syncScope, setSyncScope] = useState<BoardSyncScope>("active");
+  const [syncResult, setSyncResult] = useState<BoardSyncResultDto | null>(null);
   const [addContactId, setAddContactId] = useState("");
   const [addStageId, setAddStageId] = useState("");
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
@@ -589,6 +595,10 @@ export function ContactsPage() {
     if (!isBoardLoading && boards.length === 0) {
       setBoardPanelMode("create-board");
     }
+
+    if (!isBoardLoading && boards.length > 0) {
+      setBoardPanelMode((current) => (current === "create-board" ? null : current));
+    }
   }, [boards.length, isBoardLoading, viewMode]);
 
   useEffect(() => {
@@ -697,6 +707,43 @@ export function ContactsPage() {
           }
         : current
     );
+  }
+
+  function toggleBoardChannel(target: "new" | "edit", channelId: string, checked: boolean) {
+    const setForm = target === "new" ? setNewBoardForm : setBoardEditForm;
+
+    setForm((current) => ({
+      ...current,
+      channelIds: checked
+        ? [...current.channelIds, channelId]
+        : current.channelIds.filter((currentChannelId) => currentChannelId !== channelId)
+    }));
+  }
+
+  function toggleStageTag(target: "new" | string, tagId: string, checked: boolean) {
+    if (target === "new") {
+      setNewStageForm((current) => ({
+        ...current,
+        tagIds: checked
+          ? [...current.tagIds, tagId]
+          : current.tagIds.filter((currentTagId) => currentTagId !== tagId)
+      }));
+      return;
+    }
+
+    setStageEditForms((current) => {
+      const form = current[target] ?? emptyStageForm;
+
+      return {
+        ...current,
+        [target]: {
+          ...form,
+          tagIds: checked
+            ? [...form.tagIds, tagId]
+            : form.tagIds.filter((currentTagId) => currentTagId !== tagId)
+        }
+      };
+    });
   }
 
   async function handleCreateBoard(event: FormEvent<HTMLFormElement>) {
@@ -860,6 +907,29 @@ export function ContactsPage() {
       setSaveMessage("Etapa atualizada.");
     } catch (updateError) {
       setBoardError(updateError instanceof Error ? updateError.message : "Não foi possível atualizar a etapa.");
+    } finally {
+      setIsBoardSaving(false);
+    }
+  }
+
+  async function handleSyncBoardRules(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!selectedBoard) return;
+
+    setIsBoardSaving(true);
+    setBoardError(null);
+    setSaveMessage(null);
+    setSyncResult(null);
+
+    try {
+      const result = await apiSyncBoardRules(getToken, selectedBoard.id, syncScope);
+      setSyncResult(result);
+      setSaveMessage(`Sincronização concluída: ${result.added} adicionados, ${result.moved} movidos.`);
+      const nextBoardContacts = await apiGetBoardContacts(getToken, selectedBoard.id);
+      setBoardContacts(nextBoardContacts);
+    } catch (syncError) {
+      setBoardError(syncError instanceof Error ? syncError.message : "Não foi possível sincronizar o board.");
     } finally {
       setIsBoardSaving(false);
     }
@@ -1210,6 +1280,21 @@ export function ContactsPage() {
                     </select>
                   </label>
 
+                  <div className="board-rule-summary" aria-label="Regras do board selecionado">
+                    {selectedBoard?.channels.length ? (
+                      selectedBoard.channels.map((channel) => (
+                        <span className="board-rule-chip" key={channel.id}>
+                          {formatBoardChannelLabel(channel)}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="board-rule-chip is-muted">Sem canais</span>
+                    )}
+                    {selectedBoard?.isPrimaryPipeline ? (
+                      <span className="board-rule-chip is-primary">Funil principal</span>
+                    ) : null}
+                  </div>
+
                   <div className="board-command-actions" aria-label="Acoes do board">
                     <button
                       className={boardPanelMode === "create-board" ? "is-active" : ""}
@@ -1262,6 +1347,19 @@ export function ContactsPage() {
                       <Users size={16} aria-hidden="true" />
                       Adicionar contato
                     </button>
+                    <button
+                      className={boardPanelMode === "sync-rules" ? "is-active" : ""}
+                      disabled={!selectedBoard}
+                      onClick={() =>
+                        setBoardPanelMode((current) =>
+                          current === "sync-rules" ? null : "sync-rules"
+                        )
+                      }
+                      type="button"
+                    >
+                      <RefreshCw size={16} aria-hidden="true" />
+                      Sincronizar
+                    </button>
                   </div>
                 </div>
 
@@ -1275,7 +1373,9 @@ export function ContactsPage() {
                             ? "Gerenciar board"
                             : boardPanelMode === "create-stage"
                               ? "Nova etapa"
-                              : "Adicionar contato"}
+                              : boardPanelMode === "sync-rules"
+                                ? "Sincronizar regras"
+                                : "Adicionar contato"}
                       </strong>
                       {boards.length > 0 ? (
                         <button
@@ -1318,6 +1418,41 @@ export function ContactsPage() {
                             value={newBoardForm.description}
                           />
                         </label>
+                        <fieldset className="board-rules-fieldset">
+                          <legend>Regras do board</legend>
+                          <label className="board-toggle-row">
+                            <input
+                              checked={newBoardForm.isPrimaryPipeline}
+                              disabled={isBoardSaving}
+                              onChange={(event) =>
+                                setNewBoardForm((current) => ({
+                                  ...current,
+                                  isPrimaryPipeline: event.target.checked
+                                }))
+                              }
+                              type="checkbox"
+                            />
+                            Funil principal
+                          </label>
+                          <div className="board-checkbox-grid">
+                            {channels.length === 0 ? (
+                              <span className="board-empty-inline">Sem canais configurados</span>
+                            ) : null}
+                            {channels.map((channel) => (
+                              <label key={channel.id}>
+                                <input
+                                  checked={newBoardForm.channelIds.includes(channel.id)}
+                                  disabled={isBoardSaving}
+                                  onChange={(event) =>
+                                    toggleBoardChannel("new", channel.id, event.target.checked)
+                                  }
+                                  type="checkbox"
+                                />
+                                {channel.displayName ?? channel.phoneNumber ?? channel.provider}
+                              </label>
+                            ))}
+                          </div>
+                        </fieldset>
                         <button
                           className="secondary-button icon-button-label"
                           disabled={isBoardSaving || !newBoardForm.name.trim()}
@@ -1357,6 +1492,41 @@ export function ContactsPage() {
                             value={boardEditForm.description}
                           />
                         </label>
+                        <fieldset className="board-rules-fieldset">
+                          <legend>Regras do board</legend>
+                          <label className="board-toggle-row">
+                            <input
+                              checked={boardEditForm.isPrimaryPipeline}
+                              disabled={!selectedBoard || isBoardSaving}
+                              onChange={(event) =>
+                                setBoardEditForm((current) => ({
+                                  ...current,
+                                  isPrimaryPipeline: event.target.checked
+                                }))
+                              }
+                              type="checkbox"
+                            />
+                            Funil principal
+                          </label>
+                          <div className="board-checkbox-grid">
+                            {channels.length === 0 ? (
+                              <span className="board-empty-inline">Sem canais configurados</span>
+                            ) : null}
+                            {channels.map((channel) => (
+                              <label key={channel.id}>
+                                <input
+                                  checked={boardEditForm.channelIds.includes(channel.id)}
+                                  disabled={!selectedBoard || isBoardSaving}
+                                  onChange={(event) =>
+                                    toggleBoardChannel("edit", channel.id, event.target.checked)
+                                  }
+                                  type="checkbox"
+                                />
+                                {channel.displayName ?? channel.phoneNumber ?? channel.provider}
+                              </label>
+                            ))}
+                          </div>
+                        </fieldset>
                         <div className="board-management-actions">
                           <button
                             className="secondary-button icon-button-label"
@@ -1409,6 +1579,23 @@ export function ContactsPage() {
                             value={newStageForm.color}
                           />
                         </label>
+                        <div className="stage-tag-picker" aria-label="Tags que movem para esta etapa">
+                          {tags.length === 0 ? (
+                            <span className="board-empty-inline">Sem tags criadas</span>
+                          ) : null}
+                          {tags.map((tag) => (
+                            <label key={tag.id}>
+                              <input
+                                checked={newStageForm.tagIds.includes(tag.id)}
+                                disabled={!selectedBoard || isBoardSaving}
+                                onChange={(event) => toggleStageTag("new", tag.id, event.target.checked)}
+                                type="checkbox"
+                              />
+                              <span style={{ backgroundColor: tag.color }} aria-hidden="true" />
+                              {tag.name}
+                            </label>
+                          ))}
+                        </div>
                         <button
                           className="secondary-button icon-button-label"
                           disabled={!selectedBoard || isBoardSaving || !newStageForm.name.trim()}
@@ -1417,6 +1604,105 @@ export function ContactsPage() {
                           <Plus size={16} aria-hidden="true" />
                           Criar etapa
                         </button>
+                        {boardStages.length > 0 ? (
+                          <div className="stage-management-list">
+                            {boardStages.map((stage, stageIndex) => (
+                              <div className="stage-management-row" key={stage.id}>
+                                <label>
+                                  Nome
+                                  <input
+                                    disabled={isBoardSaving}
+                                    onChange={(event) =>
+                                      setStageEditForms((current) => ({
+                                        ...current,
+                                        [stage.id]: {
+                                          ...(current[stage.id] ?? {
+                                            name: stage.name,
+                                            color: stage.color,
+                                            tagIds: stage.tagTriggers.map((tag) => tag.id)
+                                          }),
+                                          name: event.target.value
+                                        }
+                                      }))
+                                    }
+                                    value={stageEditForms[stage.id]?.name ?? stage.name}
+                                  />
+                                </label>
+                                <label>
+                                  Cor
+                                  <input
+                                    disabled={isBoardSaving}
+                                    onChange={(event) =>
+                                      setStageEditForms((current) => ({
+                                        ...current,
+                                        [stage.id]: {
+                                          ...(current[stage.id] ?? {
+                                            name: stage.name,
+                                            color: stage.color,
+                                            tagIds: stage.tagTriggers.map((tag) => tag.id)
+                                          }),
+                                          color: event.target.value
+                                        }
+                                      }))
+                                    }
+                                    type="color"
+                                    value={stageEditForms[stage.id]?.color ?? stage.color}
+                                  />
+                                </label>
+                                <div className="stage-tag-picker">
+                                  {tags.map((tag) => (
+                                    <label key={tag.id}>
+                                      <input
+                                        checked={(stageEditForms[stage.id]?.tagIds ?? []).includes(tag.id)}
+                                        disabled={isBoardSaving}
+                                        onChange={(event) =>
+                                          toggleStageTag(stage.id, tag.id, event.target.checked)
+                                        }
+                                        type="checkbox"
+                                      />
+                                      <span style={{ backgroundColor: tag.color }} aria-hidden="true" />
+                                      {tag.name}
+                                    </label>
+                                  ))}
+                                </div>
+                                <div className="stage-management-actions">
+                                  <button
+                                    aria-label="Mover etapa para esquerda"
+                                    disabled={stageIndex === 0 || isBoardSaving}
+                                    onClick={() => void handleReorderStage(stage, -1)}
+                                    type="button"
+                                  >
+                                    <ChevronLeft size={15} aria-hidden="true" />
+                                  </button>
+                                  <button
+                                    aria-label="Mover etapa para direita"
+                                    disabled={stageIndex === boardStages.length - 1 || isBoardSaving}
+                                    onClick={() => void handleReorderStage(stage, 1)}
+                                    type="button"
+                                  >
+                                    <ChevronRight size={15} aria-hidden="true" />
+                                  </button>
+                                  <button
+                                    aria-label="Salvar etapa"
+                                    disabled={isBoardSaving || !stageEditForms[stage.id]?.name.trim()}
+                                    onClick={() => void handleUpdateStage(stage.id)}
+                                    type="button"
+                                  >
+                                    <Save size={15} aria-hidden="true" />
+                                  </button>
+                                  <button
+                                    aria-label="Apagar etapa"
+                                    disabled={isBoardSaving || (membershipsByStage.get(stage.id) ?? []).length > 0}
+                                    onClick={() => void handleDeleteStage(stage)}
+                                    type="button"
+                                  >
+                                    <Trash2 size={15} aria-hidden="true" />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                       </form>
                     ) : null}
 
@@ -1470,6 +1756,37 @@ export function ContactsPage() {
                         </button>
                       </form>
                     ) : null}
+
+                    {boardPanelMode === "sync-rules" ? (
+                      <form className="board-sync-form" onSubmit={handleSyncBoardRules}>
+                        <label>
+                          Escopo
+                          <select
+                            disabled={!selectedBoard || isBoardSaving}
+                            onChange={(event) => setSyncScope(event.target.value as BoardSyncScope)}
+                            value={syncScope}
+                          >
+                            <option value="active">Ativas</option>
+                            <option value="closed">Finalizadas</option>
+                            <option value="all">Todas</option>
+                          </select>
+                        </label>
+                        <button
+                          className="secondary-button icon-button-label"
+                          disabled={!selectedBoard || isBoardSaving}
+                          type="submit"
+                        >
+                          <RefreshCw size={16} aria-hidden="true" />
+                          Sincronizar agora
+                        </button>
+                        {syncResult ? (
+                          <p className="board-sync-result">
+                            {syncResult.evaluated} avaliados, {syncResult.added} adicionados,{" "}
+                            {syncResult.moved} movidos, {syncResult.ignored} sem mudança.
+                          </p>
+                        ) : null}
+                      </form>
+                    ) : null}
                   </div>
                 ) : null}
 
@@ -1517,46 +1834,26 @@ export function ContactsPage() {
                         return (
                           <section className="board-column" key={stage.id}>
                             <header>
-                              <div className="stage-editor">
-                                <input
-                                  aria-label={`Cor da etapa ${stage.name}`}
-                                  disabled={isBoardSaving}
-                                  onChange={(event) =>
-                                    setStageEditForms((current) => ({
-                                      ...current,
-                                      [stage.id]: {
-                                        ...(current[stage.id] ?? {
-                                          name: stage.name,
-                                          color: stage.color,
-                                          tagIds: stage.tagTriggers.map((tag) => tag.id)
-                                        }),
-                                        color: event.target.value
-                                      }
-                                    }))
-                                  }
-                                  type="color"
-                                  value={stageEditForms[stage.id]?.color ?? stage.color}
+                              <div className="stage-rich-heading">
+                                <span
+                                  className="stage-color-swatch"
+                                  style={{ backgroundColor: stage.color }}
+                                  aria-hidden="true"
                                 />
-                                <input
-                                  aria-label={`Nome da etapa ${stage.name}`}
-                                  disabled={isBoardSaving}
-                                  onChange={(event) =>
-                                    setStageEditForms((current) => ({
-                                      ...current,
-                                      [stage.id]: {
-                                        ...(current[stage.id] ?? {
-                                          name: stage.name,
-                                          color: stage.color,
-                                          tagIds: stage.tagTriggers.map((tag) => tag.id)
-                                        }),
-                                        name: event.target.value
-                                      }
-                                    }))
-                                  }
-                                  value={stageEditForms[stage.id]?.name ?? stage.name}
-                                />
+                                <div>
+                                  <strong>{stage.name}</strong>
+                                  <div className="stage-tag-chips">
+                                    {stage.tagTriggers.length > 0 ? (
+                                      stage.tagTriggers.map((tag) => (
+                                        <span key={tag.id}>{tag.name}</span>
+                                      ))
+                                    ) : (
+                                      <span className="is-muted">Manual</span>
+                                    )}
+                                  </div>
+                                </div>
                               </div>
-                              <span>{memberships.length}</span>
+                              <span className="stage-count-pill">{memberships.length}</span>
                               <div className="stage-actions" aria-label={`Acoes da etapa ${stage.name}`}>
                                 <button
                                   aria-label="Mover etapa para esquerda"
@@ -1573,17 +1870,6 @@ export function ContactsPage() {
                                   type="button"
                                 >
                                   <ChevronRight size={15} aria-hidden="true" />
-                                </button>
-                                <button
-                                  aria-label="Salvar etapa"
-                                  disabled={
-                                    isBoardSaving ||
-                                    !stageEditForms[stage.id]?.name.trim()
-                                  }
-                                  onClick={() => void handleUpdateStage(stage.id)}
-                                  type="button"
-                                >
-                                  <Save size={15} aria-hidden="true" />
                                 </button>
                                 <button
                                   aria-label="Apagar etapa"
