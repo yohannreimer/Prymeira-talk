@@ -237,6 +237,10 @@ export interface ConversationActionResultDto {
   conversation: ConversationDto;
   context: ContactContextDto;
   boardMembership?: ContactBoardMembershipDto;
+  appliedTag?: {
+    conversationId: string;
+    tagId: string;
+  };
   aiSuggestion?: string;
   crmAction?: {
     id: string;
@@ -851,6 +855,7 @@ export function createConversationsService(
       let aiSuggestion: string | undefined;
       let crmAction: ConversationActionResultDto["crmAction"];
       let boardMembership: ContactBoardMembershipDto | undefined;
+      let appliedTag: ConversationActionResultDto["appliedTag"];
 
       if (input.action === "add_note") {
         const user = input.currentClerkUserId
@@ -1010,6 +1015,10 @@ export function createConversationsService(
           },
           update: {}
         });
+        appliedTag = {
+          conversationId: input.conversationId,
+          tagId: tag.id
+        };
       }
 
       if (input.action === "remove_tag") {
@@ -1084,6 +1093,7 @@ export function createConversationsService(
         conversation: toConversationDto(conversation),
         context: await buildContactContext(conversation),
         ...(boardMembership ? { boardMembership } : {}),
+        ...(appliedTag ? { appliedTag } : {}),
         ...(aiSuggestion ? { aiSuggestion } : {}),
         ...(crmAction ? { crmAction } : {})
       };

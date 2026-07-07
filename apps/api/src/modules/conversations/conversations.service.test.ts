@@ -35,6 +35,9 @@ type MockPrisma = {
     updateMany: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["updateMany"]>>;
     upsert: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["upsert"]>>;
   };
+  contactBoard: {
+    findMany: ReturnType<typeof vi.fn>;
+  };
   contactBoardStage: {
     findMany: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["findMany"]>>;
     findFirst: ReturnType<typeof vi.fn<PrismaLike["contactBoardStage"]["findFirst"]>>;
@@ -209,6 +212,9 @@ function createMockPrisma(overrides: {
         board: { name: "Pipeline" },
         stage: { name: "Qualificado", color: "#d29b44" }
       })
+    },
+    contactBoard: {
+      findMany: vi.fn().mockResolvedValue([])
     },
     contactBoardStage: {
       findMany: vi.fn<PrismaLike["contactBoardStage"]["findMany"]>().mockResolvedValue([
@@ -1584,6 +1590,30 @@ describe("conversations service", () => {
     });
   });
 
+  it("returns applied tag metadata only when adding a tag", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+
+    const addResult = await service.runConversationAction({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      action: "add_tag",
+      name: " VIP "
+    });
+    const removeResult = await service.runConversationAction({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      action: "remove_tag",
+      tagId: "tag_1"
+    });
+
+    expect(addResult.appliedTag).toEqual({
+      conversationId: "conv_1",
+      tagId: "tag_1"
+    });
+    expect(removeResult.appliedTag).toBeUndefined();
+  });
+
   it("logs simulated AI suggestions and CRM notes", async () => {
     const prisma = createMockPrisma();
     const service = createConversationsService(prisma);
@@ -2011,6 +2041,128 @@ describe("conversation routes", () => {
         })
       );
       expect(publish).toHaveBeenCalledWith({
+        type: "conversation.updated",
+        workspaceId: "workspace_a",
+        payload: expect.objectContaining({ id: "conv_1" })
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("applies board rules through the action route after adding a tag", async () => {
+    const prisma = createMockPrisma({
+      findUnique: vi
+        .fn<PrismaLike["conversation"]["findUnique"]>()
+        .mockResolvedValueOnce({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          status: "open",
+          assignedUserId: null,
+          departmentId: null,
+          lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+          lastMessagePreview: "Oi",
+          unreadCount: 0,
+          priority: "normal",
+          tags: []
+        })
+        .mockResolvedValueOnce({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          status: "open",
+          assignedUserId: null,
+          departmentId: null,
+          lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+          lastMessagePreview: "Oi",
+          unreadCount: 0,
+          priority: "normal",
+          channel: { displayName: "WhatsApp", phoneNumber: "+55 47 99999-0000", provider: "evolution" },
+          contact: { name: "Ana Silva", phone: "5547999990000" },
+          department: null,
+          assignedUser: null,
+          tags: [{ tag: { id: "tag_1", name: "VIP", color: "#24564a" } }]
+        })
+        .mockResolvedValueOnce({
+          id: "conv_1",
+          workspaceId: "workspace_a",
+          channelId: "channel_1",
+          contactId: "contact_1",
+          status: "open",
+          assignedUserId: null,
+          departmentId: null,
+          lastMessageAt: new Date("2026-05-20T12:00:00.000Z"),
+          lastMessagePreview: "Oi",
+          unreadCount: 0,
+          priority: "normal",
+          tags: [{ tagId: "tag_1" }]
+        } as never)
+    });
+    prisma.contactBoard.findMany.mockResolvedValueOnce([
+      {
+        id: "board_1",
+        workspaceId: "workspace_a",
+        isPrimaryPipeline: false,
+        channels: [{ channelId: "channel_1" }],
+        stages: [
+          {
+            id: "stage_2",
+            workspaceId: "workspace_a",
+            boardId: "board_1",
+            order: 2,
+            tagTriggers: [{ tagId: "tag_1" }]
+          }
+        ]
+      }
+    ]);
+    const publish = vi.fn();
+    const app = Fastify({ logger: false });
+
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => {
+      request.talk = { workspaceId: "workspace_a", role: "agent" };
+    });
+    await app.register(conversationsRoutes);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/conversations/00000000-0000-4000-8000-000000000001/actions",
+        payload: { action: "add_tag", name: "VIP" }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.objectContaining({
+          appliedTag: {
+            conversationId: "00000000-0000-4000-8000-000000000001",
+            tagId: "tag_1"
+          }
+        })
+      );
+      expect(prisma.contactBoard.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            workspaceId: "workspace_a",
+            channels: { some: { channelId: "channel_1" } }
+          })
+        })
+      );
+      expect(publish).toHaveBeenCalledTimes(2);
+      expect(publish).toHaveBeenNthCalledWith(1, {
+        type: "board_membership.updated",
+        workspaceId: "workspace_a",
+        payload: expect.objectContaining({
+          contactId: "contact_1",
+          boardId: "board_1",
+          stageId: "stage_2"
+        })
+      });
+      expect(publish).toHaveBeenNthCalledWith(2, {
         type: "conversation.updated",
         workspaceId: "workspace_a",
         payload: expect.objectContaining({ id: "conv_1" })

@@ -170,10 +170,20 @@ describe("automation runner", () => {
       sendMedia: vi.fn()
     };
     const realtime = { publish: vi.fn() };
+    const boardRules = {
+      applyBoardRulesForConversationTags: vi.fn().mockResolvedValue({
+        evaluated: 1,
+        added: 1,
+        moved: 0,
+        ignored: 0,
+        conflicts: 0
+      })
+    };
     const runner = createAutomationRunner({
       prisma,
       evolution: { mode: "real", client: evolutionClient },
-      realtime
+      realtime,
+      boardRules
     });
 
     const runs = await runner.runForInboundMessage({
@@ -208,6 +218,10 @@ describe("automation runner", () => {
         create: expect.objectContaining({ workspaceId, name: "Novo lead" })
       })
     );
+    expect(boardRules.applyBoardRulesForConversationTags).toHaveBeenCalledWith({
+      workspaceId,
+      conversationId
+    });
     expect(prisma.automationRun.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({

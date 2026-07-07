@@ -101,7 +101,12 @@ describe("executeAgentActions", () => {
     });
 
     expect(results).toEqual([
-      { type: "add_tag", status: "completed" },
+      {
+        type: "add_tag",
+        status: "completed",
+        conversationId: "conv_1",
+        tagId: "tag_allowed_ai"
+      },
       { type: "change_priority", status: "completed" },
       { type: "create_internal_note", status: "completed" }
     ]);
@@ -292,7 +297,14 @@ describe("executeAgentActions", () => {
       actions: [{ type: "add_tag", tagName: " lead quente " }]
     });
 
-    expect(results).toEqual([{ type: "add_tag", status: "completed" }]);
+    expect(results).toEqual([
+      {
+        type: "add_tag",
+        status: "completed",
+        conversationId: "conv_1",
+        tagId: "tag_hot_lead"
+      }
+    ]);
     expect(prisma.tag.upsert).not.toHaveBeenCalled();
     expect(prisma.conversationTag.upsert).toHaveBeenCalledWith({
       where: {

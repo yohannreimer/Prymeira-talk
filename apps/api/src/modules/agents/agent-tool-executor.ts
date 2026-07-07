@@ -111,6 +111,8 @@ export type AgentToolExecutionResult = {
   status: "completed" | "skipped";
   reason?: string;
   rawType?: string;
+  conversationId?: string;
+  tagId?: string;
 };
 
 export async function executeAgentActions(
@@ -176,8 +178,14 @@ export async function executeAgentActions(
     }
 
     try {
-      await executeNonSendAction(prisma, input, await loadConversation(), actionType, action);
-      results.push({ type: actionType, status: "completed" });
+      const metadata = await executeNonSendAction(
+        prisma,
+        input,
+        await loadConversation(),
+        actionType,
+        action
+      );
+      results.push({ type: actionType, status: "completed", ...metadata });
     } catch (error) {
       if (error instanceof AgentToolExecutionError && error.code !== "CONVERSATION_NOT_FOUND") {
         results.push({ type: actionType, status: "skipped", reason: error.message });
@@ -213,11 +221,10 @@ async function executeNonSendAction(
   conversation: ConversationRecord,
   actionType: AgentActionType,
   action: AgentAction
-) {
+): Promise<Partial<AgentToolExecutionResult> | undefined> {
   switch (actionType) {
     case "add_tag":
-      await addTag(prisma, input, action);
-      return;
+      return addTag(prisma, input, action);
     case "remove_tag":
       await removeTag(prisma, input, action);
       return;
@@ -283,6 +290,11 @@ async function addTag(
     },
     update: {}
   });
+
+  return {
+    conversationId: input.conversationId,
+    tagId: allowedTag.id
+  };
 }
 
 function normalizeTagName(value: string) {

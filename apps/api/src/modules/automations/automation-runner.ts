@@ -198,6 +198,12 @@ export interface AutomationRunnerOptions {
   agentReplyScheduler?: AutomationRunnerAgentReplyScheduler;
   evolution?: AutomationRunnerEvolution;
   realtime?: AutomationRunnerRealtime;
+  boardRules?: {
+    applyBoardRulesForConversationTags(input: {
+      workspaceId: string;
+      conversationId: string;
+    }): Promise<unknown>;
+  };
 }
 
 export interface RunForInboundMessageInput {
@@ -624,6 +630,10 @@ async function executeNode(
         tagId: tag.id
       }
     }).catch(() => undefined);
+    await options.boardRules?.applyBoardRulesForConversationTags({
+      workspaceId: context.message.workspaceId,
+      conversationId: context.conversation.id
+    });
     return { result: resultFor(node, "completed") };
   }
 

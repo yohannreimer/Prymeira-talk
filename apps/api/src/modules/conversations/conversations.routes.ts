@@ -1,5 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { createBoardRulesService } from "../boards/board-rules.service.js";
+import type { BoardRulesPrismaLike } from "../boards/board-rules.service.js";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { MetaClientError } from "../meta/meta.client.js";
@@ -306,6 +308,15 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
 
     if (result instanceof ConversationActionError) {
       return reply.code(result.statusCode).send({ code: result.code, error: result.message });
+    }
+
+    if (result.appliedTag) {
+      const ruleService = createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike);
+      await ruleService.applyBoardRulesForConversationTags({
+        workspaceId: request.talk.workspaceId,
+        conversationId: result.appliedTag.conversationId,
+        publish: (event) => app.realtime.publish(event)
+      });
     }
 
     app.realtime.publish({
