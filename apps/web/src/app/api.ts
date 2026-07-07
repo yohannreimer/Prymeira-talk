@@ -562,6 +562,10 @@ function parseBoardMembershipDeleteResult(data: unknown): BoardMembershipDeleteR
 }
 
 function parseBoardSyncResult(data: unknown): BoardSyncResultDto {
+  if (!isRecord(data)) {
+    throw new Error("Invalid board sync response.");
+  }
+
   const payload = data as Partial<BoardSyncResultDto>;
   const result = {
     evaluated: payload.evaluated,

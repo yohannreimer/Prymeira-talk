@@ -268,6 +268,15 @@ describe("board administration API helpers", () => {
       channelIds: ["channel-1"],
       isPrimaryPipeline: true
     });
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toMatchObject({
+      tagIds: ["tag-1"]
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      9,
+      "http://localhost:3002/boards/board-1/sync-rules",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[8]?.[1]?.body))).toEqual({ scope: "all" });
   });
 });
 
