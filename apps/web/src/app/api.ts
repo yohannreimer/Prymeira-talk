@@ -1293,6 +1293,7 @@ export async function apiGetConversations(
   getToken: () => Promise<string | null>,
   filters: Partial<{
     status: "active" | "closed" | "all";
+    assignee: "me";
   }> = {}
 ): Promise<ConversationDto[]> {
   const token = await getRequiredToken(getToken);
@@ -1300,6 +1301,9 @@ export async function apiGetConversations(
 
   if (filters.status) {
     url.searchParams.set("status", filters.status);
+  }
+  if (filters.assignee) {
+    url.searchParams.set("assignee", filters.assignee);
   }
 
   const response = await fetch(url, {

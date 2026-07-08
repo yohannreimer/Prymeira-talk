@@ -468,23 +468,32 @@ export function createConversationsService(
   type ConversationListStatus = "active" | "closed" | "all";
   const activeConversationStatuses: ConversationStatus[] = ["open", "pending"];
 
-  function conversationListWhere(input: { workspaceId: string; status?: ConversationListStatus }) {
+  function conversationListWhere(input: {
+    workspaceId: string;
+    status?: ConversationListStatus;
+    assignedUserId?: string | null;
+  }) {
+    const assigneeWhere = input.assignedUserId ? { assignedUserId: input.assignedUserId } : {};
+
     if (input.status === "closed") {
       return {
         workspaceId: input.workspaceId,
-        status: "closed" as const
+        status: "closed" as const,
+        ...assigneeWhere
       };
     }
 
     if (input.status === "all") {
       return {
-        workspaceId: input.workspaceId
+        workspaceId: input.workspaceId,
+        ...assigneeWhere
       };
     }
 
     return {
       workspaceId: input.workspaceId,
-      status: { in: activeConversationStatuses }
+      status: { in: activeConversationStatuses },
+      ...assigneeWhere
     };
   }
 
@@ -597,6 +606,7 @@ export function createConversationsService(
     async listConversations(input: {
       workspaceId: string;
       status?: ConversationListStatus;
+      assignedUserId?: string | null;
     }): Promise<ConversationDto[]> {
       const conversations = await prisma.conversation.findMany({
         where: conversationListWhere(input),

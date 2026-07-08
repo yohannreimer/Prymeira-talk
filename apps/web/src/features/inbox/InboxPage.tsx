@@ -383,6 +383,7 @@ export function InboxPage() {
   const [selectedTagId, setSelectedTagId] = useState("");
   const [selectedQueueFilter, setSelectedQueueFilter] = useState<ConversationQueueFilter>("active");
   const [selectedChannelFilter, setSelectedChannelFilter] = useState("all");
+  const [conversationReloadKey, setConversationReloadKey] = useState(0);
   const [isSending, setIsSending] = useState(false);
   const [isRunningAction, setIsRunningAction] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
@@ -394,6 +395,7 @@ export function InboxPage() {
   const [quickRepliesError, setQuickRepliesError] = useState<string | null>(null);
   const [newMessagesBelow, setNewMessagesBelow] = useState(0);
   const selectedConversationIdRef = useRef<string | null>(null);
+  const selectedQueueFilterRef = useRef<ConversationQueueFilter>("active");
   const conversationsRef = useRef<ConversationDto[]>([]);
   const messageThreadRef = useRef<HTMLDivElement | null>(null);
   const pendingThreadScrollRef = useRef<ScrollBehavior | null>(null);
@@ -486,6 +488,10 @@ export function InboxPage() {
   }, [selectedConversationId]);
 
   useEffect(() => {
+    selectedQueueFilterRef.current = selectedQueueFilter;
+  }, [selectedQueueFilter]);
+
+  useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
 
@@ -547,7 +553,10 @@ export function InboxPage() {
       setError(null);
 
       try {
-        const nextConversations = await apiGetConversations(getFreshToken, { status: selectedQueueFilter });
+        const nextConversations = await apiGetConversations(getFreshToken, {
+          status: selectedQueueFilter === "mine" ? "active" : selectedQueueFilter,
+          ...(selectedQueueFilter === "mine" ? { assignee: "me" as const } : {})
+        });
 
         if (!isMounted) return;
 
@@ -575,7 +584,7 @@ export function InboxPage() {
     return () => {
       isMounted = false;
     };
-  }, [getFreshToken, selectedQueueFilter]);
+  }, [conversationReloadKey, getFreshToken, selectedQueueFilter]);
 
   useEffect(() => {
     let isMounted = true;
@@ -736,6 +745,11 @@ export function InboxPage() {
     }
 
     if (event.type !== "conversation.updated") return;
+
+    if (selectedQueueFilterRef.current === "mine") {
+      setConversationReloadKey((current) => current + 1);
+      return;
+    }
 
     setConversations((current) => upsertConversation(current, event.payload));
     if (event.payload.id === selectedConversationIdRef.current) {
@@ -1181,6 +1195,7 @@ export function InboxPage() {
 
         <div className="queue-filter-row" aria-label="Filtrar por status da conversa">
           {[
+            { id: "mine" as const, label: "Minhas" },
             { id: "active" as const, label: "Ativas" },
             { id: "closed" as const, label: "Finalizadas" },
             { id: "all" as const, label: "Todas" }
@@ -1267,12 +1282,18 @@ export function InboxPage() {
                   <span className="conv-meta-right">
                     <time className="conv-time">{formatTime(conversation.lastMessageAt)}</time>
                     {conversation.unreadCount > 0 ? (
-                      <span className="conv-unread-badge">{conversation.unreadCount}</span>
+                      <span className="conv-unread-badge">
+                        {conversation.unreadCount > 99 ? "99+" : conversation.unreadCount}
+                      </span>
                     ) : null}
                   </span>
                 </span>
                 <span className="conversation-channel-origin">
                   via {conversation.channelName ?? "Canal sem nome"}
+                </span>
+                <span className="conversation-owner-line">
+                  <UserCheck size={11} aria-hidden="true" />
+                  <span>{conversation.assignedUserName ?? "Fila geral"}</span>
                 </span>
                 <span className="conversation-preview">
                   {conversation.lastMessagePreview ?? "Conversa iniciada."}

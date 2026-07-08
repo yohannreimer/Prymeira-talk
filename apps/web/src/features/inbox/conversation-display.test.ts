@@ -98,6 +98,14 @@ describe("conversation display helpers", () => {
       expect(filterConversationsByQueue([open, pending, closed], "active")).toEqual([open, pending]);
     });
 
+    it("returns open and pending conversations for the mine queue", () => {
+      const open = conversationFixture({ id: "conversation-open", status: "open" });
+      const pending = conversationFixture({ id: "conversation-pending", status: "pending" });
+      const closed = conversationFixture({ id: "conversation-closed", status: "closed" });
+
+      expect(filterConversationsByQueue([open, pending, closed], "mine")).toEqual([open, pending]);
+    });
+
     it("returns closed conversations for the closed queue", () => {
       const open = conversationFixture({ id: "conversation-open", status: "open" });
       const closed = conversationFixture({ id: "conversation-closed", status: "closed" });

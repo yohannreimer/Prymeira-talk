@@ -5771,17 +5771,20 @@ select:disabled {
   align-items: flex-start;
   justify-content: space-between;
   gap: 6px;
+  min-width: 0;
 }
 
 .conv-name-wrap {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 1 1 auto;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .conv-name-wrap strong {
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--color-text-primary);
@@ -5797,6 +5800,9 @@ select:disabled {
   color: var(--color-brand-600);
   padding: 1px 7px;
   border-radius: var(--radius-full);
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -5807,6 +5813,9 @@ select:disabled {
   color: #76500f;
   padding: 1px 7px;
   border-radius: var(--radius-full);
+  max-width: 118px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -5815,19 +5824,24 @@ select:disabled {
   flex-direction: column;
   align-items: flex-end;
   gap: 4px;
-  flex-shrink: 0;
+  flex: 0 0 42px;
+  width: 42px;
 }
 
 .conv-time {
+  display: block;
+  width: 100%;
   font-size: 10px;
   color: var(--color-text-muted);
+  text-align: right;
+  white-space: nowrap;
 }
 
 .conv-unread-badge {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
+  width: 24px;
   height: 18px;
   padding: 0 4px;
   border-radius: var(--radius-full);
@@ -5835,6 +5849,30 @@ select:disabled {
   color: var(--color-surface-card);
   font-size: 10px;
   font-weight: 600;
+}
+
+.conversation-owner-line {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  gap: 4px;
+  color: #587167;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conversation-owner-line svg {
+  flex: 0 0 auto;
+}
+
+.conversation-owner-line span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .conversation-preview {

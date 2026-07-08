@@ -23,7 +23,8 @@ export const createMessageParamsSchema = z.object({
 });
 
 const listConversationsQuerySchema = z.object({
-  status: z.enum(["active", "closed", "all"]).optional()
+  status: z.enum(["active", "closed", "all"]).optional(),
+  assignee: z.enum(["me"]).optional()
 });
 
 const createMessageBodySchema = z
@@ -142,9 +143,22 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       return reply.code(400).send({ error: "Invalid conversations request." });
     }
 
+    const assignedUserId = query.data.assignee === "me"
+      ? await resolveCurrentUserProfileId({
+          prisma: app.prisma as unknown as PrismaLike,
+          workspaceId: request.talk.workspaceId,
+          authorizationHeader: request.headers.authorization
+      })
+      : null;
+
+    if (query.data.assignee === "me" && !assignedUserId) {
+      return [];
+    }
+
     return service.listConversations({
       workspaceId: request.talk.workspaceId,
-      status: query.data.status
+      status: query.data.status,
+      assignedUserId: query.data.assignee === "me" ? assignedUserId : null
     });
   });
 

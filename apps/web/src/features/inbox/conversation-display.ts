@@ -5,7 +5,7 @@ export type ChannelFilterOption = {
   label: string;
 };
 
-export type ConversationQueueFilter = "active" | "closed" | "all";
+export type ConversationQueueFilter = "mine" | "active" | "closed" | "all";
 
 export function contactDisplayName(conversation: ConversationDto) {
   return conversation.contactName ?? conversation.contactPhone ?? `Contato ${conversation.contactId.slice(0, 8)}`;

@@ -346,6 +346,23 @@ describe("conversations service", () => {
     );
   });
 
+  it("can list conversations assigned to the current user", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+
+    await service.listConversations({ workspaceId: "workspace_a", assignedUserId: "user_1" });
+
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          workspaceId: "workspace_a",
+          status: { in: ["open", "pending"] },
+          assignedUserId: "user_1"
+        }
+      })
+    );
+  });
+
   it("creates outbound pending messages inside the caller workspace", async () => {
     const prisma = createMockPrisma({
       create: vi.fn<PrismaLike["message"]["create"]>().mockResolvedValue({
