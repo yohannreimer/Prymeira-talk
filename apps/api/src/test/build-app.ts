@@ -17,6 +17,7 @@ export async function buildApp(
       DATABASE_URL: "postgresql://postgres:postgres@localhost:54329/prymeira_talk",
       PRYMEIRA_ACCOUNT_API_URL: "http://localhost:3001",
       PRYMEIRA_LOCAL_AUTH_BYPASS: false,
+      PRYMEIRA_LOCAL_DEMO_ENABLED: false,
       PRYMEIRA_LOCAL_WORKSPACE_ID: "local_workspace",
       PRYMEIRA_LOCAL_ROLE: "owner",
       PRYMEIRA_PRODUCT_KEY: "talk",

@@ -9,12 +9,14 @@ js_escape() {
 
 api_url="$(js_escape "${VITE_API_URL:-https://talk.prymeiradigital.com.br/api}")"
 local_auth_bypass="$(js_escape "${VITE_LOCAL_AUTH_BYPASS:-false}")"
+local_demo_enabled="$(js_escape "${VITE_LOCAL_DEMO_ENABLED:-false}")"
 clerk_publishable_key="$(js_escape "${VITE_CLERK_PUBLISHABLE_KEY:-${CLERK_PUBLISHABLE_KEY:-}}")"
 
 cat > "$runtime_config_path" <<EOF
 window.__PRYMEIRA_TALK_CONFIG__ = {
   VITE_API_URL: "$api_url",
   VITE_LOCAL_AUTH_BYPASS: "$local_auth_bypass",
+  VITE_LOCAL_DEMO_ENABLED: "$local_demo_enabled",
   VITE_CLERK_PUBLISHABLE_KEY: "$clerk_publishable_key"
 };
 EOF

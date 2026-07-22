@@ -24,6 +24,10 @@ export const envSchema = z
       .enum(["true", "false"])
       .default("false")
       .transform((value) => value === "true"),
+    PRYMEIRA_LOCAL_DEMO_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
     PRYMEIRA_LOCAL_WORKSPACE_ID: z.string().min(1).default("local_workspace"),
     PRYMEIRA_LOCAL_ROLE: z.enum(["owner", "manager", "agent"]).default("owner"),
     PRYMEIRA_PRODUCT_KEY: z.string().default("talk"),
@@ -43,6 +47,14 @@ export const envSchema = z
         code: z.ZodIssueCode.custom,
         path: ["PRYMEIRA_LOCAL_AUTH_BYPASS"],
         message: "PRYMEIRA_LOCAL_AUTH_BYPASS cannot be true when NODE_ENV is production."
+      });
+    }
+
+    if (env.NODE_ENV === "production" && env.PRYMEIRA_LOCAL_DEMO_ENABLED) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["PRYMEIRA_LOCAL_DEMO_ENABLED"],
+        message: "PRYMEIRA_LOCAL_DEMO_ENABLED cannot be true when NODE_ENV is production."
       });
     }
 

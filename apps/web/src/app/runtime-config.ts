@@ -1,6 +1,7 @@
 interface RuntimeConfig {
   VITE_API_URL?: string;
   VITE_LOCAL_AUTH_BYPASS?: string;
+  VITE_LOCAL_DEMO_ENABLED?: string;
   VITE_CLERK_PUBLISHABLE_KEY?: string;
 }
 

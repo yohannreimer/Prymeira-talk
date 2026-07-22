@@ -34,7 +34,17 @@ describe("readEnv", () => {
   it("loads rate-limit defaults", () => {
     expect(readEnv(baseProductionEnv)).toMatchObject({
       RATE_LIMIT_MAX: 300,
-      RATE_LIMIT_TIME_WINDOW: "1 minute"
+      RATE_LIMIT_TIME_WINDOW: "1 minute",
+      PRYMEIRA_LOCAL_DEMO_ENABLED: false
     });
+  });
+
+  it("rejects local demo mode in production", () => {
+    expect(() =>
+      readEnv({
+        ...baseProductionEnv,
+        PRYMEIRA_LOCAL_DEMO_ENABLED: "true"
+      })
+    ).toThrow(/PRYMEIRA_LOCAL_DEMO_ENABLED/);
   });
 });
