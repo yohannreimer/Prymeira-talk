@@ -36,6 +36,17 @@ Local URLs:
 - API: `http://localhost:3002`
 - Web: `http://localhost:5176`
 
+## Client Demo
+
+Prepare the deterministic local workspace and start the presentation with:
+
+```sh
+pnpm demo:reset
+pnpm demo:prymeira
+```
+
+Open `http://localhost:5176`. The demo contains five salespeople, ten B2B conversations, a qualified AI handoff, and simulated Vincula CRM operations. See [`docs/demo-runbook.md`](docs/demo-runbook.md) for the presentation story, fallbacks, and pre-meeting checklist.
+
 Auth rule: Clerk authenticates, Prymeira Account authorizes `product_key=talk`, Prymeira Talk enforces workspace data boundaries in the API.
 
 For local UI testing without a running Prymeira Account backend, keep Clerk enabled and set the API bypass plus the web bypass:

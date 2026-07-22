@@ -1,4 +1,5 @@
 .superpowers/
+.local/
 .env
 .env.*
 !.env.example
