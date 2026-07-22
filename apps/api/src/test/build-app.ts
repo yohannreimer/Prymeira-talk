@@ -27,6 +27,7 @@ export async function buildApp(
       EVOLUTION_MODE: "simulated",
       EVOLUTION_WEBHOOK_SECRET: "test_secret",
       TALK_UPLOAD_DIR: "tmp/test-uploads",
+      VINCULA_CRM_STRICT_REAL: false,
       ...overrides
     },
     { authEnabled: false, logger: false, prismaEnabled: false, ...options }

@@ -86,7 +86,7 @@ async function buildCrmApp(input: {
   app.addHook("preHandler", async (request) => {
     request.talk = { workspaceId: "workspace_a", role };
   });
-  await app.register(crmRoutes, input.routeOptions);
+  await app.register(crmRoutes, input.routeOptions ?? {});
 
   return { app, prisma };
 }
@@ -166,7 +166,7 @@ describe("crm service", () => {
     expect(prisma.crmSyncAction.create).not.toHaveBeenCalled();
   });
 
-  it("syncs contact, lead and note to Vincula when API URL and token are present", async () => {
+  it("syncs contact, deal and note to Vincula when API URL and token are present", async () => {
     const prisma = createMockPrisma();
     const fetchCrm = vi
       .fn()
@@ -213,6 +213,12 @@ describe("crm service", () => {
         })
       )
       .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [], total: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify({ data: { id: 77 } }), {
           status: 200,
           headers: { "content-type": "application/json" }
@@ -226,6 +232,8 @@ describe("crm service", () => {
       );
     const service = createCrmService(prisma, {
       vinculaApiUrl: "https://vincula.example.com/api",
+      vinculaWebUrl: "http://localhost:5174",
+      environment: "local-demo",
       fetch: fetchCrm as typeof fetch
     });
 
@@ -244,7 +252,11 @@ describe("crm service", () => {
         result: expect.objectContaining({
           vinculaContactId: "42",
           vinculaCompanyId: "9",
-          vinculaLeadId: "77"
+          dealCreated: true,
+          vinculaDealId: "77",
+          vinculaNoteId: "88",
+          vinculaRecordUrl: "http://localhost:5174/deals/77/show",
+          environment: "local-demo"
         })
       })
     );
@@ -255,10 +267,17 @@ describe("crm service", () => {
       })
     );
     expect(fetchCrm).toHaveBeenCalledWith(
-      "https://vincula.example.com/api/records/leads",
+      "https://vincula.example.com/api/records/deals",
       expect.objectContaining({
         method: "POST",
-        body: expect.stringContaining("Prymeira Talk / WhatsApp")
+        body: expect.stringContaining('"source":"Prymeira Talk"')
+      })
+    );
+    expect(fetchCrm).toHaveBeenCalledWith(
+      "https://vincula.example.com/api/records/deal_notes",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"deal_id":77')
       })
     );
     expect(prisma.contact.update).toHaveBeenCalledWith(
@@ -319,6 +338,12 @@ describe("crm service", () => {
         })
       )
       .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [], total: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify({ data: { id: 77 } }), {
           status: 200,
           headers: { "content-type": "application/json" }
@@ -332,6 +357,8 @@ describe("crm service", () => {
       );
     const service = createCrmService(prisma, {
       vinculaApiUrl: "https://vincula.example.com/api",
+      vinculaWebUrl: "http://localhost:5174",
+      environment: "local-demo",
       fetch: fetchCrm as typeof fetch
     });
 
@@ -361,7 +388,7 @@ describe("crm service", () => {
     );
   });
 
-  it("updates an existing Vincula lead instead of creating duplicate leads and notes", async () => {
+  it("updates an existing Vincula deal instead of creating duplicate deals and notes", async () => {
     const prisma = createMockPrisma({
       contact: {
         findUnique: vi.fn().mockResolvedValue({
@@ -393,6 +420,8 @@ describe("crm service", () => {
       );
     const service = createCrmService(prisma, {
       vinculaApiUrl: "https://vincula.example.com/api",
+      vinculaWebUrl: "http://localhost:5174",
+      environment: "local-demo",
       fetch: fetchCrm as typeof fetch
     });
 
@@ -404,15 +433,15 @@ describe("crm service", () => {
     });
 
     expect(fetchCrm).not.toHaveBeenCalledWith(
-      "https://vincula.example.com/api/records/leads",
+      "https://vincula.example.com/api/records/deals",
       expect.objectContaining({ method: "POST" })
     );
     expect(fetchCrm).not.toHaveBeenCalledWith(
-      "https://vincula.example.com/api/records/contact_notes",
+      "https://vincula.example.com/api/records/deal_notes",
       expect.objectContaining({ method: "POST" })
     );
     expect(fetchCrm).toHaveBeenCalledWith(
-      "https://vincula.example.com/api/records/leads/77",
+      "https://vincula.example.com/api/records/deals/77",
       expect.objectContaining({
         method: "PATCH",
         body: expect.stringContaining("Lead WhatsApp atualizado")
@@ -420,11 +449,12 @@ describe("crm service", () => {
     );
     expect(action.result).toEqual(
       expect.objectContaining({
-        leadCreated: false,
-        leadUpdated: true,
+        dealCreated: false,
+        dealUpdated: true,
         vinculaContactId: "42",
         vinculaCompanyId: "9",
-        vinculaLeadId: "77"
+        vinculaDealId: "77",
+        vinculaRecordUrl: "http://localhost:5174/deals/77/show"
       })
     );
     expect(prisma.contact.update).toHaveBeenCalledWith(
@@ -433,6 +463,225 @@ describe("crm service", () => {
           atomicCrmContactId: "42",
           atomicCrmLeadId: "77"
         }
+      })
+    );
+  });
+
+  it("recovers a stale stored deal id through an exact Vincula lookup", async () => {
+    const prisma = createMockPrisma({
+      contact: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseContact,
+          atomicCrmContactId: "42",
+          atomicCrmLeadId: "77"
+        })
+      }
+    });
+    const fetchCrm = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ id: 9, name: "Prymeira" }], total: 1 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 42 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: "Record not found" } }), {
+          status: 404,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ id: 78 }], total: 1 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 78 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+    const service = createCrmService(prisma, {
+      vinculaApiUrl: "https://vincula.example.com/api",
+      vinculaWebUrl: "http://localhost:5174",
+      environment: "local-demo",
+      fetch: fetchCrm as typeof fetch
+    });
+
+    const action = await service.createLead({
+      workspaceId: "workspace_a",
+      contactId,
+      title: "Oportunidade recuperada",
+      vinculaToken: "clerk-token"
+    });
+
+    expect(fetchCrm).toHaveBeenCalledWith(
+      expect.stringContaining("/records/deals?"),
+      expect.any(Object)
+    );
+    expect(fetchCrm).toHaveBeenCalledWith(
+      "https://vincula.example.com/api/records/deals/78",
+      expect.objectContaining({ method: "PATCH" })
+    );
+    expect(action.result).toEqual(
+      expect.objectContaining({
+        dealCreated: false,
+        vinculaDealId: "78",
+        vinculaRecordUrl: "http://localhost:5174/deals/78/show"
+      })
+    );
+  });
+
+  it("completes a missing initial note after a partial synchronization retry", async () => {
+    const prisma = createMockPrisma();
+    const fetchCrm = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ id: 9, name: "Prymeira" }], total: 1 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [{ id: 42, phone_jsonb: [{ number: baseContact.phone, type: "Work" }] }],
+            total: 1
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 42 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ id: 77 }], total: 1 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 77 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [], total: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 88 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+    const service = createCrmService(prisma, {
+      vinculaApiUrl: "https://vincula.example.com/api",
+      vinculaWebUrl: "http://localhost:5174",
+      environment: "local-demo",
+      fetch: fetchCrm as typeof fetch
+    });
+
+    const action = await service.createLead({
+      workspaceId: "workspace_a",
+      contactId,
+      title: "Oportunidade recuperada",
+      vinculaToken: "clerk-token"
+    });
+
+    expect(fetchCrm).not.toHaveBeenCalledWith(
+      "https://vincula.example.com/api/records/deals",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchCrm).toHaveBeenCalledWith(
+      expect.stringContaining("/records/deal_notes?"),
+      expect.any(Object)
+    );
+    expect(action.result).toEqual(
+      expect.objectContaining({
+        dealCreated: false,
+        vinculaDealId: "77",
+        vinculaNoteId: "88"
+      })
+    );
+  });
+
+  it("writes explicit AI notes to the synchronized Vincula deal", async () => {
+    const prisma = createMockPrisma({
+      contact: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseContact,
+          atomicCrmContactId: "42",
+          atomicCrmLeadId: "77"
+        })
+      }
+    });
+    const fetchCrm = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ id: 9, name: "Prymeira" }], total: 1 }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 42 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { id: 99 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+    const service = createCrmService(prisma, {
+      vinculaApiUrl: "https://vincula.example.com/api",
+      vinculaWebUrl: "http://localhost:5174",
+      environment: "local-demo",
+      fetch: fetchCrm as typeof fetch
+    });
+
+    const action = await service.createNote({
+      workspaceId: "workspace_a",
+      contactId,
+      body: "Resumo da IA: orçamento quente e prazo de 30 dias.",
+      vinculaToken: "clerk-token"
+    });
+
+    expect(fetchCrm).toHaveBeenCalledWith(
+      "https://vincula.example.com/api/records/deal_notes",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          deal_id: 77,
+          text: "Resumo da IA: orçamento quente e prazo de 30 dias.",
+          sales_id: 9101,
+          type: "note"
+        })
+      })
+    );
+    expect(action.result).toEqual(
+      expect.objectContaining({
+        noteCreated: true,
+        vinculaDealId: "77",
+        vinculaNoteId: "99",
+        vinculaRecordUrl: "http://localhost:5174/deals/77/show"
       })
     );
   });
@@ -447,6 +696,8 @@ describe("crm service", () => {
     );
     const service = createCrmService(prisma, {
       vinculaApiUrl: "https://vincula.example.com/api",
+      vinculaWebUrl: "http://localhost:5174",
+      environment: "local-demo",
       fetch: fetchCrm as typeof fetch
     });
 

@@ -89,8 +89,22 @@ interface VinculaCompanyRecord {
   name?: string | null;
 }
 
-interface VinculaLeadRecord {
+interface VinculaDealRecord {
   id: string | number;
+}
+
+interface VinculaPipelineRecord {
+  id: string | number;
+}
+
+interface VinculaSaleRecord {
+  id: string | number;
+  disabled?: boolean | null;
+}
+
+interface VinculaNoteRecord {
+  id: string | number;
+  text?: string | null;
 }
 
 interface VinculaServiceOptions {
@@ -227,27 +241,46 @@ function buildVinculaCompanyPayload(contact: ContactRecord) {
   };
 }
 
-function buildVinculaLeadPayload(contact: ContactRecord, title: string) {
-  const { firstName, lastName } = splitContactName(contact);
-
+function buildVinculaDealPayload(
+  contact: ContactRecord,
+  title: string,
+  refs: {
+    companyId: string | null;
+    contactId: string;
+    pipelineId: string;
+    ownerId: string;
+  }
+) {
   return {
-    first_name: firstName,
-    last_name: lastName,
-    email: contact.email,
-    phone_number: contact.phone,
-    company_name: contact.company,
-    source: "Prymeira Talk / WhatsApp",
-    interest: title.trim(),
-    temperature: "warm",
-    status: "new"
+    name: title.trim(),
+    ...(refs.companyId ? { company_id: Number(refs.companyId) } : {}),
+    contact_ids: [Number(refs.contactId)],
+    category: "Orçamento",
+    deal_type: "consultative",
+    probability: 75,
+    source: "Prymeira Talk",
+    stage: "opportunity",
+    description: [
+      "Oportunidade qualificada pela IA do Prymeira Talk.",
+      contact.name ? `Contato: ${contact.name}` : null,
+      contact.phone ? `Telefone: ${contact.phone}` : null,
+      contact.company ? `Empresa: ${contact.company}` : null
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    amount: 0,
+    sales_id: Number(refs.ownerId),
+    pipeline_id: Number(refs.pipelineId),
+    index: 0
   };
 }
 
-function buildLeadNote(contact: ContactRecord, title: string, leadId: string) {
+function buildOpportunityNote(contact: ContactRecord, title: string, dealId: string) {
   return [
-    "Lead criado a partir do Prymeira Talk.",
+    `Integração Prymeira Talk: ${contact.id}`,
+    "Oportunidade criada a partir do atendimento no Prymeira Talk.",
     `Interesse: ${title.trim()}`,
-    `Lead Vincula: ${leadId}`,
+    `Oportunidade Vincula: ${dealId}`,
     contact.name ? `Contato: ${contact.name}` : null,
     contact.phone ? `Telefone: ${contact.phone}` : null,
     contact.company ? `Empresa: ${contact.company}` : null
@@ -272,6 +305,7 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
   const vinculaApiUrl = options.vinculaApiUrl ? normalizeBaseUrl(options.vinculaApiUrl) : null;
   const vinculaWebUrl = options.vinculaWebUrl ? normalizeBaseUrl(options.vinculaWebUrl) : null;
   const strictReal = options.strictReal ?? false;
+  const environment = options.environment ?? "external";
   const fetchCrm = options.fetch ?? fetch;
 
   function requireStrictRealConfiguration(token: string | null | undefined) {
@@ -304,7 +338,10 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
     });
 
     if (!response.ok) {
-      const statusCode = response.status === 401 || response.status === 403 ? response.status : 502;
+      const statusCode =
+        response.status === 401 || response.status === 403 || response.status === 404
+          ? response.status
+          : 502;
       throw new CrmServiceError("VINCULA_SYNC_FAILED", await readVinculaError(response), statusCode);
     }
 
@@ -319,6 +356,41 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
     });
 
     return `/records/${resource}?${params.toString()}`;
+  }
+
+  function buildVinculaRecordUrl(input: { dealId?: string | null; contactId: string }) {
+    if (!vinculaWebUrl) return null;
+    return input.dealId
+      ? `${vinculaWebUrl}/deals/${encodeURIComponent(input.dealId)}/show`
+      : `${vinculaWebUrl}/contacts/${encodeURIComponent(input.contactId)}/show`;
+  }
+
+  async function resolveOpportunityReferences(token: string) {
+    if (environment === "local-demo") {
+      return { pipelineId: "9201", ownerId: "9101" };
+    }
+
+    const [pipelines, sales] = await Promise.all([
+      vinculaRequest<VinculaList<VinculaPipelineRecord>>(
+        token,
+        buildListPath("pipelines", {}, 1)
+      ),
+      vinculaRequest<VinculaList<VinculaSaleRecord>>(
+        token,
+        buildListPath("sales", { disabled: false }, 10)
+      )
+    ]);
+    const pipeline = pipelines.data[0];
+    const owner = sales.data.find((sale) => sale.disabled !== true);
+    if (!pipeline?.id || !owner?.id) {
+      throw new CrmServiceError(
+        "VINCULA_SYNC_FAILED",
+        "Vincula has no active commercial pipeline or owner.",
+        502
+      );
+    }
+
+    return { pipelineId: String(pipeline.id), ownerId: String(owner.id) };
   }
 
   async function findVinculaCompanyByName(token: string, contact: ContactRecord) {
@@ -383,21 +455,29 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
       contact.atomicCrmContactId && /^\d+$/.test(contact.atomicCrmContactId)
         ? contact.atomicCrmContactId
         : null;
-    const existing = existingCrmId
-      ? ({ id: existingCrmId } as VinculaContactRecord)
-      : await findVinculaContactByPhone(token, contact);
+    const updateContact = async (id: string | number) =>
+      (
+        await vinculaRequest<VinculaRecord<VinculaContactRecord>>(
+          token,
+          `/records/contacts/${encodeURIComponent(String(id))}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify(payload)
+          }
+        )
+      ).data;
 
+    if (existingCrmId) {
+      try {
+        return await updateContact(existingCrmId);
+      } catch (error) {
+        if (!(error instanceof CrmServiceError) || error.statusCode !== 404) throw error;
+      }
+    }
+
+    const existing = await findVinculaContactByPhone(token, contact);
     if (existing?.id) {
-      const updated = await vinculaRequest<VinculaRecord<VinculaContactRecord>>(
-        token,
-        `/records/contacts/${encodeURIComponent(String(existing.id))}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify(payload)
-        }
-      );
-
-      return updated.data;
+      return updateContact(existing.id);
     }
 
     const created = await vinculaRequest<VinculaRecord<VinculaContactRecord>>(
@@ -412,43 +492,123 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
     return created.data;
   }
 
-  async function upsertVinculaLead(token: string, contact: ContactRecord, title: string) {
-    const existingLeadId =
+  async function findVinculaDeal(
+    token: string,
+    title: string,
+    refs: { companyId: string | null; contactId: string }
+  ) {
+    const response = await vinculaRequest<VinculaList<VinculaDealRecord>>(
+      token,
+      buildListPath("deals", {
+        name: title.trim(),
+        source: "Prymeira Talk",
+        "contact_ids@cs": [Number(refs.contactId)],
+        ...(refs.companyId ? { company_id: Number(refs.companyId) } : {})
+      })
+    );
+    return response.data[0] ?? null;
+  }
+
+  async function upsertVinculaDeal(
+    token: string,
+    contact: ContactRecord,
+    title: string,
+    refs: {
+      companyId: string | null;
+      contactId: string;
+      pipelineId: string;
+      ownerId: string;
+    }
+  ) {
+    const payload = buildVinculaDealPayload(contact, title, refs);
+    const existingDealId =
       contact.atomicCrmLeadId && /^\d+$/.test(contact.atomicCrmLeadId)
         ? contact.atomicCrmLeadId
         : null;
-    if (existingLeadId) {
-      const updated = await vinculaRequest<VinculaRecord<VinculaLeadRecord>>(
-        token,
-        `/records/leads/${encodeURIComponent(existingLeadId)}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify(buildVinculaLeadPayload(contact, title))
-        }
-      );
+    const updateDeal = async (id: string | number) =>
+      (
+        await vinculaRequest<VinculaRecord<VinculaDealRecord>>(
+          token,
+          `/records/deals/${encodeURIComponent(String(id))}`,
+          { method: "PATCH", body: JSON.stringify(payload) }
+        )
+      ).data;
 
-      return { lead: updated.data, created: false };
+    if (existingDealId) {
+      try {
+        return { deal: await updateDeal(existingDealId), created: false, matchedByLookup: false };
+      } catch (error) {
+        if (!(error instanceof CrmServiceError) || error.statusCode !== 404) throw error;
+      }
     }
 
-    const created = await vinculaRequest<VinculaRecord<VinculaLeadRecord>>(token, "/records/leads", {
+    const existing = await findVinculaDeal(token, title, refs);
+    if (existing?.id) {
+      return { deal: await updateDeal(existing.id), created: false, matchedByLookup: true };
+    }
+
+    const created = await vinculaRequest<VinculaRecord<VinculaDealRecord>>(token, "/records/deals", {
       method: "POST",
-      body: JSON.stringify(buildVinculaLeadPayload(contact, title))
+      body: JSON.stringify(payload)
     });
 
-    return { lead: created.data, created: true };
+    return { deal: created.data, created: true, matchedByLookup: false };
+  }
+
+  async function createVinculaDealNote(
+    token: string,
+    input: { dealId: string; ownerId: string; text: string }
+  ) {
+    return (
+      await vinculaRequest<VinculaRecord<VinculaNoteRecord>>(token, "/records/deal_notes", {
+        method: "POST",
+        body: JSON.stringify({
+          deal_id: Number(input.dealId),
+          text: input.text,
+          sales_id: Number(input.ownerId),
+          type: "note"
+        })
+      })
+    ).data;
   }
 
   async function createVinculaContactNote(
     token: string,
-    input: { vinculaContactId: string; contact: ContactRecord; title: string; leadId: string }
+    input: { contactId: string; text: string }
   ) {
-    await vinculaRequest<VinculaRecord<unknown>>(token, "/records/contact_notes", {
-      method: "POST",
-      body: JSON.stringify({
-        contact_id: Number(input.vinculaContactId),
-        text: buildLeadNote(input.contact, input.title, input.leadId),
-        status: "completed"
+    return (
+      await vinculaRequest<VinculaRecord<VinculaNoteRecord>>(token, "/records/contact_notes", {
+        method: "POST",
+        body: JSON.stringify({
+          contact_id: Number(input.contactId),
+          text: input.text,
+          status: "completed"
+        })
       })
+    ).data;
+  }
+
+  async function ensureInitialVinculaDealNote(
+    token: string,
+    input: {
+      dealId: string;
+      ownerId: string;
+      contact: ContactRecord;
+      title: string;
+    }
+  ) {
+    const marker = `Integração Prymeira Talk: ${input.contact.id}`;
+    const response = await vinculaRequest<VinculaList<VinculaNoteRecord>>(
+      token,
+      buildListPath("deal_notes", { deal_id: Number(input.dealId) }, 100)
+    );
+    const existing = response.data.find((note) => String(note.text ?? "").includes(marker));
+    if (existing) return existing;
+
+    return createVinculaDealNote(token, {
+      dealId: input.dealId,
+      ownerId: input.ownerId,
+      text: buildOpportunityNote(input.contact, input.title, input.dealId)
     });
   }
 
@@ -570,19 +730,32 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
         const vinculaCompanyId = vinculaCompany?.id ? String(vinculaCompany.id) : null;
         const vinculaContact = await upsertVinculaContact(input.vinculaToken, contact, vinculaCompanyId);
         const vinculaContactId = String(vinculaContact.id);
-        const { lead: vinculaLead, created: leadCreated } = await upsertVinculaLead(
+        const references = await resolveOpportunityReferences(input.vinculaToken);
+        const { deal: vinculaDeal, created: dealCreated, matchedByLookup } = await upsertVinculaDeal(
           input.vinculaToken,
           contact,
-          title
+          title,
+          {
+            companyId: vinculaCompanyId,
+            contactId: vinculaContactId,
+            ...references
+          }
         );
-        const vinculaLeadId = String(vinculaLead.id);
+        const vinculaDealId = String(vinculaDeal.id);
+        let vinculaNote: VinculaNoteRecord | null = null;
 
-        if (leadCreated) {
-          await createVinculaContactNote(input.vinculaToken, {
-            vinculaContactId,
+        if (dealCreated) {
+          vinculaNote = await createVinculaDealNote(input.vinculaToken, {
+            dealId: vinculaDealId,
+            ownerId: references.ownerId,
+            text: buildOpportunityNote(contact, title, vinculaDealId)
+          });
+        } else if (matchedByLookup && !contact.atomicCrmLeadId) {
+          vinculaNote = await ensureInitialVinculaDealNote(input.vinculaToken, {
+            dealId: vinculaDealId,
+            ownerId: references.ownerId,
             contact,
-            title,
-            leadId: vinculaLeadId
+            title
           });
         }
 
@@ -595,7 +768,7 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
           },
           data: {
             atomicCrmContactId: vinculaContactId,
-            atomicCrmLeadId: vinculaLeadId
+            atomicCrmLeadId: vinculaDealId
           }
         });
 
@@ -611,15 +784,22 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
               title,
               vinculaContactId,
               vinculaCompanyId,
+              vinculaDealId,
               provider: "vincula"
             },
             result: {
               mode: "real",
-              leadCreated,
-              leadUpdated: !leadCreated,
+              environment,
+              dealCreated,
+              dealUpdated: !dealCreated,
               vinculaContactId,
               vinculaCompanyId,
-              vinculaLeadId
+              vinculaDealId,
+              vinculaNoteId: vinculaNote?.id ? String(vinculaNote.id) : null,
+              vinculaRecordUrl: buildVinculaRecordUrl({
+                dealId: vinculaDealId,
+                contactId: vinculaContactId
+              })
             }
           }
         });
@@ -657,15 +837,20 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
         const vinculaCompanyId = vinculaCompany?.id ? String(vinculaCompany.id) : null;
         const vinculaContact = await upsertVinculaContact(input.vinculaToken, contact, vinculaCompanyId);
         const vinculaContactId = String(vinculaContact.id);
-
-        await vinculaRequest<VinculaRecord<unknown>>(input.vinculaToken, "/records/contact_notes", {
-          method: "POST",
-          body: JSON.stringify({
-            contact_id: Number(vinculaContactId),
-            text: input.body.trim(),
-            status: "completed"
-          })
-        });
+        const vinculaDealId =
+          contact.atomicCrmLeadId && /^\d+$/.test(contact.atomicCrmLeadId)
+            ? contact.atomicCrmLeadId
+            : null;
+        const note = vinculaDealId
+          ? await createVinculaDealNote(input.vinculaToken, {
+              dealId: vinculaDealId,
+              ownerId: (await resolveOpportunityReferences(input.vinculaToken)).ownerId,
+              text: input.body.trim()
+            })
+          : await createVinculaContactNote(input.vinculaToken, {
+              contactId: vinculaContactId,
+              text: input.body.trim()
+            });
 
         await prisma.contact.update({
           where: {
@@ -691,13 +876,21 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
               body: input.body.trim(),
               vinculaContactId,
               vinculaCompanyId,
+              vinculaDealId,
               provider: "vincula"
             },
             result: {
               mode: "real",
+              environment,
               noteCreated: true,
               vinculaContactId,
-              vinculaCompanyId
+              vinculaCompanyId,
+              vinculaDealId,
+              vinculaNoteId: note?.id ? String(note.id) : null,
+              vinculaRecordUrl: buildVinculaRecordUrl({
+                dealId: vinculaDealId,
+                contactId: vinculaContactId
+              })
             }
           }
         });
