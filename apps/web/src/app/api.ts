@@ -40,6 +40,7 @@ export type {
 
 const apiUrl = readConfigValue("VITE_API_URL") ?? "http://localhost:3002";
 const localAuthBypass = readConfigValue("VITE_LOCAL_AUTH_BYPASS") === "true";
+export const localDemoEnabled = readConfigValue("VITE_LOCAL_DEMO_ENABLED") === "true";
 const realtimeAuthProtocol = "prymeira-talk-auth";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -48,6 +49,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export interface ContactBoardWithStagesDto extends ContactBoardDto {
   stages: ContactBoardStageDto[];
+}
+
+export interface DemoLeadResultDto {
+  workspaceId: string;
+  conversationId: string;
+  contactId: string;
+  created: boolean;
+}
+
+export interface DemoResetResultDto {
+  workspaceId: string;
+  users: number;
+  conversations: number;
+  contacts: number;
+  agents: number;
 }
 
 export interface BoardContactCardDto extends ContactBoardMembershipDto {
@@ -2849,6 +2865,47 @@ export async function apiGetCrmSyncActions(
     {},
     (data) => (Array.isArray(data) ? data.map(parseCrmSyncAction) : []),
     "Failed to load CRM sync actions"
+  );
+}
+
+export async function apiSimulateDemoLead(
+  getToken: () => Promise<string | null>
+): Promise<DemoLeadResultDto> {
+  return fetchJson(
+    getToken,
+    "/demo/simulate-lead",
+    { method: "POST" },
+    (data) => {
+      const payload = asRecord(data);
+      return {
+        workspaceId: String(payload.workspaceId ?? ""),
+        conversationId: String(payload.conversationId ?? ""),
+        contactId: String(payload.contactId ?? ""),
+        created: Boolean(payload.created)
+      };
+    },
+    "Failed to simulate demo lead"
+  );
+}
+
+export async function apiResetDemo(
+  getToken: () => Promise<string | null>
+): Promise<DemoResetResultDto> {
+  return fetchJson(
+    getToken,
+    "/demo/reset",
+    { method: "POST" },
+    (data) => {
+      const payload = asRecord(data);
+      return {
+        workspaceId: String(payload.workspaceId ?? ""),
+        users: Number(payload.users ?? 0),
+        conversations: Number(payload.conversations ?? 0),
+        contacts: Number(payload.contacts ?? 0),
+        agents: Number(payload.agents ?? 0)
+      };
+    },
+    "Failed to reset demo"
   );
 }
 

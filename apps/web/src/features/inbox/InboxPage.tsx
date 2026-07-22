@@ -7,6 +7,8 @@ import {
   apiCreateQuickReply,
   apiCreateConversationMessage,
   apiCreateCrmLead,
+  apiResetDemo,
+  apiSimulateDemoLead,
   apiDeleteQuickReply,
   apiGetConversationContext,
   apiGetConversationMessages,
@@ -16,6 +18,7 @@ import {
   apiMarkConversationRead,
   apiRunConversationAction,
   apiUpdateQuickReply,
+  localDemoEnabled,
   type ContactContextDto,
   type ConversationActionBody,
   type ConversationActionResultDto,
@@ -30,6 +33,7 @@ import {
 } from "./conversation-display";
 import { QuickRepliesPopover } from "./QuickRepliesPopover";
 import { useRealtimeEvents } from "./useRealtimeEvents";
+import { DemoControls } from "./DemoControls";
 
 function formatTime(value: string | null) {
   if (!value) return "Sem mensagens";
@@ -395,6 +399,7 @@ export function InboxPage() {
   const [quickRepliesError, setQuickRepliesError] = useState<string | null>(null);
   const [newMessagesBelow, setNewMessagesBelow] = useState(0);
   const selectedConversationIdRef = useRef<string | null>(null);
+  const pendingDemoConversationIdRef = useRef<string | null>(null);
   const selectedQueueFilterRef = useRef<ConversationQueueFilter>("active");
   const conversationsRef = useRef<ConversationDto[]>([]);
   const messageThreadRef = useRef<HTMLDivElement | null>(null);
@@ -561,14 +566,21 @@ export function InboxPage() {
         if (!isMounted) return;
 
         setConversations(nextConversations);
-        const requestedConversationId = readConversationIdFromUrl();
-        setSelectedConversationId((current) =>
-          current ??
-          (requestedConversationId &&
+        const requestedConversationId = pendingDemoConversationIdRef.current ?? readConversationIdFromUrl();
+        const requestedConversationExists = Boolean(
+          requestedConversationId &&
           nextConversations.some((conversation) => conversation.id === requestedConversationId)
-            ? requestedConversationId
-            : nextConversations[0]?.id ?? null)
         );
+        setSelectedConversationId((current) =>
+          requestedConversationExists
+            ? requestedConversationId
+            : current && nextConversations.some((conversation) => conversation.id === current)
+              ? current
+              : nextConversations[0]?.id ?? null
+        );
+        if (requestedConversationExists) {
+          pendingDemoConversationIdRef.current = null;
+        }
       } catch (loadError) {
         if (!isMounted) return;
         setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar conversas.");
@@ -799,6 +811,7 @@ export function InboxPage() {
 
   useEffect(() => {
     setSelectedConversationId((current) => {
+      if (pendingDemoConversationIdRef.current) return current;
       if (current && visibleConversations.some((conversation) => conversation.id === current)) {
         return current;
       }
@@ -816,6 +829,7 @@ export function InboxPage() {
   const contextNotes = contactContext?.notes ?? [];
   const visibleNotes = notesHistoryOpen ? contextNotes : contextNotes.slice(0, 2);
   const hiddenNoteCount = Math.max(0, contextNotes.length - visibleNotes.length);
+  const aiSummaryNote = contextNotes.find((note) => note.body.startsWith("Resumo da IA:")) ?? null;
   const availableTagOptions = useMemo(() => {
     const appliedTagIds = new Set(contactContext?.tags.map((tag) => tag.id) ?? []);
 
@@ -864,6 +878,23 @@ export function InboxPage() {
   const openCount = conversations.filter((conversation) => conversation.status === "open").length;
   const closedCount = conversations.filter((conversation) => conversation.status === "closed").length;
   const unreadCount = conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
+
+  function handleDemoScenarioChanged(conversationId: string | null) {
+    setSelectedChannelFilter("all");
+    setAiSuggestion(null);
+    setCrmStatus(null);
+
+    if (conversationId) {
+      pendingDemoConversationIdRef.current = conversationId;
+      setSelectedQueueFilter("all");
+    } else {
+      pendingDemoConversationIdRef.current = null;
+      setSelectedConversationId(null);
+      setSelectedQueueFilter("active");
+    }
+
+    setConversationReloadKey((current) => current + 1);
+  }
 
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1192,6 +1223,13 @@ export function InboxPage() {
             <p>Finalizadas</p>
           </div>
         </div>
+
+        <DemoControls
+          enabled={localDemoEnabled}
+          onReset={() => apiResetDemo(getFreshToken)}
+          onScenarioChanged={handleDemoScenarioChanged}
+          onSimulateLead={() => apiSimulateDemoLead(getFreshToken)}
+        />
 
         <div className="queue-filter-row" aria-label="Filtrar por status da conversa">
           {[
@@ -1583,6 +1621,29 @@ export function InboxPage() {
             </div>
           </dl>
         </div>
+
+        {/* Card tags */}
+        {aiSummaryNote || selectedConversation?.handoffReason ? (
+          <div className="context-card context-card--intelligence">
+            <div className="context-card-title-row">
+              <div className="context-card-title">Inteligência do contato</div>
+              <span className="context-ai-source">
+                <Bot size={12} aria-hidden="true" /> IA
+              </span>
+            </div>
+            {aiSummaryNote ? (
+              <p className="context-ai-summary">
+                {aiSummaryNote.body.replace(/^Resumo da IA:\s*/, "")}
+              </p>
+            ) : null}
+            {selectedConversation?.handoffReason ? (
+              <div className="context-handoff-reason">
+                <strong>Pronto para o vendedor</strong>
+                <span>{selectedConversation.handoffReason}</span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* Card tags */}
         <div className="context-card">
