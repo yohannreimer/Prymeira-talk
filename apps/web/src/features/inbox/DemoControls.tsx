@@ -18,7 +18,9 @@ export async function runDemoControlAction(input: RunDemoControlActionInput) {
     const result = await input.onReset();
     return {
       conversationId: null,
-      notice: `Demonstração restaurada: ${result.users} vendedores e ${result.conversations} conversas.`
+      notice: result.vincula
+        ? `Demonstração restaurada: Talk e Vincula prontos, com ${result.users} vendedores e ${result.conversations} conversas.`
+        : `Demonstração restaurada: ${result.users} vendedores e ${result.conversations} conversas.`
     };
   }
 

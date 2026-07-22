@@ -62,4 +62,32 @@ describe("runDemoControlAction", () => {
       notice: "Demonstração restaurada: 5 vendedores e 10 conversas."
     });
   });
+
+  it("confirms both products after an integrated reset", async () => {
+    const onReset = vi.fn().mockResolvedValue({
+      workspaceId: "demo_workspace",
+      users: 5,
+      conversations: 10,
+      contacts: 10,
+      agents: 1,
+      vincula: {
+        ok: true,
+        workspaceId: "70000000-0000-4000-8000-000000000001",
+        users: 5,
+        deals: 4
+      }
+    });
+
+    await expect(
+      runDemoControlAction({
+        kind: "reset",
+        onSimulateLead: vi.fn(),
+        onReset,
+        confirmReset: () => true
+      })
+    ).resolves.toEqual({
+      conversationId: null,
+      notice: "Demonstração restaurada: Talk e Vincula prontos, com 5 vendedores e 10 conversas."
+    });
+  });
 });

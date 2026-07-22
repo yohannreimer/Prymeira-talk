@@ -1,11 +1,14 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { createDemoScenarioService } from "./demo-scenario.js";
 import type { DemoScenarioService } from "./demo-scenario.js";
+import type { VinculaDemoClient, VinculaDemoResetResult } from "./vincula-demo-client.js";
 
 export interface DemoRoutesOptions {
   enabled: boolean;
   demoWorkspaceId: string;
   service?: Pick<DemoScenarioService, "reset" | "simulateLead">;
+  vinculaClient?: VinculaDemoClient;
+  requireVinculaReset?: boolean;
 }
 
 export const demoRoutes: FastifyPluginAsync<DemoRoutesOptions> = async (app, options) => {
@@ -41,7 +44,37 @@ export const demoRoutes: FastifyPluginAsync<DemoRoutesOptions> = async (app, opt
 
   app.post("/demo/reset", async (request, reply) => {
     if (!requireDemoAccess(request, reply)) return reply;
-    return service.reset(request.talk.workspaceId);
+
+    let vincula: VinculaDemoResetResult | undefined;
+    if (options.vinculaClient || options.requireVinculaReset) {
+      try {
+        if (!options.vinculaClient) {
+          throw new Error("Vincula demo reset client is unavailable.");
+        }
+        vincula = await options.vinculaClient.reset();
+      } catch {
+        return reply.code(503).send({
+          code: "VINCULA_DEMO_RESET_FAILED",
+          error: "Vincula could not be restored, so Talk was left unchanged.",
+          talkReset: false,
+          vinculaReset: false
+        });
+      }
+    }
+
+    try {
+      const talk = await service.reset(request.talk.workspaceId);
+      return vincula ? { ...talk, vincula } : talk;
+    } catch {
+      return reply.code(500).send({
+        code: "TALK_DEMO_RESET_FAILED",
+        error: vincula
+          ? "Vincula was restored, but Talk could not be restored."
+          : "Talk could not be restored.",
+        talkReset: false,
+        vinculaReset: Boolean(vincula)
+      });
+    }
   });
 
   app.post("/demo/simulate-lead", async (request, reply) => {

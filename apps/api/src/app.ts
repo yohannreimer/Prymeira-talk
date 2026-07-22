@@ -21,6 +21,7 @@ import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js
 import { crmRoutes } from "./modules/crm/crm.routes.js";
 import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
 import { demoRoutes } from "./modules/demo/demo.routes.js";
+import { createVinculaDemoClient } from "./modules/demo/vincula-demo-client.js";
 import { metaWebhooksRoutes } from "./modules/meta/meta.webhooks.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 import { reportsRoutes } from "./modules/reports/reports.routes.js";
@@ -109,7 +110,15 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(realtimeRoutes);
   await app.register(demoRoutes, {
     enabled: env.PRYMEIRA_LOCAL_DEMO_ENABLED,
-    demoWorkspaceId: env.PRYMEIRA_LOCAL_WORKSPACE_ID
+    demoWorkspaceId: env.PRYMEIRA_LOCAL_WORKSPACE_ID,
+    vinculaClient:
+      env.PRYMEIRA_LOCAL_DEMO_ENABLED && env.VINCULA_CRM_STRICT_REAL
+        ? createVinculaDemoClient({
+            resetUrl: env.VINCULA_CRM_RESET_URL,
+            token: env.VINCULA_CRM_RESET_TOKEN
+          })
+        : undefined,
+    requireVinculaReset: env.PRYMEIRA_LOCAL_DEMO_ENABLED && env.VINCULA_CRM_STRICT_REAL
   });
 
   const evolutionRuntime = createEvolutionRuntime({

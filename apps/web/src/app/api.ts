@@ -64,6 +64,16 @@ export interface DemoResetResultDto {
   conversations: number;
   contacts: number;
   agents: number;
+  vincula?: {
+    ok: boolean;
+    workspaceId?: string;
+    sales?: number;
+    users?: number;
+    companies?: number;
+    contacts?: number;
+    deals?: number;
+    notes?: number;
+  };
 }
 
 export interface BoardContactCardDto extends ContactBoardMembershipDto {
@@ -2897,12 +2907,26 @@ export async function apiResetDemo(
     { method: "POST" },
     (data) => {
       const payload = asRecord(data);
+      const vincula = isRecord(payload.vincula) ? payload.vincula : undefined;
       return {
         workspaceId: String(payload.workspaceId ?? ""),
         users: Number(payload.users ?? 0),
         conversations: Number(payload.conversations ?? 0),
         contacts: Number(payload.contacts ?? 0),
-        agents: Number(payload.agents ?? 0)
+        agents: Number(payload.agents ?? 0),
+        vincula: vincula
+          ? {
+              ok: Boolean(vincula.ok),
+              workspaceId:
+                typeof vincula.workspaceId === "string" ? vincula.workspaceId : undefined,
+              sales: typeof vincula.sales === "number" ? vincula.sales : undefined,
+              users: typeof vincula.users === "number" ? vincula.users : undefined,
+              companies: typeof vincula.companies === "number" ? vincula.companies : undefined,
+              contacts: typeof vincula.contacts === "number" ? vincula.contacts : undefined,
+              deals: typeof vincula.deals === "number" ? vincula.deals : undefined,
+              notes: typeof vincula.notes === "number" ? vincula.notes : undefined
+            }
+          : undefined
       };
     },
     "Failed to reset demo"

@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { demoRoutes } from "./demo.routes.js";
 import type { DemoScenarioService } from "./demo-scenario.js";
+import type { VinculaDemoClient } from "./vincula-demo-client.js";
 
 const resetResult = {
   workspaceId: "demo_workspace",
@@ -22,6 +23,9 @@ async function buildDemoApp(input: {
   enabled?: boolean;
   workspaceId?: string;
   role?: "owner" | "manager" | "agent";
+  integrated?: boolean;
+  vinculaResetError?: Error;
+  talkResetError?: Error;
 } = {}) {
   const app = Fastify({ logger: false });
   const service = {
@@ -31,6 +35,23 @@ async function buildDemoApp(input: {
       created: false
     })
   } as unknown as DemoScenarioService;
+  if (input.talkResetError) {
+    service.reset = vi.fn().mockRejectedValue(input.talkResetError);
+  }
+  const vinculaResult = {
+    ok: true,
+    workspaceId: "70000000-0000-4000-8000-000000000001",
+    users: 5,
+    companies: 4,
+    contacts: 4,
+    deals: 4,
+    notes: 4
+  };
+  const vinculaClient = {
+    reset: input.vinculaResetError
+      ? vi.fn().mockRejectedValue(input.vinculaResetError)
+      : vi.fn().mockResolvedValue(vinculaResult)
+  } satisfies VinculaDemoClient;
 
   app.addHook("preHandler", async (request) => {
     request.talk = {
@@ -41,10 +62,12 @@ async function buildDemoApp(input: {
   await app.register(demoRoutes, {
     enabled: input.enabled ?? true,
     demoWorkspaceId: "demo_workspace",
-    service
+    service,
+    vinculaClient: input.integrated ? vinculaClient : undefined,
+    requireVinculaReset: input.integrated ?? false
   });
 
-  return { app, service };
+  return { app, service, vinculaClient, vinculaResult };
 }
 
 describe("demo routes", () => {
@@ -97,6 +120,70 @@ describe("demo routes", () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual(resetResult);
       expect(service.reset).toHaveBeenCalledWith("demo_workspace");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("resets Vincula before Talk and returns both results in integrated mode", async () => {
+    const order: string[] = [];
+    const { app, service, vinculaClient, vinculaResult } = await buildDemoApp({ integrated: true });
+    vi.mocked(vinculaClient.reset).mockImplementation(async () => {
+      order.push("vincula");
+      return vinculaResult;
+    });
+    vi.mocked(service.reset).mockImplementation(async () => {
+      order.push("talk");
+      return resetResult;
+    });
+
+    try {
+      const response = await app.inject({ method: "POST", url: "/demo/reset" });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ...resetResult, vincula: vinculaResult });
+      expect(order).toEqual(["vincula", "talk"]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps Talk unchanged when the required Vincula reset fails", async () => {
+    const { app, service } = await buildDemoApp({
+      integrated: true,
+      vinculaResetError: new Error("Vincula unavailable")
+    });
+
+    try {
+      const response = await app.inject({ method: "POST", url: "/demo/reset" });
+
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toMatchObject({
+        code: "VINCULA_DEMO_RESET_FAILED",
+        talkReset: false,
+        vinculaReset: false
+      });
+      expect(service.reset).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("reports a partial reset when Talk fails after Vincula", async () => {
+    const { app } = await buildDemoApp({
+      integrated: true,
+      talkResetError: new Error("Talk database unavailable")
+    });
+
+    try {
+      const response = await app.inject({ method: "POST", url: "/demo/reset" });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toMatchObject({
+        code: "TALK_DEMO_RESET_FAILED",
+        talkReset: false,
+        vinculaReset: true
+      });
     } finally {
       await app.close();
     }
