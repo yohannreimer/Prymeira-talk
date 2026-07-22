@@ -1,6 +1,7 @@
 import type { MessageDirection, PrismaClient } from "@prisma/client";
 import type { RealtimeEvent } from "@prymeira-talk/shared";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
+import type { DemoVinculaLink } from "./demo-vincula-portfolio.js";
 import { DEMO_VINCULA_LINKS, buildDemoVinculaSyncActions } from "./demo-vincula-portfolio.js";
 
 type DemoMessage = [MessageDirection, string, Date];
@@ -339,6 +340,122 @@ export function readDemoVinculaLink(contactId: string) {
   return DEMO_VINCULA_LINKS[contactId] ?? null;
 }
 
+type DemoVinculaSyncAction = ReturnType<typeof buildDemoVinculaSyncActions>[number];
+
+interface DemoVinculaSeedStateOptions {
+  workspaceId: string;
+  seeds?: ReadonlyArray<{ readonly contactId: string }>;
+  links?: Readonly<Partial<Record<string, DemoVinculaLink>>>;
+  buildActions?: (workspaceId: string) => DemoVinculaSyncAction[];
+}
+
+function assertDemoVinculaInvariant(condition: unknown, message: string): asserts condition {
+  if (!condition) {
+    throw new Error(`Demo Vincula seed invariant failed: ${message}`);
+  }
+}
+
+export function buildDemoVinculaSeedState({
+  workspaceId,
+  seeds = conversationSeeds(),
+  links = DEMO_VINCULA_LINKS,
+  buildActions = buildDemoVinculaSyncActions
+}: DemoVinculaSeedStateOptions) {
+  const seedContactIds = seeds.map((seed) => seed.contactId);
+  const seedContactIdSet = new Set(seedContactIds);
+  const baselineContactIds = seedContactIds.filter((contactId) => contactId !== ids.carlosContact);
+  const baselineContactIdSet = new Set(baselineContactIds);
+  const linkContactIds = Object.keys(links);
+  const missingLinkIds = baselineContactIds.filter((contactId) => !Object.hasOwn(links, contactId));
+  const unexpectedLinkIds = linkContactIds.filter((contactId) => !baselineContactIdSet.has(contactId));
+  const emptyLinkIds = linkContactIds.filter((contactId) => links[contactId] === undefined);
+
+  assertDemoVinculaInvariant(seedContactIdSet.size === seedContactIds.length, "conversation seeds must not repeat contact IDs");
+  assertDemoVinculaInvariant(seedContactIdSet.has(ids.carlosContact), "Carlos must be present in the conversation seeds");
+  assertDemoVinculaInvariant(baselineContactIds.length === 9, `expected 9 baseline contacts, received ${baselineContactIds.length}`);
+  assertDemoVinculaInvariant(
+    missingLinkIds.length === 0,
+    `missing links for ${missingLinkIds.join(", ")}`
+  );
+  assertDemoVinculaInvariant(
+    unexpectedLinkIds.length === 0,
+    `unexpected links for ${unexpectedLinkIds.join(", ")}`
+  );
+  assertDemoVinculaInvariant(emptyLinkIds.length === 0, `empty links for ${emptyLinkIds.join(", ")}`);
+  assertDemoVinculaInvariant(linkContactIds.length === 9, `expected 9 links, received ${linkContactIds.length}`);
+
+  const linksByContactId = Object.fromEntries(
+    seedContactIds.map((contactId) => [contactId, links[contactId] ?? null])
+  ) as Record<string, DemoVinculaLink | null>;
+  const dealContactIds = baselineContactIds.filter((contactId) => linksByContactId[contactId]?.dealId !== undefined);
+
+  assertDemoVinculaInvariant(
+    dealContactIds.length === 6,
+    `expected 6 links with deals, received ${dealContactIds.length}`
+  );
+  assertDemoVinculaInvariant(linksByContactId[ids.carlosContact] === null, "Carlos must not have a Vincula link");
+
+  const syncActions = buildActions(workspaceId);
+  assertDemoVinculaInvariant(syncActions.length === 6, `expected 6 sync actions, received ${syncActions.length}`);
+
+  for (const action of syncActions) {
+    assertDemoVinculaInvariant(
+      seedContactIdSet.has(action.contactId),
+      `sync action references non-seeded contact ${action.contactId}`
+    );
+    const link = linksByContactId[action.contactId];
+    assertDemoVinculaInvariant(
+      link?.dealId !== undefined,
+      `sync action contact ${action.contactId} does not have a linked deal`
+    );
+    assertDemoVinculaInvariant(
+      action.mode === "real" && action.status === "completed",
+      `sync action for ${action.contactId} must be real and completed`
+    );
+    assertDemoVinculaInvariant(
+      action.payload.vinculaDealId === link.dealId,
+      `sync action deal for ${action.contactId} does not match its link`
+    );
+  }
+
+  const actionContactIds = syncActions.map((action) => action.contactId);
+  const actionContactIdSet = new Set(actionContactIds);
+  const missingActionIds = dealContactIds.filter((contactId) => !actionContactIdSet.has(contactId));
+
+  assertDemoVinculaInvariant(
+    actionContactIdSet.size === actionContactIds.length,
+    "sync actions must not repeat contacts"
+  );
+  assertDemoVinculaInvariant(
+    missingActionIds.length === 0,
+    `missing sync actions for ${missingActionIds.join(", ")}`
+  );
+
+  return {
+    contactFieldsById: Object.fromEntries(
+      seedContactIds.map((contactId) => {
+        const link = linksByContactId[contactId];
+        return [
+          contactId,
+          {
+            atomicCrmContactId: link?.contactId,
+            atomicCrmLeadId: link?.dealId
+          }
+        ];
+      })
+    ),
+    linksByContactId,
+    integrationConfig: {
+      workspaceId,
+      provider: "vincula" as const,
+      mode: "real" as const,
+      status: "configured" as const,
+      settings: { label: "Vincula CRM local", fallbackEnabled: true }
+    },
+    syncActions
+  };
+}
+
 async function clearWorkspace(prisma: PrismaClient, workspaceId: string) {
   await prisma.aiAgentPendingReply.deleteMany({ where: { workspaceId } });
   await prisma.aiAgentRun.deleteMany({ where: { workspaceId } });
@@ -376,6 +493,8 @@ async function clearWorkspace(prisma: PrismaClient, workspaceId: string) {
 
 async function seedWorkspace(prisma: PrismaClient, workspaceId: string): Promise<DemoResetResult> {
   await clearWorkspace(prisma, workspaceId);
+  const seeds = conversationSeeds();
+  const vinculaSeedState = buildDemoVinculaSeedState({ workspaceId, seeds });
 
   await prisma.workspaceMirror.create({
     data: {
@@ -509,8 +628,8 @@ async function seedWorkspace(prisma: PrismaClient, workspaceId: string): Promise
     ]
   });
 
-  for (const seed of conversationSeeds()) {
-    const vinculaLink = readDemoVinculaLink(seed.contactId);
+  for (const seed of seeds) {
+    const vinculaFields = vinculaSeedState.contactFieldsById[seed.contactId];
     await prisma.contact.create({
       data: {
         id: seed.contactId,
@@ -519,8 +638,8 @@ async function seedWorkspace(prisma: PrismaClient, workspaceId: string): Promise
         phone: seed.phone,
         email: seed.email,
         company: seed.company,
-        atomicCrmContactId: vinculaLink?.contactId,
-        atomicCrmLeadId: vinculaLink?.dealId,
+        atomicCrmContactId: vinculaFields.atomicCrmContactId,
+        atomicCrmLeadId: vinculaFields.atomicCrmLeadId,
         customFields: { origem: "WhatsApp", segmento: "B2B" }
       }
     });
@@ -578,23 +697,17 @@ async function seedWorkspace(prisma: PrismaClient, workspaceId: string): Promise
   }
 
   await prisma.integrationConfig.create({
-    data: {
-      workspaceId,
-      provider: "vincula",
-      mode: "real",
-      status: "configured",
-      settings: { label: "Vincula CRM local", fallbackEnabled: true }
-    }
+    data: vinculaSeedState.integrationConfig
   });
   await prisma.crmSyncAction.createMany({
-    data: buildDemoVinculaSyncActions(workspaceId)
+    data: vinculaSeedState.syncActions
   });
 
   return {
     workspaceId,
     users: users.length,
-    conversations: conversationSeeds().length,
-    contacts: conversationSeeds().length,
+    conversations: seeds.length,
+    contacts: seeds.length,
     agents: 1
   };
 }
