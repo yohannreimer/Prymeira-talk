@@ -1,6 +1,7 @@
 import type { MessageDirection, PrismaClient } from "@prisma/client";
 import type { RealtimeEvent } from "@prymeira-talk/shared";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
+import { DEMO_VINCULA_LINKS, buildDemoVinculaSyncActions } from "./demo-vincula-portfolio.js";
 
 type DemoMessage = [MessageDirection, string, Date];
 
@@ -334,6 +335,10 @@ export async function clearDemoAgentSessions(
   await prisma.aiAgentSession.deleteMany({ where: { workspaceId } });
 }
 
+export function readDemoVinculaLink(contactId: string) {
+  return DEMO_VINCULA_LINKS[contactId] ?? null;
+}
+
 async function clearWorkspace(prisma: PrismaClient, workspaceId: string) {
   await prisma.aiAgentPendingReply.deleteMany({ where: { workspaceId } });
   await prisma.aiAgentRun.deleteMany({ where: { workspaceId } });
@@ -505,6 +510,7 @@ async function seedWorkspace(prisma: PrismaClient, workspaceId: string): Promise
   });
 
   for (const seed of conversationSeeds()) {
+    const vinculaLink = readDemoVinculaLink(seed.contactId);
     await prisma.contact.create({
       data: {
         id: seed.contactId,
@@ -513,6 +519,8 @@ async function seedWorkspace(prisma: PrismaClient, workspaceId: string): Promise
         phone: seed.phone,
         email: seed.email,
         company: seed.company,
+        atomicCrmContactId: vinculaLink?.contactId,
+        atomicCrmLeadId: vinculaLink?.dealId,
         customFields: { origem: "WhatsApp", segmento: "B2B" }
       }
     });
@@ -573,32 +581,13 @@ async function seedWorkspace(prisma: PrismaClient, workspaceId: string): Promise
     data: {
       workspaceId,
       provider: "vincula",
-      mode: "simulated",
+      mode: "real",
       status: "configured",
-      settings: { label: "Vincula CRM", fallbackEnabled: true }
+      settings: { label: "Vincula CRM local", fallbackEnabled: true }
     }
   });
   await prisma.crmSyncAction.createMany({
-    data: [
-      {
-        workspaceId,
-        contactId: "60000000-0000-4000-8000-000000000007",
-        actionType: "create_lead",
-        mode: "simulated",
-        status: "completed",
-        payload: { title: "Reposição mensal de materiais" },
-        result: { vinculaLeadId: "lead-demo-1042", vinculaContactId: "contact-demo-207" }
-      },
-      {
-        workspaceId,
-        contactId: "60000000-0000-4000-8000-000000000008",
-        actionType: "create_note",
-        mode: "simulated",
-        status: "completed",
-        payload: { body: "Cliente validando condição com o financeiro." },
-        result: { noteCreated: true, vinculaContactId: "contact-demo-231" }
-      }
-    ]
+    data: buildDemoVinculaSyncActions(workspaceId)
   });
 
   return {
