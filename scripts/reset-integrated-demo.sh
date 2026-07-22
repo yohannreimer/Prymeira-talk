@@ -115,7 +115,7 @@ if ! printf '%s' "$reset_result" | node -e '
     try {
       result = JSON.parse(payload);
     } catch {
-      process.stderr.write(`O reset do Vincula retornou JSON inválido. Payload: ${payload}\\n`);
+      process.stderr.write(`O reset do Vincula retornou JSON inválido. Payload: ${payload}\n`);
       process.exit(1);
     }
 
@@ -128,7 +128,7 @@ if ! printf '%s' "$reset_result" | node -e '
       && result.deals === 6
       && result.notes === 6;
     if (!valid) {
-      process.stderr.write(`O reset do Vincula retornou contagens inesperadas. Payload: ${payload}\\n`);
+      process.stderr.write(`O reset do Vincula retornou contagens inesperadas. Payload: ${payload}\n`);
       process.exit(1);
     }
   });
