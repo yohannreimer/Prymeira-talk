@@ -29,8 +29,8 @@ Abra `http://localhost:5176` em uma janela de pelo menos 1440 × 900. O Talk usa
 4. No painel direito, mostre `Orçamento quente`, o resumo da IA e o motivo do handoff.
 5. Clique em **Assumir** para demonstrar a passagem de IA para humano.
 6. Use a resposta rápida **Proposta em preparação** e envie a mensagem.
-7. Em **Contatos**, abra o Pipeline comercial e mova Carlos para **Proposta enviada**.
-8. Volte ao Atendimento, abra Carlos e clique em **Vincula**.
+7. Em **Contatos**, apresente os contatos existentes; depois abra o Pipeline comercial de Carlos e mova-o para **Proposta enviada**.
+8. Volte ao Atendimento, abra Carlos e clique em **Vincula** para iniciar a sincronização.
 9. No CRM, confirme Carlos já selecionado. Clique em **Criar oportunidade** e mostre `Sincronizado no Vincula local`, os IDs reais e o botão **Abrir no Vincula**.
 10. Clique em **Abrir no Vincula**. A nova aba abre a ficha nativa dentro do Kanban, no estágio **Oportunidade**, com origem **Prymeira Talk**, probabilidade de 75% e Marina Costa como responsável.
 11. Volte ao Talk, clique em **Enviar nota da IA** e retorne à aba do Vincula. Atualize a ficha para mostrar a nota no histórico sem duplicar empresa, contato ou negócio.
@@ -56,7 +56,7 @@ Se internet, WhatsApp ou CRM real falharem, continue no ambiente local. A conver
 
 ## Restaurar durante o ensaio
 
-No Atendimento, clique em **Restaurar** e confirme. A operação restaura primeiro o workspace local do Vincula e depois o `demo_workspace` do Talk. Ao terminar, a tela informa: `Talk e Vincula prontos, com 5 vendedores e 10 conversas.`
+No Atendimento, clique em **Restaurar** e confirme. A operação restaura primeiro o workspace local do Vincula e depois o `demo_workspace` do Talk. Ao terminar, a tela informa que Talk e Vincula estão prontos.
 
 Também é possível restaurar pelo terminal:
 
@@ -64,7 +64,7 @@ Também é possível restaurar pelo terminal:
 pnpm demo:reset:all
 ```
 
-O reset remove somente os dados dos workspaces locais fixos da demonstração. O Vincula volta a quatro oportunidades neutras e o Talk volta a dez conversas.
+O reset remove somente os dados dos workspaces locais fixos da demonstração. Antes da criação ao vivo, o Vincula mostra nove contatos originados no Talk e seis negócios históricos. Carlos Mendes aparece somente depois da sincronização.
 
 ## Fallback Talk-only
 
@@ -80,7 +80,7 @@ Esse caminho mantém o comportamento anterior do Talk e não altera os comandos 
 ## Checklist antes da reunião
 
 - [ ] Notebook conectado à energia e notificações desativadas.
-- [ ] `pnpm demo:reset:all` termina confirmando 10 conversas, 5 vendedores e 4 negócios-base.
+- [ ] `pnpm demo:reset:all` termina confirmando 10 conversas, 9 contatos e 6 negócios históricos.
 - [ ] `pnpm demo:stack` mantém os quatro serviços em execução.
 - [ ] `pnpm demo:check` confirma os dois apps, as duas interfaces e o armazenamento no SSD.
 - [ ] Atendimento abre sem erros e mostra o selo **Demo local**.

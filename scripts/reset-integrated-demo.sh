@@ -111,4 +111,4 @@ if ! printf '%s' "$reset_result" | grep -q '"ok":true'; then
   exit 1
 fi
 
-printf '%s\n' "Demo integrada restaurada: Talk com 10 conversas; Vincula com 5 vendedores e 4 negócios."
+printf '%s\n' "Demo integrada restaurada: Talk com 10 conversas; Vincula com 9 contatos e 6 negócios."

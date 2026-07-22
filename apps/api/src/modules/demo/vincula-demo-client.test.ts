@@ -3,17 +3,18 @@ import { createVinculaDemoClient } from "./vincula-demo-client.js";
 
 describe("Vincula demo client", () => {
   it("resets the protected Vincula demo with the configured token", async () => {
+    const vinculaResult = {
+      ok: true,
+      workspaceId: "70000000-0000-4000-8000-000000000001",
+      sales: 5,
+      companies: 9,
+      contacts: 9,
+      deals: 6,
+      notes: 6
+    };
     const fetch = vi.fn().mockResolvedValue(
       new Response(
-        JSON.stringify({
-          ok: true,
-          workspaceId: "70000000-0000-4000-8000-000000000001",
-          users: 5,
-          companies: 4,
-          contacts: 4,
-          deals: 4,
-          notes: 4
-        }),
+        JSON.stringify(vinculaResult),
         { status: 200, headers: { "content-type": "application/json" } }
       )
     );
@@ -23,7 +24,9 @@ describe("Vincula demo client", () => {
       fetch
     });
 
-    await expect(client.reset()).resolves.toMatchObject({ ok: true, users: 5, deals: 4 });
+    await expect(client.reset()).resolves.toMatchObject(
+      expect.objectContaining({ ok: true, sales: 5, contacts: 9, deals: 6 })
+    );
     expect(fetch).toHaveBeenCalledWith(
       "http://localhost:3003/api/demo/reset",
       expect.objectContaining({
