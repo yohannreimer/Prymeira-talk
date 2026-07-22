@@ -38,14 +38,16 @@ Local URLs:
 
 ## Client Demo
 
-Prepare the deterministic local workspace and start the presentation with:
+Prepare both deterministic local products and start the presentation with:
 
 ```sh
-pnpm demo:reset
-pnpm demo:prymeira
+pnpm demo:reset:all
+pnpm demo:stack
 ```
 
-Open `http://localhost:5176`. The demo contains five salespeople, ten B2B conversations, a qualified AI handoff, and simulated Vincula CRM operations. See [`docs/demo-runbook.md`](docs/demo-runbook.md) for the presentation story, fallbacks, and pre-meeting checklist.
+In another terminal, validate the four services with `pnpm demo:check`, then open `http://localhost:5176`. The demo contains five salespeople, ten neutral B2B conversations, a qualified AI handoff, and real local writes to Vincula at `http://localhost:5174`. Runtime files and both databases stay under `.local` on the SSD. See [`docs/demo-runbook.md`](docs/demo-runbook.md) for the presentation story, reset flow, fallbacks, and pre-meeting checklist.
+
+For the Talk-only fallback, keep using `pnpm demo:reset` followed by `pnpm demo:prymeira`.
 
 Auth rule: Clerk authenticates, Prymeira Account authorizes `product_key=talk`, Prymeira Talk enforces workspace data boundaries in the API.
 
