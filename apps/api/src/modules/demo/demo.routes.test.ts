@@ -169,6 +169,31 @@ describe("demo routes", () => {
     }
   });
 
+  it.each([
+    "Vincula demo reset returned invalid JSON",
+    "Vincula demo reset returned an invalid payload: contacts"
+  ])("keeps Talk unchanged when Vincula validation fails: %s", async (message) => {
+    const { app, service } = await buildDemoApp({
+      integrated: true,
+      vinculaResetError: new Error(message)
+    });
+
+    try {
+      const response = await app.inject({ method: "POST", url: "/demo/reset" });
+
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual({
+        code: "VINCULA_DEMO_RESET_FAILED",
+        error: "Vincula could not be restored, so Talk was left unchanged.",
+        talkReset: false,
+        vinculaReset: false
+      });
+      expect(service.reset).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("reports a partial reset when Talk fails after Vincula", async () => {
     const { app } = await buildDemoApp({
       integrated: true,

@@ -64,11 +64,6 @@ if ! "$psql_bin" -h 127.0.0.1 -p "$demo_port" -U postgres -d postgres -Atqc \
   "$createdb_bin" -h 127.0.0.1 -p "$demo_port" -U postgres -O postgres prymeira_vincula_demo
 fi
 
-DATABASE_URL="$talk_database_url" pnpm --dir "$talk_root" prisma:generate
-DATABASE_URL="$talk_database_url" pnpm --dir "$talk_root" --filter @prymeira-talk/api prisma db push
-DATABASE_URL="$talk_database_url" PRYMEIRA_LOCAL_WORKSPACE_ID=demo_workspace \
-  pnpm --dir "$talk_root" --filter @prymeira-talk/api seed:demo
-
 if ! curl -fsS http://localhost:3003/api/health 2>/dev/null | grep -q '"service":"vincula-crm"'; then
   (
     cd "$vincula_root"
@@ -122,6 +117,7 @@ if ! printf '%s' "$reset_result" | node -e '
     const valid = result
       && typeof result === "object"
       && result.ok === true
+      && result.workspaceId === "70000000-0000-4000-8000-000000000001"
       && result.sales === 5
       && result.companies === 9
       && result.contacts === 9
@@ -133,6 +129,16 @@ if ! printf '%s' "$reset_result" | node -e '
     }
   });
 '; then
+  exit 1
+fi
+
+if ! {
+  DATABASE_URL="$talk_database_url" pnpm --dir "$talk_root" prisma:generate &&
+  DATABASE_URL="$talk_database_url" pnpm --dir "$talk_root" --filter @prymeira-talk/api prisma db push &&
+  DATABASE_URL="$talk_database_url" PRYMEIRA_LOCAL_WORKSPACE_ID=demo_workspace \
+    pnpm --dir "$talk_root" --filter @prymeira-talk/api seed:demo
+}; then
+  printf '%s\n' "Reset parcial: Vincula foi restaurado, mas o Talk falhou e pode precisar de nova restauração." >&2
   exit 1
 fi
 

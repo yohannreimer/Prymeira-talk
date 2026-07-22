@@ -1,4 +1,4 @@
-import type { MessageDirection, PrismaClient } from "@prisma/client";
+import type { MessageDirection, Prisma, PrismaClient } from "@prisma/client";
 import type { RealtimeEvent } from "@prymeira-talk/shared";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import type { DemoVinculaLink } from "./demo-vincula-portfolio.js";
@@ -456,7 +456,7 @@ export function buildDemoVinculaSeedState({
   };
 }
 
-async function clearWorkspace(prisma: PrismaClient, workspaceId: string) {
+async function clearWorkspace(prisma: Prisma.TransactionClient, workspaceId: string) {
   await prisma.aiAgentPendingReply.deleteMany({ where: { workspaceId } });
   await prisma.aiAgentRun.deleteMany({ where: { workspaceId } });
   await clearDemoAgentSessions(prisma, workspaceId);
@@ -491,10 +491,16 @@ async function clearWorkspace(prisma: PrismaClient, workspaceId: string) {
   await prisma.workspaceMirror.deleteMany({ where: { workspaceId } });
 }
 
-async function seedWorkspace(prisma: PrismaClient, workspaceId: string): Promise<DemoResetResult> {
+type DemoConversationSeeds = ReturnType<typeof conversationSeeds>;
+type DemoVinculaSeedState = ReturnType<typeof buildDemoVinculaSeedState>;
+
+async function seedWorkspace(
+  prisma: Prisma.TransactionClient,
+  workspaceId: string,
+  seeds: DemoConversationSeeds,
+  vinculaSeedState: DemoVinculaSeedState
+): Promise<DemoResetResult> {
   await clearWorkspace(prisma, workspaceId);
-  const seeds = conversationSeeds();
-  const vinculaSeedState = buildDemoVinculaSeedState({ workspaceId, seeds });
 
   await prisma.workspaceMirror.create({
     data: {
@@ -712,6 +718,32 @@ async function seedWorkspace(prisma: PrismaClient, workspaceId: string): Promise
   };
 }
 
+export interface DemoResetDatabase {
+  $transaction<Result>(
+    operation: (transaction: Prisma.TransactionClient) => Promise<Result>
+  ): Promise<Result>;
+}
+
+interface DemoResetDependencies {
+  buildVinculaSeedState?: typeof buildDemoVinculaSeedState;
+}
+
+export async function resetDemoWorkspace(
+  prisma: DemoResetDatabase,
+  workspaceId: string,
+  dependencies: DemoResetDependencies = {}
+): Promise<DemoResetResult> {
+  const seeds = conversationSeeds();
+  const vinculaSeedState = (dependencies.buildVinculaSeedState ?? buildDemoVinculaSeedState)({
+    workspaceId,
+    seeds
+  });
+
+  return prisma.$transaction((transaction) =>
+    seedWorkspace(transaction, workspaceId, seeds, vinculaSeedState)
+  );
+}
+
 async function simulateLead(
   prisma: PrismaClient,
   workspaceId: string,
@@ -723,7 +755,7 @@ async function simulateLead(
   });
 
   if (!conversation) {
-    await seedWorkspace(prisma, workspaceId);
+    await resetDemoWorkspace(prisma, workspaceId);
   }
 
   const created = conversation?.status !== "open" || !conversation.activeAgentSessionId;
@@ -869,7 +901,7 @@ async function simulateLead(
 export function createDemoScenarioService(prisma: PrismaClient, realtime?: DemoRealtime) {
   return {
     reset(workspaceId: string) {
-      return seedWorkspace(prisma, workspaceId);
+      return resetDemoWorkspace(prisma, workspaceId);
     },
     simulateLead(workspaceId: string) {
       return simulateLead(prisma, workspaceId, realtime);

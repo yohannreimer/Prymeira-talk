@@ -1,10 +1,13 @@
+import type { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { DEMO_VINCULA_LINKS, buildDemoVinculaSyncActions } from "./demo-vincula-portfolio.js";
 import {
   buildDemoVinculaSeedState,
   clearDemoAgentSessions,
-  readDemoVinculaLink
+  readDemoVinculaLink,
+  resetDemoWorkspace
 } from "./demo-scenario.js";
+import type { DemoResetDatabase } from "./demo-scenario.js";
 
 describe("readDemoVinculaLink", () => {
   it("returns the fixed Vincula link for linked contacts and null for Carlos", () => {
@@ -107,5 +110,73 @@ describe("clearDemoAgentSessions", () => {
       where: { workspaceId: "demo_workspace", activeAgentSessionId: { not: null } },
       data: { activeAgentSessionId: null }
     });
+  });
+});
+
+describe("resetDemoWorkspace", () => {
+  it("validates the Vincula seed state before opening a transaction or clearing Talk", async () => {
+    const transaction = vi.fn();
+    const buildVinculaSeedState = vi.fn(() => {
+      throw new Error("invalid seed state");
+    });
+
+    await expect(
+      resetDemoWorkspace(
+        { $transaction: transaction },
+        "demo_workspace",
+        { buildVinculaSeedState }
+      )
+    ).rejects.toThrow("invalid seed state");
+
+    expect(buildVinculaSeedState).toHaveBeenCalledWith({
+      workspaceId: "demo_workspace",
+      seeds: expect.any(Array)
+    });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("delegates clear and seed to one transaction and preserves prior state when an insert fails", async () => {
+    const committedState = ["existing-talk-data"];
+    const transactionCall = vi.fn();
+    const database: DemoResetDatabase = {
+      async $transaction<Result>(operation: (tx: Prisma.TransactionClient) => Promise<Result>) {
+        transactionCall();
+        const transactionState = [...committedState];
+        const delegate = new Proxy({}, {
+          get: (_target, method: string) => vi.fn(async () => {
+            if (method === "deleteMany") transactionState.length = 0;
+            return { count: 1 };
+          })
+        });
+        const tx = new Proxy({}, {
+          get: (_target, model: string) => {
+            if (model === "workspaceMirror") {
+              return {
+                deleteMany: vi.fn(async () => {
+                  transactionState.length = 0;
+                  return { count: 1 };
+                }),
+                create: vi.fn(async () => {
+                  transactionState.push("partial-seed");
+                  throw new Error("insert failed");
+                })
+              };
+            }
+            return delegate;
+          }
+        });
+
+        const result = await operation(tx as Prisma.TransactionClient);
+        committedState.splice(0, committedState.length, ...transactionState);
+        return result;
+      }
+    };
+
+    await expect(
+      resetDemoWorkspace(database, "demo_workspace")
+    ).rejects.toThrow("insert failed");
+
+    expect(transactionCall).toHaveBeenCalledTimes(1);
+    expect(committedState).toEqual(["existing-talk-data"]);
   });
 });
