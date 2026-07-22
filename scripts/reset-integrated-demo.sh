@@ -75,6 +75,7 @@ if ! curl -fsS http://localhost:3003/api/health 2>/dev/null | grep -q '"service"
     env \
       PORT=3003 \
       DATABASE_URL="$vincula_database_url" \
+      CORS_ORIGINS=http://localhost:5174,http://127.0.0.1:5174 \
       VINCULA_LOCAL_DEMO_ENABLED=true \
       VINCULA_LOCAL_DEMO_TOKEN="$vincula_token" \
       VINCULA_LOCAL_DEMO_WORKSPACE_ID="$vincula_workspace_id" \

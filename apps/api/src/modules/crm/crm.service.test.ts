@@ -255,7 +255,7 @@ describe("crm service", () => {
           dealCreated: true,
           vinculaDealId: "77",
           vinculaNoteId: "88",
-          vinculaRecordUrl: "http://localhost:5174/deals/77/show",
+          vinculaRecordUrl: "http://localhost:5174/#/deals/77/show",
           environment: "local-demo"
         })
       })
@@ -454,7 +454,7 @@ describe("crm service", () => {
         vinculaContactId: "42",
         vinculaCompanyId: "9",
         vinculaDealId: "77",
-        vinculaRecordUrl: "http://localhost:5174/deals/77/show"
+        vinculaRecordUrl: "http://localhost:5174/#/deals/77/show"
       })
     );
     expect(prisma.contact.update).toHaveBeenCalledWith(
@@ -535,7 +535,7 @@ describe("crm service", () => {
       expect.objectContaining({
         dealCreated: false,
         vinculaDealId: "78",
-        vinculaRecordUrl: "http://localhost:5174/deals/78/show"
+        vinculaRecordUrl: "http://localhost:5174/#/deals/78/show"
       })
     );
   });
@@ -681,7 +681,7 @@ describe("crm service", () => {
         noteCreated: true,
         vinculaDealId: "77",
         vinculaNoteId: "99",
-        vinculaRecordUrl: "http://localhost:5174/deals/77/show"
+        vinculaRecordUrl: "http://localhost:5174/#/deals/77/show"
       })
     );
   });

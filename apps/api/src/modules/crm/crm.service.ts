@@ -361,8 +361,8 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
   function buildVinculaRecordUrl(input: { dealId?: string | null; contactId: string }) {
     if (!vinculaWebUrl) return null;
     return input.dealId
-      ? `${vinculaWebUrl}/deals/${encodeURIComponent(input.dealId)}/show`
-      : `${vinculaWebUrl}/contacts/${encodeURIComponent(input.contactId)}/show`;
+      ? `${vinculaWebUrl}/#/deals/${encodeURIComponent(input.dealId)}/show`
+      : `${vinculaWebUrl}/#/contacts/${encodeURIComponent(input.contactId)}/show`;
   }
 
   async function resolveOpportunityReferences(token: string) {
