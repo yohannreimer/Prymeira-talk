@@ -7,6 +7,7 @@ import {
   BriefcaseBusiness,
   Building2,
   CheckCircle2,
+  ExternalLink,
   FlaskConical,
   Link2,
   Plus,
@@ -73,6 +74,25 @@ function formatDate(value: string) {
 
 function modeLabel(mode: CrmSyncActionDto["mode"]) {
   return mode === "real" ? "Real" : "Local";
+}
+
+export function readVinculaRecordUrl(
+  action: Pick<CrmSyncActionDto, "mode" | "status" | "result">
+) {
+  if (action.mode !== "real" || action.status !== "completed") return null;
+  const result =
+    action.result && typeof action.result === "object" && !Array.isArray(action.result)
+      ? (action.result as Record<string, unknown>)
+      : {};
+  const rawUrl = readField(result, "vinculaRecordUrl");
+  if (!rawUrl) return null;
+
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 export function readCrmContactId(search: string) {
@@ -216,7 +236,12 @@ export function CrmPage() {
             : await apiCreateCrmNote(getToken, { contactId, body: noteBody });
 
       setActions((current) => [syncAction, ...current]);
-      setNotice(`${actionLabel(syncAction.actionType)} em ambiente ${modeLabel(syncAction.mode).toLowerCase()}.`);
+      const syncResult = resultObject(syncAction);
+      setNotice(
+        readField(syncResult, "environment") === "local-demo"
+          ? "Sincronizado no Vincula local."
+          : `${actionLabel(syncAction.actionType)} em ambiente ${modeLabel(syncAction.mode).toLowerCase()}.`
+      );
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Não foi possível executar a ação no CRM.");
     } finally {
@@ -273,21 +298,36 @@ export function CrmPage() {
               const result = resultObject(action);
               const payload = payloadObject(action);
               const vinculaContactId = readField(result, "vinculaContactId") ?? readField(result, "atomicCrmContactId");
-              const vinculaLeadId = readField(result, "vinculaLeadId") ?? readField(result, "atomicCrmLeadId");
+              const vinculaDealId = readField(result, "vinculaDealId") ?? readField(result, "vinculaLeadId") ?? readField(result, "atomicCrmLeadId");
               const vinculaCompanyId = readField(result, "vinculaCompanyId");
+              const vinculaRecordUrl = readVinculaRecordUrl(action);
+              const actionModeLabel =
+                readField(result, "environment") === "local-demo"
+                  ? "Vincula local"
+                  : modeLabel(action.mode);
               return (
                 <article key={action.id} className="crm-activity-row">
                   <div className={`crm-activity-icon crm-activity-icon--${action.status === "completed" ? "ok" : "warn"}`}>
                     {action.status === "completed" ? <CheckCircle2 size={17} /> : <AlertTriangle size={17} />}
                   </div>
                   <div className="crm-activity-main">
-                    <div className="crm-activity-title"><strong>{actionLabel(action.actionType)}</strong><span>{modeLabel(action.mode)}</span></div>
+                    <div className="crm-activity-title"><strong>{actionLabel(action.actionType)}</strong><span>{actionModeLabel}</span></div>
                     <p>Talk {actionVerb(action.actionType)}{readField(payload, "title") ? `: ${readField(payload, "title")}` : ""}.</p>
                     <div className="crm-id-row">
                       {vinculaContactId ? <span>Contato: {vinculaContactId}</span> : null}
-                      {vinculaLeadId ? <span>Oportunidade: {vinculaLeadId}</span> : null}
+                      {vinculaDealId ? <span>Oportunidade: {vinculaDealId}</span> : null}
                       {vinculaCompanyId ? <span>Empresa: {vinculaCompanyId}</span> : null}
                     </div>
+                    {vinculaRecordUrl ? (
+                      <a
+                        className="crm-open-vincula"
+                        href={vinculaRecordUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Abrir no Vincula <ExternalLink size={14} />
+                      </a>
+                    ) : null}
                   </div>
                   <time>{formatDate(action.createdAt)}</time>
                 </article>
@@ -323,7 +363,7 @@ export function CrmPage() {
           </details>
 
           <div className="crm-health-box"><Building2 size={18} /><div><strong>Empresa vinculada</strong><p>O Vincula reutiliza ou cria a empresa e conecta contato, oportunidade e notas.</p></div></div>
-          <div className="crm-guide-inline"><Activity size={15} /><span>Em modo local, o mesmo contrato gera IDs simulados e histórico persistente.</span></div>
+          <div className="crm-guide-inline"><Activity size={15} /><span>No modo integrado, empresa, contato, oportunidade e notas são gravados no Vincula local.</span></div>
         </aside>
       </div>
     </section>

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { crmContactOptionLabel, crmLeadTitle, readCrmContactId } from "./CrmPage";
+import {
+  crmContactOptionLabel,
+  crmLeadTitle,
+  readCrmContactId,
+  readVinculaRecordUrl
+} from "./CrmPage";
 import { buildModuleSearch } from "../shell/TalkSuiteShell";
 
 const contact = {
@@ -38,5 +43,29 @@ describe("CRM contact context helpers", () => {
     const current = `?module=atomic_crm&contact=${contact.id}&conversation=conversation_10`;
     expect(buildModuleSearch(current, "atomic_crm")).toContain(`contact=${contact.id}`);
     expect(buildModuleSearch(current, "atendimento")).toBe("?module=atendimento");
+  });
+
+  it("accepts a safe deep link only from a completed real action", () => {
+    expect(
+      readVinculaRecordUrl({
+        mode: "real",
+        status: "completed",
+        result: { vinculaRecordUrl: "http://localhost:5174/deals/77/show" }
+      })
+    ).toBe("http://localhost:5174/deals/77/show");
+    expect(
+      readVinculaRecordUrl({
+        mode: "simulated",
+        status: "completed",
+        result: { vinculaRecordUrl: "http://localhost:5174/contacts/42/show" }
+      })
+    ).toBeNull();
+    expect(
+      readVinculaRecordUrl({
+        mode: "real",
+        status: "completed",
+        result: { vinculaRecordUrl: "javascript:alert(1)" }
+      })
+    ).toBeNull();
   });
 });

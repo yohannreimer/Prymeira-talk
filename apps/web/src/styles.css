@@ -2558,6 +2558,33 @@ select:disabled {
   font-weight: 700;
 }
 
+.crm-open-vincula {
+  align-items: center;
+  background: var(--color-brand-50);
+  border: 1px solid var(--color-brand-100);
+  border-radius: 999px;
+  color: var(--color-brand-700);
+  display: inline-flex;
+  font-size: 0.75rem;
+  font-weight: 750;
+  gap: 0.4rem;
+  margin-top: 0.65rem;
+  padding: 0.42rem 0.72rem;
+  text-decoration: none;
+  transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.crm-open-vincula:hover {
+  background: var(--color-brand-100);
+  border-color: var(--color-brand-600);
+  transform: translateY(-1px);
+}
+
+.crm-open-vincula:focus-visible {
+  outline: 2px solid var(--color-brand-600);
+  outline-offset: 2px;
+}
+
 .crm-activity-row time {
   color: var(--color-text-muted);
   font-size: 0.78rem;
