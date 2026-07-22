@@ -114,8 +114,12 @@ if ! printf '%s' "$reset_result" | node -e '
       process.exit(1);
     }
 
-    const valid = result
-      && typeof result === "object"
+    const expectedKeys = ["ok", "workspaceId", "sales", "companies", "contacts", "deals", "notes"];
+    const isObject = result !== null && typeof result === "object" && !Array.isArray(result);
+    const hasExactKeys = isObject
+      && Object.keys(result).length === expectedKeys.length
+      && expectedKeys.every((key) => Object.hasOwn(result, key));
+    const valid = hasExactKeys
       && result.ok === true
       && result.workspaceId === "70000000-0000-4000-8000-000000000001"
       && result.sales === 5
@@ -124,7 +128,7 @@ if ! printf '%s' "$reset_result" | node -e '
       && result.deals === 6
       && result.notes === 6;
     if (!valid) {
-      process.stderr.write(`O reset do Vincula retornou contagens inesperadas. Payload: ${payload}\n`);
+      process.stderr.write(`O reset do Vincula retornou payload inesperado. Payload: ${payload}\n`);
       process.exit(1);
     }
   });

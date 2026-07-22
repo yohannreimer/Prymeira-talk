@@ -55,15 +55,26 @@ run_reset() {
     sh "$talk_root/scripts/reset-integrated-demo.sh"
 }
 
-invalid_payload='{"ok":true,"workspaceId":"wrong-workspace","sales":5,"companies":9,"contacts":9,"deals":6,"notes":6}'
-if run_reset "$invalid_payload" >"$test_root/invalid.out" 2>"$test_root/invalid.err"; then
-  printf '%s\n' "expected invalid Vincula payload to fail" >&2
-  exit 1
-fi
-if grep -q 'seed:demo' "$log_file"; then
-  printf '%s\n' "Talk seed ran after a failed Vincula reset" >&2
-  exit 1
-fi
+assert_vincula_failure_before_talk() {
+  label="$1"
+  payload="$2"
+  : >"$log_file"
+  if run_reset "$payload" >"$test_root/$label.out" 2>"$test_root/$label.err"; then
+    printf '%s\n' "expected $label Vincula payload to fail" >&2
+    exit 1
+  fi
+  if grep -q 'seed:demo' "$log_file"; then
+    printf '%s\n' "Talk seed ran after the $label Vincula payload failed" >&2
+    exit 1
+  fi
+}
+
+wrong_workspace_payload='{"ok":true,"workspaceId":"wrong-workspace","sales":5,"companies":9,"contacts":9,"deals":6,"notes":6}'
+extra_field_payload='{"ok":true,"workspaceId":"70000000-0000-4000-8000-000000000001","sales":5,"companies":9,"contacts":9,"deals":6,"notes":6,"users":5}'
+invalid_count_payload='{"ok":true,"workspaceId":"70000000-0000-4000-8000-000000000001","sales":5,"companies":9,"contacts":8,"deals":6,"notes":6}'
+assert_vincula_failure_before_talk wrong-workspace "$wrong_workspace_payload"
+assert_vincula_failure_before_talk extra-field "$extra_field_payload"
+assert_vincula_failure_before_talk invalid-count "$invalid_count_payload"
 
 : >"$log_file"
 valid_payload='{"ok":true,"workspaceId":"70000000-0000-4000-8000-000000000001","sales":5,"companies":9,"contacts":9,"deals":6,"notes":6}'
