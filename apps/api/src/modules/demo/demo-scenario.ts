@@ -311,10 +311,33 @@ const conversationSeeds = () => [
   }
 ];
 
+type ConversationUpdateManyArgs = Parameters<PrismaClient["conversation"]["updateMany"]>[0];
+type AgentSessionDeleteManyArgs = Parameters<PrismaClient["aiAgentSession"]["deleteMany"]>[0];
+
+interface DemoAgentSessionPrisma {
+  conversation: {
+    updateMany(args: ConversationUpdateManyArgs): Promise<unknown>;
+  };
+  aiAgentSession: {
+    deleteMany(args: AgentSessionDeleteManyArgs): Promise<unknown>;
+  };
+}
+
+export async function clearDemoAgentSessions(
+  prisma: DemoAgentSessionPrisma,
+  workspaceId: string
+) {
+  await prisma.conversation.updateMany({
+    where: { workspaceId, activeAgentSessionId: { not: null } },
+    data: { activeAgentSessionId: null }
+  });
+  await prisma.aiAgentSession.deleteMany({ where: { workspaceId } });
+}
+
 async function clearWorkspace(prisma: PrismaClient, workspaceId: string) {
   await prisma.aiAgentPendingReply.deleteMany({ where: { workspaceId } });
   await prisma.aiAgentRun.deleteMany({ where: { workspaceId } });
-  await prisma.aiAgentSession.deleteMany({ where: { workspaceId } });
+  await clearDemoAgentSessions(prisma, workspaceId);
   await prisma.aiAgentAllowedTag.deleteMany({ where: { workspaceId } });
   await prisma.aiKnowledgeSource.deleteMany({ where: { workspaceId } });
   await prisma.aiAgent.deleteMany({ where: { workspaceId } });
