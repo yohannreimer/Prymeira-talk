@@ -1,18 +1,18 @@
 export interface DemoVinculaLink {
-  companyId: string;
-  contactId: string;
-  dealId?: string;
-  noteId?: string;
-  title?: string;
+  readonly companyId: string;
+  readonly contactId: string;
+  readonly dealId?: string;
+  readonly noteId?: string;
+  readonly title?: string;
 }
 
 interface CompleteDemoVinculaLink extends DemoVinculaLink {
-  dealId: string;
-  noteId: string;
-  title: string;
+  readonly dealId: string;
+  readonly noteId: string;
+  readonly title: string;
 }
 
-export const DEMO_VINCULA_LINKS: Readonly<Record<string, DemoVinculaLink>> = {
+export const DEMO_VINCULA_LINKS: Readonly<Partial<Record<string, DemoVinculaLink>>> = {
   "60000000-0000-4000-8000-000000000001": {
     companyId: "9301",
     contactId: "9401",
@@ -60,8 +60,8 @@ export const DEMO_VINCULA_LINKS: Readonly<Record<string, DemoVinculaLink>> = {
   "60000000-0000-4000-8000-000000000009": { companyId: "9309", contactId: "9409" }
 };
 
-function isCompleteLink(link: DemoVinculaLink): link is CompleteDemoVinculaLink {
-  return link.dealId !== undefined && link.noteId !== undefined && link.title !== undefined;
+function isCompleteLink(link: DemoVinculaLink | undefined): link is CompleteDemoVinculaLink {
+  return link !== undefined && link.dealId !== undefined && link.noteId !== undefined && link.title !== undefined;
 }
 
 export function buildDemoVinculaSyncActions(workspaceId: string) {
