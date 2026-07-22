@@ -73,8 +73,11 @@ describe("runDemoControlAction", () => {
       vincula: {
         ok: true,
         workspaceId: "70000000-0000-4000-8000-000000000001",
-        users: 5,
-        deals: 4
+        sales: 5,
+        companies: 9,
+        contacts: 9,
+        deals: 6,
+        notes: 6
       }
     });
 

@@ -24,9 +24,7 @@ describe("Vincula demo client", () => {
       fetch
     });
 
-    await expect(client.reset()).resolves.toMatchObject(
-      expect.objectContaining({ ok: true, sales: 5, contacts: 9, deals: 6 })
-    );
+    await expect(client.reset()).resolves.toEqual(vinculaResult);
     expect(fetch).toHaveBeenCalledWith(
       "http://localhost:3003/api/demo/reset",
       expect.objectContaining({

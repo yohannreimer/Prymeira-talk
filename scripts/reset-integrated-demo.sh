@@ -106,8 +106,33 @@ fi
 reset_result=$(curl -fsS -X POST \
   -H "Authorization: Bearer $vincula_token" \
   http://localhost:3003/api/demo/reset)
-if ! printf '%s' "$reset_result" | grep -q '"ok":true'; then
-  printf '%s\n' "O reset do Vincula não retornou sucesso." >&2
+if ! printf '%s' "$reset_result" | node -e '
+  let payload = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => { payload += chunk; });
+  process.stdin.on("end", () => {
+    let result;
+    try {
+      result = JSON.parse(payload);
+    } catch {
+      process.stderr.write(`O reset do Vincula retornou JSON inválido. Payload: ${payload}\\n`);
+      process.exit(1);
+    }
+
+    const valid = result
+      && typeof result === "object"
+      && result.ok === true
+      && result.sales === 5
+      && result.companies === 9
+      && result.contacts === 9
+      && result.deals === 6
+      && result.notes === 6;
+    if (!valid) {
+      process.stderr.write(`O reset do Vincula retornou contagens inesperadas. Payload: ${payload}\\n`);
+      process.exit(1);
+    }
+  });
+'; then
   exit 1
 fi
 
