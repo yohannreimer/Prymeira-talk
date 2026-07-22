@@ -17,10 +17,19 @@ function readModuleFromUrl() {
   return isTalkModuleKey(moduleParam) ? moduleParam : defaultModule;
 }
 
+export function buildModuleSearch(currentSearch: string, moduleKey: TalkModuleKey) {
+  const searchParams = new URLSearchParams(currentSearch);
+  searchParams.set(moduleParamName, moduleKey);
+  if (moduleKey !== "atomic_crm") {
+    searchParams.delete("contact");
+    searchParams.delete("conversation");
+  }
+  return `?${searchParams.toString()}`;
+}
+
 function buildModuleUrl(moduleKey: TalkModuleKey) {
   const url = new URL(window.location.href);
-  url.searchParams.set(moduleParamName, moduleKey);
-  return `${url.pathname}${url.search}${url.hash}`;
+  return `${url.pathname}${buildModuleSearch(url.search, moduleKey)}${url.hash}`;
 }
 
 export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {

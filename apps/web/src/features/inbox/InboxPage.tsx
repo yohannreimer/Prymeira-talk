@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ConversationDto, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bot, CheckCircle2, Download, History, MessageSquare, Plus, StickyNote, UserCheck, X } from "lucide-react";
+import { ArrowUpRight, Bot, BriefcaseBusiness, CheckCircle2, Download, History, MessageSquare, Plus, StickyNote, UserCheck, X } from "lucide-react";
 import type { ChangeEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -896,6 +896,17 @@ export function InboxPage() {
     setConversationReloadKey((current) => current + 1);
   }
 
+  function openSelectedContactInCrm() {
+    if (!selectedConversation) return;
+
+    const url = new URL(window.location.href);
+    url.searchParams.set("module", "atomic_crm");
+    url.searchParams.set("contact", selectedConversation.contactId);
+    url.searchParams.set("conversation", selectedConversation.id);
+    window.history.pushState({ module: "atomic_crm" }, "", `${url.pathname}${url.search}${url.hash}`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -1776,6 +1787,15 @@ export function InboxPage() {
             >
               <Plus size={15} aria-hidden="true" />
               Lead
+            </button>
+            <button
+              disabled={!selectedConversation || isRunningAction}
+              onClick={openSelectedContactInCrm}
+              type="button"
+            >
+              <BriefcaseBusiness size={15} aria-hidden="true" />
+              Vincula
+              <ArrowUpRight size={12} aria-hidden="true" />
             </button>
             <button
               className="quick-action-danger"
