@@ -6,8 +6,12 @@ import type { PrismaLike } from "./crm.service.js";
 
 const uuidSchema = z.string().uuid();
 
-interface CrmRoutesOptions {
+export interface CrmRoutesOptions {
   vinculaApiUrl?: string;
+  vinculaApiToken?: string;
+  vinculaWebUrl?: string;
+  strictReal?: boolean;
+  environment?: "local-demo" | "external";
   fetch?: typeof fetch;
 }
 
@@ -59,6 +63,9 @@ function readBearerToken(authorizationHeader: string | undefined) {
 export const crmRoutes: FastifyPluginAsync<CrmRoutesOptions> = async (app, options) => {
   const service = createCrmService(app.prisma as unknown as PrismaLike, {
     vinculaApiUrl: options.vinculaApiUrl,
+    vinculaWebUrl: options.vinculaWebUrl,
+    strictReal: options.strictReal,
+    environment: options.environment,
     fetch: options.fetch
   });
 
@@ -110,7 +117,8 @@ export const crmRoutes: FastifyPluginAsync<CrmRoutesOptions> = async (app, optio
       const action = await service.createLead({
         workspaceId: request.talk.workspaceId,
         ...body.data,
-        vinculaToken: readBearerToken(request.headers.authorization)
+        vinculaToken:
+          options.vinculaApiToken ?? readBearerToken(request.headers.authorization)
       });
 
       return reply.code(201).send(action);
@@ -133,7 +141,8 @@ export const crmRoutes: FastifyPluginAsync<CrmRoutesOptions> = async (app, optio
       const action = await service.createNote({
         workspaceId: request.talk.workspaceId,
         ...body.data,
-        vinculaToken: readBearerToken(request.headers.authorization)
+        vinculaToken:
+          options.vinculaApiToken ?? readBearerToken(request.headers.authorization)
       });
 
       return reply.code(201).send(action);

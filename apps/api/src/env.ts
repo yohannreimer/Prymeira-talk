@@ -39,7 +39,15 @@ export const envSchema = z
     EVOLUTION_API_KEY: optionalNonEmptyString,
     EVOLUTION_WEBHOOK_SECRET: z.string().min(1),
     TALK_UPLOAD_DIR: z.string().min(1).default("storage/uploads"),
-    VINCULA_CRM_API_URL: optionalUrl
+    VINCULA_CRM_API_URL: optionalUrl,
+    VINCULA_CRM_API_TOKEN: optionalNonEmptyString,
+    VINCULA_CRM_WEB_URL: optionalUrl,
+    VINCULA_CRM_STRICT_REAL: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    VINCULA_CRM_RESET_URL: optionalUrl,
+    VINCULA_CRM_RESET_TOKEN: optionalNonEmptyString
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === "production" && env.PRYMEIRA_LOCAL_AUTH_BYPASS) {
@@ -55,6 +63,18 @@ export const envSchema = z
         code: z.ZodIssueCode.custom,
         path: ["PRYMEIRA_LOCAL_DEMO_ENABLED"],
         message: "PRYMEIRA_LOCAL_DEMO_ENABLED cannot be true when NODE_ENV is production."
+      });
+    }
+
+    if (
+      env.NODE_ENV === "production" &&
+      env.PRYMEIRA_LOCAL_DEMO_ENABLED &&
+      env.VINCULA_CRM_STRICT_REAL
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["VINCULA_CRM_STRICT_REAL"],
+        message: "Integrated local Vincula mode cannot run in production."
       });
     }
 

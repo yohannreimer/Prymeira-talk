@@ -168,7 +168,14 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(agentsRoutes);
   await app.register(assistantRoutes);
   await app.register(crmRoutes, {
-    vinculaApiUrl: env.VINCULA_CRM_API_URL
+    vinculaApiUrl: env.VINCULA_CRM_API_URL,
+    vinculaApiToken: env.VINCULA_CRM_API_TOKEN,
+    vinculaWebUrl: env.VINCULA_CRM_WEB_URL,
+    strictReal: env.VINCULA_CRM_STRICT_REAL,
+    environment:
+      env.PRYMEIRA_LOCAL_DEMO_ENABLED && env.VINCULA_CRM_STRICT_REAL
+        ? "local-demo"
+        : "external"
   });
   await app.register(settingsRoutes);
 

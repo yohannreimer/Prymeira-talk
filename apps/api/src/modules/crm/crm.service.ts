@@ -95,6 +95,9 @@ interface VinculaLeadRecord {
 
 interface VinculaServiceOptions {
   vinculaApiUrl?: string;
+  vinculaWebUrl?: string;
+  strictReal?: boolean;
+  environment?: "local-demo" | "external";
   fetch?: FetchLike;
 }
 
@@ -267,7 +270,20 @@ async function readVinculaError(response: Response) {
 
 export function createCrmService(prisma: PrismaLike, options: VinculaServiceOptions = {}) {
   const vinculaApiUrl = options.vinculaApiUrl ? normalizeBaseUrl(options.vinculaApiUrl) : null;
+  const vinculaWebUrl = options.vinculaWebUrl ? normalizeBaseUrl(options.vinculaWebUrl) : null;
+  const strictReal = options.strictReal ?? false;
   const fetchCrm = options.fetch ?? fetch;
+
+  function requireStrictRealConfiguration(token: string | null | undefined) {
+    if (!strictReal) return;
+    if (vinculaApiUrl && vinculaWebUrl && token) return;
+
+    throw new CrmServiceError(
+      "VINCULA_SYNC_FAILED",
+      "Vincula local integration is not fully configured.",
+      503
+    );
+  }
 
   async function vinculaRequest<T>(
     token: string,
@@ -547,6 +563,7 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
     }): Promise<CrmSyncActionDto> {
       const contact = await ensureContactInWorkspace(input);
       const title = input.title.trim();
+      requireStrictRealConfiguration(input.vinculaToken);
 
       if (vinculaApiUrl && input.vinculaToken) {
         const vinculaCompany = await upsertVinculaCompany(input.vinculaToken, contact);
@@ -633,6 +650,7 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
       vinculaToken?: string | null;
     }): Promise<CrmSyncActionDto> {
       const contact = await ensureContactInWorkspace(input);
+      requireStrictRealConfiguration(input.vinculaToken);
 
       if (vinculaApiUrl && input.vinculaToken) {
         const vinculaCompany = await upsertVinculaCompany(input.vinculaToken, contact);

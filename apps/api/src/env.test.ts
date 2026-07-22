@@ -47,4 +47,26 @@ describe("readEnv", () => {
       })
     ).toThrow(/PRYMEIRA_LOCAL_DEMO_ENABLED/);
   });
+
+  it("loads server-only Vincula integration settings", () => {
+    expect(
+      readEnv({
+        ...baseProductionEnv,
+        NODE_ENV: "development",
+        PRYMEIRA_LOCAL_DEMO_ENABLED: "true",
+        VINCULA_CRM_API_URL: "http://localhost:3003/api",
+        VINCULA_CRM_API_TOKEN: "server-token",
+        VINCULA_CRM_WEB_URL: "http://localhost:5174",
+        VINCULA_CRM_STRICT_REAL: "true",
+        VINCULA_CRM_RESET_URL: "http://localhost:3003/api/demo/reset",
+        VINCULA_CRM_RESET_TOKEN: "reset-token"
+      })
+    ).toMatchObject({
+      VINCULA_CRM_API_TOKEN: "server-token",
+      VINCULA_CRM_WEB_URL: "http://localhost:5174",
+      VINCULA_CRM_STRICT_REAL: true,
+      VINCULA_CRM_RESET_URL: "http://localhost:3003/api/demo/reset",
+      VINCULA_CRM_RESET_TOKEN: "reset-token"
+    });
+  });
 });

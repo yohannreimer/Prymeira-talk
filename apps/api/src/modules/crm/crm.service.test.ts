@@ -76,6 +76,7 @@ function createMockPrisma(overrides: MockPrismaOverrides = {}): MockPrisma & Pri
 async function buildCrmApp(input: {
   prisma?: MockPrisma & PrismaLike;
   role?: UserRole;
+  routeOptions?: Parameters<typeof crmRoutes>[1];
 } = {}) {
   const app = Fastify({ logger: false });
   const prisma = input.prisma ?? createMockPrisma();
@@ -85,7 +86,7 @@ async function buildCrmApp(input: {
   app.addHook("preHandler", async (request) => {
     request.talk = { workspaceId: "workspace_a", role };
   });
-  await app.register(crmRoutes);
+  await app.register(crmRoutes, input.routeOptions);
 
   return { app, prisma };
 }
@@ -146,6 +147,23 @@ describe("crm service", () => {
         })
       })
     );
+  });
+
+  it("rejects simulated fallback when strict real mode is enabled", async () => {
+    const prisma = createMockPrisma();
+    const service = createCrmService(prisma, { strictReal: true });
+
+    await expect(
+      service.createLead({
+        workspaceId: "workspace_a",
+        contactId,
+        title: "Novo lead Talk"
+      })
+    ).rejects.toMatchObject({
+      code: "VINCULA_SYNC_FAILED",
+      statusCode: 503
+    });
+    expect(prisma.crmSyncAction.create).not.toHaveBeenCalled();
   });
 
   it("syncs contact, lead and note to Vincula when API URL and token are present", async () => {
@@ -487,6 +505,43 @@ describe("crm service", () => {
 });
 
 describe("crm routes", () => {
+  it("uses the configured server token without browser authorization", async () => {
+    const fetchCrm = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "Stop after auth check" } }), {
+        status: 403,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    const { app } = await buildCrmApp({
+      routeOptions: {
+        vinculaApiUrl: "http://localhost:3003/api",
+        vinculaApiToken: "server-token",
+        vinculaWebUrl: "http://localhost:5174",
+        strictReal: true,
+        environment: "local-demo",
+        fetch: fetchCrm as typeof fetch
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/crm/create-lead",
+        payload: { contactId, title: "Orçamento Talk" }
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(fetchCrm).toHaveBeenCalledWith(
+        expect.stringContaining("/records/companies?"),
+        expect.objectContaining({
+          headers: expect.objectContaining({ authorization: "Bearer server-token" })
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
   it("creates a simulated lead from POST /crm/create-lead", async () => {
     const { app } = await buildCrmApp();
 
