@@ -6,6 +6,15 @@ demo_state_dir="$project_dir/.local/demo-postgres"
 demo_data_dir="$demo_state_dir/data"
 demo_log_path="$demo_state_dir/postgres.log"
 demo_port=54329
+demo_db_mode=${PRYMEIRA_DEMO_DB_MODE:-auto}
+
+case "$demo_db_mode" in
+  auto|local) ;;
+  *)
+    printf '%s\n' "PRYMEIRA_DEMO_DB_MODE deve ser 'auto' ou 'local'." >&2
+    exit 1
+    ;;
+esac
 
 find_pg_command() {
   command_name="$1"
@@ -26,7 +35,7 @@ if [ -n "$pg_isready_bin" ] && "$pg_isready_bin" -h 127.0.0.1 -p "$demo_port" >/
   exit 0
 fi
 
-if command -v docker >/dev/null 2>&1; then
+if [ "$demo_db_mode" = "auto" ] && command -v docker >/dev/null 2>&1; then
   if docker compose -f "$project_dir/docker-compose.dev.yml" up -d >/dev/null 2>&1; then
     attempt=0
     while [ "$attempt" -lt 20 ]; do
