@@ -20,6 +20,7 @@ import { conversationsRoutes } from "./modules/conversations/conversations.route
 import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js";
 import { crmRoutes } from "./modules/crm/crm.routes.js";
 import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
+import { demoRoutes } from "./modules/demo/demo.routes.js";
 import { metaWebhooksRoutes } from "./modules/meta/meta.webhooks.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 import { reportsRoutes } from "./modules/reports/reports.routes.js";
@@ -106,6 +107,10 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   }));
 
   await app.register(realtimeRoutes);
+  await app.register(demoRoutes, {
+    enabled: env.PRYMEIRA_LOCAL_DEMO_ENABLED,
+    demoWorkspaceId: env.PRYMEIRA_LOCAL_WORKSPACE_ID
+  });
 
   const evolutionRuntime = createEvolutionRuntime({
     mode: env.EVOLUTION_MODE,
