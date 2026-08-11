@@ -23,7 +23,7 @@ const PROTECTED_RULES: Array<{
 }> = [
   {
     type: "stock",
-    question: /\b(estoque|dispon[ií]vel|disponibilidade|unidades hoje|pronta entrega)\b/i,
+    question: /\b(estoque|dispon[ií]ve(?:l|is)|disponibilidade|unidades hoje|pronta entrega)\b/i,
     evidence:
       /\b(estoque|disponibilidade|pronta entrega)\b.{0,80}\b(confirm|consult|verific|\d+)|\bsob encomenda\b/i
   },

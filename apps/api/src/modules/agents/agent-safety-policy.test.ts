@@ -4,6 +4,7 @@ import { evaluateAgentSafety } from "./agent-safety-policy.js";
 describe("evaluateAgentSafety", () => {
   it.each([
     ["Tem exatamente 30 chapas em estoque hoje?", "stock"],
+    ["Vocês têm exatamente 30 unidades disponíveis hoje?", "stock"],
     ["Qual o preço exato e o desconto?", "price"],
     ["Entrega até sexta sem falta?", "deadline"],
     ["Qual viga aguenta 5 toneladas?", "technical_specification"]
