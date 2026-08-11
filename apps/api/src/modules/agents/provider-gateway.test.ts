@@ -731,6 +731,72 @@ describe("createOpenAiCompatibleAgentProvider", () => {
     }
   );
 
+  it("surfaces only allowlisted metadata from structured provider errors", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            message: "Request echoed secret-api-key and private customer text.",
+            type: "invalid_request_error",
+            code: "unsupported_value",
+            param: "temperature"
+          },
+          requestBody: "private prompt"
+        }),
+        { status: 400 }
+      )
+    );
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example",
+      apiKey: "secret-api-key",
+      chatModel: "gpt-5.6-luna",
+      fetchImpl: fetchMock
+    });
+
+    const error = await provider.generate({
+      model: "runtime-model",
+      systemPrompt: "Private system prompt.",
+      userPrompt: "Private customer text.",
+      context: {}
+    }).catch((caughtError: unknown) => caughtError);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "OpenAI-compatible provider request failed with status 400 " +
+        "(type invalid_request_error, code unsupported_value, param temperature)."
+    );
+    expect((error as Error).message).not.toContain("secret-api-key");
+    expect((error as Error).message).not.toContain("Private");
+    expect((error as Error).message).not.toContain("Request echoed");
+  });
+
+  it("rejects unsafe metadata and keeps the status-only fallback", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        error: {
+          type: "invalid request with spaces",
+          code: "x".repeat(81),
+          param: "temperature; secret-api-key"
+        }
+      }), { status: 400 })
+    );
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example",
+      apiKey: "secret-api-key",
+      chatModel: "gpt-5.6-luna",
+      fetchImpl: fetchMock
+    });
+
+    await expect(provider.generate({
+      model: "runtime-model",
+      systemPrompt: "Atenda clientes.",
+      userPrompt: "Olá",
+      context: {}
+    })).rejects.toThrow(
+      "OpenAI-compatible provider request failed with status 400."
+    );
+  });
+
   it("throws on non-OK provider responses with the status in the message", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ error: "quota exceeded" }), { status: 429 })

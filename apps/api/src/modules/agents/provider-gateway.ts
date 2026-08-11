@@ -346,6 +346,42 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function normalizeProviderErrorDetail(value: unknown) {
+  if (typeof value !== "string" && typeof value !== "number") {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  return /^[A-Za-z0-9_.-]{1,80}$/.test(normalized) ? normalized : null;
+}
+
+async function createProviderResponseError(response: Response) {
+  const details: string[] = [];
+
+  try {
+    const payload = await response.json() as unknown;
+    const error = isRecord(payload) && isRecord(payload.error)
+      ? payload.error
+      : null;
+
+    if (error) {
+      for (const key of ["type", "code", "param"] as const) {
+        const value = normalizeProviderErrorDetail(error[key]);
+        if (value) {
+          details.push(`${key} ${value}`);
+        }
+      }
+    }
+  } catch {
+    // Preserve status-only behavior for malformed or non-JSON responses.
+  }
+
+  const metadata = details.length > 0 ? ` (${details.join(", ")})` : "";
+  return new Error(
+    `OpenAI-compatible provider request failed with status ${response.status}${metadata}.`
+  );
+}
+
 function isGpt56Model(model: string) {
   return /^gpt-5\.6(?:-|$)/i.test(model.trim());
 }
@@ -406,9 +442,7 @@ export function createOpenAiCompatibleAgentProvider(
       }
 
       if (!response.ok) {
-        throw new Error(
-          `OpenAI-compatible provider request failed with status ${response.status}.`
-        );
+        throw await createProviderResponseError(response);
       }
 
       let payload: unknown;
