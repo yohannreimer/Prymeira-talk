@@ -73,7 +73,7 @@ const emptyAiProviderForm: AiProviderFormState = {
   enabled: false,
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
-  chatModel: "gpt-4.1-mini",
+  chatModel: "gpt-5.6-luna",
   storedSecrets: {
     apiKey: false
   }
@@ -125,7 +125,7 @@ function getMetaCloudForm(settings: SettingsDto): MetaCloudFormState {
   };
 }
 
-function getAiProviderForm(settings: SettingsDto): AiProviderFormState {
+export function getAiProviderForm(settings: SettingsDto): AiProviderFormState {
   const integration = settings.integrations.find((config) => config.provider === "openai_compatible");
   const integrationSettings = asSettingsRecord(integration?.settings);
 
