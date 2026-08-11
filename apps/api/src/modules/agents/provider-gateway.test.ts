@@ -300,6 +300,88 @@ describe("createOpenAiCompatibleAgentProvider", () => {
     });
   });
 
+  it.each(["gpt-5.6-luna", "gpt-5.6-terra"])(
+    "uses the GPT-5.6 reasoning baseline for %s",
+    async (chatModel) => {
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                confidence: 0.9,
+                reply: "Resposta do modelo.",
+                actions: [],
+                handoff: { required: false, reason: null }
+              })
+            }
+          }]
+        }))
+      );
+      const provider = createOpenAiCompatibleAgentProvider({
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "secret-api-key",
+        chatModel,
+        fetchImpl: fetchMock
+      });
+
+      await provider.generate({
+        model: "runtime-model",
+        systemPrompt: "Atenda clientes da Prymeira Talk.",
+        userPrompt: "Olá",
+        context: {}
+      });
+
+      const [, init] = fetchMock.mock.calls[0] ?? [];
+      const body = JSON.parse(String(init?.body));
+      expect(body).toEqual(expect.objectContaining({
+        model: chatModel,
+        reasoning_effort: "none",
+        response_format: { type: "json_object" }
+      }));
+      expect(body).not.toHaveProperty("temperature");
+      expect(body.messages).toHaveLength(2);
+    }
+  );
+
+  it("keeps the legacy sampling contract outside GPT-5.6", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              confidence: 0.9,
+              reply: "Resposta do modelo.",
+              actions: [],
+              handoff: { required: false, reason: null }
+            })
+          }
+        }]
+      }))
+    );
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "secret-api-key",
+      chatModel: "gpt-5.4",
+      fetchImpl: fetchMock
+    });
+
+    await provider.generate({
+      model: "runtime-model",
+      systemPrompt: "Atenda clientes da Prymeira Talk.",
+      userPrompt: "Olá",
+      context: {}
+    });
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body));
+    expect(body).toEqual(expect.objectContaining({
+      model: "gpt-5.4",
+      temperature: 0.2,
+      response_format: { type: "json_object" }
+    }));
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
   it("parses choices[0].message.content as JSON and validates agent output", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

@@ -346,6 +346,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isGpt56Model(model: string) {
+  return /^gpt-5\.6(?:-|$)/i.test(model.trim());
+}
+
+function buildOpenAiCompatibleRequestBody(input: {
+  chatModel: string;
+  systemPrompt: string;
+  userPrompt: string;
+  context: Record<string, unknown>;
+}) {
+  const sharedBody = {
+    model: input.chatModel,
+    response_format: { type: "json_object" as const },
+    messages: [
+      {
+        role: "system",
+        content: buildOpenAiCompatibleSystemPrompt(input.systemPrompt)
+      },
+      {
+        role: "user",
+        content: buildOpenAiCompatibleUserContent(input.userPrompt, input.context)
+      }
+    ]
+  };
+
+  return isGpt56Model(input.chatModel)
+    ? { ...sharedBody, reasoning_effort: "none" as const }
+    : { ...sharedBody, temperature: 0.2 };
+}
+
 export function createOpenAiCompatibleAgentProvider(
   input: OpenAiCompatibleAgentProviderInput
 ): AgentProvider {
@@ -362,24 +392,14 @@ export function createOpenAiCompatibleAgentProvider(
             Authorization: `Bearer ${input.apiKey}`,
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({
-            model: input.chatModel,
-            temperature: 0.2,
-            response_format: { type: "json_object" },
-            messages: [
-              {
-                role: "system",
-                content: buildOpenAiCompatibleSystemPrompt(agentInput.systemPrompt)
-              },
-              {
-                role: "user",
-                content: buildOpenAiCompatibleUserContent(
-                  agentInput.userPrompt,
-                  agentInput.context
-                )
-              }
-            ]
-          })
+          body: JSON.stringify(
+            buildOpenAiCompatibleRequestBody({
+              chatModel: input.chatModel,
+              systemPrompt: agentInput.systemPrompt,
+              userPrompt: agentInput.userPrompt,
+              context: agentInput.context
+            })
+          )
         });
       } catch {
         throw new Error("OpenAI-compatible provider request failed.");
