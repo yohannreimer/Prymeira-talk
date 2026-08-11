@@ -1,3 +1,5 @@
+import { chunkKnowledgeContent, type KnowledgeChunk } from "./knowledge-chunking.js";
+
 export type KnowledgeRetrievalMetadata = {
   category?: string | null;
   keywords?: string[] | string | null;
@@ -17,7 +19,10 @@ export type SelectedKnowledgeSource = {
   category: string | null;
   score: number;
   reasons: KnowledgeRetrievalReason[];
-  includedAs: "full_document" | "snippet";
+  includedAs: "full_document" | "chunk";
+  chunkIndex: number;
+  start: number;
+  end: number;
 };
 
 export type KnowledgeRetrievalReason =
@@ -29,10 +34,12 @@ export type KnowledgeRetrievalReason =
 export type KnowledgeRetrievalResult = {
   selected: SelectedKnowledgeSource[];
   total: number;
+  evaluatedChunks: number;
 };
 
 const MAX_SELECTED_SOURCES = 3;
-const MAX_FULL_DOCUMENT_LENGTH = 8_000;
+const MAX_SELECTED_CHUNKS = 6;
+const MAX_SELECTED_KNOWLEDGE_CHARS = 12_000;
 
 const CATEGORY_ALIASES: Record<string, string[]> = {
   precos: [
@@ -177,16 +184,60 @@ export function selectRelevantKnowledge(input: {
     activeCategories: primaryCategories.size > 0 ? primaryCategories : historyCategories
   };
 
-  const rankedSources = input.sources
-    .map((source, index) => scoreSource(source, index, retrievalQuery))
-    .filter((source): source is ScoredKnowledgeSource => source !== null)
-    .sort((left, right) => right.score - left.score || left.index - right.index)
-    .slice(0, MAX_SELECTED_SOURCES)
-    .map(({ index: _index, ...source }) => source);
+  let evaluatedChunkCount = 0;
+  const rankedChunks = input.sources
+    .flatMap((source, sourceIndex) => {
+      const chunks = chunkKnowledgeContent(source.content ?? "");
+      evaluatedChunkCount += chunks.length;
+      const scoredChunks = chunks.flatMap((chunk) => {
+        const scored = scoreChunk(source, sourceIndex, chunk, chunks.length, retrievalQuery);
+        return scored ? [scored] : [];
+      });
+
+      const contentMatches = scoredChunks.filter((chunk) =>
+        chunk.reasons.includes("content_overlap")
+      );
+      return contentMatches.length > 0 ? contentMatches : scoredChunks.slice(0, 1);
+    })
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        left.sourceIndex - right.sourceIndex ||
+        left.chunkIndex - right.chunkIndex
+    );
+
+  const selected: SelectedKnowledgeSource[] = [];
+  const sourceIds = new Set<string>();
+  let selectedCharacters = 0;
+
+  for (const candidate of rankedChunks) {
+    if (selected.length >= MAX_SELECTED_CHUNKS) {
+      break;
+    }
+    if (!sourceIds.has(candidate.id) && sourceIds.size >= MAX_SELECTED_SOURCES) {
+      continue;
+    }
+    if (selectedCharacters + candidate.content.length > MAX_SELECTED_KNOWLEDGE_CHARS) {
+      continue;
+    }
+    if (
+      selected.some(
+        (item) => item.id === candidate.id && overlapRatio(item, candidate) > 0.65
+      )
+    ) {
+      continue;
+    }
+
+    const { sourceIndex: _sourceIndex, ...selectedCandidate } = candidate;
+    selected.push(selectedCandidate);
+    sourceIds.add(candidate.id);
+    selectedCharacters += candidate.content.length;
+  }
 
   return {
-    selected: rankedSources,
-    total: input.sources.length
+    selected,
+    total: input.sources.length,
+    evaluatedChunks: evaluatedChunkCount
   };
 }
 
@@ -196,7 +247,7 @@ export function isDocumentDependentQuestion(value: string | null | undefined) {
 }
 
 type ScoredKnowledgeSource = SelectedKnowledgeSource & {
-  index: number;
+  sourceIndex: number;
 };
 
 type RetrievalQuery = {
@@ -208,19 +259,20 @@ type RetrievalQuery = {
   activeCategories: Set<string>;
 };
 
-function scoreSource(
+function scoreChunk(
   source: KnowledgeRetrievalSource,
-  index: number,
+  sourceIndex: number,
+  chunk: KnowledgeChunk,
+  sourceChunkCount: number,
   query: RetrievalQuery
 ): ScoredKnowledgeSource | null {
   const metadata = readMetadata(source.metadata);
   const category = normalizeCategory(metadata.category);
   const keywords = metadata.keywords.map(normalize).filter(Boolean);
   const title = normalize(source.title);
-  const content = source.content ?? "";
+  const content = chunk.content;
   const normalizedContent = normalize(content);
   const reasons = new Set<KnowledgeRetrievalReason>();
-  const evidenceTerms = new Set<string>();
   const allowHistorySignal =
     query.primaryCategories.size === 0 || Boolean(category && query.activeCategories.has(category));
   let score = 0;
@@ -228,9 +280,6 @@ function scoreSource(
   if (category && query.activeCategories.has(category)) {
     score += 50;
     reasons.add("category_match");
-    for (const alias of CATEGORY_ALIASES[category] ?? []) {
-      evidenceTerms.add(alias);
-    }
   }
 
   const primaryKeywordMatches = keywords.filter((keyword) => query.primary.includes(keyword));
@@ -244,9 +293,6 @@ function scoreSource(
       primaryKeywordMatches.length * 15 + historyKeywordMatches.length * 4
     );
     reasons.add("keyword_match");
-    for (const keyword of keywordMatches) {
-      evidenceTerms.add(keyword);
-    }
   }
 
   if (hasTitleMatch(title, query.primaryTokens, query.activeCategories)) {
@@ -262,67 +308,34 @@ function scoreSource(
   if (overlapCount >= 2) {
     score += Math.min(20, overlapCount * 4);
     reasons.add("content_overlap");
-    for (const token of query.primaryTokens) {
-      if (normalizedContent.includes(token)) {
-        evidenceTerms.add(token);
-      }
-    }
-    if (allowHistorySignal) {
-      for (const token of query.historyTokens) {
-        if (normalizedContent.includes(token)) {
-          evidenceTerms.add(token);
-        }
-      }
-    }
   }
 
   if (reasons.size === 0) {
     return null;
   }
 
-  const includedAs =
-    content.length <= MAX_FULL_DOCUMENT_LENGTH ? "full_document" : ("snippet" as const);
-
   return {
     id: source.id,
     title: source.title,
-    content: selectContentForProvider(content, includedAs, Array.from(evidenceTerms)),
+    content,
     category,
     score,
     reasons: Array.from(reasons),
-    includedAs,
-    index
+    includedAs: sourceChunkCount === 1 ? "full_document" : "chunk",
+    chunkIndex: chunk.index,
+    start: chunk.start,
+    end: chunk.end,
+    sourceIndex
   };
 }
 
-function selectContentForProvider(
-  content: string,
-  includedAs: SelectedKnowledgeSource["includedAs"],
-  evidenceTerms: string[]
+function overlapRatio(
+  left: Pick<SelectedKnowledgeSource, "start" | "end">,
+  right: Pick<SelectedKnowledgeSource, "start" | "end">
 ) {
-  if (includedAs === "full_document") {
-    return content;
-  }
-
-  const start = findSnippetStart(content, evidenceTerms);
-  return content.slice(start, start + MAX_FULL_DOCUMENT_LENGTH);
-}
-
-function findSnippetStart(content: string, evidenceTerms: string[]) {
-  const normalizedContent = normalize(content);
-  const terms = evidenceTerms
-    .map(normalize)
-    .filter((term) => term.length >= 4)
-    .sort((left, right) => right.length - left.length);
-
-  for (const term of terms) {
-    const index = normalizedContent.indexOf(term);
-    if (index >= 0) {
-      return Math.max(0, index - 600);
-    }
-  }
-
-  return 0;
+  const overlap = Math.max(0, Math.min(left.end, right.end) - Math.max(left.start, right.start));
+  const shortest = Math.min(left.end - left.start, right.end - right.start);
+  return shortest > 0 ? overlap / shortest : 0;
 }
 
 function detectCategories(query: string) {
@@ -364,8 +377,8 @@ function toTokenSet(value: string) {
   return new Set(
     value
       .split(/[^a-z0-9]+/g)
-      .filter((token) => token.length >= 4)
-      .filter((token) => !/\d/.test(token))
+      .filter((token) => token.length >= 3)
+      .filter((token) => /[a-z]/.test(token))
       .filter((token) => !STOP_WORDS.has(token))
   );
 }

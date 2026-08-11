@@ -89,7 +89,7 @@ describe("selectRelevantKnowledge", () => {
     expect(result.selected.map((source) => source.id)).toEqual(["onboarding"]);
   });
 
-  it("marks oversized documents as snippets", () => {
+  it("marks oversized documents as chunks", () => {
     const longContent = `${"Trecho geral sem valores. ".repeat(900)}Preço do plano profissional: R$ 199 por mês. Detalhes finais.`;
 
     const result = selectRelevantKnowledge({
@@ -107,8 +107,48 @@ describe("selectRelevantKnowledge", () => {
     });
 
     expect(result.selected).toHaveLength(1);
-    expect(result.selected[0]?.includedAs).toBe("snippet");
-    expect(result.selected[0]?.content.length).toBeLessThanOrEqual(8_000);
+    expect(result.selected[0]?.includedAs).toBe("chunk");
+    expect(result.selected[0]?.content.length).toBeLessThanOrEqual(2_400);
     expect(result.selected[0]?.content).toContain("Preço do plano profissional");
+  });
+
+  it.each([
+    ["início", "CÓDIGO-INÍCIO"],
+    ["meio", "CÓDIGO-MEIO"],
+    ["fim", "CÓDIGO-FIM"]
+  ])("retrieves a fact from the %s of one long source", (_position, fact) => {
+    const content = [
+      "Catálogo CÓDIGO-INÍCIO chapas especiais.",
+      "texto neutro ".repeat(1_100),
+      "Catálogo CÓDIGO-MEIO tubos especiais.",
+      "texto neutro ".repeat(1_100),
+      "Catálogo CÓDIGO-FIM vigas especiais."
+    ].join("\n\n");
+    const result = selectRelevantKnowledge({
+      latestMessage: `Quero informações sobre ${fact}`,
+      conversationHistory: "",
+      instruction: null,
+      sources: [{ id: "long", title: "INSTRUÇÕES GERAIS", content }]
+    });
+
+    expect(result.selected.some((chunk) => chunk.content.includes(fact))).toBe(true);
+    expect(result.selected.every((chunk) => chunk.start >= 0 && chunk.end > chunk.start)).toBe(true);
+  });
+
+  it("limits selected knowledge to six chunks and 12000 characters", () => {
+    const result = selectRelevantKnowledge({
+      latestMessage: "chapas tubos vigas perfis cantoneiras estoque preço",
+      conversationHistory: "",
+      instruction: null,
+      sources: Array.from({ length: 4 }, (_, index) => ({
+        id: `source-${index}`,
+        title: `Catálogo ${index}`,
+        content: "chapas tubos vigas perfis cantoneiras estoque preço ".repeat(800)
+      }))
+    });
+
+    expect(result.selected.length).toBeLessThanOrEqual(6);
+    expect(result.selected.reduce((sum, chunk) => sum + chunk.content.length, 0)).toBeLessThanOrEqual(12_000);
+    expect(result.evaluatedChunks).toBeGreaterThan(result.selected.length);
   });
 });
