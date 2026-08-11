@@ -122,7 +122,7 @@ Diagnostics must not expose API keys, authorization headers, complete prompts, c
 
 The API Dockerfile will use multiple stages. The build stage keeps TypeScript, Vitest, Prisma CLI, and other development tools. The runtime stage receives only the files and production dependencies required to start the compiled API and generated Prisma client.
 
-The API TypeScript configuration will gain a production emit configuration rather than executing source through `tsx` in production. Prisma migration execution will use a dedicated migration stage or one-shot deployment command, separate from the long-running API process.
+The API TypeScript configuration will gain a production emit configuration rather than executing source through `tsx` in production. The API image will expose a dedicated `migrate` command that contains Prisma CLI and the generated client. The deployment procedure runs that command in a one-shot container before updating the long-running API service. The API service itself starts only the compiled server and never invokes migrations.
 
 ### Health and startup
 
@@ -140,7 +140,7 @@ The stack will add:
 Operational cleanup is restricted to Prymeira Talk images. After a successful rollout and health verification, the host may remove Prymeira Talk images that are both dangling and unused, while preserving:
 
 - the active API and web images;
-- the immediately previous API and web images when available;
+- one immediately previous API image and one immediately previous web image if those images exist on the host;
 - all PostgreSQL volumes.
 
 The cleanup process never prunes global Docker images, containers, volumes, or build cache belonging to other products.
@@ -213,7 +213,7 @@ The final production test uses a second WhatsApp number so the inbound event is 
 - The Villefer agent uses `Orçamento`, not `Orçamento quente`.
 - Invalid tag output cannot fail an otherwise valid reply.
 - Prompt and full-base exfiltration requests are refused.
-- API runtime image is materially smaller than the current approximately 810 MB image.
+- API runtime image is no larger than 450 MB in Portainer, compared with the current 810.1 MB image.
 - PostgreSQL and API healthchecks are active, and readiness fails when the database is unavailable.
 - Production health, simulator matrix, and second-number WhatsApp matrix pass after deployment.
 
