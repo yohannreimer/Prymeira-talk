@@ -628,7 +628,15 @@ describe("createAgentRuntime", () => {
       actions: [],
       handoff: { required: false, reason: null }
     });
-    const runtime = createAgentRuntime({ prisma, provider });
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-handoff-1" });
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      evolution: {
+        mode: "real",
+        client: { sendText }
+      }
+    });
 
     const result = await runtime.runForMessage({
       workspaceId: ids.workspace,
@@ -640,7 +648,18 @@ describe("createAgentRuntime", () => {
 
     expect(result).toEqual({ status: "handoff_requested", runId: ids.run });
     expect(provider.generate).not.toHaveBeenCalled();
-    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalledWith({
+      instanceName: "instancia",
+      number: "5511999999999",
+      text: "Vou consultar essas informações e já te dou um retorno."
+    });
+    expect(prisma.message.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        body: "Vou consultar essas informações e já te dou um retorno.",
+        providerMessageId: "evo-handoff-1",
+        status: "sent"
+      })
+    });
     expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         status: "handoff_requested",
@@ -751,7 +770,11 @@ describe("createAgentRuntime", () => {
 
     expect(result).toEqual({ status: "handoff_requested", runId: ids.run });
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.message.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        body: "Vou consultar essas informações e já te dou um retorno."
+      })
+    });
     expect(prisma.aiAgentSession.update).toHaveBeenLastCalledWith({
       where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.session } },
       data: expect.objectContaining({
@@ -795,7 +818,11 @@ describe("createAgentRuntime", () => {
     });
 
     expect(result).toEqual({ status: "handoff_requested", runId: ids.run });
-    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.message.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        body: "Vou consultar essas informações e já te dou um retorno."
+      })
+    });
     expect(prisma.aiAgentSession.update).toHaveBeenLastCalledWith({
       where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.session } },
       data: expect.objectContaining({
@@ -813,6 +840,51 @@ describe("createAgentRuntime", () => {
         })
       })
     });
+  });
+
+  it("does not send a handoff acknowledgement when send_message is not allowed", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          allowedActions: ["request_handoff"]
+        })
+      },
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseConversation,
+          activeAgentSessionId: ids.session
+        }),
+        update: vi.fn().mockResolvedValue({})
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.2,
+      reply: "Texto incerto que não deve ser enviado.",
+      actions: [{ type: "request_handoff", reason: "Baixa confiança." }],
+      handoff: { required: true, reason: "Baixa confiança." }
+    });
+    const sendText = vi.fn();
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      evolution: {
+        mode: "real",
+        client: { sendText }
+      }
+    });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({ status: "handoff_requested", runId: ids.run });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
   });
 
   it("logs skipped action execution issues without blocking the reply", async () => {

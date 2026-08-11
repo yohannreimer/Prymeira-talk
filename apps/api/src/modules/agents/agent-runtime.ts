@@ -36,6 +36,8 @@ type JsonValue = unknown;
 type AgentRunStatus = "completed" | "handoff_requested" | "failed" | "skipped";
 type AgentRunTrigger = "automation" | "manual_test";
 
+const HANDOFF_ACKNOWLEDGEMENT = "Vou consultar essas informações e já te dou um retorno.";
+
 type AiAgentRecord = {
   id: string;
   workspaceId: string;
@@ -539,6 +541,7 @@ export function createAgentRuntime(input: {
         const confidenceThreshold = readConfidenceThreshold(agent.handoffConfig);
         const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
         const status: AgentRunStatus = handoffReason ? "handoff_requested" : "completed";
+        const outboundReply = handoffReason ? HANDOFF_ACKNOWLEDGEMENT : providerOutput.reply;
 
         actionResults = await executeAgentActions(prisma as AgentToolExecutorPrismaLike, {
           workspaceId: runInput.workspaceId,
@@ -563,15 +566,15 @@ export function createAgentRuntime(input: {
           throw new Error("Agent did not produce a reply.");
         }
 
-        if (!handoffReason && providerOutput.reply && allowedActions.includes("send_message")) {
-          const providerSend = await sendAgentReplyToProvider(input.evolution, conversation, providerOutput.reply);
+        if (outboundReply && allowedActions.includes("send_message")) {
+          const providerSend = await sendAgentReplyToProvider(input.evolution, conversation, outboundReply);
           const outboundMessage = await prisma.message.create({
             data: {
               workspaceId: runInput.workspaceId,
               conversationId: conversation.id,
               direction: "outbound",
               type: "text",
-              body: providerOutput.reply,
+              body: outboundReply,
               providerMessageId: providerSend?.providerMessageId ?? undefined,
               status: providerSend ? "sent" : "pending",
               sentByUserId: null,
@@ -595,7 +598,7 @@ export function createAgentRuntime(input: {
             },
             data: {
               lastMessageAt: new Date(),
-              lastMessagePreview: providerOutput.reply
+              lastMessagePreview: outboundReply
             }
           });
         }
