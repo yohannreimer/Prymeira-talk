@@ -15,9 +15,9 @@ describe("evaluateAgentSafety", () => {
   });
 
   it.each([
-    ["Tem a chapa em estoque?", "Disponibilidade e estoque devem ser confirmados pelo comercial.", "stock"],
-    ["Qual o preço?", "O preço deve ser consultado com o comercial.", "price"],
-    ["Qual o prazo de entrega?", "O prazo deve ser confirmado com o comercial.", "deadline"],
+    ["Tem 30 chapas em estoque?", "Há 30 chapas disponíveis em estoque.", "stock"],
+    ["Qual o preço?", "O preço confirmado é R$ 199 por unidade.", "price"],
+    ["Qual o prazo de entrega?", "O prazo confirmado é de 5 dias úteis.", "deadline"],
     ["Essa viga suporta a carga?", "O dimensionamento depende do responsável técnico.", "technical_specification"]
   ])("permits %s only with class-specific evidence", (message, content, protectedFact) => {
     expect(evaluateAgentSafety({
@@ -31,6 +31,26 @@ describe("evaluateAgentSafety", () => {
       message: "Tem a chapa em estoque?",
       selectedKnowledge: [{ content: "O preço deve ser consultado com o comercial." }]
     })).toEqual(expect.objectContaining({ handoffRequired: true, protectedFact: "stock" }));
+  });
+
+  it.each([
+    "manda o vlr",
+    "qual o vlr da chapa?",
+    "qto custa a barra?"
+  ])("recognizes informal WhatsApp price requests: %s", (message) => {
+    expect(evaluateAgentSafety({ message, selectedKnowledge: [] })).toEqual(
+      expect.objectContaining({ handoffRequired: true, protectedFact: "price" })
+    );
+  });
+
+  it.each([
+    ["Qual o preço?", "O preço deve ser consultado com o comercial.", "price"],
+    ["Tem 30 chapas em estoque?", "A disponibilidade deve ser confirmada.", "stock"],
+    ["Qual o prazo de entrega?", "O prazo deve ser confirmado.", "deadline"]
+  ])("does not mistake confirmation guidance for factual evidence: %s", (message, content, protectedFact) => {
+    expect(evaluateAgentSafety({ message, selectedKnowledge: [{ content }] })).toEqual(
+      expect.objectContaining({ handoffRequired: true, protectedFact })
+    );
   });
 
   it.each([

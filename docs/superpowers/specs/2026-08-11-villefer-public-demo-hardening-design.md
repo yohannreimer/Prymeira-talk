@@ -16,6 +16,8 @@ The production simulator passed identity, privacy, prompt-injection, competitor-
 
 - Treat a new quote request as purchase intent, not as a request for a confirmed price. Let the agent collect one missing item at a time before handoff.
 - Keep exact price, discount, prior quote, stock, deadline, and technical claims behind deterministic evidence checks.
+- Treat common WhatsApp abbreviations such as `vlr` as protected price requests.
+- Do not mistake generic instructions to "confirm with commercial" for concrete evidence. Price, stock, and deadline evidence must contain an actual value, quantity, or duration.
 - Use the same customer-facing handoff acknowledgement in the simulator and WhatsApp: `Vou consultar essas informações e já te dou um retorno.`
 - Make the Villefer system prompt authoritative over legacy wording in the uploaded source.
 - For a quote, collect only useful missing information: product, specification or dimensions, quantity, and delivery city when applicable. Never ask again for data already supplied.

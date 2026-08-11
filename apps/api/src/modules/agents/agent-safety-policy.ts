@@ -28,20 +28,18 @@ const PROTECTED_RULES: Array<{
     type: "stock",
     question: /\b(estoque|dispon[ií]ve(?:l|is)|disponibilidade|unidades hoje|pronta entrega)\b/i,
     evidence:
-      /\b(estoque|disponibilidade|pronta entrega)\b.{0,80}\b(confirm|consult|verific|\d+)|\bsob encomenda\b/i
+      /\b\d+\s*(?:unidades?|pe[cç]as?|chapas?|barras?)\b.{0,80}\b(?:dispon[ií]ve(?:l|is)|em estoque|pronta entrega)\b|\b(?:dispon[ií]ve(?:l|is)|em estoque)\b.{0,80}\b\d+\s*(?:unidades?|pe[cç]as?|chapas?|barras?)\b/i
   },
   {
     type: "price",
     question:
-      /\b(pre[cç]o|valor|custa|custo|desconto)\b|\b(quanto|qual|confirm|fechar|aprov|passou|recebi|ontem)\w*\b.{0,50}\bor[cç]amento\b|\bor[cç]amento\b.{0,50}\b(quanto|valor|confirm|fechar|aprov|passou|recebi|ontem)\w*\b/i,
-    evidence:
-      /\br\$\s*\d|\b(pre[cç]o|valor|desconto|or[cç]amento)\b.{0,80}\b(confirm|consult|verific)/i
+      /\b(pre[cç]o|valor|vlr|custa|custo|desconto)\b|\b(quanto|qual|confirm|fechar|aprov|passou|recebi|ontem)\w*\b.{0,50}\bor[cç]amento\b|\bor[cç]amento\b.{0,50}\b(quanto|valor|confirm|fechar|aprov|passou|recebi|ontem)\w*\b/i,
+    evidence: /\br\$\s*\d/i
   },
   {
     type: "deadline",
     question: /\b(prazo|entrega|at[eé] quando|sexta|dias [uú]teis|previs[aã]o)\b/i,
-    evidence:
-      /\b\d+\s*dias?\b|\b(prazo|entrega|previs[aã]o)\b.{0,80}\b(confirm|consult|verific)/i
+    evidence: /\b\d+\s*(?:dias?|horas?)\b/i
   },
   {
     type: "technical_specification",
