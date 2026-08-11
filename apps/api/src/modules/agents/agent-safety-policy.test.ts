@@ -49,4 +49,18 @@ describe("evaluateAgentSafety", () => {
       selectedKnowledge: []
     })).toEqual({ handoffRequired: false, protectedFact: null, reason: null });
   });
+
+  it("lets the agent qualify a new quote request before handing off", () => {
+    expect(evaluateAgentSafety({
+      message: "Quero fazer um orçamento de chapa xadrez.",
+      selectedKnowledge: []
+    })).toEqual({ handoffRequired: false, protectedFact: null, reason: null });
+  });
+
+  it("still protects a previously quoted commercial condition", () => {
+    expect(evaluateAgentSafety({
+      message: "Pode fechar nesse orçamento que você me passou ontem?",
+      selectedKnowledge: []
+    })).toEqual(expect.objectContaining({ handoffRequired: true, protectedFact: "price" }));
+  });
 });

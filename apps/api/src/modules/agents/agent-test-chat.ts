@@ -11,6 +11,7 @@ import { enforceWhatsAppReply } from "./agent-reply-policy.js";
 import {
   createSafetyHandoffOutput,
   evaluateAgentSafety,
+  HANDOFF_ACKNOWLEDGEMENT,
   type ProtectedFact
 } from "./agent-safety-policy.js";
 import {
@@ -249,6 +250,12 @@ export function createAgentTestChatService(input: {
             }
           );
         }
+      }
+
+      const handoffRequested =
+        output.handoff.required || output.actions.some((action) => action.type === "request_handoff");
+      if (handoffRequested) {
+        output = { ...output, reply: HANDOFF_ACKNOWLEDGEMENT };
       }
 
       const replyPolicy = output.reply ? enforceWhatsAppReply(output.reply) : null;

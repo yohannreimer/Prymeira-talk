@@ -227,10 +227,27 @@ describe("createAgentTestChatService", () => {
     });
 
     expect(provider.generate).not.toHaveBeenCalled();
-    expect(result.message.content).toBe(
-      "Não quero te passar uma informação errada. Vou encaminhar para o comercial confirmar com segurança."
-    );
+    expect(result.message.content).toBe("Vou consultar essas informações e já te dou um retorno.");
     expect(result.output.handoff.required).toBe(true);
+  });
+
+  it("shows the same acknowledgement as WhatsApp when the provider requests handoff", async () => {
+    const provider = buildProvider({
+      confidence: 0.82,
+      reply: "Vou encaminhar você para o comercial.",
+      actions: [{ type: "request_handoff", reason: "Cotação pronta para o comercial." }],
+      handoff: { required: true, reason: "Cotação pronta para o comercial." }
+    });
+    const service = createAgentTestChatService({ prisma: buildPrisma(), provider });
+
+    const result = await service.sendMessage({
+      workspaceId: "workspace_a",
+      agentId: baseAgent.id,
+      messages: [{ role: "user", content: "Já passei os dados da cotação." }]
+    });
+
+    expect(result.message.content).toBe("Vou consultar essas informações e já te dou um retorno.");
+    expect(result.output.reply).toBe("Vou consultar essas informações e já te dou um retorno.");
   });
 
   it("returns a controlled error when the provider fails", async () => {

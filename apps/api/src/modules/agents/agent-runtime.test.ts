@@ -666,8 +666,7 @@ describe("createAgentRuntime", () => {
         confidence: 0.2,
         knowledgeMatches: [],
         output: expect.objectContaining({
-          reply:
-            "Não quero te passar uma informação errada. Vou encaminhar para o comercial confirmar com segurança.",
+          reply: "Vou consultar essas informações e já te dou um retorno.",
           handoff: expect.objectContaining({
             required: true
           })

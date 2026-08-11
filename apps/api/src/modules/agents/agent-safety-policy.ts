@@ -13,6 +13,9 @@ export type AgentSafetyDecision = {
   reason: string | null;
 };
 
+export const HANDOFF_ACKNOWLEDGEMENT =
+  "Vou consultar essas informações e já te dou um retorno.";
+
 const HUMAN_REQUEST =
   /\b(falar|conversar|atendimento|passar|transferir|chamar)\b.{0,40}\b(pessoa|humano|atendente|comercial|especialista|vendedor)\b|\b(quero|preciso|prefiro)\b.{0,30}\b(pessoa|humano|atendente|comercial|especialista|vendedor)\b/i;
 
@@ -29,7 +32,8 @@ const PROTECTED_RULES: Array<{
   },
   {
     type: "price",
-    question: /\b(pre[cç]o|valor|custa|custo|desconto|or[cç]amento)\b/i,
+    question:
+      /\b(pre[cç]o|valor|custa|custo|desconto)\b|\b(quanto|qual|confirm|fechar|aprov|passou|recebi|ontem)\w*\b.{0,50}\bor[cç]amento\b|\bor[cç]amento\b.{0,50}\b(quanto|valor|confirm|fechar|aprov|passou|recebi|ontem)\w*\b/i,
     evidence:
       /\br\$\s*\d|\b(pre[cç]o|valor|desconto|or[cç]amento)\b.{0,80}\b(confirm|consult|verific)/i
   },
@@ -78,8 +82,7 @@ export function evaluateAgentSafety(input: {
 export function createSafetyHandoffOutput(reason: string): AgentOutput {
   return {
     confidence: 0.2,
-    reply:
-      "Não quero te passar uma informação errada. Vou encaminhar para o comercial confirmar com segurança.",
+    reply: HANDOFF_ACKNOWLEDGEMENT,
     actions: [{ type: "request_handoff", reason }],
     handoff: { required: true, reason }
   };

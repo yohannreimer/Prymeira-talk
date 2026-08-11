@@ -22,7 +22,8 @@ import {
 import { enforceWhatsAppReply } from "./agent-reply-policy.js";
 import {
   createSafetyHandoffOutput,
-  evaluateAgentSafety
+  evaluateAgentSafety,
+  HANDOFF_ACKNOWLEDGEMENT
 } from "./agent-safety-policy.js";
 import {
   createOpenAiCompatibleAgentProvider,
@@ -35,8 +36,6 @@ import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 type JsonValue = unknown;
 type AgentRunStatus = "completed" | "handoff_requested" | "failed" | "skipped";
 type AgentRunTrigger = "automation" | "manual_test";
-
-const HANDOFF_ACKNOWLEDGEMENT = "Vou consultar essas informações e já te dou um retorno.";
 
 type AiAgentRecord = {
   id: string;
