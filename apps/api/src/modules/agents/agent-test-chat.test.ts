@@ -109,7 +109,12 @@ describe("createAgentTestChatService", () => {
       model: "prymeira-simulated",
       totalKnowledgeSources: 1,
       selectedKnowledgeSources: 1,
+      evaluatedKnowledgeChunks: 1,
+      selectedKnowledgeChunks: 1,
       selectedKnowledgeCharacters: "Plano profissional custa R$ 199 por mes.".length,
+      protectedFact: "price",
+      replyCharacters: "O plano profissional custa R$ 199 por mes.".length,
+      replyCompacted: false,
       conversationMessages: 3,
       knowledgeMatches: result.knowledgeMatches,
       allowedTags: ["Lead quente"],
@@ -223,7 +228,7 @@ describe("createAgentTestChatService", () => {
 
     expect(provider.generate).not.toHaveBeenCalled();
     expect(result.message.content).toBe(
-      "Vou chamar uma pessoa do time para confirmar essa informação com segurança."
+      "Não quero te passar uma informação errada. Vou encaminhar para o comercial confirmar com segurança."
     );
     expect(result.output.handoff.required).toBe(true);
   });

@@ -4,10 +4,15 @@ import {
   type OpenAiCompatibleSettings
 } from "./ai-provider-settings.js";
 import {
-  isDocumentDependentQuestion,
   selectRelevantKnowledge,
   type KnowledgeRetrievalSource
 } from "./knowledge-retrieval.js";
+import { enforceWhatsAppReply } from "./agent-reply-policy.js";
+import {
+  createSafetyHandoffOutput,
+  evaluateAgentSafety,
+  type ProtectedFact
+} from "./agent-safety-policy.js";
 import {
   createOpenAiCompatibleAgentProvider,
   type AgentOutput,
@@ -64,7 +69,12 @@ export type AgentTestChatDebug = {
   model: string;
   totalKnowledgeSources: number;
   selectedKnowledgeSources: number;
+  evaluatedKnowledgeChunks: number;
+  selectedKnowledgeChunks: number;
   selectedKnowledgeCharacters: number;
+  protectedFact: ProtectedFact | null;
+  replyCharacters: number;
+  replyCompacted: boolean;
   conversationMessages: number;
   conversationCharacters: number;
   allowedTags: string[];
@@ -164,9 +174,16 @@ export function createAgentTestChatService(input: {
         category: source.category,
         score: source.score,
         reasons: source.reasons,
-        includedAs: source.includedAs
+        includedAs: source.includedAs,
+        chunkIndex: source.chunkIndex,
+        start: source.start,
+        end: source.end
       }));
       const allowedTags = toAllowedTags(agent);
+      const safety = evaluateAgentSafety({
+        message: latestUserMessage.content,
+        selectedKnowledge: knowledgeSelection.selected
+      });
 
       const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
         workspaceId: runInput.workspaceId
@@ -179,11 +196,18 @@ export function createAgentTestChatService(input: {
         providerMode: providerSettings.active ? "real" : "simulated",
         model,
         totalKnowledgeSources: knowledgeSelection.total,
-        selectedKnowledgeSources: knowledgeSelection.selected.length,
+        evaluatedKnowledgeChunks: knowledgeSelection.evaluatedChunks,
+        selectedKnowledgeSources: new Set(
+          knowledgeSelection.selected.map((source) => source.id)
+        ).size,
+        selectedKnowledgeChunks: knowledgeSelection.selected.length,
         selectedKnowledgeCharacters: knowledgeSelection.selected.reduce(
           (total, source) => total + source.content.length,
           0
         ),
+        protectedFact: safety.protectedFact,
+        replyCharacters: 0,
+        replyCompacted: false,
         conversationMessages: runInput.messages.length,
         conversationCharacters: conversationHistory.length,
         allowedTags: allowedTags.map((tag) => tag.name),
@@ -192,11 +216,8 @@ export function createAgentTestChatService(input: {
 
       let output: AgentOutput;
 
-      if (
-        isDocumentDependentQuestion(`${latestUserMessage.content}\n${conversationHistory}`) &&
-        knowledgeSelection.selected.length === 0
-      ) {
-        output = createDocumentRequiredHandoffOutput();
+      if (safety.handoffRequired) {
+        output = createSafetyHandoffOutput(safety.reason ?? "Human handoff required.");
       } else {
         try {
           output = await runProvider.generate({
@@ -230,8 +251,15 @@ export function createAgentTestChatService(input: {
         }
       }
 
+      const replyPolicy = output.reply ? enforceWhatsAppReply(output.reply) : null;
+      if (replyPolicy) {
+        output = { ...output, reply: replyPolicy.reply };
+      }
+
       const debug: AgentTestChatDebug = {
         ...debugBase,
+        replyCharacters: output.reply?.length ?? 0,
+        replyCompacted: replyPolicy?.compacted ?? false,
         output: {
           confidence: output.confidence,
           handoffRequired: output.handoff.required,
@@ -258,20 +286,6 @@ function formatTestConversationHistory(messages: AgentTestChatMessage[]) {
     .filter((message) => message.content.trim().length > 0)
     .map((message) => `${message.role === "user" ? "cliente" : "atendente"}: ${message.content.trim()}`)
     .join("\n");
-}
-
-function createDocumentRequiredHandoffOutput(): AgentOutput {
-  const reason = "No relevant document found for a document-dependent question.";
-
-  return {
-    confidence: 0.2,
-    reply: "Vou chamar uma pessoa do time para confirmar essa informação com segurança.",
-    actions: [{ type: "request_handoff", reason }],
-    handoff: {
-      required: true,
-      reason
-    }
-  };
 }
 
 function toRetrievalSource(source: KnowledgeSourceRecord): KnowledgeRetrievalSource {

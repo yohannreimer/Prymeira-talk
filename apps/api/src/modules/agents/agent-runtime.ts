@@ -15,11 +15,15 @@ import {
   type ConversationContextBuilderPrismaLike
 } from "./conversation-context-builder.js";
 import {
-  isDocumentDependentQuestion,
   selectRelevantKnowledge,
   type KnowledgeRetrievalSource,
   type SelectedKnowledgeSource
 } from "./knowledge-retrieval.js";
+import { enforceWhatsAppReply } from "./agent-reply-policy.js";
+import {
+  createSafetyHandoffOutput,
+  evaluateAgentSafety
+} from "./agent-safety-policy.js";
 import {
   createOpenAiCompatibleAgentProvider,
   type AgentOutput,
@@ -474,6 +478,15 @@ export function createAgentRuntime(input: {
           allowedTagCount: allowedTags.length,
           knowledgeCount: knowledgeSelection.selected.length,
           knowledgeTotal: knowledgeSelection.total,
+          evaluatedKnowledgeChunks: knowledgeSelection.evaluatedChunks,
+          selectedKnowledgeSources: new Set(
+            knowledgeSelection.selected.map((source) => source.id)
+          ).size,
+          selectedKnowledgeChunks: knowledgeSelection.selected.length,
+          selectedKnowledgeCharacters: knowledgeSelection.selected.reduce(
+            (total, source) => total + source.content.length,
+            0
+          ),
           conversationMessageCount: conversationContext.messages.length
         };
         knowledgeMatches = knowledgeSelection.selected.map((source) => ({
@@ -482,8 +495,16 @@ export function createAgentRuntime(input: {
           category: source.category,
           score: source.score,
           reasons: source.reasons,
-          includedAs: source.includedAs
+          includedAs: source.includedAs,
+          chunkIndex: source.chunkIndex,
+          start: source.start,
+          end: source.end
         }));
+
+        const safety = evaluateAgentSafety({
+          message: message.body ?? "",
+          selectedKnowledge: knowledgeSelection.selected
+        });
 
         const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
           workspaceId: runInput.workspaceId
@@ -493,21 +514,27 @@ export function createAgentRuntime(input: {
           : provider;
         runModel = providerSettings.active ? providerSettings.chatModel : agent.model;
 
-        if (
-          isDocumentDependentQuestion(
-            `${message.body ?? ""}\n${conversationContext.formattedHistory}`
-          ) &&
-          knowledgeSelection.selected.length === 0
-        ) {
-          providerOutput = createDocumentRequiredHandoffOutput();
-        } else {
-          providerOutput = await runProvider.generate({
+        providerOutput = safety.handoffRequired
+          ? createSafetyHandoffOutput(safety.reason ?? "Human handoff required.")
+          : await runProvider.generate({
             model: runModel,
             systemPrompt: agent.systemPrompt,
             userPrompt: buildUserPrompt(message.body, runInput.instruction),
             context
           });
+
+        const replyPolicy = providerOutput.reply
+          ? enforceWhatsAppReply(providerOutput.reply)
+          : null;
+        if (replyPolicy) {
+          providerOutput = { ...providerOutput, reply: replyPolicy.reply };
         }
+        contextSummary = {
+          ...contextSummary,
+          protectedFact: safety.protectedFact,
+          replyCharacters: providerOutput.reply?.length ?? 0,
+          replyCompacted: replyPolicy?.compacted ?? false
+        };
 
         const confidenceThreshold = readConfidenceThreshold(agent.handoffConfig);
         const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
@@ -520,6 +547,16 @@ export function createAgentRuntime(input: {
           allowedTags,
           actions: providerOutput.actions
         });
+        contextSummary = {
+          ...contextSummary,
+          rejectedActionCodes: [
+            ...new Set(
+              actionResults.flatMap((result) =>
+                result.status === "skipped" && result.code ? [result.code] : []
+              )
+            )
+          ]
+        };
         await applyBoardRulesForActionResults(runInput.workspaceId, actionResults);
 
         if (!handoffReason && allowedActions.includes("send_message") && !providerOutput.reply) {
@@ -823,20 +860,6 @@ async function sendAgentReplyToProvider(
     number,
     text: reply
   });
-}
-
-function createDocumentRequiredHandoffOutput(): AgentOutput {
-  const reason = "No relevant document found for a document-dependent question.";
-
-  return {
-    confidence: 0.2,
-    reply: "Vou chamar uma pessoa do time para confirmar essa informação com segurança.",
-    actions: [{ type: "request_handoff", reason }],
-    handoff: {
-      required: true,
-      reason
-    }
-  };
 }
 
 function toRetrievalSource(source: KnowledgeSourceRecord): KnowledgeRetrievalSource {

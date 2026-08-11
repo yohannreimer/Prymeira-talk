@@ -382,7 +382,13 @@ describe("createAgentRuntime", () => {
         contextSummary: expect.objectContaining({
           allowedTagCount: 1,
           knowledgeCount: 1,
-          knowledgeTotal: 1
+          knowledgeTotal: 1,
+          evaluatedKnowledgeChunks: 1,
+          selectedKnowledgeSources: 1,
+          selectedKnowledgeChunks: 1,
+          protectedFact: "price",
+          replyCharacters: "O plano profissional custa R$ 199 por mes.".length,
+          replyCompacted: false
         }),
         knowledgeMatches: [
           expect.objectContaining({
@@ -391,7 +397,10 @@ describe("createAgentRuntime", () => {
             category: "precos",
             score: expect.any(Number),
             reasons: expect.arrayContaining(["category_match", "keyword_match"]),
-            includedAs: "full_document"
+            includedAs: "full_document",
+            chunkIndex: 0,
+            start: 0,
+            end: "Plano profissional custa R$ 199 por mes.".length
           })
         ]
       })
@@ -638,10 +647,41 @@ describe("createAgentRuntime", () => {
         confidence: 0.2,
         knowledgeMatches: [],
         output: expect.objectContaining({
-          reply: "Vou chamar uma pessoa do time para confirmar essa informação com segurança.",
+          reply:
+            "Não quero te passar uma informação errada. Vou encaminhar para o comercial confirmar com segurança.",
           handoff: expect.objectContaining({
             required: true
           })
+        })
+      })
+    });
+  });
+
+  it("sends a compacted reply no longer than 500 characters", async () => {
+    const prisma = buildPrisma();
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "Produto metálico. ".repeat(80),
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({ prisma, provider });
+
+    await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    const body = prisma.message.create.mock.calls[0]?.[0].data.body as string;
+    expect(body.length).toBeLessThanOrEqual(500);
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        contextSummary: expect.objectContaining({
+          replyCharacters: body.length,
+          replyCompacted: true
         })
       })
     });
@@ -826,13 +866,18 @@ describe("createAgentRuntime", () => {
           {
             type: "add_tag",
             status: "skipped",
-            reason: "Tag name is required."
+            code: "TOOL_INVALID_INPUT",
+            reason: "Tag ID or name is required."
           }
         ],
         output: expect.objectContaining({
           reply: "Vou registrar uma etiqueta."
         }),
-        contextSummary: expect.objectContaining({ knowledgeCount: 1, knowledgeTotal: 1 }),
+        contextSummary: expect.objectContaining({
+          knowledgeCount: 1,
+          knowledgeTotal: 1,
+          rejectedActionCodes: ["TOOL_INVALID_INPUT"]
+        }),
         knowledgeMatches: [
           expect.objectContaining({
             id: "knowledge_1",
