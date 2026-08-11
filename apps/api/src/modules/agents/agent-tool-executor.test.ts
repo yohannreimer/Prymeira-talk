@@ -208,6 +208,7 @@ describe("executeAgentActions", () => {
       {
         type: "create_internal_note",
         status: "skipped",
+        code: "TOOL_INVALID_INPUT",
         reason: "Note body is required."
       }
     ]);
@@ -289,6 +290,43 @@ describe("executeAgentActions", () => {
     );
   });
 
+  it("applies add_tag by canonical allowed tag id", async () => {
+    const prisma = buildPrisma();
+
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      actions: [{ type: "add_tag", tagId: "tag_hot_lead" }]
+    });
+
+    expect(results).toEqual([
+      {
+        type: "add_tag",
+        status: "completed",
+        conversationId: "conv_1",
+        tagId: "tag_hot_lead"
+      }
+    ]);
+  });
+
+  it("skips an unknown tag id and continues the next action", async () => {
+    const prisma = buildPrisma();
+
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      actions: [
+        { type: "add_tag", tagId: "tag_unknown" },
+        { type: "request_handoff", reason: "Cliente pediu humano" }
+      ]
+    });
+
+    expect(results[0]).toMatchObject({
+      type: "add_tag",
+      status: "skipped",
+      code: "TOOL_INVALID_INPUT"
+    });
+    expect(results[1]).toMatchObject({ type: "request_handoff", status: "completed" });
+  });
+
   it("matches allowed tag names ignoring case, accents, and extra spaces", async () => {
     const prisma = buildPrisma();
 
@@ -335,6 +373,7 @@ describe("executeAgentActions", () => {
       {
         type: "add_tag",
         status: "skipped",
+        code: "TOOL_INVALID_INPUT",
         reason: "Agent tag VIP is not in this agent's allowed tag list."
       }
     ]);
@@ -372,6 +411,7 @@ describe("executeAgentActions", () => {
       {
         type: "remove_tag",
         status: "skipped",
+        code: "TOOL_INVALID_INPUT",
         reason: "Agent tag tag_not_allowed is not in this agent's allowed tag list."
       }
     ]);

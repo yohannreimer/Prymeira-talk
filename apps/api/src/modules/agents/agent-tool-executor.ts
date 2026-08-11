@@ -109,6 +109,7 @@ export class AgentToolExecutionError extends Error {
 export type AgentToolExecutionResult = {
   type: AgentActionResultType;
   status: "completed" | "skipped";
+  code?: AgentToolExecutionErrorCode;
   reason?: string;
   rawType?: string;
   conversationId?: string;
@@ -188,7 +189,12 @@ export async function executeAgentActions(
       results.push({ type: actionType, status: "completed", ...metadata });
     } catch (error) {
       if (error instanceof AgentToolExecutionError && error.code !== "CONVERSATION_NOT_FOUND") {
-        results.push({ type: actionType, status: "skipped", reason: error.message });
+        results.push({
+          type: actionType,
+          status: "skipped",
+          code: error.code,
+          reason: error.message
+        });
         continue;
       }
 
@@ -260,18 +266,22 @@ async function addTag(
   },
   action: AgentAction
 ) {
-  const name = getFirstString(action, ["tagName", "name", "tag", "label"])?.trim();
-  if (!name) {
-    throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Tag name is required.");
+  const requestedTagId = getFirstString(action, ["tagId", "id"])?.trim();
+  const requestedTagName = getFirstString(action, ["tagName", "name", "tag", "label"])?.trim();
+  const requestedTag = requestedTagId || requestedTagName;
+  if (!requestedTag) {
+    throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "Tag ID or name is required.");
   }
 
-  const allowedTag = (input.allowedTags ?? []).find(
-    (tag) => normalizeTagName(tag.name) === normalizeTagName(name)
-  );
+  const allowedTag = requestedTagId
+    ? (input.allowedTags ?? []).find((tag) => tag.id === requestedTagId)
+    : (input.allowedTags ?? []).find(
+        (tag) => normalizeTagName(tag.name) === normalizeTagName(requestedTagName ?? "")
+      );
   if (!allowedTag) {
     throw new AgentToolExecutionError(
       "TOOL_INVALID_INPUT",
-      `Agent tag ${name} is not in this agent's allowed tag list.`
+      `Agent tag ${requestedTag} is not in this agent's allowed tag list.`
     );
   }
 
