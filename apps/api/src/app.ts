@@ -34,6 +34,7 @@ export interface CreateAppOptions {
   fetch?: AuthContextPluginOptions["fetch"];
   logger?: boolean;
   prismaEnabled?: boolean;
+  readinessCheck?: () => Promise<void>;
   requireProductAccess?: AuthContextPluginOptions["requireProductAccess"];
 }
 
@@ -100,6 +101,18 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   }
 
   app.get("/health", async () => ({ ok: true, product: env.PRYMEIRA_PRODUCT_KEY }));
+  app.get("/ready", async (_request, reply) => {
+    try {
+      if (options.readinessCheck) {
+        await options.readinessCheck();
+      } else {
+        await app.prisma.$queryRawUnsafe("SELECT 1");
+      }
+      return { ok: true, product: env.PRYMEIRA_PRODUCT_KEY };
+    } catch {
+      return reply.code(503).send({ ok: false, product: env.PRYMEIRA_PRODUCT_KEY });
+    }
+  });
   app.get("/me", async (request) => ({
     workspaceId: request.talk.workspaceId,
     role: request.talk.role

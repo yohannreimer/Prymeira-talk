@@ -1,10 +1,8 @@
-FROM node:22-alpine
-
-WORKDIR /app
-
+FROM node:22-alpine AS builder
+WORKDIR /workspace
 RUN corepack enable
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json .npmrc ./
 COPY packages/shared/package.json packages/shared/package.json
 COPY apps/api/package.json apps/api/package.json
 
@@ -13,13 +11,16 @@ RUN pnpm install --frozen-lockfile
 COPY packages/shared packages/shared
 COPY apps/api apps/api
 
-RUN pnpm --filter @prymeira-talk/api exec prisma generate --schema prisma/schema.prisma
-RUN pnpm --filter @prymeira-talk/api build
+RUN pnpm --filter @prymeira-talk/api build:prod
+RUN pnpm --filter @prymeira-talk/api deploy --prod /runtime
+RUN cd /runtime && ./node_modules/.bin/prisma generate --schema prisma/schema.prisma
 
-ENV NODE_ENV=production
-ENV API_HOST=0.0.0.0
-ENV API_PORT=3002
+FROM node:22-alpine AS runtime
+WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@10.0.0 --activate
+COPY --from=builder /runtime ./
+ENV NODE_ENV=production API_HOST=0.0.0.0 API_PORT=3002
 
 EXPOSE 3002
 
-CMD ["sh", "-c", "pnpm --filter @prymeira-talk/api exec prisma migrate deploy --schema prisma/schema.prisma && pnpm --filter @prymeira-talk/api exec tsx src/server.ts"]
+CMD ["node", "dist/server.js"]

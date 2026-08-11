@@ -74,6 +74,7 @@ function readPathname(request: FastifyRequest) {
 function isPublicPath(pathname: string) {
   return (
     pathname === "/health" ||
+    pathname === "/ready" ||
     pathname === "/webhooks/evolution" ||
     pathname.startsWith("/webhooks/evolution/") ||
     pathname.startsWith("/uploads/automations/") ||

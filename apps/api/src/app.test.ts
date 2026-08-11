@@ -18,6 +18,47 @@ describe("app", () => {
     }
   });
 
+  it("returns ready only when the database check succeeds", async () => {
+    const readinessCheck = vi.fn().mockResolvedValue(undefined);
+    const requireProductAccess = vi.fn();
+    const app = await buildApp(
+      {},
+      { authEnabled: true, readinessCheck, requireProductAccess }
+    );
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/ready" });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true, product: "talk" });
+      expect(readinessCheck).toHaveBeenCalledTimes(1);
+      expect(requireProductAccess).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 503 without leaking database errors", async () => {
+    const app = await buildApp(
+      {},
+      {
+        readinessCheck: vi
+          .fn()
+          .mockRejectedValue(new Error("postgresql://user:secret@database/internal"))
+      }
+    );
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/ready" });
+
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual({ ok: false, product: "talk" });
+      expect(response.body).not.toContain("postgresql://user:secret@database/internal");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("allows browser preflight requests for PATCH endpoints", async () => {
     const app = await buildApp({}, { authEnabled: false, prismaEnabled: false });
 

@@ -3,9 +3,13 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@10.0.0",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc --noEmit",
+    "build:prod": "tsup --config tsup.config.ts",
+    "start:prod": "node dist/server.js",
+    "migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "prisma": "dotenv -e ../../.env -- prisma",
@@ -21,11 +25,12 @@
     "fastify": "^5.6.2",
     "fastify-plugin": "^5.1.0",
     "pdf-parse": "^2.4.5",
+    "prisma": "^6.19.0",
     "zod": "^4.1.12"
   },
   "devDependencies": {
     "dotenv-cli": "^8.0.0",
-    "prisma": "^6.19.0",
+    "tsup": "^8.5.1",
     "tsx": "^4.21.0",
     "vitest": "^4.0.18"
   }
