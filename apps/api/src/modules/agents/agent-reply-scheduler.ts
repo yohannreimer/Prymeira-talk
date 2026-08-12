@@ -1,3 +1,8 @@
+import {
+  DEFAULT_AGENT_REPLY_WAIT_SECONDS,
+  readAgentBehaviorSettings
+} from "../settings/agent-behavior-settings.js";
+
 type JsonValue = unknown;
 
 type ActiveConversationRecord = {
@@ -25,6 +30,9 @@ type PendingReplyRecord = {
 };
 
 export interface AgentReplySchedulerPrismaLike {
+  workspaceMirror: {
+    findUnique(args: unknown): Promise<{ limits?: JsonValue } | null>;
+  };
   conversation: {
     findUnique(args: unknown): Promise<ActiveConversationRecord | null>;
   };
@@ -60,7 +68,6 @@ export function createAgentReplyScheduler(input: {
   pollIntervalMs?: number;
   batchSize?: number;
 }) {
-  const debounceMs = input.debounceMs ?? DEFAULT_AGENT_REPLY_DEBOUNCE_MS;
   const pollIntervalMs = input.pollIntervalMs ?? 5_000;
   const batchSize = input.batchSize ?? 20;
   let timer: NodeJS.Timeout | null = null;
@@ -94,6 +101,7 @@ export function createAgentReplyScheduler(input: {
     }
 
     const now = scheduleInput.now ?? new Date();
+    const debounceMs = await resolveDebounceMs(scheduleInput.workspaceId);
     const scheduledAt = new Date(now.getTime() + debounceMs);
     const session = conversation.activeAgentSession;
     const instruction = readInstruction(session.metadata);
@@ -129,6 +137,22 @@ export function createAgentReplyScheduler(input: {
     scheduleWake(scheduledAt, now);
 
     return { scheduled: true as const, scheduledAt };
+  }
+
+  async function resolveDebounceMs(workspaceId: string) {
+    if (input.debounceMs !== undefined) {
+      return input.debounceMs;
+    }
+
+    try {
+      const workspace = await input.prisma.workspaceMirror.findUnique({
+        where: { workspaceId },
+        select: { limits: true }
+      });
+      return readAgentBehaviorSettings(workspace?.limits).agentReplyWaitSeconds * 1_000;
+    } catch {
+      return DEFAULT_AGENT_REPLY_WAIT_SECONDS * 1_000;
+    }
   }
 
   async function processDueReplies(processInput: { now?: Date } = {}) {

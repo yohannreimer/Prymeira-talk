@@ -28,6 +28,9 @@ function buildConversation() {
 
 function buildPrisma(overrides: Record<string, any> = {}) {
   return {
+    workspaceMirror: {
+      findUnique: overrides.workspaceMirror?.findUnique ?? vi.fn().mockResolvedValue(null)
+    },
     conversation: {
       findUnique: overrides.conversation?.findUnique ?? vi.fn().mockResolvedValue(buildConversation())
     },
@@ -42,6 +45,84 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentReplyScheduler", () => {
+  it.each([
+    [10, "2026-07-05T12:00:10.000Z"],
+    [0, "2026-07-05T12:00:00.000Z"],
+    [40, "2026-07-05T12:00:40.000Z"]
+  ])("uses workspace wait %s seconds", async (replyWaitSeconds, expected) => {
+    const prisma = buildPrisma({
+      workspaceMirror: {
+        findUnique: vi.fn().mockResolvedValue({
+          limits: { agentBehavior: { replyWaitSeconds } }
+        })
+      }
+    });
+    const scheduler = createAgentReplyScheduler({
+      prisma,
+      agentRuntime: { runForMessage: vi.fn() }
+    });
+
+    await scheduler.scheduleActiveSessionForMessage({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.firstMessage,
+      now: new Date("2026-07-05T12:00:00.000Z")
+    });
+
+    expect(prisma.aiAgentPendingReply.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({ scheduledAt: new Date(expected) })
+    }));
+    scheduler.stop();
+  });
+
+  it("reads the workspace wait again for the next inbound message", async () => {
+    const findUnique = vi.fn()
+      .mockResolvedValueOnce({ limits: { agentBehavior: { replyWaitSeconds: 10 } } })
+      .mockResolvedValueOnce({ limits: { agentBehavior: { replyWaitSeconds: 25 } } });
+    const prisma = buildPrisma({ workspaceMirror: { findUnique } });
+    const scheduler = createAgentReplyScheduler({
+      prisma,
+      agentRuntime: { runForMessage: vi.fn() }
+    });
+
+    await scheduler.scheduleActiveSessionForMessage({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.firstMessage,
+      now: new Date("2026-07-05T12:00:00.000Z")
+    });
+    await scheduler.scheduleActiveSessionForMessage({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.secondMessage,
+      now: new Date("2026-07-05T12:00:05.000Z")
+    });
+
+    expect(prisma.aiAgentPendingReply.upsert).toHaveBeenLastCalledWith(expect.objectContaining({
+      update: expect.objectContaining({ scheduledAt: new Date("2026-07-05T12:00:30.000Z") })
+    }));
+    scheduler.stop();
+  });
+
+  it("falls back to 40 seconds when workspace behavior cannot be read", async () => {
+    const prisma = buildPrisma({
+      workspaceMirror: { findUnique: vi.fn().mockRejectedValue(new Error("database unavailable")) }
+    });
+    const scheduler = createAgentReplyScheduler({
+      prisma,
+      agentRuntime: { runForMessage: vi.fn() }
+    });
+    await scheduler.scheduleActiveSessionForMessage({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.firstMessage,
+      now: new Date("2026-07-05T12:00:00.000Z")
+    });
+    expect(prisma.aiAgentPendingReply.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({ scheduledAt: new Date("2026-07-05T12:00:40.000Z") })
+    }));
+    scheduler.stop();
+  });
   it("wakes processing when a scheduled reply becomes due", async () => {
     vi.useFakeTimers();
     const prisma = buildPrisma({
