@@ -99,6 +99,15 @@ describe("evaluateAgentSafety", () => {
     );
   });
 
+  it("never mistakes descriptive ready-delivery copy for live availability", () => {
+    expect(evaluateAgentSafety({
+      message: "Tem chapa 3 mm pronta entrega?",
+      selectedKnowledge: [{
+        content: "Chapas lisas de 3 mm são geralmente trabalhadas na modalidade pronta entrega."
+      }]
+    })).toEqual(expect.objectContaining({ handoffRequired: true, protectedFact: "stock" }));
+  });
+
   it("still protects a previously quoted commercial condition", () => {
     expect(evaluateAgentSafety({
       message: "Pode fechar nesse orçamento que você me passou ontem?",

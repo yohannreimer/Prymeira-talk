@@ -74,6 +74,17 @@ export function evaluateAgentSafety(input: {
     return { handoffRequired: false, protectedFact: null, reason: null };
   }
 
+  // "Pronta entrega" is a live commercial condition. Knowledge-base copy can
+  // describe the modality, but it must never be treated as proof of current
+  // availability for a concrete product request.
+  if (READY_DELIVERY_CONCEPT.test(input.message)) {
+    return {
+      handoffRequired: true,
+      protectedFact: "stock",
+      reason: "Ready-delivery availability requires live confirmation."
+    };
+  }
+
   const rule = PROTECTED_RULES.find((candidate) => candidate.question.test(input.message));
   if (!rule) {
     return { handoffRequired: false, protectedFact: null, reason: null };
