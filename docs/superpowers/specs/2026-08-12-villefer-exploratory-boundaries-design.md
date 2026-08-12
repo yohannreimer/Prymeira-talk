@@ -34,9 +34,7 @@ The exploratory simulator matrix covered product discovery, material comparisons
 
 ## Image-list behavior
 
-Image understanding is explicitly out of scope for this change. Today Evolution stores the image and its caption, but the agent-provider request contains only the message body and message type. The media URL or image bytes are not sent to the model. Therefore the agent cannot reliably read a photographed material list.
-
-Until multimodal input is designed and implemented, the safe customer behavior is to avoid claiming that image contents were read and ask the customer to send the list as text or a readable PDF handled by a person.
+This design originally documented the pre-multimodal limitation: Evolution stored the image but the provider received only its caption. That temporary limitation is superseded by `2026-08-12-agent-multimodal-input-design.md`, which defines bounded vision and audio processing while preserving the commercial and engineering boundaries above.
 
 ## Verification
 
