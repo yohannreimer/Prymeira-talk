@@ -27,9 +27,15 @@ import {
 } from "./agent-safety-policy.js";
 import {
   createOpenAiCompatibleAgentProvider,
+  type AgentImageAttachment,
   type AgentOutput,
   type AgentProvider
 } from "./provider-gateway.js";
+import { resolveAgentMedia } from "./agent-media-resolver.js";
+import {
+  createOpenAiCompatibleAudioTranscriber,
+  type AgentAudioTranscriber
+} from "./audio-transcription.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 
@@ -165,6 +171,25 @@ type AgentRuntimeBoardRules = {
   }): Promise<unknown>;
 };
 
+export const IMAGE_PROCESSING_FALLBACK =
+  "Não consegui analisar essa imagem. Pode reenviar com mais nitidez ou mandar a lista em texto?";
+export const AUDIO_PROCESSING_FALLBACK =
+  "Não consegui entender esse áudio. Pode reenviar ou escrever a mensagem?";
+
+const IMAGE_MEDIA_POLICY = {
+  kind: "image" as const,
+  maxBytes: 10 * 1024 * 1024,
+  allowedMimeTypes: new Set(["image/png", "image/jpeg", "image/webp", "image/gif"])
+};
+const AUDIO_MEDIA_POLICY = {
+  kind: "audio" as const,
+  maxBytes: 25 * 1024 * 1024,
+  allowedMimeTypes: new Set([
+    "audio/ogg", "audio/opus", "audio/webm", "video/webm", "audio/mpeg",
+    "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/wav", "audio/x-wav"
+  ])
+};
+
 const agentInclude = {
   allowedTags: {
     include: { tag: true },
@@ -176,6 +201,10 @@ export function createAgentRuntime(input: {
   prisma: AgentRuntimePrismaLike;
   provider: AgentProvider;
   providerFactory?: (settings: Extract<OpenAiCompatibleSettings, { active: true }>) => AgentProvider;
+  mediaResolver?: typeof resolveAgentMedia;
+  audioTranscriberFactory?: (
+    settings: Extract<OpenAiCompatibleSettings, { active: true }>
+  ) => AgentAudioTranscriber;
   evolution?: AgentRuntimeEvolution;
   realtime?: AgentRuntimeRealtime;
   boardRules?: AgentRuntimeBoardRules;
@@ -439,6 +468,60 @@ export function createAgentRuntime(input: {
           conversation.activeAgentSessionId = session.id;
         }
 
+        const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
+          workspaceId: runInput.workspaceId
+        });
+        const mediaResolver = input.mediaResolver ?? resolveAgentMedia;
+        let effectiveText = message.body ?? "";
+        let attachment: AgentImageAttachment | undefined;
+        let mediaFallback: string | null = null;
+        let mediaProcessingError: string | null = null;
+        let mediaMetadata: Record<string, string> | null = null;
+
+        if (message.type === "image") {
+          try {
+            const media = await mediaResolver({
+              mediaUrl: message.mediaUrl,
+              policy: IMAGE_MEDIA_POLICY
+            });
+            effectiveText = !effectiveText || /^(Imagem|Figurinha) recebida$/i.test(effectiveText)
+              ? "Analise a imagem enviada pelo cliente."
+              : effectiveText;
+            attachment = {
+              type: "image",
+              url: `data:${media.mimeType};base64,${media.bytes.toString("base64")}`,
+              detail: "high"
+            };
+            mediaMetadata = { type: "image", mimeType: media.mimeType, source: media.source };
+          } catch (error) {
+            mediaFallback = IMAGE_PROCESSING_FALLBACK;
+            mediaProcessingError = readStableMediaErrorCode(error);
+          }
+        } else if (message.type === "audio") {
+          try {
+            if (!providerSettings.active) {
+              throw Object.assign(new Error("Audio provider is unavailable."), {
+                code: "TRANSCRIPTION_PROVIDER_UNAVAILABLE"
+              });
+            }
+            const media = await mediaResolver({
+              mediaUrl: message.mediaUrl,
+              policy: AUDIO_MEDIA_POLICY
+            });
+            const transcriber = input.audioTranscriberFactory
+              ? input.audioTranscriberFactory(providerSettings)
+              : createOpenAiCompatibleAudioTranscriber(providerSettings);
+            effectiveText = await transcriber.transcribe({
+              bytes: media.bytes,
+              mimeType: media.mimeType
+            });
+            mediaMetadata = { type: "audio", mimeType: media.mimeType, source: media.source };
+          } catch (error) {
+            mediaFallback = AUDIO_PROCESSING_FALLBACK;
+            mediaProcessingError = readStableMediaErrorCode(error);
+          }
+        }
+
         const [knowledge, conversationContext] = await Promise.all([
           prisma.aiKnowledgeSource.findMany({
             where: {
@@ -458,7 +541,7 @@ export function createAgentRuntime(input: {
         const allowedActions = readAllowedActions(agent.allowedActions);
         const allowedTags = toAllowedTags(agent);
         const knowledgeSelection = selectRelevantKnowledge({
-          latestMessage: message.body,
+          latestMessage: effectiveText,
           conversationHistory: conversationContext.formattedHistory,
           instruction: runInput.instruction,
           sources: knowledge.map(toRetrievalSource)
@@ -469,7 +552,8 @@ export function createAgentRuntime(input: {
           knowledgeSelection.selected,
           conversationContext,
           allowedActions,
-          allowedTags
+          allowedTags,
+          effectiveText
         );
         contextSummary = {
           contactId: conversation.contactId,
@@ -489,6 +573,8 @@ export function createAgentRuntime(input: {
             0
           ),
           conversationMessageCount: conversationContext.messages.length
+          ,...(mediaMetadata ? { media: mediaMetadata } : {})
+          ,...(mediaProcessingError ? { mediaProcessingError } : {})
         };
         knowledgeMatches = knowledgeSelection.selected.map((source) => ({
           id: source.id,
@@ -503,25 +589,30 @@ export function createAgentRuntime(input: {
         }));
 
         const safety = evaluateAgentSafety({
-          message: message.body ?? "",
+          message: effectiveText,
           selectedKnowledge: knowledgeSelection.selected
         });
 
-        const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
-          workspaceId: runInput.workspaceId
-        });
         const runProvider = providerSettings.active
           ? (input.providerFactory ?? createOpenAiCompatibleAgentProvider)(providerSettings)
           : provider;
         runModel = providerSettings.active ? providerSettings.chatModel : agent.model;
 
-        providerOutput = safety.handoffRequired
+        providerOutput = mediaFallback
+          ? {
+              confidence: 1,
+              reply: mediaFallback,
+              actions: [],
+              handoff: { required: false, reason: null }
+            }
+          : safety.handoffRequired
           ? createSafetyHandoffOutput(safety.reason ?? "Human handoff required.")
           : await runProvider.generate({
             model: runModel,
             systemPrompt: agent.systemPrompt,
-            userPrompt: buildUserPrompt(message.body, runInput.instruction),
-            context
+            userPrompt: buildUserPrompt(effectiveText, runInput.instruction),
+            context,
+            ...(attachment ? { attachment } : {})
           });
 
         const replyPolicy = providerOutput.reply
@@ -808,10 +899,11 @@ function buildContext(
   knowledge: Pick<SelectedKnowledgeSource, "title" | "content">[],
   conversationContext: ConversationContext,
   allowedActions: readonly AiAgentAllowedAction[],
-  allowedTags: readonly AllowedAgentTag[]
+  allowedTags: readonly AllowedAgentTag[],
+  effectiveText: string
 ) {
   return {
-    messageBody: message.body ?? "",
+    messageBody: effectiveText,
     conversationHistory: conversationContext.formattedHistory,
     conversationMessages: conversationContext.messages,
     allowedActions,
@@ -897,4 +989,17 @@ function isRecord(value: JsonValue): value is Record<string, unknown> {
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "AI agent runtime failed.";
+}
+
+function readStableMediaErrorCode(error: unknown) {
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    /^[A-Z0-9_]{1,80}$/.test(error.code)
+  ) {
+    return error.code;
+  }
+  return "MEDIA_PROCESSING_FAILED";
 }
