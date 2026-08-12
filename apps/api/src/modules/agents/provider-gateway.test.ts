@@ -307,6 +307,52 @@ describe("createOpenAiCompatibleAgentProvider", () => {
     });
   });
 
+  it("sends image attachments as multimodal user content", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              confidence: 0.9,
+              reply: "Pela imagem, parecem ser produtos siderúrgicos.",
+              actions: [],
+              handoff: { required: false, reason: null }
+            })
+          }
+        }]
+      }))
+    );
+    const provider = createOpenAiCompatibleAgentProvider({
+      baseUrl: "https://provider.example/v1",
+      apiKey: "secret",
+      chatModel: "gpt-5.6-luna",
+      fetchImpl: fetchMock
+    });
+
+    await provider.generate({
+      model: "ignored",
+      systemPrompt: "Atenda com segurança.",
+      userPrompt: "Vocês trabalham com estes itens?",
+      context: { messageBody: "Vocês trabalham com estes itens?" },
+      attachment: {
+        type: "image",
+        url: "data:image/jpeg;base64,aW1hZ2Vt",
+        detail: "high"
+      }
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.messages[1].content).toEqual([
+      { type: "text", text: expect.stringContaining("Vocês trabalham com estes itens?") },
+      {
+        type: "image_url",
+        image_url: { url: "data:image/jpeg;base64,aW1hZ2Vt", detail: "high" }
+      }
+    ]);
+    expect(body.messages[0].content).toContain("never infer exact dimensions");
+    expect(body.messages[0].content).toContain("stock, price, deadline");
+  });
+
   it.each(["gpt-5.6-luna", "gpt-5.6-terra"])(
     "uses the GPT-5.6 reasoning baseline for %s",
     async (chatModel) => {
