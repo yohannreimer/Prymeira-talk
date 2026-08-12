@@ -6,7 +6,7 @@
 
 ## Context
 
-Prymeira Talk currently uses a fixed 40-second debounce before an active agent replies. Each inbound message replaces the pending reply's `lastMessageId` and moves `scheduledAt`, so a sequence of short customer messages can already be combined into one agent turn. The delay is hard-coded, however, and cannot be changed during a demo or adapted to a workspace's sales motion.
+Prymeira Talk currently has a fixed 40-second debounce scheduler. Each inbound message can replace the pending reply's `lastMessageId` and move `scheduledAt`, which is the correct batching mechanism. However, the automation `run_agent` path calls `runForMessage` immediately before the scheduler is used. That immediate path bypasses the quiet window and can produce one response per inbound message. The delay is also hard-coded and cannot be changed during a demo or adapted to a workspace's sales motion.
 
 A production conversation also exposed an AI-to-AI loop. An external automated menu repeatedly sent `Não entendi, escolha uma das opções acima, por favor.` The Villefer agent answered each repetition, which caused the external bot to answer again. Multiple exchanges occurred within about one minute. Prompt-only instructions are insufficient because each individual response looks reasonable; the runtime needs a deterministic circuit breaker.
 
@@ -48,6 +48,8 @@ The UI adds a `Comportamento dos agentes` section in `Ajustes`, near the Provide
 ## Dynamic reply scheduling
 
 When an inbound message is eligible for an active agent session, the scheduler resolves `agentReplyWaitSeconds` for that message's workspace and calculates `scheduledAt` from that value. It must resolve the setting during scheduling rather than only during API startup, so a newly saved value applies to the next inbound message without deployment or restart.
+
+There must be only one production reply path. An automation `run_agent` step activates or refreshes the agent session and schedules the pending reply; it must not call `runForMessage` immediately. The webhook's post-automation scheduling remains idempotent because the pending reply is upserted by workspace and conversation. Direct generation remains available only for the explicit agent test-chat surface, not inbound production automation.
 
 The existing pending-reply upsert remains the batching mechanism:
 
@@ -168,6 +170,8 @@ This keeps integration settings validation isolated and makes authorization, val
 - The default remains 40 seconds.
 - A workspace value of 10, 40, or 0 produces the matching `scheduledAt`.
 - A second message replaces `lastMessageId` and restarts the quiet window.
+- A production `run_agent` automation activates and schedules but does not generate immediately.
+- An inbound webhook that schedules after the automation upserts the same pending reply without creating a second response.
 - A settings change affects the next scheduled message without recreating the scheduler.
 - Missing or malformed settings fall back to 40 seconds.
 - An earlier wake timer cannot process a row rescheduled by a later message.
