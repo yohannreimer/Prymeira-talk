@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-12
 
-**Status:** Approved in conversation; awaiting written-spec review
+**Status:** Implemented; final production verification pending
 
 ## Context
 
