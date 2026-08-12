@@ -1,4 +1,9 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import {
+  readAgentBehaviorSettings,
+  writeAgentBehaviorSettings,
+  type AgentBehaviorSettings
+} from "./agent-behavior-settings.js";
 
 type DateLike = Date | string;
 type IntegrationMode = "simulated" | "real";
@@ -35,6 +40,7 @@ interface AuditLogRecord {
 }
 
 type WorkspaceMirrorFindUniqueArgs = Parameters<PrismaClient["workspaceMirror"]["findUnique"]>[0];
+type WorkspaceMirrorUpsertArgs = Parameters<PrismaClient["workspaceMirror"]["upsert"]>[0];
 type IntegrationConfigFindManyArgs = Parameters<PrismaClient["integrationConfig"]["findMany"]>[0];
 type IntegrationConfigUpsertArgs = Parameters<PrismaClient["integrationConfig"]["upsert"]>[0];
 type AuditLogCreateArgs = Parameters<PrismaClient["auditLog"]["create"]>[0];
@@ -43,6 +49,7 @@ type AuditLogFindManyArgs = Parameters<PrismaClient["auditLog"]["findMany"]>[0];
 export interface PrismaLike {
   workspaceMirror: {
     findUnique(args: WorkspaceMirrorFindUniqueArgs): Promise<WorkspaceMirrorRecord | null>;
+    upsert(args: WorkspaceMirrorUpsertArgs): Promise<WorkspaceMirrorRecord>;
   };
   integrationConfig: {
     findMany(args: IntegrationConfigFindManyArgs): Promise<IntegrationConfigRecord[]>;
@@ -76,6 +83,7 @@ export interface IntegrationConfigDto {
 
 export interface SettingsDto {
   workspace: WorkspaceSettingsDto;
+  behavior: AgentBehaviorSettings;
   integrations: IntegrationConfigDto[];
 }
 
@@ -292,6 +300,7 @@ export function createSettingsService(prisma: PrismaLike) {
 
       return {
         workspace: toWorkspaceDto(input.workspaceId, workspace),
+        behavior: readAgentBehaviorSettings(workspace?.limits),
         integrations: integrations.map(toIntegrationDto)
       };
     },
@@ -361,7 +370,55 @@ export function createSettingsService(prisma: PrismaLike) {
 
       return {
         workspace: toWorkspaceDto(input.workspaceId, workspace),
+        behavior: readAgentBehaviorSettings(workspace?.limits),
         integrations: mergedIntegrations.map(toIntegrationDto)
+      };
+    },
+
+    async updateAgentBehavior(input: {
+      workspaceId: string;
+      agentReplyWaitSeconds: number;
+    }): Promise<SettingsDto> {
+      const current = await prisma.workspaceMirror.findUnique({
+        where: { workspaceId: input.workspaceId }
+      });
+      const previous = readAgentBehaviorSettings(current?.limits);
+      const nextLimits = writeAgentBehaviorSettings(current?.limits, {
+        agentReplyWaitSeconds: input.agentReplyWaitSeconds
+      }) as Prisma.InputJsonObject;
+      const workspace = await prisma.workspaceMirror.upsert({
+        where: { workspaceId: input.workspaceId },
+        create: {
+          workspaceId: input.workspaceId,
+          limits: nextLimits
+        },
+        update: {
+          limits: nextLimits
+        }
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          workspaceId: input.workspaceId,
+          actorUserId: null,
+          action: "settings.agent_behavior_updated",
+          targetType: "workspace_mirror",
+          targetId: input.workspaceId,
+          metadata: {
+            previousWaitSeconds: previous.agentReplyWaitSeconds,
+            nextWaitSeconds: input.agentReplyWaitSeconds
+          }
+        }
+      });
+
+      const integrations = await prisma.integrationConfig.findMany({
+        where: { workspaceId: input.workspaceId },
+        orderBy: [{ provider: "asc" }]
+      });
+      return {
+        workspace: toWorkspaceDto(input.workspaceId, workspace),
+        behavior: readAgentBehaviorSettings(workspace.limits),
+        integrations: integrations.map(toIntegrationDto)
       };
     },
 

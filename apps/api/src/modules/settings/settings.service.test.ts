@@ -7,6 +7,7 @@ import type { PrismaLike } from "./settings.service.js";
 type MockPrisma = {
   workspaceMirror: {
     findUnique: any;
+    upsert: any;
   };
   integrationConfig: {
     findUnique: any;
@@ -60,7 +61,17 @@ function createMockPrisma(overrides: {
           limits: { seats: 12 },
           createdAt: new Date("2026-05-20T16:00:00.000Z"),
           updatedAt: new Date("2026-05-21T16:00:00.000Z")
-        })
+        }),
+      upsert:
+        overrides.workspaceMirror?.upsert ??
+        vi.fn().mockImplementation(async (args) => ({
+          workspaceId: "workspace_a",
+          name: "Workspace A",
+          plan: "pro",
+          limits: args.update.limits,
+          createdAt: new Date("2026-05-20T16:00:00.000Z"),
+          updatedAt: new Date("2026-05-21T16:00:00.000Z")
+        }))
     },
     integrationConfig: {
       findUnique: overrides.integrationConfig?.findUnique ?? vi.fn().mockResolvedValue(null),
@@ -107,6 +118,7 @@ describe("settings service", () => {
 
     expect(settings).toEqual(
       expect.objectContaining({
+        behavior: { agentReplyWaitSeconds: 40 },
         workspace: expect.objectContaining({
           workspaceId: "workspace_a",
           name: "Workspace A",
@@ -120,6 +132,38 @@ describe("settings service", () => {
         ]
       })
     );
+  });
+
+  it("updates agent behavior while preserving workspace limits", async () => {
+    const prisma = createMockPrisma({
+      workspaceMirror: {
+        findUnique: vi.fn().mockResolvedValue({
+          workspaceId: "workspace_a",
+          name: "Workspace A",
+          plan: "pro",
+          limits: { existingLimit: 12 },
+          createdAt: new Date(),
+          updatedAt: new Date()
+        })
+      }
+    });
+    const service = createSettingsService(prisma);
+
+    const result = await service.updateAgentBehavior({
+      workspaceId: "workspace_a",
+      agentReplyWaitSeconds: 10
+    });
+
+    expect(result.behavior).toEqual({ agentReplyWaitSeconds: 10 });
+    expect(prisma.workspaceMirror.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: { limits: { existingLimit: 12, agentBehavior: { replyWaitSeconds: 10 } } }
+    }));
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: "settings.agent_behavior_updated",
+        metadata: { previousWaitSeconds: 40, nextWaitSeconds: 10 }
+      })
+    });
   });
 
   it("updates integration mode and writes an audit log entry", async () => {
@@ -817,6 +861,48 @@ describe("settings Meta Evolution template routes", () => {
 });
 
 describe("settings routes", () => {
+  it.each(["owner", "manager"] as const)("allows %s to update agent behavior", async (role) => {
+    const { app } = await buildSettingsApp({ role });
+    try {
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/settings/agent-behavior",
+        payload: { agentReplyWaitSeconds: 10 }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ behavior: { agentReplyWaitSeconds: 10 } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("forbids agents from updating agent behavior", async () => {
+    const { app } = await buildSettingsApp({ role: "agent" });
+    try {
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/settings/agent-behavior",
+        payload: { agentReplyWaitSeconds: 10 }
+      });
+      expect(response.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([-1, 301, 10.5, "10"])("rejects invalid reply wait %s", async (value) => {
+    const { app } = await buildSettingsApp();
+    try {
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/settings/agent-behavior",
+        payload: { agentReplyWaitSeconds: value }
+      });
+      expect(response.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
   it("allows managers to update Meta Cloud settings", async () => {
     const { app } = await buildSettingsApp({ role: "manager" });
 

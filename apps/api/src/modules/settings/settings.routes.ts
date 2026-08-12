@@ -28,6 +28,9 @@ const openAiCompatibleSettingsSchema = z.object({
   apiKey: z.string().trim().optional(),
   chatModel: z.string().trim().optional()
 }).strict();
+const agentBehaviorBodySchema = z.object({
+  agentReplyWaitSeconds: z.number().int().min(0).max(300)
+}).strict();
 
 const updateSettingsBodySchema = z.union([
   z.object({
@@ -100,6 +103,22 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
 
       throw error;
     }
+  });
+
+  app.patch("/settings/agent-behavior", async (request, reply) => {
+    if (!requireSettingsManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const body = agentBehaviorBodySchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "Invalid agent behavior settings request." });
+    }
+
+    return service.updateAgentBehavior({
+      workspaceId: request.talk.workspaceId,
+      agentReplyWaitSeconds: body.data.agentReplyWaitSeconds
+    });
   });
 
   app.get("/settings/audit-log", async (request, reply) => {
