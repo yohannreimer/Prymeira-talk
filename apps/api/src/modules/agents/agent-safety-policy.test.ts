@@ -77,6 +77,28 @@ describe("evaluateAgentSafety", () => {
     })).toEqual({ handoffRequired: false, protectedFact: null, reason: null });
   });
 
+  it.each([
+    "Qual é a diferença entre pronta entrega e direto de fábrica?",
+    "Como funciona a pronta entrega?",
+    "O que significa pronta entrega?"
+  ])("keeps conceptual ready-delivery questions exploratory: %s", (message) => {
+    expect(evaluateAgentSafety({ message, selectedKnowledge: [] })).toEqual({
+      handoffRequired: false,
+      protectedFact: null,
+      reason: null
+    });
+  });
+
+  it.each([
+    ["Tem chapa 3 mm pronta entrega?", "stock"],
+    ["Consegue entregar amanhã?", "deadline"],
+    ["Qual o prazo de entrega para Joinville?", "deadline"]
+  ])("still protects concrete stock or delivery commitments: %s", (message, protectedFact) => {
+    expect(evaluateAgentSafety({ message, selectedKnowledge: [] })).toEqual(
+      expect.objectContaining({ handoffRequired: true, protectedFact })
+    );
+  });
+
   it("still protects a previously quoted commercial condition", () => {
     expect(evaluateAgentSafety({
       message: "Pode fechar nesse orçamento que você me passou ontem?",

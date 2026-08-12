@@ -19,6 +19,10 @@ export const HANDOFF_ACKNOWLEDGEMENT =
 const HUMAN_REQUEST =
   /\b(falar|conversar|atendimento|passar|transferir|chamar)\b.{0,40}\b(pessoa|humano|atendente|comercial|especialista|vendedor)\b|\b(quero|preciso|prefiro)\b.{0,30}\b(pessoa|humano|atendente|comercial|especialista|vendedor)\b/i;
 
+const READY_DELIVERY_CONCEPT = /\bpronta entrega\b/i;
+const EXPLANATORY_QUESTION =
+  /\b(o que (?:é|significa)|como funciona|qual (?:é )?a diferen[cç]a|diferen[cç]a entre)\b/i;
+
 const PROTECTED_RULES: Array<{
   type: ProtectedFact;
   question: RegExp;
@@ -38,7 +42,8 @@ const PROTECTED_RULES: Array<{
   },
   {
     type: "deadline",
-    question: /\b(prazo|entrega|at[eé] quando|sexta|dias [uú]teis|previs[aã]o)\b/i,
+    question:
+      /\b(prazo|entrega|entregar|entregam|entregue|at[eé] quando|amanh[aã]|sexta|dias [uú]teis|previs[aã]o)\b/i,
     evidence: /\b\d+\s*(?:dias?|horas?)\b/i
   },
   {
@@ -60,6 +65,13 @@ export function evaluateAgentSafety(input: {
       protectedFact: null,
       reason: "Customer requested human service."
     };
+  }
+
+  if (
+    READY_DELIVERY_CONCEPT.test(input.message) &&
+    EXPLANATORY_QUESTION.test(input.message)
+  ) {
+    return { handoffRequired: false, protectedFact: null, reason: null };
   }
 
   const rule = PROTECTED_RULES.find((candidate) => candidate.question.test(input.message));
