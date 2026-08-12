@@ -52,6 +52,7 @@ export function evaluateAgentLoopGuard(input: {
         : new Date(message.createdAt).getTime();
       return Number.isFinite(createdAt) && createdAt >= cutoff && createdAt <= input.now.getTime();
     })
+    .sort((first, second) => new Date(first.createdAt).getTime() - new Date(second.createdAt).getTime())
     .slice(-MAX_HISTORY_RECORDS);
   const inbound = recent.filter((message) => message.direction === "inbound" && message.type === "text");
   const aiOutbound = recent.filter(isAiOutbound);

@@ -35,6 +35,21 @@ describe("agent loop guard", () => {
     });
   });
 
+  it("detects the latest repeated inbound when Prisma returns newest messages first", () => {
+    const repeated = "Não entendi, escolha uma das opções acima, por favor.";
+    const messages = [
+      inbound(repeated, 15), ai("A Villefer atende produtos siderúrgicos.", 25),
+      inbound(repeated, 35), ai("Essa mensagem parece ser de outra instituição.", 45),
+      inbound(repeated, 55), inbound("Mensagem anterior diferente", 65)
+    ];
+    expect(evaluateAgentLoopGuard({ messages, now })).toEqual({
+      triggered: true,
+      guard: "repeated_inbound",
+      inboundCount: 3,
+      aiOutboundCount: 2
+    });
+  });
+
   it("does not trigger for two duplicates", () => {
     const messages = [inbound("Repita", 40), ai("Como posso ajudar?", 30), inbound("Repita", 20)];
     expect(evaluateAgentLoopGuard({ messages, now })).toEqual({ triggered: false });
