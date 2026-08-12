@@ -225,11 +225,84 @@ function buildPrisma(overrides: Record<string, any> = {}) {
     aiAgentRun: {
       create: vi.fn().mockResolvedValue({ id: ids.run, status: "completed" })
     },
+    auditLog: {
+      create: vi.fn().mockResolvedValue({ id: "audit_loop" })
+    },
     ...(overrides as object)
   };
 }
 
 describe("createAgentRuntime", () => {
+  it("stops a repeated automated exchange silently before provider generation", async () => {
+    const currentNow = new Date();
+    const repeated = "Não entendi, escolha uma das opções acima, por favor.";
+    const loopMessages = [
+      { ...baseMessage, id: "loop_in_1", body: repeated, metadata: {}, createdAt: new Date(currentNow.getTime() - 50_000) },
+      { ...baseMessage, id: "loop_out_1", direction: "outbound", body: "Essa mensagem parece ser de outra instituição.", metadata: { source: "ai_agent" }, createdAt: new Date(currentNow.getTime() - 40_000) },
+      { ...baseMessage, id: "loop_in_2", body: repeated, metadata: {}, createdAt: new Date(currentNow.getTime() - 30_000) },
+      { ...baseMessage, id: "loop_out_2", direction: "outbound", body: "A Villefer atende produtos siderúrgicos.", metadata: { source: "ai_agent" }, createdAt: new Date(currentNow.getTime() - 20_000) },
+      { ...baseMessage, id: ids.message, body: repeated, metadata: {}, createdAt: new Date(currentNow.getTime() - 10_000) }
+    ];
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(loopMessages.at(-1));
+    vi.mocked(prisma.message.findMany).mockResolvedValue(loopMessages);
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "Não deveria ser enviada.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const sendText = vi.fn();
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      evolution: { mode: "real", client: { sendText } }
+    });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({ status: "handoff_requested", runId: ids.run, message: "possible_automation_loop" });
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+    }));
+    expect(prisma.aiAgentSession.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: "handoff_requested",
+        handoffReason: "possible_automation_loop"
+      })
+    }));
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: "agent.automation_loop_stopped",
+        metadata: {
+          guard: "repeated_inbound",
+          inboundCount: 3,
+          aiOutboundCount: 2
+        }
+      })
+    });
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        status: "handoff_requested",
+        output: {},
+        actions: [],
+        costEstimate: {},
+        contextSummary: expect.objectContaining({
+          loopGuard: "repeated_inbound",
+          loopInboundCount: 3,
+          loopAiOutboundCount: 2
+        })
+      })
+    });
+  });
   it("passes an inbound image to the provider with its caption", async () => {
     const imageMessage = {
       ...baseMessage,

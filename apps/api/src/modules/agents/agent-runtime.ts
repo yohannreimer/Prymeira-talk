@@ -38,6 +38,7 @@ import {
 } from "./audio-transcription.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import { evaluateAgentLoopGuard } from "./agent-loop-guard.js";
 
 type JsonValue = unknown;
 type AgentRunStatus = "completed" | "handoff_requested" | "failed" | "skipped";
@@ -100,6 +101,7 @@ type MessageRecord = {
   type: MessageDto["type"];
   body: string | null;
   mediaUrl?: string | null;
+  metadata?: JsonValue;
   status: MessageDto["status"];
   sentByUserId?: string | null;
   createdAt: Date | string;
@@ -144,6 +146,9 @@ type AgentRuntimePrismaLike = Omit<
   };
   aiAgentRun: {
     create(args: unknown): Promise<{ id: string; status: AgentRunStatus }>;
+  };
+  auditLog: {
+    create(args: unknown): Promise<unknown>;
   };
 };
 
@@ -466,6 +471,84 @@ export function createAgentRuntime(input: {
             }
           });
           conversation.activeAgentSessionId = session.id;
+        }
+
+        const recentMessages = await prisma.message.findMany({
+          where: {
+            workspaceId: runInput.workspaceId,
+            conversationId: conversation.id,
+            createdAt: { gte: new Date(Date.now() - 2 * 60 * 1_000) }
+          },
+          orderBy: [{ createdAt: "desc" }],
+          take: 30
+        }) as MessageRecord[];
+        const loopGuard = evaluateAgentLoopGuard({
+          messages: recentMessages,
+          now: new Date()
+        });
+
+        if (loopGuard.triggered) {
+          const loopContextSummary = {
+            ...contextSummary,
+            loopGuard: loopGuard.guard,
+            loopInboundCount: loopGuard.inboundCount,
+            loopAiOutboundCount: loopGuard.aiOutboundCount
+          };
+          await prisma.aiAgentSession.update({
+            where: {
+              workspaceId_id: {
+                workspaceId: runInput.workspaceId,
+                id: session.id
+              }
+            },
+            data: {
+              status: "handoff_requested",
+              handoffReason: "possible_automation_loop",
+              lastRunAt: new Date()
+            }
+          });
+          await prisma.conversation.update({
+            where: {
+              workspaceId_id: {
+                workspaceId: runInput.workspaceId,
+                id: conversation.id
+              }
+            },
+            data: {
+              aiControlStatus: "human_controlled"
+            }
+          });
+          await prisma.auditLog.create({
+            data: {
+              workspaceId: runInput.workspaceId,
+              actorUserId: null,
+              action: "agent.automation_loop_stopped",
+              targetType: "conversation",
+              targetId: conversation.id,
+              metadata: {
+                guard: loopGuard.guard,
+                inboundCount: loopGuard.inboundCount,
+                aiOutboundCount: loopGuard.aiOutboundCount
+              }
+            }
+          });
+          await publishConversationUpdated(runInput.workspaceId, conversation.id);
+          const run = await createRun({
+            workspaceId: runInput.workspaceId,
+            agentId: agent.id,
+            sessionId: session.id,
+            conversationId: conversation.id,
+            trigger: runInput.trigger,
+            input: runInputPayload,
+            contextSummary: loopContextSummary,
+            model: agent.model,
+            status: "handoff_requested"
+          });
+          return {
+            status: "handoff_requested",
+            runId: run.id,
+            message: "possible_automation_loop"
+          };
         }
 
         const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
