@@ -8,6 +8,7 @@ import {
   apiGetSettings,
   apiGetTags,
   apiSyncMetaTemplates,
+  apiUpdateAgentBehavior,
   apiUpdateSettings,
   apiUpdateTag,
   type AuditLogDto,
@@ -144,6 +145,13 @@ export function getAiProviderForm(settings: SettingsDto): AiProviderFormState {
   };
 }
 
+export function getAgentReplyWaitSeconds(settings: Pick<SettingsDto, "behavior"> | Partial<SettingsDto>) {
+  const value = settings.behavior?.agentReplyWaitSeconds;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 300
+    ? String(value)
+    : "40";
+}
+
 function setTrimmedValue(target: Record<string, unknown>, key: string, value: string) {
   const trimmed = value.trim();
 
@@ -160,8 +168,10 @@ export function SettingsPage() {
   const [metaForm, setMetaForm] = useState<MetaCloudFormState>(emptyMetaForm);
   const [aiProviderForm, setAiProviderForm] = useState<AiProviderFormState>(emptyAiProviderForm);
   const [tagForm, setTagForm] = useState<TagFormState>(emptyTagForm);
+  const [agentReplyWaitSeconds, setAgentReplyWaitSeconds] = useState("40");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSavingBehavior, setIsSavingBehavior] = useState(false);
   const [isSavingTag, setIsSavingTag] = useState(false);
   const [savingTagId, setSavingTagId] = useState<string | null>(null);
   const [isSyncingTemplates, setIsSyncingTemplates] = useState(false);
@@ -183,6 +193,7 @@ export function SettingsPage() {
       setTags(sortTags(nextTags));
       setMetaForm(getMetaCloudForm(nextSettings));
       setAiProviderForm(getAiProviderForm(nextSettings));
+      setAgentReplyWaitSeconds(getAgentReplyWaitSeconds(nextSettings));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar ajustes.");
     } finally {
@@ -348,6 +359,36 @@ export function SettingsPage() {
     }
   }
 
+  async function saveAgentBehavior(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setNotice(null);
+
+    const value = Number(agentReplyWaitSeconds);
+    if (!agentReplyWaitSeconds.trim() || !Number.isInteger(value) || value < 0 || value > 300) {
+      setError("Informe um tempo inteiro entre 0 e 300 segundos.");
+      return;
+    }
+
+    setIsSavingBehavior(true);
+
+    try {
+      const nextSettings = await apiUpdateAgentBehavior(getToken, {
+        agentReplyWaitSeconds: value
+      });
+      setSettings(nextSettings);
+      setAgentReplyWaitSeconds(getAgentReplyWaitSeconds(nextSettings));
+      setAuditLog(await apiGetAuditLog(getToken));
+      setNotice(value === 0
+        ? "Os agentes responderão imediatamente."
+        : `Os agentes aguardarão ${value} segundos após a última mensagem.`);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Não foi possível salvar o comportamento dos agentes.");
+    } finally {
+      setIsSavingBehavior(false);
+    }
+  }
+
   async function syncMetaTemplates() {
     setIsSyncingTemplates(true);
     setError(null);
@@ -492,6 +533,7 @@ export function SettingsPage() {
       <div className="settings-workbench">
         <nav className="settings-nav" aria-label="Seções de ajustes">
           <a href="#settings-workspace"><Settings2 size={15} aria-hidden="true" />Workspace</a>
+          <a href="#settings-agent-behavior"><Bot size={15} aria-hidden="true" />Comportamento</a>
           <a href="#settings-ai"><Bot size={15} aria-hidden="true" />Provider de IA</a>
           <a href="#settings-whatsapp"><Cable size={15} aria-hidden="true" />WhatsApp Meta</a>
           <a href="#settings-tags"><Tags size={15} aria-hidden="true" />Tags da IA</a>
@@ -678,6 +720,41 @@ export function SettingsPage() {
             </div>
           </form>
         </div>
+
+        <form
+          className="module-panel module-form settings-card"
+          id="settings-agent-behavior"
+          onSubmit={(event) => void saveAgentBehavior(event)}
+        >
+          <div className="panel-title-row">
+            <h2>Comportamento dos agentes</h2>
+          </div>
+
+          <label className="form-field">
+            Tempo de espera após a última mensagem
+            <input
+              inputMode="numeric"
+              max={300}
+              min={0}
+              onChange={(event) => setAgentReplyWaitSeconds(event.target.value)}
+              required
+              step={1}
+              type="number"
+              value={agentReplyWaitSeconds}
+            />
+          </label>
+
+          <p className="list-note">
+            Cada nova mensagem reinicia a contagem. Use 0 para responder imediatamente.
+          </p>
+
+          <div className="module-header-actions">
+            <button className="primary-button" type="submit" disabled={isSavingBehavior}>
+              <Save size={16} />
+              Salvar comportamento
+            </button>
+          </div>
+        </form>
 
         <form className="module-panel module-form settings-card" id="settings-ai" onSubmit={(event) => void saveAiProviderSettings(event)}>
           <div className="panel-title-row">

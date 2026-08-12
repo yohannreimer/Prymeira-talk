@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SettingsDto } from "../../app/api";
-import { getAiProviderForm, SettingsPage } from "./SettingsPage";
+import { getAgentReplyWaitSeconds, getAiProviderForm, SettingsPage } from "./SettingsPage";
 
 vi.mock("../../app/auth", () => ({
   useTalkAuth: () => ({
@@ -19,11 +19,13 @@ vi.mock("../../app/api", () => ({
       name: "Workspace de teste",
       plan: "Free"
     },
+    behavior: { agentReplyWaitSeconds: 40 },
     integrations: []
   })),
   apiGetTags: vi.fn(async () => []),
   apiSyncMetaTemplates: vi.fn(),
   apiUpdateSettings: vi.fn(),
+  apiUpdateAgentBehavior: vi.fn(),
   apiUpdateTag: vi.fn()
 }));
 
@@ -32,6 +34,20 @@ afterEach(() => {
 });
 
 describe("SettingsPage", () => {
+  it("renders configurable agent reply behavior", () => {
+    const html = renderToStaticMarkup(<SettingsPage />);
+    expect(html).toContain("Comportamento dos agentes");
+    expect(html).toContain("Tempo de espera após a última mensagem");
+    expect(html).toContain('min="0"');
+    expect(html).toContain('max="300"');
+    expect(html).toContain('value="40"');
+    expect(html).toContain("Cada nova mensagem reinicia a contagem");
+  });
+
+  it("uses saved and default reply wait values", () => {
+    expect(getAgentReplyWaitSeconds({ behavior: { agentReplyWaitSeconds: 10 } } as SettingsDto)).toBe("10");
+    expect(getAgentReplyWaitSeconds({} as SettingsDto)).toBe("40");
+  });
   it("defaults an unconfigured AI provider to GPT-5.6 Luna", () => {
     const html = renderToStaticMarkup(<SettingsPage />);
 
@@ -61,7 +77,8 @@ describe("SettingsPage", () => {
         },
         createdAt: "2026-08-11T00:00:00.000Z",
         updatedAt: "2026-08-11T00:00:00.000Z"
-      }]
+      }],
+      behavior: { agentReplyWaitSeconds: 40 }
     };
 
     expect(getAiProviderForm(settings).chatModel).toBe("gpt-5.4");

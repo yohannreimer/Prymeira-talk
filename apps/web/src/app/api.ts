@@ -491,6 +491,9 @@ export interface IntegrationConfigDto {
 export interface SettingsDto {
   workspace: WorkspaceSettingsDto;
   integrations: IntegrationConfigDto[];
+  behavior: {
+    agentReplyWaitSeconds: number;
+  };
 }
 
 export interface AuditLogDto {
@@ -1138,6 +1141,7 @@ function parseIntegrationConfig(data: unknown): IntegrationConfigDto {
 function parseSettings(data: unknown): SettingsDto {
   const payload = data as SettingsDto;
   const workspace = payload.workspace ?? ({} as WorkspaceSettingsDto);
+  const agentReplyWaitSeconds = payload.behavior?.agentReplyWaitSeconds;
 
   return {
     workspace: {
@@ -1150,7 +1154,15 @@ function parseSettings(data: unknown): SettingsDto {
     },
     integrations: Array.isArray(payload.integrations)
       ? payload.integrations.map(parseIntegrationConfig)
-      : []
+      : [],
+    behavior: {
+      agentReplyWaitSeconds: typeof agentReplyWaitSeconds === "number" &&
+        Number.isInteger(agentReplyWaitSeconds) &&
+        agentReplyWaitSeconds >= 0 &&
+        agentReplyWaitSeconds <= 300
+        ? agentReplyWaitSeconds
+        : 40
+    }
   };
 }
 
@@ -2932,6 +2944,22 @@ export async function apiUpdateSettings(
     },
     parseSettings,
     "Failed to update settings"
+  );
+}
+
+export async function apiUpdateAgentBehavior(
+  getToken: () => Promise<string | null>,
+  body: { agentReplyWaitSeconds: number }
+): Promise<SettingsDto> {
+  return fetchJson(
+    getToken,
+    "/settings/agent-behavior",
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    },
+    parseSettings,
+    "Failed to update agent behavior"
   );
 }
 
