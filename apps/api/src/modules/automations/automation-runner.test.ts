@@ -1064,14 +1064,20 @@ describe("automation runner", () => {
       automationRule: { findMany: vi.fn().mockResolvedValue([agentRule]) }
     } as Partial<AutomationRunnerPrisma>);
     const agentRuntime = {
-      activateForMessage: vi.fn(),
+      activateForMessage: vi.fn().mockResolvedValue({
+        status: "completed",
+        sessionId: "agent-session-1"
+      }),
       runForMessage: vi.fn().mockResolvedValue({
         status: "completed",
         runId: "agent-run-1"
       })
     };
     const agentReplyScheduler = {
-      scheduleActiveSessionForMessage: vi.fn()
+      scheduleActiveSessionForMessage: vi.fn().mockResolvedValue({
+        scheduled: true,
+        scheduledAt: new Date("2026-05-24T12:00:40.000Z")
+      })
     };
     const runner = createAutomationRunner({ prisma, agentRuntime, agentReplyScheduler });
 
@@ -1081,16 +1087,19 @@ describe("automation runner", () => {
       eventKey: "message.received:agent-immediate"
     });
 
-    expect(agentRuntime.runForMessage).toHaveBeenCalledWith({
+    expect(agentRuntime.activateForMessage).toHaveBeenCalledWith({
       workspaceId,
       agentId,
       conversationId,
       messageId,
-      trigger: "automation",
       instruction: "Responda agora."
     });
-    expect(agentRuntime.activateForMessage).not.toHaveBeenCalled();
-    expect(agentReplyScheduler.scheduleActiveSessionForMessage).not.toHaveBeenCalled();
+    expect(agentRuntime.runForMessage).not.toHaveBeenCalled();
+    expect(agentReplyScheduler.scheduleActiveSessionForMessage).toHaveBeenCalledWith({
+      workspaceId,
+      conversationId,
+      messageId
+    });
     expect(runs[0]?.status).toBe("completed");
     expect(runs[0]?.result).toMatchObject({
       actionResults: [
@@ -1099,7 +1108,8 @@ describe("automation runner", () => {
           nodeId: "agent-1",
           status: "completed",
           branch: "completed",
-          runId: "agent-run-1"
+          sessionId: "agent-session-1",
+          replyScheduled: true
         }
       ]
     });

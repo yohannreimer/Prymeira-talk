@@ -776,41 +776,6 @@ async function executeNode(
       };
     }
 
-    if (options.agentRuntime.runForMessage) {
-      const runtimeResult = await options.agentRuntime.runForMessage({
-        workspaceId: context.message.workspaceId,
-        agentId,
-        conversationId: context.conversation.id,
-        messageId: context.message.id,
-        trigger: "automation",
-        instruction
-      });
-      const actionStatus =
-        runtimeResult.status === "failed" || runtimeResult.status === "skipped"
-          ? runtimeResult.status
-          : "completed";
-      const graphBranch =
-        runtimeResult.status === "handoff_requested"
-          ? "handoff"
-          : runtimeResult.status === "completed"
-            ? "success"
-            : undefined;
-
-      return {
-        result: resultFor(node, actionStatus, {
-          message: runtimeResult.message ?? `Agent runtime ${runtimeResult.status}.`,
-          ...(runtimeResult.status === "failed"
-            ? { error: runtimeResult.message ?? "Agent runtime failed." }
-            : {}),
-          branch: runtimeResult.status,
-          runId: runtimeResult.runId
-        }),
-        branch: graphBranch,
-        branchExact: runtimeResult.status === "handoff_requested",
-        stop: runtimeResult.status === "failed" || runtimeResult.status === "skipped"
-      };
-    }
-
     const runtimeResult = await options.agentRuntime.activateForMessage({
       workspaceId: context.message.workspaceId,
       agentId,
