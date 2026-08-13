@@ -24,10 +24,12 @@ type MockPrisma = {
   message: {
     create: ReturnType<typeof vi.fn<PrismaLike["message"]["create"]>>;
     findMany: ReturnType<typeof vi.fn<PrismaLike["message"]["findMany"]>>;
+    deleteMany: ReturnType<typeof vi.fn<PrismaLike["message"]["deleteMany"]>>;
   };
   contactNote: {
     create: ReturnType<typeof vi.fn<PrismaLike["contactNote"]["create"]>>;
     findMany: ReturnType<typeof vi.fn<PrismaLike["contactNote"]["findMany"]>>;
+    deleteMany: ReturnType<typeof vi.fn<PrismaLike["contactNote"]["deleteMany"]>>;
   };
   contactBoardMembership: {
     findFirst: ReturnType<typeof vi.fn<PrismaLike["contactBoardMembership"]["findFirst"]>>;
@@ -58,9 +60,20 @@ type MockPrisma = {
   };
   aiAgentSession: {
     update: ReturnType<typeof vi.fn<PrismaLike["aiAgentSession"]["update"]>>;
+    deleteMany: ReturnType<typeof vi.fn<PrismaLike["aiAgentSession"]["deleteMany"]>>;
+  };
+  aiAgentPendingReply: {
+    deleteMany: ReturnType<typeof vi.fn<PrismaLike["aiAgentPendingReply"]["deleteMany"]>>;
+  };
+  aiAgentRun: {
+    deleteMany: ReturnType<typeof vi.fn<PrismaLike["aiAgentRun"]["deleteMany"]>>;
   };
   aiActionLog: {
     create: ReturnType<typeof vi.fn<PrismaLike["aiActionLog"]["create"]>>;
+    deleteMany: ReturnType<typeof vi.fn<PrismaLike["aiActionLog"]["deleteMany"]>>;
+  };
+  auditLog: {
+    create: ReturnType<typeof vi.fn<PrismaLike["auditLog"]["create"]>>;
   };
   crmSyncAction: {
     create: ReturnType<typeof vi.fn<PrismaLike["crmSyncAction"]["create"]>>;
@@ -149,7 +162,8 @@ function createMockPrisma(overrides: {
             sentByUserId: null,
             createdAt: new Date("2026-05-20T12:00:00.000Z")
           }
-        ])
+        ]),
+      deleteMany: vi.fn<PrismaLike["message"]["deleteMany"]>().mockResolvedValue({ count: 1 })
     },
     contactNote: {
       create: vi.fn<PrismaLike["contactNote"]["create"]>().mockResolvedValue({
@@ -175,7 +189,8 @@ function createMockPrisma(overrides: {
             createdAt: new Date("2026-05-20T12:10:00.000Z"),
             createdBy: { displayName: "Ana" }
           }
-        ])
+        ]),
+      deleteMany: vi.fn<PrismaLike["contactNote"]["deleteMany"]>().mockResolvedValue({ count: 1 })
     },
     contactBoardMembership: {
       findFirst: vi.fn<PrismaLike["contactBoardMembership"]["findFirst"]>().mockResolvedValue({
@@ -276,13 +291,24 @@ function createMockPrisma(overrides: {
       deleteMany: vi.fn<PrismaLike["conversationTag"]["deleteMany"]>().mockResolvedValue({ count: 1 })
     },
     aiAgentSession: {
-      update: vi.fn<PrismaLike["aiAgentSession"]["update"]>().mockResolvedValue({})
+      update: vi.fn<PrismaLike["aiAgentSession"]["update"]>().mockResolvedValue({}),
+      deleteMany: vi.fn<PrismaLike["aiAgentSession"]["deleteMany"]>().mockResolvedValue({ count: 1 })
+    },
+    aiAgentPendingReply: {
+      deleteMany: vi.fn<PrismaLike["aiAgentPendingReply"]["deleteMany"]>().mockResolvedValue({ count: 1 })
+    },
+    aiAgentRun: {
+      deleteMany: vi.fn<PrismaLike["aiAgentRun"]["deleteMany"]>().mockResolvedValue({ count: 1 })
     },
     aiActionLog: {
       create: vi.fn<PrismaLike["aiActionLog"]["create"]>().mockResolvedValue({
         id: "ai_1",
         status: "completed"
-      })
+      }),
+      deleteMany: vi.fn<PrismaLike["aiActionLog"]["deleteMany"]>().mockResolvedValue({ count: 1 })
+    },
+    auditLog: {
+      create: vi.fn<PrismaLike["auditLog"]["create"]>().mockResolvedValue({})
     },
     crmSyncAction: {
       create: vi.fn<PrismaLike["crmSyncAction"]["create"]>().mockResolvedValue({
@@ -1670,9 +1696,78 @@ describe("conversations service", () => {
     );
     expect(crmResult.crmAction?.status).toBe("queued");
   });
+
+  it("resets all selected conversation context while preserving its identity", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+
+    const result = await service.resetConversation({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      actorUserId: "user_1"
+    });
+
+    const scope = { workspaceId: "workspace_a", conversationId: "conv_1" };
+    expect(prisma.$transaction).toHaveBeenCalledOnce();
+    expect(prisma.aiAgentPendingReply.deleteMany).toHaveBeenCalledWith({ where: scope });
+    expect(prisma.aiAgentRun.deleteMany).toHaveBeenCalledWith({ where: scope });
+    expect(prisma.aiActionLog.deleteMany).toHaveBeenCalledWith({ where: scope });
+    expect(prisma.message.deleteMany).toHaveBeenCalledWith({ where: scope });
+    expect(prisma.conversationTag.deleteMany).toHaveBeenCalledWith({ where: scope });
+    expect(prisma.contactNote.deleteMany).toHaveBeenCalledWith({ where: scope });
+    expect(prisma.aiAgentSession.deleteMany).toHaveBeenCalledWith({ where: scope });
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: "open",
+        assignedUserId: null,
+        departmentId: null,
+        lastMessageAt: null,
+        lastMessagePreview: null,
+        unreadCount: 0,
+        priority: "normal",
+        aiControlStatus: "agent_allowed",
+        activeAgentSessionId: null
+      })
+    }));
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: {
+        workspaceId: "workspace_a",
+        actorUserId: "user_1",
+        action: "conversation.demo_reset",
+        targetType: "conversation",
+        targetId: "conv_1",
+        metadata: {}
+      }
+    });
+    expect(result.conversation.id).toBe("conv_1");
+  });
 });
 
 describe("conversation routes", () => {
+  it("restricts conversation resets to workspace owners", async () => {
+    const prisma = createMockPrisma();
+    const app = Fastify({ logger: false });
+
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish: vi.fn(), addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => {
+      request.talk = { workspaceId: "workspace_a", role: "manager" };
+    });
+    await app.register(conversationsRoutes);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/conversations/00000000-0000-4000-8000-000000000001/reset"
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({ code: "CONVERSATION_RESET_FORBIDDEN" });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns outbound messages and publishes message plus conversation updates once", async () => {
     const prisma = createMockPrisma();
     const publish = vi.fn();

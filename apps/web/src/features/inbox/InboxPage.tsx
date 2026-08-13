@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ConversationDto, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bot, CheckCircle2, Download, History, MessageSquare, Plus, StickyNote, UserCheck, X } from "lucide-react";
+import { Bot, CheckCircle2, Download, History, MessageSquare, Plus, RotateCcw, StickyNote, UserCheck, X } from "lucide-react";
 import type { ChangeEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -11,9 +11,11 @@ import {
   apiGetConversationContext,
   apiGetConversationMessages,
   apiGetConversations,
+  apiGetCurrentTalkUser,
   apiGetTags,
   apiGetQuickReplies,
   apiMarkConversationRead,
+  apiResetConversation,
   apiRunConversationAction,
   apiUpdateQuickReply,
   type ContactContextDto,
@@ -83,6 +85,10 @@ export function needsHumanAttention(
     conversation.activeAgentSessionStatus === "handoff_requested" ||
     (conversation.aiControlStatus === "human_controlled" && Boolean(conversation.handoffReason))
   );
+}
+
+export function canResetConversation(role: "owner" | "manager" | "agent") {
+  return role === "owner";
 }
 
 function priorityLabel(priority: ConversationDto["priority"]) {
@@ -386,6 +392,7 @@ export function InboxPage() {
   const [conversationReloadKey, setConversationReloadKey] = useState(0);
   const [isSending, setIsSending] = useState(false);
   const [isRunningAction, setIsRunningAction] = useState(false);
+  const [currentRole, setCurrentRole] = useState<"owner" | "manager" | "agent">("agent");
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
   const [crmStatus, setCrmStatus] = useState<string | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -412,10 +419,11 @@ export function InboxPage() {
   useEffect(() => {
     let isMounted = true;
 
-    void apiGetTags(getToken)
-      .then((tags) => {
+    void Promise.all([apiGetTags(getToken), apiGetCurrentTalkUser(getToken)])
+      .then(([tags, currentUser]) => {
         if (isMounted) {
           setTagCatalog(tags.filter((tag) => tag.isActive));
+          setCurrentRole(currentUser.role);
         }
       })
       .catch(() => undefined);
@@ -1084,6 +1092,36 @@ export function InboxPage() {
     }
   }
 
+  async function resetSelectedConversation() {
+    if (!selectedConversationId || !canResetConversation(currentRole)) return;
+
+    const selected = conversations.find((conversation) => conversation.id === selectedConversationId);
+    const confirmed = window.confirm(
+      `Reiniciar a conversa com ${selected ? contactDisplayName(selected) : "este contato"}?\n\n` +
+      "Isso apagará definitivamente mensagens, tags, notas e toda a memória da IA desta conversa."
+    );
+    if (!confirmed) return;
+
+    const targetConversationId = selectedConversationId;
+    setIsRunningAction(true);
+    setContextError(null);
+
+    try {
+      const result = await apiResetConversation(targetConversationId, getFreshToken);
+      applyActionResult(result, targetConversationId);
+      setMessages([]);
+      setMessagesConversationId(targetConversationId);
+      setNoteDraft("");
+      setSelectedTagId("");
+      setAiSuggestion(null);
+      setCrmStatus("Conversa reiniciada. Envie uma nova mensagem pelo WhatsApp para começar do zero.");
+    } catch (resetError) {
+      setContextError(resetError instanceof Error ? resetError.message : "Não foi possível reiniciar a conversa.");
+    } finally {
+      setIsRunningAction(false);
+    }
+  }
+
   function applyActionResult(result: ConversationActionResultDto, targetConversationId: string) {
     setConversations((current) => upsertConversation(current, result.conversation));
     if (
@@ -1725,6 +1763,17 @@ export function InboxPage() {
               <CheckCircle2 size={15} aria-hidden="true" />
               Finalizar
             </button>
+            {canResetConversation(currentRole) ? (
+              <button
+                className="quick-action-danger"
+                disabled={!selectedConversation || isRunningAction}
+                onClick={() => void resetSelectedConversation()}
+                type="button"
+              >
+                <RotateCcw size={15} aria-hidden="true" />
+                Reiniciar conversa
+              </button>
+            ) : null}
           </div>
           {aiSuggestion ? (
             <div className="ai-suggestion">{aiSuggestion}</div>

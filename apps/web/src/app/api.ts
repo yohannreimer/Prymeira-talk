@@ -154,6 +154,11 @@ export interface ConversationActionResultDto {
   };
 }
 
+export interface CurrentTalkUserDto {
+  workspaceId: string;
+  role: "owner" | "manager" | "agent";
+}
+
 export interface AgentTestChatMessageDto {
   role: "user" | "assistant";
   content: string;
@@ -1879,6 +1884,25 @@ export async function apiGetConversationMessages(
   return messageSchema.array().parse(data);
 }
 
+export async function apiGetCurrentTalkUser(
+  getToken: () => Promise<string | null>
+): Promise<CurrentTalkUserDto> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/me`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load current user: ${response.status}`);
+  }
+
+  const payload = asRecord(await response.json());
+  return {
+    workspaceId: String(payload.workspaceId ?? ""),
+    role: payload.role === "owner" || payload.role === "manager" ? payload.role : "agent"
+  };
+}
+
 export interface CreateConversationMessageInput {
   body?: string;
   attachment?: {
@@ -1954,6 +1978,23 @@ export async function apiRunConversationAction(
 
   const data = await response.json();
   return parseConversationActionResult(data);
+}
+
+export async function apiResetConversation(
+  conversationId: string,
+  getToken: () => Promise<string | null>
+): Promise<ConversationActionResultDto> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/conversations/${conversationId}/reset`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to reset conversation: ${response.status}`);
+  }
+
+  return parseConversationActionResult(await response.json());
 }
 
 export async function apiGetQuickReplies(getToken: () => Promise<string | null>): Promise<QuickReplyDto[]> {

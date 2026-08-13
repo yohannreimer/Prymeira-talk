@@ -3,6 +3,7 @@ import {
   aiControlActionLabel,
   aiControlLabel,
   applyComposerMarker,
+  canResetConversation,
   insertComposerText,
   metaClosedWindowMessage,
   metaServiceWindowSendError,
@@ -61,6 +62,14 @@ describe("AI control helpers", () => {
         handoffReason: null
       })
     ).toBe(false);
+  });
+});
+
+describe("temporary conversation reset", () => {
+  it("is visible only to workspace owners", () => {
+    expect(canResetConversation("owner")).toBe(true);
+    expect(canResetConversation("manager")).toBe(false);
+    expect(canResetConversation("agent")).toBe(false);
   });
 });
 

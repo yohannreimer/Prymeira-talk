@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { createBoardRulesService } from "../boards/board-rules.service.js";
 import type { BoardRulesPrismaLike } from "../boards/board-rules.service.js";
@@ -88,6 +88,19 @@ const conversationActionBodySchema = z.discriminatedUnion("action", [
     action: z.literal("close_conversation")
   })
 ]);
+
+function requireConversationResetOwner(
+  role: "owner" | "manager" | "agent",
+  reply: FastifyReply
+) {
+  if (role === "owner") return true;
+
+  reply.code(403).send({
+    code: "CONVERSATION_RESET_FORBIDDEN",
+    error: "Only the workspace owner can reset a conversation."
+  });
+  return false;
+}
 
 function readCurrentClerkUserId(authorizationHeader: string | undefined) {
   const token = authorizationHeader?.startsWith("Bearer ")
@@ -247,6 +260,47 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     });
 
     return conversation;
+  });
+
+  app.post("/conversations/:conversationId/reset", async (request, reply) => {
+    const params = createMessageParamsSchema.safeParse(request.params);
+
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid conversation reset request." });
+    }
+
+    if (!requireConversationResetOwner(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const actorUserId = await resolveCurrentUserProfileId({
+      prisma: app.prisma as unknown as PrismaLike,
+      workspaceId: request.talk.workspaceId,
+      authorizationHeader: request.headers.authorization
+    });
+    const result = await service.resetConversation({
+      workspaceId: request.talk.workspaceId,
+      conversationId: params.data.conversationId,
+      actorUserId
+    }).catch((error: unknown) => {
+      if (error instanceof ConversationNotFoundError) return null;
+      throw error;
+    });
+
+    if (!result) {
+      return reply.code(404).send({
+        code: "CONVERSATION_NOT_FOUND",
+        error: "Conversation not found."
+      });
+    }
+
+    app.realtime.publish({
+      type: "conversation.updated",
+      workspaceId: request.talk.workspaceId,
+      payload: result.conversation
+    });
+
+    return result;
   });
 
   app.post("/conversations/:conversationId/actions", async (request, reply) => {

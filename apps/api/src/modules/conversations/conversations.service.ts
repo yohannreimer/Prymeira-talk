@@ -253,8 +253,10 @@ type ConversationFindUniqueArgs = Parameters<PrismaClient["conversation"]["findU
 type ConversationUpdateArgs = Parameters<PrismaClient["conversation"]["update"]>[0];
 type MessageCreateArgs = Parameters<PrismaClient["message"]["create"]>[0];
 type MessageFindManyArgs = Parameters<PrismaClient["message"]["findMany"]>[0];
+type MessageDeleteManyArgs = Parameters<PrismaClient["message"]["deleteMany"]>[0];
 type ContactNoteCreateArgs = Parameters<PrismaClient["contactNote"]["create"]>[0];
 type ContactNoteFindManyArgs = Parameters<PrismaClient["contactNote"]["findMany"]>[0];
+type ContactNoteDeleteManyArgs = Parameters<PrismaClient["contactNote"]["deleteMany"]>[0];
 type BoardMembershipFindFirstArgs = Parameters<PrismaClient["contactBoardMembership"]["findFirst"]>[0];
 type BoardMembershipUpdateArgs = Parameters<PrismaClient["contactBoardMembership"]["update"]>[0];
 type BoardStageFindManyArgs = Parameters<PrismaClient["contactBoardStage"]["findMany"]>[0];
@@ -266,7 +268,12 @@ type TagUpsertArgs = Parameters<PrismaClient["tag"]["upsert"]>[0];
 type ConversationTagUpsertArgs = Parameters<PrismaClient["conversationTag"]["upsert"]>[0];
 type ConversationTagDeleteManyArgs = Parameters<PrismaClient["conversationTag"]["deleteMany"]>[0];
 type AiAgentSessionUpdateArgs = Parameters<PrismaClient["aiAgentSession"]["update"]>[0];
+type AiAgentSessionDeleteManyArgs = Parameters<PrismaClient["aiAgentSession"]["deleteMany"]>[0];
+type AiAgentPendingReplyDeleteManyArgs = Parameters<PrismaClient["aiAgentPendingReply"]["deleteMany"]>[0];
+type AiAgentRunDeleteManyArgs = Parameters<PrismaClient["aiAgentRun"]["deleteMany"]>[0];
 type AiActionLogCreateArgs = Parameters<PrismaClient["aiActionLog"]["create"]>[0];
+type AiActionLogDeleteManyArgs = Parameters<PrismaClient["aiActionLog"]["deleteMany"]>[0];
+type AuditLogCreateArgs = Parameters<PrismaClient["auditLog"]["create"]>[0];
 type CrmSyncActionCreateArgs = Parameters<PrismaClient["crmSyncAction"]["create"]>[0];
 
 export interface PrismaLike {
@@ -278,10 +285,12 @@ export interface PrismaLike {
   message: {
     create(args: MessageCreateArgs): Promise<MessageRecord>;
     findMany(args: MessageFindManyArgs): Promise<MessageRecord[]>;
+    deleteMany(args: MessageDeleteManyArgs): Promise<{ count: number }>;
   };
   contactNote: {
     create(args: ContactNoteCreateArgs): Promise<ContactNoteRecord>;
     findMany(args: ContactNoteFindManyArgs): Promise<ContactNoteRecord[]>;
+    deleteMany(args: ContactNoteDeleteManyArgs): Promise<{ count: number }>;
   };
   contactBoardMembership: {
     findFirst(args: BoardMembershipFindFirstArgs): Promise<BoardMembershipRecord | null>;
@@ -309,9 +318,20 @@ export interface PrismaLike {
   };
   aiAgentSession: {
     update(args: AiAgentSessionUpdateArgs): Promise<unknown>;
+    deleteMany(args: AiAgentSessionDeleteManyArgs): Promise<{ count: number }>;
+  };
+  aiAgentPendingReply: {
+    deleteMany(args: AiAgentPendingReplyDeleteManyArgs): Promise<{ count: number }>;
+  };
+  aiAgentRun: {
+    deleteMany(args: AiAgentRunDeleteManyArgs): Promise<{ count: number }>;
   };
   aiActionLog: {
     create(args: AiActionLogCreateArgs): Promise<{ id: string; status: string }>;
+    deleteMany(args: AiActionLogDeleteManyArgs): Promise<{ count: number }>;
+  };
+  auditLog: {
+    create(args: AuditLogCreateArgs): Promise<unknown>;
   };
   crmSyncAction: {
     create(args: CrmSyncActionCreateArgs): Promise<{ id: string; status: string }>;
@@ -1106,6 +1126,78 @@ export function createConversationsService(
         ...(appliedTag ? { appliedTag } : {}),
         ...(aiSuggestion ? { aiSuggestion } : {}),
         ...(crmAction ? { crmAction } : {})
+      };
+    },
+
+    async resetConversation(input: {
+      workspaceId: string;
+      conversationId: string;
+      actorUserId: string | null;
+    }): Promise<ConversationActionResultDto> {
+      const existing = await prisma.conversation.findUnique({
+        where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+        select: { id: true }
+      });
+
+      if (!existing) {
+        throw new ConversationNotFoundError();
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.conversation.update({
+          where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+          data: {
+            status: "open",
+            assignedUserId: null,
+            departmentId: null,
+            lastMessageAt: null,
+            lastMessagePreview: null,
+            customerServiceWindowExpiresAt: null,
+            unreadCount: 0,
+            priority: "normal",
+            aiControlStatus: "agent_allowed",
+            aiControlUpdatedAt: new Date(),
+            aiControlUpdatedById: input.actorUserId,
+            activeAgentSessionId: null
+          }
+        });
+        await tx.aiAgentPendingReply.deleteMany({
+          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
+        });
+        await tx.aiAgentRun.deleteMany({
+          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
+        });
+        await tx.aiActionLog.deleteMany({
+          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
+        });
+        await tx.message.deleteMany({
+          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
+        });
+        await tx.conversationTag.deleteMany({
+          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
+        });
+        await tx.contactNote.deleteMany({
+          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
+        });
+        await tx.aiAgentSession.deleteMany({
+          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
+        });
+        await tx.auditLog.create({
+          data: {
+            workspaceId: input.workspaceId,
+            actorUserId: input.actorUserId,
+            action: "conversation.demo_reset",
+            targetType: "conversation",
+            targetId: input.conversationId,
+            metadata: {}
+          }
+        });
+      });
+
+      const conversation = await findConversation(input);
+      return {
+        conversation: toConversationDto(conversation),
+        context: await buildContactContext(conversation)
       };
     },
 
