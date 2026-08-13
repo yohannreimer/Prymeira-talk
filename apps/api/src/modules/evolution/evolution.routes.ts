@@ -26,7 +26,16 @@ import {
 
 export interface EvolutionRoutesOptions {
   webhookSecret: string;
-  agentRuntime?: AutomationRunnerAgentRuntime;
+  agentRuntime?: AutomationRunnerAgentRuntime & {
+    prepareAudioMessage(input: {
+      workspaceId: string;
+      messageId: string;
+    }): Promise<{
+      status: "completed" | "failed" | "skipped";
+      text?: string;
+      errorCode?: string;
+    }>;
+  };
   evolution?: AutomationRunnerEvolution;
   agentReplyScheduler?: {
     scheduleActiveSessionForMessage(input: {
@@ -705,6 +714,15 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
       });
 
       if (message.direction === "inbound") {
+        if (message.type === "audio") {
+          await options.agentRuntime?.prepareAudioMessage({
+            workspaceId,
+            messageId: message.id
+          }).catch((error: unknown) => {
+            request.log.error({ error }, "Failed to prepare inbound audio.");
+          });
+        }
+
         await automationRunner.runForInboundMessage({
           workspaceId,
           messageId: message.id,

@@ -279,14 +279,19 @@ function createMockPrisma(overrides: {
 
 async function buildEvolutionApp(
   prisma = createMockPrisma(),
-  evolution?: EvolutionRoutesOptions["evolution"]
+  evolution?: EvolutionRoutesOptions["evolution"],
+  routeOverrides: Partial<EvolutionRoutesOptions> = {}
 ) {
   const app = Fastify({ logger: false });
   const publish = vi.fn();
 
   app.decorate("prisma", prisma as never);
   app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
-  await app.register(evolutionRoutes, { webhookSecret: "top_secret", evolution });
+  await app.register(evolutionRoutes, {
+    webhookSecret: "top_secret",
+    evolution,
+    ...routeOverrides
+  });
 
   return { app, prisma, publish };
 }
@@ -908,6 +913,97 @@ describe("Evolution webhook routes", () => {
           body: "Figurinha recebida",
           mediaUrl: "data:image/webp;base64,c3RpY2tlcg=="
         })
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("prepares inbound audio before automations and reply scheduling", async () => {
+    const messageCreate = vi.fn().mockImplementation(async (args) => ({
+      id: "msg_1",
+      sentByUserId: null,
+      updatedAt: new Date("2026-05-20T12:00:00.000Z"),
+      ...args.data
+    }));
+    const prisma = createMockPrisma({
+      message: { create: messageCreate }
+    });
+    const prepareAudioMessage = vi.fn().mockResolvedValue({
+      status: "completed",
+      text: "Preciso de chapas lisas."
+    });
+    const agentRuntime = {
+      activateForMessage: vi.fn().mockResolvedValue({ status: "completed" }),
+      prepareAudioMessage
+    };
+    const scheduleActiveSessionForMessage = vi.fn().mockResolvedValue({ scheduled: true });
+    const { app } = await buildEvolutionApp(prisma, undefined, {
+      agentRuntime,
+      agentReplyScheduler: { scheduleActiveSessionForMessage }
+    });
+    const audioPayload = {
+      ...validWebhookBody,
+      data: {
+        ...validWebhookBody.data,
+        key: { ...validWebhookBody.data.key, id: "provider_audio_immediate" },
+        message: {
+          base64: "YXVkaW8=",
+          audioMessage: { mimetype: "audio/ogg; codecs=opus" }
+        }
+      }
+    };
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: audioPayload
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(prepareAudioMessage).toHaveBeenCalledWith({
+        workspaceId: "workspace_a",
+        messageId: "msg_1"
+      });
+      expect(prepareAudioMessage.mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(prisma.automationRule.findMany).mock.invocationCallOrder[0]!
+      );
+      expect(prepareAudioMessage.mock.invocationCallOrder[0]).toBeLessThan(
+        scheduleActiveSessionForMessage.mock.invocationCallOrder[0]!
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not run audio preparation for inbound text", async () => {
+    const prepareAudioMessage = vi.fn();
+    const agentRuntime = {
+      activateForMessage: vi.fn().mockResolvedValue({ status: "completed" }),
+      prepareAudioMessage
+    };
+    const scheduleActiveSessionForMessage = vi.fn().mockResolvedValue({ scheduled: true });
+    const { app } = await buildEvolutionApp(createMockPrisma(), undefined, {
+      agentRuntime,
+      agentReplyScheduler: { scheduleActiveSessionForMessage }
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: validWebhookBody
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(prepareAudioMessage).not.toHaveBeenCalled();
+      expect(scheduleActiveSessionForMessage).toHaveBeenCalledWith({
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        messageId: "msg_1"
       });
     } finally {
       await app.close();
