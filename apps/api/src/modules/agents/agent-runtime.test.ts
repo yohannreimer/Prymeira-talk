@@ -208,6 +208,12 @@ function buildPrisma(overrides: Record<string, any> = {}) {
     message: {
       findFirst: vi.fn().mockResolvedValue(baseMessage),
       findMany: vi.fn().mockResolvedValue(baseConversationMessages),
+      update: overrides.message?.update ?? vi.fn().mockImplementation(
+        async (args: { data: Partial<typeof baseMessage> }) => ({
+          ...baseMessage,
+          ...args.data
+        })
+      ),
       create: vi.fn().mockResolvedValue({
         id: "outbound_1",
         workspaceId: ids.workspace,
@@ -417,7 +423,14 @@ describe("createAgentRuntime", () => {
       actions: [],
       handoff: { required: false, reason: null }
     });
-    const transcribe = vi.fn().mockResolvedValue("Tem exatamente 30 chapas em estoque hoje?");
+    const transcribe = vi.fn().mockResolvedValue({
+      text: "Tem exatamente 30 chapas em estoque hoje?",
+      playback: {
+        bytes: Buffer.from("converted-mp3"),
+        mimeType: "audio/mpeg"
+      }
+    });
+    const publish = vi.fn();
     const runtime = createAgentRuntime({
       prisma,
       provider,
@@ -427,7 +440,8 @@ describe("createAgentRuntime", () => {
         mimeType: "audio/ogg",
         source: "data_url"
       }),
-      audioTranscriberFactory: vi.fn(() => ({ transcribe }))
+      audioTranscriberFactory: vi.fn(() => ({ transcribe })),
+      realtime: { publish }
     });
 
     const result = await runtime.runForMessage({
@@ -440,6 +454,26 @@ describe("createAgentRuntime", () => {
 
     expect(result.status).toBe("handoff_requested");
     expect(transcribe).toHaveBeenCalledWith({ bytes: Buffer.from("audio"), mimeType: "audio/ogg" });
+    expect(prisma.message.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: ids.workspace,
+          id: ids.message
+        }
+      },
+      data: {
+        body: "Tem exatamente 30 chapas em estoque hoje?",
+        mediaUrl: "data:audio/mpeg;base64,Y29udmVydGVkLW1wMw=="
+      }
+    });
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: "message.created",
+      payload: expect.objectContaining({
+        id: ids.message,
+        body: "Tem exatamente 30 chapas em estoque hoje?",
+        mediaUrl: "data:audio/mpeg;base64,Y29udmVydGVkLW1wMw=="
+      })
+    }));
     expect(realProvider.generate).not.toHaveBeenCalled();
     expect(prisma.message.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -472,6 +506,7 @@ describe("createAgentRuntime", () => {
       actions: [],
       handoff: { required: false, reason: null }
     });
+    const publish = vi.fn();
     const runtime = createAgentRuntime({
       prisma,
       provider,
@@ -484,7 +519,8 @@ describe("createAgentRuntime", () => {
         transcribe: vi.fn().mockRejectedValue(Object.assign(new Error("failed"), {
           code: "TRANSCRIPTION_FAILED"
         }))
-      }))
+      })),
+      realtime: { publish }
     });
 
     const result = await runtime.runForMessage({
@@ -497,6 +533,22 @@ describe("createAgentRuntime", () => {
 
     expect(result.status).toBe("completed");
     expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.message.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: ids.workspace,
+          id: ids.message
+        }
+      },
+      data: { body: "Não foi possível transcrever este áudio." }
+    });
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: "message.created",
+      payload: expect.objectContaining({
+        id: ids.message,
+        body: "Não foi possível transcrever este áudio."
+      })
+    }));
     expect(prisma.message.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         body: "Não consegui entender esse áudio. Pode reenviar ou escrever a mensagem?"

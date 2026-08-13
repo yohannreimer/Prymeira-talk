@@ -142,6 +142,7 @@ type AgentRuntimePrismaLike = Omit<
   message: {
     findFirst(args: unknown): Promise<MessageRecord | null>;
     findMany: ConversationContextBuilderPrismaLike["message"]["findMany"];
+    update(args: unknown): Promise<MessageRecord>;
     create(args: unknown): Promise<MessageRecord>;
   };
   aiAgentRun: {
@@ -180,6 +181,8 @@ export const IMAGE_PROCESSING_FALLBACK =
   "Não consegui analisar essa imagem. Pode reenviar com mais nitidez ou mandar a lista em texto?";
 export const AUDIO_PROCESSING_FALLBACK =
   "Não consegui entender esse áudio. Pode reenviar ou escrever a mensagem?";
+const AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK =
+  "Não foi possível transcrever este áudio.";
 
 const IMAGE_MEDIA_POLICY = {
   kind: "image" as const,
@@ -594,14 +597,48 @@ export function createAgentRuntime(input: {
             const transcriber = input.audioTranscriberFactory
               ? input.audioTranscriberFactory(providerSettings)
               : createOpenAiCompatibleAudioTranscriber(providerSettings);
-            effectiveText = await transcriber.transcribe({
+            const transcription = await transcriber.transcribe({
               bytes: media.bytes,
               mimeType: media.mimeType
+            });
+            effectiveText = transcription.text;
+            const updatedAudioMessage = await prisma.message.update({
+              where: {
+                workspaceId_id: {
+                  workspaceId: runInput.workspaceId,
+                  id: message.id
+                }
+              },
+              data: {
+                body: transcription.text,
+                ...(transcription.playback
+                  ? { mediaUrl: toAudioDataUrl(transcription.playback) }
+                  : {})
+              }
+            });
+            input.realtime?.publish({
+              type: "message.created",
+              workspaceId: runInput.workspaceId,
+              payload: toMessageDto(updatedAudioMessage)
             });
             mediaMetadata = { type: "audio", mimeType: media.mimeType, source: media.source };
           } catch (error) {
             mediaFallback = AUDIO_PROCESSING_FALLBACK;
             mediaProcessingError = readStableMediaErrorCode(error);
+            const failedAudioMessage = await prisma.message.update({
+              where: {
+                workspaceId_id: {
+                  workspaceId: runInput.workspaceId,
+                  id: message.id
+                }
+              },
+              data: { body: AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK }
+            });
+            input.realtime?.publish({
+              type: "message.created",
+              workspaceId: runInput.workspaceId,
+              payload: toMessageDto(failedAudioMessage)
+            });
           }
         }
 
@@ -974,6 +1011,10 @@ function readConfidenceThreshold(value: JsonValue) {
 
 function buildUserPrompt(messageBody: string | null | undefined, instruction: string | null | undefined) {
   return [instruction?.trim(), messageBody?.trim()].filter(Boolean).join("\n\n");
+}
+
+function toAudioDataUrl(playback: { bytes: Buffer; mimeType: string }) {
+  return `data:${playback.mimeType};base64,${playback.bytes.toString("base64")}`;
 }
 
 function buildContext(
