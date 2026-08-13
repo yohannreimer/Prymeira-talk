@@ -181,7 +181,7 @@ export const IMAGE_PROCESSING_FALLBACK =
   "Não consegui analisar essa imagem. Pode reenviar com mais nitidez ou mandar a lista em texto?";
 export const AUDIO_PROCESSING_FALLBACK =
   "Não consegui entender esse áudio. Pode reenviar ou escrever a mensagem?";
-const AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK =
+export const AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK =
   "Não foi possível transcrever este áudio.";
 
 const IMAGE_MEDIA_POLICY = {
@@ -219,7 +219,102 @@ export function createAgentRuntime(input: {
 }) {
   const { prisma, provider } = input;
 
+  async function prepareAudioMessageRecord(
+    message: MessageRecord,
+    resolvedProviderSettings?: OpenAiCompatibleSettings
+  ) {
+    if (message.type !== "audio") {
+      return { status: "skipped" as const };
+    }
+    if (message.body === AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK) {
+      return { status: "failed" as const, errorCode: "TRANSCRIPTION_FAILED" };
+    }
+    if (!isPendingAudioBody(message.body)) {
+      return { status: "completed" as const, text: message.body ?? "" };
+    }
+
+    try {
+      const providerSettings = resolvedProviderSettings ??
+        await resolveOpenAiCompatibleSettings(prisma, {
+          workspaceId: message.workspaceId
+        });
+      if (!providerSettings.active) {
+        throw Object.assign(new Error("Audio provider is unavailable."), {
+          code: "TRANSCRIPTION_PROVIDER_UNAVAILABLE"
+        });
+      }
+      const media = await (input.mediaResolver ?? resolveAgentMedia)({
+        mediaUrl: message.mediaUrl,
+        policy: AUDIO_MEDIA_POLICY
+      });
+      const transcriber = input.audioTranscriberFactory
+        ? input.audioTranscriberFactory(providerSettings)
+        : createOpenAiCompatibleAudioTranscriber(providerSettings);
+      const transcription = await transcriber.transcribe({
+        bytes: media.bytes,
+        mimeType: media.mimeType
+      });
+      const updatedAudioMessage = await prisma.message.update({
+        where: {
+          workspaceId_id: {
+            workspaceId: message.workspaceId,
+            id: message.id
+          }
+        },
+        data: {
+          body: transcription.text,
+          ...(transcription.playback
+            ? { mediaUrl: toAudioDataUrl(transcription.playback) }
+            : {})
+        }
+      });
+      input.realtime?.publish({
+        type: "message.created",
+        workspaceId: message.workspaceId,
+        payload: toMessageDto(updatedAudioMessage)
+      });
+      return {
+        status: "completed" as const,
+        text: transcription.text,
+        media: {
+          type: "audio" as const,
+          mimeType: media.mimeType,
+          source: media.source
+        }
+      };
+    } catch (error) {
+      const errorCode = readStableMediaErrorCode(error);
+      const failedAudioMessage = await prisma.message.update({
+        where: {
+          workspaceId_id: {
+            workspaceId: message.workspaceId,
+            id: message.id
+          }
+        },
+        data: { body: AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK }
+      });
+      input.realtime?.publish({
+        type: "message.created",
+        workspaceId: message.workspaceId,
+        payload: toMessageDto(failedAudioMessage)
+      });
+      return { status: "failed" as const, errorCode };
+    }
+  }
+
   return {
+    async prepareAudioMessage(prepareInput: { workspaceId: string; messageId: string }) {
+      const message = await prisma.message.findFirst({
+        where: {
+          workspaceId: prepareInput.workspaceId,
+          id: prepareInput.messageId
+        }
+      });
+      return message
+        ? prepareAudioMessageRecord(message)
+        : { status: "skipped" as const };
+    },
+
     async activateForMessage(runInput: {
       workspaceId: string;
       agentId: string;
@@ -584,61 +679,15 @@ export function createAgentRuntime(input: {
             mediaProcessingError = readStableMediaErrorCode(error);
           }
         } else if (message.type === "audio") {
-          try {
-            if (!providerSettings.active) {
-              throw Object.assign(new Error("Audio provider is unavailable."), {
-                code: "TRANSCRIPTION_PROVIDER_UNAVAILABLE"
-              });
-            }
-            const media = await mediaResolver({
-              mediaUrl: message.mediaUrl,
-              policy: AUDIO_MEDIA_POLICY
-            });
-            const transcriber = input.audioTranscriberFactory
-              ? input.audioTranscriberFactory(providerSettings)
-              : createOpenAiCompatibleAudioTranscriber(providerSettings);
-            const transcription = await transcriber.transcribe({
-              bytes: media.bytes,
-              mimeType: media.mimeType
-            });
-            effectiveText = transcription.text;
-            const updatedAudioMessage = await prisma.message.update({
-              where: {
-                workspaceId_id: {
-                  workspaceId: runInput.workspaceId,
-                  id: message.id
-                }
-              },
-              data: {
-                body: transcription.text,
-                ...(transcription.playback
-                  ? { mediaUrl: toAudioDataUrl(transcription.playback) }
-                  : {})
-              }
-            });
-            input.realtime?.publish({
-              type: "message.created",
-              workspaceId: runInput.workspaceId,
-              payload: toMessageDto(updatedAudioMessage)
-            });
-            mediaMetadata = { type: "audio", mimeType: media.mimeType, source: media.source };
-          } catch (error) {
+          const preparedAudio = await prepareAudioMessageRecord(message, providerSettings);
+          if (preparedAudio.status === "failed") {
             mediaFallback = AUDIO_PROCESSING_FALLBACK;
-            mediaProcessingError = readStableMediaErrorCode(error);
-            const failedAudioMessage = await prisma.message.update({
-              where: {
-                workspaceId_id: {
-                  workspaceId: runInput.workspaceId,
-                  id: message.id
-                }
-              },
-              data: { body: AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK }
-            });
-            input.realtime?.publish({
-              type: "message.created",
-              workspaceId: runInput.workspaceId,
-              payload: toMessageDto(failedAudioMessage)
-            });
+            mediaProcessingError = preparedAudio.errorCode;
+          } else if (preparedAudio.status === "completed") {
+            effectiveText = preparedAudio.text;
+            if ("media" in preparedAudio && preparedAudio.media) {
+              mediaMetadata = preparedAudio.media;
+            }
           }
         }
 
@@ -1015,6 +1064,10 @@ function buildUserPrompt(messageBody: string | null | undefined, instruction: st
 
 function toAudioDataUrl(playback: { bytes: Buffer; mimeType: string }) {
   return `data:${playback.mimeType};base64,${playback.bytes.toString("base64")}`;
+}
+
+function isPendingAudioBody(body: string | null) {
+  return !body || /^(Áudio recebido|Processando áudio\.\.\.)$/i.test(body.trim());
 }
 
 function buildContext(

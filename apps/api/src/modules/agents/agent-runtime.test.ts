@@ -393,6 +393,166 @@ describe("createAgentRuntime", () => {
     });
   });
 
+  it("prepares an inbound audio message immediately", async () => {
+    const audioMessage = {
+      ...baseMessage,
+      type: "audio",
+      body: "Áudio recebido",
+      mediaUrl: "data:audio/ogg;base64,YXVkaW8="
+    };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(audioMessage);
+    vi.mocked(prisma.integrationConfig.findUnique).mockResolvedValue({
+      mode: "real",
+      settings: {
+        baseUrl: "https://provider.example/v1",
+        apiKey: "secret",
+        chatModel: "gpt-5.6-luna"
+      }
+    });
+    const transcribe = vi.fn().mockResolvedValue({
+      text: "Preciso de 42 chapas lisas.",
+      playback: {
+        bytes: Buffer.from("converted-mp3"),
+        mimeType: "audio/mpeg"
+      }
+    });
+    const publish = vi.fn();
+    const runtime = createAgentRuntime({
+      prisma,
+      provider: buildProvider({
+        confidence: 0.9,
+        reply: "Não deveria ser chamada.",
+        actions: [],
+        handoff: { required: false, reason: null }
+      }),
+      mediaResolver: vi.fn().mockResolvedValue({
+        bytes: Buffer.from("audio"),
+        mimeType: "audio/ogg",
+        source: "data_url"
+      }),
+      audioTranscriberFactory: vi.fn(() => ({ transcribe })),
+      realtime: { publish }
+    });
+
+    const result = await runtime.prepareAudioMessage({
+      workspaceId: ids.workspace,
+      messageId: ids.message
+    });
+
+    expect(result).toEqual({
+      status: "completed",
+      text: "Preciso de 42 chapas lisas.",
+      media: { type: "audio", mimeType: "audio/ogg", source: "data_url" }
+    });
+    expect(prisma.message.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: ids.workspace,
+          id: ids.message
+        }
+      },
+      data: {
+        body: "Preciso de 42 chapas lisas.",
+        mediaUrl: "data:audio/mpeg;base64,Y29udmVydGVkLW1wMw=="
+      }
+    });
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: "message.created",
+      payload: expect.objectContaining({ body: "Preciso de 42 chapas lisas." })
+    }));
+  });
+
+  it("stores a terminal display state when immediate audio preparation fails", async () => {
+    const audioMessage = {
+      ...baseMessage,
+      type: "audio",
+      body: "Áudio recebido",
+      mediaUrl: "data:audio/ogg;base64,YXVkaW8="
+    };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(audioMessage);
+    vi.mocked(prisma.integrationConfig.findUnique).mockResolvedValue({
+      mode: "real",
+      settings: {
+        baseUrl: "https://provider.example/v1",
+        apiKey: "secret",
+        chatModel: "gpt-5.6-luna"
+      }
+    });
+    const publish = vi.fn();
+    const runtime = createAgentRuntime({
+      prisma,
+      provider: buildProvider({
+        confidence: 0.9,
+        reply: "Não deveria ser chamada.",
+        actions: [],
+        handoff: { required: false, reason: null }
+      }),
+      mediaResolver: vi.fn().mockRejectedValue(Object.assign(new Error("missing"), {
+        code: "MEDIA_UNAVAILABLE"
+      })),
+      realtime: { publish }
+    });
+
+    const result = await runtime.prepareAudioMessage({
+      workspaceId: ids.workspace,
+      messageId: ids.message
+    });
+
+    expect(result).toEqual({ status: "failed", errorCode: "MEDIA_UNAVAILABLE" });
+    expect(prisma.message.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: ids.workspace,
+          id: ids.message
+        }
+      },
+      data: { body: "Não foi possível transcrever este áudio." }
+    });
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: "message.created",
+      payload: expect.objectContaining({ body: "Não foi possível transcrever este áudio." })
+    }));
+  });
+
+  it("reuses a stored audio transcript without transcribing again", async () => {
+    const audioMessage = {
+      ...baseMessage,
+      type: "audio",
+      body: "Quero saber quais chapas vocês trabalham.",
+      mediaUrl: "data:audio/mpeg;base64,YXVkaW8="
+    };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(audioMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([audioMessage]);
+    const transcribe = vi.fn();
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "Trabalhamos com chapas lisas e xadrez.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      audioTranscriberFactory: vi.fn(() => ({ transcribe }))
+    });
+
+    await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
+      userPrompt: "Quero saber quais chapas vocês trabalham."
+    }));
+  });
+
   it("applies deterministic stock protection to an audio transcript", async () => {
     const audioMessage = {
       ...baseMessage,
