@@ -446,12 +446,7 @@ describe("createAgentRuntime", () => {
       media: { type: "audio", mimeType: "audio/ogg", source: "data_url" }
     });
     expect(prisma.message.update).toHaveBeenCalledWith({
-      where: {
-        workspaceId_id: {
-          workspaceId: ids.workspace,
-          id: ids.message
-        }
-      },
+      where: { id: ids.message },
       data: {
         body: "Preciso de 42 chapas lisas.",
         mediaUrl: "data:audio/mpeg;base64,Y29udmVydGVkLW1wMw=="
@@ -502,12 +497,7 @@ describe("createAgentRuntime", () => {
 
     expect(result).toEqual({ status: "failed", errorCode: "MEDIA_UNAVAILABLE" });
     expect(prisma.message.update).toHaveBeenCalledWith({
-      where: {
-        workspaceId_id: {
-          workspaceId: ids.workspace,
-          id: ids.message
-        }
-      },
+      where: { id: ids.message },
       data: { body: "Não foi possível transcrever este áudio." }
     });
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({
@@ -615,12 +605,7 @@ describe("createAgentRuntime", () => {
     expect(result.status).toBe("handoff_requested");
     expect(transcribe).toHaveBeenCalledWith({ bytes: Buffer.from("audio"), mimeType: "audio/ogg" });
     expect(prisma.message.update).toHaveBeenCalledWith({
-      where: {
-        workspaceId_id: {
-          workspaceId: ids.workspace,
-          id: ids.message
-        }
-      },
+      where: { id: ids.message },
       data: {
         body: "Tem exatamente 30 chapas em estoque hoje?",
         mediaUrl: "data:audio/mpeg;base64,Y29udmVydGVkLW1wMw=="
@@ -694,12 +679,7 @@ describe("createAgentRuntime", () => {
     expect(result.status).toBe("completed");
     expect(provider.generate).not.toHaveBeenCalled();
     expect(prisma.message.update).toHaveBeenCalledWith({
-      where: {
-        workspaceId_id: {
-          workspaceId: ids.workspace,
-          id: ids.message
-        }
-      },
+      where: { id: ids.message },
       data: { body: "Não foi possível transcrever este áudio." }
     });
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({

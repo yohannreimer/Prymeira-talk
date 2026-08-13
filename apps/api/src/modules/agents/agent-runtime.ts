@@ -255,12 +255,7 @@ export function createAgentRuntime(input: {
         mimeType: media.mimeType
       });
       const updatedAudioMessage = await prisma.message.update({
-        where: {
-          workspaceId_id: {
-            workspaceId: message.workspaceId,
-            id: message.id
-          }
-        },
+        where: { id: message.id },
         data: {
           body: transcription.text,
           ...(transcription.playback
@@ -285,12 +280,7 @@ export function createAgentRuntime(input: {
     } catch (error) {
       const errorCode = readStableMediaErrorCode(error);
       const failedAudioMessage = await prisma.message.update({
-        where: {
-          workspaceId_id: {
-            workspaceId: message.workspaceId,
-            id: message.id
-          }
-        },
+        where: { id: message.id },
         data: { body: AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK }
       });
       input.realtime?.publish({
