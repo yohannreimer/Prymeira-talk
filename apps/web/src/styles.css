@@ -6196,6 +6196,21 @@ select:disabled {
   height: 40px;
 }
 
+.message-audio-preview.is-processing {
+  min-height: 34px;
+  align-content: center;
+}
+
+.message-audio-text {
+  margin-top: 8px !important;
+}
+
+.message-audio-text.is-processing,
+.message-audio-text.is-error {
+  opacity: 0.72;
+  font-size: 12px;
+}
+
 .message-media-fallback {
   display: inline-flex;
   width: fit-content;

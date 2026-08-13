@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  audioMessageDisplayText,
   aiControlActionLabel,
   aiControlLabel,
   applyComposerMarker,
   canResetConversation,
   insertComposerText,
+  isBrowserPlayableAudio,
   metaClosedWindowMessage,
   metaServiceWindowSendError,
   messageDisplayText,
@@ -99,6 +101,41 @@ describe("messageMediaKind", () => {
     expect(messageMediaKind({ mediaUrl: "data:video/mp4;base64,dmZk", type: "file" })).toBe("file");
     expect(messageMediaKind({ mediaUrl: "https://cdn.test/a.pdf", type: "file" })).toBe("file");
     expect(messageMediaKind({ mediaUrl: null, type: "image" })).toBeNull();
+  });
+});
+
+describe("audio message presentation", () => {
+  it("does not mount Safari's native player for inline OGG/Opus data", () => {
+    expect(isBrowserPlayableAudio({
+      type: "audio",
+      mediaUrl: "data:audio/ogg;base64,YQ=="
+    })).toBe(false);
+    expect(isBrowserPlayableAudio({
+      type: "audio",
+      mediaUrl: "data:audio/opus;base64,YQ=="
+    })).toBe(false);
+    expect(isBrowserPlayableAudio({
+      type: "audio",
+      mediaUrl: "data:audio/mpeg;base64,YQ=="
+    })).toBe(true);
+  });
+
+  it("labels processing, transcript, and failure states", () => {
+    expect(audioMessageDisplayText({ type: "audio", body: "Áudio recebido" })).toEqual({
+      kind: "processing",
+      text: "Processando áudio..."
+    });
+    expect(audioMessageDisplayText({ type: "audio", body: "Preciso de 42 chapas." })).toEqual({
+      kind: "transcript",
+      text: "Texto do áudio: Preciso de 42 chapas."
+    });
+    expect(audioMessageDisplayText({
+      type: "audio",
+      body: "Não foi possível transcrever este áudio."
+    })).toEqual({
+      kind: "error",
+      text: "Não foi possível transcrever este áudio."
+    });
   });
 });
 

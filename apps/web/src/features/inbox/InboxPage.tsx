@@ -286,6 +286,35 @@ export function messageMediaKind(message: Pick<MessageDto, "mediaUrl" | "type">)
   return "file";
 }
 
+const audioTranscriptFailure = "Não foi possível transcrever este áudio.";
+
+export function isBrowserPlayableAudio(
+  message: Pick<MessageDto, "mediaUrl" | "type">
+) {
+  if (message.type !== "audio" || !message.mediaUrl) return false;
+
+  return !(
+    /^data:audio\/(ogg|opus)(?:[;,])/i.test(message.mediaUrl) ||
+    /\.(ogg|opus)(?:\?|#|$)/i.test(message.mediaUrl)
+  );
+}
+
+export function audioMessageDisplayText(
+  message: Pick<MessageDto, "body" | "type">
+) {
+  const body = message.body?.trim() ?? "";
+
+  if (body === audioTranscriptFailure) {
+    return { kind: "error" as const, text: body };
+  }
+
+  if (!body || body === "Áudio recebido") {
+    return { kind: "processing" as const, text: "Processando áudio..." };
+  }
+
+  return { kind: "transcript" as const, text: `Texto do áudio: ${body}` };
+}
+
 export function messageMediaLabel(message: Pick<MessageDto, "mediaUrl" | "type">) {
   const kind = messageMediaKind(message);
   const labels: Record<MessageMediaKind, string> = {
@@ -330,6 +359,22 @@ function MessageMediaPreview(props: { message: MessageDto }) {
   }
 
   if (kind === "audio") {
+    if (!isBrowserPlayableAudio(message)) {
+      return (
+        <div className="message-audio-preview is-processing">
+          <a
+            className="message-media-fallback"
+            href={message.mediaUrl}
+            rel="noreferrer"
+            target="_blank"
+          >
+            <Download size={14} aria-hidden="true" />
+            Abrir áudio original
+          </a>
+        </div>
+      );
+    }
+
     return (
       <div className="message-audio-preview">
         <audio
@@ -1413,7 +1458,11 @@ export function InboxPage() {
                 ) : null}
                 <div className="msg-bubble-body">
                   <MessageMediaPreview message={message} />
-                  {message.body || !message.mediaUrl ? (
+                  {message.type === "audio" ? (
+                    <p className={`message-audio-text is-${audioMessageDisplayText(message).kind}`}>
+                      {audioMessageDisplayText(message).text}
+                    </p>
+                  ) : message.body || !message.mediaUrl ? (
                     <p>{messageDisplayText(message)}</p>
                   ) : null}
                   <time>{formatMessageTime(message.createdAt)}</time>
