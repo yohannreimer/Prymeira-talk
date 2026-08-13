@@ -1698,7 +1698,9 @@ describe("conversations service", () => {
   });
 
   it("resets all selected conversation context while preserving its identity", async () => {
-    const prisma = createMockPrisma();
+    const prisma = createMockPrisma({
+      findNotes: vi.fn<PrismaLike["contactNote"]["findMany"]>().mockResolvedValue([])
+    });
     const service = createConversationsService(prisma);
 
     const result = await service.resetConversation({
@@ -1714,7 +1716,9 @@ describe("conversations service", () => {
     expect(prisma.aiActionLog.deleteMany).toHaveBeenCalledWith({ where: scope });
     expect(prisma.message.deleteMany).toHaveBeenCalledWith({ where: scope });
     expect(prisma.conversationTag.deleteMany).toHaveBeenCalledWith({ where: scope });
-    expect(prisma.contactNote.deleteMany).toHaveBeenCalledWith({ where: scope });
+    expect(prisma.contactNote.deleteMany).toHaveBeenCalledWith({
+      where: { workspaceId: "workspace_a", contactId: "contact_1" }
+    });
     expect(prisma.aiAgentSession.deleteMany).toHaveBeenCalledWith({ where: scope });
     expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
@@ -1740,6 +1744,7 @@ describe("conversations service", () => {
       }
     });
     expect(result.conversation.id).toBe("conv_1");
+    expect(result.context.notes).toEqual([]);
   });
 });
 

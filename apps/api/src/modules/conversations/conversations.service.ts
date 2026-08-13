@@ -1136,7 +1136,7 @@ export function createConversationsService(
     }): Promise<ConversationActionResultDto> {
       const existing = await prisma.conversation.findUnique({
         where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
-        select: { id: true }
+        select: { id: true, contactId: true }
       });
 
       if (!existing) {
@@ -1177,7 +1177,7 @@ export function createConversationsService(
           where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
         });
         await tx.contactNote.deleteMany({
-          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
+          where: { workspaceId: input.workspaceId, contactId: existing.contactId }
         });
         await tx.aiAgentSession.deleteMany({
           where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
