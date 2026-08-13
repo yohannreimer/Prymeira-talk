@@ -22,7 +22,10 @@ describe("createOpenAiCompatibleAudioTranscriber", () => {
     await expect(transcriber.transcribe({
       bytes: Buffer.from("webm-audio"),
       mimeType: "audio/webm"
-    })).resolves.toBe("Preciso de dez chapas de três milímetros.");
+    })).resolves.toEqual({
+      text: "Preciso de dez chapas de três milímetros.",
+      playback: null
+    });
 
     const [url, init] = fetchImpl.mock.calls[0];
     expect(url).toBe("https://provider.example/v1/audio/transcriptions");
@@ -61,7 +64,7 @@ describe("createOpenAiCompatibleAudioTranscriber", () => {
     })).rejects.toMatchObject({ code: "TRANSCRIPTION_FAILED" });
   });
 
-  it("remuxes OGG/Opus to WebM and uploads the converted file", async () => {
+  it("converts OGG/Opus to MP3 and returns browser playback bytes", async () => {
     let temporaryDirectory: string | null = null;
     const createTemporaryDirectory = async () => {
       temporaryDirectory = await mkdtemp(join(tmpdir(), "talk-audio-test-"));
@@ -69,7 +72,7 @@ describe("createOpenAiCompatibleAudioTranscriber", () => {
     };
     const runProcess = vi.fn(async (_command: string, args: string[]) => {
       const outputPath = args.at(-1)!;
-      await writeFile(outputPath, Buffer.from("converted-webm"));
+      await writeFile(outputPath, Buffer.from("converted-mp3"));
     });
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(successResponse("Áudio convertido."));
     const transcriber = createOpenAiCompatibleAudioTranscriber({
@@ -83,29 +86,34 @@ describe("createOpenAiCompatibleAudioTranscriber", () => {
     await expect(transcriber.transcribe({
       bytes: Buffer.from("ogg-opus"),
       mimeType: "audio/ogg"
-    })).resolves.toBe("Áudio convertido.");
+    })).resolves.toEqual({
+      text: "Áudio convertido.",
+      playback: {
+        bytes: Buffer.from("converted-mp3"),
+        mimeType: "audio/mpeg"
+      }
+    });
 
     expect(runProcess).toHaveBeenCalledWith(
       "ffmpeg",
-      expect.arrayContaining(["-c:a", "copy"])
+      expect.arrayContaining(["-c:a", "libmp3lame", "-b:a", "64k"])
     );
     const file = ((fetchImpl.mock.calls[0][1]?.body as FormData).get("file")) as File;
-    expect(file.type).toBe("audio/webm");
-    expect(Buffer.from(await file.arrayBuffer()).toString()).toBe("converted-webm");
+    expect(file.type).toBe("audio/mpeg");
+    expect(file.name).toBe("audio.mp3");
+    expect(Buffer.from(await file.arrayBuffer()).toString()).toBe("converted-mp3");
     await expect(access(temporaryDirectory!)).rejects.toThrow();
   });
 
-  it("falls back to Opus transcoding and cleans up after provider failure", async () => {
+  it("cleans up converted MP3 after provider failure", async () => {
     let temporaryDirectory: string | null = null;
     const createTemporaryDirectory = async () => {
       temporaryDirectory = await mkdtemp(join(tmpdir(), "talk-audio-test-"));
       return temporaryDirectory;
     };
-    const runProcess = vi.fn()
-      .mockRejectedValueOnce(new Error("remux failed"))
-      .mockImplementationOnce(async (_command: string, args: string[]) => {
-        await writeFile(args.at(-1)!, Buffer.from("transcoded-webm"));
-      });
+    const runProcess = vi.fn(async (_command: string, args: string[]) => {
+      await writeFile(args.at(-1)!, Buffer.from("converted-mp3"));
+    });
     const transcriber = createOpenAiCompatibleAudioTranscriber({
       baseUrl: "https://provider.example/v1",
       apiKey: "secret",
@@ -118,10 +126,9 @@ describe("createOpenAiCompatibleAudioTranscriber", () => {
       bytes: Buffer.from("ogg-opus"),
       mimeType: "audio/ogg; codecs=opus"
     })).rejects.toMatchObject({ code: "TRANSCRIPTION_FAILED" });
-    expect(runProcess).toHaveBeenNthCalledWith(
-      2,
+    expect(runProcess).toHaveBeenCalledWith(
       "ffmpeg",
-      expect.arrayContaining(["-c:a", "libopus", "-b:a", "32k"])
+      expect.arrayContaining(["-c:a", "libmp3lame", "-b:a", "64k"])
     );
     await expect(access(temporaryDirectory!)).rejects.toThrow();
   });

@@ -25,8 +25,19 @@ export class AudioTranscriptionError extends Error {
   }
 }
 
+export type AgentAudioTranscriptionResult = {
+  text: string;
+  playback: {
+    bytes: Buffer;
+    mimeType: "audio/mpeg";
+  } | null;
+};
+
 export type AgentAudioTranscriber = {
-  transcribe(input: { bytes: Buffer; mimeType: string }): Promise<string>;
+  transcribe(input: {
+    bytes: Buffer;
+    mimeType: string;
+  }): Promise<AgentAudioTranscriptionResult>;
 };
 
 type RunProcess = (command: string, args: string[]) => Promise<unknown>;
@@ -71,6 +82,7 @@ async function normalizeAudio(input: {
       bytes: input.bytes,
       mimeType: directType.type,
       extension: directType.extension,
+      playback: null,
       cleanup: async () => {}
     };
   }
@@ -81,31 +93,27 @@ async function normalizeAudio(input: {
 
   const directory = await input.createTemporaryDirectory();
   const sourcePath = join(directory, "input.ogg");
-  const outputPath = join(directory, "output.webm");
+  const outputPath = join(directory, "output.mp3");
   try {
     await writeFile(sourcePath, input.bytes);
     try {
       await input.runProcess(input.ffmpegPath, [
-        "-v", "error", "-y", "-i", sourcePath, "-c:a", "copy", outputPath
+        "-v", "error", "-y", "-i", sourcePath,
+        "-vn", "-c:a", "libmp3lame", "-b:a", "64k", outputPath
       ]);
     } catch {
-      try {
-        await input.runProcess(input.ffmpegPath, [
-          "-v", "error", "-y", "-i", sourcePath, "-c:a", "libopus", "-b:a", "32k", outputPath
-        ]);
-      } catch {
-        throw new AudioTranscriptionError(
-          "AUDIO_CONVERSION_FAILED",
-          "Audio could not be converted for transcription."
-        );
-      }
+      throw new AudioTranscriptionError(
+        "AUDIO_CONVERSION_FAILED",
+        "Audio could not be converted for transcription."
+      );
     }
     const bytes = await readFile(outputPath);
     assertAudioSize(bytes);
     return {
       bytes,
-      mimeType: "audio/webm",
-      extension: "webm",
+      mimeType: "audio/mpeg",
+      extension: "mp3",
+      playback: { bytes, mimeType: "audio/mpeg" as const },
       cleanup: () => rm(directory, { recursive: true, force: true })
     };
   } catch (error) {
@@ -185,7 +193,10 @@ export function createOpenAiCompatibleAudioTranscriber(input: {
         if (typeof text !== "string" || text.trim().length === 0) {
           throw new AudioTranscriptionError("EMPTY_TRANSCRIPT", "Audio transcription was empty.");
         }
-        return text.trim();
+        return {
+          text: text.trim(),
+          playback: normalized.playback
+        };
       } finally {
         await normalized.cleanup();
       }
