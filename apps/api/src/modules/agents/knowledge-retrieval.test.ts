@@ -111,4 +111,35 @@ describe("selectRelevantKnowledge", () => {
     expect(result.selected[0]?.content.length).toBeLessThanOrEqual(8_000);
     expect(result.selected[0]?.content).toContain("Preço do plano profissional");
   });
+
+  it("selects a custom material source using package aliases", () => {
+    const result = selectRelevantKnowledge({
+      latestMessage: "Preciso de chapa galvanizada",
+      conversationHistory: "",
+      instruction: "",
+      taxonomy: [
+        {
+          key: "materials",
+          label: "Materiais",
+          aliases: ["chapa", "galvanizada"],
+          requiresSource: true
+        }
+      ],
+      sources: [
+        {
+          id: "source-materials",
+          title: "Materiais disponíveis",
+          content: "Chapas galvanizadas sob consulta.",
+          metadata: {
+            category: "materials",
+            keywords: ["chapa", "galvanizada"]
+          }
+        }
+      ]
+    });
+
+    expect(result.selected[0]).toEqual(
+      expect.objectContaining({ id: "source-materials", category: "materials" })
+    );
+  });
 });

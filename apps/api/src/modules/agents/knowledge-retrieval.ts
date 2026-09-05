@@ -1,6 +1,10 @@
+import type { AgentKnowledgeTaxonomyEntry } from "@prymeira-talk/shared";
+import { DEFAULT_KNOWLEDGE_TAXONOMY } from "./knowledge-taxonomy.js";
+
 export type KnowledgeRetrievalMetadata = {
   category?: string | null;
   keywords?: string[] | string | null;
+  aliases?: string[] | string | null;
 };
 
 export type KnowledgeRetrievalSource = {
@@ -34,147 +38,35 @@ export type KnowledgeRetrievalResult = {
 const MAX_SELECTED_SOURCES = 3;
 const MAX_FULL_DOCUMENT_LENGTH = 8_000;
 
-const CATEGORY_ALIASES: Record<string, string[]> = {
-  precos: [
-    "preco",
-    "precos",
-    "valor",
-    "valores",
-    "quanto custa",
-    "custa",
-    "custo",
-    "custos",
-    "plano",
-    "planos",
-    "mensalidade",
-    "assinatura",
-    "orcamento",
-    "desconto",
-    "taxa",
-    "pagamento"
-  ],
-  politicas: [
-    "politica",
-    "politicas",
-    "regra",
-    "regras",
-    "termo",
-    "termos",
-    "cancelamento",
-    "cancelar",
-    "reembolso",
-    "devolucao",
-    "troca",
-    "garantia",
-    "privacidade",
-    "prazo",
-    "contrato"
-  ],
-  produto: [
-    "produto",
-    "produtos",
-    "servico",
-    "servicos",
-    "funcionalidade",
-    "funcionalidades",
-    "recurso",
-    "recursos",
-    "integracao",
-    "integracoes",
-    "oferece",
-    "funciona",
-    "beneficio",
-    "beneficios"
-  ],
-  onboarding: [
-    "onboarding",
-    "implantacao",
-    "implementar",
-    "configurar",
-    "configuracao",
-    "comecar",
-    "inicio",
-    "primeiros",
-    "passos",
-    "treinamento",
-    "cadastro",
-    "acesso",
-    "ativar",
-    "setup"
-  ]
-};
-
 const STOP_WORDS = new Set([
-  "ainda",
-  "agora",
-  "aqui",
-  "aquela",
-  "aquele",
-  "aquilo",
-  "assim",
-  "atendente",
-  "boa",
-  "cada",
-  "cliente",
-  "como",
-  "com",
-  "daquele",
-  "dessa",
-  "desse",
-  "deste",
-  "data",
-  "dele",
-  "dela",
-  "eles",
-  "elas",
-  "esta",
-  "este",
-  "essa",
-  "esse",
-  "fala",
-  "favor",
-  "hoje",
-  "isso",
-  "mais",
-  "mesmo",
-  "minha",
-  "muito",
-  "nota",
-  "obrigado",
-  "para",
-  "pela",
-  "pelo",
-  "pode",
-  "pois",
-  "qual",
-  "quando",
-  "queria",
-  "sem",
-  "sobre",
-  "sua",
-  "tarde",
-  "tudo",
-  "voce",
-  "voces"
+  "ainda", "agora", "aqui", "aquela", "aquele", "aquilo", "assim", "atendente",
+  "boa", "cada", "cliente", "como", "com", "daquele", "dessa", "desse", "deste",
+  "data", "dele", "dela", "eles", "elas", "esta", "este", "essa", "esse", "fala",
+  "favor", "hoje", "isso", "mais", "mesmo", "minha", "muito", "nota", "obrigado",
+  "para", "pela", "pelo", "pode", "pois", "qual", "quando", "queria", "sem", "sobre",
+  "sua", "tarde", "tudo", "voce", "voces"
 ]);
 
 export function selectRelevantKnowledge(input: {
   latestMessage: string | null | undefined;
   conversationHistory: string | null | undefined;
   instruction: string | null | undefined;
+  taxonomy?: AgentKnowledgeTaxonomyEntry[];
   sources: KnowledgeRetrievalSource[];
 }): KnowledgeRetrievalResult {
+  const taxonomy = input.taxonomy ?? DEFAULT_KNOWLEDGE_TAXONOMY;
   const primaryQuery = normalize([input.instruction, input.latestMessage].filter(Boolean).join("\n"));
   const historyQuery = normalize(input.conversationHistory ?? "");
-  const primaryCategories = detectCategories(primaryQuery);
-  const historyCategories = detectCategories(historyQuery);
+  const primaryCategories = detectCategories(primaryQuery, taxonomy);
+  const historyCategories = detectCategories(historyQuery, taxonomy);
   const retrievalQuery: RetrievalQuery = {
     primary: primaryQuery,
     history: historyQuery,
     primaryTokens: toTokenSet(primaryQuery),
     historyTokens: toTokenSet(historyQuery),
     primaryCategories,
-    activeCategories: primaryCategories.size > 0 ? primaryCategories : historyCategories
+    activeCategories: primaryCategories.size > 0 ? primaryCategories : historyCategories,
+    taxonomy
   };
 
   const rankedSources = input.sources
@@ -184,20 +76,18 @@ export function selectRelevantKnowledge(input: {
     .slice(0, MAX_SELECTED_SOURCES)
     .map(({ index: _index, ...source }) => source);
 
-  return {
-    selected: rankedSources,
-    total: input.sources.length
-  };
+  return { selected: rankedSources, total: input.sources.length };
 }
 
-export function isDocumentDependentQuestion(value: string | null | undefined) {
-  const categories = detectCategories(normalize(value ?? ""));
-  return Array.from(categories).some((category) => category === "precos" || category === "politicas");
+export function isDocumentDependentQuestion(
+  value: string | null | undefined,
+  taxonomy: AgentKnowledgeTaxonomyEntry[] = DEFAULT_KNOWLEDGE_TAXONOMY
+) {
+  const categories = detectCategories(normalize(value ?? ""), taxonomy);
+  return taxonomy.some((entry) => entry.requiresSource && categories.has(entry.key));
 }
 
-type ScoredKnowledgeSource = SelectedKnowledgeSource & {
-  index: number;
-};
+type ScoredKnowledgeSource = SelectedKnowledgeSource & { index: number };
 
 type RetrievalQuery = {
   primary: string;
@@ -206,6 +96,7 @@ type RetrievalQuery = {
   historyTokens: Set<string>;
   primaryCategories: Set<string>;
   activeCategories: Set<string>;
+  taxonomy: AgentKnowledgeTaxonomyEntry[];
 };
 
 function scoreSource(
@@ -214,8 +105,8 @@ function scoreSource(
   query: RetrievalQuery
 ): ScoredKnowledgeSource | null {
   const metadata = readMetadata(source.metadata);
-  const category = normalizeCategory(metadata.category);
-  const keywords = metadata.keywords.map(normalize).filter(Boolean);
+  const category = normalizeCategory(metadata.category, query.taxonomy);
+  const keywords = [...metadata.keywords, ...metadata.aliases].map(normalize).filter(Boolean);
   const title = normalize(source.title);
   const content = source.content ?? "";
   const normalizedContent = normalize(content);
@@ -225,11 +116,15 @@ function scoreSource(
     query.primaryCategories.size === 0 || Boolean(category && query.activeCategories.has(category));
   let score = 0;
 
+  const taxonomyEntry = category
+    ? query.taxonomy.find((entry) => entry.key === category)
+    : undefined;
+
   if (category && query.activeCategories.has(category)) {
     score += 50;
     reasons.add("category_match");
-    for (const alias of CATEGORY_ALIASES[category] ?? []) {
-      evidenceTerms.add(alias);
+    for (const alias of taxonomyEntry?.aliases ?? []) {
+      evidenceTerms.add(normalize(alias));
     }
   }
 
@@ -239,17 +134,12 @@ function scoreSource(
     : [];
   const keywordMatches = Array.from(new Set([...primaryKeywordMatches, ...historyKeywordMatches]));
   if (keywordMatches.length > 0) {
-    score += Math.min(
-      30,
-      primaryKeywordMatches.length * 15 + historyKeywordMatches.length * 4
-    );
+    score += Math.min(30, primaryKeywordMatches.length * 15 + historyKeywordMatches.length * 4);
     reasons.add("keyword_match");
-    for (const keyword of keywordMatches) {
-      evidenceTerms.add(keyword);
-    }
+    for (const keyword of keywordMatches) evidenceTerms.add(keyword);
   }
 
-  if (hasTitleMatch(title, query.primaryTokens, query.activeCategories)) {
+  if (hasTitleMatch(title, query.primaryTokens, query.activeCategories, query.taxonomy)) {
     score += 18;
     reasons.add("title_match");
   }
@@ -263,26 +153,18 @@ function scoreSource(
     score += Math.min(20, overlapCount * 4);
     reasons.add("content_overlap");
     for (const token of query.primaryTokens) {
-      if (normalizedContent.includes(token)) {
-        evidenceTerms.add(token);
-      }
+      if (normalizedContent.includes(token)) evidenceTerms.add(token);
     }
     if (allowHistorySignal) {
       for (const token of query.historyTokens) {
-        if (normalizedContent.includes(token)) {
-          evidenceTerms.add(token);
-        }
+        if (normalizedContent.includes(token)) evidenceTerms.add(token);
       }
     }
   }
 
-  if (reasons.size === 0) {
-    return null;
-  }
+  if (reasons.size === 0) return null;
 
-  const includedAs =
-    content.length <= MAX_FULL_DOCUMENT_LENGTH ? "full_document" : ("snippet" as const);
-
+  const includedAs = content.length <= MAX_FULL_DOCUMENT_LENGTH ? "full_document" : ("snippet" as const);
   return {
     id: source.id,
     title: source.title,
@@ -300,63 +182,47 @@ function selectContentForProvider(
   includedAs: SelectedKnowledgeSource["includedAs"],
   evidenceTerms: string[]
 ) {
-  if (includedAs === "full_document") {
-    return content;
-  }
-
+  if (includedAs === "full_document") return content;
   const start = findSnippetStart(content, evidenceTerms);
   return content.slice(start, start + MAX_FULL_DOCUMENT_LENGTH);
 }
 
 function findSnippetStart(content: string, evidenceTerms: string[]) {
   const normalizedContent = normalize(content);
-  const terms = evidenceTerms
-    .map(normalize)
-    .filter((term) => term.length >= 4)
-    .sort((left, right) => right.length - left.length);
-
+  const terms = evidenceTerms.map(normalize).filter((term) => term.length >= 4).sort((a, b) => b.length - a.length);
   for (const term of terms) {
     const index = normalizedContent.indexOf(term);
-    if (index >= 0) {
-      return Math.max(0, index - 600);
-    }
+    if (index >= 0) return Math.max(0, index - 600);
   }
-
   return 0;
 }
 
-function detectCategories(query: string) {
+function detectCategories(query: string, taxonomy: AgentKnowledgeTaxonomyEntry[]) {
   const categories = new Set<string>();
-
-  for (const [category, aliases] of Object.entries(CATEGORY_ALIASES)) {
-    if (aliases.some((alias) => query.includes(alias))) {
-      categories.add(category);
-    }
+  for (const entry of taxonomy) {
+    if (entry.aliases.map(normalize).some((alias) => query.includes(alias))) categories.add(entry.key);
   }
-
   return categories;
 }
 
-function hasTitleMatch(title: string, queryTokens: Set<string>, detectedCategories: Set<string>) {
+function hasTitleMatch(
+  title: string,
+  queryTokens: Set<string>,
+  detectedCategories: Set<string>,
+  taxonomy: AgentKnowledgeTaxonomyEntry[]
+) {
   const titleTokens = toTokenSet(title);
   const hasTokenMatch = Array.from(titleTokens).some((token) => queryTokens.has(token));
-  const hasCategoryTitleMatch = Array.from(detectedCategories).some((category) =>
-    CATEGORY_ALIASES[category]?.some((alias) => title.includes(alias))
-  );
-
+  const hasCategoryTitleMatch = taxonomy
+    .filter((entry) => detectedCategories.has(entry.key))
+    .some((entry) => entry.aliases.map(normalize).some((alias) => title.includes(alias)));
   return hasTokenMatch || hasCategoryTitleMatch;
 }
 
 function countContentOverlap(content: string, queryTokens: Set<string>) {
   const contentTokens = toTokenSet(content);
   let count = 0;
-
-  for (const token of queryTokens) {
-    if (contentTokens.has(token)) {
-      count += 1;
-    }
-  }
-
+  for (const token of queryTokens) if (contentTokens.has(token)) count += 1;
   return count;
 }
 
@@ -373,41 +239,32 @@ function toTokenSet(value: string) {
 function readMetadata(value: KnowledgeRetrievalSource["metadata"]): {
   category: string | null;
   keywords: string[];
+  aliases: string[];
 } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { category: null, keywords: [] };
+    return { category: null, keywords: [], aliases: [] };
   }
-
-  const category = typeof value.category === "string" ? value.category : null;
-  const keywords = Array.isArray(value.keywords)
-    ? value.keywords.filter((keyword): keyword is string => typeof keyword === "string")
-    : typeof value.keywords === "string"
-      ? value.keywords.split(",")
-      : [];
-
-  return { category, keywords };
+  return {
+    category: typeof value.category === "string" ? value.category : null,
+    keywords: readStringList(value.keywords),
+    aliases: readStringList(value.aliases)
+  };
 }
 
-function normalizeCategory(value: string | null) {
-  const normalized = normalize(value ?? "");
+function readStringList(value: unknown) {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+  return typeof value === "string" ? value.split(",") : [];
+}
 
-  if (normalized in CATEGORY_ALIASES) {
-    return normalized;
-  }
-
-  for (const [category, aliases] of Object.entries(CATEGORY_ALIASES)) {
-    if (aliases.includes(normalized)) {
-      return category;
-    }
-  }
-
-  return normalized || null;
+function normalizeCategory(value: string | null, taxonomy: AgentKnowledgeTaxonomyEntry[]) {
+  const normalizedValue = normalize(value ?? "");
+  const normalizedKey = normalizedValue.replace(/[^a-z0-9]+/g, "_");
+  const direct = taxonomy.find((entry) => entry.key === normalizedKey);
+  if (direct) return direct.key;
+  const byAlias = taxonomy.find((entry) => entry.aliases.map(normalize).includes(normalizedValue));
+  return byAlias?.key ?? (normalizedKey || null);
 }
 
 function normalize(value: string) {
-  return value
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .toLowerCase()
-    .trim();
+  return value.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().trim();
 }

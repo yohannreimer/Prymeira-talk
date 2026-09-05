@@ -1,14 +1,6 @@
 import { PDFParse } from "pdf-parse";
 
-export type KnowledgeCategory =
-  | "precos"
-  | "produto"
-  | "faq"
-  | "politicas"
-  | "onboarding"
-  | "comercial"
-  | "suporte"
-  | "outro";
+export type KnowledgeCategory = string;
 
 type SourceKind = "pdf" | "text";
 
@@ -26,6 +18,15 @@ export type KnowledgeIngestionMetadata = {
 
 function normalizeExtractedText(value: string) {
   return value.replace(/\s+/g, " ").trim();
+}
+
+export function normalizeKnowledgeCategory(value: string) {
+  const category = value.trim().toLocaleLowerCase("pt-BR");
+  if (!/^[a-z][a-z0-9_]{0,79}$/.test(category)) {
+    throw new Error("A categoria de conhecimento é inválida.");
+  }
+
+  return category;
 }
 
 function deriveKeywords(text: string) {
@@ -122,7 +123,7 @@ export async function ingestKnowledgeUpload(input: {
   return {
     content,
     metadata: {
-      category: input.category,
+      category: normalizeKnowledgeCategory(input.category),
       sourceKind,
       extractionMethod: sourceKind === "pdf" ? "pdf-parse" : "plain-text",
       extractedAt: new Date().toISOString(),
