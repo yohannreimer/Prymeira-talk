@@ -143,6 +143,7 @@ export type HistoricalTrainingEvidence = {
   perInstance: InstanceEvidence[];
   overall: Omit<InstanceEvidence, "instance" | "window"> & {
     instances: number;
+    commercialContactOccurrences: number;
     window: { start: string; endExclusive: string };
   };
 };
@@ -215,6 +216,13 @@ export function compileHistoricalTraining(input: {
   const perInstance = parsedInputs
     .map(({ history, baseline }) => buildInstanceEvidence(history, baseline))
     .sort((left, right) => left.instance.localeCompare(right.instance, "pt-BR"));
+  const uniqueCommercialContacts = new Set(
+    parsedInputs.flatMap(({ baseline }) =>
+      baseline.conversations
+        .filter((item) => item.classification === "sales")
+        .map((item) => item.chatId)
+    )
+  ).size;
   const evidence: HistoricalTrainingEvidence = {
     schemaVersion: 1,
     compilerVersion: definition.compilerVersion,
@@ -227,7 +235,7 @@ export function compileHistoricalTraining(input: {
       evaluationContent: "anonymized_paraphrases"
     },
     perInstance,
-    overall: buildOverallEvidence(perInstance)
+    overall: buildOverallEvidence(perInstance, uniqueCommercialContacts)
   };
   const artifacts: HistoricalTrainingArtifacts = {
     package: definition.package,
@@ -315,7 +323,10 @@ function buildInstanceEvidence(
   };
 }
 
-function buildOverallEvidence(perInstance: InstanceEvidence[]) {
+function buildOverallEvidence(
+  perInstance: InstanceEvidence[],
+  uniqueCommercialContacts: number
+) {
   const starts = perInstance.map((item) => item.window.start).sort();
   const ends = perInstance.map((item) => item.window.endExclusive).sort();
 
@@ -329,7 +340,8 @@ function buildOverallEvidence(perInstance: InstanceEvidence[]) {
     individualChats: sum(perInstance, "individualChats"),
     conversationSegments: sum(perInstance, "conversationSegments"),
     commercialJourneys: sum(perInstance, "commercialJourneys"),
-    commercialContacts: sum(perInstance, "commercialContacts"),
+    commercialContacts: uniqueCommercialContacts,
+    commercialContactOccurrences: sum(perInstance, "commercialContacts"),
     inboundMessages: sum(perInstance, "inboundMessages"),
     outboundMessages: sum(perInstance, "outboundMessages"),
     media: mergeCounts(perInstance.map((item) => item.media)),
@@ -355,7 +367,8 @@ function buildReviewMarkdown(
     `- ${evidence.overall.instances} instâncias.\n` +
     `- ${evidence.overall.sourceMessages.toLocaleString("pt-BR")} mensagens no recorte.\n` +
     `- ${evidence.overall.commercialJourneys.toLocaleString("pt-BR")} jornadas classificadas como comerciais.\n` +
-    `- ${evidence.overall.commercialContacts.toLocaleString("pt-BR")} contatos comerciais por instância.\n\n` +
+    `- ${evidence.overall.commercialContacts.toLocaleString("pt-BR")} identificadores de contato únicos entre os quatro baselines.\n` +
+    `- ${evidence.overall.commercialContactOccurrences.toLocaleString("pt-BR")} ocorrências de contato ao somar cada instância; a diferença representa contatos presentes em mais de um número.\n\n` +
     `## Sinais de demanda\n\n| Tema | Jornadas com sinal |\n| --- | ---: |\n${demandRows}\n\n` +
     `## Decisões já aprovadas\n\n${decisions}\n\n` +
     `## Padrões comportamentais usados na V1\n\n${findings}\n\n` +

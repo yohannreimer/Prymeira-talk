@@ -12,6 +12,7 @@
     "migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "compile:villefer-v1": "tsx scripts/compile-villefer-v1.ts",
     "prisma": "dotenv -e ../../.env -- prisma",
     "seed:demo": "dotenv -e ../../.env -- tsx prisma/seed-demo.ts"
   },

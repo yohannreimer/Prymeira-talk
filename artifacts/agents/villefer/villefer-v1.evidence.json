@@ -1,0 +1,165 @@
+{
+  "compilerVersion": "1.0.0",
+  "generatedAt": "2026-09-05T12:00:00.000Z",
+  "inputFingerprint": "sha256:9b2dd69852d98654244cda8119689aab195407d7d50fc33bd1ec0548da14401e",
+  "methodology": {
+    "customerIdentifiersExported": false,
+    "evaluationContent": "anonymized_paraphrases",
+    "historicalFactsPromotedToConfirmed": false,
+    "rawConversationContentExported": false
+  },
+  "overall": {
+    "commercialContactOccurrences": 1309,
+    "commercialContacts": 1246,
+    "commercialJourneys": 5581,
+    "conversationSegments": 7588,
+    "demandSignals": {
+      "entrega_frete": 195,
+      "especificacao": 568,
+      "estoque": 57,
+      "medida_corte": 256,
+      "nota_fiscal": 108,
+      "pagamento": 165,
+      "preco": 629
+    },
+    "inboundMessages": 15290,
+    "individualChats": 1562,
+    "instances": 4,
+    "media": {
+      "audioMessage": 1643,
+      "documentMessage": 1215,
+      "imageMessage": 1570,
+      "stickerMessage": 171,
+      "videoMessage": 25
+    },
+    "outboundMessages": 21491,
+    "sourceMessages": 46313,
+    "window": {
+      "endExclusive": "2026-09-04T15:28:16.996Z",
+      "start": "2026-06-04T03:00:00.000Z"
+    }
+  },
+  "perInstance": [
+    {
+      "commercialContacts": 182,
+      "commercialJourneys": 572,
+      "conversationSegments": 670,
+      "demandSignals": {
+        "entrega_frete": 32,
+        "especificacao": 63,
+        "estoque": 9,
+        "medida_corte": 30,
+        "nota_fiscal": 10,
+        "pagamento": 33,
+        "preco": 106
+      },
+      "inboundMessages": 3268,
+      "individualChats": 202,
+      "instance": "Diogo",
+      "media": {
+        "audioMessage": 172,
+        "documentMessage": 410,
+        "imageMessage": 162,
+        "stickerMessage": 45,
+        "videoMessage": 3
+      },
+      "outboundMessages": 4290,
+      "sourceMessages": 7924,
+      "window": {
+        "endExclusive": "2026-09-04T15:28:16.996Z",
+        "start": "2026-06-04T03:00:00.000Z"
+      }
+    },
+    {
+      "commercialContacts": 538,
+      "commercialJourneys": 4162,
+      "conversationSegments": 5857,
+      "demandSignals": {
+        "entrega_frete": 74,
+        "especificacao": 210,
+        "estoque": 19,
+        "medida_corte": 87,
+        "nota_fiscal": 46,
+        "pagamento": 61,
+        "preco": 219
+      },
+      "inboundMessages": 6082,
+      "individualChats": 656,
+      "instance": "Henry",
+      "media": {
+        "audioMessage": 362,
+        "documentMessage": 208,
+        "imageMessage": 826,
+        "stickerMessage": 20,
+        "videoMessage": 9
+      },
+      "outboundMessages": 11546,
+      "sourceMessages": 25717,
+      "window": {
+        "endExclusive": "2026-09-04T15:28:16.996Z",
+        "start": "2026-06-04T03:00:00.000Z"
+      }
+    },
+    {
+      "commercialContacts": 246,
+      "commercialJourneys": 460,
+      "conversationSegments": 550,
+      "demandSignals": {
+        "entrega_frete": 47,
+        "especificacao": 113,
+        "estoque": 14,
+        "medida_corte": 42,
+        "nota_fiscal": 17,
+        "pagamento": 36,
+        "preco": 129
+      },
+      "inboundMessages": 3262,
+      "individualChats": 268,
+      "instance": "Junior Villefer",
+      "media": {
+        "audioMessage": 935,
+        "documentMessage": 429,
+        "imageMessage": 421,
+        "stickerMessage": 104,
+        "videoMessage": 11
+      },
+      "outboundMessages": 3411,
+      "sourceMessages": 6992,
+      "window": {
+        "endExclusive": "2026-09-04T15:28:16.996Z",
+        "start": "2026-06-04T03:00:00.000Z"
+      }
+    },
+    {
+      "commercialContacts": 343,
+      "commercialJourneys": 387,
+      "conversationSegments": 511,
+      "demandSignals": {
+        "entrega_frete": 42,
+        "especificacao": 182,
+        "estoque": 15,
+        "medida_corte": 97,
+        "nota_fiscal": 35,
+        "pagamento": 35,
+        "preco": 175
+      },
+      "inboundMessages": 2678,
+      "individualChats": 436,
+      "instance": "Villefer Geral",
+      "media": {
+        "audioMessage": 174,
+        "documentMessage": 168,
+        "imageMessage": 161,
+        "stickerMessage": 2,
+        "videoMessage": 2
+      },
+      "outboundMessages": 2244,
+      "sourceMessages": 5680,
+      "window": {
+        "endExclusive": "2026-09-04T15:28:16.996Z",
+        "start": "2026-06-04T03:00:00.000Z"
+      }
+    }
+  ],
+  "schemaVersion": 1
+}

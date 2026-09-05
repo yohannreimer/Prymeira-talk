@@ -41,7 +41,7 @@ const packageFixture: AgentPackage = {
   knowledge: []
 };
 
-function history(instance: string, index: number) {
+function history(instance: string, index: number, contactIndex = index) {
   return {
     instance,
     window: {
@@ -51,7 +51,7 @@ function history(instance: string, index: number) {
     messages: [
       {
         id: `message-private-${index}`,
-        chatId: `554799999000${index}@s.whatsapp.net`,
+        chatId: `554799999000${contactIndex}@s.whatsapp.net`,
         participant: null,
         fromMe: false,
         timestamp: "2026-06-05T12:00:00.000Z",
@@ -65,7 +65,7 @@ function history(instance: string, index: number) {
       },
       {
         id: `message-media-${index}`,
-        chatId: `554799999000${index}@s.whatsapp.net`,
+        chatId: `554799999000${contactIndex}@s.whatsapp.net`,
         participant: null,
         fromMe: true,
         timestamp: "2026-06-05T12:01:00.000Z",
@@ -81,7 +81,7 @@ function history(instance: string, index: number) {
   };
 }
 
-function baseline(instance: string, index: number) {
+function baseline(instance: string, index: number, contactIndex = index) {
   return {
     instance,
     sourceMessages: 2,
@@ -92,7 +92,7 @@ function baseline(instance: string, index: number) {
     conversations: [
       {
         id: `conversation-private-${index}`,
-        chatId: `554799999000${index}@s.whatsapp.net`,
+        chatId: `554799999000${contactIndex}@s.whatsapp.net`,
         contactName: `Cliente Privado ${index}`,
         classification: "sales"
       }
@@ -121,8 +121,8 @@ describe("compileHistoricalTraining", () => {
   it("aggregates four histories without copying raw conversations", () => {
     const inputs = ["Henry", "Diogo", "Villefer Geral", "Junior Villefer"].map(
       (instance, index) => ({
-        history: history(instance, index),
-        baseline: baseline(instance, index)
+        history: history(instance, index, index === 3 ? 0 : index),
+        baseline: baseline(instance, index, index === 3 ? 0 : index)
       })
     );
 
@@ -132,7 +132,8 @@ describe("compileHistoricalTraining", () => {
       instances: 4,
       sourceMessages: 8,
       commercialJourneys: 4,
-      commercialContacts: 4,
+      commercialContacts: 3,
+      commercialContactOccurrences: 4,
       inboundMessages: 4,
       outboundMessages: 4
     });
