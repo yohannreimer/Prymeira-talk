@@ -154,3 +154,7 @@ pnpm --filter @prymeira-talk/api prisma migrate dev --name init
 ```
 
 Production-grade tenant resolution depends on Prymeira Account returning a `workspace_id` for users entitled to `product_key=talk`. Prymeira Talk treats the API as the tenant boundary and filters workspace data server-side.
+
+## Reusable Agent Models
+
+The Agents page can validate, import, and export portable agent models. Imports are workspace-scoped and always create an inactive simulated agent for review; exports preserve templates while removing deployment-specific variable values. See [`docs/agent-packages.md`](docs/agent-packages.md) for the format, operating rules, and API routes.

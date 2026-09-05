@@ -3611,7 +3611,6 @@ select:disabled {
   display: grid;
   gap: 16px;
   margin: 0 18px 16px;
-  overflow: hidden;
   border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-border-subtle));
   background:
     linear-gradient(115deg, color-mix(in srgb, var(--color-accent) 6%, transparent), transparent 42%),
