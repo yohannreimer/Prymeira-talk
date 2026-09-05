@@ -8,6 +8,7 @@ import {
   selectRelevantKnowledge,
   type KnowledgeRetrievalSource
 } from "./knowledge-retrieval.js";
+import { readKnowledgeTaxonomy } from "./knowledge-taxonomy.js";
 import {
   createOpenAiCompatibleAgentProvider,
   type AgentOutput,
@@ -21,6 +22,7 @@ type AgentRecord = {
   workspaceId: string;
   model: string;
   systemPrompt: string;
+  behaviorConfig?: JsonValue;
   handoffConfig?: JsonValue;
   allowedTags?: Array<{
     tag?: {
@@ -68,6 +70,7 @@ export type AgentTestChatDebug = {
   conversationMessages: number;
   conversationCharacters: number;
   allowedTags: string[];
+  taxonomyKeys: string[];
   knowledgeMatches: Array<Record<string, unknown>>;
   output?: {
     confidence: number;
@@ -152,10 +155,12 @@ export function createAgentTestChatService(input: {
         take: 50
       });
       const conversationHistory = formatTestConversationHistory(runInput.messages);
+      const taxonomy = readKnowledgeTaxonomy(agent.behaviorConfig);
       const knowledgeSelection = selectRelevantKnowledge({
         latestMessage: latestUserMessage.content,
         conversationHistory,
         instruction: null,
+        taxonomy,
         sources: knowledge.map(toRetrievalSource)
       });
       const knowledgeMatches = knowledgeSelection.selected.map((source) => ({
@@ -187,13 +192,17 @@ export function createAgentTestChatService(input: {
         conversationMessages: runInput.messages.length,
         conversationCharacters: conversationHistory.length,
         allowedTags: allowedTags.map((tag) => tag.name),
+        taxonomyKeys: taxonomy.map((entry) => entry.key),
         knowledgeMatches
       };
 
       let output: AgentOutput;
 
       if (
-        isDocumentDependentQuestion(`${latestUserMessage.content}\n${conversationHistory}`) &&
+        isDocumentDependentQuestion(
+          `${latestUserMessage.content}\n${conversationHistory}`,
+          taxonomy
+        ) &&
         knowledgeSelection.selected.length === 0
       ) {
         output = createDocumentRequiredHandoffOutput();

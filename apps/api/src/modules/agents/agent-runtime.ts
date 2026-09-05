@@ -20,6 +20,7 @@ import {
   type KnowledgeRetrievalSource,
   type SelectedKnowledgeSource
 } from "./knowledge-retrieval.js";
+import { readKnowledgeTaxonomy } from "./knowledge-taxonomy.js";
 import {
   createOpenAiCompatibleAgentProvider,
   type AgentOutput,
@@ -38,6 +39,7 @@ type AiAgentRecord = {
   status?: string;
   model: string;
   systemPrompt: string;
+  behaviorConfig: JsonValue;
   handoffConfig: JsonValue;
   allowedActions: JsonValue;
   allowedTags?: Array<{
@@ -452,10 +454,12 @@ export function createAgentRuntime(input: {
 
         const allowedActions = readAllowedActions(agent.allowedActions);
         const allowedTags = toAllowedTags(agent);
+        const taxonomy = readKnowledgeTaxonomy(agent.behaviorConfig);
         const knowledgeSelection = selectRelevantKnowledge({
           latestMessage: message.body,
           conversationHistory: conversationContext.formattedHistory,
           instruction: runInput.instruction,
+          taxonomy,
           sources: knowledge.map(toRetrievalSource)
         });
         const context = buildContext(
@@ -472,6 +476,7 @@ export function createAgentRuntime(input: {
           channelId: conversation.channelId ?? conversation.channel?.id ?? null,
           tagCount: context.tags.length,
           allowedTagCount: allowedTags.length,
+          taxonomyKeys: taxonomy.map((entry) => entry.key),
           knowledgeCount: knowledgeSelection.selected.length,
           knowledgeTotal: knowledgeSelection.total,
           conversationMessageCount: conversationContext.messages.length
@@ -495,7 +500,8 @@ export function createAgentRuntime(input: {
 
         if (
           isDocumentDependentQuestion(
-            `${message.body ?? ""}\n${conversationContext.formattedHistory}`
+            `${message.body ?? ""}\n${conversationContext.formattedHistory}`,
+            taxonomy
           ) &&
           knowledgeSelection.selected.length === 0
         ) {
