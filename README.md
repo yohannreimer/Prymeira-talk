@@ -158,3 +158,5 @@ Production-grade tenant resolution depends on Prymeira Account returning a `work
 ## Reusable Agent Models
 
 The Agents page can validate, import, and export portable agent models. Imports are workspace-scoped and always create an inactive simulated agent for review; exports preserve templates while removing deployment-specific variable values. See [`docs/agent-packages.md`](docs/agent-packages.md) for the format, operating rules, and API routes.
+
+The first compiled business package is the privacy-safe Villefer commercial qualifier V1, derived from four reconstructed WhatsApp histories. See [`docs/villefer-v1-training.md`](docs/villefer-v1-training.md) for its evidence boundary, review checklist, regeneration command, import flow, and laboratory scenarios.
