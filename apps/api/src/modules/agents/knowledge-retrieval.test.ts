@@ -151,4 +151,35 @@ describe("selectRelevantKnowledge", () => {
     expect(result.selected.reduce((sum, chunk) => sum + chunk.content.length, 0)).toBeLessThanOrEqual(12_000);
     expect(result.evaluatedChunks).toBeGreaterThan(result.selected.length);
   });
+
+  it("selects a custom material source using package aliases", () => {
+    const result = selectRelevantKnowledge({
+      latestMessage: "Preciso de chapa galvanizada",
+      conversationHistory: "",
+      instruction: "",
+      taxonomy: [
+        {
+          key: "materials",
+          label: "Materiais",
+          aliases: ["chapa", "galvanizada"],
+          requiresSource: true
+        }
+      ],
+      sources: [
+        {
+          id: "source-materials",
+          title: "Materiais disponíveis",
+          content: "Chapas galvanizadas sob consulta.",
+          metadata: {
+            category: "materials",
+            keywords: ["chapa", "galvanizada"]
+          }
+        }
+      ]
+    });
+
+    expect(result.selected[0]).toEqual(
+      expect.objectContaining({ id: "source-materials", category: "materials" })
+    );
+  });
 });

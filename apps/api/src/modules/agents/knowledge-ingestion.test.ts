@@ -36,6 +36,28 @@ describe("ingestKnowledgeUpload", () => {
     expect(result.metadata.extractedAt).toEqual(expect.any(String));
   });
 
+  it("accepts custom category slugs", async () => {
+    const result = await ingestKnowledgeUpload({
+      fileName: "materiais.txt",
+      mimeType: "text/plain",
+      base64Content: Buffer.from("Chapas galvanizadas sob consulta.").toString("base64"),
+      category: "materials_catalog"
+    });
+
+    expect(result.metadata.category).toBe("materials_catalog");
+  });
+
+  it("rejects invalid custom category slugs", async () => {
+    await expect(
+      ingestKnowledgeUpload({
+        fileName: "materiais.txt",
+        mimeType: "text/plain",
+        base64Content: Buffer.from("Chapas galvanizadas sob consulta.").toString("base64"),
+        category: "Materiais e Aço"
+      })
+    ).rejects.toThrow("A categoria de conhecimento é inválida.");
+  });
+
   it("accepts txt uploads with a generic browser mime type", async () => {
     const result = await ingestKnowledgeUpload({
       fileName: "base-produtos.txt",
