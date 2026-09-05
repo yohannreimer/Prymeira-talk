@@ -873,6 +873,80 @@ describe("createAgentRuntime", () => {
     });
   });
 
+  it("uses a custom package taxonomy in live retrieval", async () => {
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "Vou confirmar o material.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const customMessage = { ...baseMessage, body: "Preciso de chapa" };
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          behaviorConfig: {
+            knowledgeTaxonomy: [
+              {
+                key: "materials",
+                label: "Materiais",
+                aliases: ["chapa"],
+                requiresSource: true
+              }
+            ]
+          }
+        })
+      },
+      message: {
+        findFirst: vi.fn().mockResolvedValue(customMessage),
+        findMany: vi.fn().mockResolvedValue([customMessage]),
+        create: vi.fn().mockResolvedValue({
+          ...customMessage,
+          id: "outbound_custom",
+          direction: "outbound"
+        })
+      },
+      aiKnowledgeSource: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "materials_source",
+            title: "Materiais",
+            content: "Chapas disponíveis sob consulta.",
+            metadata: { category: "materials", keywords: ["chapa"] },
+            status: "ready"
+          }
+        ])
+      }
+    });
+
+    const runtime = createAgentRuntime({ prisma, provider });
+    await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(provider.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          knowledge: [
+            {
+              title: "Materiais",
+              content: "Chapas disponíveis sob consulta."
+            }
+          ]
+        })
+      })
+    );
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        contextSummary: expect.objectContaining({ taxonomyKeys: ["materials"] })
+      })
+    });
+  });
+
   it("uses the real OpenAI-compatible provider when workspace settings are active", async () => {
     const prisma = buildPrisma({
       integrationConfig: {

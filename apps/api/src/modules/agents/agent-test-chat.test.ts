@@ -7,6 +7,7 @@ const baseAgent = {
   workspaceId: "workspace_a",
   model: "prymeira-simulated",
   systemPrompt: "Atenda como secretaria.",
+  behaviorConfig: {},
   handoffConfig: { confidenceThreshold: 0.55 },
   allowedTags: [
     {
@@ -151,6 +152,54 @@ describe("createAgentTestChatService", () => {
         })
       })
     );
+  });
+
+  it("uses custom package taxonomy in isolated tests", async () => {
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "Vou confirmar o material.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          behaviorConfig: {
+            knowledgeTaxonomy: [
+              {
+                key: "materials",
+                label: "Materiais",
+                aliases: ["chapa"],
+                requiresSource: true
+              }
+            ]
+          }
+        })
+      },
+      aiKnowledgeSource: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "materials_source",
+            title: "Materiais",
+            content: "Chapas disponíveis sob consulta.",
+            metadata: { category: "materials", keywords: ["chapa"] }
+          }
+        ])
+      }
+    });
+    const service = createAgentTestChatService({ prisma, provider });
+
+    const result = await service.sendMessage({
+      workspaceId: "workspace_a",
+      agentId: baseAgent.id,
+      messages: [{ role: "user", content: "Preciso de chapa" }]
+    });
+
+    expect(result.knowledgeMatches[0]).toEqual(
+      expect.objectContaining({ category: "materials" })
+    );
+    expect(result.debug.taxonomyKeys).toEqual(["materials"]);
   });
 
   it("uses the real provider when workspace settings are active", async () => {

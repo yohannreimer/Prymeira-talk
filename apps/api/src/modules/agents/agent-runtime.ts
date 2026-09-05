@@ -15,6 +15,7 @@ import {
   type ConversationContextBuilderPrismaLike
 } from "./conversation-context-builder.js";
 import {
+  isDocumentDependentQuestion,
   selectRelevantKnowledge,
   type KnowledgeRetrievalSource,
   type SelectedKnowledgeSource
@@ -25,6 +26,7 @@ import {
   evaluateAgentSafety,
   HANDOFF_ACKNOWLEDGEMENT
 } from "./agent-safety-policy.js";
+import { readKnowledgeTaxonomy } from "./knowledge-taxonomy.js";
 import {
   createOpenAiCompatibleAgentProvider,
   type AgentImageAttachment,
@@ -50,6 +52,7 @@ type AiAgentRecord = {
   status?: string;
   model: string;
   systemPrompt: string;
+  behaviorConfig: JsonValue;
   handoffConfig: JsonValue;
   allowedActions: JsonValue;
   allowedTags?: Array<{
@@ -699,10 +702,12 @@ export function createAgentRuntime(input: {
 
         const allowedActions = readAllowedActions(agent.allowedActions);
         const allowedTags = toAllowedTags(agent);
+        const taxonomy = readKnowledgeTaxonomy(agent.behaviorConfig);
         const knowledgeSelection = selectRelevantKnowledge({
           latestMessage: effectiveText,
           conversationHistory: conversationContext.formattedHistory,
           instruction: runInput.instruction,
+          taxonomy,
           sources: knowledge.map(toRetrievalSource)
         });
         const context = buildContext(
@@ -720,6 +725,7 @@ export function createAgentRuntime(input: {
           channelId: conversation.channelId ?? conversation.channel?.id ?? null,
           tagCount: context.tags.length,
           allowedTagCount: allowedTags.length,
+          taxonomyKeys: taxonomy.map((entry) => entry.key),
           knowledgeCount: knowledgeSelection.selected.length,
           knowledgeTotal: knowledgeSelection.total,
           evaluatedKnowledgeChunks: knowledgeSelection.evaluatedChunks,
@@ -766,6 +772,11 @@ export function createAgentRuntime(input: {
             }
           : safety.handoffRequired
           ? createSafetyHandoffOutput(safety.reason ?? "Human handoff required.")
+          : isDocumentDependentQuestion(
+                `${effectiveText}\n${conversationContext.formattedHistory}`,
+                taxonomy
+              ) && knowledgeSelection.selected.length === 0
+            ? createDocumentRequiredHandoffOutput()
           : await runProvider.generate({
             model: runModel,
             systemPrompt: agent.systemPrompt,
@@ -1121,6 +1132,20 @@ async function sendAgentReplyToProvider(
     number,
     text: reply
   });
+}
+
+function createDocumentRequiredHandoffOutput(): AgentOutput {
+  const reason = "No relevant document found for a document-dependent question.";
+
+  return {
+    confidence: 0.2,
+    reply: "Vou chamar uma pessoa do time para confirmar essa informação com segurança.",
+    actions: [{ type: "request_handoff", reason }],
+    handoff: {
+      required: true,
+      reason
+    }
+  };
 }
 
 function toRetrievalSource(source: KnowledgeSourceRecord): KnowledgeRetrievalSource {

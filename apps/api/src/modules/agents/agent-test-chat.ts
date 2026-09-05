@@ -4,6 +4,7 @@ import {
   type OpenAiCompatibleSettings
 } from "./ai-provider-settings.js";
 import {
+  isDocumentDependentQuestion,
   selectRelevantKnowledge,
   type KnowledgeRetrievalSource
 } from "./knowledge-retrieval.js";
@@ -14,6 +15,7 @@ import {
   HANDOFF_ACKNOWLEDGEMENT,
   type ProtectedFact
 } from "./agent-safety-policy.js";
+import { readKnowledgeTaxonomy } from "./knowledge-taxonomy.js";
 import {
   createOpenAiCompatibleAgentProvider,
   type AgentOutput,
@@ -27,6 +29,7 @@ type AgentRecord = {
   workspaceId: string;
   model: string;
   systemPrompt: string;
+  behaviorConfig?: JsonValue;
   handoffConfig?: JsonValue;
   allowedTags?: Array<{
     tag?: {
@@ -79,6 +82,7 @@ export type AgentTestChatDebug = {
   conversationMessages: number;
   conversationCharacters: number;
   allowedTags: string[];
+  taxonomyKeys: string[];
   knowledgeMatches: Array<Record<string, unknown>>;
   output?: {
     confidence: number;
@@ -163,10 +167,12 @@ export function createAgentTestChatService(input: {
         take: 50
       });
       const conversationHistory = formatTestConversationHistory(runInput.messages);
+      const taxonomy = readKnowledgeTaxonomy(agent.behaviorConfig);
       const knowledgeSelection = selectRelevantKnowledge({
         latestMessage: latestUserMessage.content,
         conversationHistory,
         instruction: null,
+        taxonomy,
         sources: knowledge.map(toRetrievalSource)
       });
       const knowledgeMatches = knowledgeSelection.selected.map((source) => ({
@@ -212,6 +218,7 @@ export function createAgentTestChatService(input: {
         conversationMessages: runInput.messages.length,
         conversationCharacters: conversationHistory.length,
         allowedTags: allowedTags.map((tag) => tag.name),
+        taxonomyKeys: taxonomy.map((entry) => entry.key),
         knowledgeMatches
       };
 
@@ -219,6 +226,14 @@ export function createAgentTestChatService(input: {
 
       if (safety.handoffRequired) {
         output = createSafetyHandoffOutput(safety.reason ?? "Human handoff required.");
+      } else if (
+        isDocumentDependentQuestion(
+          `${latestUserMessage.content}\n${conversationHistory}`,
+          taxonomy
+        ) &&
+        knowledgeSelection.selected.length === 0
+      ) {
+        output = createDocumentRequiredHandoffOutput();
       } else {
         try {
           output = await runProvider.generate({
@@ -293,6 +308,20 @@ function formatTestConversationHistory(messages: AgentTestChatMessage[]) {
     .filter((message) => message.content.trim().length > 0)
     .map((message) => `${message.role === "user" ? "cliente" : "atendente"}: ${message.content.trim()}`)
     .join("\n");
+}
+
+function createDocumentRequiredHandoffOutput(): AgentOutput {
+  const reason = "No relevant document found for a document-dependent question.";
+
+  return {
+    confidence: 0.2,
+    reply: "Vou chamar uma pessoa do time para confirmar essa informação com segurança.",
+    actions: [{ type: "request_handoff", reason }],
+    handoff: {
+      required: true,
+      reason
+    }
+  };
 }
 
 function toRetrievalSource(source: KnowledgeSourceRecord): KnowledgeRetrievalSource {
