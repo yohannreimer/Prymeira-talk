@@ -481,6 +481,7 @@ export const villeferV1Definition: HistoricalTrainingDefinition = {
     "Erros e correções de quantidade, medida ou item precisam ser tratados como conflito e encaminhados ao vendedor."
   ],
   needsValidation: [
+    "Reconciliar antes de nova apresentação a diferença entre 1.246 contatos únicos nos quatro baselines usados pelo compilador e 1.248 contatos no funil executivo anterior, que aplicou outra regra de classificação.",
     "Confirmar o catálogo atual, famílias de produto, qualidades, normas, acabamentos e nomenclaturas aceitas.",
     "Confirmar medidas padrão, tolerâncias, pesos teóricos, lotes mínimos e regras técnicas que podem ser respondidas sem vendedor.",
     "Confirmar quais cortes, dobras e outros beneficiamentos são oferecidos e suas limitações.",
