@@ -3607,6 +3607,128 @@ select:disabled {
   align-content: start;
 }
 
+.agent-package-panel {
+  display: grid;
+  gap: 16px;
+  margin: 0 18px 16px;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-border-subtle));
+  background:
+    linear-gradient(115deg, color-mix(in srgb, var(--color-accent) 6%, transparent), transparent 42%),
+    var(--color-surface-card);
+}
+
+.agent-package-intro {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.agent-package-intro h2,
+.agent-package-intro p {
+  margin: 0;
+}
+
+.agent-package-intro h2 {
+  font-size: 1rem;
+}
+
+.agent-package-intro > div > p:last-child {
+  max-width: 760px;
+  margin-top: 4px;
+  color: var(--color-text-secondary);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.agent-package-mark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-accent) 9%, var(--color-surface-card));
+  color: var(--color-accent);
+}
+
+.agent-package-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
+  gap: 10px;
+}
+
+.agent-package-lane {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-surface-subtle) 82%, transparent);
+}
+
+.agent-package-lane--export {
+  grid-template-rows: auto 1fr auto;
+}
+
+.agent-package-lane__heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--color-text-primary);
+}
+
+.agent-package-lane__heading > svg {
+  margin-top: 2px;
+  color: var(--color-accent);
+}
+
+.agent-package-lane__heading div,
+.agent-package-selection {
+  display: grid;
+  gap: 3px;
+}
+
+.agent-package-lane__heading strong,
+.agent-package-selection strong {
+  font-size: 0.86rem;
+}
+
+.agent-package-lane__heading span,
+.agent-package-selection span,
+.agent-package-file-name,
+.agent-package-summary span {
+  color: var(--color-text-secondary);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.agent-package-file input {
+  padding: 8px;
+}
+
+.agent-package-summary,
+.agent-package-selection {
+  padding: 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+}
+
+.agent-package-summary {
+  display: grid;
+  gap: 4px;
+}
+
+.agent-package-summary > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-accent);
+}
+
 .knowledge-source-list {
   display: grid;
   gap: 8px;
@@ -6908,6 +7030,7 @@ select:disabled {
   .automation-editor-meta,
   .automation-editor-body,
   .campaigns-layout,
+  .agent-package-actions,
   .crm-dashboard-grid,
   .ops-grid,
   .team-ops-grid,

@@ -1,4 +1,5 @@
 import {
+  agentPackageSchema,
   aiAgentSchema,
   aiKnowledgeSourceSchema,
   contactBoardMembershipSchema,
@@ -13,6 +14,7 @@ import {
   messageSchema,
   tagSchema,
   type AgentAllowedTagDto,
+  type AgentPackage,
   type AiAgentAllowedAction,
   type AiAgentDto,
   type AiKnowledgeSourceDto,
@@ -32,6 +34,7 @@ import { readConfigValue } from "./runtime-config";
 
 export type {
   AgentAllowedTagDto,
+  AgentPackage,
   AiAgentAllowedAction,
   AiAgentDto,
   AiKnowledgeSourceDto,
@@ -2759,6 +2762,66 @@ export async function apiGetAgents(
     {},
     (data) => (Array.isArray(data) ? data.map(parseAgent) : []),
     "Failed to load agents"
+  );
+}
+
+export async function apiValidateAgentPackage(
+  getToken: () => Promise<string | null>,
+  agentPackage: unknown
+): Promise<{ valid: true; package: AgentPackage }> {
+  return fetchJson(
+    getToken,
+    "/agent-packages/validate",
+    {
+      method: "POST",
+      body: JSON.stringify({ package: agentPackage })
+    },
+    (data) => {
+      const payload = data as { valid?: unknown; package?: unknown };
+      return {
+        valid: true,
+        package: agentPackageSchema.parse(payload.package)
+      };
+    },
+    "Failed to validate agent package"
+  );
+}
+
+export async function apiImportAgentPackage(
+  getToken: () => Promise<string | null>,
+  body: {
+    package: AgentPackage;
+    variableValues: Record<string, string>;
+  }
+): Promise<{ agent: AiAgentDto; knowledgeCount: number }> {
+  return fetchJson(
+    getToken,
+    "/agent-packages/import",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    (data) => {
+      const payload = data as { agent?: unknown; knowledgeCount?: unknown };
+      return {
+        agent: aiAgentSchema.parse(payload.agent),
+        knowledgeCount: Number(payload.knowledgeCount ?? 0)
+      };
+    },
+    "Failed to import agent package"
+  );
+}
+
+export async function apiExportAgentPackage(
+  getToken: () => Promise<string | null>,
+  agentId: string
+): Promise<AgentPackage> {
+  return fetchJson(
+    getToken,
+    `/agents/${agentId}/package`,
+    {},
+    (data) => agentPackageSchema.parse(data),
+    "Failed to export agent package"
   );
 }
 
