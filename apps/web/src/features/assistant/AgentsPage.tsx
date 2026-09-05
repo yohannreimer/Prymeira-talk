@@ -30,6 +30,7 @@ import {
   UploadCloud
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { AgentPackagePanel } from "./AgentPackagePanel";
 
 const defaultAllowedActions: AiAgentAllowedAction[] = [
   "send_message",
@@ -54,19 +55,9 @@ type KnowledgeFormState = {
   content: string;
 };
 
-type KnowledgeUploadCategory =
-  | "precos"
-  | "produto"
-  | "faq"
-  | "politicas"
-  | "onboarding"
-  | "comercial"
-  | "suporte"
-  | "outro";
-
 type KnowledgeUploadFormState = {
   title: string;
-  category: KnowledgeUploadCategory;
+  category: string;
   file: File | null;
 };
 
@@ -74,7 +65,7 @@ type KnowledgeInputMode = "file" | "text";
 
 type AgentTestDebugState = Record<string, unknown> | null;
 
-const knowledgeUploadCategories: Array<{ value: KnowledgeUploadCategory; label: string }> = [
+const knowledgeUploadCategories: Array<{ value: string; label: string }> = [
   { value: "precos", label: "Preços" },
   { value: "produto", label: "Produto" },
   { value: "faq", label: "FAQ" },
@@ -141,6 +132,17 @@ function readKnowledgeCategory(source: AiKnowledgeSourceDto) {
 
 function knowledgeCategoryLabel(value: string | null) {
   return knowledgeUploadCategories.find((category) => category.value === value)?.label ?? value;
+}
+
+function normalizeKnowledgeCategoryInput(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLocaleLowerCase("pt-BR")
+    .trim()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
 }
 
 function guessMimeType(file: File) {
@@ -367,7 +369,7 @@ export function AgentsPage() {
       const file = knowledgeUploadForm.file;
       const createdSource = await apiUploadAgentKnowledge(getToken, selectedAgent.id, {
         title: knowledgeUploadForm.title.trim() || file.name,
-        category: knowledgeUploadForm.category,
+        category: normalizeKnowledgeCategoryInput(knowledgeUploadForm.category) || "outro",
         fileName: file.name,
         mimeType: guessMimeType(file),
         base64Content: await fileToBase64(file)
@@ -447,6 +449,15 @@ export function AgentsPage() {
     }));
   }
 
+  function acceptImportedAgent(agent: AiAgentDto) {
+    setAgents((current) => [agent, ...current.filter((item) => item.id !== agent.id)]);
+    setSelectedAgentId(agent.id);
+    setAgentForm(agentFormFromAgent(agent));
+    setKnowledge([]);
+    setTestMessages([]);
+    setTestDebug(null);
+  }
+
   return (
     <section className="module-page" aria-label="Agentes">
       <header className="module-header">
@@ -471,6 +482,12 @@ export function AgentsPage() {
 
       {error ? <p className="error-note">{error}</p> : null}
       {notice ? <p className="success-note">{notice}</p> : null}
+
+      <AgentPackagePanel
+        getToken={getToken}
+        selectedAgent={selectedAgent}
+        onImported={acceptImportedAgent}
+      />
 
       <div className="ops-grid">
         <div className="module-panel">
@@ -666,20 +683,28 @@ export function AgentsPage() {
                   <div className="knowledge-form-grid">
                     <label className="form-field">
                       Categoria
-                      <select
+                      <input
+                        list="knowledge-category-suggestions"
                         value={knowledgeUploadForm.category}
                         onChange={(event) => setKnowledgeUploadForm((current) => ({
                           ...current,
-                          category: event.target.value as KnowledgeUploadCategory
+                          category: event.target.value
                         }))}
+                        onBlur={() => setKnowledgeUploadForm((current) => ({
+                          ...current,
+                          category: normalizeKnowledgeCategoryInput(current.category) || "outro"
+                        }))}
+                        placeholder="Ex.: medidas_e_tolerancias"
                         disabled={!selectedAgent}
-                      >
+                        required
+                      />
+                      <datalist id="knowledge-category-suggestions">
                         {knowledgeUploadCategories.map((category) => (
                           <option key={category.value} value={category.value}>
                             {category.label}
                           </option>
                         ))}
-                      </select>
+                      </datalist>
                     </label>
                     <label className="form-field">
                       Título do documento
