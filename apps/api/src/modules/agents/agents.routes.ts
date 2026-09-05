@@ -56,16 +56,12 @@ const createKnowledgeSourceBodySchema = z.object({
   mimeType: z.string().trim().max(160).nullable().optional()
 });
 
-const knowledgeCategorySchema = z.enum([
-  "precos",
-  "produto",
-  "faq",
-  "politicas",
-  "onboarding",
-  "comercial",
-  "suporte",
-  "outro"
-]);
+const knowledgeCategorySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80)
+  .regex(/^[a-z][a-z0-9_]*$/);
 
 const uploadKnowledgeBodySchema = z.object({
   title: z.string().trim().min(1).max(160),
@@ -138,7 +134,8 @@ function isKnowledgeUploadError(error: unknown): error is Error {
     "Não foi possível ler o arquivo de conhecimento.",
     "O arquivo de conhecimento não contém texto legível.",
     "O arquivo de conhecimento é muito grande.",
-    "O texto extraído do arquivo de conhecimento é muito grande."
+    "O texto extraído do arquivo de conhecimento é muito grande.",
+    "A categoria de conhecimento é inválida."
   ].includes(error.message);
 }
 

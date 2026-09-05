@@ -8,6 +8,7 @@ import { prismaPlugin } from "./plugins/prisma.js";
 import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
 import { createAgentReplyScheduler } from "./modules/agents/agent-reply-scheduler.js";
 import { agentsRoutes } from "./modules/agents/agents.routes.js";
+import { agentPackageRoutes } from "./modules/agents/agent-package.routes.js";
 import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.js";
 import { automationsRoutes } from "./modules/automations/automations.routes.js";
 import { assistantRoutes } from "./modules/assistant/assistant.routes.js";
@@ -173,6 +174,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(reportsRoutes);
   await app.register(teamRoutes);
   await app.register(tagsRoutes);
+  await app.register(agentPackageRoutes);
   await app.register(agentsRoutes);
   await app.register(assistantRoutes);
   await app.register(crmRoutes, {
