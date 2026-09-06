@@ -110,6 +110,8 @@ describe("villeferV1Definition", () => {
 
     expect(prompt).toMatch(/uma (?:única|unica) mensagem curta/i);
     expect(prompt).toMatch(/perda expl[ií]cita/i);
+    expect(prompt).toMatch(/aplica[cç][aã]o, norma, certificado, empresa e prazo desejado s[aã]o complementares/i);
+    expect(prompt).toMatch(/n[aã]o os pergunte apenas para completar cadastro/i);
     expect(incompleteChapa?.expected.responseGuidance).toMatch(
       /tipo.*medida.*espessura.*quantidade/i
     );
