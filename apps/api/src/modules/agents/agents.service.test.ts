@@ -115,6 +115,37 @@ function buildPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & AgentsPr
 }
 
 describe("createAgentsService", () => {
+  it.each([undefined, "none", "low"] as const)("stores an explicitly bounded reasoning setting on create: %s", async (reasoningEffort) => {
+    const prisma = buildPrisma();
+    const result = await createAgentsService(prisma).createAgent({ workspaceId: "workspace_a", name: "Pilot", systemPrompt: "Atenda com clareza.", reasoningEffort });
+    expect(result.behaviorConfig.reasoningEffort).toBe(reasoningEffort ?? "none");
+    expect(result.status).toBe("inactive");
+  });
+
+  it("updates reasoning without replacing the agent's other behavior fields", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgent.findFirst.mockResolvedValue({ ...baseAgent, behaviorConfig: { reasoningEffort: "none", qualification: { requiredFields: ["city"] }, taxonomy: ["produto"] } });
+    const result = await createAgentsService(prisma).updateAgent({ workspaceId: "workspace_a", agentId, data: { reasoningEffort: "low" } });
+    expect(result.behaviorConfig).toEqual({ reasoningEffort: "low", qualification: { requiredFields: ["city"] }, taxonomy: ["produto"] });
+    expect(prisma.aiAgent.update).toHaveBeenCalledWith(expect.objectContaining({ data: { behaviorConfig: result.behaviorConfig } }));
+  });
+
+  it("does not touch behavior configuration when reasoning is omitted", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgent.findFirst.mockResolvedValue({ ...baseAgent, behaviorConfig: { reasoningEffort: "low", qualification: { requiredFields: ["city"] } } });
+    await createAgentsService(prisma).updateAgent({ workspaceId: "workspace_a", agentId, data: { name: "Renamed pilot" } });
+    expect(prisma.aiAgent.update).toHaveBeenCalledWith(expect.objectContaining({ data: { name: "Renamed pilot" } }));
+  });
+
+  it.each(["medium", "high", "", null])( "rejects unsupported reasoning values in service calls: %s", async (reasoningEffort) => {
+    const prisma = buildPrisma();
+    prisma.aiAgent.findFirst.mockResolvedValue(baseAgent);
+    const service = createAgentsService(prisma);
+    await expect(service.createAgent({ workspaceId: "workspace_a", name: "Pilot", systemPrompt: "Atenda com clareza.", reasoningEffort: reasoningEffort as never })).rejects.toMatchObject({ code: "AGENT_INVALID_CONFIG" });
+    await expect(service.updateAgent({ workspaceId: "workspace_a", agentId, data: { reasoningEffort: reasoningEffort as never } })).rejects.toMatchObject({ code: "AGENT_INVALID_CONFIG" });
+    expect(prisma.aiAgent.create).not.toHaveBeenCalled();
+    expect(prisma.aiAgent.update).not.toHaveBeenCalled();
+  });
   it("returns allowed tags from agent relations when listing agents", async () => {
     const prisma = buildPrisma({
       aiAgent: {

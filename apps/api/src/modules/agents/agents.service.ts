@@ -7,6 +7,7 @@ import type {
 
 type DateLike = Date | string;
 type AiAgentStatus = "active" | "inactive";
+type AgentReasoningEffort = "none" | "low";
 type AiKnowledgeSourceType = "faq" | "text" | "file";
 
 type AgentAllowedTagRecord = {
@@ -206,7 +207,11 @@ function toKnowledgeSourceDto(record: AiKnowledgeSourceRecord): AiKnowledgeSourc
 function validateAgentConfig(input: {
   status?: AiAgentStatus;
   allowedActions?: AiAgentAllowedAction[];
+  reasoningEffort?: AgentReasoningEffort;
 }) {
+  if (input.reasoningEffort !== undefined && input.reasoningEffort !== "none" && input.reasoningEffort !== "low") {
+    throw new AgentsServiceError("AGENT_INVALID_CONFIG", "Agent reasoning effort must be none or low.");
+  }
   if (
     input.status === "active" &&
     input.allowedActions &&
@@ -321,13 +326,14 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       name: string;
       description?: string | null;
       status?: AiAgentStatus;
+      reasoningEffort?: AgentReasoningEffort;
       systemPrompt: string;
       allowedActions?: AiAgentAllowedAction[];
       allowedTagIds?: string[];
     }): Promise<AiAgentDto> {
       const allowedActions = input.allowedActions ?? ["send_message"];
       const status = input.status ?? "inactive";
-      validateAgentConfig({ status, allowedActions });
+      validateAgentConfig({ status, allowedActions, reasoningEffort: input.reasoningEffort });
       const createArgs = {
         data: {
           workspaceId: input.workspaceId,
@@ -338,7 +344,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
           provider: "simulated",
           model: "prymeira-simulated",
           systemPrompt: input.systemPrompt.trim(),
-          behaviorConfig: {},
+          behaviorConfig: { reasoningEffort: input.reasoningEffort ?? "none" },
           handoffConfig: {
             confidenceThreshold: 0.55
           },
@@ -388,6 +394,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
         name: string;
         description: string | null;
         status: AiAgentStatus;
+        reasoningEffort: AgentReasoningEffort;
         systemPrompt: string;
         allowedActions: AiAgentAllowedAction[];
         allowedTagIds: string[];
@@ -396,7 +403,8 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       const existingAgent = await ensureAgent(input);
       validateAgentConfig({
         status: input.data.status ?? existingAgent.status,
-        allowedActions: input.data.allowedActions ?? readAllowedActions(existingAgent.allowedActions)
+        allowedActions: input.data.allowedActions ?? readAllowedActions(existingAgent.allowedActions),
+        reasoningEffort: input.data.reasoningEffort
       });
 
       const description = nullableTrim(input.data.description);
@@ -411,6 +419,9 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
           ...(input.data.name !== undefined ? { name: input.data.name.trim() } : {}),
           ...(description !== undefined ? { description } : {}),
           ...(input.data.status !== undefined ? { status: input.data.status } : {}),
+          ...(input.data.reasoningEffort !== undefined
+            ? { behaviorConfig: { ...toRecord(existingAgent.behaviorConfig), reasoningEffort: input.data.reasoningEffort } }
+            : {}),
           ...(input.data.systemPrompt !== undefined
             ? { systemPrompt: input.data.systemPrompt.trim() }
             : {}),
