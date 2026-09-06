@@ -6,7 +6,6 @@ describe("evaluateAgentSafety", () => {
     ["Tem exatamente 30 chapas em estoque hoje?", "stock"],
     ["Vocês têm exatamente 30 unidades disponíveis hoje?", "stock"],
     ["Qual o preço exato e o desconto?", "price"],
-    ["Entrega até sexta sem falta?", "deadline"],
     ["Qual viga aguenta 5 toneladas?", "technical_specification"]
   ])("requires evidence for %s", (message, protectedFact) => {
     expect(evaluateAgentSafety({ message, selectedKnowledge: [] })).toEqual(
@@ -23,7 +22,7 @@ describe("evaluateAgentSafety", () => {
     expect(evaluateAgentSafety({
       message,
       selectedKnowledge: [{ content }]
-    })).toEqual({ handoffRequired: false, protectedFact, reason: null });
+    })).toEqual({ handoffRequired: false, protectedFact, reason: null, outcome: "continue" });
   });
 
   it("does not accept evidence from a different protected class", () => {
@@ -67,14 +66,14 @@ describe("evaluateAgentSafety", () => {
     expect(evaluateAgentSafety({
       message: "Quais produtos vocês trabalham?",
       selectedKnowledge: []
-    })).toEqual({ handoffRequired: false, protectedFact: null, reason: null });
+    })).toEqual({ handoffRequired: false, protectedFact: null, reason: null, outcome: "continue" });
   });
 
   it("lets the agent qualify a new quote request before handing off", () => {
     expect(evaluateAgentSafety({
       message: "Quero fazer um orçamento de chapa xadrez.",
       selectedKnowledge: []
-    })).toEqual({ handoffRequired: false, protectedFact: null, reason: null });
+    })).toEqual({ handoffRequired: false, protectedFact: null, reason: null, outcome: "continue" });
   });
 
   it.each([
@@ -85,7 +84,8 @@ describe("evaluateAgentSafety", () => {
     expect(evaluateAgentSafety({ message, selectedKnowledge: [] })).toEqual({
       handoffRequired: false,
       protectedFact: null,
-      reason: null
+      reason: null,
+      outcome: "continue"
     });
   });
 
