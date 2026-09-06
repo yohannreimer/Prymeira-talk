@@ -671,6 +671,34 @@
       "title": "Organização de áudio, imagem e documento",
       "type": "text",
       "validUntil": null
+    },
+    {
+      "aliases": [
+        "catálogo autorizado",
+        "produto permitido",
+        "produto fora do catálogo",
+        "plástico",
+        "barras",
+        "chapas",
+        "vigas",
+        "perfis",
+        "tubos",
+        "inox",
+        "alumínio",
+        "corte",
+        "dobra",
+        "oxicorte"
+      ],
+      "approvalStatus": "confirmed",
+      "approvedAt": "2026-09-06T12:00:00.000Z",
+      "approvedBy": "Responsável pelo projeto Prymeira Talk",
+      "category": "product_and_specification",
+      "content": "A Villefer trabalha somente com estas categorias nesta versão: barras chatas; barras maciças; cantoneiras; chapas lisas; chapas xadrez; chapas expandidas; vigas I; vigas U; perfil U enrijecido; perfil U estrutural; perfil W com abas paralelas; tubos industriais; tubos mecânicos; tubos conforme NBR 5580; tubos Schedule; tubos redondos; tubos quadrados; tubos retangulares; perfis com medidas ou comprimentos especiais; produtos de aço inoxidável; produtos de alumínio; corte em barras; corte e dobra; oxicorte. Confirme somente item desta lista ou sinônimo inequívoco. Se o termo for ambíguo, faça uma pergunta curta antes de decidir. Se o item estiver fora da lista, informe diretamente que a Villefer não trabalha com ele, pergunte se pode ajudar com produto em aço, inox ou alumínio e não faça handoff, orçamento ou nota. Em pedido misto, recuse somente o item externo e continue com os autorizados. A expressão 'outros produtos não ferrosos' não autoriza confirmação automática. A presença na lista confirma apenas a categoria, nunca medida, espessura, norma, estoque, quantidade, preço, prazo, frete ou viabilidade técnica. Exemplo: para 'Vocês trabalham com plástico?', responda 'Não, a Villefer não trabalha com plástico. Posso te ajudar com algum produto em aço, inox ou alumínio?'.",
+      "key": "approved_positive_catalog_v1",
+      "source": "Catálogo inicial aprovado a partir da base existente do agente Villefer",
+      "title": "Catálogo positivo autorizado — Villefer V1",
+      "type": "faq",
+      "validUntil": null
     }
   ],
   "metadata": {
