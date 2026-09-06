@@ -30,6 +30,7 @@ import {
 import { readKnowledgeTaxonomy } from "./knowledge-taxonomy.js";
 import {
   createOpenAiCompatibleAgentProvider,
+  readAgentReasoningEffort,
   type AgentOutput,
   type AgentProvider
 } from "./provider-gateway.js";
@@ -783,6 +784,7 @@ export function createAgentRuntime(input: {
               ) && knowledgeSelection.selected.length === 0
             ? createDocumentRequiredHandoffOutput()
           : await runProvider.generate({
+            reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
             model: runModel,
             systemPrompt: agent.systemPrompt,
             userPrompt: buildUserPrompt(effectiveText, runInput.instruction),

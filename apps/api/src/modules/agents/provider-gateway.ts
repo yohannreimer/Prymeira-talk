@@ -31,6 +31,10 @@ export const agentOutputSchema = z.object({
 
 export type AgentOutput = z.infer<typeof agentOutputSchema>;
 
+export function readAgentReasoningEffort(config: unknown): "none" | "low" {
+  return isRecord(config) && config.reasoningEffort === "low" ? "low" : "none";
+}
+
 export type AgentImageAttachment = {
   type: "image";
   url: string;
@@ -43,6 +47,7 @@ export interface AgentProviderInput {
   userPrompt: string;
   context: Record<string, unknown>;
   attachment?: AgentImageAttachment;
+  reasoningEffort?: "none" | "low";
 }
 
 export interface AgentProvider {
@@ -60,6 +65,7 @@ const openAiCompatibleResponseSchema = z.object({
   choices: z
     .array(
       z.object({
+        finish_reason: z.string().nullable().optional(),
         message: z.object({
           content: z.string()
         })
@@ -399,6 +405,7 @@ function buildOpenAiCompatibleRequestBody(input: {
   userPrompt: string;
   context: Record<string, unknown>;
   attachment?: AgentImageAttachment;
+  reasoningEffort?: "none" | "low";
 }) {
   const history = buildProviderHistory(input.context, input.userPrompt);
   const context = { ...input.context };
@@ -438,7 +445,7 @@ function buildOpenAiCompatibleRequestBody(input: {
   };
 
   return isGpt56Model(input.chatModel)
-    ? { ...sharedBody, reasoning_effort: "none" as const }
+    ? { ...sharedBody, reasoning_effort: input.reasoningEffort ?? "none", ...(input.reasoningEffort === "low" ? { max_completion_tokens: 8192 } : {}) }
     : { ...sharedBody, temperature: 0.2 };
 }
 
@@ -473,6 +480,7 @@ export function createOpenAiCompatibleAgentProvider(
       try {
         response = await fetchImpl(`${baseUrl}/chat/completions`, {
           method: "POST",
+          ...(agentInput.reasoningEffort === "low" ? { signal: AbortSignal.timeout(90_000) } : {}),
           headers: {
             Authorization: `Bearer ${input.apiKey}`,
             "Content-Type": "application/json"
@@ -483,7 +491,8 @@ export function createOpenAiCompatibleAgentProvider(
               systemPrompt: agentInput.systemPrompt,
               userPrompt: agentInput.userPrompt,
               context: agentInput.context,
-              attachment: agentInput.attachment
+              attachment: agentInput.attachment,
+              reasoningEffort: agentInput.reasoningEffort
             })
           )
         });
@@ -505,6 +514,11 @@ export function createOpenAiCompatibleAgentProvider(
       const providerResponse = openAiCompatibleResponseSchema.safeParse(payload);
       if (!providerResponse.success) {
         throw new Error("OpenAI-compatible provider returned invalid JSON response.");
+      }
+
+      const finishReason = providerResponse.data.choices[0].finish_reason;
+      if (finishReason && finishReason !== "stop") {
+        throw new Error("OpenAI-compatible provider returned an incomplete response.");
       }
 
       const content = providerResponse.data.choices[0].message.content;

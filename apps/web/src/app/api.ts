@@ -2837,6 +2837,7 @@ export async function apiCreateAgent(
     systemPrompt: string;
     allowedActions?: AiAgentAllowedAction[];
     allowedTagIds?: string[];
+    reasoningEffort?: "none" | "low";
   }
 ): Promise<AiAgentDto> {
   return fetchJson(
@@ -2861,6 +2862,7 @@ export async function apiUpdateAgent(
     allowedActions: AiAgentAllowedAction[];
     allowedTagIds: string[];
     status: AiAgentDto["status"];
+    reasoningEffort: "none" | "low";
   }>
 ): Promise<AiAgentDto> {
   return fetchJson(

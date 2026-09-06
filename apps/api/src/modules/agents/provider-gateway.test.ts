@@ -173,6 +173,12 @@ describe("createSimulatedAgentProvider", () => {
 });
 
 describe("createOpenAiCompatibleAgentProvider", () => {
+  it("never turns a length-limited JSON fragment into a customer reply", async () => {
+    const provider = createOpenAiCompatibleAgentProvider({ baseUrl: "https://api.example/v1", apiKey: "test", chatModel: "gpt-5.6-luna",
+      fetchImpl: vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: '{"reply":"Vou encaminhar","actions":[{"type":"create_internal_note","body":"' } }] }), { status: 200 }))
+    });
+    await expect(provider.generate({ model: "gpt-5.6-luna", systemPrompt: "Qualifique.", userPrompt: "Meu pedido.", context: {}, reasoningEffort: "low" })).rejects.toThrow("incomplete response");
+  });
   it("posts to the chat completions endpoint with authorization and JSON headers", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
@@ -378,9 +384,13 @@ describe("createOpenAiCompatibleAgentProvider", () => {
     expect(body.messages[0].content).toContain("stock, price, deadline");
   });
 
-  it.each(["gpt-5.6-luna", "gpt-5.6-terra"])(
-    "uses the GPT-5.6 reasoning baseline for %s",
-    async (chatModel) => {
+  it.each([
+    { chatModel: "gpt-5.6-luna", reasoningEffort: undefined },
+    { chatModel: "gpt-5.6-terra", reasoningEffort: undefined },
+    { chatModel: "gpt-5.6-luna", reasoningEffort: "low" as const }
+  ])(
+    "uses the selected bounded reasoning mode for $chatModel / $reasoningEffort",
+    async ({ chatModel, reasoningEffort }) => {
       const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
         new Response(JSON.stringify({
           choices: [{
@@ -406,16 +416,21 @@ describe("createOpenAiCompatibleAgentProvider", () => {
         model: "runtime-model",
         systemPrompt: "Atenda clientes da Prymeira Talk.",
         userPrompt: "Olá",
-        context: {}
+        context: {},
+        ...(reasoningEffort ? { reasoningEffort } : {})
       });
 
       const [, init] = fetchMock.mock.calls[0] ?? [];
       const body = JSON.parse(String(init?.body));
       expect(body).toEqual(expect.objectContaining({
         model: chatModel,
-        reasoning_effort: "none",
+        reasoning_effort: reasoningEffort ?? "none",
         response_format: { type: "json_object" }
       }));
+      if (reasoningEffort === "low") {
+        expect(body.max_completion_tokens).toBe(8192);
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+      }
       expect(body).not.toHaveProperty("temperature");
       expect(body.messages).toHaveLength(2);
     }

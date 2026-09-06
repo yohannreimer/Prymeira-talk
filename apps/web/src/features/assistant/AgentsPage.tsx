@@ -49,6 +49,7 @@ type AgentFormState = {
   status: AiAgentDto["status"];
   systemPrompt: string;
   allowedTagIds: string[];
+  reasoningEffort: "none" | "low";
 };
 
 type KnowledgeFormState = {
@@ -83,6 +84,7 @@ function emptyAgentForm(): AgentFormState {
     name: "Agente de atendimento",
     status: "inactive",
     systemPrompt: defaultSystemPrompt,
+    reasoningEffort: "none",
     allowedTagIds: []
   };
 }
@@ -92,6 +94,7 @@ function agentFormFromAgent(agent: AiAgentDto): AgentFormState {
     name: agent.name,
     status: agent.status,
     systemPrompt: agent.systemPrompt,
+    reasoningEffort: agent.behaviorConfig.reasoningEffort === "low" ? "low" : "none",
     allowedTagIds: agent.allowedTags.map((tag) => tag.id)
   };
 }
@@ -309,6 +312,7 @@ export function AgentsPage() {
           name: agentForm.name,
           status: agentForm.status,
           systemPrompt: agentForm.systemPrompt,
+          reasoningEffort: agentForm.reasoningEffort,
           allowedTagIds: agentForm.allowedTagIds
         });
 
@@ -322,6 +326,7 @@ export function AgentsPage() {
         name: agentForm.name,
         status: agentForm.status,
         systemPrompt: agentForm.systemPrompt,
+        reasoningEffort: agentForm.reasoningEffort,
         allowedActions: defaultAllowedActions,
         allowedTagIds: agentForm.allowedTagIds
       });
@@ -607,6 +612,14 @@ export function AgentsPage() {
                 required
                 rows={7}
               />
+            </label>
+            <label className="form-field">
+              Modo de resposta
+              <select aria-label="Modo de resposta" value={agentForm.reasoningEffort} onChange={(event) => setAgentForm((current) => ({ ...current, reasoningEffort: event.target.value === "low" ? "low" : "none" }))}>
+                <option value="none">Rápido</option>
+                <option value="low">Mais cuidadoso</option>
+              </select>
+              <small>Nos modelos GPT-5.6, o modo cuidadoso usa raciocínio curto antes de responder. Pode aumentar o tempo e o consumo de tokens; não garante acerto.</small>
             </label>
             <section className="agent-tag-selector" aria-label="Tags permitidas">
               <div className="panel-title-row compact">

@@ -19,6 +19,7 @@ import { readKnowledgeTaxonomy } from "./knowledge-taxonomy.js";
 import { prepareInboundMedia, formatProcessedMediaMessage, type InboundMediaAttachment, type InboundMediaResult } from "./inbound-media.js";
 import {
   createOpenAiCompatibleAgentProvider,
+  readAgentReasoningEffort,
   type AgentOutput,
   type AgentProvider
 } from "./provider-gateway.js";
@@ -76,6 +77,7 @@ export type AgentTestChatDebug = {
   proposedActions?: AgentOutput["actions"];
   providerMode: "real" | "simulated";
   model: string;
+  reasoningEffort?: "none" | "low";
   totalKnowledgeSources: number;
   selectedKnowledgeSources: number;
   evaluatedKnowledgeChunks: number;
@@ -227,6 +229,7 @@ export function createAgentTestChatService(input: {
       const debugBase: AgentTestChatDebug = {
         providerMode: providerSettings.active ? "real" : "simulated",
         model,
+        reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
         totalKnowledgeSources: knowledgeSelection.total,
         evaluatedKnowledgeChunks: knowledgeSelection.evaluatedChunks,
         selectedKnowledgeSources: new Set(
@@ -266,6 +269,7 @@ export function createAgentTestChatService(input: {
       } else {
         try {
           output = await runProvider.generate({
+            reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
             model,
             systemPrompt: agent.systemPrompt,
             userPrompt: latestUserMessage.content,
