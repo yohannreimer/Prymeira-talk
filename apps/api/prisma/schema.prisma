@@ -167,6 +167,9 @@ model UserProfile {
   sentMessages          Message[]      @relation("UserSentMessages")
   contactNotes          ContactNote[]  @relation("ContactNoteCreatedBy")
   departmentMemberships DepartmentMember[]
+  assistantRequests AssistantConversationState[]
+  assistantSuggestions AssistantSuggestion[]
+  assistantSends AssistantSuggestionSend[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, clerkUserId])
@@ -318,6 +321,8 @@ model Conversation {
   aiSessions   AiAgentSession[]  @relation("AiAgentSessionConversation")
   aiRuns       AiAgentRun[]
   aiPendingReplies AiAgentPendingReply[]
+  assistantState AssistantConversationState?
+  assistantSuggestions AssistantSuggestion[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, channelId, contactId])
@@ -346,7 +351,10 @@ model Message {
 
   conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
   sentBy       UserProfile? @relation("UserSentMessages", fields: [workspaceId, sentByUserId], references: [workspaceId, id], onDelete: NoAction)
+  assistantInputs AssistantConversationState[]
+  assistantSends AssistantSuggestionSend[]
 
+  @@unique([workspaceId, id])
   @@unique([workspaceId, providerEventId])
   @@unique([workspaceId, providerMessageId])
   @@index([workspaceId, conversationId, createdAt])
@@ -637,10 +645,83 @@ model AiAgent {
   runs             AiAgentRun[]
   pendingReplies   AiAgentPendingReply[]
   allowedTags      AiAgentAllowedTag[]
+  assistantSuggestions AssistantSuggestion[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status])
   @@map("ai_agents")
+}
+
+model AssistantConversationState {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  conversationId String @map("conversation_id") @db.Uuid
+  revision Int @default(1)
+  lastMessageId String? @map("last_message_id") @db.Uuid
+  status String @default("pending")
+  firstPendingAt DateTime @map("first_pending_at")
+  scheduledAt DateTime? @map("scheduled_at")
+  leaseToken String? @map("lease_token") @db.Uuid
+  leaseUntil DateTime? @map("lease_until")
+  requestedById String? @map("requested_by_id") @db.Uuid
+  instruction String?
+  attempts Int @default(0)
+  lastError String? @map("last_error")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  lastMessage Message? @relation(fields: [workspaceId, lastMessageId], references: [workspaceId, id], onDelete: NoAction)
+  requestedBy UserProfile? @relation(fields: [workspaceId, requestedById], references: [workspaceId, id], onDelete: NoAction)
+
+  @@unique([workspaceId, conversationId])
+  @@index([status, scheduledAt])
+  @@map("assistant_conversation_states")
+}
+
+model AssistantSuggestion {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  conversationId String @map("conversation_id") @db.Uuid
+  agentId String @map("agent_id") @db.Uuid
+  actorUserId String? @map("actor_user_id") @db.Uuid
+  revision Int
+  contextKey String @map("context_key")
+  agentHash String @map("agent_hash")
+  body String
+  instruction String?
+  warnings Json @default("[]")
+  proposedActions Json @default("{}") @map("proposed_actions")
+  createdAt DateTime @default(now()) @map("created_at")
+  conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  agent AiAgent @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: NoAction)
+  actor UserProfile? @relation(fields: [workspaceId, actorUserId], references: [workspaceId, id], onDelete: NoAction)
+  send AssistantSuggestionSend?
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, conversationId, revision])
+  @@index([workspaceId, conversationId, createdAt])
+  @@map("assistant_suggestions")
+}
+
+model AssistantSuggestionSend {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  requestKey String @map("request_key") @db.Uuid
+  suggestionId String @unique @map("suggestion_id") @db.Uuid
+  bodyHash String @map("body_hash")
+  finalBody String @map("final_body")
+  actorUserId String @map("actor_user_id") @db.Uuid
+  messageId String? @map("message_id") @db.Uuid
+  status String @default("pending")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  suggestion AssistantSuggestion @relation(fields: [workspaceId, suggestionId], references: [workspaceId, id], onDelete: Cascade)
+  actor UserProfile @relation(fields: [workspaceId, actorUserId], references: [workspaceId, id], onDelete: NoAction)
+  message Message? @relation(fields: [workspaceId, messageId], references: [workspaceId, id], onDelete: NoAction)
+
+  @@unique([workspaceId, requestKey])
+  @@unique([workspaceId, suggestionId])
+  @@map("assistant_suggestion_sends")
 }
 
 model AiAgentAllowedTag {
