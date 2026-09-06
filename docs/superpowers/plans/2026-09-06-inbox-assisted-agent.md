@@ -229,10 +229,14 @@ type ComposerState = { conversationId: string; body: string; origin: ComposerSug
 - [x] User approved both revised behavior and interactive visual.
 - [x] User chose sequential execution in this session.
 - [x] Dedicated worktree created; baseline preserved.
-- [ ] Task 1 complete.
-- [ ] Task 2 complete.
-- [ ] Task 3 complete.
-- [ ] Task 4 complete.
-- [ ] Task 5 complete.
-- [ ] Task 6 complete.
-- [ ] Task 7 complete.
+- [x] Task 1: shared contracts and pure control policy verified.
+- [x] Task 2: schema, scoped access, CAS leases and local database tests verified.
+- [x] Task 3: read-only provider/media adapter and failure handling verified.
+- [x] Task 4: transactional inbound scheduling and autonomous-runtime guards verified.
+- [x] Task 5: authenticated API, explicit idempotent send and attribution verified.
+- [x] Task 6: approved panel, composer provenance and channel settings implemented.
+- [x] Task 7: local suites, builds, database/browser verification and pilot handoff documented.
+
+The procedural checkboxes above preserve the original sequence; this execution log and `artifacts/assistant-pilot/verification.md` are the completion record. Tests were added alongside implementation where a separate red-green cycle was not recorded; do not claim every item was executed as strict TDD.
+
+Implementation adjustments supported by tests: server-arrival ordering avoids second-precision provider timestamps dropping new input; queue writes share the inbound transaction; leases survive superseding revisions; explicit sends reserve an outgoing message before transport; context polling uses authenticated requests rather than workspace-wide broadcasts. Provider errors require a manual retry, while abandoned worker recovery remains capped at two attempts. All local verification is separate from the pending real-chip pilot. No production deployment occurred.

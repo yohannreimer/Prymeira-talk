@@ -1,0 +1,94 @@
+const { chromium } = require(process.env.PLAYWRIGHT_PACKAGE || 'playwright');
+const { expect } = require((process.env.PLAYWRIGHT_PACKAGE || 'playwright') + '/test');
+const assert = require('node:assert/strict');
+const token = 'local.eyJzdWIiOiJkZW1vX2FnZW50X21hcmluYSJ9.bypass';
+const api = 'http://127.0.0.1:56440';
+async function request(path, body) {
+  const response = await fetch(api + path, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}) });
+  assert(response.ok, `HTTP ${response.status}: ${await response.clone().text()}`); return response.json();
+}
+(async () => {
+  const state = await request('/__test/state');
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 940 } });
+  const errors = []; page.on('pageerror', e => errors.push(e.message));
+  try {
+    const inbound = await request('/__test/inbound', { text: 'Boa tarde! Preciso de 10 chapas de aço de 2 mm.', delay: 0 });
+    assert.equal(inbound.status, 200);
+    await page.goto('http://127.0.0.1:56306/', { waitUntil: 'networkidle' });
+    await expect(page.getByRole('button', { name: 'Enviar resposta', exact: true })).toBeVisible({ timeout: 15000 });
+    assert.equal((await request('/__test/state')).sends, state.sends, 'Inbound must not send anything');
+    await page.screenshot({ path: __dirname + '/desktop.png', fullPage: true });
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    const composer = page.getByRole('textbox', { name: 'Mensagem', exact: true });
+    await composer.fill('Texto que o vendedor já escreveu.');
+    await page.getByRole('button', { name: 'Editar no campo' }).click();
+    await expect(page.getByText('Substituir o texto que você já escreveu?')).toBeVisible();
+    await page.getByRole('button', { name: 'Manter meu texto' }).click();
+    await expect(composer).toHaveValue('Texto que o vendedor já escreveu.');
+    await page.getByRole('button', { name: 'Editar no campo' }).click();
+    await page.getByRole('button', { name: 'Substituir rascunho' }).click();
+    await composer.fill('Marcos, me passa as medidas e a cidade de entrega?');
+    await request('/__test/inbound', { text: 'A entrega seria em Joinville.' });
+    await expect(page.getByRole('button', { name: 'Revisei o contexto' })).toBeVisible({ timeout: 15000 });
+    await expect(composer).toHaveValue('Marcos, me passa as medidas e a cidade de entrega?');
+    await composer.fill('Marcos, falta só me passar as medidas das chapas.');
+    await page.getByRole('button', { name: 'Revisei o contexto' }).click();
+    await page.getByRole('button', { name: 'Enviar mensagem', exact: true }).click();
+    await expect(composer).toHaveValue('', { timeout: 10000 });
+    const reviewed = await request(`/assistant/conversations/${state.conversationId}`);
+    assert(reviewed.history.some(h => h.finalBody === 'Marcos, falta só me passar as medidas das chapas.' && h.actorName === 'Marina · teste local'));
+    assert.equal((await request('/__test/state')).sends, state.sends + 1);
+    // A takeover during an actual HTTP provider request must prevent publication.
+    const before = (await request(`/assistant/conversations/${state.conversationId}`)).history.length;
+    await request('/__test/inbound', { text: 'E se eu quiser mais duas chapas?', delay: 3500 });
+    await expect.poll(async () => (await request(`/assistant/conversations/${state.conversationId}`)).status, { timeout: 10000 }).toBe('generating');
+    await page.getByRole('button', { name: 'Assumir', exact: true }).click();
+    await expect(page.getByText('O atendimento está com você')).toBeVisible();
+    await page.waitForTimeout(4000);
+    assert.equal((await request(`/assistant/conversations/${state.conversationId}`)).history.length, before);
+    await page.screenshot({ path: __dirname + '/human-control.png', fullPage: true });
+    await page.getByRole('button', { name: 'Liberar IA', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Enviar resposta', exact: true })).toBeVisible({ timeout: 15000 });
+    // Private direction creates a revision, not a customer message.
+    const sendsBefore = (await request('/__test/state')).sends;
+    await page.getByLabel('Orientar a IA').fill('Seja mais curto.');
+    await page.getByRole('button', { name: 'Ajustar sugestão' }).click();
+    await expect.poll(async () => (await request(`/assistant/conversations/${state.conversationId}`)).history[0]?.instruction, { timeout: 15000 }).toBe('Seja mais curto.');
+    assert.equal((await request('/__test/state')).sends, sendsBefore);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByRole('textbox', { name: 'Mensagem', exact: true })).toBeVisible();
+    const composerBox = await page.getByRole('textbox', { name: 'Mensagem', exact: true }).boundingBox();
+    assert(composerBox && composerBox.x + composerBox.width <= 390 && composerBox.y + composerBox.height <= 844, 'mobile composer is clipped');
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'mobile chat overflows');
+    await page.screenshot({ path: __dirname + '/mobile-chat.png', fullPage: true });
+    await page.locator('.assistant-mobile-trigger').click();
+    await expect(page.getByRole('button', { name: 'Fechar apoio' })).toBeFocused();
+    await expect(page.getByText('Só você e sua equipe veem este apoio')).toBeVisible();
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'mobile panel overflows');
+    await page.screenshot({ path: __dirname + '/mobile-panel.png', fullPage: true });
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.assistant-mobile-trigger')).toBeFocused();
+    await page.setViewportSize({ width: 1440, height: 940 });
+    const directBefore = (await request('/__test/state')).sends;
+    await page.getByRole('button', { name: 'Enviar resposta', exact: true }).click();
+    await expect.poll(async () => (await request('/__test/state')).sends).toBe(directBefore + 1);
+    await page.getByRole('button', { name: 'Canais', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'IA de apoio', exact: true })).toBeVisible();
+    await page.getByLabel('Modo', { exact: true }).selectOption('on_demand');
+    await page.getByRole('button', { name: 'Salvar configuração' }).click();
+    await expect(page.getByText('Configuração salva. Nenhuma mensagem foi enviada.')).toBeVisible();
+    assert.equal((await request(`/assistant/channels/${state.channelId}/settings`)).mode, 'on_demand');
+    await page.getByLabel('Modo', { exact: true }).selectOption('automatic');
+    await page.getByRole('button', { name: 'Salvar configuração' }).click();
+    await expect.poll(async () => (await request(`/assistant/channels/${state.channelId}/settings`)).mode).toBe('automatic');
+    await page.getByRole('button', { name: 'Atendimento', exact: true }).click();
+    await request('/__test/inbound', { text: 'Tenho outro pedido para orçar.', delay: 0 });
+    await expect(page.getByRole('button', { name: 'Enviar resposta', exact: true })).toBeVisible({ timeout: 15000 });
+    assert.deepEqual(errors, []);
+    console.log(JSON.stringify({ passed: true, checks: ['automatic private generation', 'no autonomous send', 'draft preservation', 'stale review', 'edited send attribution', 'in-flight human control', 'release resumes', 'private revision', 'desktop layout', 'mobile layout', 'Escape and focus', 'direct approved send', 'channel configuration'], provider: 'local HTTP fake; not a real model quality test', sends: (await request('/__test/state')).sends - state.sends }));
+  } catch (error) {
+    await page.screenshot({ path: __dirname + '/failure.png', fullPage: true });
+    console.error((await page.locator('body').innerText()).slice(-12000)); throw error;
+  } finally { await browser.close(); }
+})();

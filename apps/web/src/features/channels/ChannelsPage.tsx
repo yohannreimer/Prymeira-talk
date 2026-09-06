@@ -16,6 +16,7 @@ import {
 } from "../../app/api";
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
 import { getQrDisplaySource } from "./qr-display";
+import { AssistantChannelSettings } from './AssistantChannelSettings';
 
 const statusLabels: Record<ChannelDto["status"], string> = {
   disconnected: "Desconectado",
@@ -620,6 +621,7 @@ export function ChannelsPage() {
         )}
       </div>
 
+      {selectedChannelId ? <AssistantChannelSettings key={selectedChannelId} channelId={selectedChannelId} getToken={getToken} /> : null}
       {createDrawerOpen ? (
         <>
           <div

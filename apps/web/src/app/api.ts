@@ -31,6 +31,23 @@ import {
   type TagDto
 } from "@prymeira-talk/shared";
 import { readConfigValue } from "./runtime-config";
+import type { AssistantConversationDto, AssistantChannelSettings, AssistantSendInput } from '@prymeira-talk/shared';
+
+export function apiGetAssistantConversation(id: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return fetchJson(getToken, `/assistant/conversations/${id}`, { signal }, data => data as AssistantConversationDto, 'Não foi possível carregar a IA de apoio.');
+}
+export function apiRequestAssistantSuggestion(id: string, instruction: string | undefined, getToken: () => Promise<string | null>) {
+  return fetchJson(getToken, `/assistant/conversations/${id}/suggestions`, { method: 'POST', body: JSON.stringify({ instruction }) }, data => data, 'Não foi possível gerar a sugestão.');
+}
+export function apiSendAssistantSuggestion(id: string, input: AssistantSendInput, getToken: () => Promise<string | null>) {
+  return fetchJson(getToken, `/assistant/conversations/${id}/send`, { method: 'POST', body: JSON.stringify(input) }, data => data as { status: string; messageId: string | null; message?: MessageDto; conversation?: ConversationDto }, 'Não foi possível confirmar o envio.');
+}
+export function apiGetAssistantChannelSettings(id: string, getToken: () => Promise<string | null>) {
+  return fetchJson(getToken, `/assistant/channels/${id}/settings`, {}, data => data as AssistantChannelSettings, 'Não foi possível carregar a configuração.');
+}
+export function apiSetAssistantChannelSettings(id: string, settings: AssistantChannelSettings, getToken: () => Promise<string | null>) {
+  return fetchJson(getToken, `/assistant/channels/${id}/settings`, { method: 'PUT', body: JSON.stringify(settings) }, data => data as AssistantChannelSettings, 'Não foi possível salvar a configuração.');
+}
 
 export type {
   AgentAllowedTagDto,

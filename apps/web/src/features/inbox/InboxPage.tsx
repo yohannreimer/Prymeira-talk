@@ -32,6 +32,11 @@ import {
 } from "./conversation-display";
 import { QuickRepliesPopover } from "./QuickRepliesPopover";
 import { useRealtimeEvents } from "./useRealtimeEvents";
+import { AssistantPanel } from './AssistantPanel';
+import { useAssistantConversation } from './useAssistantConversation';
+import { canCopySuggestion, draftNeedsReview, suggestionOrigin, type ComposerSuggestionOrigin } from './assistant-composer-state';
+import { apiSendAssistantSuggestion } from '../../app/api';
+import type { AssistantSuggestionDto } from '@prymeira-talk/shared';
 
 function formatTime(value: string | null) {
   if (!value) return "Sem mensagens";
@@ -428,6 +433,13 @@ export function InboxPage() {
   const [messageError, setMessageError] = useState<string | null>(null);
   const [contextError, setContextError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [assistantTab, setAssistantTab] = useState<'contact' | 'assistant'>('assistant');
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [composerOrigin, setComposerOrigin] = useState<ComposerSuggestionOrigin | null>(null);
+  const assistantSendBusy = useRef(false);
+  const directSendKeys = useRef(new Map<string, string>());
+  const assistantTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const assistantCloseRef = useRef<HTMLButtonElement | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [notesHistoryOpen, setNotesHistoryOpen] = useState(false);
   const [tagCatalog, setTagCatalog] = useState<TagDto[]>([]);
@@ -460,6 +472,15 @@ export function InboxPage() {
     setToken(nextToken);
     return nextToken;
   }, [getToken]);
+  const assistant = useAssistantConversation(selectedConversationId, getToken);
+  useEffect(() => { setComposerOrigin(null); setDraft(''); setAssistantOpen(false); }, [selectedConversationId]);
+  useEffect(() => {
+    if (!assistantOpen) return;
+    assistantCloseRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { setAssistantOpen(false); assistantTriggerRef.current?.focus(); } };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [assistantOpen]);
 
   useEffect(() => {
     let isMounted = true;
@@ -865,6 +886,31 @@ export function InboxPage() {
     [visibleConversations, selectedConversationId]
   );
   const visibleMessages = messagesConversationId === selectedConversationId ? messages : [];
+  useEffect(() => { assistant.refresh(); }, [selectedConversation?.lastMessageAt, selectedConversation?.aiControlStatus, assistant.refresh]);
+  const originNeedsReview = draftNeedsReview(composerOrigin, assistant.data?.currentContextKey);
+  function editSuggestion(suggestion: AssistantSuggestionDto, confirmed: boolean) {
+    if (suggestion.conversationId !== selectedConversationId || !canCopySuggestion(draft, confirmed)) return;
+    setDraft(suggestion.body); setComposerOrigin(suggestionOrigin(suggestion)); setAssistantOpen(false);
+    requestAnimationFrame(() => draftTextAreaRef.current?.focus());
+  }
+  async function sendSuggestion(suggestion: AssistantSuggestionDto, editedBody?: string) {
+    if (assistantSendBusy.current || !selectedConversationId) return;
+    const targetId = selectedConversationId;
+    const keyId = `${targetId}:${suggestion.id}`;
+    if (!directSendKeys.current.has(keyId)) directSendKeys.current.set(keyId, crypto.randomUUID());
+    const requestKey = editedBody !== undefined && composerOrigin ? composerOrigin.requestKey : directSendKeys.current.get(keyId)!;
+    assistantSendBusy.current = true; setIsSending(true);
+    try {
+      const result = await apiSendAssistantSuggestion(targetId, { suggestionId: suggestion.id, requestKey, body: editedBody ?? suggestion.body, reviewedContextKey: editedBody !== undefined ? composerOrigin?.contextKey ?? suggestion.contextKey : suggestion.contextKey, edited: editedBody !== undefined }, getToken);
+      if (result.status === 'uncertain' || result.status === 'pending') throw new Error('Envio ainda sem confirmação. Confira a conversa antes de reenviar.');
+      if (selectedConversationIdRef.current === targetId) {
+        if (result.message) setMessages(current => upsertMessage(current, result.message!));
+        if (editedBody !== undefined) { setDraft(current => current.trim() === editedBody ? '' : current); setComposerOrigin(null); }
+        assistant.refresh();
+      }
+      if (result.conversation) setConversations(current => upsertConversation(current, result.conversation!));
+    } finally { assistantSendBusy.current = false; setIsSending(false); }
+  }
   const isThreadTransitioning = Boolean(selectedConversationId) && messagesConversationId !== selectedConversationId;
   const contextNotes = contactContext?.notes ?? [];
   const visibleNotes = notesHistoryOpen ? contextNotes : contextNotes.slice(0, 2);
@@ -921,7 +967,15 @@ export function InboxPage() {
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!selectedConversationId || !draft.trim()) return;
+    if (!selectedConversationId || !draft.trim() || isSending) return;
+    if (composerOrigin) {
+      if (originNeedsReview) { setMessageError('Chegaram novas informações. Revise o rascunho antes de enviar.'); return; }
+      const source = assistant.data?.history.find(s => s.id === composerOrigin.suggestionId);
+      if (!source) { setMessageError('A revisão original não está disponível. Abra novamente o apoio.'); return; }
+      try { await sendSuggestion(source, draft.trim()); setMessageError(null); }
+      catch (e) { setMessageError(e instanceof Error ? e.message : 'Confira o envio na conversa.'); }
+      return;
+    }
 
     const targetConversationId = selectedConversationId;
     const messageBody = draft.trim();
@@ -1017,6 +1071,7 @@ export function InboxPage() {
     event.target.value = "";
 
     if (!file || !selectedConversationId) return;
+    if (composerOrigin) { setMessageError('Envie primeiro o texto em revisão. Depois anexe o arquivo em uma nova mensagem.'); return; }
 
     const targetConversationId = selectedConversationId;
     const serviceWindowError = metaServiceWindowSendError(selectedConversation);
@@ -1251,7 +1306,7 @@ export function InboxPage() {
   }
 
   return (
-    <section className="talk-workspace talk-workspace-atendimento" aria-label="Atendimento">
+    <section className={`talk-workspace talk-workspace-atendimento${selectedConversationId ? ' has-selected-conversation' : ''}`} aria-label="Atendimento">
       <section className="conversation-list" aria-label="Atendimento">
         <header className="list-header">
           <div>
@@ -1390,6 +1445,7 @@ export function InboxPage() {
 
       <section className="chat-panel" aria-label="Area de atendimento">
         <header className="chat-header">
+          <button className="assistant-mobile-back" type="button" onClick={() => setSelectedConversationId(null)}>Voltar</button>
           <div>
             <p className="eyebrow">Atendimento</p>
             <h2>
@@ -1432,6 +1488,7 @@ export function InboxPage() {
             }}
             ref={messageThreadRef}
           >
+            {visibleMessages.length >= 100 ? <p className="assistant-caption">Na abertura, são carregadas as 100 mensagens mais recentes.</p> : null}
             {isThreadTransitioning ? (
               <div className="message-thread-skeleton" aria-label="Abrindo conversa">
                 <span />
@@ -1495,6 +1552,8 @@ export function InboxPage() {
         )}
 
         <div className="composer-shell">
+          <button ref={assistantTriggerRef} type="button" className="assistant-mobile-trigger" onClick={() => { setAssistantTab('assistant'); setAssistantOpen(true); }} disabled={!selectedConversation}><MessageSquare size={15} /> IA de apoio <span>{assistant.data?.status === 'ready' ? 'Sugestão pronta' : 'Abrir'}</span></button>
+          {composerOrigin ? <div className="assistant-composer-origin"><span>{originNeedsReview ? 'A conversa mudou. Confira o rascunho.' : 'Sugestão em edição. O texto enviado ficará registrado.'}</span>{originNeedsReview ? <button type="button" disabled={!assistant.data?.currentContextKey} onClick={() => setComposerOrigin(current => current && assistant.data?.currentContextKey ? { ...current, contextKey: assistant.data.currentContextKey } : current)}>Revisei o contexto</button> : null}</div> : null}
           {showQuickReplies ? (
             <QuickRepliesPopover
               replies={quickReplies}
@@ -1601,6 +1660,7 @@ export function InboxPage() {
                 disabled={!selectedConversation}
                 onChange={(event) => {
                   setDraft(event.target.value);
+                  if (!event.target.value) setComposerOrigin(null);
                   resizeDraftTextArea();
                 }}
                 onInput={resizeDraftTextArea}
@@ -1617,7 +1677,7 @@ export function InboxPage() {
               />
               <button
                 className="composer-send"
-                disabled={!selectedConversation || !draft.trim()}
+                disabled={!selectedConversation || !draft.trim() || isSending}
                 type="submit"
                 aria-label="Enviar mensagem"
               >
@@ -1628,7 +1688,9 @@ export function InboxPage() {
         </div>
       </section>
 
-      <aside className="contact-panel" aria-label="Detalhes do contato">
+      <aside className={`contact-panel assistant-contact-panel${assistantOpen ? ' assistant-drawer-open' : ''}`} aria-label="Contato e IA de apoio">
+        <div className="assistant-tabs"><button type="button" aria-pressed={assistantTab === 'contact'} onClick={() => setAssistantTab('contact')}>Contato</button><button type="button" aria-pressed={assistantTab === 'assistant'} onClick={() => setAssistantTab('assistant')}>IA de apoio{assistant.data?.status === 'ready' ? <span className="assistant-tab-dot" /> : null}</button><button ref={assistantCloseRef} className="assistant-drawer-close" aria-label="Fechar apoio" type="button" onClick={() => { setAssistantOpen(false); assistantTriggerRef.current?.focus(); }}><X size={18} /></button></div>
+        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={sendSuggestion} onEdit={editSuggestion} /> : <>
         {/* Card identidade */}
         <div className="context-card context-card--identity">
           <div className="context-identity-avatar" aria-hidden="true">
@@ -1789,7 +1851,7 @@ export function InboxPage() {
             </button>
             <button
               disabled={!selectedConversation || isRunningAction}
-              onClick={() => void runAction({ action: "request_ai_suggestion" })}
+              onClick={() => setAssistantTab('assistant')}
               type="button"
             >
               <Bot size={15} aria-hidden="true" />
@@ -1831,6 +1893,7 @@ export function InboxPage() {
             <p className="crm-status">{crmStatus}</p>
           ) : null}
         </div>
+        </>}
       </aside>
     </section>
   );

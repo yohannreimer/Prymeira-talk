@@ -121,7 +121,9 @@ Gestores podem consultar os exemplos do workspace. Isso é material de revisão:
 - [x] Aprovar o fluxo funcional e o registro de alterações, sem envio automático.
 - [x] Documentar decisões e revisar isolamento, escopo, consistência e falhas.
 - [x] Revisão da primeira especificação pelo usuário.
-- [ ] Revisão do ajuste para sugestões automáticas e controle humano.
-- [ ] Elaborar plano de implementação após a revisão.
+- [x] Revisão do ajuste para sugestões automáticas e controle humano.
+- [x] Elaborar plano de implementação após a revisão.
+
+Implementação local e evidências: `docs/assisted-inbox-pilot.md` e `artifacts/assistant-pilot/verification.md`. O usuário aprovou o visual e escolheu execução sequencial. Publicação e teste com chip real continuam pendentes.
 
 O usuário solicitou design bonito e integrado ao Talk; a direção visual acima preserva os padrões existentes e será validada antes da implementação visual. Esta especificação não afirma que o recurso já está implementado ou publicado.
