@@ -1,26 +1,34 @@
 import { describe, expect, it, vi } from "vitest";
-import { prepareInboundMedia, extractInboundVisualText, MAX_INBOUND_MEDIA_BYTES, type InboundPdfParser } from "./inbound-media.js";
+import { prepareInboundMedia as prepareMedia, inspectPdfImages, extractInboundVisualText, MAX_INBOUND_MEDIA_BYTES, type InboundPdfParser } from "./inbound-media.js";
+
+function prepareInboundMedia(input: Parameters<typeof prepareMedia>[0]) {
+  return prepareMedia({
+    ...(input.pdfFactory ? { pdfImageInspector: async () => ({ hasRasterContent: false, imageCount: 0, totalPixels: 0 }) } : {}),
+    ...input
+  });
+}
 
 const settings = { active: true as const, baseUrl: "https://ai.example/v1", apiKey: "test-key", chatModel: "vision-model" };
 const attachment = { fileName: "lista.pdf", mimeType: "application/pdf", base64Content: Buffer.from("%PDF-1.7\ntest").toString("base64") };
 function parser(texts: string[]): InboundPdfParser {
   return {
-    getInfo: vi.fn().mockResolvedValue({ total: texts.length }),
+    getInfo: vi.fn().mockResolvedValue({ total: texts.length, pages: texts.map((_, index) => ({ pageNumber: index + 1, width: 612, height: 792 })) }),
     getText: vi.fn().mockResolvedValue({ pages: texts.map((text, index) => ({ num: index + 1, text })), total: texts.length }),
     getScreenshot: vi.fn().mockResolvedValue({ pages: texts.map((_, index) => ({ pageNumber: index + 1, dataUrl: "data:image/png;base64,aW1hZ2U=" })) }),
     destroy: vi.fn().mockResolvedValue(undefined)
   };
 }
 
-function actualPdf(lines: string[]) {
-  const stream = `BT /F1 12 Tf ${lines.map((line, row) => line.split("  ").map((cell, column) => `1 0 0 1 ${50 + column * 170} ${750 - row * 20} Tm (${cell}) Tj`).join("\n")).join("\n")} ET`;
+function actualPdf(lines: string[], options: { width?: number; height?: number; imageDimensions?: [number, number] } = {}) {
+  const stream = `BT /F1 12 Tf ${lines.map((line, row) => line.split("  ").map((cell, column) => `1 0 0 1 ${50 + column * 170} ${750 - row * 20} Tm (${cell}) Tj`).join("\n")).join("\n")} ET${options.imageDimensions ? "\nq 100 0 0 100 50 50 cm /Im1 Do Q" : ""}`;
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${options.width ?? 612} ${options.height ?? 792}] /Resources << /Font << /F1 4 0 R >> ${options.imageDimensions ? "/XObject << /Im1 6 0 R >>" : ""} >> /Contents 5 0 R >>`,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`
   ];
+  if (options.imageDimensions) objects.push(`<< /Type /XObject /Subtype /Image /Width ${options.imageDimensions[0]} /Height ${options.imageDimensions[1]} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 3 >>\nstream\nabc\nendstream`);
   let pdf = "%PDF-1.4\n";
   const offsets = [0];
   for (const [index, object] of objects.entries()) {
@@ -28,11 +36,48 @@ function actualPdf(lines: string[]) {
     pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
   }
   const xref = Buffer.byteLength(pdf);
-  pdf += `xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
   return { ...attachment, base64Content: Buffer.from(pdf).toString("base64") };
 }
 
 describe("prepareInboundMedia", () => {
+  it.each([
+    { pageNumber: 1, width: 612, height: 100_000 },
+    { pageNumber: 1, width: 30_000, height: 30_000 },
+    { pageNumber: 1, width: 1, height: 792 },
+    { pageNumber: 1, width: 10_000, height: 1 },
+    { pageNumber: 1, width: Infinity, height: 792 },
+    { pageNumber: 1, width: 0, height: 792 }
+  ])("rejects unsafe PDF page dimensions before extraction or canvas allocation: %j", async (page) => {
+    const pdf = parser(["Readable customer header and long native text content"]);
+    vi.mocked(pdf.getInfo).mockResolvedValue({ total: 1, pages: [page] });
+    const result = await prepareInboundMedia({ attachment, settings, pdfFactory: () => pdf });
+    expect(result).toMatchObject({ status: "failed", errorCode: "PDF_PAGE_TOO_LARGE" });
+    expect(pdf.getText).not.toHaveBeenCalled();
+    expect(pdf.getScreenshot).not.toHaveBeenCalled();
+    expect(pdf.destroy).toHaveBeenCalled();
+  });
+
+  it("requires complete per-page dimensions before extracting a PDF", async () => {
+    const pdf = parser(["native page one with enough characters to extract", "native page two with enough characters to extract"]);
+    vi.mocked(pdf.getInfo).mockResolvedValue({ total: 2, pages: [{ pageNumber: 1, width: 612, height: 792 }] });
+    const result = await prepareInboundMedia({ attachment, settings, pdfFactory: () => pdf });
+    expect(result).toMatchObject({ status: "failed", errorCode: "PDF_INCOMPLETE" });
+    expect(pdf.getText).not.toHaveBeenCalled();
+  });
+
+  it("rejects a real PDF image exceeding the decoder bound without silently accepting its text", async () => {
+    const result = await prepareInboundMedia({ attachment: actualPdf(["Long readable text header but oversized raster data below"], { imageDimensions: [10_000, 10_000] }), settings });
+    expect(result).toMatchObject({ status: "failed", errorCode: "PDF_IMAGE_TOO_LARGE" });
+    expect(result.extractedText).toBeUndefined();
+  });
+
+  it("rejects a real extreme-height PDF before calling visual extraction", async () => {
+    const visionExtract = vi.fn();
+    const result = await prepareInboundMedia({ attachment: actualPdf([], { height: 100_000 }), settings, visionExtract });
+    expect(result).toMatchObject({ status: "failed", errorCode: "PDF_PAGE_TOO_LARGE" });
+    expect(visionExtract).not.toHaveBeenCalled();
+  });
   it("extracts a real native PDF with installed pdf-parse and retains line breaks", async () => {
     const result = await prepareInboundMedia({ attachment: actualPdf(["Material  Quantidade  Medida", "Tubo aco  12  50 x 30 x 2 mm", "Barra chata  3  2 x 1/4 polegadas"]), settings: { active: false, reason: "not_configured" } });
     expect(result).toMatchObject({ status: "processed", pages: 1 });
@@ -50,9 +95,8 @@ describe("prepareInboundMedia", () => {
 
   it("renders mixed raster/text PDFs even when their text header is readable", async () => {
     const pdf = parser(["Long readable header without the scanned customer list below it"]);
-    pdf.getImage = vi.fn().mockResolvedValue({ pages: [{ images: [{}] }] });
     const visionExtract = vi.fn().mockResolvedValue("Título\nTubo aço\t12\t50 x 30 x 2 mm");
-    const result = await prepareInboundMedia({ attachment, settings, pdfFactory: () => pdf, visionExtract });
+    const result = await prepareInboundMedia({ attachment, settings, pdfFactory: () => pdf, pdfImageInspector: async () => ({ hasRasterContent: true, imageCount: 1, totalPixels: 1_000_000 }), visionExtract });
     expect(result.status).toBe("processed");
     expect(pdf.getScreenshot).toHaveBeenCalledOnce();
     expect(result.extractedText).toContain("Tubo aço");
@@ -141,5 +185,35 @@ describe("prepareInboundMedia", () => {
     expect(result).toMatchObject({ status: "processed", kind: "audio", extractedText: "Preciso de 12 tubos de 6 metros" });
     const image = await prepareInboundMedia({ attachment: { fileName: "pedido.png", mimeType: "image/png", base64Content: "aW1hZ2U=" }, settings: { active: false, reason: "simulated" } });
     expect(image).toMatchObject({ status: "failed", errorCode: "MEDIA_PROVIDER_UNAVAILABLE" });
+  });
+});
+
+describe("bounded PDF image metadata inspection", () => {
+  const header = "page   num  type   width height color comp bpc  enc interp  object ID x-ppi y-ppi size ratio\n--------------------------------------------------------------------------------------------\n";
+  const listing = (width: number, height: number, count = 1) => header + Array.from({ length: count }, (_, index) => `1 ${index} image ${width} ${height} rgb 3 8 image no 3 0 100 100 1K 1%`).join("\n");
+
+  it("recognizes bounded raster images from metadata without decoding them", async () => {
+    const result = await inspectPdfImages(Buffer.from("pdf"), async () => ({ stdout: listing(1132, 1600), stderr: "" }));
+    expect(result).toEqual({ hasRasterContent: true, imageCount: 1, totalPixels: 1_811_200 });
+    await expect(inspectPdfImages(Buffer.from("pdf"), async () => ({ stdout: header, stderr: "" }))).resolves.toEqual({ hasRasterContent: false, imageCount: 0, totalPixels: 0 });
+  });
+
+  it.each([listing(10_000, 10_000), listing(2000, 2000, 8), listing(10, 10, 51)])("rejects per-image, aggregate and image-count excess before decoding", async (stdout) => {
+    await expect(inspectPdfImages(Buffer.from("pdf"), async () => ({ stdout, stderr: "" }))).rejects.toMatchObject({ code: "PDF_IMAGE_TOO_LARGE" });
+  });
+
+  it.each([
+    { stdout: "", stderr: "" },
+    { stdout: "unexpected listing", stderr: "" },
+    { stdout: header + "1 0 image NaN 500 rgb", stderr: "" },
+    { stdout: header, stderr: "Syntax Warning: truncated stream" }
+  ])("fails closed on missing or malformed metadata and parser warnings", async (result) => {
+    await expect(inspectPdfImages(Buffer.from("pdf"), async () => result)).rejects.toMatchObject({ code: "PDF_IMAGE_INSPECTION_FAILED" });
+  });
+
+  it("fails closed when the metadata command is unavailable or times out", async () => {
+    for (const code of ["ENOENT", "ETIMEDOUT", "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"]) {
+      await expect(inspectPdfImages(Buffer.from("pdf"), async () => { throw Object.assign(new Error("private filesystem information"), { code }); })).rejects.toMatchObject({ code: "PDF_IMAGE_INSPECTION_FAILED" });
+    }
   });
 });

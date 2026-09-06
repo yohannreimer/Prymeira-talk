@@ -1,4 +1,5 @@
-import { PDFParse } from "pdf-parse";
+import { PDFParse, type LoadParameters } from "pdf-parse";
+import { execFile } from "node:child_process";
 import { resolveAgentMedia } from "./agent-media-resolver.js";
 import { createOpenAiCompatibleAudioTranscriber, type AgentAudioTranscriber } from "./audio-transcription.js";
 import type { OpenAiCompatibleSettings } from "./ai-provider-settings.js";
@@ -6,6 +7,11 @@ import type { OpenAiCompatibleSettings } from "./ai-provider-settings.js";
 export const MAX_INBOUND_MEDIA_BYTES = 8 * 1024 * 1024;
 export const MAX_INBOUND_MEDIA_TEXT = 20_000;
 export const MAX_INBOUND_PDF_PAGES = 5;
+const MAX_PDF_IMAGE_PIXELS = 6_000_000;
+const MAX_PDF_PAGE_POINTS = 20_000;
+const PDF_RENDER_WIDTH = 1600;
+const MAX_PDF_RENDER_HEIGHT = 3200;
+const MIN_PDF_RENDER_HEIGHT = 400;
 export const INBOUND_MEDIA_MIME_TYPES = [
   "application/pdf", "image/png", "image/jpeg", "image/webp",
   "audio/mpeg", "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/wav", "audio/x-wav",
@@ -26,16 +32,16 @@ export type InboundMediaResult = {
   fallback?: string;
 };
 export type InboundPdfParser = {
-  getInfo(): Promise<{ total: number }>;
+  getInfo(options?: { parsePageInfo: boolean; first: number }): Promise<{ total: number; pages: { pageNumber: number; width: number; height: number }[] }>;
   getText(options?: { lineEnforce: boolean; cellSeparator: string; pageJoiner: string }): Promise<{ pages: { num: number; text: string }[]; total: number }>;
   getScreenshot(options?: { desiredWidth: number; imageDataUrl: boolean; imageBuffer: boolean }): Promise<{ pages: { pageNumber: number; dataUrl: string }[] }>;
-  getImage?(options: { imageDataUrl: boolean; imageBuffer: boolean; imageThreshold: number }): Promise<{ pages: { images: unknown[] }[] }>;
   destroy(): Promise<void>;
 };
 export type VisionExtract = (input: { settings: ActiveSettings; images: string[]; fetchImpl?: typeof fetch }) => Promise<string>;
 export type InboundMediaDependencies = {
   mediaResolver?: typeof resolveAgentMedia;
-  pdfFactory?: (bytes: Buffer) => InboundPdfParser;
+  pdfFactory?: (bytes: Buffer, options: LoadParameters) => InboundPdfParser;
+  pdfImageInspector?: typeof inspectPdfImages;
   visionExtract?: VisionExtract;
   audioTranscriberFactory?: (settings: ActiveSettings) => AgentAudioTranscriber;
 };
@@ -47,6 +53,45 @@ export function inboundMediaFallback(kind: InboundMediaKind) {
 }
 
 function fail(code: string): never { throw Object.assign(new Error(code), { code }); }
+
+type RunPdfImageList = (bytes: Buffer) => Promise<{ stdout: string; stderr: string }>;
+const runPdfImageList: RunPdfImageList = (bytes) => new Promise((resolve, reject) => {
+  const child = execFile("pdfimages", ["-list", "-"], {
+    shell: false,
+    timeout: 10_000,
+    killSignal: "SIGKILL",
+    maxBuffer: 128 * 1024,
+    encoding: "utf8"
+  }, (error, stdout, stderr) => {
+    if (error) reject(error);
+    else resolve({ stdout, stderr });
+  });
+  // An early parser exit may close stdin; the process callback reports the failure.
+  child.stdin?.on("error", () => {});
+  child.stdin?.end(bytes);
+});
+
+export async function inspectPdfImages(bytes: Buffer, run: RunPdfImageList = runPdfImageList) {
+  let listing: Awaited<ReturnType<RunPdfImageList>>;
+  try { listing = await run(bytes); } catch { fail("PDF_IMAGE_INSPECTION_FAILED"); }
+  if (listing.stderr.trim() || listing.stdout.length + listing.stderr.length > 256 * 1024) fail("PDF_IMAGE_INSPECTION_FAILED");
+  const lines = listing.stdout.trim().split(/\r?\n/);
+  if (!/^page\s+num\s+type\s+width\s+height\s/.test(lines[0] ?? "") || !/^-{10,}$/.test(lines[1] ?? "")) fail("PDF_IMAGE_INSPECTION_FAILED");
+  let imageCount = 0;
+  let totalPixels = 0;
+  for (const line of lines.slice(2)) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 14 || !/^\d+$/.test(fields[0]) || !/^\d+$/.test(fields[1]) || !/^(image|mask|smask|stencil)$/.test(fields[2]) || !/^\d+$/.test(fields[3]) || !/^\d+$/.test(fields[4])) fail("PDF_IMAGE_INSPECTION_FAILED");
+    const width = Number(fields[3]);
+    const height = Number(fields[4]);
+    const pixels = width * height;
+    if (!Number.isSafeInteger(pixels) || width < 1 || height < 1 || Number(fields[0]) < 1) fail("PDF_IMAGE_INSPECTION_FAILED");
+    imageCount += 1;
+    totalPixels += pixels;
+    if (pixels > MAX_PDF_IMAGE_PIXELS || totalPixels > 30_000_000 || imageCount > 50) fail("PDF_IMAGE_TOO_LARGE");
+  }
+  return { hasRasterContent: imageCount > 0, imageCount, totalPixels };
+}
 function assertText(text: string) {
   if (!text.trim()) fail("MEDIA_UNREADABLE");
   if (text.length > MAX_INBOUND_MEDIA_TEXT) fail("MEDIA_TEXT_TOO_LARGE");
@@ -122,21 +167,38 @@ export async function prepareInboundMedia(input: InboundMediaDependencies & {
     let pages: number | undefined;
     if (kind === "document") {
       if (!media.bytes.subarray(0, 1024).includes(Buffer.from("%PDF-"))) fail("INVALID_PDF");
-      const pdf = input.pdfFactory?.(media.bytes) ?? new PDFParse({ data: Uint8Array.from(media.bytes), stopAtErrors: true, isEvalSupported: false });
+      // Defense in depth: dimensions are independently inspected with Poppler below.
+      // pdf.js can swallow operator-list failures even with stopAtErrors enabled.
+      const pdfOptions: LoadParameters = {
+        data: Uint8Array.from(media.bytes),
+        stopAtErrors: true,
+        isEvalSupported: false,
+        maxImageSize: MAX_PDF_IMAGE_PIXELS
+      };
+      const pdf = input.pdfFactory?.(media.bytes, pdfOptions) ?? new PDFParse(pdfOptions);
       try {
-        const info = await pdf.getInfo();
+        const info = await pdf.getInfo({ parsePageInfo: true, first: MAX_INBOUND_PDF_PAGES + 1 });
         pages = info.total;
         if (!Number.isInteger(pages) || pages < 1) fail("INVALID_PDF");
         if (pages > MAX_INBOUND_PDF_PAGES) fail("PDF_TOO_MANY_PAGES");
+        if (!Array.isArray(info.pages) || info.pages.length !== pages || info.pages.some((page, index) => page.pageNumber !== index + 1)) fail("PDF_INCOMPLETE");
+        for (const page of info.pages) {
+          const renderedHeight = PDF_RENDER_WIDTH * page.height / page.width;
+          if (!Number.isFinite(page.width) || !Number.isFinite(page.height) ||
+            page.width <= 0 || page.height <= 0 || page.width > MAX_PDF_PAGE_POINTS || page.height > MAX_PDF_PAGE_POINTS ||
+            !Number.isFinite(renderedHeight) || renderedHeight > MAX_PDF_RENDER_HEIGHT || renderedHeight < MIN_PDF_RENDER_HEIGHT ||
+            PDF_RENDER_WIDTH * renderedHeight > MAX_PDF_IMAGE_PIXELS) fail("PDF_PAGE_TOO_LARGE");
+        }
+        // Metadata-only subprocess preflight happens before any raster decode or canvas.
+        // getImage() cannot serve as preflight: it allocates canvases and can omit errors.
+        const imageInspection = await (input.pdfImageInspector ?? inspectPdfImages)(media.bytes);
         const extracted = await pdf.getText({ lineEnforce: true, cellSeparator: "\t", pageJoiner: "" });
         if (extracted.pages.length !== pages || extracted.pages.some((page, index) => page.num !== index + 1)) fail("PDF_INCOMPLETE");
-        const embeddedImages = await pdf.getImage?.({ imageDataUrl: false, imageBuffer: false, imageThreshold: 0 });
-        const hasRasterContent = embeddedImages?.pages.some((page) => page.images.length > 0) ?? false;
-        if (!hasRasterContent && extracted.pages.every((page) => page.text.trim().length >= 40)) {
+        if (!imageInspection.hasRasterContent && extracted.pages.every((page) => page.text.trim().length >= 40)) {
           text = extracted.pages.map((page) => `Página ${page.num}\n${page.text.trim()}`).join("\n\n");
         } else {
           if (!input.settings.active) fail("MEDIA_PROVIDER_UNAVAILABLE");
-          const rendered = await pdf.getScreenshot({ desiredWidth: 1600, imageDataUrl: true, imageBuffer: false });
+          const rendered = await pdf.getScreenshot({ desiredWidth: PDF_RENDER_WIDTH, imageDataUrl: true, imageBuffer: false });
           if (rendered.pages.length !== pages || rendered.pages.some((page, index) => page.pageNumber !== index + 1 || !page.dataUrl)) fail("PDF_INCOMPLETE");
           if (rendered.pages.reduce((sum, page) => sum + page.dataUrl.length, 0) > 30 * 1024 * 1024) fail("MEDIA_TOO_LARGE");
           text = await (input.visionExtract ?? extractInboundVisualText)({ settings: input.settings, images: rendered.pages.map((page) => page.dataUrl) });
@@ -152,8 +214,13 @@ export async function prepareInboundMedia(input: InboundMediaDependencies & {
     }
     return { ...base, status: "processed", mimeType: media.mimeType, source: media.source, ...(pages ? { pages } : {}), extractedText: assertText(text) };
   } catch (error) {
-    const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" && /^[A-Z_]+$/.test(error.code) ? error.code : "MEDIA_EXTRACTION_FAILED";
-    return { ...base, status: "failed", errorCode: code, fallback: inboundMediaFallback(kind) };
+    const code = error instanceof Error && error.message.includes("Image exceeded maximum allowed size")
+      ? "PDF_IMAGE_TOO_LARGE"
+      : error && typeof error === "object" && "code" in error && typeof error.code === "string" && /^[A-Z_]+$/.test(error.code) ? error.code : "MEDIA_EXTRACTION_FAILED";
+    const fallback = code === "PDF_IMAGE_TOO_LARGE" || code === "PDF_PAGE_TOO_LARGE"
+      ? "Esse PDF tem páginas ou imagens grandes demais para leitura automática. Pode reenviar com resolução menor, até 5 páginas e 8 MB, ou colar a lista? Se preferir, chamo uma pessoa do time."
+      : inboundMediaFallback(kind);
+    return { ...base, status: "failed", errorCode: code, fallback };
   }
 }
 
