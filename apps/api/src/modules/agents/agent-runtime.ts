@@ -757,6 +757,9 @@ export function createAgentRuntime(input: {
         const safety = evaluateAgentSafety({
           message: effectiveText,
           conversationHistory: conversationContext.formattedHistory,
+          // Do not declare an attachment missing if a media message is present in history.
+          // Processing failures keep their existing media fallback above the safety output.
+          attachmentAvailable: Boolean(attachment) || conversationContext.messages.some((entry) => entry.type === "image" || entry.type === "document"),
           selectedKnowledge: knowledgeSelection.selected
         });
         const safetyOutput = createSafetyDecisionOutput(safety);

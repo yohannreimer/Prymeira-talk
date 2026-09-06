@@ -191,6 +191,8 @@ export function createAgentTestChatService(input: {
       const safety = evaluateAgentSafety({
         message: latestUserMessage.content,
         conversationHistory,
+        // This simulator accepts text messages only, never actual attachments.
+        attachmentAvailable: false,
         selectedKnowledge: knowledgeSelection.selected
       });
       const safetyOutput = createSafetyDecisionOutput(safety);

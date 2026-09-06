@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { evaluateAgentSafety } from "./agent-safety-policy.js";
 
 describe("evaluateAgentSafety", () => {
+  it("requests a missing attachment when its absence is known", () => {
+    expect(evaluateAgentSafety({ message: "Segue o arquivo.", attachmentAvailable: false, selectedKnowledge: [] }).outcome).toBe("request_attachment");
+  });
+  it.each([
+    { message: "Segue o arquivo.", attachmentAvailable: true },
+    { message: "Segue o arquivo." },
+    { message: "Segue a lista: 2 chapas A36 de 3 mm.", attachmentAvailable: false },
+    { message: "Não recebi o arquivo do orçamento.", attachmentAvailable: false }
+  ])("does not mistake supplied content or unknown availability for an absent attachment", (input) => {
+    expect(evaluateAgentSafety({ ...input, selectedKnowledge: [] }).outcome).not.toBe("request_attachment");
+  });
   it.each([
     "Não decidimos fechar com outro fornecedor. Ainda estamos analisando sua proposta.",
     "Ainda não fechei com outro fornecedor.",

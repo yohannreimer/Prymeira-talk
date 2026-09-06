@@ -62,6 +62,14 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentTestChatService", () => {
+  it("asks for the actual attachment instead of consulting or handing off an empty file reference", async () => {
+    const provider = buildProvider({ confidence: 0.9, reply: "Vou consultar essas informações e já te dou um retorno.", actions: [], handoff: { required: false, reason: null } });
+    const service = createAgentTestChatService({ prisma: buildPrisma(), provider });
+    const result = await service.sendMessage({ workspaceId: "workspace_a", agentId: baseAgent.id, messages: [{ role: "user", content: "Tenho uma lista da engenharia, vou mandar." }, { role: "assistant", content: "Pode enviar." }, { role: "user", content: "Segue o arquivo." }] });
+    expect(result.message.content).toContain("Pode reenviar");
+    expect(result.output.handoff.required).toBe(false);
+    expect(provider.generate).not.toHaveBeenCalled();
+  });
   it("generates a test reply with chat history and selected knowledge", async () => {
     const prisma = buildPrisma();
     const provider = buildProvider({

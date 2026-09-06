@@ -17,6 +17,7 @@ export type AgentSafetyOutcome =
   | "close_purchase"
   | "await_approval"
   | "ignore_injection"
+  | "request_attachment"
   | "qualify_urgent";
 
 export type AgentSafetyDecision = {
@@ -36,6 +37,7 @@ const INJECTION_RECOVERY =
   "Pode me enviar a lista de materiais com os itens, medidas e quantidades?";
 const URGENT_QUALIFICATION =
   "Entendi a urgência. Para o vendedor confirmar o prazo, me informe o produto, as medidas ou especificação e a quantidade.";
+const ATTACHMENT_REFERENCE_ONLY = /^(?:(?:oi|ol[aá]|bom dia|boa tarde|boa noite)[,!.\s]*)?(?:segue(?:m)?|enviei|mandei)\s+(?:o |a |os |as )?(?:arquivo|anexo|lista|foto|imagem|documento)s?[.!\s]*$/i;
 
 const HUMAN_REQUEST =
   /\b(falar|conversar|atendimento|passar|transferir|chamar)\b.{0,40}\b(pessoa|humano|atendente|comercial|especialista|vendedor)\b|\b(quero|preciso|prefiro)\b.{0,30}\b(pessoa|humano|atendente|comercial|especialista|vendedor)\b/i;
@@ -115,6 +117,7 @@ const PROTECTED_RULES: Array<{
 export function evaluateAgentSafety(input: {
   message: string;
   conversationHistory?: string | null;
+  attachmentAvailable?: boolean;
   selectedKnowledge: Array<Pick<SelectedKnowledgeSource, "content">>;
 }): AgentSafetyDecision {
   const message = input.message.trim().replace(/\s+/g, " ");
@@ -125,6 +128,10 @@ export function evaluateAgentSafety(input: {
 
   if (HUMAN_REQUEST.test(message)) {
     return handoffDecision(null, "Customer requested human service.");
+  }
+
+  if (input.attachmentAvailable === false && ATTACHMENT_REFERENCE_ONLY.test(message)) {
+    return decision("request_attachment");
   }
 
   if (hasAffirmedLoss(message) && !ADDITIONAL_REQUEST.test(message)) {
@@ -173,7 +180,9 @@ export function createSafetyDecisionOutput(decisionValue: AgentSafetyDecision): 
     return createSafetyHandoffOutput(decisionValue.reason ?? "Human handoff required.");
   }
 
-  const reply = decisionValue.outcome === "close_loss"
+  const reply = decisionValue.outcome === "request_attachment"
+    ? "O arquivo não apareceu aqui. Pode reenviar ou colar a lista na conversa?"
+    : decisionValue.outcome === "close_loss"
     ? LOSS_ACKNOWLEDGEMENT
     : decisionValue.outcome === "close_purchase"
       ? PURCHASE_ACKNOWLEDGEMENT
