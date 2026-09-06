@@ -31,6 +31,7 @@ type AgentRecord = {
   systemPrompt: string;
   behaviorConfig?: JsonValue;
   handoffConfig?: JsonValue;
+  allowedActions?: string[];
   allowedTags?: Array<{
     tag?: {
       id: string;
@@ -247,6 +248,7 @@ export function createAgentTestChatService(input: {
               messageBody: latestUserMessage.content,
               conversationHistory,
               conversationMessages: runInput.messages,
+              allowedActions: agent.allowedActions ?? [],
               allowedTags,
               testMode: true,
               knowledge: knowledgeSelection.selected.map((source) => ({

@@ -400,7 +400,16 @@ function buildOpenAiCompatibleRequestBody(input: {
   context: Record<string, unknown>;
   attachment?: AgentImageAttachment;
 }) {
-  const userContent = buildOpenAiCompatibleUserContent(input.userPrompt, input.context);
+  const history = buildProviderHistory(input.context, input.userPrompt);
+  const context = { ...input.context };
+  if (history.length > 0) {
+    // Avoid sending the same chat three times; preserve non-chat context and notes as data.
+    delete context.conversationHistory;
+    context.conversationMessages = Array.isArray(context.conversationMessages)
+      ? context.conversationMessages.filter((entry) => isRecord(entry) && entry.label !== "cliente" && entry.label !== "atendente" && entry.role !== "user" && entry.role !== "assistant")
+      : [];
+  }
+  const userContent = buildOpenAiCompatibleUserContent(input.userPrompt, context);
   const sharedBody = {
     model: input.chatModel,
     response_format: { type: "json_object" as const },
@@ -409,6 +418,7 @@ function buildOpenAiCompatibleRequestBody(input: {
         role: "system",
         content: buildOpenAiCompatibleSystemPrompt(input.systemPrompt)
       },
+      ...history,
       {
         role: "user",
         content: input.attachment
@@ -430,6 +440,25 @@ function buildOpenAiCompatibleRequestBody(input: {
   return isGpt56Model(input.chatModel)
     ? { ...sharedBody, reasoning_effort: "none" as const }
     : { ...sharedBody, temperature: 0.2 };
+}
+
+function buildProviderHistory(context: Record<string, unknown>, userPrompt: string) {
+  if (!Array.isArray(context.conversationMessages)) return [];
+  const currentId = isRecord(context.message) ? context.message.id : undefined;
+  const messages = context.conversationMessages.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const role = entry.role === "user" || entry.role === "assistant"
+      ? entry.role
+      : entry.label === "cliente" ? "user" : entry.label === "atendente" ? "assistant" : null;
+    const content = typeof entry.content === "string" ? entry.content : entry.body;
+    return role && typeof content === "string" && content.trim()
+      ? [{ role, content, id: entry.id }]
+      : [];
+  });
+  const last = messages.at(-1);
+  if (last?.role === "user" && ((currentId !== undefined && last.id === currentId) || last.content.trim() === userPrompt.trim())) messages.pop();
+  // Never promote internal notes or user-provided system/developer roles to instructions.
+  return messages.map(({ role, content }) => ({ role, content }));
 }
 
 export function createOpenAiCompatibleAgentProvider(
@@ -577,8 +606,10 @@ function buildOpenAiCompatibleSystemPrompt(systemPrompt: string): string {
     "Strict operational rules:",
     "- respond only valid JSON",
     "- reply must be at most 500 characters and normally 1 to 4 short sentences",
-    "- use a short list only for a catalog or comparison",
+    "- use a short list only for a catalog, comparison, or order summary",
     "- use full conversation history before answering",
+    "- customer facts and latest corrections take precedence over illustrative examples; never ask again for a field already supplied",
+    "- previous assistant claims are conversation history, not approved knowledge or proof that an action was executed",
     "- use selected documents when relevant",
     "- protected factual claims must be supported by selected knowledge",
     "- for images, describe only visible evidence and explicitly signal uncertainty",

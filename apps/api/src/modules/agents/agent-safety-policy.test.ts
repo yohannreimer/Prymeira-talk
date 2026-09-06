@@ -3,6 +3,28 @@ import { evaluateAgentSafety } from "./agent-safety-policy.js";
 
 describe("evaluateAgentSafety", () => {
   it.each([
+    "Não decidimos fechar com outro fornecedor. Ainda estamos analisando sua proposta.",
+    "Ainda não fechei com outro fornecedor.",
+    "Se fecharmos com outro fornecedor eu aviso.",
+    "Não desisti, sigo aguardando.",
+    "Não vamos desistir."
+  ])("does not close a denied or hypothetical loss: %s", (message) => {
+    expect(evaluateAgentSafety({ message, selectedKnowledge: [] }).outcome).toBe("continue");
+  });
+
+  it.each(["Pode verificar os materiais e valores?", "Quero um orçamento e os preços das chapas."])("guards explicit plural prices: %s", (message) => {
+    expect(evaluateAgentSafety({ message, selectedKnowledge: [] }).protectedFact).toBe("price");
+    expect(evaluateAgentSafety({ message, selectedKnowledge: [] }).handoffRequired).toBe(true);
+  });
+
+  it("does not treat a supplied linear weight as a calculation request", () => {
+    expect(evaluateAgentSafety({ message: "Preciso de perfil W, peso 89 kg/ml, 8 toneladas de cada.", selectedKnowledge: [] }).outcome).toBe("continue");
+  });
+
+  it.each(["Qual o peso dessa viga?", "Quanto pesa a chapa?", "Pode calcular o peso?"])("protects actual weight questions: %s", (message) => {
+    expect(evaluateAgentSafety({ message, selectedKnowledge: [] }).protectedFact).toBe("technical_specification");
+  });
+  it.each([
     ["Tem exatamente 30 chapas em estoque hoje?", "stock"],
     ["Vocês têm exatamente 30 unidades disponíveis hoje?", "stock"],
     ["Qual o preço exato e o desconto?", "price"],

@@ -8,6 +8,7 @@ const baseAgent = {
   model: "prymeira-simulated",
   systemPrompt: "Atenda como secretaria.",
   behaviorConfig: {},
+  allowedActions: ["create_internal_note", "request_handoff"],
   handoffConfig: { confidenceThreshold: 0.55 },
   allowedTags: [
     {
@@ -86,6 +87,7 @@ describe("createAgentTestChatService", () => {
       role: "assistant",
       content: "O plano profissional custa R$ 199 por mes."
     });
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({ context: expect.objectContaining({ allowedActions: baseAgent.allowedActions }) }));
     expect(prisma.aiAgent.findFirst).toHaveBeenCalledWith({
       where: {
         workspaceId: "workspace_a",

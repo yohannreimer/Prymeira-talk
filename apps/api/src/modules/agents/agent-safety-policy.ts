@@ -58,10 +58,6 @@ const QUANTITY_SIGNAL =
 const READY_DELIVERY_CONCEPT = /\bpronta entrega\b/i;
 const EXPLANATORY_QUESTION =
   /\b(o que (?:[eé]|significa)|como funciona|qual (?:[eé] )?a diferen[cç]a|diferen[cç]a entre)\b/i;
-const NEW_QUOTE_REQUEST =
-  /\b(quero|preciso|gostaria|pode)\b.{0,50}\b(or[cç]amento|cota[cç][aã]o|cotar|proposta)\b/i;
-const EXPLICIT_QUOTED_CONDITION =
-  /\b(fechar|confirm|aprov|passou|recebi|ontem)\w*\b.{0,60}\bor[cç]amento\b|\bor[cç]amento\b.{0,60}\b(fechar|confirm|aprov|passou|recebi|ontem)\w*\b/i;
 
 const PROTECTED_RULES: Array<{
   type: ProtectedFact;
@@ -98,7 +94,7 @@ const PROTECTED_RULES: Array<{
   {
     type: "price",
     question:
-      /\b(pre[cç]o|valor|vlr|custa|custo|desconto)\b|\bquanto\s+(?:fica|d[aá])\b|\bqual\s+(?:[eé]\s+)?o\s+total\b|\bpor\s+(?:quilo|kg)\b|\b(fechar|confirm|aprov|passou|recebi|ontem)\w*\b.{0,60}\bor[cç]amento\b|\bor[cç]amento\b.{0,60}\b(fechar|confirm|aprov|passou|recebi|ontem)\w*\b/i,
+      /\b(pre[cç]os?|valor(?:es)?|vlrs?|custa|custos?|descontos?)\b|\bquanto\s+(?:fica|d[aá])\b|\bqual\s+(?:[eé]\s+)?o\s+total\b|\bpor\s+(?:quilo|kg)\b|\b(fechar|confirm|aprov|passou|recebi|ontem)\w*\b.{0,60}\bor[cç]amento\b|\bor[cç]amento\b.{0,60}\b(fechar|confirm|aprov|passou|recebi|ontem)\w*\b/i,
     evidence: /\br\$\s*\d/i
   },
   {
@@ -110,7 +106,7 @@ const PROTECTED_RULES: Array<{
   {
     type: "technical_specification",
     question:
-      /\b(aguenta|suporta|dimension|carga|peso|qual viga|espessura exata|capacidade|resist[eê]ncia)\b/i,
+      /\b(aguenta|suporta|dimension\w*|carga|qual viga|espessura exata|capacidade|resist[eê]ncia)\b|\b(?:qual|quanto|calcular|calcula|informe|informar|saber|verificar)\b.{0,40}\b(?:peso|pesa)\b|\bpeso\s*\?/i,
     evidence:
       /\b(projeto|memorial|carga|dimensionamento|capacidade|respons[aá]vel t[eé]cnico)\b/i
   }
@@ -131,7 +127,7 @@ export function evaluateAgentSafety(input: {
     return handoffDecision(null, "Customer requested human service.");
   }
 
-  if (EXPLICIT_LOSS.test(message) && !ADDITIONAL_REQUEST.test(message)) {
+  if (hasAffirmedLoss(message) && !ADDITIONAL_REQUEST.test(message)) {
     return decision("close_loss");
   }
 
@@ -162,7 +158,7 @@ export function evaluateAgentSafety(input: {
 
   const commercialText = removeMissingFieldMentions(message);
   const rule = PROTECTED_RULES.find((candidate) => candidate.question.test(commercialText));
-  if (!rule || (rule.type === "price" && NEW_QUOTE_REQUEST.test(message) && !EXPLICIT_QUOTED_CONDITION.test(message))) {
+  if (!rule) {
     return decision("continue");
   }
 
@@ -226,6 +222,18 @@ function handoffDecision(protectedFact: ProtectedFact | null, reason: string): A
 
 function hasMinimumOrderDetails(value: string) {
   return PRODUCT_SIGNAL.test(value) && SPECIFICATION_SIGNAL.test(value) && QUANTITY_SIGNAL.test(value);
+}
+
+function hasAffirmedLoss(message: string) {
+  // Scope negation to the matching clause, not to an unrelated earlier sentence.
+  return message.split(/[.!?;\n]|\bmas\b/i).some((clause) => {
+    const match = EXPLICIT_LOSS.exec(clause);
+    if (!match) return false;
+    // "Não vamos seguir" is itself an explicit loss, not a negated purchase.
+    if (/^n[aã]o\s+(?:vou|vamos|iremos)\s+(?:seguir|prosseguir)\b/i.test(match[0])) return true;
+    const prefix = clause.slice(0, match.index);
+    return !/\b(?:n[aã]o|nunca|nem|se|caso)\b/i.test(prefix);
+  });
 }
 
 function removeMissingFieldMentions(value: string) {
