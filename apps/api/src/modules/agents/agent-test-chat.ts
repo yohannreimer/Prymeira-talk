@@ -229,8 +229,9 @@ export function createAgentTestChatService(input: {
       if (safetyOutput) {
         output = safetyOutput;
       } else if (
+        safety.outcome !== "await_approval" &&
         isDocumentDependentQuestion(
-          `${latestUserMessage.content}\n${conversationHistory}`,
+          latestUserMessage.content,
           taxonomy
         ) &&
         knowledgeSelection.selected.length === 0

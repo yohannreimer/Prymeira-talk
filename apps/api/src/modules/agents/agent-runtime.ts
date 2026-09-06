@@ -775,8 +775,8 @@ export function createAgentRuntime(input: {
             }
           : safetyOutput
           ? safetyOutput
-          : isDocumentDependentQuestion(
-                `${effectiveText}\n${conversationContext.formattedHistory}`,
+          : safety.outcome !== "await_approval" && isDocumentDependentQuestion(
+                effectiveText,
                 taxonomy
               ) && knowledgeSelection.selected.length === 0
             ? createDocumentRequiredHandoffOutput()

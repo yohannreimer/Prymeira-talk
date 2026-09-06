@@ -1156,6 +1156,30 @@ describe("createAgentRuntime", () => {
     });
   });
 
+  it("continues after a material answer without requiring a document for its own previous question", async () => {
+    const prisma = buildPrisma();
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
+      ...baseAgent, behaviorConfig: { knowledgeTaxonomy: [{
+        key: "materials", label: "Materiais", aliases: ["material", "inox"], requiresSource: true
+      }] }
+    });
+    vi.mocked(prisma.aiKnowledgeSource.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, body: "Inox 304" });
+    vi.mocked(prisma.message.findMany).mockResolvedValue([
+      { ...baseMessage, id: "earlier", body: "Preciso de duas chapas 1500 x 3000 x 3 mm" },
+      { ...baseMessage, id: "assistant", direction: "outbound", body: "Qual material você precisa?" },
+      { ...baseMessage, body: "Inox 304" }
+    ]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Qual a cidade de entrega?", actions: [], handoff: { required: false, reason: null } });
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-material-answer" });
+    const result = await createAgentRuntime({ prisma, provider, evolution: { mode: "real", client: { sendText } } }).runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation"
+    });
+    expect(provider.generate).toHaveBeenCalledOnce();
+    expect(result.status).toBe("completed");
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "Qual a cidade de entrega?" }));
+  });
+
   it("requests handoff for document-dependent questions without relevant knowledge", async () => {
     const prisma = buildPrisma({
       aiKnowledgeSource: {

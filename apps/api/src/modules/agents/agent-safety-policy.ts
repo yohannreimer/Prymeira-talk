@@ -14,6 +14,8 @@ export type AgentSafetyOutcome =
   | "continue"
   | "handoff"
   | "close_loss"
+  | "close_purchase"
+  | "await_approval"
   | "ignore_injection"
   | "qualify_urgent";
 
@@ -28,7 +30,8 @@ export const HANDOFF_ACKNOWLEDGEMENT =
   "Vou consultar essas informações e já te dou um retorno.";
 
 const LOSS_ACKNOWLEDGEMENT =
-  "Entendido, obrigado pelo retorno. Fico à disposição para uma próxima necessidade.";
+  "Tranquilo, obrigado pelo retorno! Fico à disposição para uma próxima oportunidade.";
+const PURCHASE_ACKNOWLEDGEMENT = "Certo, obrigado por avisar! Fico à disposição para a próxima.";
 const INJECTION_RECOVERY =
   "Pode me enviar a lista de materiais com os itens, medidas e quantidades?";
 const URGENT_QUALIFICATION =
@@ -39,7 +42,11 @@ const HUMAN_REQUEST =
 const PROMPT_INJECTION =
   /\b(ignore|desconsidere|esque[cç]a)\b.{0,80}\b(regras?|instru[cç][oõ]es?|prompt|mensagens? anteriores?)\b|\b(revele|mostre|copie|repita)\b.{0,60}\b(prompt|regras? internas?|instru[cç][oõ]es? internas?|segredos?)\b|\b(mude|troque|altere)\b.{0,50}\b(papel|fun[cç][aã]o|regras?)\b/i;
 const EXPLICIT_LOSS =
-  /\b(?:pedido\s+)?(?:j[aá]\s+)?(?:foi\s+)?comprad[oa]\b.{0,100}\b(?:outro|concorrente|fornecedor)\b|\b(?:comprei|compramos|fechei|fechamos)\b.{0,100}\b(?:outro|concorrente|fornecedor)\b|\b(?:desisti|desistimos)\b|\bn[aã]o\s+(?:vou|vamos|iremos)\s+(?:seguir|prosseguir)\b/i;
+  /\b(?:pedido\s+)?(?:j[aá]\s+)?(?:foi\s+)?comprad[oa]\b.{0,100}\b(?:outro|concorrente|fornecedor)\b|\b(?:comprei|compramos|fechei|fechamos|decidi(?:mos)?\s+fechar)\b.{0,100}\b(?:outro|concorrente|fornecedor)\b|\b(?:desisti|desistimos)\b|\bn[aã]o\s+(?:vou|vamos|iremos)\s+(?:seguir|prosseguir)\b/i;
+const APPROVAL_STATUS = /\b(?:dependo|dependemos|aguardo|aguardamos|aguardando)\b.{0,50}\baprova[cç][aã]o\b|\b(?:mandei|mandamos|enviei|enviamos|encaminhei|encaminhamos)\b.{0,40}\bpara\s+aprova[cç][aã]o\b/i;
+// Status updates must not swallow a new request in the same message.
+const ADDITIONAL_REQUEST = /\b(?:qual|quanto|qto|pode|podem|consegue|conseguem|quero|preciso|gostaria|manda|mande|envia|envie|me passa|voc[eê]s t[eê]m)\b/i;
+const BARE_PURCHASE = /^(?:(?:oi|ol[aá]|bom dia|boa tarde|boa noite|tudo bem|tudo certo|e por a[ií])[,!.?\s]*)*(?:j[aá]\s+comprei|comprei\s+j[aá])[,!.\s]*(?:obrigad[oa][!.\s]*)?$/i;
 const URGENT_REQUEST =
   /\b(?:urgente|urg[eê]ncia)\b|\b(?:fechar|preciso\s+fechar)\b.{0,30}\b(?:hoje|agora)\b|\breceber\b.{0,35}\b(?:hoje|amanh[aã]|nesta semana|essa semana|ainda esta semana)\b|\b(?:garante|sem falta)\b/i;
 const PRODUCT_SIGNAL =
@@ -114,18 +121,27 @@ export function evaluateAgentSafety(input: {
   conversationHistory?: string | null;
   selectedKnowledge: Array<Pick<SelectedKnowledgeSource, "content">>;
 }): AgentSafetyDecision {
-  const message = input.message.trim();
+  const message = input.message.trim().replace(/\s+/g, " ");
 
   if (PROMPT_INJECTION.test(message)) {
     return decision("ignore_injection");
   }
 
-  if (EXPLICIT_LOSS.test(message)) {
+  if (HUMAN_REQUEST.test(message)) {
+    return handoffDecision(null, "Customer requested human service.");
+  }
+
+  if (EXPLICIT_LOSS.test(message) && !ADDITIONAL_REQUEST.test(message)) {
     return decision("close_loss");
   }
 
-  if (HUMAN_REQUEST.test(message)) {
-    return handoffDecision(null, "Customer requested human service.");
+  if (BARE_PURCHASE.test(message)) {
+    return decision("close_purchase");
+  }
+
+  if (APPROVAL_STATUS.test(message) && !ADDITIONAL_REQUEST.test(message)
+    && !PROTECTED_RULES.some((rule) => rule.question.test(message.replace(/or[cç]amento/gi, "")))) {
+    return decision("await_approval");
   }
 
   const fullConversation = `${input.conversationHistory ?? ""}\n${message}`;
@@ -163,6 +179,8 @@ export function createSafetyDecisionOutput(decisionValue: AgentSafetyDecision): 
 
   const reply = decisionValue.outcome === "close_loss"
     ? LOSS_ACKNOWLEDGEMENT
+    : decisionValue.outcome === "close_purchase"
+      ? PURCHASE_ACKNOWLEDGEMENT
     : decisionValue.outcome === "ignore_injection"
       ? INJECTION_RECOVERY
       : decisionValue.outcome === "qualify_urgent"
