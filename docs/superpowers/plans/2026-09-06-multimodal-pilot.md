@@ -50,3 +50,19 @@ Files: apps/web/src/app/api.ts; apps/web/src/features/assistant/AgentsPage.tsx/t
 - Test agent only: rendered prompt 7,938 chars, FNV `9ff4619e`, persisted and still inactive. Package metadata corrected for future imports; existing stored qualification metadata is deliberately not injected into the model because live metadata is older.
 - Controlled synthetic fixtures: text PDF (1.2MB to cross old proxy limit), 2-page PDF, scanned PDF, PNG, MP3, OGG, 6-page refusal, document instructions. These are not historical client attachments.
 - Fresh pre-resource-preflight checkpoint: API 678 tests, web 99 tests, typechecks and production builds passed. Final rerun and live-provider evidence still required.
+
+## 16h checkpoint (2026-09-06, São Paulo)
+
+- Release `40b01c39a43eeb56da576938a1d757225c28d3cb`: 715 API tests passed; API typecheck/build and web production build passed. Web previously passed 100 tests on the same frontend change. Independent quality re-review reported no P1/P2.
+- API and web image build workflow `34053304577` succeeded; exact Portainer services updated and running. Public health and readiness returned `ok: true` after cutover.
+- First real-provider file run on `4e5a4fc` read native PDF >1MiB, scan PDF, PNG and OGG, but repeated supplied information in three responses. Baseline saved separately in analysis `outputs/real-battery/media-baseline.json`.
+- Added an explicit per-agent careful-reply setting; all existing agents default to `none`. Only the inactive Villefer test agent opted into `low`, saved and verified in the UI. Active Villefer configuration was not edited. Truncated provider completions now fail before customer-facing parsing.
+- Paired native/scan PDF replay with the same prompt and inputs now proposed complete notes and handoff without redundant city questions. Remaining media and text regression replay is ongoing; this is not a production accuracy claim.
+- Evolution provisioning already requests base64 webhooks. Actual phone transport, assignment and human takeover still require the user's supervised pilot; no real customer messages have been sent by these tests.
+
+## Final code verification checkpoint
+
+- `d096027`: injection recovery acknowledges supplied content and asks for a clean copy; deterministic block still avoids provider invocation and actions.
+- `2efa247`: qualification-only handoffs no longer end in a contradictory permission question; when omitted, a minimum note records only the supplied reason, not an invented full briefing. Existing detailed notes and legacy agents are preserved.
+- Fresh combined API suite: **725 passing tests**, typecheck and production build passed. Fresh web suite: **100 passing tests**. Both fixes still require post-deploy F09/N11 replay.
+- Paired low-mode tests have now verified native/scanned PDF, PNG, OGG, MP3, two-page PDF and retained PDF corrections. Invalid/six-page PDFs failed safely. Text replays verified kg orders, missing attachments, qualification continuity, urgency and protected-fact handoffs. Evidence is being consolidated separately from frozen previous reports.
