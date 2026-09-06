@@ -280,6 +280,44 @@ describe("createAgentTestChatService", () => {
     expect(result.output.handoff.required).toBe(true);
   });
 
+  it("lets the provider qualify a delivery city supplied by the customer without knowledge", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          behaviorConfig: {
+            knowledgeTaxonomy: [{
+              key: "delivery_and_freight",
+              label: "Entrega, prazo e frete",
+              aliases: ["entrega", "frete", "prazo", "retirada", "cidade"],
+              requiresSource: true
+            }]
+          }
+        })
+      },
+      aiKnowledgeSource: {
+        findMany: vi.fn().mockResolvedValue([])
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "Certo, registrei Itajaí como cidade de entrega. Qual material você precisa?",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const service = createAgentTestChatService({ prisma, provider });
+
+    const result = await service.sendMessage({
+      workspaceId: "workspace_a",
+      agentId: baseAgent.id,
+      messages: [{ role: "user", content: "A entrega é em Itajaí." }]
+    });
+
+    expect(provider.generate).toHaveBeenCalledOnce();
+    expect(result.message.content).toContain("Itajaí");
+    expect(result.output.handoff.required).toBe(false);
+  });
+
   it("shows the same acknowledgement as WhatsApp when the provider requests handoff", async () => {
     const provider = buildProvider({
       confidence: 0.82,

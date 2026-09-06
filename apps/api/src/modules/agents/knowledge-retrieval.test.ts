@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectRelevantKnowledge } from "./knowledge-retrieval.js";
+import { isDocumentDependentQuestion, selectRelevantKnowledge } from "./knowledge-retrieval.js";
 
 describe("selectRelevantKnowledge", () => {
   it("selects the pricing document for a pricing question", () => {
@@ -205,5 +205,14 @@ describe("selectRelevantKnowledge", () => {
       id: "approved-catalog",
       reasons: expect.arrayContaining(["content_overlap"])
     }));
+  });
+
+  it("does not treat a customer-provided delivery city as a source-dependent question", () => {
+    expect(isDocumentDependentQuestion("A entrega é em Itajaí.", [{
+      key: "delivery_and_freight",
+      label: "Entrega, prazo e frete",
+      aliases: ["entrega", "frete", "prazo", "retirada", "cidade"],
+      requiresSource: true
+    }])).toBe(false);
   });
 });

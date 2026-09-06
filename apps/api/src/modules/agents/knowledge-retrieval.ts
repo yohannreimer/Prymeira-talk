@@ -43,6 +43,8 @@ export type KnowledgeRetrievalResult = {
 const MAX_SELECTED_SOURCES = 3;
 const MAX_SELECTED_CHUNKS = 6;
 const MAX_SELECTED_KNOWLEDGE_CHARS = 12_000;
+const SOURCE_DEPENDENT_REQUEST =
+  /\?|^\s*(?:qual|quais|quanto|quando|onde|como|tem|t[eê]m|voc[eê]s?\s+(?:tem|t[eê]m|trabalha|trabalham|vende|vendem|oferece|oferecem)|consegue|conseguem|pode|podem|confirma|confirmam|garante|garantem|informe|informem|me\s+(?:diga|digam|passe|passem)|manda|mandem|preciso\s+saber|gostaria\s+de\s+saber)\b/i;
 
 const STOP_WORDS = new Set([
   "ainda", "agora", "aqui", "aquela", "aquele", "aquilo", "assim", "atendente",
@@ -136,7 +138,12 @@ export function isDocumentDependentQuestion(
   value: string | null | undefined,
   taxonomy: AgentKnowledgeTaxonomyEntry[] = DEFAULT_KNOWLEDGE_TAXONOMY
 ) {
-  const categories = detectCategories(normalize(value ?? ""), taxonomy);
+  const rawValue = value ?? "";
+  if (!SOURCE_DEPENDENT_REQUEST.test(rawValue)) {
+    return false;
+  }
+
+  const categories = detectCategories(normalize(rawValue), taxonomy);
   return taxonomy.some((entry) => entry.requiresSource && categories.has(entry.key));
 }
 
