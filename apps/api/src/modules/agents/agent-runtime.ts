@@ -21,7 +21,7 @@ import {
   type SelectedKnowledgeSource
 } from "./knowledge-retrieval.js";
 import { enforceWhatsAppReply } from "./agent-reply-policy.js";
-import { normalizeAgentHandoffOutput } from "./agent-output-normalizer.js";
+import { normalizeAgentHandoffOutput, usesQualificationHandoff } from "./agent-output-normalizer.js";
 import {
   createSafetyDecisionOutput,
   evaluateAgentSafety,
@@ -751,12 +751,13 @@ export function createAgentRuntime(input: {
           end: source.end
         }));
 
+        const attachmentAvailable = mediaMetadata?.status === "processed" || conversationContext.messages.some((entry) => (entry.type === "image" || entry.type === "file") && /\[(Texto do PDF|Leitura da imagem) — conteúdo enviado pelo cliente\]/.test(entry.body ?? ""));
         const safety = evaluateAgentSafety({
           message: effectiveText,
           conversationHistory: conversationContext.formattedHistory,
           // Do not declare an attachment missing if a media message is present in history.
           // Processing failures keep their existing media fallback above the safety output.
-          attachmentAvailable: mediaMetadata?.status === "processed" || conversationContext.messages.some((entry) => (entry.type === "image" || entry.type === "file") && /\[(Texto do PDF|Leitura da imagem) — conteúdo enviado pelo cliente\]/.test(entry.body ?? "")),
+          attachmentAvailable,
           selectedKnowledge: knowledgeSelection.selected
         });
         const safetyOutput = createSafetyDecisionOutput(safety);
@@ -775,7 +776,7 @@ export function createAgentRuntime(input: {
             }
           : safetyOutput
           ? safetyOutput
-          : mediaMetadata?.status !== "processed" && safety.outcome !== "await_approval" && isDocumentDependentQuestion(
+          : !attachmentAvailable && safety.outcome !== "await_approval" && isDocumentDependentQuestion(
                 effectiveText,
                 taxonomy
               ) && knowledgeSelection.selected.length === 0
@@ -787,7 +788,8 @@ export function createAgentRuntime(input: {
             context
           });
 
-        providerOutput = normalizeAgentHandoffOutput(providerOutput);
+        const contextualHandoff = usesQualificationHandoff(agent.behaviorConfig);
+        providerOutput = normalizeAgentHandoffOutput(providerOutput, { preserveReply: contextualHandoff });
 
         const replyPolicy = providerOutput.reply
           ? enforceWhatsAppReply(providerOutput.reply)
@@ -805,7 +807,11 @@ export function createAgentRuntime(input: {
         const confidenceThreshold = readConfidenceThreshold(agent.handoffConfig);
         const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
         const status: AgentRunStatus = handoffReason ? "handoff_requested" : "completed";
-        const outboundReply = handoffReason ? HANDOFF_ACKNOWLEDGEMENT : providerOutput.reply;
+        const outboundReply = handoffReason
+          ? contextualHandoff && providerOutput.handoff.required && providerOutput.confidence >= confidenceThreshold
+            ? providerOutput.reply ?? HANDOFF_ACKNOWLEDGEMENT
+            : HANDOFF_ACKNOWLEDGEMENT
+          : providerOutput.reply;
 
         actionResults = await executeAgentActions(prisma as AgentToolExecutorPrismaLike, {
           workspaceId: runInput.workspaceId,

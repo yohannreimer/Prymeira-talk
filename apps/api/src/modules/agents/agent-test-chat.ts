@@ -9,7 +9,7 @@ import {
   type KnowledgeRetrievalSource
 } from "./knowledge-retrieval.js";
 import { enforceWhatsAppReply } from "./agent-reply-policy.js";
-import { normalizeAgentHandoffOutput } from "./agent-output-normalizer.js";
+import { normalizeAgentHandoffOutput, usesQualificationHandoff } from "./agent-output-normalizer.js";
 import {
   createSafetyDecisionOutput,
   evaluateAgentSafety,
@@ -297,7 +297,7 @@ export function createAgentTestChatService(input: {
         }
       }
 
-      output = normalizeAgentHandoffOutput(output);
+      output = normalizeAgentHandoffOutput(output, { preserveReply: usesQualificationHandoff(agent.behaviorConfig) });
 
       const replyPolicy = output.reply ? enforceWhatsAppReply(output.reply) : null;
       if (replyPolicy) {

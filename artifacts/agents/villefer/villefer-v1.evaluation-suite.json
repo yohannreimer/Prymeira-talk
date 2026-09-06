@@ -4,13 +4,306 @@
       "category": "complete_request",
       "conversation": [
         {
+          "content": "Minha lista: 2 chapas A36, 3 x 1200 x 3000 mm, entrega em Joinville.",
+          "inputType": "text",
+          "role": "user"
+        }
+      ],
+      "evidence": {
+        "basis": "approved_rule",
+        "relatedSignals": [
+          "compact_dimensions",
+          "reuse_known_information"
+        ]
+      },
+      "expected": {
+        "capturedFields": [
+          "product",
+          "specification",
+          "thickness",
+          "dimensions",
+          "quantity",
+          "city",
+          "fulfillment"
+        ],
+        "forbiddenClaims": [
+          "Não inventar preço, desconto ou valor de proposta.",
+          "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
+          "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
+        ],
+        "handoffExpected": true,
+        "missingFields": [],
+        "nextAction": "handoff",
+        "responseGuidance": "A nota deve conter 2 chapas A36 e 3 x 1200 x 3000 mm. A espessura 3 mm já foi fornecida; não perguntar espessura, prazo ou confirmação final.",
+        "stage": "proposal_handoff"
+      },
+      "id": "compact_chapa_dimensions",
+      "title": "Espessura já presente na sequência de medidas"
+    },
+    {
+      "category": "complete_request",
+      "conversation": [
+        {
+          "content": "Preciso de 10 chapas lisas A36, 3 x 1200 x 3000 mm, entrega em Joinville.",
+          "inputType": "text",
+          "role": "user"
+        },
+        {
+          "content": "Ajustando a quantidade: são 8 chapas, não 10. As medidas continuam iguais.",
+          "inputType": "text",
+          "role": "user"
+        }
+      ],
+      "evidence": {
+        "basis": "approved_rule",
+        "relatedSignals": [
+          "latest_correction",
+          "internal_note"
+        ]
+      },
+      "expected": {
+        "capturedFields": [
+          "product",
+          "specification",
+          "thickness",
+          "dimensions",
+          "quantity",
+          "city",
+          "fulfillment"
+        ],
+        "forbiddenClaims": [
+          "Não inventar preço, desconto ou valor de proposta.",
+          "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
+          "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
+        ],
+        "handoffExpected": true,
+        "missingFields": [],
+        "nextAction": "handoff",
+        "responseGuidance": "Inspecionar a ação create_internal_note: a quantidade vigente deve ser 8, substituindo 10; conservar A36 e 3 x 1200 x 3000 mm. Uma resposta de encaminhamento sem a nota não comprova a correção. Não perguntar confirmação.",
+        "stage": "proposal_handoff"
+      },
+      "id": "latest_quantity_correction",
+      "title": "Correção de quantidade aplicada à nota"
+    },
+    {
+      "category": "incomplete_request",
+      "conversation": [
+        {
+          "content": "Nosso padrão é chapa lisa SAE 1045, 1500 x 6000 mm. Vamos buscar.",
+          "inputType": "text",
+          "role": "user"
+        },
+        {
+          "content": "Quero 4 chapas de 6,35 mm nesse padrão.",
+          "inputType": "text",
+          "role": "user"
+        }
+      ],
+      "evidence": {
+        "basis": "approved_rule",
+        "relatedSignals": [
+          "reuse_customer_pattern",
+          "independent_logistics_fields"
+        ]
+      },
+      "expected": {
+        "capturedFields": [
+          "product",
+          "specification",
+          "thickness",
+          "dimensions",
+          "quantity",
+          "fulfillment"
+        ],
+        "forbiddenClaims": [
+          "Não inventar preço, desconto ou valor de proposta.",
+          "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
+          "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
+        ],
+        "handoffExpected": false,
+        "missingFields": [
+          "city"
+        ],
+        "nextAction": "ask_next_field",
+        "responseGuidance": "Perguntar somente a cidade da retirada; reaproveitar SAE 1045, 1500 x 6000 mm, 4 chapas e 6,35 mm. Retirada não preenche cidade e não deve ser perguntada novamente.",
+        "stage": "qualification"
+      },
+      "id": "pickup_missing_city",
+      "title": "Retirada preservada enquanto falta cidade"
+    },
+    {
+      "category": "incomplete_request",
+      "conversation": [
+        {
+          "content": "Quero 7 barras redondas maciças de 3/4 aço 1020 e 5 barras TUBO RED SCH-40 1'' (33,40) CH-3,38 FQ C/C NBR5590. Retirada em Joinville.",
+          "inputType": "text",
+          "role": "user"
+        }
+      ],
+      "evidence": {
+        "basis": "approved_rule",
+        "relatedSignals": [
+          "raw_specification",
+          "per_item_dimensions"
+        ]
+      },
+      "expected": {
+        "capturedFields": [
+          "product",
+          "specification",
+          "quantity",
+          "city",
+          "fulfillment"
+        ],
+        "forbiddenClaims": [
+          "Não inventar preço, desconto ou valor de proposta.",
+          "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
+          "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
+        ],
+        "handoffExpected": false,
+        "missingFields": [
+          "dimensions"
+        ],
+        "nextAction": "ask_next_field",
+        "responseGuidance": "Perguntar juntos os comprimentos das barras maciças e dos tubos. Manter literalmente SCH-40, 1'', (33,40), CH-3,38, FQ C/C e NBR5590 ao registrar o tubo; não expandir CH como chapa nem omitir qualificadores. Não supor barras de 6 m.",
+        "stage": "qualification"
+      },
+      "id": "technical_codes_missing_lengths",
+      "title": "Códigos originais com comprimentos ausentes"
+    },
+    {
+      "category": "incomplete_request",
+      "conversation": [
+        {
+          "content": "Quero tubo mecânico de 1/2. O que falta para cotar?",
+          "inputType": "text",
+          "role": "user"
+        }
+      ],
+      "evidence": {
+        "basis": "approved_rule",
+        "relatedSignals": [
+          "partial_dimension",
+          "fractional_measure"
+        ]
+      },
+      "expected": {
+        "capturedFields": [
+          "product",
+          "dimensions"
+        ],
+        "forbiddenClaims": [
+          "Não inventar preço, desconto ou valor de proposta.",
+          "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
+          "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
+        ],
+        "handoffExpected": false,
+        "missingFields": [
+          "thickness",
+          "dimensions",
+          "quantity",
+          "city",
+          "fulfillment"
+        ],
+        "nextAction": "ask_next_field",
+        "responseGuidance": "Preservar 1/2 como dimensão parcialmente informada. Se unidade ou referência do diâmetro estiver ambígua, citar 1/2 e esclarecer essa parte. Pedir juntos parede, comprimento e quantidade ausentes, sem perguntar genericamente qual medida nem converter a fração.",
+        "stage": "qualification"
+      },
+      "id": "fractional_tube_measure",
+      "title": "Fração informada sem repetir pergunta genérica"
+    },
+    {
+      "category": "incomplete_request",
+      "conversation": [
+        {
+          "content": "Preciso de VIGA I W PADRAO EUROPEU 360 X 64mm, 3 barras de 12000 mm. Entrega em Joinville.",
+          "inputType": "text",
+          "role": "user"
+        }
+      ],
+      "evidence": {
+        "basis": "approved_rule",
+        "relatedSignals": [
+          "technical_ambiguity",
+          "raw_specification"
+        ]
+      },
+      "expected": {
+        "capturedFields": [
+          "product",
+          "dimensions",
+          "quantity",
+          "city",
+          "fulfillment"
+        ],
+        "forbiddenClaims": [
+          "Não inventar preço, desconto ou valor de proposta.",
+          "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
+          "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
+        ],
+        "handoffExpected": false,
+        "missingFields": [
+          "specification"
+        ],
+        "nextAction": "ask_next_field",
+        "responseGuidance": "Preservar a descrição original. Explicitar a dúvida sobre I/W, padrão europeu e o significado de 64mm; solicitar a identificação técnica exata ou referência do perfil. Não declarar I e W equivalentes nem trocar mm por kg/m. Caso o cliente não saiba, encaminhar a dúvida técnica com pendência.",
+        "stage": "qualification"
+      },
+      "id": "ambiguous_profile_description",
+      "title": "Descrição de perfil sem equivalência inventada"
+    },
+    {
+      "category": "incomplete_request",
+      "conversation": [
+        {
+          "content": "Quero 2 chapas A36 4,75 x 1500 x 3000 mm; 4 perfis U 75 x 35 x 4,75 mm; 5 barras chatas 3/16 x 1 polegada; 3 tubos redondos de 4' parede 2,5 mm. Vou retirar em Joinville.",
+          "inputType": "text",
+          "role": "user"
+        }
+      ],
+      "evidence": {
+        "basis": "approved_rule",
+        "relatedSignals": [
+          "per_item_dimensions",
+          "unit_ambiguity"
+        ]
+      },
+      "expected": {
+        "capturedFields": [
+          "product",
+          "thickness",
+          "dimensions",
+          "quantity",
+          "city",
+          "fulfillment"
+        ],
+        "forbiddenClaims": [
+          "Não inventar preço, desconto ou valor de proposta.",
+          "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
+          "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
+        ],
+        "handoffExpected": false,
+        "missingFields": [
+          "dimensions"
+        ],
+        "nextAction": "ask_next_field",
+        "responseGuidance": "Preservar os quatro itens e quantidades. Em uma pergunta, pedir comprimentos dos perfis U, barras chatas e tubos, e esclarecer a unidade de 4'. Não pedir medidas já completas das chapas, inventar polegadas para 4', assumir comprimentos padrão ou declarar que falta apenas logística.",
+        "stage": "qualification"
+      },
+      "id": "mixed_list_per_item_gaps",
+      "title": "Lista mista com unidade ambígua e comprimentos ausentes"
+    },
+    {
+      "category": "complete_request",
+      "conversation": [
+        {
           "content": "Preciso de duas chapas de aço carbono SAE 1020, 6,35 x 1500 x 3000 mm, sem corte, para entrega em Joinville até a próxima semana.",
           "inputType": "text",
           "role": "user"
         }
       ],
       "evidence": {
-        "basis": "historical_pattern",
+        "basis": "approved_rule",
         "relatedSignals": [
           "especificacao",
           "medida_corte",
@@ -34,11 +327,11 @@
           "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
           "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
         ],
-        "handoffExpected": false,
+        "handoffExpected": true,
         "missingFields": [],
-        "nextAction": "confirm_request",
-        "responseGuidance": "Organizar o item e pedir confirmação sem repetir perguntas já respondidas.",
-        "stage": "confirmation"
+        "nextAction": "handoff",
+        "responseGuidance": "Registrar a nota com os dados fornecidos e encaminhar sem confirmação final nem novas perguntas.",
+        "stage": "proposal_handoff"
       },
       "id": "complete_single_item",
       "title": "Pedido técnico completo em uma mensagem"
@@ -75,8 +368,7 @@
           "dimensions",
           "quantity",
           "city",
-          "fulfillment",
-          "desired_deadline"
+          "fulfillment"
         ],
         "nextAction": "ask_next_field",
         "responseGuidance": "Reconhecer o pedido e perguntar tipo, medida, espessura e quantidade em uma única mensagem curta.",
@@ -169,8 +461,7 @@
           "specification",
           "thickness",
           "dimensions",
-          "quantity",
-          "desired_deadline"
+          "quantity"
         ],
         "nextAction": "ask_next_field",
         "responseGuidance": "Perguntar especificação ou medida do tubo; não perguntar a cidade novamente.",
@@ -211,7 +502,6 @@
           "dimensions",
           "city",
           "fulfillment",
-          "desired_deadline",
           "attachments"
         ],
         "nextAction": "ask_next_field",
@@ -291,11 +581,10 @@
         "handoffExpected": false,
         "missingFields": [
           "city",
-          "fulfillment",
-          "desired_deadline"
+          "fulfillment"
         ],
         "nextAction": "ask_next_field",
-        "responseGuidance": "Confirmar que a lista foi organizada e perguntar a cidade/local de entrega.",
+        "responseGuidance": "Perguntar cidade e entrega/retirada; não exigir prazo desejado nem repetir a lista.",
         "stage": "qualification"
       },
       "id": "document_request",
@@ -874,7 +1163,7 @@
     }
   ],
   "generatedAt": "2026-09-05T12:00:00.000Z",
-  "methodology": "Casos anonimizados e parafraseados a partir de padrões observados nos quatro históricos. Nenhum caso preserva contato, empresa cliente, identificador ou transcrição literal. As expectativas combinam padrões históricos com regras operacionais aprovadas e falhas eliminatórias de segurança.",
+  "methodology": "Casos anonimizados e parafraseados dos quatro históricos, acrescidos de controles sintéticos para regressões de qualificação. Nenhum caso preserva contato, empresa cliente ou identificador; códigos e medidas técnicas necessários aos controles são mantidos. As expectativas combinam padrões históricos com regras operacionais aprovadas e falhas eliminatórias de segurança. Validar o pacote não comprova o comportamento do modelo: os casos devem ser reproduzidos com inspeção das respostas e ações.",
   "packageKey": "villefer-commercial-qualifier-v1",
   "schemaVersion": 1
 }

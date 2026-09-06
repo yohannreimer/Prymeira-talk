@@ -169,6 +169,7 @@ export interface AgentTestChatMessageDto {
 
 export interface AgentTestChatResultDto {
   message: AgentTestChatMessageDto;
+  processedMessage?: AgentTestChatMessageDto;
   output: unknown;
   knowledgeMatches: Array<Record<string, unknown>>;
   debug?: Record<string, unknown>;
@@ -1110,7 +1111,9 @@ function parseAgentTestChatResult(data: unknown): AgentTestChatResultDto {
             typeof item === "object" && item !== null && !Array.isArray(item)
         )
       : [],
-    ...(debug ? { debug } : {})
+    ...(debug ? { debug } : {}),
+    ...(payload.processedMessage && typeof payload.processedMessage.content === "string"
+      ? { processedMessage: { role: "user" as const, content: payload.processedMessage.content } } : {})
   };
 }
 
@@ -2937,6 +2940,7 @@ export async function apiSendAgentTestChatMessage(
   agentId: string,
   body: {
     messages: AgentTestChatMessageDto[];
+    attachment?: { fileName: string; mimeType: string; base64Content: string };
   }
 ): Promise<AgentTestChatResultDto> {
   return fetchJson(

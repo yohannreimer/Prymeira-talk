@@ -1,9 +1,51 @@
 import { agentPackageSchema } from "@prymeira-talk/shared";
 import { describe, expect, it } from "vitest";
-import { assertPrivacySafeArtifact } from "./historical-training-compiler.js";
+import { assertPrivacySafeArtifact, historicalEvaluationSuiteSchema } from "./historical-training-compiler.js";
 import { villeferV1Definition } from "./villefer-v1-definition.js";
 
 describe("villeferV1Definition", () => {
+  it("does not require an optional deadline or reconfirm supplied customer facts", () => {
+    const fields = villeferV1Definition.package.agent.qualification.fields;
+
+    expect(fields.find((field) => field.key === "desired_deadline")?.requiredFor).toEqual([]);
+    expect(fields.filter((field) => field.confirmationRequired).map((field) => field.key)).toEqual([]);
+    expect(fields.find((field) => field.key === "fulfillment")?.dependsOn).toEqual([]);
+    expect(villeferV1Definition.evaluationSuite.cases.filter((testCase) =>
+      testCase.expected.missingFields.includes("desired_deadline")
+    )).toEqual([]);
+  });
+
+  it("expects complete requests to hand off without a final confirmation", () => {
+    const complete = villeferV1Definition.evaluationSuite.cases.find((testCase) =>
+      testCase.id === "complete_single_item"
+    );
+
+    expect(complete?.expected).toMatchObject({
+      stage: "proposal_handoff", nextAction: "handoff", handoffExpected: true, missingFields: []
+    });
+  });
+
+  it("ships replay cases for technical preservation, corrections and per-item gaps", () => {
+    const suite = historicalEvaluationSuiteSchema.parse(villeferV1Definition.evaluationSuite);
+    const expectations = [
+      ["compact_chapa_dimensions", ["thickness", "dimensions", "quantity"], [], true],
+      ["latest_quantity_correction", ["quantity", "dimensions"], [], true],
+      ["pickup_missing_city", ["fulfillment", "thickness"], ["city"], false],
+      ["technical_codes_missing_lengths", ["product", "specification", "quantity"], ["dimensions"], false],
+      ["fractional_tube_measure", ["product", "dimensions"], ["thickness", "quantity"], false],
+      ["ambiguous_profile_description", ["product", "quantity"], ["specification"], false],
+      ["mixed_list_per_item_gaps", ["product", "quantity"], ["dimensions"], false]
+    ] as const;
+
+    for (const [id, capturedFields, missingFields, handoffExpected] of expectations) {
+      const testCase = suite.cases.find((entry) => entry.id === id);
+      expect(testCase, id).toBeDefined();
+      expect(testCase?.expected.capturedFields, id).toEqual(expect.arrayContaining([...capturedFields]));
+      expect(testCase?.expected.missingFields, id).toEqual(expect.arrayContaining([...missingFields]));
+      expect(testCase?.expected.handoffExpected, id).toBe(handoffExpected);
+    }
+  });
+
   it("produces an importable package with the approved qualification scope", () => {
     const parsed = agentPackageSchema.parse(villeferV1Definition.package);
     const fieldKeys = parsed.agent.qualification.fields.map((field) => field.key);

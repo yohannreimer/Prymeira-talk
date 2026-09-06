@@ -62,6 +62,21 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentTestChatService", () => {
+  it("keeps the qualification agent handoff explanation and complete proposed note", async () => {
+    const prisma = buildPrisma({ aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent,
+      behaviorConfig: { qualification: { fields: [{ key: "product" }] } }
+    }) } });
+    const provider = buildProvider({ confidence: 0.9,
+      reply: "O acabamento branco precisa de confirmação. Vou passar essa solicitação ao vendedor.",
+      actions: [{ type: "create_internal_note", body: "Cantoneira; acabamento branco solicitado, não confirmado." }],
+      handoff: { required: true, reason: "Confirmar acabamento." }
+    });
+    const result = await createAgentTestChatService({ prisma, provider }).sendMessage({
+      workspaceId: "workspace_a", agentId: baseAgent.id, messages: [{ role: "user", content: "Cantoneira branca" }]
+    });
+    expect(result.message.content).toContain("acabamento branco");
+    expect(result.debug.proposedActions).toEqual(expect.arrayContaining([expect.objectContaining({ type: "create_internal_note", body: expect.stringContaining("não confirmado") })]));
+  });
   it("extracts an attached PDF into retained user history and audits actions without execution", async () => {
     const provider = buildProvider({ confidence: 0.9, reply: "Anotei os itens. Qual cidade?", actions: [{ type: "create_internal_note", body: "12 tubos" }], handoff: { required: false, reason: null } });
     const extractedText = "Página 1\nMaterial\tQuantidade\tMedida\nTubo aço\t12\t50 x 30 x 2 mm";

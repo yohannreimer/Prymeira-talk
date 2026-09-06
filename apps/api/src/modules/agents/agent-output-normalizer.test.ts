@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { HANDOFF_ACKNOWLEDGEMENT } from "./agent-safety-policy.js";
-import { normalizeAgentHandoffOutput } from "./agent-output-normalizer.js";
+import { normalizeAgentHandoffOutput, usesQualificationHandoff } from "./agent-output-normalizer.js";
 
 describe("normalizeAgentHandoffOutput", () => {
+  it("enables contextual handoff only for qualification packages", () => {
+    expect(usesQualificationHandoff({ qualification: { fields: [{ key: "product" }] } })).toBe(true);
+    for (const value of [null, {}, { qualification: {} }, { qualification: { fields: [] } }]) {
+      expect(usesQualificationHandoff(value)).toBe(false);
+    }
+  });
   it("turns the reserved acknowledgement into a complete handoff", () => {
     const result = normalizeAgentHandoffOutput({
       confidence: 0.82,
@@ -51,5 +57,22 @@ describe("normalizeAgentHandoffOutput", () => {
     };
 
     expect(normalizeAgentHandoffOutput(output)).toEqual(output);
+  });
+
+  it("preserves the useful short handoff explanation when explicitly enabled", () => {
+    const output = normalizeAgentHandoffOutput({
+      confidence: 0.9,
+      reply: "O acabamento branco precisa ser confirmado pelo vendedor. Vou encaminhar seu pedido com essa observação.",
+      actions: [{ type: "create_internal_note", body: "Cliente pediu acabamento branco; confirmar disponibilidade." }],
+      handoff: { required: true, reason: "Acabamento não confirmado." }
+    }, { preserveReply: true });
+    expect(output.reply).toContain("acabamento branco");
+    expect(output.actions.some((action) => action.type === "request_handoff")).toBe(true);
+  });
+
+  it("still supplies an acknowledgement for a missing reply in qualified mode", () => {
+    expect(normalizeAgentHandoffOutput({ confidence: 0.9, reply: null, actions: [],
+      handoff: { required: true, reason: "Pedido completo." }
+    }, { preserveReply: true }).reply).toBe(HANDOFF_ACKNOWLEDGEMENT);
   });
 });

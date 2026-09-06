@@ -1383,6 +1383,46 @@ describe("createAgentRuntime", () => {
     });
   });
 
+  it("answers a document follow-up using retained extracted content instead of requiring company knowledge", async () => {
+    const prisma = buildPrisma();
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ ...baseAgent, behaviorConfig: {
+      knowledgeTaxonomy: [{ key: "dimensions", label: "Medidas", aliases: ["medidas", "lista"], requiresSource: true }]
+    } });
+    vi.mocked(prisma.aiKnowledgeSource.findMany).mockResolvedValue([]);
+    const message = { ...baseMessage, body: "Quais medidas estão na lista?" };
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(message);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([
+      { ...baseMessage, id: "pdf-before", type: "file", body: "[Texto do PDF — conteúdo enviado pelo cliente]\n2 chapas 3 x 1200 x 3000 mm" }, message
+    ]);
+    const provider = buildProvider({ confidence: 0.95, reply: "A lista informa 3 x 1200 x 3000 mm.", actions: [], handoff: { required: false, reason: null } });
+    const result = await createAgentRuntime({ prisma, provider }).runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+    expect(result.status).toBe("completed");
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({ context: expect.objectContaining({ conversationHistory: expect.stringContaining("3 x 1200 x 3000 mm") }) }));
+  });
+
+  it("preserves the qualified handoff explanation and executes its seller note", async () => {
+    const prisma = buildPrisma();
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ ...baseAgent,
+      behaviorConfig: { qualification: { fields: [{ key: "product" }] } },
+      allowedActions: [...baseAgent.allowedActions, "create_internal_note"]
+    });
+    const message = { ...baseMessage, body: "Cantoneira branca" };
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(message);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([message]);
+    const reply = "O acabamento branco precisa de confirmação. Vou passar essa solicitação ao vendedor.";
+    const provider = buildProvider({ confidence: 0.92, reply,
+      actions: [{ type: "create_internal_note", body: "Cantoneira; acabamento branco solicitado, não confirmado." }],
+      handoff: { required: true, reason: "Confirmar acabamento." }
+    });
+    const result = await createAgentRuntime({ prisma, provider }).runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation,
+      messageId: ids.message, trigger: "automation"
+    });
+    expect(result.status).toBe("handoff_requested");
+    expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({ body: reply }) });
+    expect(prisma.contactNote.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ body: expect.stringContaining("acabamento branco") }) }));
+  });
+
   it("requests handoff from a request_handoff action even with high confidence and a reply", async () => {
     const prisma = buildPrisma({
       conversation: {

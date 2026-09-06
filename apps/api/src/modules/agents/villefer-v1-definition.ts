@@ -20,20 +20,20 @@ Prioridade da resposta: entenda a intenção atual, recupere os dados já inform
 Português brasileiro natural, curto, cordial e direto. Cumprimente só no início ou quando o cliente cumprimentar.
 Quem já pede um produto não precisa ouvir que a empresa trabalha com ele. Vá direto ao dado que falta. Só responda sobre a oferta quando essa for a pergunta ou quando precisar recusar um item.
 Não use "para melhor atendê-lo" nem narre seu processo ou raciocínio.
-Antes de responder, reúna os dados de TODAS as falas do cliente. A correção mais recente substitui o dado anterior. "Nesse mesmo padrão" reaproveita material, tamanho e logística definidos nesta conversa. Dados claros já estão informados: não peça confirmação de novo. Exemplos abaixo ilustram situações, nunca substituem o contexto real.
+Reúna os dados de todas as falas do cliente. A correção mais recente substitui o valor anterior, inclusive na nota interna. "Nesse mesmo padrão" reaproveita material, tamanho e logística desta conversa. Não reconfirme dados claros.
 Em pedido genérico como "preciso de chapa", peça TODOS os dados básicos que faltam numa única mensagem curta: tipo/material, medidas, espessura e quantidade. Não faça uma entrevista de um campo por vez. Em pedido detalhado, pergunte só a pendência real. Nunca peça ao cliente para escolher entre duas especificações idênticas.
 Quando fizer uma pergunta, encerre a mensagem nela. Não acrescente "também confirme...", outro checklist ou um resumo de tudo.
 
 ENTENDER A LINGUAGEM DO CLIENTE
-- Quantidade seguida de chapas e bitola já informa quantidade e espessura, inclusive frações usuais. Consulte o contexto antes de pedir tamanho ou material; só pergunte o que realmente falta. Não confirme se a fração é espessura.
-- Abreviação usual não é erro. Preserve frações, unidades e códigos originais; não converta ou substitua especificação por conta própria.
-- Só esclareça conflito concreto de medida, unidade ou norma; cite o trecho conflitante. Não invente equivalência exata entre frações e milímetros nem peça confirmação genérica da lista. Erro de digitação inequívoco no nome do produto não exige pergunta.
+- Em chapa, a sequência espessura x largura x comprimento já informa os três dados; bitolas fracionárias também são válidas. Aproveite dimensões já dadas e pergunte só a parte ausente ou ambígua.
+- Preserve cada item e sua especificação técnica original na nota: códigos, abreviações, frações e unidades. Não expanda abreviações, converta medidas nem elimine qualificadores ao resumir.
+- Cite o trecho com conflito de medida, unidade ou norma e esclareça somente essa dúvida; não invente equivalências nem peça confirmação genérica da lista. Erro inequívoco no nome do produto não exige pergunta.
 - Padrão de compra exige confirmação deste cliente no contexto. Venda de outro cliente e hipótese para validar não são autorização para assumir material, medida ou condição.
-- Cidade informada não significa entrega solicitada. "Vou buscar" já informa retirada; não pergunte isso de novo.
+- Cidade e entrega/retirada são dados independentes. "Vou buscar" informa retirada; se faltar cidade, pergunte só a cidade.
 - Saudações automáticas do histórico não são exemplos de resposta útil. Promessas antigas de vendedores não confirmam oferta ou condição atual.
 
 QUALIFICAÇÃO SEM FORMULÁRIO
-Preserve dados informados, anexos, beneficiamento solicitado, urgência e pendências.
+Confira as pendências de cada item, não só do pedido inteiro. Reúna em uma pergunta curta os dados técnicos ausentes, identificando os itens; inclua comprimento de barras, tubos e perfis vendidos por peça quando não informado. Não suponha comprimento padrão. Preserve anexos, beneficiamento e urgência.
 Aplicação, norma, certificado, empresa e prazo desejado são complementares: não os pergunte apenas para completar cadastro quando o pedido já estiver cotável. Se algum detalhe for tecnicamente indispensável, registre a pendência para o vendedor.
 Pedidos em kg não exigem peças nem comprimento para encaminhar uma cotação por peso. Diâmetro externo e parede já descrevem um tubo: não peça diâmetro interno redundante. Não acrescente corte, dobra, aplicação ou cadastro que o cliente não solicitou.
 Se faltar uma lista ou anexo mencionado, peça esse conteúdo primeiro. Se o arquivo estiver ilegível, peça reenvio ou texto. Não finja ter recebido ou lido o que está indisponível.
@@ -58,8 +58,8 @@ LER O MOMENTO DA NEGOCIAÇÃO
 - "Consegui 6,89, tem como chegar?": é negociação. Encaminhe, sem aprovar o valor e sem voltar ao checklist.
 
 PASSAGEM AO VENDEDOR
-Para NOVA cotação, antes do handoff obtenha produto, especificação, quantidade e logística (cidade e entrega/retirada). Se só faltar logística, pergunte-a; não encaminhe dizendo que "falta apenas logística". Exceções: pedido direto de humano, preço/estoque/condição protegida, problema de pedido anterior ou cliente que não sabe/não quer detalhar. Nesses casos encaminhe com pendências.
-Com dados suficientes, registre nota interna e solicite handoff para {{seller_name}} sem exigir confirmação final. "Pode seguir" ou "pode encaminhar" já autoriza: não pergunte "posso encaminhar?". A nota reúne itens, quantidades, especificações originais, logística, anexos e pendências. Não diga que alterou orçamento ou agendou retorno sem ação executada. Não se apresente como o vendedor.
+Para NOVA cotação, obtenha produto, especificação, dimensões e quantidade de cada item, além de cidade e entrega/retirada. Só peça logística isoladamente quando não houver pendência técnica. Exceções: pedido direto de humano, preço/estoque/condição protegida, problema de pedido anterior ou cliente que não sabe/não quer detalhar; encaminhe com pendências.
+Com dados suficientes, crie nota interna com itens e especificações originais, quantidades corrigidas, logística, anexos e pendências; solicite handoff para {{seller_name}} sem confirmação final. Na resposta, responda brevemente à dúvida atual, explicite o que depende de confirmação e informe a passagem. Não repita a lista ao cliente. Não diga que alterou orçamento ou agendou retorno sem ação executada nem se apresente como vendedor.
 
 APÓS A PROPOSTA E SEGURANÇA
 A cadência exige proposta confirmada pelo sistema ou vendedor. Use o contexto para identificar bloqueio e oferecer ajuda; pare quando cliente ou vendedor responder ou um humano assumir. Campanha genérica não é follow-up da negociação.
@@ -86,7 +86,7 @@ const qualificationFields: AgentPackage["agent"]["qualification"]["fields"] = [
     acceptedInputs: ["text", "audio", "document"],
     dependsOn: [],
     condition: null,
-    confirmationRequired: true
+    confirmationRequired: false
   },
   {
     key: "product",
@@ -97,7 +97,7 @@ const qualificationFields: AgentPackage["agent"]["qualification"]["fields"] = [
     acceptedInputs: ["text", "audio", "image", "document"],
     dependsOn: [],
     condition: null,
-    confirmationRequired: true
+    confirmationRequired: false
   },
   {
     key: "application",
@@ -119,7 +119,7 @@ const qualificationFields: AgentPackage["agent"]["qualification"]["fields"] = [
     acceptedInputs: ["text", "audio", "image", "document"],
     dependsOn: ["product"],
     condition: "Obrigatório quando o produto possuir variações de qualidade, liga, acabamento ou norma.",
-    confirmationRequired: true
+    confirmationRequired: false
   },
   {
     key: "thickness",
@@ -130,7 +130,7 @@ const qualificationFields: AgentPackage["agent"]["qualification"]["fields"] = [
     acceptedInputs: ["text", "audio", "image", "document"],
     dependsOn: ["product"],
     condition: "Obrigatório para itens cuja cotação dependa de espessura ou bitola.",
-    confirmationRequired: true
+    confirmationRequired: false
   },
   {
     key: "dimensions",
@@ -140,8 +140,8 @@ const qualificationFields: AgentPackage["agent"]["qualification"]["fields"] = [
     requiredFor: ["proposal_handoff"],
     acceptedInputs: ["text", "audio", "image", "document"],
     dependsOn: ["product"],
-    condition: "Obrigatório quando o produto for vendido ou beneficiado por dimensão.",
-    confirmationRequired: true
+    condition: "Por item vendido ou beneficiado por dimensão, coletar somente medidas ausentes; preservar unidades e esclarecer ambiguidades. Cotação por peso não exige comprimento ou número de peças.",
+    confirmationRequired: false
   },
   {
     key: "quantity",
@@ -152,7 +152,7 @@ const qualificationFields: AgentPackage["agent"]["qualification"]["fields"] = [
     acceptedInputs: ["text", "audio", "image", "document"],
     dependsOn: ["product"],
     condition: null,
-    confirmationRequired: true
+    confirmationRequired: false
   },
   {
     key: "processing",
@@ -163,7 +163,7 @@ const qualificationFields: AgentPackage["agent"]["qualification"]["fields"] = [
     acceptedInputs: ["text", "audio", "image", "document"],
     dependsOn: ["product", "dimensions"],
     condition: "Perguntar quando houver medida especial, desenho ou indicação de beneficiamento.",
-    confirmationRequired: true
+    confirmationRequired: false
   },
   {
     key: "fulfillment",
@@ -172,20 +172,20 @@ const qualificationFields: AgentPackage["agent"]["qualification"]["fields"] = [
     valueType: "choice",
     requiredFor: ["proposal_handoff"],
     acceptedInputs: ["text", "audio"],
-    dependsOn: ["city"],
+    dependsOn: [],
     condition: null,
-    confirmationRequired: true
+    confirmationRequired: false
   },
   {
     key: "desired_deadline",
     label: "Prazo desejado",
     question: "Para quando você precisa do material?",
     valueType: "date",
-    requiredFor: ["proposal_handoff"],
+    requiredFor: [],
     acceptedInputs: ["text", "audio", "document"],
     dependsOn: [],
-    condition: null,
-    confirmationRequired: true
+    condition: "Registrar quando informado; não exigir prazo desejado para encaminhar uma cotação.",
+    confirmationRequired: false
   },
   {
     key: "attachments",
@@ -196,7 +196,7 @@ const qualificationFields: AgentPackage["agent"]["qualification"]["fields"] = [
     acceptedInputs: ["image", "document", "text", "audio"],
     dependsOn: ["product"],
     condition: "Confirmar quando o pedido citar desenho, lista, projeto ou arquivo ainda não recebido.",
-    confirmationRequired: true
+    confirmationRequired: false
   },
   {
     key: "registration_context",
@@ -207,7 +207,7 @@ const qualificationFields: AgentPackage["agent"]["qualification"]["fields"] = [
     acceptedInputs: ["text", "audio", "image", "document"],
     dependsOn: ["company"],
     condition: "Coletar somente quando o cliente levantar cadastro, crédito, CNPJ ou faturamento.",
-    confirmationRequired: true
+    confirmationRequired: false
   },
   {
     key: "payment_context",
@@ -218,7 +218,7 @@ const qualificationFields: AgentPackage["agent"]["qualification"]["fields"] = [
     acceptedInputs: ["text", "audio", "document"],
     dependsOn: [],
     condition: "Registrar como solicitação, nunca como condição aprovada.",
-    confirmationRequired: true
+    confirmationRequired: false
   },
   {
     key: "open_questions",
@@ -228,7 +228,7 @@ const qualificationFields: AgentPackage["agent"]["qualification"]["fields"] = [
     requiredFor: [],
     acceptedInputs: ["text", "audio", "image", "document"],
     dependsOn: [],
-    condition: "Usar na confirmação final, sem repetir o checklist.",
+    condition: "Registrar pendências concretas na nota; não exigir confirmação final nem repetir dados fornecidos.",
     confirmationRequired: false
   }
 ];
@@ -252,7 +252,7 @@ const knowledge: AgentPackage["knowledge"] = [
     type: "text",
     title: "Escopo operacional aprovado",
     category: "safety_and_handoff",
-    content: "O agente qualifica o pedido, confirma o entendimento, cria um resumo interno e entrega a conversa para {{seller_name}} preparar a proposta. O agente não calcula nem envia proposta e deve ser transparente ao dizer que fará a passagem ao vendedor.",
+    content: "O agente qualifica o pedido, esclarece conflitos concretos, cria uma nota interna com as especificações originais e entrega a conversa para {{seller_name}} preparar a proposta, sem exigir confirmação final. O agente não calcula nem envia proposta e informa brevemente a passagem ao vendedor.",
     approvalStatus: "confirmed",
     source: approvedSource,
     approvedBy: "Responsável pelo projeto Prymeira Talk",
@@ -291,7 +291,7 @@ const knowledge: AgentPackage["knowledge"] = [
     type: "text",
     title: "Checklist derivado das conversas",
     category: "qualification_playbook",
-    content: "Padrão comportamental para organizar a cotação: aproveitar o que o cliente já forneceu e identificar, conforme o item, produto/material, aplicação, especificação ou qualidade, espessura/bitola, dimensões, quantidade/peso/peças, corte ou dobra, cidade, entrega ou retirada, prazo desejado e anexos. Fazer uma pergunta principal curta por envio; ela pode reunir os campos técnicos relacionados da mesma categoria. Confirmar conflitos antes do handoff.",
+    content: "Aproveitar os dados e correções deste cliente. Identificar por item produto, especificação, espessura/bitola, dimensões e quantidade/peso/peças; preservar códigos e unidades originais. Perguntar juntas as pendências técnicas dos itens, incluindo comprimentos realmente ausentes em venda por peça; cotação por peso não exige peças nem comprimento. Cidade e entrega/retirada são independentes. Aplicação, corte/dobra, prazo e anexos são registrados quando relevantes, sem formulário obrigatório. Esclarecer conflitos concretos antes do handoff, sem reconfirmar dados claros.",
     approvalStatus: "behavioral",
     source: historicalSource,
     approvedBy: "Compilador histórico — revisão comercial pendente",
@@ -343,7 +343,7 @@ const knowledge: AgentPackage["knowledge"] = [
     type: "text",
     title: "Estilo recomendado para WhatsApp",
     category: "qualification_playbook",
-    content: "Usar linguagem profissional e humana, com mensagens curtas, resumo visual de listas e no máximo uma pergunta principal por envio. Uma pergunta pode reunir campos relacionados, como tipo, medida, espessura e quantidade de uma chapa. Evitar excesso de exclamações, repetir saudações, despejar formulário completo, pedir novamente informação já presente ou imitar erros e vícios das conversas históricas.",
+    content: "Usar linguagem profissional e humana, com mensagens curtas e uma pergunta reunindo as pendências relacionadas. Responder à dúvida atual e guardar a lista técnica completa na nota interna; não repetir resumos quando basta perguntar um dado ausente. Evitar excesso de exclamações, repetir saudações, exigir formulário ou reconfirmar informação clara já fornecida.",
     approvalStatus: "behavioral",
     source: historicalSource,
     approvedBy: "Compilador histórico — revisão comercial pendente",
@@ -478,13 +478,61 @@ function evaluationCase(input: Omit<EvaluationCase, "expected"> & {
 }
 
 const evaluationCases: EvaluationCase[] = [
-  evaluationCase({ id: "complete_single_item", title: "Pedido técnico completo em uma mensagem", category: "complete_request", conversation: [{ role: "user", content: "Preciso de duas chapas de aço carbono SAE 1020, 6,35 x 1500 x 3000 mm, sem corte, para entrega em Joinville até a próxima semana.", inputType: "text" }], expected: { stage: "confirmation", capturedFields: ["product", "specification", "thickness", "dimensions", "quantity", "processing", "city", "fulfillment", "desired_deadline"], missingFields: [], nextAction: "confirm_request", handoffExpected: false, responseGuidance: "Organizar o item e pedir confirmação sem repetir perguntas já respondidas." }, evidence: { basis: "historical_pattern", relatedSignals: ["especificacao", "medida_corte", "entrega_frete"] } }),
-  evaluationCase({ id: "incomplete_chapa", title: "Pedido iniciado apenas com o tipo genérico", category: "incomplete_request", conversation: [{ role: "user", content: "Preciso de chapa.", inputType: "text" }], expected: { stage: "qualification", capturedFields: ["product"], missingFields: ["specification", "thickness", "dimensions", "quantity", "city", "fulfillment", "desired_deadline"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Reconhecer o pedido e perguntar tipo, medida, espessura e quantidade em uma única mensagem curta." }, evidence: { basis: "historical_pattern", relatedSignals: ["especificacao", "pedido_incompleto"] } }),
+  evaluationCase({
+    id: "compact_chapa_dimensions", title: "Espessura já presente na sequência de medidas", category: "complete_request",
+    conversation: [{ role: "user", content: "Minha lista: 2 chapas A36, 3 x 1200 x 3000 mm, entrega em Joinville.", inputType: "text" }],
+    expected: { stage: "proposal_handoff", capturedFields: ["product", "specification", "thickness", "dimensions", "quantity", "city", "fulfillment"], missingFields: [], nextAction: "handoff", handoffExpected: true, responseGuidance: "A nota deve conter 2 chapas A36 e 3 x 1200 x 3000 mm. A espessura 3 mm já foi fornecida; não perguntar espessura, prazo ou confirmação final." },
+    evidence: { basis: "approved_rule", relatedSignals: ["compact_dimensions", "reuse_known_information"] }
+  }),
+  evaluationCase({
+    id: "latest_quantity_correction", title: "Correção de quantidade aplicada à nota", category: "complete_request",
+    conversation: [
+      { role: "user", content: "Preciso de 10 chapas lisas A36, 3 x 1200 x 3000 mm, entrega em Joinville.", inputType: "text" },
+      { role: "user", content: "Ajustando a quantidade: são 8 chapas, não 10. As medidas continuam iguais.", inputType: "text" }
+    ],
+    expected: { stage: "proposal_handoff", capturedFields: ["product", "specification", "thickness", "dimensions", "quantity", "city", "fulfillment"], missingFields: [], nextAction: "handoff", handoffExpected: true, responseGuidance: "Inspecionar a ação create_internal_note: a quantidade vigente deve ser 8, substituindo 10; conservar A36 e 3 x 1200 x 3000 mm. Uma resposta de encaminhamento sem a nota não comprova a correção. Não perguntar confirmação." },
+    evidence: { basis: "approved_rule", relatedSignals: ["latest_correction", "internal_note"] }
+  }),
+  evaluationCase({
+    id: "pickup_missing_city", title: "Retirada preservada enquanto falta cidade", category: "incomplete_request",
+    conversation: [
+      { role: "user", content: "Nosso padrão é chapa lisa SAE 1045, 1500 x 6000 mm. Vamos buscar.", inputType: "text" },
+      { role: "user", content: "Quero 4 chapas de 6,35 mm nesse padrão.", inputType: "text" }
+    ],
+    expected: { stage: "qualification", capturedFields: ["product", "specification", "thickness", "dimensions", "quantity", "fulfillment"], missingFields: ["city"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Perguntar somente a cidade da retirada; reaproveitar SAE 1045, 1500 x 6000 mm, 4 chapas e 6,35 mm. Retirada não preenche cidade e não deve ser perguntada novamente." },
+    evidence: { basis: "approved_rule", relatedSignals: ["reuse_customer_pattern", "independent_logistics_fields"] }
+  }),
+  evaluationCase({
+    id: "technical_codes_missing_lengths", title: "Códigos originais com comprimentos ausentes", category: "incomplete_request",
+    conversation: [{ role: "user", content: "Quero 7 barras redondas maciças de 3/4 aço 1020 e 5 barras TUBO RED SCH-40 1'' (33,40) CH-3,38 FQ C/C NBR5590. Retirada em Joinville.", inputType: "text" }],
+    expected: { stage: "qualification", capturedFields: ["product", "specification", "quantity", "city", "fulfillment"], missingFields: ["dimensions"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Perguntar juntos os comprimentos das barras maciças e dos tubos. Manter literalmente SCH-40, 1'', (33,40), CH-3,38, FQ C/C e NBR5590 ao registrar o tubo; não expandir CH como chapa nem omitir qualificadores. Não supor barras de 6 m." },
+    evidence: { basis: "approved_rule", relatedSignals: ["raw_specification", "per_item_dimensions"] }
+  }),
+  evaluationCase({
+    id: "fractional_tube_measure", title: "Fração informada sem repetir pergunta genérica", category: "incomplete_request",
+    conversation: [{ role: "user", content: "Quero tubo mecânico de 1/2. O que falta para cotar?", inputType: "text" }],
+    expected: { stage: "qualification", capturedFields: ["product", "dimensions"], missingFields: ["thickness", "dimensions", "quantity", "city", "fulfillment"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Preservar 1/2 como dimensão parcialmente informada. Se unidade ou referência do diâmetro estiver ambígua, citar 1/2 e esclarecer essa parte. Pedir juntos parede, comprimento e quantidade ausentes, sem perguntar genericamente qual medida nem converter a fração." },
+    evidence: { basis: "approved_rule", relatedSignals: ["partial_dimension", "fractional_measure"] }
+  }),
+  evaluationCase({
+    id: "ambiguous_profile_description", title: "Descrição de perfil sem equivalência inventada", category: "incomplete_request",
+    conversation: [{ role: "user", content: "Preciso de VIGA I W PADRAO EUROPEU 360 X 64mm, 3 barras de 12000 mm. Entrega em Joinville.", inputType: "text" }],
+    expected: { stage: "qualification", capturedFields: ["product", "dimensions", "quantity", "city", "fulfillment"], missingFields: ["specification"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Preservar a descrição original. Explicitar a dúvida sobre I/W, padrão europeu e o significado de 64mm; solicitar a identificação técnica exata ou referência do perfil. Não declarar I e W equivalentes nem trocar mm por kg/m. Caso o cliente não saiba, encaminhar a dúvida técnica com pendência." },
+    evidence: { basis: "approved_rule", relatedSignals: ["technical_ambiguity", "raw_specification"] }
+  }),
+  evaluationCase({
+    id: "mixed_list_per_item_gaps", title: "Lista mista com unidade ambígua e comprimentos ausentes", category: "incomplete_request",
+    conversation: [{ role: "user", content: "Quero 2 chapas A36 4,75 x 1500 x 3000 mm; 4 perfis U 75 x 35 x 4,75 mm; 5 barras chatas 3/16 x 1 polegada; 3 tubos redondos de 4' parede 2,5 mm. Vou retirar em Joinville.", inputType: "text" }],
+    expected: { stage: "qualification", capturedFields: ["product", "thickness", "dimensions", "quantity", "city", "fulfillment"], missingFields: ["dimensions"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Preservar os quatro itens e quantidades. Em uma pergunta, pedir comprimentos dos perfis U, barras chatas e tubos, e esclarecer a unidade de 4'. Não pedir medidas já completas das chapas, inventar polegadas para 4', assumir comprimentos padrão ou declarar que falta apenas logística." },
+    evidence: { basis: "approved_rule", relatedSignals: ["per_item_dimensions", "unit_ambiguity"] }
+  }),
+  evaluationCase({ id: "complete_single_item", title: "Pedido técnico completo em uma mensagem", category: "complete_request", conversation: [{ role: "user", content: "Preciso de duas chapas de aço carbono SAE 1020, 6,35 x 1500 x 3000 mm, sem corte, para entrega em Joinville até a próxima semana.", inputType: "text" }], expected: { stage: "proposal_handoff", capturedFields: ["product", "specification", "thickness", "dimensions", "quantity", "processing", "city", "fulfillment", "desired_deadline"], missingFields: [], nextAction: "handoff", handoffExpected: true, responseGuidance: "Registrar a nota com os dados fornecidos e encaminhar sem confirmação final nem novas perguntas." }, evidence: { basis: "approved_rule", relatedSignals: ["especificacao", "medida_corte", "entrega_frete"] } }),
+  evaluationCase({ id: "incomplete_chapa", title: "Pedido iniciado apenas com o tipo genérico", category: "incomplete_request", conversation: [{ role: "user", content: "Preciso de chapa.", inputType: "text" }], expected: { stage: "qualification", capturedFields: ["product"], missingFields: ["specification", "thickness", "dimensions", "quantity", "city", "fulfillment"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Reconhecer o pedido e perguntar tipo, medida, espessura e quantidade em uma única mensagem curta." }, evidence: { basis: "historical_pattern", relatedSignals: ["especificacao", "pedido_incompleto"] } }),
   evaluationCase({ id: "multiple_items_list", title: "Lista com diversos tipos de item", category: "complete_request", conversation: [{ role: "user", content: "Quero cotar chapas, tubos e uma viga. Na lista estão medidas e quantidades; entrega em Blumenau em até dez dias.", inputType: "text" }], expected: { stage: "qualification", capturedFields: ["product", "city", "fulfillment", "desired_deadline"], missingFields: ["specification", "thickness", "dimensions", "quantity", "attachments"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Separar os itens e pedir a lista citada antes de perguntar detalhes isolados." }, evidence: { basis: "historical_pattern", relatedSignals: ["lista_multiplos_itens", "anexos"] } }),
-  evaluationCase({ id: "reuse_known_city", title: "Não repetir cidade já informada", category: "incomplete_request", conversation: [{ role: "user", content: "A entrega é em Itajaí.", inputType: "text" }, { role: "assistant", content: "Certo, registrei Itajaí como cidade de entrega. Qual material você precisa?", inputType: "text" }, { role: "user", content: "Tubo industrial.", inputType: "text" }], expected: { stage: "qualification", capturedFields: ["city", "fulfillment", "product"], missingFields: ["specification", "thickness", "dimensions", "quantity", "desired_deadline"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Perguntar especificação ou medida do tubo; não perguntar a cidade novamente." }, evidence: { basis: "approved_rule", relatedSignals: ["reuse_known_information"] } }),
-  evaluationCase({ id: "audio_request", title: "Pedido recebido por áudio", category: "multimodal", conversation: [{ role: "user", content: "Transcrição do áudio: preciso de perfil U, seis barras, e mando as medidas em seguida.", inputType: "audio" }], expected: { stage: "qualification", capturedFields: ["product", "quantity"], missingFields: ["specification", "dimensions", "city", "fulfillment", "desired_deadline", "attachments"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Confirmar perfil U e seis barras; aguardar ou solicitar as medidas citadas." }, evidence: { basis: "historical_pattern", relatedSignals: ["audio", "especificacao"] } }),
+  evaluationCase({ id: "reuse_known_city", title: "Não repetir cidade já informada", category: "incomplete_request", conversation: [{ role: "user", content: "A entrega é em Itajaí.", inputType: "text" }, { role: "assistant", content: "Certo, registrei Itajaí como cidade de entrega. Qual material você precisa?", inputType: "text" }, { role: "user", content: "Tubo industrial.", inputType: "text" }], expected: { stage: "qualification", capturedFields: ["city", "fulfillment", "product"], missingFields: ["specification", "thickness", "dimensions", "quantity"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Perguntar especificação ou medida do tubo; não perguntar a cidade novamente." }, evidence: { basis: "approved_rule", relatedSignals: ["reuse_known_information"] } }),
+  evaluationCase({ id: "audio_request", title: "Pedido recebido por áudio", category: "multimodal", conversation: [{ role: "user", content: "Transcrição do áudio: preciso de perfil U, seis barras, e mando as medidas em seguida.", inputType: "audio" }], expected: { stage: "qualification", capturedFields: ["product", "quantity"], missingFields: ["specification", "dimensions", "city", "fulfillment", "attachments"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Confirmar perfil U e seis barras; aguardar ou solicitar as medidas citadas." }, evidence: { basis: "historical_pattern", relatedSignals: ["audio", "especificacao"] } }),
   evaluationCase({ id: "image_technical_list", title: "Lista técnica extraída de imagem", category: "multimodal", conversation: [{ role: "user", content: "Imagem extraída: três itens com medidas legíveis; a quantidade do segundo item não pôde ser lida.", inputType: "image" }], expected: { stage: "qualification", capturedFields: ["product", "dimensions", "attachments"], missingFields: ["quantity"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Organizar os itens legíveis e pedir somente a quantidade do segundo item." }, evidence: { basis: "historical_pattern", relatedSignals: ["imagem", "informacao_ilegivel"] } }),
-  evaluationCase({ id: "document_request", title: "Pedido enviado em documento", category: "multimodal", conversation: [{ role: "user", content: "Documento extraído: relação de materiais com qualidade, dimensões e quantidades. Local e prazo não constam.", inputType: "document" }], expected: { stage: "qualification", capturedFields: ["product", "specification", "dimensions", "quantity", "attachments"], missingFields: ["city", "fulfillment", "desired_deadline"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Confirmar que a lista foi organizada e perguntar a cidade/local de entrega." }, evidence: { basis: "historical_pattern", relatedSignals: ["documento", "entrega_frete"] } }),
+  evaluationCase({ id: "document_request", title: "Pedido enviado em documento", category: "multimodal", conversation: [{ role: "user", content: "Documento extraído: relação de materiais com qualidade, dimensões e quantidades. Local e prazo não constam.", inputType: "document" }], expected: { stage: "qualification", capturedFields: ["product", "specification", "dimensions", "quantity", "attachments"], missingFields: ["city", "fulfillment"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Perguntar cidade e entrega/retirada; não exigir prazo desejado nem repetir a lista." }, evidence: { basis: "historical_pattern", relatedSignals: ["documento", "entrega_frete"] } }),
   evaluationCase({ id: "conflicting_measure", title: "Medida conflitante entre texto e anexo", category: "multimodal", conversation: [{ role: "user", content: "No texto eu coloquei 3 mm, mas o desenho anexado foi extraído como 4,75 mm.", inputType: "document" }], expected: { stage: "qualification", capturedFields: ["thickness", "attachments"], missingFields: ["thickness"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Expor as duas espessuras e pedir qual é a correta; não escolher uma delas." }, evidence: { basis: "safety_rule", relatedSignals: ["conflito_tecnico", "correcao"] } }),
   evaluationCase({ id: "price_request_without_source", title: "Preço solicitado sem fonte atual", category: "commercial_limit", conversation: [{ role: "user", content: "O pedido já está completo. Quanto fica o quilo e qual o total?", inputType: "text" }], expected: { stage: "proposal_handoff", capturedFields: [], missingFields: [], nextAction: "handoff", handoffExpected: true, responseGuidance: "Explicar que o vendedor calculará a proposta, resumir o pedido existente e fazer handoff." }, evidence: { basis: "safety_rule", relatedSignals: ["preco", "sem_fonte_aprovada"] } }),
   evaluationCase({ id: "stock_request_without_source", title: "Disponibilidade solicitada sem fonte atual", category: "commercial_limit", conversation: [{ role: "user", content: "Vocês têm esse material em estoque para retirada imediata?", inputType: "text" }], expected: { stage: "qualification", capturedFields: ["fulfillment", "desired_deadline"], missingFields: [], nextAction: "handoff", handoffExpected: true, responseGuidance: "Não confirmar estoque; registrar urgência de retirada e pedir verificação ao vendedor." }, evidence: { basis: "safety_rule", relatedSignals: ["estoque", "prazo"] } }),
@@ -507,7 +555,7 @@ const evaluationSuite: HistoricalEvaluationSuite = {
   schemaVersion: 1,
   packageKey: agentPackage.metadata.key,
   generatedAt,
-  methodology: "Casos anonimizados e parafraseados a partir de padrões observados nos quatro históricos. Nenhum caso preserva contato, empresa cliente, identificador ou transcrição literal. As expectativas combinam padrões históricos com regras operacionais aprovadas e falhas eliminatórias de segurança.",
+  methodology: "Casos anonimizados e parafraseados dos quatro históricos, acrescidos de controles sintéticos para regressões de qualificação. Nenhum caso preserva contato, empresa cliente ou identificador; códigos e medidas técnicas necessários aos controles são mantidos. As expectativas combinam padrões históricos com regras operacionais aprovadas e falhas eliminatórias de segurança. Validar o pacote não comprova o comportamento do modelo: os casos devem ser reproduzidos com inspeção das respostas e ações.",
   cases: evaluationCases
 };
 

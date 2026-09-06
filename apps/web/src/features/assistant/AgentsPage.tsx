@@ -29,8 +29,10 @@ import {
   ShieldCheck,
   UploadCloud
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AgentPackagePanel } from "./AgentPackagePanel";
+import { getTestUploadMime, validateTestUpload } from "./agent-test-upload";
+import { AgentTestInspection } from "./AgentTestInspection";
 
 const defaultAllowedActions: AiAgentAllowedAction[] = [
   "send_message",
@@ -192,6 +194,9 @@ export function AgentsPage() {
   const [testMessages, setTestMessages] = useState<AgentTestChatMessageDto[]>([]);
   const [testMessageBody, setTestMessageBody] = useState("");
   const [testDebug, setTestDebug] = useState<AgentTestDebugState>(null);
+  const testRequestGeneration = useRef(0);
+  const [testFile, setTestFile] = useState<File | null>(null);
+  const [testFileKey, setTestFileKey] = useState(0);
   const [isLoadingAgents, setIsLoadingAgents] = useState(true);
   const [isLoadingKnowledge, setIsLoadingKnowledge] = useState(false);
   const [isSavingAgent, setIsSavingAgent] = useState(false);
@@ -264,6 +269,10 @@ export function AgentsPage() {
   }, [getToken, selectedAgentId]);
 
   function startNewAgent() {
+    if (isSendingTestMessage) return;
+    testRequestGeneration.current += 1;
+    setTestFile(null);
+    setTestFileKey((value) => value + 1);
     setSelectedAgentId(null);
     setAgentForm(emptyAgentForm());
     setKnowledge([]);
@@ -275,6 +284,10 @@ export function AgentsPage() {
   }
 
   function selectAgent(agent: AiAgentDto) {
+    if (isSendingTestMessage) return;
+    testRequestGeneration.current += 1;
+    setTestFile(null);
+    setTestFileKey((value) => value + 1);
     setSelectedAgentId(agent.id);
     setAgentForm(agentFormFromAgent(agent));
     setTestMessages([]);
@@ -387,14 +400,19 @@ export function AgentsPage() {
 
   async function sendTestMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isSendingTestMessage) return;
 
     if (!selectedAgent) {
       setError("Salve ou selecione um agente antes de testar.");
       return;
     }
 
-    const content = testMessageBody.trim();
+    const content = testMessageBody.trim() || (testFile ? `Arquivo enviado: ${testFile.name}` : "");
     if (!content) {
+      return;
+    }
+    if (testFile && content.length > 3000) {
+      setError("Com anexo, escreva uma mensagem de até 3.000 caracteres. Os dados do arquivo serão lidos separadamente.");
       return;
     }
 
@@ -402,6 +420,7 @@ export function AgentsPage() {
       ...testMessages,
       { role: "user", content }
     ];
+    const requestGeneration = ++testRequestGeneration.current;
     setTestMessages(nextMessages);
     setTestMessageBody("");
     setIsSendingTestMessage(true);
@@ -409,16 +428,25 @@ export function AgentsPage() {
     setNotice(null);
 
     try {
+      if (testFile) validateTestUpload(testFile);
+      const attachment = testFile ? { fileName: testFile.name, mimeType: getTestUploadMime(testFile), base64Content: await fileToBase64(testFile) } : undefined;
       const result = await apiSendAgentTestChatMessage(getToken, selectedAgent.id, {
-        messages: nextMessages
+        messages: nextMessages,
+        ...(attachment ? { attachment } : {})
       });
+      if (requestGeneration !== testRequestGeneration.current) return;
 
-      setTestMessages((current) => [...current, result.message]);
-      setTestDebug(result.debug ?? {
+      const retainedMessages = result.processedMessage
+        ? [...nextMessages.slice(0,-1), result.processedMessage] : nextMessages;
+      setTestMessages([...retainedMessages, result.message]);
+      setTestFile(null);
+      setTestFileKey((value) => value + 1);
+      setTestDebug({ ...result.debug,
         knowledgeMatches: result.knowledgeMatches,
         output: result.output
       });
     } catch (testError) {
+      if (requestGeneration !== testRequestGeneration.current) return;
       setTestMessages(testMessages);
       setTestMessageBody(content);
       setTestDebug(testError instanceof ApiRequestError && testError.debug
@@ -428,11 +456,15 @@ export function AgentsPage() {
         });
       setError(testError instanceof Error ? testError.message : "Não foi possível testar o agente.");
     } finally {
-      setIsSendingTestMessage(false);
+      if (requestGeneration === testRequestGeneration.current) setIsSendingTestMessage(false);
     }
   }
 
   function resetTestChat() {
+    if (isSendingTestMessage) return;
+    testRequestGeneration.current += 1;
+    setTestFile(null);
+    setTestFileKey((value) => value + 1);
     setTestMessages([]);
     setTestMessageBody("");
     setTestDebug(null);
@@ -450,6 +482,12 @@ export function AgentsPage() {
   }
 
   function acceptImportedAgent(agent: AiAgentDto) {
+    testRequestGeneration.current += 1;
+    setIsSendingTestMessage(false);
+    setError(null);
+    setTestFile(null);
+    setTestFileKey((value) => value + 1);
+    setTestMessageBody("");
     setAgents((current) => [agent, ...current.filter((item) => item.id !== agent.id)]);
     setSelectedAgentId(agent.id);
     setAgentForm(agentFormFromAgent(agent));
@@ -808,7 +846,7 @@ export function AgentsPage() {
                 className="secondary-button"
                 type="button"
                 onClick={resetTestChat}
-                disabled={testMessages.length === 0 && !testMessageBody}
+                disabled={isSendingTestMessage || (testMessages.length === 0 && !testMessageBody && !testFile)}
               >
                 <RotateCcw size={14} />
                 Resetar teste
@@ -837,12 +875,31 @@ export function AgentsPage() {
               ))}
             </div>
 
+            <p className="muted">Simulação: não envia mensagens ao WhatsApp nem executa o repasse. Confira abaixo os dados lidos e o resumo proposto.</p>
+            <AgentTestInspection debug={testDebug} />
             <details className="agent-test-debug">
               <summary>Logs do teste</summary>
               <pre>{formatAgentTestDebug(testDebug)}</pre>
             </details>
 
             <form className="module-form" onSubmit={(event) => void sendTestMessage(event)}>
+              <label className="form-field">
+                Anexo de teste — PDF, imagem ou áudio (até 8 MB)
+                <input key={testFileKey} type="file" aria-label="Anexo de teste"
+                  accept=".pdf,.png,.jpg,.jpeg,.webp,.mp3,.m4a,.wav,.ogg,.opus,.webm"
+                  disabled={!selectedAgent || isSendingTestMessage}
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0] ?? null;
+                    try {
+                      if (file) validateTestUpload(file);
+                      setTestFile(file); setError(null);
+                    } catch (error) {
+                      setTestFile(null); event.currentTarget.value = "";
+                      setError(error instanceof Error ? error.message : "Anexo inválido.");
+                    }
+                  }} />
+              </label>
+              {testFile ? <div className="muted">{testFile.name} · <button type="button" disabled={isSendingTestMessage} onClick={() => { setTestFile(null); setTestFileKey((value) => value + 1); }}>Remover anexo</button></div> : null}
               <label className="form-field">
                 Mensagem de teste
                 <textarea
@@ -856,7 +913,7 @@ export function AgentsPage() {
               <button
                 className="secondary-button"
                 type="submit"
-                disabled={!selectedAgent || !testMessageBody.trim() || isSendingTestMessage}
+                disabled={!selectedAgent || (!testMessageBody.trim() && !testFile) || isSendingTestMessage}
               >
                 <Send size={15} />
                 {isSendingTestMessage ? "Enviando" : "Enviar teste"}
