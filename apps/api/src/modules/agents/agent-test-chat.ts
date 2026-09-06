@@ -180,7 +180,7 @@ export function createAgentTestChatService(input: {
       if (messages.some((message) => message.content.length > 24_000) || messages.reduce((sum, message) => sum + message.content.length, 0) > 120_000) {
         throw new AgentTestChatError("TEST_CHAT_INVALID_MESSAGES", "O histórico com o anexo excede o limite deste teste. Inicie um novo teste para enviar o arquivo completo.");
       }
-      const attachmentAvailable = media?.status === "processed" || messages.some((message) => message.role === "user" && /\[(Texto do PDF|Leitura da imagem) — conteúdo enviado pelo cliente\]/.test(message.content));
+      const attachmentAvailable = media?.status === "processed" || messages.some((message) => message.role === "user" && /\[(Texto do PDF|Leitura da imagem|Transcrição do áudio) — conteúdo enviado pelo cliente\]/.test(message.content));
 
       const knowledge = await prisma.aiKnowledgeSource.findMany({
         where: {

@@ -676,9 +676,7 @@ export function createAgentRuntime(input: {
             mediaProcessingError = preparedAudio.errorCode;
           } else if (preparedAudio.status === "completed") {
             effectiveText = preparedAudio.text;
-            if ("media" in preparedAudio && preparedAudio.media) {
-              mediaMetadata = preparedAudio.media;
-            }
+            mediaMetadata = { ...("media" in preparedAudio ? preparedAudio.media : {}), kind: "audio", status: "processed", extractedText: preparedAudio.text };
           }
         }
 
@@ -751,7 +749,10 @@ export function createAgentRuntime(input: {
           end: source.end
         }));
 
-        const attachmentAvailable = mediaMetadata?.status === "processed" || conversationContext.messages.some((entry) => (entry.type === "image" || entry.type === "file") && /\[(Texto do PDF|Leitura da imagem) — conteúdo enviado pelo cliente\]/.test(entry.body ?? ""));
+        const attachmentAvailable = mediaMetadata?.status === "processed" || conversationContext.messages.some((entry) =>
+          ((entry.type === "image" || entry.type === "file") && /\[(Texto do PDF|Leitura da imagem) — conteúdo enviado pelo cliente\]/.test(entry.body ?? ""))
+          || (entry.type === "audio" && Boolean(entry.body?.trim()) && !isPendingAudioBody(entry.body) && entry.body !== AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK)
+        );
         const safety = evaluateAgentSafety({
           message: effectiveText,
           conversationHistory: conversationContext.formattedHistory,

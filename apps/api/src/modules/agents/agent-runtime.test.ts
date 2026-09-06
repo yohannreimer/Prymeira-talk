@@ -1383,7 +1383,7 @@ describe("createAgentRuntime", () => {
     });
   });
 
-  it("answers a document follow-up using retained extracted content instead of requiring company knowledge", async () => {
+  it.each(["file", "audio"])("answers a %s follow-up using retained extracted content instead of requiring company knowledge", async (mediaType) => {
     const prisma = buildPrisma();
     vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ ...baseAgent, behaviorConfig: {
       knowledgeTaxonomy: [{ key: "dimensions", label: "Medidas", aliases: ["medidas", "lista"], requiresSource: true }]
@@ -1392,7 +1392,7 @@ describe("createAgentRuntime", () => {
     const message = { ...baseMessage, body: "Quais medidas estão na lista?" };
     vi.mocked(prisma.message.findFirst).mockResolvedValue(message);
     vi.mocked(prisma.message.findMany).mockResolvedValue([
-      { ...baseMessage, id: "pdf-before", type: "file", body: "[Texto do PDF — conteúdo enviado pelo cliente]\n2 chapas 3 x 1200 x 3000 mm" }, message
+      { ...baseMessage, id: "media-before", type: mediaType, body: `${mediaType === "file" ? "[Texto do PDF — conteúdo enviado pelo cliente]\n" : ""}2 chapas 3 x 1200 x 3000 mm` }, message
     ]);
     const provider = buildProvider({ confidence: 0.95, reply: "A lista informa 3 x 1200 x 3000 mm.", actions: [], handoff: { required: false, reason: null } });
     const result = await createAgentRuntime({ prisma, provider }).runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
