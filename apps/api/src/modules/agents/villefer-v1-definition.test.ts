@@ -34,7 +34,8 @@ describe("villeferV1Definition", () => {
       ["technical_codes_missing_lengths", ["product", "specification", "quantity"], ["dimensions"], false],
       ["fractional_tube_measure", ["product", "dimensions"], ["thickness", "quantity"], false],
       ["ambiguous_profile_description", ["product", "quantity"], ["specification"], false],
-      ["mixed_list_per_item_gaps", ["product", "quantity"], ["dimensions"], false]
+      ["mixed_list_per_item_gaps", ["product", "quantity"], ["dimensions"], false],
+      ["mixed_list_shared_material_and_clarified_unit", ["product", "specification", "dimensions", "quantity"], [], true]
     ] as const;
 
     for (const [id, capturedFields, missingFields, handoffExpected] of expectations) {
@@ -44,6 +45,20 @@ describe("villeferV1Definition", () => {
       expect(testCase?.expected.missingFields, id).toEqual(expect.arrayContaining([...missingFields]));
       expect(testCase?.expected.handoffExpected, id).toBe(handoffExpected);
     }
+  });
+
+  it("replays a shared material answer and explicit unit clarification before handoff", () => {
+    const replay = historicalEvaluationSuiteSchema.parse(villeferV1Definition.evaluationSuite).cases.find(
+      (entry) => entry.id === "mixed_list_shared_material_and_clarified_unit"
+    );
+    expect(replay?.conversation.map((turn) => turn.role)).toEqual(["user", "assistant", "user"]);
+    expect(replay?.conversation[0].content).toContain("tudo redondo de 4'");
+    expect(replay?.conversation[1].content).toContain("material das chapas, perfis, barras e tubos");
+    expect(replay?.conversation[2].content).toContain("4 polegadas. Material aço carbono");
+    expect(replay?.expected).toMatchObject({ missingFields: [], handoffExpected: true });
+    expect(replay?.expected.responseGuidance).toMatch(/aço carbono aos quatro itens.*inclusive chapas/);
+    expect(replay?.expected.responseGuidance).toMatch(/4'.*4 polegadas, sem pendência de unidade/);
+    expect(replay?.expected.responseGuidance).toContain("tubo redondo sem criar dúvida técnica");
   });
 
   it("produces an importable package with the approved qualification scope", () => {

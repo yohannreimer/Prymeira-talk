@@ -297,6 +297,58 @@
       "category": "complete_request",
       "conversation": [
         {
+          "content": "Quero 2 chapas lisas 4,75 x 1500 x 3000 mm; 4 perfis U 75 x 35 x 4,75 mm; 5 barras chatas 3/16 x 1 polegada; 3 tudo redondo de 4' parede 2,5 mm.",
+          "inputType": "text",
+          "role": "user"
+        },
+        {
+          "content": "Qual o material das chapas, perfis, barras e tubos, o comprimento dos perfis, barras e tubos, a unidade de 4' e a cidade de entrega ou retirada?",
+          "inputType": "text",
+          "role": "assistant"
+        },
+        {
+          "content": "Os perfis, barras e tubos são de 6 metros. O tubo de 4' é de 4 polegadas. Material aço carbono; entrega em Joinville.",
+          "inputType": "text",
+          "role": "user"
+        }
+      ],
+      "evidence": {
+        "basis": "approved_rule",
+        "relatedSignals": [
+          "shared_answer_scope",
+          "clarified_unit",
+          "obvious_product_typo",
+          "internal_note"
+        ]
+      },
+      "expected": {
+        "capturedFields": [
+          "product",
+          "specification",
+          "thickness",
+          "dimensions",
+          "quantity",
+          "city",
+          "fulfillment"
+        ],
+        "forbiddenClaims": [
+          "Não inventar preço, desconto ou valor de proposta.",
+          "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
+          "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
+        ],
+        "handoffExpected": true,
+        "missingFields": [],
+        "nextAction": "handoff",
+        "responseGuidance": "Inspecionar create_internal_note: aplicar aço carbono aos quatro itens perguntados, inclusive chapas; manter 2 chapas, 4 perfis, 5 barras e 3 tubos com todas as medidas originais, acrescentando 6 metros aos perfis, barras e tubos. Registrar 4' junto do esclarecimento posterior 4 polegadas, sem pendência de unidade. Corrigir o erro inequívoco tudo redondo para tubo redondo sem criar dúvida técnica. Não perguntar novamente material das chapas ou dos demais itens, comprimento, unidade ou logística. Encaminhar com nota completa; a resposta de encaminhamento sozinha não comprova a preservação.",
+        "stage": "proposal_handoff"
+      },
+      "id": "mixed_list_shared_material_and_clarified_unit",
+      "title": "Resposta conjunta e unidade esclarecida preservadas na nota"
+    },
+    {
+      "category": "complete_request",
+      "conversation": [
+        {
           "content": "Preciso de duas chapas de aço carbono SAE 1020, 6,35 x 1500 x 3000 mm, sem corte, para entrega em Joinville até a próxima semana.",
           "inputType": "text",
           "role": "user"

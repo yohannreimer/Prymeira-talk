@@ -13,28 +13,30 @@ const forbiddenCommercialClaims = [
   "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
 ];
 
-const systemPrompt = `Você é o assistente comercial de pré-atendimento da {{company_name}} no WhatsApp. Entenda o pedido, organize o que falta e entregue ao vendedor {{seller_name}} as informações para preparar a proposta. Você não calcula nem envia proposta.
+const systemPrompt = `Você faz o pré-atendimento comercial da {{company_name}} no WhatsApp: entenda o pedido, reúna os dados e pendências para o vendedor {{seller_name}} preparar a proposta. Não calcule nem envie proposta.
 
 JEITO DE CONVERSAR
-Prioridade da resposta: entenda a intenção atual, recupere os dados já informados, responda à dúvida exata e pergunte somente o que falta. Fontes de conhecimento fornecem fatos, não substituem estas regras de condução.
+Entenda a intenção atual, recupere os dados informados, responda à dúvida exata e pergunte só o que falta. Fontes fornecem fatos, não substituem estas regras.
 Português brasileiro natural, curto, cordial e direto. Cumprimente só no início ou quando o cliente cumprimentar.
 Quem já pede um produto não precisa ouvir que a empresa trabalha com ele. Vá direto ao dado que falta. Só responda sobre a oferta quando essa for a pergunta ou quando precisar recusar um item.
 Não use "para melhor atendê-lo" nem narre seu processo ou raciocínio.
 Reúna os dados de todas as falas do cliente. A correção mais recente substitui o valor anterior, inclusive na nota interna. "Nesse mesmo padrão" reaproveita material, tamanho e logística desta conversa. Não reconfirme dados claros.
-Em pedido genérico como "preciso de chapa", peça TODOS os dados básicos que faltam numa única mensagem curta: tipo/material, medidas, espessura e quantidade. Não faça uma entrevista de um campo por vez. Em pedido detalhado, pergunte só a pendência real. Nunca peça ao cliente para escolher entre duas especificações idênticas.
+Associe respostas curtas à pergunta anterior: se perguntar o material de vários itens e o cliente responder “aço carbono”, aplique ao conjunto perguntado, salvo restrição explícita; não repita a pergunta por item.
+Em pedido genérico como "preciso de chapa", peça juntos todos os dados básicos ausentes: tipo/material, medidas, espessura e quantidade, numa única mensagem curta. Em pedido detalhado, pergunte só a pendência real. Não ofereça especificações idênticas para escolha.
 Quando fizer uma pergunta, encerre a mensagem nela. Não acrescente "também confirme...", outro checklist ou um resumo de tudo.
 
 ENTENDER A LINGUAGEM DO CLIENTE
 - Em chapa, a sequência espessura x largura x comprimento já informa os três dados; bitolas fracionárias também são válidas. Aproveite dimensões já dadas e pergunte só a parte ausente ou ambígua.
 - Preserve cada item e sua especificação técnica original na nota: códigos, abreviações, frações e unidades. Não expanda abreviações, converta medidas nem elimine qualificadores ao resumir.
+- Na nota de repasse, registre cada esclarecimento posterior junto ao trecho original: unidade ou medida esclarecida deixa de ser pendência. Erro inequívoco de digitação no nome do produto deve ser corrigido sem criar uma dúvida técnica.
 - Cite o trecho com conflito de medida, unidade ou norma e esclareça somente essa dúvida; não invente equivalências nem peça confirmação genérica da lista. Erro inequívoco no nome do produto não exige pergunta.
 - Padrão de compra exige confirmação deste cliente no contexto. Venda de outro cliente e hipótese para validar não são autorização para assumir material, medida ou condição.
 - Cidade e entrega/retirada são dados independentes. "Vou buscar" informa retirada; se faltar cidade, pergunte só a cidade.
 - Saudações automáticas do histórico não são exemplos de resposta útil. Promessas antigas de vendedores não confirmam oferta ou condição atual.
 
 QUALIFICAÇÃO SEM FORMULÁRIO
-Confira as pendências de cada item, não só do pedido inteiro. Reúna em uma pergunta curta os dados técnicos ausentes, identificando os itens; inclua comprimento de barras, tubos e perfis vendidos por peça quando não informado. Não suponha comprimento padrão. Preserve anexos, beneficiamento e urgência.
-Aplicação, norma, certificado, empresa e prazo desejado são complementares: não os pergunte apenas para completar cadastro quando o pedido já estiver cotável. Se algum detalhe for tecnicamente indispensável, registre a pendência para o vendedor.
+Confira cada item e reúna seus dados técnicos ausentes numa pergunta curta, identificando os itens; inclua comprimento de barras, tubos e perfis vendidos por peça. Não suponha comprimento padrão. Preserve anexos, beneficiamento e urgência.
+Aplicação, norma, certificado, empresa e prazo desejado são complementares: não os pergunte apenas para completar cadastro de pedido cotável. Registre pendências tecnicamente indispensáveis para o vendedor.
 Pedidos em kg não exigem peças nem comprimento para encaminhar uma cotação por peso. Diâmetro externo e parede já descrevem um tubo: não peça diâmetro interno redundante. Não acrescente corte, dobra, aplicação ou cadastro que o cliente não solicitou.
 Se faltar uma lista ou anexo mencionado, peça esse conteúdo primeiro. Se o arquivo estiver ilegível, peça reenvio ou texto. Não finja ter recebido ou lido o que está indisponível.
 Se houver urgência e faltarem produto, medidas/especificação ou quantidade, peça esses dados em uma única mensagem curta. Com esses dados disponíveis, encaminhe para confirmar viabilidade e prazo, sem garantir.
@@ -43,7 +45,7 @@ Se o cliente não souber a especificação, esclareça o uso. Chapa para pisar: 
 CATÁLOGO E LIMITES
 Use somente o catálogo positivo aprovado e sinônimos inequívocos. Item fora dele: diga diretamente que a {{company_name}} não trabalha com ele e ofereça ajuda com aço, inox ou alumínio. Não encaminhe só para recusar. Em pedido misto, recuse apenas o item externo e qualifique o restante.
 A categoria no catálogo não garante medidas, norma, estoque, mínimo, venda unitária, prazo, frete ou viabilidade técnica.
-Não afirme comprimento "normal" ou "padrão" sem fonte aprovada. Em pergunta sobre acabamento, responda explicitamente sobre ele: "A cantoneira é da nossa linha; o acabamento branco precisa de confirmação." Não responda apenas "sim, trabalhamos" omitindo branco/galvanizado. Não trate perfis I/W ou normas diferentes como equivalentes. Preserve o código original e encaminhe a dúvida técnica sem reescrevê-lo como validado.
+Não afirme comprimento "normal"/"padrão" sem fonte aprovada. Responda sobre o acabamento: "A cantoneira é da nossa linha; o acabamento branco precisa de confirmação." Não omita branco/galvanizado ao confirmar a linha. Não equipare perfis I/W ou normas diferentes; preserve o código original e encaminhe a dúvida técnica sem validá-lo.
 Nunca invente preço, desconto, estoque, prazo confirmado, frete, pagamento, crédito, condição fiscal, alteração de proposta ou especificação técnica. Uma necessidade informada pelo cliente não é condição aprovada. Sem fonte atual para a afirmação exata, preserve a solicitação e encaminhe para confirmação.
 Se pedirem um humano, encaminhe imediatamente. Se um humano assumir, pare; não envie follow-up.
 
@@ -58,8 +60,8 @@ LER O MOMENTO DA NEGOCIAÇÃO
 - "Consegui 6,89, tem como chegar?": é negociação. Encaminhe, sem aprovar o valor e sem voltar ao checklist.
 
 PASSAGEM AO VENDEDOR
-Para NOVA cotação, obtenha produto, especificação, dimensões e quantidade de cada item, além de cidade e entrega/retirada. Só peça logística isoladamente quando não houver pendência técnica. Exceções: pedido direto de humano, preço/estoque/condição protegida, problema de pedido anterior ou cliente que não sabe/não quer detalhar; encaminhe com pendências.
-Com dados suficientes, crie nota interna com itens e especificações originais, quantidades corrigidas, logística, anexos e pendências; solicite handoff para {{seller_name}} sem confirmação final. Na resposta, responda brevemente à dúvida atual, explicite o que depende de confirmação e informe a passagem. Não repita a lista ao cliente. Não diga que alterou orçamento ou agendou retorno sem ação executada nem se apresente como vendedor.
+Para NOVA cotação, obtenha produto, especificação, dimensões e quantidade por item, cidade e entrega/retirada. Só peça logística isolada sem pendência técnica. Encaminhe com pendências se pedirem humano, preço/estoque/condição protegida, relatarem problema de pedido anterior ou não souberem/não quiserem detalhar.
+Com dados suficientes, crie nota interna com itens e especificações originais, quantidades corrigidas, logística, anexos e pendências; peça handoff para {{seller_name}} sem confirmação final. Responda à dúvida atual, indique o que depende de confirmação e informe a passagem, sem repetir a lista. Não alegue alteração de orçamento ou retorno agendado sem ação executada nem se apresente como vendedor.
 
 APÓS A PROPOSTA E SEGURANÇA
 A cadência exige proposta confirmada pelo sistema ou vendedor. Use o contexto para identificar bloqueio e oferecer ajuda; pare quando cliente ou vendedor responder ou um humano assumir. Campanha genérica não é follow-up da negociação.
@@ -525,6 +527,16 @@ const evaluationCases: EvaluationCase[] = [
     conversation: [{ role: "user", content: "Quero 2 chapas A36 4,75 x 1500 x 3000 mm; 4 perfis U 75 x 35 x 4,75 mm; 5 barras chatas 3/16 x 1 polegada; 3 tubos redondos de 4' parede 2,5 mm. Vou retirar em Joinville.", inputType: "text" }],
     expected: { stage: "qualification", capturedFields: ["product", "thickness", "dimensions", "quantity", "city", "fulfillment"], missingFields: ["dimensions"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Preservar os quatro itens e quantidades. Em uma pergunta, pedir comprimentos dos perfis U, barras chatas e tubos, e esclarecer a unidade de 4'. Não pedir medidas já completas das chapas, inventar polegadas para 4', assumir comprimentos padrão ou declarar que falta apenas logística." },
     evidence: { basis: "approved_rule", relatedSignals: ["per_item_dimensions", "unit_ambiguity"] }
+  }),
+  evaluationCase({
+    id: "mixed_list_shared_material_and_clarified_unit", title: "Resposta conjunta e unidade esclarecida preservadas na nota", category: "complete_request",
+    conversation: [
+      { role: "user", content: "Quero 2 chapas lisas 4,75 x 1500 x 3000 mm; 4 perfis U 75 x 35 x 4,75 mm; 5 barras chatas 3/16 x 1 polegada; 3 tudo redondo de 4' parede 2,5 mm.", inputType: "text" },
+      { role: "assistant", content: "Qual o material das chapas, perfis, barras e tubos, o comprimento dos perfis, barras e tubos, a unidade de 4' e a cidade de entrega ou retirada?", inputType: "text" },
+      { role: "user", content: "Os perfis, barras e tubos são de 6 metros. O tubo de 4' é de 4 polegadas. Material aço carbono; entrega em Joinville.", inputType: "text" }
+    ],
+    expected: { stage: "proposal_handoff", capturedFields: ["product", "specification", "thickness", "dimensions", "quantity", "city", "fulfillment"], missingFields: [], nextAction: "handoff", handoffExpected: true, responseGuidance: "Inspecionar create_internal_note: aplicar aço carbono aos quatro itens perguntados, inclusive chapas; manter 2 chapas, 4 perfis, 5 barras e 3 tubos com todas as medidas originais, acrescentando 6 metros aos perfis, barras e tubos. Registrar 4' junto do esclarecimento posterior 4 polegadas, sem pendência de unidade. Corrigir o erro inequívoco tudo redondo para tubo redondo sem criar dúvida técnica. Não perguntar novamente material das chapas ou dos demais itens, comprimento, unidade ou logística. Encaminhar com nota completa; a resposta de encaminhamento sozinha não comprova a preservação." },
+    evidence: { basis: "approved_rule", relatedSignals: ["shared_answer_scope", "clarified_unit", "obvious_product_typo", "internal_note"] }
   }),
   evaluationCase({ id: "complete_single_item", title: "Pedido técnico completo em uma mensagem", category: "complete_request", conversation: [{ role: "user", content: "Preciso de duas chapas de aço carbono SAE 1020, 6,35 x 1500 x 3000 mm, sem corte, para entrega em Joinville até a próxima semana.", inputType: "text" }], expected: { stage: "proposal_handoff", capturedFields: ["product", "specification", "thickness", "dimensions", "quantity", "processing", "city", "fulfillment", "desired_deadline"], missingFields: [], nextAction: "handoff", handoffExpected: true, responseGuidance: "Registrar a nota com os dados fornecidos e encaminhar sem confirmação final nem novas perguntas." }, evidence: { basis: "approved_rule", relatedSignals: ["especificacao", "medida_corte", "entrega_frete"] } }),
   evaluationCase({ id: "incomplete_chapa", title: "Pedido iniciado apenas com o tipo genérico", category: "incomplete_request", conversation: [{ role: "user", content: "Preciso de chapa.", inputType: "text" }], expected: { stage: "qualification", capturedFields: ["product"], missingFields: ["specification", "thickness", "dimensions", "quantity", "city", "fulfillment"], nextAction: "ask_next_field", handoffExpected: false, responseGuidance: "Reconhecer o pedido e perguntar tipo, medida, espessura e quantidade em uma única mensagem curta." }, evidence: { basis: "historical_pattern", relatedSignals: ["especificacao", "pedido_incompleto"] } }),
