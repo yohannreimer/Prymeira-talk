@@ -177,9 +177,13 @@ function scoreChunk(
     reasons.add("category_match");
   }
 
-  const primaryKeywordMatches = keywords.filter((keyword) => query.primary.includes(keyword));
+  const primaryKeywordMatches = keywords.filter((keyword) =>
+    hasKeywordMatch(keyword, query.primary, query.primaryTokens)
+  );
   const historyKeywordMatches = allowHistorySignal
-    ? keywords.filter((keyword) => query.history.includes(keyword))
+    ? keywords.filter((keyword) =>
+        hasKeywordMatch(keyword, query.history, query.historyTokens)
+      )
     : [];
   const keywordMatches = Array.from(new Set([...primaryKeywordMatches, ...historyKeywordMatches]));
   if (keywordMatches.length > 0) {
@@ -259,14 +263,28 @@ function countContentOverlap(content: string, queryTokens: Set<string>) {
   return count;
 }
 
+function hasKeywordMatch(keyword: string, query: string, queryTokens: Set<string>) {
+  if (query.includes(keyword)) return true;
+  const keywordTokens = toTokenSet(keyword);
+  return keywordTokens.size > 0 && Array.from(keywordTokens).every((token) => queryTokens.has(token));
+}
+
 function toTokenSet(value: string) {
   return new Set(
     value
       .split(/[^a-z0-9]+/g)
+      .map(toComparableToken)
       .filter((token) => token.length >= 3)
       .filter((token) => /[a-z]/.test(token))
       .filter((token) => !STOP_WORDS.has(token))
   );
+}
+
+function toComparableToken(token: string) {
+  if (token.length > 5 && token.endsWith("ais")) return `${token.slice(0, -3)}al`;
+  if (token.length > 5 && token.endsWith("eis")) return `${token.slice(0, -3)}el`;
+  if (token.length > 4 && token.endsWith("s")) return token.slice(0, -1);
+  return token;
 }
 
 function readMetadata(value: KnowledgeRetrievalSource["metadata"]): {
