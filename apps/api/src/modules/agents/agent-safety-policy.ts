@@ -25,6 +25,7 @@ export type AgentSafetyDecision = {
   protectedFact: ProtectedFact | null;
   reason: string | null;
   outcome: AgentSafetyOutcome;
+  injectionRecovery?: "request_clean_copy";
 };
 
 export const HANDOFF_ACKNOWLEDGEMENT =
@@ -35,6 +36,8 @@ const LOSS_ACKNOWLEDGEMENT =
 const PURCHASE_ACKNOWLEDGEMENT = "Certo, obrigado por avisar! Fico à disposição para a próxima.";
 const INJECTION_RECOVERY =
   "Pode me enviar a lista de materiais com os itens, medidas e quantidades?";
+const INJECTION_CLEAN_COPY_RECOVERY =
+  "Recebi o conteúdo, mas ele mistura dados do pedido com outras instruções. Pode reenviar uma versão com somente os dados do pedido? Se preferir, chamo uma pessoa do time.";
 const URGENT_QUALIFICATION =
   "Entendi a urgência. Para o vendedor confirmar o prazo, me informe o produto, as medidas ou especificação e a quantidade.";
 const ATTACHMENT_REFERENCE_ONLY = /^(?:(?:oi|ol[aá]|bom dia|boa tarde|boa noite)[,!.\s]*)?(?:segue(?:m)?|enviei|mandei)\s+(?:o |a |os |as )?(?:arquivo|anexo|lista|foto|imagem|documento)s?[.!\s]*$/i;
@@ -121,9 +124,16 @@ export function evaluateAgentSafety(input: {
   selectedKnowledge: Array<Pick<SelectedKnowledgeSource, "content">>;
 }): AgentSafetyDecision {
   const message = input.message.trim().replace(/\s+/g, " ");
+  const fullConversation = `${input.conversationHistory ?? ""}\n${message}`;
 
   if (PROMPT_INJECTION.test(message)) {
-    return decision("ignore_injection");
+    // Supplied material changes only the recovery wording. It remains untrusted:
+    // the deterministic response never forwards injected commands to the provider.
+    const suppliedMaterial = input.attachmentAvailable === true || hasMinimumOrderDetails(fullConversation);
+    return {
+      ...decision("ignore_injection"),
+      ...(suppliedMaterial ? { injectionRecovery: "request_clean_copy" as const } : {})
+    };
   }
 
   if (HUMAN_REQUEST.test(message)) {
@@ -147,7 +157,6 @@ export function evaluateAgentSafety(input: {
     return decision("await_approval");
   }
 
-  const fullConversation = `${input.conversationHistory ?? ""}\n${message}`;
   if (URGENT_REQUEST.test(message)) {
     if (!hasMinimumOrderDetails(fullConversation)) {
       return decision("qualify_urgent");
@@ -187,7 +196,7 @@ export function createSafetyDecisionOutput(decisionValue: AgentSafetyDecision): 
     : decisionValue.outcome === "close_purchase"
       ? PURCHASE_ACKNOWLEDGEMENT
     : decisionValue.outcome === "ignore_injection"
-      ? INJECTION_RECOVERY
+      ? decisionValue.injectionRecovery === "request_clean_copy" ? INJECTION_CLEAN_COPY_RECOVERY : INJECTION_RECOVERY
       : decisionValue.outcome === "qualify_urgent"
         ? URGENT_QUALIFICATION
         : null;
