@@ -183,7 +183,7 @@ describe("selectRelevantKnowledge", () => {
     );
   });
 
-  it("matches singular product wording against plural catalog aliases", () => {
+  it("matches singular product wording against a plural catalog without metadata", () => {
     const result = selectRelevantKnowledge({
       latestMessage: "Tubo industrial.",
       conversationHistory: "cliente: Preciso entregar em Joinville.",
@@ -197,17 +197,13 @@ describe("selectRelevantKnowledge", () => {
       sources: [{
         id: "approved-catalog",
         title: "Catálogo positivo autorizado",
-        content: "A empresa trabalha com tubos industriais e tubos mecânicos.",
-        metadata: {
-          category: "product_and_specification",
-          aliases: ["tubos industriais", "tubos mecânicos"]
-        }
+        content: "A empresa trabalha com tubos industriais e tubos mecânicos."
       }]
     });
 
     expect(result.selected[0]).toEqual(expect.objectContaining({
       id: "approved-catalog",
-      category: "product_and_specification"
+      reasons: expect.arrayContaining(["content_overlap"])
     }));
   });
 });
