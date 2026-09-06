@@ -10,6 +10,11 @@ const imagePolicy: AgentMediaPolicy = {
 const publicResolver = vi.fn().mockResolvedValue(["203.0.113.10"]);
 
 describe("resolveAgentMedia", () => {
+  it.each(["http://[::ffff:127.0.0.1]/private", "http://[::ffff:7f00:1]/private", "http://[0:0:0:0:0:ffff:a00:1]/private"])("blocks mapped IPv6 before fetching %s", async (mediaUrl) => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("private", { headers: { "content-type": "image/png" } }));
+    await expect(resolveAgentMedia({ mediaUrl, policy: imagePolicy, fetchImpl })).rejects.toMatchObject({ code: "MEDIA_NETWORK_BLOCKED" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
   it("decodes a valid base64 image data URL", async () => {
     await expect(resolveAgentMedia({
       mediaUrl: "data:image/jpeg;base64,aW1hZ2Vt",

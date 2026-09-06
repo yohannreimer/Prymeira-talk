@@ -2,7 +2,7 @@ import { isIP } from "node:net";
 import { lookup } from "node:dns/promises";
 
 export type AgentMediaPolicy = {
-  kind: "image" | "audio";
+  kind: "image" | "audio" | "document";
   maxBytes: number;
   allowedMimeTypes: ReadonlySet<string>;
 };
@@ -96,10 +96,12 @@ function isBlockedIp(address: string) {
   if (version === 4) return isBlockedIpv4(address);
   if (version !== 6) return true;
 
-  const normalized = address.toLowerCase().split("%", 1)[0];
+  // Canonicalize expanded and IPv4-mapped forms before classifying the target.
+  const normalized = new URL(`http://[${address.toLowerCase().split("%", 1)[0]}]/`).hostname.slice(1, -1);
   if (
     normalized === "::" ||
     normalized === "::1" ||
+    normalized.startsWith("::ffff:") ||
     normalized.startsWith("fc") ||
     normalized.startsWith("fd") ||
     /^fe[89ab]/.test(normalized) ||
@@ -107,8 +109,7 @@ function isBlockedIp(address: string) {
   ) {
     return true;
   }
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(normalized);
-  return mapped ? isBlockedIpv4(mapped[1]) : false;
+  return false;
 }
 
 async function defaultResolveHost(hostname: string) {

@@ -16,6 +16,7 @@ import {
   type ProtectedFact
 } from "./agent-safety-policy.js";
 import { readKnowledgeTaxonomy } from "./knowledge-taxonomy.js";
+import { prepareInboundMedia, formatProcessedMediaMessage, type InboundMediaAttachment, type InboundMediaResult } from "./inbound-media.js";
 import {
   createOpenAiCompatibleAgentProvider,
   type AgentOutput,
@@ -64,12 +65,15 @@ export type AgentTestChatMessage = {
 
 export type AgentTestChatResult = {
   message: AgentTestChatMessage;
+  processedMessage?: AgentTestChatMessage;
   output: AgentOutput;
   knowledgeMatches: Array<Record<string, unknown>>;
   debug: AgentTestChatDebug;
 };
 
 export type AgentTestChatDebug = {
+  media?: InboundMediaResult;
+  proposedActions?: AgentOutput["actions"];
   providerMode: "real" | "simulated";
   model: string;
   totalKnowledgeSources: number;
@@ -129,6 +133,7 @@ export function createAgentTestChatService(input: {
   prisma: AgentTestChatPrismaLike;
   provider: AgentProvider;
   providerFactory?: (settings: Extract<OpenAiCompatibleSettings, { active: true }>) => AgentProvider;
+  mediaPreparer?: typeof prepareInboundMedia;
 }) {
   const { prisma, provider } = input;
 
@@ -137,9 +142,14 @@ export function createAgentTestChatService(input: {
       workspaceId: string;
       agentId: string;
       messages: AgentTestChatMessage[];
+      attachment?: InboundMediaAttachment;
     }): Promise<AgentTestChatResult> {
-      const latestUserMessage = [...runInput.messages].reverse().find((message) => message.role === "user");
-      if (!latestUserMessage || latestUserMessage.content.trim().length === 0) {
+      const messages = runInput.messages.map((message) => ({ ...message }));
+      const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
+      if (runInput.attachment && (latestUserMessage?.content.length ?? 0) > 3_000) {
+        throw new AgentTestChatError("TEST_CHAT_INVALID_MESSAGES", "A mensagem que acompanha o anexo deve ter até 3.000 caracteres.");
+      }
+      if (!latestUserMessage || (!runInput.attachment && latestUserMessage.content.trim().length === 0) || (runInput.attachment && messages.at(-1)?.role !== "user") || messages.some((message) => message.content.length > 24_000) || messages.reduce((sum, message) => sum + message.content.length, 0) > 120_000) {
         throw new AgentTestChatError(
           "TEST_CHAT_INVALID_MESSAGES",
           "Test chat requires at least one user message."
@@ -158,6 +168,20 @@ export function createAgentTestChatService(input: {
         throw new AgentTestChatError("AGENT_NOT_FOUND", "Agent not found.");
       }
 
+      const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
+        workspaceId: runInput.workspaceId
+      });
+      const media = runInput.attachment ? await (input.mediaPreparer ?? prepareInboundMedia)({ attachment: runInput.attachment, settings: providerSettings }) : undefined;
+      let processedMessage: AgentTestChatMessage | undefined;
+      if (media) {
+        latestUserMessage.content = formatProcessedMediaMessage(latestUserMessage.content, media);
+        processedMessage = { ...latestUserMessage };
+      }
+      if (messages.some((message) => message.content.length > 24_000) || messages.reduce((sum, message) => sum + message.content.length, 0) > 120_000) {
+        throw new AgentTestChatError("TEST_CHAT_INVALID_MESSAGES", "O histórico com o anexo excede o limite deste teste. Inicie um novo teste para enviar o arquivo completo.");
+      }
+      const attachmentAvailable = media?.status === "processed" || messages.some((message) => message.role === "user" && /\[(Texto do PDF|Leitura da imagem) — conteúdo enviado pelo cliente\]/.test(message.content));
+
       const knowledge = await prisma.aiKnowledgeSource.findMany({
         where: {
           workspaceId: runInput.workspaceId,
@@ -167,7 +191,7 @@ export function createAgentTestChatService(input: {
         orderBy: [{ createdAt: "desc" }],
         take: 50
       });
-      const conversationHistory = formatTestConversationHistory(runInput.messages);
+      const conversationHistory = formatTestConversationHistory(messages);
       const taxonomy = readKnowledgeTaxonomy(agent.behaviorConfig);
       const knowledgeSelection = selectRelevantKnowledge({
         latestMessage: latestUserMessage.content,
@@ -191,15 +215,11 @@ export function createAgentTestChatService(input: {
       const safety = evaluateAgentSafety({
         message: latestUserMessage.content,
         conversationHistory,
-        // This simulator accepts text messages only, never actual attachments.
-        attachmentAvailable: false,
+        attachmentAvailable,
         selectedKnowledge: knowledgeSelection.selected
       });
       const safetyOutput = createSafetyDecisionOutput(safety);
 
-      const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
-        workspaceId: runInput.workspaceId
-      });
       const runProvider = providerSettings.active
         ? (input.providerFactory ?? createOpenAiCompatibleAgentProvider)(providerSettings)
         : provider;
@@ -224,15 +244,18 @@ export function createAgentTestChatService(input: {
         conversationCharacters: conversationHistory.length,
         allowedTags: allowedTags.map((tag) => tag.name),
         taxonomyKeys: taxonomy.map((entry) => entry.key),
-        knowledgeMatches
+        knowledgeMatches,
+        ...(media ? { media } : {})
       };
 
       let output: AgentOutput;
 
-      if (safetyOutput) {
+      if (media?.status === "failed") {
+        output = { confidence: 1, reply: media.fallback ?? "Pode reenviar o arquivo?", actions: [], handoff: { required: false, reason: null } };
+      } else if (safetyOutput) {
         output = safetyOutput;
       } else if (
-        safety.outcome !== "await_approval" &&
+        !attachmentAvailable && safety.outcome !== "await_approval" &&
         isDocumentDependentQuestion(
           latestUserMessage.content,
           taxonomy
@@ -249,7 +272,7 @@ export function createAgentTestChatService(input: {
             context: {
               messageBody: latestUserMessage.content,
               conversationHistory,
-              conversationMessages: runInput.messages,
+              conversationMessages: messages,
               allowedActions: agent.allowedActions ?? [],
               allowedTags,
               testMode: true,
@@ -283,6 +306,7 @@ export function createAgentTestChatService(input: {
 
       const debug: AgentTestChatDebug = {
         ...debugBase,
+        proposedActions: output.actions,
         replyCharacters: output.reply?.length ?? 0,
         replyCompacted: replyPolicy?.compacted ?? false,
         output: {
@@ -294,6 +318,7 @@ export function createAgentTestChatService(input: {
       };
 
       return {
+        ...(processedMessage ? { processedMessage } : {}),
         message: {
           role: "assistant",
           content: output.reply?.trim() || "Vou chamar uma pessoa do time para continuar este teste."

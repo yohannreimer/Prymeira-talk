@@ -13,6 +13,7 @@ import {
   MAX_KNOWLEDGE_UPLOAD_BYTES
 } from "./knowledge-ingestion.js";
 import { createSimulatedAgentProvider } from "./provider-gateway.js";
+import { INBOUND_MEDIA_MIME_TYPES, MAX_INBOUND_MEDIA_BYTES } from "./inbound-media.js";
 
 const uuidSchema = z.string().uuid();
 
@@ -78,12 +79,20 @@ const testChatBodySchema = z.object({
     .array(
       z.object({
         role: z.enum(["user", "assistant"]),
-        content: z.string().trim().min(1).max(4000)
+        content: z.string().trim().max(24_000)
       })
     )
     .min(1)
-    .max(40)
-});
+    .max(40),
+  attachment: z.object({
+    fileName: z.string().trim().min(1).max(240),
+    mimeType: z.enum(INBOUND_MEDIA_MIME_TYPES),
+    base64Content: z.string().min(1).max(Math.ceil(MAX_INBOUND_MEDIA_BYTES / 3) * 4)
+  }).strict().optional()
+}).strict()
+  .refine((body) => body.messages.reduce((sum, message) => sum + message.content.length, 0) <= 120_000)
+  .refine((body) => !body.attachment || (body.messages.at(-1)?.content.length ?? 0) <= 3_000);
+const testChatBodyLimit = Math.ceil(MAX_INBOUND_MEDIA_BYTES / 3) * 4 + 750_000;
 
 function handleAgentsError(reply: FastifyReply, error: unknown) {
   if (error instanceof AgentsServiceError) {
@@ -272,7 +281,7 @@ export const agentsRoutes: FastifyPluginAsync = async (app) => {
     }
   );
 
-  app.post("/agents/:agentId/test-chat", async (request, reply) => {
+  app.post("/agents/:agentId/test-chat", { bodyLimit: testChatBodyLimit }, async (request, reply) => {
     if (!requireAgentManage(request.talk.role, reply)) {
       return reply;
     }
@@ -287,7 +296,8 @@ export const agentsRoutes: FastifyPluginAsync = async (app) => {
       return await testChatService.sendMessage({
         workspaceId: request.talk.workspaceId,
         agentId: params.data.agentId,
-        messages: body.data.messages
+        messages: body.data.messages,
+        attachment: body.data.attachment
       });
     } catch (error) {
       return handleAgentTestChatError(reply, error);

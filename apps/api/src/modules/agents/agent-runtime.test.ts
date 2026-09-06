@@ -309,7 +309,7 @@ describe("createAgentRuntime", () => {
       })
     });
   });
-  it("passes an inbound image to the provider with its caption", async () => {
+  it("extracts an inbound image and persists its data with its caption", async () => {
     const imageMessage = {
       ...baseMessage,
       type: "image",
@@ -330,7 +330,8 @@ describe("createAgentRuntime", () => {
       mimeType: "image/jpeg",
       source: "data_url"
     });
-    const runtime = createAgentRuntime({ prisma, provider, mediaResolver });
+    const mediaPreparer = vi.fn().mockResolvedValue({ kind: "image", status: "processed", extractedText: "Tubo aço\t12\t50 x 30 x 2 mm" });
+    const runtime = createAgentRuntime({ prisma, provider, mediaResolver, mediaPreparer });
 
     await runtime.runForMessage({
       workspaceId: ids.workspace,
@@ -341,14 +342,42 @@ describe("createAgentRuntime", () => {
     });
 
     expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
-      userPrompt: "Vocês trabalham com estes itens?",
-      attachment: {
-        type: "image",
-        url: "data:image/jpeg;base64,aW1hZ2Vt",
-        detail: "high"
-      },
-      context: expect.objectContaining({ messageBody: "Vocês trabalham com estes itens?" })
+      userPrompt: expect.stringContaining("Tubo aço\t12\t50 x 30 x 2 mm"),
+      context: expect.objectContaining({ messageBody: expect.stringContaining("Vocês trabalham com estes itens?") })
     }));
+    expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ body: expect.stringContaining("Tubo aço\t12\t50 x 30 x 2 mm"), metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "processed" }) }) }) });
+  });
+
+  it("processes PDFs as retained customer data, then reuses them on a later turn", async () => {
+    const document = { ...baseMessage, type: "file", body: "Segue o arquivo.", mediaUrl: "https://cdn.example/lista.pdf", metadata: { fileName: "lista.pdf" } };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(document);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([document]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Qual cidade?", actions: [], handoff: { required: false, reason: null } });
+    const mediaPreparer = vi.fn().mockResolvedValue({ kind: "document", status: "processed", extractedText: "Página 1\nTubo aço\t12\t50 x 30 x 2 mm", pages: 1 });
+    const runtime = createAgentRuntime({ prisma, provider, mediaPreparer });
+    await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+    const update = vi.mocked(prisma.message.update).mock.calls.find(([args]: any[]) => args.data.metadata?.inboundMedia)?.[0] as any;
+    expect(update.data.body).toContain("Tubo aço\t12\t50 x 30 x 2 mm");
+    expect(provider.generate).toHaveBeenCalledOnce();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, id: "next", body: "São Paulo" });
+    vi.mocked(prisma.message.findMany).mockResolvedValue([{ ...document, ...update.data }, { ...baseMessage, id: "next", body: "São Paulo" }]);
+    await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: "next", trigger: "automation" });
+    expect(provider.generate).toHaveBeenLastCalledWith(expect.objectContaining({ context: expect.objectContaining({ conversationHistory: expect.stringContaining("Tubo aço\t12\t50 x 30 x 2 mm") }) }));
+    expect(mediaPreparer).toHaveBeenCalledOnce();
+  });
+
+  it("does not invent customer document contents when PDF extraction fails", async () => {
+    const document = { ...baseMessage, type: "file", body: "Segue o arquivo.", mediaUrl: null };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(document);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([document]);
+    const provider = buildProvider({ confidence: 0.9, reply: "imagined", actions: [], handoff: { required: false, reason: null } });
+    const runtime = createAgentRuntime({ prisma, provider });
+    await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({ body: expect.stringContaining("Não consegui ler esse PDF inteiro") }) });
+    expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "failed", errorCode: "MEDIA_UNAVAILABLE" }) }) }) });
   });
 
   it("uses the exact image fallback once when media cannot be resolved", async () => {

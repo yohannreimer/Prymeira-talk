@@ -30,15 +30,12 @@ import {
 import { readKnowledgeTaxonomy } from "./knowledge-taxonomy.js";
 import {
   createOpenAiCompatibleAgentProvider,
-  type AgentImageAttachment,
   type AgentOutput,
   type AgentProvider
 } from "./provider-gateway.js";
 import { resolveAgentMedia } from "./agent-media-resolver.js";
-import {
-  createOpenAiCompatibleAudioTranscriber,
-  type AgentAudioTranscriber
-} from "./audio-transcription.js";
+import { prepareInboundMedia, formatProcessedMediaMessage, transcribeInboundAudio, MAX_INBOUND_MEDIA_BYTES, type InboundMediaResult } from "./inbound-media.js";
+import type { AgentAudioTranscriber } from "./audio-transcription.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { evaluateAgentLoopGuard } from "./agent-loop-guard.js";
@@ -188,14 +185,9 @@ export const AUDIO_PROCESSING_FALLBACK =
 export const AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK =
   "Não foi possível transcrever este áudio.";
 
-const IMAGE_MEDIA_POLICY = {
-  kind: "image" as const,
-  maxBytes: 10 * 1024 * 1024,
-  allowedMimeTypes: new Set(["image/png", "image/jpeg", "image/webp", "image/gif"])
-};
 const AUDIO_MEDIA_POLICY = {
   kind: "audio" as const,
-  maxBytes: 25 * 1024 * 1024,
+  maxBytes: MAX_INBOUND_MEDIA_BYTES,
   allowedMimeTypes: new Set([
     "audio/ogg", "audio/opus", "audio/webm", "video/webm", "audio/mpeg",
     "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/wav", "audio/x-wav"
@@ -214,6 +206,7 @@ export function createAgentRuntime(input: {
   provider: AgentProvider;
   providerFactory?: (settings: Extract<OpenAiCompatibleSettings, { active: true }>) => AgentProvider;
   mediaResolver?: typeof resolveAgentMedia;
+  mediaPreparer?: typeof prepareInboundMedia;
   audioTranscriberFactory?: (
     settings: Extract<OpenAiCompatibleSettings, { active: true }>
   ) => AgentAudioTranscriber;
@@ -251,12 +244,11 @@ export function createAgentRuntime(input: {
         mediaUrl: message.mediaUrl,
         policy: AUDIO_MEDIA_POLICY
       });
-      const transcriber = input.audioTranscriberFactory
-        ? input.audioTranscriberFactory(providerSettings)
-        : createOpenAiCompatibleAudioTranscriber(providerSettings);
-      const transcription = await transcriber.transcribe({
+      const transcription = await transcribeInboundAudio({
         bytes: media.bytes,
-        mimeType: media.mimeType
+        mimeType: media.mimeType,
+        settings: providerSettings,
+        audioTranscriberFactory: input.audioTranscriberFactory
       });
       const updatedAudioMessage = await prisma.message.update({
         where: { id: message.id },
@@ -648,29 +640,34 @@ export function createAgentRuntime(input: {
         });
         const mediaResolver = input.mediaResolver ?? resolveAgentMedia;
         let effectiveText = message.body ?? "";
-        let attachment: AgentImageAttachment | undefined;
         let mediaFallback: string | null = null;
         let mediaProcessingError: string | null = null;
-        let mediaMetadata: Record<string, string> | null = null;
+        let mediaMetadata: Record<string, unknown> | null = null;
 
-        if (message.type === "image") {
-          try {
-            const media = await mediaResolver({
-              mediaUrl: message.mediaUrl,
-              policy: IMAGE_MEDIA_POLICY
+        if (message.type === "image" || message.type === "file") {
+          const metadata = isRecord(message.metadata) ? message.metadata : {};
+          const stored = isRecord(metadata.inboundMedia) ? metadata.inboundMedia : null;
+          const media = stored?.status === "processed" && typeof stored.extractedText === "string"
+            ? stored as InboundMediaResult
+            : await (input.mediaPreparer ?? prepareInboundMedia)({
+                mediaUrl: message.mediaUrl,
+                kind: message.type === "file" ? "document" : "image",
+                settings: providerSettings,
+                mediaResolver
+              });
+          mediaMetadata = { ...media };
+          if (media.status === "failed") {
+            mediaFallback = media.fallback ?? "Pode reenviar o arquivo?";
+            mediaProcessingError = media.errorCode ?? "MEDIA_EXTRACTION_FAILED";
+          } else {
+            effectiveText = stored?.status === "processed" ? effectiveText : formatProcessedMediaMessage(effectiveText, media);
+          }
+          if (stored?.status !== "processed") {
+            const updated = await prisma.message.update({
+              where: { id: message.id },
+              data: { body: media.status === "processed" ? effectiveText : formatProcessedMediaMessage(effectiveText, media), metadata: { ...metadata, inboundMedia: media } }
             });
-            effectiveText = !effectiveText || /^(Imagem|Figurinha) recebida$/i.test(effectiveText)
-              ? "Analise a imagem enviada pelo cliente."
-              : effectiveText;
-            attachment = {
-              type: "image",
-              url: `data:${media.mimeType};base64,${media.bytes.toString("base64")}`,
-              detail: "high"
-            };
-            mediaMetadata = { type: "image", mimeType: media.mimeType, source: media.source };
-          } catch (error) {
-            mediaFallback = IMAGE_PROCESSING_FALLBACK;
-            mediaProcessingError = readStableMediaErrorCode(error);
+            input.realtime?.publish({ type: "message.created", workspaceId: message.workspaceId, payload: toMessageDto(updated) });
           }
         } else if (message.type === "audio") {
           const preparedAudio = await prepareAudioMessageRecord(message, providerSettings);
@@ -759,7 +756,7 @@ export function createAgentRuntime(input: {
           conversationHistory: conversationContext.formattedHistory,
           // Do not declare an attachment missing if a media message is present in history.
           // Processing failures keep their existing media fallback above the safety output.
-          attachmentAvailable: Boolean(attachment) || conversationContext.messages.some((entry) => entry.type === "image" || entry.type === "document"),
+          attachmentAvailable: mediaMetadata?.status === "processed" || conversationContext.messages.some((entry) => (entry.type === "image" || entry.type === "file") && /\[(Texto do PDF|Leitura da imagem) — conteúdo enviado pelo cliente\]/.test(entry.body ?? "")),
           selectedKnowledge: knowledgeSelection.selected
         });
         const safetyOutput = createSafetyDecisionOutput(safety);
@@ -778,7 +775,7 @@ export function createAgentRuntime(input: {
             }
           : safetyOutput
           ? safetyOutput
-          : safety.outcome !== "await_approval" && isDocumentDependentQuestion(
+          : mediaMetadata?.status !== "processed" && safety.outcome !== "await_approval" && isDocumentDependentQuestion(
                 effectiveText,
                 taxonomy
               ) && knowledgeSelection.selected.length === 0
@@ -787,8 +784,7 @@ export function createAgentRuntime(input: {
             model: runModel,
             systemPrompt: agent.systemPrompt,
             userPrompt: buildUserPrompt(effectiveText, runInput.instruction),
-            context,
-            ...(attachment ? { attachment } : {})
+            context
           });
 
         providerOutput = normalizeAgentHandoffOutput(providerOutput);

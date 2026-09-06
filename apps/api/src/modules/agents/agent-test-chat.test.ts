@@ -62,6 +62,48 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentTestChatService", () => {
+  it("extracts an attached PDF into retained user history and audits actions without execution", async () => {
+    const provider = buildProvider({ confidence: 0.9, reply: "Anotei os itens. Qual cidade?", actions: [{ type: "create_internal_note", body: "12 tubos" }], handoff: { required: false, reason: null } });
+    const extractedText = "Página 1\nMaterial\tQuantidade\tMedida\nTubo aço\t12\t50 x 30 x 2 mm";
+    const mediaPreparer = vi.fn().mockResolvedValue({ kind: "document", status: "processed", extractedText, pages: 1, fileName: "lista.pdf" });
+    const service = createAgentTestChatService({ prisma: buildPrisma(), provider, mediaPreparer });
+    const result = await service.sendMessage({ workspaceId: "workspace_a", agentId: baseAgent.id, messages: [{ role: "user", content: "Segue o arquivo." }], attachment: { fileName: "lista.pdf", mimeType: "application/pdf", base64Content: "JVBERi0=" } });
+    expect(result.processedMessage?.content).toContain(extractedText);
+    expect(result.debug.media).toMatchObject({ kind: "document", status: "processed", extractedText });
+    expect(result.debug.proposedActions).toEqual([{ type: "create_internal_note", body: "12 tubos" }]);
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({ userPrompt: expect.stringContaining(extractedText), context: expect.objectContaining({ conversationMessages: [result.processedMessage] }) }));
+    await service.sendMessage({ workspaceId: "workspace_a", agentId: baseAgent.id, messages: [result.processedMessage!, result.message, { role: "user", content: "São Paulo" }] });
+    expect(provider.generate).toHaveBeenLastCalledWith(expect.objectContaining({ context: expect.objectContaining({ conversationHistory: expect.stringContaining(extractedText) }) }));
+    expect(mediaPreparer).toHaveBeenCalledOnce();
+    const followup = await service.sendMessage({ workspaceId: "workspace_a", agentId: baseAgent.id, messages: [result.processedMessage!, result.message, { role: "user", content: "Enviei o arquivo." }] });
+    expect(followup.message.content).not.toContain("não apareceu");
+    expect(provider.generate).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects attachment captions that would not fit in retained history", async () => {
+    const mediaPreparer = vi.fn();
+    const service = createAgentTestChatService({ prisma: buildPrisma(), provider: buildProvider({ confidence: 1, reply: "ok", actions: [], handoff: { required: false, reason: null } }), mediaPreparer });
+    await expect(service.sendMessage({ workspaceId: "workspace_a", agentId: baseAgent.id, messages: [{ role: "user", content: "x".repeat(3001) }], attachment: { fileName: "lista.pdf", mimeType: "application/pdf", base64Content: "JVBERi0=" } })).rejects.toMatchObject({ code: "TEST_CHAT_INVALID_MESSAGES" });
+    expect(mediaPreparer).not.toHaveBeenCalled();
+  });
+
+  it("rejects an enriched history over the aggregate limit before invoking the agent", async () => {
+    const provider = buildProvider({ confidence: 1, reply: "ok", actions: [], handoff: { required: false, reason: null } });
+    const service = createAgentTestChatService({ prisma: buildPrisma(), provider, mediaPreparer: vi.fn().mockResolvedValue({ kind: "document", status: "processed", extractedText: "x".repeat(20_000) }) });
+    await expect(service.sendMessage({ workspaceId: "workspace_a", agentId: baseAgent.id, messages: [...Array.from({ length: 5 }, () => ({ role: "user" as const, content: "x".repeat(22_000) })), { role: "user", content: "Segue" }], attachment: { fileName: "lista.pdf", mimeType: "application/pdf", base64Content: "JVBERi0=" } })).rejects.toMatchObject({ code: "TEST_CHAT_INVALID_MESSAGES" });
+    expect(provider.generate).not.toHaveBeenCalled();
+  });
+
+  it("returns a safe visible attachment failure without calling the agent", async () => {
+    const provider = buildProvider({ confidence: 1, reply: "imagined data", actions: [], handoff: { required: false, reason: null } });
+    const service = createAgentTestChatService({ prisma: buildPrisma(), provider, mediaPreparer: vi.fn().mockResolvedValue({ kind: "document", status: "failed", errorCode: "INVALID_PDF", fallback: "Pode reenviar o PDF?" }) });
+    const result = await service.sendMessage({ workspaceId: "workspace_a", agentId: baseAgent.id, messages: [{ role: "user", content: "Segue o arquivo." }], attachment: { fileName: "broken.pdf", mimeType: "application/pdf", base64Content: "YmFk" } });
+    expect(result.message.content).toBe("Pode reenviar o PDF?");
+    expect(result.debug.media?.errorCode).toBe("INVALID_PDF");
+    expect(result.debug.proposedActions).toEqual([]);
+    expect(provider.generate).not.toHaveBeenCalled();
+  });
+
   it("asks for the actual attachment instead of consulting or handing off an empty file reference", async () => {
     const provider = buildProvider({ confidence: 0.9, reply: "Vou consultar essas informações e já te dou um retorno.", actions: [], handoff: { required: false, reason: null } });
     const service = createAgentTestChatService({ prisma: buildPrisma(), provider });
