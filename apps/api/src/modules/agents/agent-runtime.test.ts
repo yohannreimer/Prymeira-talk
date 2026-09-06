@@ -1381,6 +1381,41 @@ describe("createAgentRuntime", () => {
     });
   });
 
+  it("turns the reserved consultation acknowledgement into a real handoff", async () => {
+    const genericMessage = { ...baseMessage, body: "Já enviei todos os dados do pedido." };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(genericMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([genericMessage]);
+    const provider = buildProvider({
+      confidence: 0.82,
+      reply: "Vou consultar essas informações e já te dou um retorno.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({ prisma, provider });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "manual_test"
+    });
+
+    expect(result).toEqual({ status: "handoff_requested", runId: ids.run });
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        status: "handoff_requested",
+        output: expect.objectContaining({
+          handoff: expect.objectContaining({ required: true }),
+          actions: expect.arrayContaining([
+            expect.objectContaining({ type: "request_handoff" })
+          ])
+        })
+      })
+    });
+  });
+
   it("does not send a handoff acknowledgement when send_message is not allowed", async () => {
     const prisma = buildPrisma({
       aiAgent: {

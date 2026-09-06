@@ -182,4 +182,32 @@ describe("selectRelevantKnowledge", () => {
       expect.objectContaining({ id: "source-materials", category: "materials" })
     );
   });
+
+  it("matches singular product wording against plural catalog aliases", () => {
+    const result = selectRelevantKnowledge({
+      latestMessage: "Tubo industrial.",
+      conversationHistory: "cliente: Preciso entregar em Joinville.",
+      instruction: null,
+      taxonomy: [{
+        key: "product_and_specification",
+        label: "Produto e especificação",
+        aliases: ["produto", "tubos industriais"],
+        requiresSource: true
+      }],
+      sources: [{
+        id: "approved-catalog",
+        title: "Catálogo positivo autorizado",
+        content: "A empresa trabalha com tubos industriais e tubos mecânicos.",
+        metadata: {
+          category: "product_and_specification",
+          aliases: ["tubos industriais", "tubos mecânicos"]
+        }
+      }]
+    });
+
+    expect(result.selected[0]).toEqual(expect.objectContaining({
+      id: "approved-catalog",
+      category: "product_and_specification"
+    }));
+  });
 });

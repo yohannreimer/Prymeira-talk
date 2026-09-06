@@ -299,6 +299,27 @@ describe("createAgentTestChatService", () => {
     expect(result.output.reply).toBe("Vou consultar essas informações e já te dou um retorno.");
   });
 
+  it("turns the reserved consultation acknowledgement into a real handoff", async () => {
+    const provider = buildProvider({
+      confidence: 0.82,
+      reply: "Vou consultar essas informações e já te dou um retorno.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const service = createAgentTestChatService({ prisma: buildPrisma(), provider });
+
+    const result = await service.sendMessage({
+      workspaceId: "workspace_a",
+      agentId: baseAgent.id,
+      messages: [{ role: "user", content: "Já enviei todos os dados do pedido." }]
+    });
+
+    expect(result.output.handoff.required).toBe(true);
+    expect(result.output.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "request_handoff" })
+    ]));
+  });
+
   it("returns a controlled error when the provider fails", async () => {
     const prisma = buildPrisma({
       aiKnowledgeSource: {
