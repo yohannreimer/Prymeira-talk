@@ -21,8 +21,9 @@ import {
   type SelectedKnowledgeSource
 } from "./knowledge-retrieval.js";
 import { enforceWhatsAppReply } from "./agent-reply-policy.js";
+import { normalizeAgentHandoffOutput } from "./agent-output-normalizer.js";
 import {
-  createSafetyHandoffOutput,
+  createSafetyDecisionOutput,
   evaluateAgentSafety,
   HANDOFF_ACKNOWLEDGEMENT
 } from "./agent-safety-policy.js";
@@ -755,8 +756,10 @@ export function createAgentRuntime(input: {
 
         const safety = evaluateAgentSafety({
           message: effectiveText,
+          conversationHistory: conversationContext.formattedHistory,
           selectedKnowledge: knowledgeSelection.selected
         });
+        const safetyOutput = createSafetyDecisionOutput(safety);
 
         const runProvider = providerSettings.active
           ? (input.providerFactory ?? createOpenAiCompatibleAgentProvider)(providerSettings)
@@ -770,8 +773,8 @@ export function createAgentRuntime(input: {
               actions: [],
               handoff: { required: false, reason: null }
             }
-          : safety.handoffRequired
-          ? createSafetyHandoffOutput(safety.reason ?? "Human handoff required.")
+          : safetyOutput
+          ? safetyOutput
           : isDocumentDependentQuestion(
                 `${effectiveText}\n${conversationContext.formattedHistory}`,
                 taxonomy
@@ -784,6 +787,8 @@ export function createAgentRuntime(input: {
             context,
             ...(attachment ? { attachment } : {})
           });
+
+        providerOutput = normalizeAgentHandoffOutput(providerOutput);
 
         const replyPolicy = providerOutput.reply
           ? enforceWhatsAppReply(providerOutput.reply)

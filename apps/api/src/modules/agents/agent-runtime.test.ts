@@ -1374,8 +1374,11 @@ describe("createAgentRuntime", () => {
         status: "handoff_requested",
         confidence: 0.91,
         output: expect.objectContaining({
-          reply: "Posso ajudar com isso.",
-          handoff: { required: false, reason: null }
+          reply: "Vou consultar essas informações e já te dou um retorno.",
+          handoff: {
+            required: true,
+            reason: "Cliente pediu atendente humano."
+          }
         })
       })
     });

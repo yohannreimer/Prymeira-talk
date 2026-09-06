@@ -9,10 +9,10 @@ import {
   type KnowledgeRetrievalSource
 } from "./knowledge-retrieval.js";
 import { enforceWhatsAppReply } from "./agent-reply-policy.js";
+import { normalizeAgentHandoffOutput } from "./agent-output-normalizer.js";
 import {
-  createSafetyHandoffOutput,
+  createSafetyDecisionOutput,
   evaluateAgentSafety,
-  HANDOFF_ACKNOWLEDGEMENT,
   type ProtectedFact
 } from "./agent-safety-policy.js";
 import { readKnowledgeTaxonomy } from "./knowledge-taxonomy.js";
@@ -189,8 +189,10 @@ export function createAgentTestChatService(input: {
       const allowedTags = toAllowedTags(agent);
       const safety = evaluateAgentSafety({
         message: latestUserMessage.content,
+        conversationHistory,
         selectedKnowledge: knowledgeSelection.selected
       });
+      const safetyOutput = createSafetyDecisionOutput(safety);
 
       const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
         workspaceId: runInput.workspaceId
@@ -224,8 +226,8 @@ export function createAgentTestChatService(input: {
 
       let output: AgentOutput;
 
-      if (safety.handoffRequired) {
-        output = createSafetyHandoffOutput(safety.reason ?? "Human handoff required.");
+      if (safetyOutput) {
+        output = safetyOutput;
       } else if (
         isDocumentDependentQuestion(
           `${latestUserMessage.content}\n${conversationHistory}`,
@@ -267,11 +269,7 @@ export function createAgentTestChatService(input: {
         }
       }
 
-      const handoffRequested =
-        output.handoff.required || output.actions.some((action) => action.type === "request_handoff");
-      if (handoffRequested) {
-        output = { ...output, reply: HANDOFF_ACKNOWLEDGEMENT };
-      }
+      output = normalizeAgentHandoffOutput(output);
 
       const replyPolicy = output.reply ? enforceWhatsAppReply(output.reply) : null;
       if (replyPolicy) {
