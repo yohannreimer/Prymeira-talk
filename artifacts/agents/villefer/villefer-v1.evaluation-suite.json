@@ -79,7 +79,7 @@
           "desired_deadline"
         ],
         "nextAction": "ask_next_field",
-        "responseGuidance": "Reconhecer o pedido e perguntar qual tipo ou especificação de chapa é necessária.",
+        "responseGuidance": "Reconhecer o pedido e perguntar tipo, medida, espessura e quantidade em uma única mensagem curta.",
         "stage": "qualification"
       },
       "id": "incomplete_chapa",
@@ -415,10 +415,11 @@
         }
       ],
       "evidence": {
-        "basis": "historical_pattern",
+        "basis": "approved_rule",
         "relatedSignals": [
           "urgencia",
-          "entrega_frete"
+          "entrega_frete",
+          "qualificacao_pratica"
         ]
       },
       "expected": {
@@ -430,11 +431,16 @@
           "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
           "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
         ],
-        "handoffExpected": true,
-        "missingFields": [],
-        "nextAction": "handoff",
-        "responseGuidance": "Reconhecer a urgência sem garantir prazo e sinalizar prioridade ao vendedor.",
-        "stage": "proposal_handoff"
+        "handoffExpected": false,
+        "missingFields": [
+          "product",
+          "specification",
+          "dimensions",
+          "quantity"
+        ],
+        "nextAction": "ask_next_field",
+        "responseGuidance": "Reconhecer a urgência sem garantir prazo e pedir produto, medidas ou especificação e quantidade em uma única mensagem curta. Encaminhar ao vendedor assim que esses dados mínimos estiverem disponíveis.",
+        "stage": "qualification"
       },
       "id": "urgent_deadline",
       "title": "Cliente precisa fechar no mesmo dia"

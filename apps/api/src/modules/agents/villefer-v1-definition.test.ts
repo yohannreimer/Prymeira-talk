@@ -82,4 +82,42 @@ describe("villeferV1Definition", () => {
     ).toBe(true);
     expect(() => assertPrivacySafeArtifact(suite)).not.toThrow();
   });
+
+  it("ships the approved positive catalog with structured retrieval metadata", () => {
+    const catalog = villeferV1Definition.package.knowledge.find(
+      (source) => source.key === "approved_positive_catalog_v1"
+    );
+
+    expect(catalog).toEqual(expect.objectContaining({
+      approvalStatus: "confirmed",
+      category: "product_and_specification"
+    }));
+    expect(catalog?.aliases).toEqual(expect.arrayContaining([
+      "tubo industrial",
+      "tubos industriais",
+      "metalon"
+    ]));
+  });
+
+  it("encodes the approved practical qualification and urgency rules", () => {
+    const prompt = villeferV1Definition.package.agent.systemPrompt;
+    const incompleteChapa = villeferV1Definition.evaluationSuite.cases.find(
+      (testCase) => testCase.id === "incomplete_chapa"
+    );
+    const urgent = villeferV1Definition.evaluationSuite.cases.find(
+      (testCase) => testCase.id === "urgent_deadline"
+    );
+
+    expect(prompt).toMatch(/uma (?:única|unica) mensagem curta/i);
+    expect(prompt).toMatch(/perda expl[ií]cita/i);
+    expect(incompleteChapa?.expected.responseGuidance).toMatch(
+      /tipo.*medida.*espessura.*quantidade/i
+    );
+    expect(urgent?.expected).toEqual(expect.objectContaining({
+      stage: "qualification",
+      nextAction: "ask_next_field",
+      handoffExpected: false,
+      missingFields: expect.arrayContaining(["product", "dimensions", "quantity"])
+    }));
+  });
 });
