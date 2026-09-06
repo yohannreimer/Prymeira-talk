@@ -12,6 +12,8 @@ import { agentPackageRoutes } from "./modules/agents/agent-package.routes.js";
 import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.js";
 import { automationsRoutes } from "./modules/automations/automations.routes.js";
 import { assistantRoutes } from "./modules/assistant/assistant.routes.js";
+import { createAssistantScheduler } from './modules/assistant/assistant-scheduler.js';
+import { assistantInboxRoutes } from './modules/assistant/assistant-inbox.routes.js';
 import { createBoardRulesService, type BoardRulesPrismaLike } from "./modules/boards/board-rules.service.js";
 import { boardsRoutes } from "./modules/boards/boards.routes.js";
 import { campaignsRoutes } from "./modules/campaigns/campaigns.routes.js";
@@ -46,7 +48,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     .filter(Boolean);
 
   await app.register(cors, {
-    methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     origin(origin, callback) {
       if (!origin || allowedCorsOrigins.includes(origin)) {
         callback(null, true);
@@ -153,14 +155,18 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     });
   }
 
+  const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });
+  assistantScheduler?.start();
+  app.addHook('onClose', async () => { assistantScheduler?.stop(); });
   await app.register(evolutionRoutes, {
+    assistantScheduler,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,
     agentRuntime,
     agentReplyScheduler,
     evolution: evolutionRuntime
   });
-  await app.register(metaWebhooksRoutes);
-  await app.register(conversationsRoutes, { evolution: evolutionRuntime });
+  await app.register(metaWebhooksRoutes, { assistantScheduler });
+  await app.register(conversationsRoutes, { evolution: evolutionRuntime, assistantScheduler });
   await app.register(quickRepliesRoutes);
   await app.register(uploadsRoutes, {
     publicTalkUrl: env.PUBLIC_TALK_URL,
@@ -177,6 +183,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(agentPackageRoutes);
   await app.register(agentsRoutes);
   await app.register(assistantRoutes);
+  await app.register(assistantInboxRoutes, { scheduler: assistantScheduler, evolution: evolutionRuntime });
   await app.register(crmRoutes, {
     vinculaApiUrl: env.VINCULA_CRM_API_URL
   });

@@ -21,6 +21,8 @@ describe('assistant policy', () => {
     expect(readAssistantSettings(config)).toEqual({mode:'disabled',agentId:null});
   });
   it('blocks autonomous agents in either assisted mode',()=>{
+    expect(blocksAutonomousAgent({assistant:{mode:'automatic'}})).toBe(true);
+    expect(blocksAutonomousAgent({assistant:{mode:'unexpected'}})).toBe(true);
     const agentId='00000000-0000-4000-8000-000000000101';
     expect(blocksAutonomousAgent({assistant:{mode:'automatic',agentId}})).toBe(true);
     expect(blocksAutonomousAgent({assistant:{mode:'on_demand',agentId}})).toBe(true);

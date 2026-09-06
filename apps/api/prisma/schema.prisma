@@ -346,6 +346,7 @@ model Message {
   metadata          Json             @default("{}")
   status            MessageStatus    @default(pending)
   sentByUserId      String?          @map("sent_by_user_id") @db.Uuid
+  ingestedAt        DateTime?        @default(now()) @map("ingested_at")
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
 
@@ -358,6 +359,7 @@ model Message {
   @@unique([workspaceId, providerEventId])
   @@unique([workspaceId, providerMessageId])
   @@index([workspaceId, conversationId, createdAt])
+  @@index([workspaceId, conversationId, ingestedAt(sort: Desc), createdAt(sort: Desc)], map: "messages_assistant_context_order_idx")
   @@map("messages")
 }
 

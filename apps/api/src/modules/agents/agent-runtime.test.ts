@@ -239,6 +239,27 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentRuntime", () => {
+  it('never activates or sends an autonomous agent in an assisted channel', async () => {
+    const prisma = buildPrisma({ conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: { ...baseConversation.channel, encryptedConfig: { assistant: { mode: 'automatic', agentId: ids.agent } } } }) } });
+    const provider = buildProvider({ reply: 'Do not send', confidence: 1, actions: [], handoff: { required: false, reason: null } });
+    const sendText = vi.fn();
+    const runtime = createAgentRuntime({ prisma, provider, evolution: { mode: 'real', client: { sendText } } });
+    const input = { workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: 'automation' as const };
+    expect((await runtime.activateForMessage(input)).status).toBe('skipped');
+    expect((await runtime.runForMessage(input)).status).toBe('skipped');
+    expect(provider.generate).not.toHaveBeenCalled(); expect(sendText).not.toHaveBeenCalled(); expect(prisma.message.create).not.toHaveBeenCalled();
+  });
+  it('rechecks channel mode after the provider returns, before tools or send', async () => {
+    const prisma = buildPrisma();
+    const provider = { generate: vi.fn(async () => {
+      vi.mocked(prisma.conversation.findUnique).mockResolvedValue({ ...baseConversation, channel: { ...baseConversation.channel, encryptedConfig: { assistant: { mode: 'automatic', agentId: ids.agent } } } });
+      return { reply: 'Do not send', confidence: 1, actions: [], handoff: { required: false, reason: null } };
+    }) };
+    const sendText = vi.fn();
+    const runtime = createAgentRuntime({ prisma, provider, evolution: { mode: 'real', client: { sendText } } });
+    expect((await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: 'automation' })).status).toBe('skipped');
+    expect(sendText).not.toHaveBeenCalled(); expect(prisma.message.create).not.toHaveBeenCalled();
+  });
   it("stops a repeated automated exchange silently before provider generation", async () => {
     const currentNow = new Date();
     const repeated = "Não entendi, escolha uma das opções acima, por favor.";

@@ -41,6 +41,7 @@ import { toConversationDto, toMessageDto } from "../conversations/conversations.
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { evaluateAgentLoopGuard } from "./agent-loop-guard.js";
 
+import { blocksAutonomousAgent } from '../assistant/assistant-policy.js';
 type JsonValue = unknown;
 type AgentRunStatus = "completed" | "handoff_requested" | "failed" | "skipped";
 type AgentRunTrigger = "automation" | "manual_test";
@@ -87,6 +88,7 @@ type ConversationRecord = {
     company?: string | null;
   } | null;
   channel?: {
+    encryptedConfig?: unknown;
     id?: string;
     provider?: string | null;
     providerKey?: string | null;
@@ -322,9 +324,10 @@ export function createAgentRuntime(input: {
           where: {
             workspaceId_id: {
               workspaceId: runInput.workspaceId,
-              id: runInput.conversationId
+            id: runInput.conversationId
             }
-          }
+          },
+          include: { channel: true }
         }),
         prisma.message.findFirst({
           where: {
@@ -354,7 +357,7 @@ export function createAgentRuntime(input: {
         return { status: "failed", message: "Conversation or message was not found." };
       }
 
-      if (conversation.aiControlStatus === "human_controlled") {
+      if (conversation.aiControlStatus === "human_controlled" || blocksAutonomousAgent(conversation.channel?.encryptedConfig)) {
         return { status: "skipped", message: "Conversation is controlled by a human." };
       }
 
@@ -486,7 +489,7 @@ export function createAgentRuntime(input: {
         return { status: "failed", runId: run.id, message: "Message does not belong to the conversation." };
       }
 
-      if (conversation.aiControlStatus === "human_controlled") {
+      if (conversation.aiControlStatus === "human_controlled" || blocksAutonomousAgent(conversation.channel?.encryptedConfig)) {
         const errorMessage = "Conversation is controlled by a human.";
         const run = await createRun({
           workspaceId: runInput.workspaceId,
@@ -816,6 +819,8 @@ export function createAgentRuntime(input: {
             : HANDOFF_ACKNOWLEDGEMENT
           : providerOutput.reply;
 
+        const beforeActions = await prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: conversation.id } }, include: { channel: true } });
+        if (!beforeActions || beforeActions.aiControlStatus === 'human_controlled' || blocksAutonomousAgent(beforeActions.channel?.encryptedConfig)) return { status: 'skipped', message: 'Human review is required.' };
         actionResults = await executeAgentActions(prisma as AgentToolExecutorPrismaLike, {
           workspaceId: runInput.workspaceId,
           conversationId: conversation.id,
@@ -840,6 +845,8 @@ export function createAgentRuntime(input: {
         }
 
         if (outboundReply && allowedActions.includes("send_message")) {
+          const beforeSend = await prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: conversation.id } }, include: { channel: true } });
+          if (!beforeSend || blocksAutonomousAgent(beforeSend.channel?.encryptedConfig) || (beforeSend.aiControlStatus === 'human_controlled' && !handoffReason)) return { status: 'skipped', message: 'Human review is required.' };
           const providerSend = await sendAgentReplyToProvider(input.evolution, conversation, outboundReply);
           const outboundMessage = await prisma.message.create({
             data: {

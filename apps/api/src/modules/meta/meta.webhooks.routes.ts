@@ -207,7 +207,7 @@ function hasValidMetaSignature(
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
+export const metaWebhooksRoutes: FastifyPluginAsync<{ assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler }> = async (app, options) => {
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {
     const rawBody = Buffer.isBuffer(body) ? body : Buffer.from(body);
@@ -443,6 +443,7 @@ export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
             throw new Error("Conversation disappeared during Meta webhook ingestion.");
           }
 
+          await options.assistantScheduler?.persistInbound(tx, { workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
           return { kind: "created", message, conversation: updatedConversation };
         });
 
@@ -462,6 +463,7 @@ export const metaWebhooksRoutes: FastifyPluginAsync = async (app) => {
         continue;
       }
 
+      await options.assistantScheduler?.message({ workspaceId, conversationId: result.message.conversationId, messageId: result.message.id, direction: result.message.direction });
       app.realtime.publish({
         type: "message.created",
         workspaceId,

@@ -277,12 +277,15 @@ type AuditLogCreateArgs = Parameters<PrismaClient["auditLog"]["create"]>[0];
 type CrmSyncActionCreateArgs = Parameters<PrismaClient["crmSyncAction"]["create"]>[0];
 
 export interface PrismaLike {
+  assistantConversationState?: Pick<PrismaClient['assistantConversationState'], 'deleteMany'>;
+  assistantSuggestion?: Pick<PrismaClient['assistantSuggestion'], 'deleteMany'>;
   conversation: {
     findMany(args: ConversationFindManyArgs): Promise<ConversationRecord[]>;
     findUnique(args: ConversationFindUniqueArgs): Promise<(Partial<ConversationRecord> & { id: string }) | null>;
     update(args: ConversationUpdateArgs): Promise<ConversationRecord>;
   };
   message: {
+    update?(args: Parameters<PrismaClient['message']['update']>[0]): Promise<MessageRecord>;
     create(args: MessageCreateArgs): Promise<MessageRecord>;
     findMany(args: MessageFindManyArgs): Promise<MessageRecord[]>;
     deleteMany(args: MessageDeleteManyArgs): Promise<{ count: number }>;
@@ -639,6 +642,7 @@ export function createConversationsService(
     },
 
     async createPendingOutboundMessage(input: {
+      reservedMessageId?: string;
       workspaceId: string;
       conversationId: string;
       body?: string;
@@ -649,6 +653,7 @@ export function createConversationsService(
       };
       sentByUserId: string | null;
     }): Promise<{ message: MessageDto; conversation: ConversationDto }> {
+      if (input.reservedMessageId && !prisma.message.update) throw new Error('Reserved outbound storage is unavailable.');
       const conversation = await prisma.conversation.findUnique({
         where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
         select: {
@@ -766,19 +771,20 @@ export function createConversationsService(
         }
       }
 
-      const message = await prisma.message.create({
-        data: {
+      const messageData = {
           workspaceId: input.workspaceId,
           conversationId: input.conversationId,
-          direction: "outbound",
+          direction: "outbound" as const,
           type: messageType,
           body: messageBody,
           mediaUrl: input.attachment?.mediaUrl,
           providerMessageId: providerSend?.providerMessageId ?? undefined,
-          status: providerSend ? "sent" : "pending",
+          status: providerSend ? "sent" as const : "pending" as const,
           sentByUserId: input.sentByUserId
-        }
-      });
+      };
+      const message = input.reservedMessageId
+        ? await prisma.message.update!({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.reservedMessageId } }, data: messageData })
+        : await prisma.message.create({ data: messageData });
 
       const updatedConversation = await prisma.conversation.update({
         where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
@@ -1170,6 +1176,8 @@ export function createConversationsService(
         await tx.aiActionLog.deleteMany({
           where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
         });
+        await tx.assistantConversationState?.deleteMany({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
+        await tx.assistantSuggestion?.deleteMany({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
         await tx.message.deleteMany({
           where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
         });
@@ -1219,11 +1227,11 @@ export function createConversationsService(
           workspaceId: input.workspaceId,
           conversationId: input.conversationId
         },
-        orderBy: { createdAt: "asc" },
+        orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
         take: 100
       });
 
-      return messages.map(toMessageDto);
+      return [...messages].reverse().map(toMessageDto);
     }
   };
 }

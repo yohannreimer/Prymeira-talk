@@ -25,6 +25,7 @@ import {
 } from "./evolution.schemas.js";
 
 export interface EvolutionRoutesOptions {
+  assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
   webhookSecret: string;
   agentRuntime?: AutomationRunnerAgentRuntime & {
     prepareAudioMessage(input: {
@@ -694,6 +695,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           throw new Error("Conversation disappeared during Evolution webhook ingestion.");
         }
 
+        await options.assistantScheduler?.persistInbound(tx, { workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
         return { kind: "created" as const, message, conversation: updatedConversation };
       });
 
@@ -702,6 +704,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
       }
 
       const { message, conversation } = transactionResult;
+      await options.assistantScheduler?.message({ workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
       app.realtime.publish({
         type: "message.created",
         workspaceId,
@@ -714,7 +717,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
       });
 
       if (message.direction === "inbound") {
-        if (message.type === "audio") {
+        if (message.type === "audio" && !await options.assistantScheduler?.isAssisted(workspaceId, message.conversationId)) {
           await options.agentRuntime?.prepareAudioMessage({
             workspaceId,
             messageId: message.id

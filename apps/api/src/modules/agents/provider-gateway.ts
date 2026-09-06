@@ -480,7 +480,7 @@ export function createOpenAiCompatibleAgentProvider(
       try {
         response = await fetchImpl(`${baseUrl}/chat/completions`, {
           method: "POST",
-          ...(agentInput.reasoningEffort === "low" ? { signal: AbortSignal.timeout(90_000) } : {}),
+          signal: AbortSignal.timeout(agentInput.reasoningEffort === "low" ? 90_000 : 60_000),
           headers: {
             Authorization: `Bearer ${input.apiKey}`,
             "Content-Type": "application/json"

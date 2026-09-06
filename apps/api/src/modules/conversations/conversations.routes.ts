@@ -15,6 +15,7 @@ import {
 import type { PrismaLike } from "./conversations.service.js";
 
 interface ConversationsRoutesOptions {
+  assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
   evolution?: EvolutionRuntime;
 }
 
@@ -340,6 +341,8 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
         workspaceId: request.talk.workspaceId,
         conversationId: params.data.conversationId
       });
+
+      await options.assistantScheduler?.control(request.talk.workspaceId, params.data.conversationId, body.data.action === 'assume_ai_control');
       const result = { conversation, context };
 
       app.realtime.publish({
@@ -472,6 +475,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       });
     }
 
+    await options.assistantScheduler?.message({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId, messageId: result.message.id, direction: 'outbound' });
     app.realtime.publish({
       type: "message.created",
       workspaceId: request.talk.workspaceId,

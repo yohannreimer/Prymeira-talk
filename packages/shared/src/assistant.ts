@@ -22,6 +22,7 @@ export type AssistantSuggestionDto={
   actorName:string|null;finalBody:string|null;messageId:string|null;sendStatus:string|null;
 };
 export type AssistantConversationDto={
+  currentContextKey:string|null;
   settings:AssistantChannelSettings;status:AssistantDraftStatus;humanControlled:boolean;
   suggestion:AssistantSuggestionDto|null;history:AssistantSuggestionDto[];
   agentName:string|null;error:string|null;

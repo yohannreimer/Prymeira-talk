@@ -1220,7 +1220,7 @@ describe("conversations service", () => {
         workspaceId: "workspace_a",
         conversationId: "conv_1"
       },
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
       take: 100
     });
     expect(messageSchema.array().parse(messages)).toEqual(messages);

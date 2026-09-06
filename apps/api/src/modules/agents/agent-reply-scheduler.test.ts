@@ -45,6 +45,12 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentReplyScheduler", () => {
+  it('does not enqueue autonomous replies in an assisted channel', async () => {
+    const prisma = buildPrisma({ conversation: { findUnique: vi.fn().mockResolvedValue({ ...buildConversation(), channel: { encryptedConfig: { assistant: { mode: 'automatic' } } } }) } });
+    const scheduler = createAgentReplyScheduler({ prisma, agentRuntime: { runForMessage: vi.fn() } });
+    expect(await scheduler.scheduleActiveSessionForMessage({ workspaceId: ids.workspace, conversationId: ids.conversation, messageId: 'test' })).toEqual({ scheduled: false });
+    expect(prisma.aiAgentPendingReply.upsert).not.toHaveBeenCalled();
+  });
   it.each([
     [10, "2026-07-05T12:00:10.000Z"],
     [0, "2026-07-05T12:00:00.000Z"],

@@ -3,9 +3,11 @@ import {
   readAgentBehaviorSettings
 } from "../settings/agent-behavior-settings.js";
 
+import { blocksAutonomousAgent } from '../assistant/assistant-policy.js';
 type JsonValue = unknown;
 
 type ActiveConversationRecord = {
+  channel?: { encryptedConfig?: unknown } | null;
   id: string;
   workspaceId: string;
   aiControlStatus: string;
@@ -88,12 +90,14 @@ export function createAgentReplyScheduler(input: {
         }
       },
       include: {
-        activeAgentSession: true
+        activeAgentSession: true,
+        channel: true
       }
     });
 
     if (
       !conversation?.activeAgentSession ||
+      blocksAutonomousAgent(conversation.channel?.encryptedConfig) ||
       conversation.aiControlStatus === "human_controlled" ||
       conversation.activeAgentSession.status !== "active"
     ) {

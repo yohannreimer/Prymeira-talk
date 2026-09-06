@@ -20,7 +20,7 @@ export async function loadAssistantContext(db: AssistantDb, workspaceId: string,
   const agent = await db.aiAgent.findFirst({ where: { workspaceId, id: settings.agentId } });
   if (!agent) throw new AssistantError('ASSISTANT_AGENT_REQUIRED', 'Selecione um agente deste espaço de trabalho.', 422);
   const knowledge = await db.aiKnowledgeSource.findMany({ where: { workspaceId, agentId: agent.id, status: 'ready' }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: 50 });
-  const fetched = await db.message.findMany({ where: { workspaceId, conversationId, type: { notIn: ['internal_note', 'system'] } }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 81 });
+  const fetched = await db.message.findMany({ where: { workspaceId, conversationId, type: { notIn: ['internal_note', 'system'] } }, orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }], take: 81 });
   const messages = fetched.slice(0, 80).reverse();
   const agentHash = assistantHash({ agent, knowledge, settings });
   // Exclude extraction caches and delivery receipts: neither changes what was said.
