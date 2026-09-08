@@ -1,6 +1,6 @@
 # IA de apoio no Talk
 
-Implementação local do modo assistido aprovado em 06/09/2026. Não publicada na VPS; nenhum canal real foi ativado.
+Modo assistido aprovado em 06/09/2026 e publicado na VPS em 08/09/2026, versão `a6db129`. Nenhum canal real foi ativado. Registro: `docs/operations/2026-09-08-assisted-pilot-release.md`.
 
 ## Como usar após a publicação
 
