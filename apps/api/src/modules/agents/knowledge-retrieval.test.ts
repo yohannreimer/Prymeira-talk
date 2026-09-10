@@ -215,4 +215,23 @@ describe("selectRelevantKnowledge", () => {
       requiresSource: true
     }])).toBe(false);
   });
+
+  it.each([
+    "Oi Diogo, tudo certo?\nNo momento, sem demandas para aços!!",
+    "Bom dia, tudo bem? Por enquanto sem demanda de aço.",
+    "Tudo bom? A entrega é em Itajaí."
+  ])("does not turn a social greeting into a factual request: %s", (message) => {
+    const taxonomy = [{ key: "commercial", label: "Comercial", aliases: ["aço", "entrega"], requiresSource: true }];
+    expect(isDocumentDependentQuestion(message, taxonomy)).toBe(false);
+  });
+
+  it.each([
+    "Oi, tudo certo? Vocês trabalham com aço?",
+    "Tudo bem? No momento sem demanda de aço. Qual o mínimo de entrega?",
+    "Tudo certo com a entrega?",
+    "Como funciona a entrega?"
+  ])("preserves genuine factual questions after a greeting: %s", (message) => {
+    const taxonomy = [{ key: "commercial", label: "Comercial", aliases: ["aço", "entrega"], requiresSource: true }];
+    expect(isDocumentDependentQuestion(message, taxonomy)).toBe(true);
+  });
 });

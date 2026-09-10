@@ -167,8 +167,12 @@ describe("villeferV1Definition", () => {
 
     expect(prompt).toMatch(/uma (?:única|unica) mensagem curta/i);
     expect(prompt).toMatch(/perda expl[ií]cita/i);
-    expect(prompt).toMatch(/aplica[cç][aã]o, norma, certificado, empresa e prazo desejado s[aã]o complementares/i);
-    expect(prompt).toMatch(/n[aã]o os pergunte apenas para completar cadastro/i);
+    expect(prompt).toMatch(/n[aã]o pergunte aplica[cç][aã]o, norma, certificado, empresa ou prazo s[oó] para completar cadastro/i);
+    expect(prompt).toMatch(/checklist vale s[oó] para NOVO pedido/i);
+    expect(prompt).toMatch(/Restri[cç][oõ]es expl[ií]citas do vendedor nesta negocia[cç][aã]o/i);
+    expect(prompt).toMatch(/Nunca prometa avaliar adequa[cç][aã]o, carga ou seguran[cç]a pela foto/i);
+    expect(prompt).toContain('"03 brr" = 3 barras');
+    expect(prompt.length).toBeLessThanOrEqual(8000);
     expect(incompleteChapa?.expected.responseGuidance).toMatch(
       /tipo.*medida.*espessura.*quantidade/i
     );

@@ -138,7 +138,9 @@ export function isDocumentDependentQuestion(
   value: string | null | undefined,
   taxonomy: AgentKnowledgeTaxonomyEntry[] = DEFAULT_KNOWLEDGE_TAXONOMY
 ) {
-  const rawValue = value ?? "";
+  // A social question is not a request for a company fact. Keep substantive
+  // qualifiers/questions (e.g. "Tudo certo com a entrega?") intact.
+  const rawValue = (value ?? "").replace(/\btudo\s+(?:bem|bom|certo)\s*\?+/gi, "").trim();
   if (!SOURCE_DEPENDENT_REQUEST.test(rawValue)) {
     return false;
   }
