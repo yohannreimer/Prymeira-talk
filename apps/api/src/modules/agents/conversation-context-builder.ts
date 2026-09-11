@@ -1,3 +1,5 @@
+import { COMPLETE_HISTORY_CHARACTER_LIMIT, COMPLETE_HISTORY_MESSAGE_LIMIT } from "./conversation-reasoning-policy.js";
+
 type ConversationMessageRecord = {
   id: string;
   direction?: string | null;
@@ -35,6 +37,7 @@ export async function buildConversationContext(
     conversationId: string;
     limit?: number;
     includeInternalNotes?: boolean;
+    complete?: boolean;
   }
 ): Promise<ConversationContext> {
   const messages = await prisma.message.findMany({
@@ -43,8 +46,13 @@ export async function buildConversationContext(
       conversationId: input.conversationId
     },
     orderBy: [{ createdAt: "desc" }],
-    take: input.limit ?? DEFAULT_MESSAGE_LIMIT
+    take: input.complete ? COMPLETE_HISTORY_MESSAGE_LIMIT + 1 : input.limit ?? DEFAULT_MESSAGE_LIMIT
   });
+
+  if (input.complete && (messages.length > COMPLETE_HISTORY_MESSAGE_LIMIT
+    || messages.reduce((total, message) => total + (message.body?.length ?? 0), 0) > COMPLETE_HISTORY_CHARACTER_LIMIT)) {
+    throw new Error("CONVERSATION_CONTEXT_LIMIT: histórico excede o limite de leitura completa; revisão humana necessária.");
+  }
 
   const normalizedMessages = messages
     .map(normalizeConversationMessage)

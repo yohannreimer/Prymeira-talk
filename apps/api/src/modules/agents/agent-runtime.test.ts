@@ -239,6 +239,17 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentRuntime", () => {
+  it("uses the same context-first path for live generation without forced price handoff", async () => {
+    const provider = buildProvider({ confidence: 0.9, reply: "Qual quantidade você precisa?", actions: [], handoff: { required: false, reason: null } });
+    const prisma = buildPrisma({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, behaviorConfig: { conversationReasoning: "context_first_v1" } }) },
+      aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([]) }
+    });
+    await createAgentRuntime({ prisma, provider }).runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+    expect(provider.generate).toHaveBeenCalledOnce();
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({ context: expect.objectContaining({ conversationReasoning: "context_first_v1" }) }));
+    expect(prisma.message.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 2001 }));
+  });
   it('never activates or sends an autonomous agent in an assisted channel', async () => {
     const prisma = buildPrisma({ conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: { ...baseConversation.channel, encryptedConfig: { assistant: { mode: 'automatic', agentId: ids.agent } } } }) } });
     const provider = buildProvider({ reply: 'Do not send', confidence: 1, actions: [], handoff: { required: false, reason: null } });

@@ -1,4 +1,5 @@
 import { aiAgentAllowedActionSchema, type AiAgentAllowedAction, type MessageDto } from "@prymeira-talk/shared";
+import { usesContextFirst, resolveConversationSafetyOutput, conversationReasoningContext } from "./conversation-reasoning-policy.js";
 import {
   resolveOpenAiCompatibleSettings,
   type AiProviderSettingsPrismaLike,
@@ -23,7 +24,6 @@ import {
 import { enforceWhatsAppReply } from "./agent-reply-policy.js";
 import { normalizeAgentHandoffOutput, usesQualificationHandoff } from "./agent-output-normalizer.js";
 import {
-  createSafetyDecisionOutput,
   evaluateAgentSafety,
   HANDOFF_ACKNOWLEDGEMENT
 } from "./agent-safety-policy.js";
@@ -696,7 +696,8 @@ export function createAgentRuntime(input: {
           }),
           buildConversationContext(prisma, {
             workspaceId: runInput.workspaceId,
-            conversationId: conversation.id
+            conversationId: conversation.id,
+            complete: usesContextFirst(agent.behaviorConfig)
           })
         ]);
 
@@ -765,7 +766,7 @@ export function createAgentRuntime(input: {
           attachmentAvailable,
           selectedKnowledge: knowledgeSelection.selected
         });
-        const safetyOutput = createSafetyDecisionOutput(safety);
+        const safetyOutput = resolveConversationSafetyOutput(safety, agent.behaviorConfig);
 
         const runProvider = providerSettings.active
           ? (input.providerFactory ?? createOpenAiCompatibleAgentProvider)(providerSettings)
@@ -781,7 +782,7 @@ export function createAgentRuntime(input: {
             }
           : safetyOutput
           ? safetyOutput
-          : !attachmentAvailable && safety.outcome !== "await_approval" && isDocumentDependentQuestion(
+          : !usesContextFirst(agent.behaviorConfig) && !attachmentAvailable && safety.outcome !== "await_approval" && isDocumentDependentQuestion(
                 effectiveText,
                 taxonomy
               ) && knowledgeSelection.selected.length === 0
@@ -791,7 +792,7 @@ export function createAgentRuntime(input: {
             model: runModel,
             systemPrompt: agent.systemPrompt,
             userPrompt: buildUserPrompt(effectiveText, runInput.instruction),
-            context
+            context: { ...context, ...conversationReasoningContext(agent.behaviorConfig, safety) }
           });
 
         const contextualHandoff = usesQualificationHandoff(agent.behaviorConfig);

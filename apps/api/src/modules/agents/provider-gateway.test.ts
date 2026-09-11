@@ -384,6 +384,19 @@ describe("createOpenAiCompatibleAgentProvider", () => {
     expect(body.messages[0].content).toContain("stock, price, deadline");
   });
 
+  it.each([true, false])("keeps commercial truth constraints but enables context-first decisions only when opted in: %s", async contextFirst => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reply: "Qual quantidade?", confidence: 1, actions: [], handoff: { required: false, reason: null } }) } }] })));
+    const provider = createOpenAiCompatibleAgentProvider({ baseUrl: "https://provider.invalid", apiKey: "test-only", chatModel: "test-model", fetchImpl: fetchMock });
+    await provider.generate({ model: "test-model", systemPrompt: "Qualifique o pedido.", userPrompt: "Qual valor?", context: contextFirst ? { conversationReasoning: "context_first_v1" } : {} });
+    const request = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const system = request.messages[0].content;
+    expect(system).toContain("do not invent prices");
+    expect(system).toContain("protected factual claims must be supported");
+    expect(system.includes("mention of price/payment/deadline alone does not require handoff")).toBe(contextFirst);
+    expect(system.includes("request human handoff without inventing an answer")).toBe(!contextFirst);
+    expect(request.messages.at(-1).content.includes("NEXT reply FROM our company TO the external contact")).toBe(contextFirst);
+  });
+
   it.each([
     { chatModel: "gpt-5.6-luna", reasoningEffort: undefined },
     { chatModel: "gpt-5.6-terra", reasoningEffort: undefined },

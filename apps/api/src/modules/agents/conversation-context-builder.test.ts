@@ -7,6 +7,22 @@ const ids = {
 };
 
 describe("buildConversationContext", () => {
+  it("loads stored history beyond 80 messages when complete context is requested", async () => {
+    const messages = Array.from({ length: 120 }, (_, i) => ({ id: `m${i}`, direction: "inbound", type: "text", body: i === 0 ? "Retirada em Joinville" : "continuação", createdAt: new Date(1000 * i) }));
+    const prisma = { message: { findMany: vi.fn().mockResolvedValue(messages) } };
+    const result = await buildConversationContext(prisma, { workspaceId: ids.workspace, conversationId: ids.conversation, complete: true });
+    expect(prisma.message.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 2001 }));
+    expect(result.messages).toHaveLength(120);
+    expect(result.formattedHistory).toContain("Retirada em Joinville");
+  });
+  it("refuses oversized complete history instead of silently dropping the beginning", async () => {
+    const prisma = { message: { findMany: vi.fn().mockResolvedValue(Array.from({ length: 2001 }, (_, i) => ({ id: `m${i}`, body: "oi" }))) } };
+    await expect(buildConversationContext(prisma, { workspaceId: ids.workspace, conversationId: ids.conversation, complete: true })).rejects.toThrow(/limite/i);
+  });
+  it("refuses the complete character limit even with few messages", async () => {
+    const prisma = { message: { findMany: vi.fn().mockResolvedValue([{ id: "m", body: "x".repeat(120001) }]) } };
+    await expect(buildConversationContext(prisma, { workspaceId: ids.workspace, conversationId: ids.conversation, complete: true })).rejects.toThrow(/limite/i);
+  });
   it("loads recent conversation messages in chronological order and formats them for the LLM", async () => {
     const prisma = {
       message: {

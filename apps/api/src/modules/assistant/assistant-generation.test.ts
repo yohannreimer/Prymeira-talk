@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createAssistantGeneration, assistantHash, type AssistantContext } from './assistant-generation.js';
+import { createAssistantGeneration, loadAssistantContext, assistantHash, type AssistantContext } from './assistant-generation.js';
 import type { AssistantDb } from './assistant-access.js';
 
 const context = { conversation: { workspaceId: 'w', aiControlStatus: 'agent_allowed' }, agent: { id: 'a', systemPrompt: 'Qualifique o pedido.', behaviorConfig: {} }, knowledge: [], messages: [{ id: 'm', workspaceId: 'w', direction: 'inbound', type: 'text', body: 'Preciso de 10 chapas de aço de 2 mm', mediaUrl: null, metadata: {} }], contextKey: 'context', agentHash: 'agent', limited: false } as unknown as AssistantContext;
@@ -11,6 +11,25 @@ function setup(active = true) {
   return { db, generate, mediaPreparer, run: createAssistantGeneration(db, { providerFactory: () => ({ generate }), mediaPreparer }) };
 }
 describe('private read-only generation', () => {
+  it.each([true, false])('loads complete stored history only for opted-in agents: %s', async complete => {
+    const { db } = setup();
+    Object.assign(db, {
+      conversation: { findFirst: vi.fn().mockResolvedValue({ ...context.conversation, channel: { encryptedConfig: { assistant: { mode: 'automatic', agentId: '00000000-0000-4000-8000-000000000101' } } } }) },
+      aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...context.agent, behaviorConfig: complete ? { conversationReasoning: 'context_first_v1' } : {} }) },
+      aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([]) },
+      message: { findMany: vi.fn().mockResolvedValue(Array.from({ length: 81 }, (_, i) => ({ ...context.messages[0], id: `m${i}` }))) }
+    });
+    const result = await loadAssistantContext(db, 'w', 'c');
+    expect(result.messages.length).toBe(complete ? 81 : 80);
+    expect(result.limited).toBe(!complete);
+    expect(db.message.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: complete ? 2001 : 81 }));
+  });
+  it('lets context-first price questions reach the model without automatic transfer', async () => {
+    const { run, generate } = setup();
+    await run({ ...context, agent: { ...context.agent, behaviorConfig: { conversationReasoning: 'context_first_v1' } }, messages: [{ ...context.messages[0], body: 'Qual o valor da chapa?' }] });
+    expect(generate).toHaveBeenCalledOnce();
+    expect(generate.mock.calls[0][0].context.conversationReasoning).toBe('context_first_v1');
+  });
   it('stores proposed actions as data and keeps private instructions distinct from customer text', async () => {
     const { run, generate } = setup();
     const result = await run(context, 'Pergunte tudo de uma vez');

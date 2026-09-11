@@ -3,6 +3,24 @@ import { HANDOFF_ACKNOWLEDGEMENT } from "./agent-safety-policy.js";
 import { normalizeAgentHandoffOutput, usesQualificationHandoff } from "./agent-output-normalizer.js";
 
 describe("normalizeAgentHandoffOutput", () => {
+  it.each([null, [], { reason: 12 }, { reason: " " }])("ignores malformed nested reasons: %j", handoff => {
+    const result = normalizeAgentHandoffOutput({ confidence: 1, reply: "Vou encaminhar.", actions: [{ type: "request_handoff", handoff }], handoff: { required: true, reason: "Motivo válido" } });
+    expect(result.handoff.reason).toBe("Motivo válido");
+  });
+  it("keeps direct reason precedence over nested fallback", () => {
+    const result = normalizeAgentHandoffOutput({ confidence: 1, reply: "Vou encaminhar.", actions: [{ type: "request_handoff", reason: "Direto", handoff: { reason: "Alternativo" } }], handoff: { required: true, reason: "Principal" } });
+    expect(result.handoff.reason).toBe("Direto");
+  });
+  it("preserves the C092 nested handoff reason instead of replacing it with a generic note", () => {
+    const reason = "Verificar acabamento branco, sem afirmar disponibilidade.";
+    const result = normalizeAgentHandoffOutput({ confidence: 0.9, reply: "Vou verificar esse acabamento com o vendedor.",
+      actions: [{ type: "request_handoff", handoff: { required: true, reason } }],
+      handoff: { required: false, reason: null }
+    }, { preserveReply: true });
+    expect(result.handoff.reason).toBe(reason);
+    expect(result.actions).toContainEqual({ type: "create_internal_note", body: `Motivo do repasse: ${reason}` });
+    expect(normalizeAgentHandoffOutput(result, { preserveReply: true })).toEqual(result);
+  });
   it("aligns the qualified N11 handoff with its reply and records only the supplied reason", () => {
     const reason = "Confirmar se há cantoneira de alumínio com acabamento branco.";
     const result = normalizeAgentHandoffOutput({

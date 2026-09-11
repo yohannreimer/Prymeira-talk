@@ -28,7 +28,10 @@ export function normalizeAgentHandoffOutput(
   const actionReason = firstAction && typeof firstAction.reason === "string"
     ? firstAction.reason.trim()
     : "";
-  const reason = actionReason || output.handoff.reason?.trim() || DEFAULT_HANDOFF_REASON;
+  const nestedHandoff = firstAction?.handoff;
+  const nestedReason = nestedHandoff && typeof nestedHandoff === "object" && !Array.isArray(nestedHandoff)
+    && "reason" in nestedHandoff && typeof nestedHandoff.reason === "string" ? nestedHandoff.reason.trim() : "";
+  const reason = actionReason || output.handoff.reason?.trim() || nestedReason || DEFAULT_HANDOFF_REASON;
   const actionsWithoutHandoff = output.actions.filter((action) => action.type !== "request_handoff");
   // A qualified handoff must leave a trace even when the model omitted its note.
   // Keep this to the supplied reason; it is not a reconstructed customer brief.

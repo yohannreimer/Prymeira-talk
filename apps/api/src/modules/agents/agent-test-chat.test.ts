@@ -62,6 +62,17 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentTestChatService", () => {
+  it.each(["Qual o valor de uma viga I de 1500 mm, 8 polegadas?", "Preciso receber amanhã", "Já comprei", "Qual a norma desse material?"])("lets an opted-in model reason about the full exchange: %s", async (content) => {
+    const prisma = buildPrisma({ aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, behaviorConfig: {
+      conversationReasoning: "context_first_v1",
+      knowledgeTaxonomy: [{ key: "technical", label: "Norma", aliases: ["norma"], requiresSource: true }]
+    } }) }, aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([]) } });
+    const provider = buildProvider({ confidence: 1, reply: "Resposta contextual do modelo.", actions: [], handoff: { required: false, reason: null } });
+    const messages = [{ role: "assistant" as const, content: "Qual é sua necessidade?" }, { role: "user" as const, content }];
+    await createAgentTestChatService({ prisma, provider }).sendMessage({ workspaceId: "workspace_a", agentId: baseAgent.id, messages });
+    expect(provider.generate).toHaveBeenCalledOnce();
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({ context: expect.objectContaining({ conversationMessages: messages, conversationReasoning: "context_first_v1" }) }));
+  });
   it("lets a no-demand reply with a social question reach the provider without handoff", async () => {
     const prisma = buildPrisma({
       aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, behaviorConfig: {

@@ -9,9 +9,9 @@ import {
   type KnowledgeRetrievalSource
 } from "./knowledge-retrieval.js";
 import { enforceWhatsAppReply } from "./agent-reply-policy.js";
+import { usesContextFirst, resolveConversationSafetyOutput, conversationReasoningContext } from "./conversation-reasoning-policy.js";
 import { normalizeAgentHandoffOutput, usesQualificationHandoff } from "./agent-output-normalizer.js";
 import {
-  createSafetyDecisionOutput,
   evaluateAgentSafety,
   type ProtectedFact
 } from "./agent-safety-policy.js";
@@ -220,7 +220,7 @@ export function createAgentTestChatService(input: {
         attachmentAvailable,
         selectedKnowledge: knowledgeSelection.selected
       });
-      const safetyOutput = createSafetyDecisionOutput(safety);
+      const safetyOutput = resolveConversationSafetyOutput(safety, agent.behaviorConfig);
 
       const runProvider = providerSettings.active
         ? (input.providerFactory ?? createOpenAiCompatibleAgentProvider)(providerSettings)
@@ -258,7 +258,7 @@ export function createAgentTestChatService(input: {
       } else if (safetyOutput) {
         output = safetyOutput;
       } else if (
-        !attachmentAvailable && safety.outcome !== "await_approval" &&
+        !usesContextFirst(agent.behaviorConfig) && !attachmentAvailable && safety.outcome !== "await_approval" &&
         isDocumentDependentQuestion(
           latestUserMessage.content,
           taxonomy
@@ -274,6 +274,7 @@ export function createAgentTestChatService(input: {
             systemPrompt: agent.systemPrompt,
             userPrompt: latestUserMessage.content,
             context: {
+              ...conversationReasoningContext(agent.behaviorConfig, safety),
               messageBody: latestUserMessage.content,
               conversationHistory,
               conversationMessages: messages,
