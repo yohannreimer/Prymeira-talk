@@ -437,8 +437,8 @@ describe("Evolution client", () => {
         webhook: expect.objectContaining({
           enabled: true,
           url: "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace",
-          webhookByEvents: false,
-          webhookBase64: true,
+          byEvents: false,
+          base64: true,
           headers: expect.objectContaining({
             "x-prymeira-talk-secret": "webhook-secret"
           }),
@@ -446,6 +446,9 @@ describe("Evolution client", () => {
         })
       })
     );
+    const webhook = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).webhook;
+    expect(webhook).not.toHaveProperty("webhookBase64");
+    expect(webhook).not.toHaveProperty("webhookByEvents");
   });
 
   it("connects an existing instance and returns its QR code", async () => {

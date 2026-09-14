@@ -180,7 +180,7 @@ function readMessageBase64(message: unknown, messageKey: string) {
   );
 }
 
-function extractMessageContent(message: unknown): {
+export function extractMessageContent(message: unknown): {
   type: MessageDto["type"];
   body: string | null;
   mediaUrl: string | null;

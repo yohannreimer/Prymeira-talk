@@ -11,6 +11,15 @@ function setup(active = true) {
   return { db, generate, mediaPreparer, run: createAssistantGeneration(db, { providerFactory: () => ({ generate }), mediaPreparer }) };
 }
 describe('private read-only generation', () => {
+  it('uses extracted historical seller attachments and keeps their dates explicit', async () => {
+    const { run, generate, mediaPreparer } = setup();
+    const m = { ...context.messages[0], id:'proposal',direction:'outbound' as const,type:'file' as const,mediaUrl:'url',createdAt:new Date('2026-08-20T12:00:00Z'),metadata:{} };
+    m.metadata = { historyImport:{source:'evolution'},assistantMedia:{sourceHash:assistantHash([m.id,m.type,m.mediaUrl]),result:{kind:'document',status:'processed',extractedText:'Proposta antiga: 10 chapas'}} };
+    await run({...context,messages:[m,context.messages[0]]});
+    expect(generate.mock.calls[0][0].context.conversationHistory).toContain('Proposta antiga: 10 chapas');
+    expect(generate.mock.calls[0][0].context.conversationHistory).toContain('2026-08-20');
+    expect(mediaPreparer).not.toHaveBeenCalled();
+  });
   it.each([true, false])('loads complete stored history only for opted-in agents: %s', async complete => {
     const { db } = setup();
     Object.assign(db, {

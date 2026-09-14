@@ -13,6 +13,10 @@ import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.
 import { automationsRoutes } from "./modules/automations/automations.routes.js";
 import { assistantRoutes } from "./modules/assistant/assistant.routes.js";
 import { createAssistantScheduler } from './modules/assistant/assistant-scheduler.js';
+import { createAssistantHistoryImporter } from './modules/assistant/assistant-history.js';
+import { createEvolutionHistorySource } from './modules/evolution/evolution-history.js';
+import { prepareInboundMedia } from './modules/agents/inbound-media.js';
+import { resolveOpenAiCompatibleSettings } from './modules/agents/ai-provider-settings.js';
 import { assistantInboxRoutes } from './modules/assistant/assistant-inbox.routes.js';
 import { createBoardRulesService, type BoardRulesPrismaLike } from "./modules/boards/board-rules.service.js";
 import { boardsRoutes } from "./modules/boards/boards.routes.js";
@@ -155,7 +159,12 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     });
   }
 
-  const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });
+  const prepareAssistantHistory = options.prismaEnabled === false || evolutionRuntime.mode !== 'real' || !env.EVOLUTION_API_BASE_URL || !env.EVOLUTION_API_KEY
+    ? undefined
+    : createAssistantHistoryImporter(app.prisma, createEvolutionHistorySource({ baseUrl: env.EVOLUTION_API_BASE_URL, apiKey: env.EVOLUTION_API_KEY }), {
+        prepareMedia: async ({ workspaceId, mediaUrl, kind }) => prepareInboundMedia({ settings: await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId }), mediaUrl, kind })
+      });
+  const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { prepareContext: prepareAssistantHistory, onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });
   assistantScheduler?.start();
   app.addHook('onClose', async () => { assistantScheduler?.stop(); });
   await app.register(evolutionRoutes, {

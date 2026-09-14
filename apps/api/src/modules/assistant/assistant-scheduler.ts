@@ -8,6 +8,7 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
   generate?: ReturnType<typeof createAssistantGeneration>;
   repository?: ReturnType<typeof createAssistantRepository>;
   loadContext?: typeof loadAssistantContext;
+  prepareContext?: (workspaceId: string, conversationId: string) => Promise<unknown>;
   onError?: (error: unknown) => void;
 } = {}) {
   const repository = dependencies.repository ?? createAssistantRepository(prisma);
@@ -24,6 +25,7 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
         const token = await repository.claim(state);
         if (!token) return;
         try {
+          await dependencies.prepareContext?.(state.workspaceId, state.conversationId);
           const context = await loadContext(prisma, state.workspaceId, state.conversationId);
           if (!state.requestedById && context.messages.at(-1)?.direction !== 'inbound') {
             await repository.fail(state, token, 'O cliente já recebeu uma resposta. Aguarde uma nova mensagem.');
