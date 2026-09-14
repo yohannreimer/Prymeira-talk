@@ -15,13 +15,14 @@ describe('private read-only generation', () => {
   it.each([false, true])('warns about historical media only when currently needed: %s', async requiredForReply => {
     const { run, generate, mediaPreparer } = setup();
     mediaPreparer.mockResolvedValue({ kind: 'audio', status: 'failed', extractedText: '' });
-    generate.mockResolvedValue({ ...output, attachmentRelevance: [{ messageId: 'old-audio', requiredForReply }] });
+    generate.mockResolvedValue({ ...output, attachmentRelevance: [{ messageId: 'A1', requiredForReply }] });
     const result = await run({ ...context, messages: [oldAttachment, { ...context.messages[0], body: requiredForReply ? 'Pode cotar o que pedi naquele áudio?' : 'Por enquanto nada ainda' }] });
     expect(result.warnings).toHaveLength(requiredForReply ? 1 : 0);
     expect(generate.mock.calls[0][0].context.conversationHistory).toContain('Anexo não lido');
-    expect(generate.mock.calls[0][0].context.unreadAttachments).toEqual([expect.objectContaining({ messageId: 'old-audio', currentTurn: false })]);
+    expect(generate.mock.calls[0][0].context.unreadAttachments).toEqual([expect.objectContaining({ messageId: 'A1', currentTurn: false })]);
+    expect(result.proposedActions).toMatchObject({ attachmentRelevance: [{ messageId: 'old-audio', requiredForReply }] });
   });
-  it.each([undefined, [], [{ messageId: 'other', requiredForReply: false }], [{ messageId: 'old-audio', requiredForReply: false }, { messageId: 'old-audio', requiredForReply: true }]])('keeps warnings when relevance is absent or ambiguous: %j', async attachmentRelevance => {
+  it.each([undefined, [], [{ messageId: 'other', requiredForReply: false }], [{ messageId: 'A1', requiredForReply: false }, { messageId: 'A1', requiredForReply: true }]])('keeps warnings when relevance is absent or ambiguous: %j', async attachmentRelevance => {
     const { run, generate, mediaPreparer } = setup();
     mediaPreparer.mockResolvedValue({ kind: 'audio', status: 'failed', extractedText: '' });
     generate.mockResolvedValue({ ...output, attachmentRelevance });
@@ -30,7 +31,7 @@ describe('private read-only generation', () => {
   it('never suppresses an unread attachment in the current customer turn', async () => {
     const { run, generate, mediaPreparer } = setup();
     mediaPreparer.mockResolvedValue({ kind: 'audio', status: 'failed', extractedText: '' });
-    generate.mockResolvedValue({ ...output, attachmentRelevance: [{ messageId: 'new-audio', requiredForReply: false }] });
+    generate.mockResolvedValue({ ...output, attachmentRelevance: [{ messageId: 'A1', requiredForReply: false }] });
     const result = await run({ ...context, messages: [{ ...oldAttachment, id: 'new-audio', metadata: {} }, context.messages[0]] });
     expect(result.warnings).toHaveLength(1);
   });
@@ -39,6 +40,19 @@ describe('private read-only generation', () => {
     mediaPreparer.mockResolvedValue({ kind: 'audio', status: 'failed', extractedText: '' });
     await run({ ...context, messages: [oldAttachment, context.messages[0]] });
     expect(db.message.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { metadata: expect.objectContaining({ assistantMedia: expect.objectContaining({ result: expect.objectContaining({ status: 'failed' }) }) }) } }));
+  });
+  it('uses short distinct references instead of asking the model to copy similar UUIDs', async () => {
+    const { run, generate, mediaPreparer } = setup();
+    mediaPreparer.mockResolvedValue({ kind: 'audio', status: 'failed', extractedText: '' });
+    const ids = ['1b2c4908-e61b-49ef-9724-907141d1ea9c', '920ebdb3-9a76-448c-ae42-9072d65e45db'];
+    generate.mockResolvedValue({ ...output, attachmentRelevance: [{ messageId: 'A1', requiredForReply: false }, { messageId: 'A2', requiredForReply: true }] });
+    const result = await run({ ...context, messages: [...ids.map(id => ({ ...oldAttachment, id })), context.messages[0]] });
+    const input = generate.mock.calls[0][0];
+    expect(input.context.unreadAttachments.map((a: { messageId: string }) => a.messageId)).toEqual(['A1', 'A2']);
+    expect(input.context.conversationHistory).toContain('ID A1:');
+    expect(input.context.conversationHistory).toContain('ID A2:');
+    expect(input.context.conversationHistory).not.toContain(ids[0]);
+    expect(result.warnings).toEqual([expect.stringContaining('920ebdb3')]);
   });
   it('uses extracted historical seller attachments and keeps their dates explicit', async () => {
     const { run, generate, mediaPreparer } = setup();
