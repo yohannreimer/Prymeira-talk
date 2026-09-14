@@ -24,4 +24,12 @@ Reutilizado somente o áudio curto original do próprio contato. Remux sem recod
 
 **Resultado confirmado pelo usuário:** “consegue, ta perfeito esse”. O reenvio alterou somente a linha do tempo do Ogg, sem recodificar o áudio. Aplicar a normalização explícita `-avoid_negative_ts make_zero` ao conversor do Talk. Não são necessárias mudanças de bitrate, application ou encoding da Evolution para essa correção.
 
-Um teste adicional de normalização de WebM sintético passou sem alteração do conversor; portanto, essa fixture NÃO reproduz o defeito real e não deve ser apresentada como teste vermelho/verde da correção. Criado também teste de contrato que observa o comando ffmpeg real: falhou antes da correção porque o argumento de normalização estava ausente. O teste manual no iPhone é a evidência de reprodução/correção do sintoma real. Publicação da correção do conversor pendente de testes e build.
+Um teste adicional de normalização de WebM sintético passou sem alteração do conversor; portanto, essa fixture NÃO reproduz o defeito real e não deve ser apresentada como teste vermelho/verde da correção. Criado também teste de contrato que observa o comando ffmpeg real: falhou antes da correção porque o argumento de normalização estava ausente, e passou após inclusão. O teste manual no iPhone é a evidência de reprodução/correção do sintoma real.
+
+## Publicação concluída
+
+- 846 testes da API aprovados; 10 ignorados existentes. Typecheck, build:prod e diff --check aprovados.
+- Workflow 34909673312 aprovou imagens de API e web. Atualizada somente API, sem mudança de interface: `689fa439e72cf0263a764bc6bd466ae0471dda1a`.
+- Serviço wseof97wna8dqec8jape6nshz confirmou imagem nova; tarefa umyomigke6g8negssagani75h, contêiner 036605cdc7cb36a011b13df759c3fc33917119181b334ad1fb66532f735253bc. API health HTTP 200 após reinício; tarefa anterior shutdown.
+- A correção vale para novas gravações/envios. Mensagens antigas já entregues ao WhatsApp não são reescritas. Nenhum reenvio em massa, alteração de agente ou mudança de aprovação manual.
+- Rollback API: cc7326f11a498c6c49c4ebf6dadd6da95e3df148 (restaura a incompatibilidade, usar apenas se necessário por outra regressão).
