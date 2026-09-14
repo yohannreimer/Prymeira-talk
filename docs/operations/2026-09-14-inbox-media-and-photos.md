@@ -34,4 +34,12 @@ Causas confirmadas em 14/09:
 - O CSP real permite `data:` em img-src/media-src, mas não `blob:`. A UI criava object URLs. Ao aplicar a mesma política ao harness local, áudio, imagem remota e foto falharam. URLs locais passaram a usar data URLs de bytes autenticados, sem enfraquecer o CSP. Testes verificam bytes e MIME, inclusive arquivos maiores que um chunk. Cache é liberado ao sair; requisições canceladas não atualizam componentes antigos.
 - Na imagem Alpine da API, `fc-list` e `fc-match` retornaram zero bytes: nenhuma fonte de fallback. Incluídas Liberation/DejaVu e verificação de fonte Helvetica durante o build. O arquivo original não estava corrompido; o defeito era na rasterização da prévia.
 
-Harness agora reproduz as restrições de imagem/áudio de produção. Após a correção, player entrou em reprodução, duração/posição ficaram disponíveis e imagens/foto sintéticas apareceram. Publicação corretiva e verificação visual em produção ainda pendentes neste ponto do registro. Nenhum envio ou alteração de agentes foi feito.
+Harness agora reproduz as restrições de imagem/áudio de produção. Após a correção, player entrou em reprodução, duração/posição ficaram disponíveis e imagens/foto sintéticas apareceram.
+
+## Publicação corretiva e verificação visual
+
+Commit `66691e4403bf42241a130dda068c433cf80b560f`, workflow `34892344256` concluído com sucesso. API e web publicadas por SHA no Portainer. API atualizada primeiro; só após health HTTP 200 foi aplicada a web. Página pública carregando `index-D1-cH186.js`; CSP de produção preservado. Web em running, tarefa `li0widk8atxenplqyhq4recut`.
+
+Verificação no Talk autenticado (conta disponível no navegador: canal Diogo): a mesma cotação real que antes exibia apenas logo/linhas passou a exibir cabeçalho, dados, tabela e valores dentro do diálogo. Fotos reais apareceram na lista e junto às mensagens. Dois áudios reais de 10 e 5 segundos carregaram; primeiro observado em reprodução aos 8 segundos, com controle de pausa e avanço, ambos chegaram ao fim. Não foram enviados WhatsApps nem feitas chamadas de geração de IA.
+
+Testes finais: web 126/126, API 838 aprovados e 10 ignorados, shared 51/51; typecheck API, build API e build web aprovados. Aviso de bundle web acima de 500 kB já existia. Falhas antigas de leitura semântica/transcrição e sugestão continuam sendo outro escopo: esta verificação prova apresentação/reprodução, não entendimento dos anexos pela IA. Fotos dependem de disponibilidade/privacidade na Evolution. Nenhuma configuração de envio automático foi alterada.
