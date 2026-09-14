@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { decodeVoiceRecording, prepareVoiceRecording } from './outbound-audio.js';
 import { createEvolutionClient } from '../evolution/evolution.client.js';
 import { createConversationsService, type PrismaLike } from './conversations.service.js';
@@ -9,6 +10,14 @@ function wav() {
   return `data:audio/wav;base64,${bytes.toString('base64')}`;
 }
 describe('voice recording validation and transport', () => {
+  it('normalizes negative browser WebM timestamps before publishing an Ogg voice message', async () => {
+    const webm = execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.4', '-c:a', 'libopus', '-f', 'webm', 'pipe:1'], { timeout: 10000 });
+    const result = await prepareVoiceRecording(`data:audio/webm;base64,${webm.toString('base64')}`, 'audio/webm');
+    const bytes = Buffer.from(result.mediaUrl.split(',')[1], 'base64');
+    const probe = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_streams', '-of', 'json', 'pipe:0'], { input: bytes, timeout: 10000 }).toString());
+    expect(Number(probe.streams[0].start_time)).toBeGreaterThanOrEqual(0);
+    expect(probe.streams[0]).toMatchObject({ codec_name: 'opus', channels: 1, sample_rate: '48000' });
+  });
   it('converts actual synthetic audio to Opus and records it on the owning conversation', async () => {
     const sendAudio = vi.fn().mockResolvedValue({ providerMessageId: 'voice-provider', raw: {} }); const sendMedia = vi.fn();
     const conversation = { id: 'conv', workspaceId: 'workspace', contact: { phone: '5511999990000' }, channel: { provider: 'evolution', providerKey: 'own-instance' } };

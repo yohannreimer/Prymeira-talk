@@ -24,7 +24,9 @@ export async function prepareVoiceRecording(url: string, mimeType: string) {
     directory = await mkdtemp(join(tmpdir(), 'talk-outbound-voice-'));
     const source = join(directory, 'source'); const target = join(directory, 'voice.ogg');
     await writeFile(source, bytes);
-    await run('ffmpeg', ['-v', 'error', '-nostdin', '-protocol_whitelist', 'file,pipe', '-f', demuxer, '-i', source, '-vn', '-t', '301', '-ac', '1', '-ar', '48000', '-c:a', 'libopus', '-b:a', '32k', '-y', target], { timeout: 45000, maxBuffer: 64 * 1024 });
+    // Browser recordings can retain a negative start time after Opus conversion.
+    // WhatsApp iOS then rejects an otherwise intact, downloadable voice message.
+    await run('ffmpeg', ['-v', 'error', '-nostdin', '-protocol_whitelist', 'file,pipe', '-f', demuxer, '-i', source, '-vn', '-t', '301', '-ac', '1', '-ar', '48000', '-c:a', 'libopus', '-b:a', '32k', '-avoid_negative_ts', 'make_zero', '-y', target], { timeout: 45000, maxBuffer: 64 * 1024 });
     const result = await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', target], { timeout: 10000, maxBuffer: 4096 });
     const duration = Number(result.stdout.trim());
     if (!Number.isFinite(duration) || duration <= 0 || duration > 300.5) throw new Error('Grave um áudio de até 5 minutos.');
