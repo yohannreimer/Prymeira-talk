@@ -6,7 +6,7 @@ import { mediaDataUrl } from './media-data-url';
 import './inbox-media.css';
 
 type MediaMessage = Pick<MessageDto, 'type' | 'body'> & Partial<Pick<MessageDto, 'mediaUrl' | 'attachment'>>;
-const placeholder = /^(Imagem recebida|Figurinha recebida|Arquivo recebido|Áudio recebido|Vídeo recebido)$/i;
+const placeholder = /^(Imagem recebida|Figurinha recebida|Arquivo recebido|Áudio recebido|Áudio enviado|Vídeo recebido)$/i;
 const filename = /^[^\n]{1,240}\.(pdf|docx?|xlsx?|csv|txt|zip|png|jpe?g|webp|mp4|ogg|mp3)$/i;
 export function mediaFileName(message: MediaMessage) {
   if (message.attachment?.fileName?.trim()) return message.attachment.fileName;

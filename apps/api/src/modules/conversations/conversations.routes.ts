@@ -444,7 +444,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     return result;
   });
 
-  app.post("/conversations/:conversationId/messages", async (request, reply) => {
+  app.post("/conversations/:conversationId/messages", { bodyLimit: 12 * 1024 * 1024 }, async (request, reply) => {
     const params = createMessageParamsSchema.safeParse(request.params);
     const body = createMessageBodySchema.safeParse(request.body);
 

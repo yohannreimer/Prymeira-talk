@@ -1,5 +1,6 @@
 import type { ConversationStatus, PrismaClient } from "@prisma/client";
 import { createHash } from 'node:crypto';
+import { prepareVoiceRecording } from './outbound-audio.js';
 import type {
   ContactBoardMembershipDto,
   ContactBoardMoveSource,
@@ -40,6 +41,8 @@ export class ConversationActionError extends Error {
 }
 
 type OutboundMessageValidationErrorCode =
+  | "AUDIO_CHANNEL_NOT_SUPPORTED"
+  | "INVALID_VOICE_RECORDING"
   | "OUTBOUND_CONTACT_PHONE_REQUIRED"
   | "OUTBOUND_PROVIDER_KEY_REQUIRED"
   | "META_MEDIA_NOT_SUPPORTED"
@@ -687,9 +690,12 @@ export function createConversationsService(
         throw new ConversationNotFoundError();
       }
 
-      const messageBody = input.body?.trim() || input.attachment?.fileName || "";
+      const isAudio = input.attachment?.mimetype.toLowerCase().startsWith('audio/') ?? false;
+      if (isAudio && conversation.channel?.provider !== 'evolution') throw new OutboundMessageValidationError('AUDIO_CHANNEL_NOT_SUPPORTED', 'A gravação de voz está disponível em canais Evolution.');
+      let audio: Awaited<ReturnType<typeof prepareVoiceRecording>> | null = null;
+      const messageBody = isAudio ? 'Áudio enviado' : input.body?.trim() || input.attachment?.fileName || "";
       const messageType: MessageDto["type"] = input.attachment
-        ? input.attachment.mimetype.toLowerCase().startsWith("image/")
+        ? isAudio ? 'audio' : input.attachment.mimetype.toLowerCase().startsWith("image/")
           ? "image"
           : "file"
         : "text";
@@ -718,7 +724,12 @@ export function createConversationsService(
           );
         }
 
-        providerSend = input.attachment
+        if (isAudio && input.attachment) {
+          if (!options.evolution.client.sendAudio) throw new OutboundMessageValidationError('AUDIO_CHANNEL_NOT_SUPPORTED', 'Este canal ainda não oferece envio de voz.');
+          try { audio = await prepareVoiceRecording(input.attachment.mediaUrl, input.attachment.mimetype); }
+          catch (e) { throw new OutboundMessageValidationError('INVALID_VOICE_RECORDING', e instanceof Error ? e.message : 'Áudio inválido.'); }
+          providerSend = await options.evolution.client.sendAudio({ instanceName: providerKey, number: contactPhone, audio: audio.mediaUrl });
+        } else providerSend = input.attachment
           ? await options.evolution.client.sendMedia({
               instanceName: providerKey,
               number: contactPhone,
@@ -796,7 +807,8 @@ export function createConversationsService(
           direction: "outbound" as const,
           type: messageType,
           body: messageBody,
-          mediaUrl: input.attachment?.mediaUrl,
+          mediaUrl: audio?.mediaUrl ?? input.attachment?.mediaUrl,
+          ...(audio ? { metadata: { attachment: { fileName: 'audio.ogg', durationSeconds: audio.durationSeconds } } } : {}),
           providerMessageId: providerSend?.providerMessageId ?? undefined,
           status: providerSend ? "sent" as const : "pending" as const,
           sentByUserId: input.sentByUserId

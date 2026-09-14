@@ -37,6 +37,9 @@ import { AssistantPanel } from './AssistantPanel';
 import { ContactIdentityCard } from './ContactIdentityCard';
 import { ContactAvatar, ContactPhotoProvider } from './ContactAvatar';
 import { InboxMedia, mediaCaption } from './InboxMedia';
+import { RichDraft, type RichDraftHandle } from './RichDraft';
+import { VoiceRecorder } from './VoiceRecorder';
+import { WhatsappText } from './whatsapp-text';
 import { useAssistantConversation } from './useAssistantConversation';
 import { canCopySuggestion, draftNeedsReview, suggestionOrigin, type ComposerSuggestionOrigin } from './assistant-composer-state';
 import { apiSendAssistantSuggestion } from '../../app/api';
@@ -405,7 +408,8 @@ function InboxPageContent() {
   const messageThreadRef = useRef<HTMLDivElement | null>(null);
   const pendingThreadScrollRef = useRef<ScrollBehavior | null>(null);
   const userReadingHistoryRef = useRef(false);
-  const draftTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const draftTextAreaRef = useRef<RichDraftHandle | null>(null);
+  const [draftFormat, setDraftFormat] = useState({ bold: false, italic: false });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [acknowledgedHandoffIds, setAcknowledgedHandoffIds] = useState<Set<string>>(() => new Set());
   const getFreshToken = useCallback(async () => {
@@ -462,40 +466,12 @@ function InboxPageContent() {
     pendingThreadScrollRef.current = behavior;
   }
 
-  function setDraftSelection(selectionStart: number, selectionEnd: number) {
-    window.requestAnimationFrame(() => {
-      draftTextAreaRef.current?.focus();
-      draftTextAreaRef.current?.setSelectionRange(selectionStart, selectionEnd);
-    });
-  }
-
   function applyDraftMarker(marker: "*" | "_") {
-    const textarea = draftTextAreaRef.current;
-    const selectionStart = textarea?.selectionStart ?? draft.length;
-    const selectionEnd = textarea?.selectionEnd ?? draft.length;
-    const nextDraft = applyComposerMarker(draft, selectionStart, selectionEnd, marker);
-
-    setDraft(nextDraft.value);
-    setDraftSelection(nextDraft.selectionStart, nextDraft.selectionEnd);
+    draftTextAreaRef.current?.format(marker === '*' ? 'bold' : 'italic');
   }
 
   function insertDraftText(text: string) {
-    const textarea = draftTextAreaRef.current;
-    const selectionStart = textarea?.selectionStart ?? draft.length;
-    const selectionEnd = textarea?.selectionEnd ?? draft.length;
-    const nextDraft = insertComposerText(draft, selectionStart, selectionEnd, text);
-
-    setDraft(nextDraft.value);
-    setDraftSelection(nextDraft.selectionStart, nextDraft.selectionEnd);
-  }
-
-  function resizeDraftTextArea() {
-    const textarea = draftTextAreaRef.current;
-
-    if (!textarea) return;
-
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 140)}px`;
+    draftTextAreaRef.current?.insertText(text);
   }
 
   useEffect(() => {
@@ -509,10 +485,6 @@ function InboxPageContent() {
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
-
-  useEffect(() => {
-    resizeDraftTextArea();
-  }, [draft]);
 
   useEffect(() => {
     if (!showQuickReplies) return;
@@ -1015,28 +987,32 @@ function InboxPageContent() {
   async function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
+    if (file) await sendAttachment(file, file.type.startsWith('audio/')).catch(() => {});
+  }
 
-    if (!file || !selectedConversationId) return;
-    if (composerOrigin) { setMessageError('Envie primeiro o texto em revisão. Depois anexe o arquivo em uma nova mensagem.'); return; }
+  async function sendAttachment(file: File, voice = false) {
+    if (!selectedConversationId || isSending) throw new Error('Aguarde o envio atual.');
+    if (file.size > 8 * 1024 * 1024) { setMessageError('Envie um arquivo de até 8 MB.'); throw new Error('Arquivo maior que 8 MB.'); }
+    if (composerOrigin) { setMessageError('Envie primeiro o texto em revisão. Depois anexe o arquivo em uma nova mensagem.'); throw new Error('Texto em revisão.'); }
 
     const targetConversationId = selectedConversationId;
     const serviceWindowError = metaServiceWindowSendError(selectedConversation);
 
     if (serviceWindowError) {
       setMessageError(serviceWindowError);
-      return;
+      throw new Error(serviceWindowError);
     }
 
-    const caption = draft.trim();
+    const caption = voice ? '' : draft.trim();
     const mediaUrl = await fileToDataUrl(file).catch((fileError: unknown) => {
       setMessageError(fileError instanceof Error ? fileError.message : "Não foi possível ler o arquivo.");
       return null;
     });
 
-    if (!mediaUrl) return;
+    if (!mediaUrl || selectedConversationIdRef.current !== targetConversationId) throw new Error('A conversa mudou ou o arquivo não pôde ser lido.');
 
-    const messageType: MessageDto["type"] = file.type.startsWith("image/") ? "image" : "file";
-    const body = caption || file.name;
+    const messageType: MessageDto["type"] = voice ? 'audio' : file.type.startsWith("image/") ? "image" : "file";
+    const body = voice ? 'Áudio enviado' : caption || file.name;
     const optimisticMessage: MessageDto = {
       id: optimisticMessageId(),
       workspaceId: selectedConversation?.workspaceId ?? "",
@@ -1053,7 +1029,7 @@ function InboxPageContent() {
 
     setIsSending(true);
     setMessageError(null);
-    setDraft("");
+    if (!voice) setDraft("");
     setMessages((current) =>
       selectedConversationIdRef.current === targetConversationId ? [...current, optimisticMessage] : current
     );
@@ -1112,6 +1088,7 @@ function InboxPageContent() {
           )
         );
       }
+      throw sendError;
     } finally {
       setIsSending(false);
     }
@@ -1458,9 +1435,9 @@ function InboxPageContent() {
                 <div className="msg-bubble-body">
                   {['image', 'audio', 'file'].includes(message.type) ? <>
                     <InboxMedia key={`${message.id}:${message.mediaUrl?.slice(0, 60)}`} message={message} getToken={getToken} />
-                    {mediaCaption(message) ? <p>{mediaCaption(message)}</p> : null}
+                    {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
                     {attachmentReadNotice(message) ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
-                  </> : <p>{messageDisplayText(message)}</p>}
+                  </> : <p><WhatsappText text={messageDisplayText(message)} /></p>}
                   <time>{formatMessageTime(message.createdAt)}</time>
                   {outboundStatusLabel(message) ? (
                     <span className={`message-send-state message-send-state--${message.status}`}>
@@ -1527,7 +1504,9 @@ function InboxPageContent() {
                 type="button"
                 className="composer-tool"
                 aria-label="Negrito"
-                disabled={!selectedConversation}
+                aria-pressed={draftFormat.bold}
+                disabled={!selectedConversation || isSending}
+                onMouseDown={event => event.preventDefault()}
                 onClick={() => applyDraftMarker("*")}
               >
                 <strong>B</strong>
@@ -1536,7 +1515,9 @@ function InboxPageContent() {
                 type="button"
                 className="composer-tool"
                 aria-label="Itálico"
-                disabled={!selectedConversation}
+                aria-pressed={draftFormat.italic}
+                disabled={!selectedConversation || isSending}
+                onMouseDown={event => event.preventDefault()}
                 onClick={() => applyDraftMarker("_")}
               >
                 <em>I</em>
@@ -1566,6 +1547,7 @@ function InboxPageContent() {
                 ref={fileInputRef}
                 type="file"
               />
+              <VoiceRecorder key={selectedConversationId ?? 'no-conversation'} disabled={!selectedConversation || isSending || Boolean(composerOrigin) || selectedConversation.channelProvider !== 'evolution'} onSend={file => sendAttachment(file, true)} />
               <span className="composer-tool-spacer" aria-hidden="true" />
               <button
                 type="button"
@@ -1593,27 +1575,7 @@ function InboxPageContent() {
               </div>
             ) : null}
             <div className="composer-input-row">
-              <textarea
-                aria-label="Mensagem"
-                className="composer-textarea"
-                disabled={!selectedConversation}
-                onChange={(event) => {
-                  setDraft(event.target.value);
-                  if (!event.target.value) setComposerOrigin(null);
-                  resizeDraftTextArea();
-                }}
-                onInput={resizeDraftTextArea}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    event.currentTarget.form?.requestSubmit();
-                  }
-                }}
-                placeholder="Escreva uma mensagem..."
-                ref={draftTextAreaRef}
-                rows={1}
-                value={draft}
-              />
+              <RichDraft key={selectedConversationId ?? 'no-conversation'} ref={draftTextAreaRef} value={draft} disabled={!selectedConversation || isSending} onFormatChange={setDraftFormat} onChange={value => { setDraft(value); if (!value) setComposerOrigin(null); }} />
               <button
                 className="composer-send"
                 disabled={!selectedConversation || !draft.trim() || isSending}

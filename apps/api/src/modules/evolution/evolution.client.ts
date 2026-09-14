@@ -132,6 +132,7 @@ export interface ListTemplatesResult {
 }
 
 export interface EvolutionClient {
+  sendAudio?(input: { instanceName: string; number: string; audio: string }): Promise<SendMediaResult>;
   fetchProfilePicture?(input: { instanceName: string; number: string }): Promise<string | null>;
   fetchMedia?(input: { instanceName: string; id: string }): Promise<string>;
   createInstance(input: CreateInstanceInput): Promise<CreateInstanceResult>;
@@ -482,6 +483,13 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
         providerMessageId: extractProviderMessageId(responseBody),
         raw: responseBody
       };
+    },
+
+    async sendAudio(input) {
+      const responseBody = await post(`/message/sendWhatsAppAudio/${encodeURIComponent(input.instanceName)}`, {
+        number: input.number, audio: normalizeMediaPayload(input.audio), encoding: false
+      }, 60000);
+      return { providerMessageId: extractProviderMessageId(responseBody), raw: responseBody };
     },
 
     async sendMedia(input) {
