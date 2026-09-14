@@ -294,6 +294,12 @@ export const messageSchema = z.object({
   body: z.string().nullable(),
   mediaUrl: z.string().url().nullable(),
   attachmentReadStatus: z.literal('unread').optional(),
+  attachment: z.object({
+    fileName: z.string().optional(),
+    caption: z.string().optional(),
+    mimeType: z.string().optional(),
+    durationSeconds: z.number().nonnegative().optional()
+  }).optional(),
   status: messageStatusSchema,
   sentByUserId: z.string().nullable(),
   createdAt: z.string().datetime()

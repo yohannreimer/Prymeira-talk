@@ -132,6 +132,8 @@ export interface ListTemplatesResult {
 }
 
 export interface EvolutionClient {
+  fetchProfilePicture?(input: { instanceName: string; number: string }): Promise<string | null>;
+  fetchMedia?(input: { instanceName: string; id: string }): Promise<string>;
   createInstance(input: CreateInstanceInput): Promise<CreateInstanceResult>;
   connectInstance(input: ConnectInstanceInput): Promise<ConnectInstanceResult>;
   setWebhook(input: SetWebhookInput): Promise<SetWebhookResult>;
@@ -354,8 +356,23 @@ function normalizeMediaPayload(media: string) {
   return base64Match?.[1] ?? trimmedMedia;
 }
 
-async function parseResponseBody(response: Response) {
-  const text = await response.text();
+async function parseResponseBody(response: Response, maxBytes?: number) {
+  let text: string;
+  if (maxBytes && response.body) {
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const part = await reader.read();
+        if (part.done) break;
+        size += part.value.byteLength;
+        if (size > maxBytes) { await reader.cancel(); throw new Error('EVOLUTION_RESPONSE_LIMIT'); }
+        chunks.push(part.value);
+      }
+      text = Buffer.concat(chunks).toString('utf8');
+    } finally { reader.releaseLock(); }
+  } else text = await response.text();
   if (text.trim() === "") {
     return null;
   }
@@ -371,16 +388,17 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
   const baseUrl = options.baseUrl.replace(/\/$/, "");
   const fetchImpl = options.fetch ?? globalThis.fetch;
 
-  async function post(path: string, body: unknown) {
+  async function post(path: string, body: unknown, timeoutMs?: number) {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         apikey: options.apiKey
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {})
     });
-    const responseBody = sanitizeResponseBody(await parseResponseBody(response));
+    const responseBody = sanitizeResponseBody(await parseResponseBody(response, timeoutMs ? 36 * 1024 * 1024 : undefined));
 
     if (!response.ok) {
       throw new EvolutionClientError(response.status, responseBody);
@@ -406,6 +424,19 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
   }
 
   return {
+    async fetchProfilePicture(input) {
+      const data = await post(`/chat/fetchProfilePictureUrl/${encodeURIComponent(input.instanceName)}`, { number: input.number }, 8000);
+      const url = getString(data, 'profilePictureUrl');
+      if (!url) return null;
+      try { return new URL(url).protocol === 'https:' ? url : null; } catch { return null; }
+    },
+    async fetchMedia(input) {
+      const data = await post(`/chat/getBase64FromMediaMessage/${encodeURIComponent(input.instanceName)}`, { message: { key: { id: input.id } }, convertToMp4: false }, 15000);
+      const base64 = getString(data, 'base64');
+      const mime = getString(data, 'mimetype')?.split(';')[0].trim().toLowerCase();
+      if (!base64 || !mime || base64.length > 36 * 1024 * 1024) throw new Error('MEDIA_UNAVAILABLE');
+      return `data:${mime};base64,${base64.replace(/^data:[^,]+,/, '').replace(/\s/g, '')}`;
+    },
     async createInstance(input) {
       const responseBody = await post("/instance/create", {
         instanceName: input.instanceName,

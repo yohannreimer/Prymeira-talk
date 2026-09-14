@@ -180,6 +180,17 @@ function readMessageBase64(message: unknown, messageKey: string) {
   );
 }
 
+function attachmentPresentation(message: unknown) {
+  const fileName = readStringPath(message, ['documentMessage', 'fileName']);
+  const caption = readFirstStringPath(message, [['documentMessage', 'caption'], ['imageMessage', 'caption'], ['videoMessage', 'caption']]);
+  const raw = message && typeof message === 'object' ? (message as Record<string, unknown>).audioMessage : null;
+  const seconds = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).seconds : null;
+  return {
+    ...(fileName ? { fileName } : {}), ...(caption ? { caption } : {}),
+    ...(typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0 ? { durationSeconds: seconds } : {})
+  };
+}
+
 export function extractMessageContent(message: unknown): {
   type: MessageDto["type"];
   body: string | null;
@@ -622,6 +633,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             type: messageContent.type,
             body: messageContent.body,
             mediaUrl: messageContent.mediaUrl,
+            ...(['audio', 'image', 'file'].includes(messageContent.type) ? { metadata: { attachment: attachmentPresentation(payload.data.message) } } : {}),
             status: payload.data.key.fromMe ? "sent" : "delivered",
             createdAt: receivedAt
           }

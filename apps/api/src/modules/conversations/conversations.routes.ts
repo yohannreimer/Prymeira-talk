@@ -13,6 +13,7 @@ import {
   createConversationsService
 } from "./conversations.service.js";
 import type { PrismaLike } from "./conversations.service.js";
+import { createInboxMediaService } from './inbox-media.js';
 
 interface ConversationsRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
@@ -147,6 +148,42 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
   app,
   options
 ) => {
+  const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client });
+  app.get('/conversations/:conversationId/messages/:messageId/preview', async (request, reply) => {
+    const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
+    const query = z.object({ page: z.coerce.number().int().min(1).max(2000).default(1) }).safeParse(request.query);
+    if (!params.success || !query.success) return reply.code(400).send({ error: 'Invalid PDF preview request.' });
+    try {
+      const media = await mediaService.preview(request.talk.workspaceId, params.data.conversationId, params.data.messageId, query.data.page);
+      return reply.header('Cache-Control', 'private, no-store').send({ imageUrl: `data:image/png;base64,${media.bytes.toString('base64')}`, pages: media.pageCount });
+    } catch (error) {
+      return reply.code(error instanceof Error && error.message === 'NOT_FOUND' ? 404 : 422).send({ error: 'Não foi possível abrir a prévia deste PDF.' });
+    }
+  });
+  app.get('/conversations/:conversationId/messages/:messageId/media', async (request, reply) => {
+    const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Invalid media request.' });
+    try {
+      const media = await mediaService.media(request.talk.workspaceId, params.data.conversationId, params.data.messageId);
+      return reply.header('Cache-Control', 'private, no-store').header('X-Content-Type-Options', 'nosniff')
+        .type(media.mimeType).send(media.bytes);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : '';
+      return reply.code(code === 'NOT_FOUND' ? 404 : code === 'MEDIA_BUSY' ? 429 : 422)
+        .send({ error: 'Não foi possível carregar o anexo. Tente novamente.' });
+    }
+  });
+  app.get('/conversations/:conversationId/contact-photo', async (request, reply) => {
+    const params = createMessageParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Invalid photo request.' });
+    reply.header('Cache-Control', 'private, no-store').header('X-Content-Type-Options', 'nosniff');
+    try {
+      const photo = await mediaService.photo(request.talk.workspaceId, params.data.conversationId);
+      return photo ? reply.type(photo.mimeType).send(photo.bytes) : reply.code(204).send();
+    } catch (error) {
+      return reply.code(error instanceof Error && error.message === 'NOT_FOUND' ? 404 : 204).send();
+    }
+  });
   const service = createConversationsService(app.prisma as unknown as PrismaLike, {
     evolution: options.evolution
   });

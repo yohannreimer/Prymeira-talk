@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ConversationDto, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bot, CheckCircle2, Download, History, MessageSquare, Plus, RotateCcw, StickyNote, UserCheck, X } from "lucide-react";
+import { Bot, CheckCircle2, History, MessageSquare, Plus, RotateCcw, StickyNote, UserCheck, X } from "lucide-react";
 import type { ChangeEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -35,6 +35,8 @@ import { QuickRepliesPopover } from "./QuickRepliesPopover";
 import { useRealtimeEvents } from "./useRealtimeEvents";
 import { AssistantPanel } from './AssistantPanel';
 import { ContactIdentityCard } from './ContactIdentityCard';
+import { ContactAvatar, ContactPhotoProvider } from './ContactAvatar';
+import { InboxMedia, mediaCaption } from './InboxMedia';
 import { useAssistantConversation } from './useAssistantConversation';
 import { canCopySuggestion, draftNeedsReview, suggestionOrigin, type ComposerSuggestionOrigin } from './assistant-composer-state';
 import { apiSendAssistantSuggestion } from '../../app/api';
@@ -352,83 +354,12 @@ export function messageMediaFallbackLabel(message: Pick<MessageDto, "mediaUrl" |
   return kind ? labels[kind] : "Abrir mídia";
 }
 
-function MessageMediaPreview(props: { message: MessageDto }) {
-  const { message } = props;
-  const kind = messageMediaKind(message);
-
-  if (!message.mediaUrl || !kind) {
-    return null;
-  }
-
-  if (kind === "image") {
-    return (
-      <a
-        className="message-media-frame"
-        href={message.mediaUrl}
-        rel="noreferrer"
-        target="_blank"
-      >
-        <img alt={messageDisplayText(message)} src={message.mediaUrl} />
-      </a>
-    );
-  }
-
-  if (kind === "audio") {
-    if (!isBrowserPlayableAudio(message)) {
-      return (
-        <div className="message-audio-preview is-processing">
-          <a
-            className="message-media-fallback"
-            href={message.mediaUrl}
-            rel="noreferrer"
-            target="_blank"
-          >
-            <Download size={14} aria-hidden="true" />
-            Abrir áudio original
-          </a>
-        </div>
-      );
-    }
-
-    return (
-      <div className="message-audio-preview">
-        <audio
-          className="message-audio-player"
-          controls
-          preload="metadata"
-          src={message.mediaUrl}
-        />
-        <a
-          className="message-media-fallback"
-          href={message.mediaUrl}
-          rel="noreferrer"
-          target="_blank"
-        >
-          <Download size={14} aria-hidden="true" />
-          {messageMediaFallbackLabel(message)}
-        </a>
-      </div>
-    );
-  }
-
-  return (
-    <a
-      className="message-file-card"
-      download
-      href={message.mediaUrl}
-      rel="noreferrer"
-      target="_blank"
-    >
-      <Download size={16} aria-hidden="true" />
-      <span>
-        <strong>{messageDisplayText(message)}</strong>
-        <small>{messageMediaFallbackLabel(message)}</small>
-      </span>
-    </a>
-  );
+export function InboxPage() {
+  const { getToken } = useTalkAuth();
+  return <ContactPhotoProvider getToken={getToken}><InboxPageContent /></ContactPhotoProvider>;
 }
 
-export function InboxPage() {
+function InboxPageContent() {
   const { getToken } = useTalkAuth();
   const [token, setToken] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationDto[]>([]);
@@ -1417,9 +1348,7 @@ export function InboxPage() {
               type="button"
             >
               <div className="conv-avatar-wrap">
-                <span className="conversation-avatar" aria-hidden="true">
-                  {conversation.contactId.slice(0, 2).toUpperCase()}
-                </span>
+                <ContactAvatar conversationId={conversation.id} name={conversation.contactName} className="conversation-avatar" />
               </div>
               <span className="conversation-content">
                 <span className="conversation-row">
@@ -1524,20 +1453,14 @@ export function InboxPage() {
                 key={message.id}
               >
                 {message.direction === "inbound" ? (
-                  <span className="msg-avatar" aria-hidden="true">
-                    {selectedConversation?.contactId.slice(0, 2).toUpperCase() ?? "??"}
-                  </span>
+                  <ContactAvatar conversationId={selectedConversation?.id} name={selectedConversation?.contactName} className="msg-avatar" />
                 ) : null}
                 <div className="msg-bubble-body">
-                  <MessageMediaPreview message={message} />
-                  {message.type === "audio" ? (
-                    <p className={`message-audio-text is-${audioMessageDisplayText(message).kind}`}>
-                      {audioMessageDisplayText(message).text}
-                    </p>
-                  ) : message.body || !message.mediaUrl ? (
-                    <p>{messageDisplayText(message)}</p>
-                  ) : null}
-                  {message.type !== 'audio' && attachmentReadNotice(message) ? <p className="message-audio-text is-error">{attachmentReadNotice(message)}</p> : null}
+                  {['image', 'audio', 'file'].includes(message.type) ? <>
+                    <InboxMedia key={`${message.id}:${message.mediaUrl?.slice(0, 60)}`} message={message} getToken={getToken} />
+                    {mediaCaption(message) ? <p>{mediaCaption(message)}</p> : null}
+                    {attachmentReadNotice(message) ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
+                  </> : <p>{messageDisplayText(message)}</p>}
                   <time>{formatMessageTime(message.createdAt)}</time>
                   {outboundStatusLabel(message) ? (
                     <span className={`message-send-state message-send-state--${message.status}`}>
@@ -1709,6 +1632,7 @@ export function InboxPage() {
         {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={sendSuggestion} onEdit={editSuggestion} /> : <>
         {/* Card identidade */}
         {selectedConversation ? <ContactIdentityCard key={selectedConversation.contactId}
+          conversationId={selectedConversation.id}
           contactId={selectedConversation.contactId} name={selectedConversation.contactName ?? null}
           phone={selectedConversation.contactPhone ?? null} channelName={selectedConversation.channelName}
           onSave={saveContactName} /> : <div className="context-card">Nenhuma conversa</div>}

@@ -73,11 +73,12 @@ async function normalizeAudio(input: {
   ffmpegPath: string;
   runProcess: RunProcess;
   createTemporaryDirectory: () => Promise<string>;
+  forceConversion?: boolean;
 }) {
   assertAudioSize(input.bytes);
   const mimeType = normalizeMimeType(input.mimeType);
   const directType = directAudioTypes.get(mimeType);
-  if (directType) {
+  if (directType && !input.forceConversion) {
     return {
       bytes: input.bytes,
       mimeType: directType.type,
@@ -87,7 +88,7 @@ async function normalizeAudio(input: {
     };
   }
 
-  if (mimeType !== "audio/ogg" && mimeType !== "audio/opus") {
+  if (!directType && mimeType !== "audio/ogg" && mimeType !== "audio/opus") {
     throw new AudioTranscriptionError("UNSUPPORTED_AUDIO_TYPE", "Audio type is unsupported.");
   }
 
@@ -98,7 +99,7 @@ async function normalizeAudio(input: {
     await writeFile(sourcePath, input.bytes);
     try {
       await input.runProcess(input.ffmpegPath, [
-        "-v", "error", "-y", "-i", sourcePath,
+        "-v", "error", "-y", ...(input.forceConversion ? ['-protocol_whitelist', 'file,pipe', '-f', mimeType === 'audio/ogg' || mimeType === 'audio/opus' ? 'ogg' : 'matroska'] : []), "-i", sourcePath,
         "-vn", "-c:a", "libmp3lame", "-b:a", "64k", outputPath
       ]);
     } catch {
@@ -120,6 +121,22 @@ async function normalizeAudio(input: {
     await rm(directory, { recursive: true, force: true });
     throw error;
   }
+}
+
+/** Playback is independent of transcription and requires no model credentials. */
+export async function prepareAudioPlayback(input: { bytes: Buffer; mimeType: string }) {
+  const mime = normalizeMimeType(input.mimeType);
+  if (['audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/x-m4a', 'audio/wav', 'audio/x-wav'].includes(mime)) {
+    assertAudioSize(input.bytes);
+    return { bytes: input.bytes, mimeType: directAudioTypes.get(mime)!.type };
+  }
+  // Normalize browser-dependent Opus/WebM containers to a widely playable MP3.
+  const normalized = await normalizeAudio({
+    ...input, forceConversion: true, ffmpegPath: 'ffmpeg', runProcess: defaultRunProcess,
+    createTemporaryDirectory: () => mkdtemp(join(tmpdir(), 'talk-playback-'))
+  });
+  try { return { bytes: normalized.bytes, mimeType: normalized.mimeType }; }
+  finally { await normalized.cleanup(); }
 }
 
 export function createOpenAiCompatibleAudioTranscriber(input: {

@@ -1,5 +1,6 @@
 import { useRef, useState, type FormEvent } from 'react';
-import { Pencil, UserRound } from 'lucide-react';
+import { Pencil } from 'lucide-react';
+import { ContactAvatar } from './ContactAvatar';
 import './contact-identity.css';
 
 export function contactNameError(name: string) {
@@ -8,7 +9,8 @@ export function contactNameError(name: string) {
 }
 
 /** Key by contactId in the inbox so an unfinished edit never follows another contact. */
-export function ContactIdentityCard({ contactId, name, phone, channelName, onSave }: {
+export function ContactIdentityCard({ contactId, conversationId, name, phone, channelName, onSave }: {
+  conversationId?: string;
   contactId: string; name: string | null; phone: string | null; channelName?: string | null;
   onSave: (contactId: string, name: string) => Promise<void>;
 }) {
@@ -20,7 +22,6 @@ export function ContactIdentityCard({ contactId, name, phone, channelName, onSav
   const busy = useRef(false);
   const editButton = useRef<HTMLButtonElement>(null);
   const displayName = name?.trim() || null;
-  const initials = displayName?.split(/\s+/).slice(0, 2).map(part => part[0]).join('').toUpperCase();
 
   function close() {
     if (busy.current) return;
@@ -44,7 +45,7 @@ export function ContactIdentityCard({ contactId, name, phone, channelName, onSav
 
   return <div className="context-card contact-identity-card">
     <div className="contact-identity-heading">
-      <div className="context-identity-avatar" aria-hidden="true">{initials || <UserRound size={20} />}</div>
+      <ContactAvatar conversationId={conversationId} name={name} className="context-identity-avatar" />
       <div className="contact-identity-details">
         <div className="context-identity-name">{displayName || 'Contato sem nome'}</div>
         {phone ? <div className="contact-identity-phone">{phone}</div> : null}

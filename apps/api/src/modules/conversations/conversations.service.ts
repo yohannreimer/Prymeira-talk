@@ -420,6 +420,13 @@ export function toMessageDto(record: MessageRecord): MessageDto {
   const sourceHash = createHash('sha256').update(JSON.stringify([record.id, record.type, record.mediaUrl ?? null])).digest('hex');
   const result = cache.sourceHash === sourceHash ? object(cache.result) : {};
   const history = object(metadata.historyImport);
+  const attachment = object(metadata.attachment);
+  const publicAttachment = {
+    ...(typeof attachment.fileName === 'string' ? { fileName: attachment.fileName.slice(0, 240) } : {}),
+    ...(typeof attachment.caption === 'string' ? { caption: attachment.caption } : {}),
+    ...(typeof attachment.mimeType === 'string' ? { mimeType: attachment.mimeType } : {}),
+    ...(typeof attachment.durationSeconds === 'number' && Number.isFinite(attachment.durationSeconds) && attachment.durationSeconds >= 0 ? { durationSeconds: attachment.durationSeconds } : {})
+  };
   const processed = result.status === 'processed' && typeof result.extractedText === 'string' && result.extractedText.trim().length > 0;
   const unread = ['image', 'audio', 'file'].includes(record.type) && !processed && (result.status === 'failed' || (history.source === 'evolution' && ['unavailable', 'unread'].includes(String(history.mediaStatus))));
   return {
@@ -431,6 +438,7 @@ export function toMessageDto(record: MessageRecord): MessageDto {
     type: record.type,
     body: record.body,
     mediaUrl: record.mediaUrl ?? null,
+    ...(Object.keys(publicAttachment).length ? { attachment: publicAttachment } : {}),
     ...(unread ? { attachmentReadStatus: 'unread' as const } : {}),
     status: record.status,
     sentByUserId: record.sentByUserId ?? null,

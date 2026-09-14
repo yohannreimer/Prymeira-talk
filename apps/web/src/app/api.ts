@@ -1263,6 +1263,28 @@ async function fileToBase64Payload(file: File) {
   return btoa(binary);
 }
 
+export function apiGetPdfPreview(conversationId: string, messageId: string, page: number, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return fetchJson(getToken, `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/preview?page=${page}`, { signal }, data => data as { imageUrl: string; pages: number }, 'Não foi possível abrir a prévia deste PDF.');
+}
+
+export async function apiGetInboxMedia(conversationId: string, messageId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/media`, {
+    headers: { Authorization: `Bearer ${token}` }, signal
+  });
+  if (!response.ok) throw new Error('Não foi possível carregar o anexo. Tente novamente.');
+  return response.blob();
+}
+
+export async function apiGetContactPhoto(conversationId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/contact-photo`, {
+    headers: { Authorization: `Bearer ${token}` }, signal
+  });
+  if (!response.ok || response.status === 204) return null;
+  return response.blob();
+}
+
 async function fetchJson<T>(
   getToken: () => Promise<string | null>,
   path: string,
