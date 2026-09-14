@@ -27,7 +27,12 @@ export const agentOutputSchema = z.object({
   reply: z.string().trim().min(1).nullable().optional(),
   actions: z.array(agentActionSchema).default([]),
   handoff: agentHandoffSchema,
-  sources: z.array(agentSourceSchema).optional()
+  sources: z.array(agentSourceSchema).optional(),
+  // Private assisted-mode assessment. Invalid/missing assessment must not suppress warnings.
+  attachmentRelevance: z.array(z.object({
+    messageId: z.string().min(1),
+    requiredForReply: z.boolean()
+  })).optional().catch(undefined)
 });
 
 export type AgentOutput = z.infer<typeof agentOutputSchema>;

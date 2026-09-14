@@ -11,6 +11,35 @@ function setup(active = true) {
   return { db, generate, mediaPreparer, run: createAssistantGeneration(db, { providerFactory: () => ({ generate }), mediaPreparer }) };
 }
 describe('private read-only generation', () => {
+  const oldAttachment = { ...context.messages[0], id: 'old-audio', type: 'audio' as const, body: 'Áudio recebido', createdAt: new Date('2026-08-18T12:00:00Z'), metadata: { historyImport: { source: 'evolution', mediaStatus: 'unavailable' } } };
+  it.each([false, true])('warns about historical media only when currently needed: %s', async requiredForReply => {
+    const { run, generate, mediaPreparer } = setup();
+    mediaPreparer.mockResolvedValue({ kind: 'audio', status: 'failed', extractedText: '' });
+    generate.mockResolvedValue({ ...output, attachmentRelevance: [{ messageId: 'old-audio', requiredForReply }] });
+    const result = await run({ ...context, messages: [oldAttachment, { ...context.messages[0], body: requiredForReply ? 'Pode cotar o que pedi naquele áudio?' : 'Por enquanto nada ainda' }] });
+    expect(result.warnings).toHaveLength(requiredForReply ? 1 : 0);
+    expect(generate.mock.calls[0][0].context.conversationHistory).toContain('Anexo não lido');
+    expect(generate.mock.calls[0][0].context.unreadAttachments).toEqual([expect.objectContaining({ messageId: 'old-audio', currentTurn: false })]);
+  });
+  it.each([undefined, [], [{ messageId: 'other', requiredForReply: false }], [{ messageId: 'old-audio', requiredForReply: false }, { messageId: 'old-audio', requiredForReply: true }]])('keeps warnings when relevance is absent or ambiguous: %j', async attachmentRelevance => {
+    const { run, generate, mediaPreparer } = setup();
+    mediaPreparer.mockResolvedValue({ kind: 'audio', status: 'failed', extractedText: '' });
+    generate.mockResolvedValue({ ...output, attachmentRelevance });
+    expect((await run({ ...context, messages: [oldAttachment, context.messages[0]] })).warnings).toHaveLength(1);
+  });
+  it('never suppresses an unread attachment in the current customer turn', async () => {
+    const { run, generate, mediaPreparer } = setup();
+    mediaPreparer.mockResolvedValue({ kind: 'audio', status: 'failed', extractedText: '' });
+    generate.mockResolvedValue({ ...output, attachmentRelevance: [{ messageId: 'new-audio', requiredForReply: false }] });
+    const result = await run({ ...context, messages: [{ ...oldAttachment, id: 'new-audio', metadata: {} }, context.messages[0]] });
+    expect(result.warnings).toHaveLength(1);
+  });
+  it('stores failed reading state against its source without treating it as read', async () => {
+    const { run, db, mediaPreparer } = setup();
+    mediaPreparer.mockResolvedValue({ kind: 'audio', status: 'failed', extractedText: '' });
+    await run({ ...context, messages: [oldAttachment, context.messages[0]] });
+    expect(db.message.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { metadata: expect.objectContaining({ assistantMedia: expect.objectContaining({ result: expect.objectContaining({ status: 'failed' }) }) }) } }));
+  });
   it('uses extracted historical seller attachments and keeps their dates explicit', async () => {
     const { run, generate, mediaPreparer } = setup();
     const m = { ...context.messages[0], id:'proposal',direction:'outbound' as const,type:'file' as const,mediaUrl:'url',createdAt:new Date('2026-08-20T12:00:00Z'),metadata:{} };

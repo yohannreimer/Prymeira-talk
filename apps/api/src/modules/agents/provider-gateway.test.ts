@@ -6,6 +6,13 @@ import {
 } from "./provider-gateway.js";
 
 describe("parseAgentOutput", () => {
+  it('preserves the private attachment assessment', () => {
+    const attachmentRelevance = [{ messageId: 'old', requiredForReply: false }];
+    expect(parseAgentOutput({ reply: 'Tudo bem.', attachmentRelevance }).attachmentRelevance).toEqual(attachmentRelevance);
+  });
+  it.each([null, 'none', [{ messageId: 'old', requiredForReply: 'false' }]])('does not trust malformed attachment decisions: %j', attachmentRelevance => {
+    expect(parseAgentOutput({ reply: 'Tudo bem.', attachmentRelevance }).attachmentRelevance).toBeUndefined();
+  });
   it("parses valid structured agent output", () => {
     const output = parseAgentOutput({
       confidence: 0.82,

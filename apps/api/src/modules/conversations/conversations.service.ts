@@ -1,4 +1,5 @@
 import type { ConversationStatus, PrismaClient } from "@prisma/client";
+import { createHash } from 'node:crypto';
 import type {
   ContactBoardMembershipDto,
   ContactBoardMoveSource,
@@ -124,6 +125,7 @@ interface MessageRecord {
   type: MessageDto["type"];
   body: string | null;
   mediaUrl?: string | null;
+  metadata?: unknown;
   status: MessageDto["status"];
   sentByUserId?: string | null;
   createdAt: DateLike;
@@ -412,6 +414,14 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
 }
 
 export function toMessageDto(record: MessageRecord): MessageDto {
+  const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
+  const metadata = object(record.metadata);
+  const cache = object(metadata.assistantMedia);
+  const sourceHash = createHash('sha256').update(JSON.stringify([record.id, record.type, record.mediaUrl ?? null])).digest('hex');
+  const result = cache.sourceHash === sourceHash ? object(cache.result) : {};
+  const history = object(metadata.historyImport);
+  const processed = result.status === 'processed' && typeof result.extractedText === 'string' && result.extractedText.trim().length > 0;
+  const unread = ['image', 'audio', 'file'].includes(record.type) && !processed && (result.status === 'failed' || (history.source === 'evolution' && ['unavailable', 'unread'].includes(String(history.mediaStatus))));
   return {
     id: record.id,
     workspaceId: record.workspaceId,
@@ -421,6 +431,7 @@ export function toMessageDto(record: MessageRecord): MessageDto {
     type: record.type,
     body: record.body,
     mediaUrl: record.mediaUrl ?? null,
+    ...(unread ? { attachmentReadStatus: 'unread' as const } : {}),
     status: record.status,
     sentByUserId: record.sentByUserId ?? null,
     createdAt: toIsoString(record.createdAt)

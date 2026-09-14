@@ -304,10 +304,18 @@ export function isBrowserPlayableAudio(
   );
 }
 
+export function attachmentReadNotice(message: Pick<MessageDto, 'type' | 'attachmentReadStatus'>) {
+  return message.attachmentReadStatus === 'unread' ? 'Anexo não lido pela IA.' : null;
+}
+
 export function audioMessageDisplayText(
-  message: Pick<MessageDto, "body" | "type">
+  message: Pick<MessageDto, "body" | "type" | "attachmentReadStatus">
 ) {
   const body = message.body?.trim() ?? "";
+
+  if (message.attachmentReadStatus === 'unread') {
+    return { kind: 'error' as const, text: 'Áudio não lido pela IA.' };
+  }
 
   if (body === audioTranscriptFailure) {
     return { kind: "error" as const, text: body };
@@ -1522,6 +1530,7 @@ export function InboxPage() {
                   ) : message.body || !message.mediaUrl ? (
                     <p>{messageDisplayText(message)}</p>
                   ) : null}
+                  {message.type !== 'audio' && attachmentReadNotice(message) ? <p className="message-audio-text is-error">{attachmentReadNotice(message)}</p> : null}
                   <time>{formatMessageTime(message.createdAt)}</time>
                   {outboundStatusLabel(message) ? (
                     <span className={`message-send-state message-send-state--${message.status}`}>

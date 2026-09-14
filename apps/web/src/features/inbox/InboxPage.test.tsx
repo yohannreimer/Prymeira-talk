@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   audioMessageDisplayText,
+  attachmentReadNotice,
   aiControlActionLabel,
   aiControlLabel,
   applyComposerMarker,
@@ -105,6 +106,11 @@ describe("messageMediaKind", () => {
 });
 
 describe("audio message presentation", () => {
+  it('keeps unread warnings local to the attachment without a false processing label', () => {
+    expect(attachmentReadNotice({ type: 'file', attachmentReadStatus: 'unread' })).toBe('Anexo não lido pela IA.');
+    expect(attachmentReadNotice({ type: 'file' })).toBeNull();
+    expect(audioMessageDisplayText({ type: 'audio', body: 'Áudio recebido', attachmentReadStatus: 'unread' })).toEqual({ kind: 'error', text: 'Áudio não lido pela IA.' });
+  });
   it("does not mount Safari's native player for inline OGG/Opus data", () => {
     expect(isBrowserPlayableAudio({
       type: "audio",
