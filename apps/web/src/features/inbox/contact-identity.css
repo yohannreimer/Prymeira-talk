@@ -1,0 +1,18 @@
+.contact-identity-card { gap: 12px; }
+.contact-identity-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.contact-identity-details { min-width: 0; }
+.contact-identity-details .context-identity-name { overflow-wrap: anywhere; }
+.contact-identity-phone { font-size: 12px; color: var(--color-text-secondary); margin-top: 3px; overflow-wrap: anywhere; }
+.contact-name-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.contact-name-footer [role="status"] { color: var(--color-brand-600); font-size: 11px; }
+.contact-name-edit { display: inline-flex; align-items: center; gap: 6px; border: 0; padding: 6px 0; background: transparent; color: var(--color-brand-600); font-size: 12px; font-weight: 600; cursor: pointer; }
+.contact-name-edit:hover { text-decoration: underline; }
+.contact-name-form { display: grid; gap: 8px; }
+.contact-name-form label { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); }
+.contact-name-form input { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--color-border); border-radius: 8px; padding: 9px 10px; background: var(--color-surface-card); color: var(--color-text-primary); font: inherit; font-size: 13px; }
+.contact-name-form input:focus-visible, .contact-name-edit:focus-visible, .contact-name-actions button:focus-visible { outline: 2px solid var(--color-brand-600); outline-offset: 3px; }
+.contact-name-form [role="alert"] { margin: 0; font-size: 12px; color: #a33232; }
+.contact-name-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.contact-name-actions button { border: 1px solid var(--color-border); border-radius: 8px; padding: 8px 10px; background: var(--color-surface-card); color: var(--color-text-secondary); font-size: 12px; cursor: pointer; }
+.contact-name-actions .contact-name-save { background: var(--color-brand-600); border-color: var(--color-brand-600); color: white; }
+.contact-name-actions button:disabled, .contact-name-form input:disabled { opacity: .6; cursor: wait; }

@@ -14,7 +14,8 @@ describe('assistant policy', () => {
     expect(canGenerateSuggestion({mode:'disabled',control:'agent_allowed',trigger:'manual'})).toBe(false);
   });
   it('caps the debounce',()=>{
-    expect(nextSuggestionAt(1000,1000)).toBe(3000);
+    expect(nextSuggestionAt(1000,1000)).toBe(6000);
+    expect(nextSuggestionAt(1000,4000)).toBe(9000);
     expect(nextSuggestionAt(1000,15000)).toBe(11000);
   });
   it.each([null,{}, {assistant:{mode:'automatic'}}, {assistant:{mode:'surprise',agentId:'bad'}}])('legacy or invalid settings stay disabled',config=>{

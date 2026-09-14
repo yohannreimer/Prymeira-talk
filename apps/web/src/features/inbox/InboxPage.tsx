@@ -18,6 +18,7 @@ import {
   apiResetConversation,
   apiRunConversationAction,
   apiUpdateQuickReply,
+  apiUpdateContact,
   type ContactContextDto,
   type ConversationActionBody,
   type ConversationActionResultDto,
@@ -33,6 +34,7 @@ import {
 import { QuickRepliesPopover } from "./QuickRepliesPopover";
 import { useRealtimeEvents } from "./useRealtimeEvents";
 import { AssistantPanel } from './AssistantPanel';
+import { ContactIdentityCard } from './ContactIdentityCard';
 import { useAssistantConversation } from './useAssistantConversation';
 import { canCopySuggestion, draftNeedsReview, suggestionOrigin, type ComposerSuggestionOrigin } from './assistant-composer-state';
 import { apiSendAssistantSuggestion } from '../../app/api';
@@ -920,6 +922,11 @@ export function InboxPage() {
     } finally { assistantSendBusy.current = false; setIsSending(false); }
   }
   const isThreadTransitioning = Boolean(selectedConversationId) && messagesConversationId !== selectedConversationId;
+  async function saveContactName(contactId: string, name: string) {
+    const saved = await apiUpdateContact(getToken, contactId, { name });
+    setConversations(current => current.map(conversation => conversation.contactId === saved.id
+      ? { ...conversation, contactName: saved.name, contactPhone: saved.phone } : conversation));
+  }
   const contextNotes = contactContext?.notes ?? [];
   const visibleNotes = notesHistoryOpen ? contextNotes : contextNotes.slice(0, 2);
   const hiddenNoteCount = Math.max(0, contextNotes.length - visibleNotes.length);
@@ -1701,23 +1708,10 @@ export function InboxPage() {
         <div className="assistant-tabs"><button type="button" aria-pressed={assistantTab === 'contact'} onClick={() => setAssistantTab('contact')}>Contato</button><button type="button" aria-pressed={assistantTab === 'assistant'} onClick={() => setAssistantTab('assistant')}>IA de apoio{assistant.data?.status === 'ready' ? <span className="assistant-tab-dot" /> : null}</button><button ref={assistantCloseRef} className="assistant-drawer-close" aria-label="Fechar apoio" type="button" onClick={() => { setAssistantOpen(false); assistantTriggerRef.current?.focus(); }}><X size={18} /></button></div>
         {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={sendSuggestion} onEdit={editSuggestion} /> : <>
         {/* Card identidade */}
-        <div className="context-card context-card--identity">
-          <div className="context-identity-avatar" aria-hidden="true">
-            {selectedConversation
-              ? selectedConversation.contactId.slice(0, 2).toUpperCase()
-              : "?"}
-          </div>
-          <div>
-            <div className="context-identity-name">
-              {selectedConversation
-                ? contactDisplayName(selectedConversation)
-                : "Nenhuma conversa"}
-            </div>
-            {selectedConversation?.channelName ? (
-              <div className="context-identity-sub">{selectedConversation.channelName}</div>
-            ) : null}
-          </div>
-        </div>
+        {selectedConversation ? <ContactIdentityCard key={selectedConversation.contactId}
+          contactId={selectedConversation.contactId} name={selectedConversation.contactName ?? null}
+          phone={selectedConversation.contactPhone ?? null} channelName={selectedConversation.channelName}
+          onSave={saveContactName} /> : <div className="context-card">Nenhuma conversa</div>}
 
         {/* Card detalhes */}
         <div className="context-card">

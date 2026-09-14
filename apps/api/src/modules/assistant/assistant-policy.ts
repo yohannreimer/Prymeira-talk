@@ -15,5 +15,5 @@ export function canGenerateSuggestion(input:{mode:AssistantMode;control:string;t
   return input.control==='agent_allowed'&&input.mode!=='disabled'&&(input.mode==='automatic'||input.trigger==='manual');
 }
 export function nextSuggestionAt(firstPendingMs:number,lastInboundMs:number):number{
-  return Math.min(lastInboundMs+2000,firstPendingMs+10000);
+  return Math.min(lastInboundMs+5000,firstPendingMs+10000);
 }
