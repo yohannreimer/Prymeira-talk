@@ -25,4 +25,8 @@ Não foi enviado áudio para um cliente real. A entrega ponta a ponta no WhatsAp
 
 ## Publicação
 
-Pendente de sessão autenticada no Portainer. Publicar API e depois web pelo mesmo SHA imutável; aguardar health 200 entre serviços e validar o editor sem enviar a clientes. Rollback de ambos: 66691e4403bf42241a130dda068c433cf80b560f.
+Publicados API e web pelo SHA `cc7326f11a498c6c49c4ebf6dadd6da95e3df148`, nessa ordem, com health 200 antes da atualização web. Workflow `34907585675` aprovado nos dois builds. O primeiro build (`34907391290`) falhou por lockfile gerado pelo pnpm 9 local, sem a configuração injectWorkspacePackages exigida pelo pnpm 10 do Docker; regenerado com pnpm 10.0.0 e instalação frozen validada. Nenhum serviço foi alterado antes do build aprovado.
+
+Produção verificada: API health 200; web HTTP 200; bundle `/assets/index-D3uqptTL.js`; Permissions-Policy `camera=(), microphone=(self), geolocation=()`. Editor real com texto sintético confirmou strong/em no DOM, sem asteriscos visíveis. Rascunho removido sem envio. Captura real de aproximadamente 31 segundos no Talk, prévia reproduzida pelo botão próprio e gravação descartada; nenhuma chamada de envio ao WhatsApp foi feita. Servidor local do harness encerrado.
+
+Rollback de ambos os serviços: `66691e4403bf42241a130dda068c433cf80b560f`. A entrega real no aparelho destinatário continua pendente de teste autorizado, conforme limites acima.
