@@ -17,7 +17,9 @@ RUN cd /runtime && ./node_modules/.bin/prisma generate --schema prisma/schema.pr
 
 FROM node:22-alpine AS runtime
 WORKDIR /app
-RUN apk add --no-cache ffmpeg poppler-utils \
+RUN apk add --no-cache ffmpeg poppler-utils fontconfig font-liberation font-dejavu \
+  && fc-cache -f \
+  && test -n "$(fc-match -f '%{file}' Helvetica)" \
   && corepack enable \
   && corepack prepare pnpm@10.0.0 --activate
 COPY --from=builder /runtime ./

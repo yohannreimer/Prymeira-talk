@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { UserRound } from 'lucide-react';
 import { apiGetContactPhoto } from '../../app/api';
+import { mediaDataUrl } from './media-data-url';
 
 type PhotoLoader = (id: string) => Promise<string | null>;
 const PhotoContext = createContext<PhotoLoader | null>(null);
@@ -8,12 +9,11 @@ export function ContactPhotoProvider({ getToken, children }: { getToken: () => P
   const tokenRef = useRef(getToken); tokenRef.current = getToken;
   const [loader] = useState(() => {
     const cache = new Map<string, Promise<string | null>>();
-    const urls = new Set<string>();
     let abort = new AbortController();
     let chain = Promise.resolve();
     return {
       start() { if (abort.signal.aborted) abort = new AbortController(); },
-      clear() { abort.abort(); urls.forEach(url => URL.revokeObjectURL(url)); urls.clear(); cache.clear(); },
+      clear() { abort.abort(); cache.clear(); },
       load(id: string) {
         if (cache.has(id)) return cache.get(id)!;
         const signal = abort.signal;
@@ -23,7 +23,7 @@ export function ContactPhotoProvider({ getToken, children }: { getToken: () => P
           try {
             const blob = await apiGetContactPhoto(id, () => tokenRef.current(), signal);
             if (!blob || signal.aborted) return null;
-            const url = URL.createObjectURL(blob); urls.add(url); return url;
+            const url = await mediaDataUrl(blob); return signal.aborted ? null : url;
           } catch { return null; }
         });
         chain = task.then(() => {}); cache.set(id, task); return task;

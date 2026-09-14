@@ -25,4 +25,13 @@ Reprodução manual: `pnpm --filter @prymeira-talk/api exec tsx scripts/inbox-me
 
 Limites: não se garante recuperar mídia que o WhatsApp já removeu. PDFs protegidos/corrompidos podem não gerar prévia; download continua disponível quando há bytes. Perfil oculto pelo titular permanece sem foto. Dois envios com mesmo nome não são apagados ou fundidos: podem ser mensagens distintas. Esta mudança não afirma corrigir a leitura semântica de todos os anexos pela IA.
 
-Publicação ainda pendente neste registro inicial; atualizar abaixo com commit, imagens e evidência de produção.
+## Primeira publicação e correção após retorno do usuário
+
+Primeira publicação: commit `502787fe3f392362bbda177ec414d02215006d20`, workflow `34890830838`, API e web atualizadas no Portainer. Consultas somente leitura confirmaram bytes de áudio MP3, PDF, prévia PNG e foto JPEG nos dois canais. Isso **não comprovou a apresentação correta**: o usuário mostrou PDF sem texto e áudio/fotos indisponíveis.
+
+Causas confirmadas em 14/09:
+
+- O CSP real permite `data:` em img-src/media-src, mas não `blob:`. A UI criava object URLs. Ao aplicar a mesma política ao harness local, áudio, imagem remota e foto falharam. URLs locais passaram a usar data URLs de bytes autenticados, sem enfraquecer o CSP. Testes verificam bytes e MIME, inclusive arquivos maiores que um chunk. Cache é liberado ao sair; requisições canceladas não atualizam componentes antigos.
+- Na imagem Alpine da API, `fc-list` e `fc-match` retornaram zero bytes: nenhuma fonte de fallback. Incluídas Liberation/DejaVu e verificação de fonte Helvetica durante o build. O arquivo original não estava corrompido; o defeito era na rasterização da prévia.
+
+Harness agora reproduz as restrições de imagem/áudio de produção. Após a correção, player entrou em reprodução, duração/posição ficaram disponíveis e imagens/foto sintéticas apareceram. Publicação corretiva e verificação visual em produção ainda pendentes neste ponto do registro. Nenhum envio ou alteração de agentes foi feito.

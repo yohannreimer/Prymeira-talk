@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Download, FileText, LoaderCircle, Mic, Pause, Play, RotateCcw, X } from 'lucide-react';
 import type { MessageDto } from '@prymeira-talk/shared';
 import { apiGetInboxMedia, apiGetPdfPreview } from '../../app/api';
+import { mediaDataUrl } from './media-data-url';
 import './inbox-media.css';
 
 type MediaMessage = Pick<MessageDto, 'type' | 'body'> & Partial<Pick<MessageDto, 'mediaUrl' | 'attachment'>>;
@@ -57,7 +58,7 @@ function MediaViewer({ src, kind, name, message, getToken, onClose }: { src: str
   </dialog>;
 }
 
-/** Fetches privately on demand; blob URLs are released when leaving the message. */
+/** Fetches privately on demand; local media URLs comply with production CSP. */
 export function InboxMedia({ message, getToken }: { message: MessageDto; getToken: () => Promise<string | null> }) {
   const root = useRef<HTMLDivElement>(null);
   const audio = useRef<HTMLAudioElement>(null);
@@ -83,7 +84,6 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
     return () => {
       controller.current?.abort();
       audio.current?.pause();
-      if (resource.current) URL.revokeObjectURL(resource.current.url);
       resource.current = null; pending.current = null;
     };
   }, [message.id, message.mediaUrl]);
@@ -96,8 +96,9 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
     const signal = controller.current.signal;
     const job = (async () => {
       const blob = await apiGetInboxMedia(message.conversationId, message.id, getToken, signal);
+      const url = await mediaDataUrl(blob);
       signal.throwIfAborted();
-      const item = { blob, url: URL.createObjectURL(blob) };
+      const item = { blob, url };
       resource.current = item; setSrc(item.url);
       return item;
     })();
