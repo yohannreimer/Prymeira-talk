@@ -516,6 +516,7 @@ describe("executeAgentActions", () => {
     expect(invalid[0]).toEqual({
       type: "send_attachment",
       status: "skipped",
+      code: "TOOL_INVALID_INPUT",
       reason: "attachmentUrl must use http or https."
     });
   });
