@@ -2,6 +2,14 @@
 
 Esta entrega transforma os quatro históricos reconstruídos da Villefer em um primeiro pacote operacional de treinamento. O pacote foi desenhado para **qualificar o pedido e entregar o briefing ao vendedor**; ele não calcula nem envia proposta.
 
+## Revisões posteriores
+
+O pacote evoluiu depois do recorte histórico e a **revisão de 16/09/2026** (agente do vendedor Junior) passou a ser o baseline vigente. Ela adiciona a política comercial validada em 15–16/09 (estoque versus encomenda, mínimos de 300 kg para inox e 1.000 kg para tubos não inox e perfis, exclusão de oxicorte e material cortado) e este repositório passou a espelhá-la em `villefer-v1-definition.ts` e `villefer-v1-package.ts`.
+
+Sobre esse baseline foi acrescentada uma regra de pré-atendimento: na primeira menção a um item sob encomenda, o agente confirma que temos, informa o mínimo aplicável e oferece **ver o catálogo em PDF ou falar com o vendedor**. A escolha do catálogo envia o arquivo oficial por `send_attachment`; a escolha do vendedor solicita handoff. Itens de linha de estoque seguem a qualificação normal, e a oferta não se repete no meio de uma negociação já em andamento.
+
+O catálogo enviado é o arquivo oficial `https://villefer.com.br/site/uploads/2024/07/catalogo-villefer.pdf`, registrado como fonte aprovada `approved_catalog_pdf_v1`. O envio só ocorre em canais Evolution.
+
 ## Resultado da compilação
 
 | Item | Resultado |

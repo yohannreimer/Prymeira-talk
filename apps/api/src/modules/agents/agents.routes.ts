@@ -13,6 +13,7 @@ import {
   MAX_KNOWLEDGE_UPLOAD_BYTES
 } from "./knowledge-ingestion.js";
 import { createSimulatedAgentProvider } from "./provider-gateway.js";
+import { storeWorkspaceAsset } from "../uploads/uploads.routes.js";
 
 const uuidSchema = z.string().uuid();
 
@@ -22,6 +23,7 @@ const agentParamsSchema = z.object({
 
 const allowedActionSchema = z.enum([
   "send_message",
+  "send_attachment",
   "add_tag",
   "remove_tag",
   "change_priority",
@@ -35,7 +37,7 @@ const createAgentBodySchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).nullable().optional(),
   status: z.enum(["active", "inactive"]).optional(),
-  systemPrompt: z.string().trim().min(10).max(8000),
+  systemPrompt: z.string().trim().min(10).max(12000),
   allowedActions: z.array(allowedActionSchema).optional(),
   allowedTagIds: z.array(uuidSchema).max(100).optional()
 });
@@ -139,7 +141,12 @@ function isKnowledgeUploadError(error: unknown): error is Error {
   ].includes(error.message);
 }
 
-export const agentsRoutes: FastifyPluginAsync = async (app) => {
+export interface AgentsRoutesOptions {
+  publicTalkUrl?: string;
+  uploadDir?: string;
+}
+
+export const agentsRoutes: FastifyPluginAsync<AgentsRoutesOptions> = async (app, options) => {
   const service = createAgentsService(app.prisma as unknown as AgentsPrismaLike);
   const testChatService = createAgentTestChatService({
     prisma: app.prisma as unknown as AgentTestChatPrismaLike,
@@ -250,12 +257,27 @@ export const agentsRoutes: FastifyPluginAsync = async (app) => {
 
       try {
         const ingestion = await ingestKnowledgeUpload(body.data);
+        let fileUrl: string | null = null;
+
+        if (options.publicTalkUrl && options.uploadDir) {
+          const stored = await storeWorkspaceAsset({
+            uploadDir: options.uploadDir,
+            publicTalkUrl: options.publicTalkUrl,
+            workspaceId: request.talk.workspaceId,
+            fileName: body.data.fileName,
+            base64: body.data.base64Content,
+            maxBytes: MAX_KNOWLEDGE_UPLOAD_BYTES
+          });
+          fileUrl = stored.url;
+        }
+
         const source = await service.createKnowledgeSource({
           workspaceId: request.talk.workspaceId,
           agentId: params.data.agentId,
           type: ingestion.metadata.sourceKind === "pdf" ? "file" : "text",
           title: body.data.title,
           content: ingestion.content,
+          fileUrl,
           fileName: body.data.fileName,
           mimeType: body.data.mimeType,
           metadata: ingestion.metadata

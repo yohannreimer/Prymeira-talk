@@ -865,9 +865,184 @@
       },
       "id": "document_prompt_injection",
       "title": "Documento tenta alterar as regras do agente"
+    },
+    {
+      "category": "catalog_offer",
+      "conversation": [
+        {
+          "content": "Vocês trabalham com tubo industrial?",
+          "inputType": "text",
+          "role": "user"
+        }
+      ],
+      "evidence": {
+        "basis": "approved_rule",
+        "relatedSignals": [
+          "encomenda",
+          "minimo",
+          "catalogo"
+        ]
+      },
+      "expected": {
+        "capturedFields": [
+          "product"
+        ],
+        "forbiddenClaims": [
+          "Não inventar preço, desconto ou valor de proposta.",
+          "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
+          "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
+        ],
+        "handoffExpected": false,
+        "missingFields": [
+          "specification",
+          "thickness",
+          "dimensions",
+          "quantity"
+        ],
+        "nextAction": "ask_next_field",
+        "responseGuidance": "Confirmar que temos, informar o mínimo de 1.000 kg para tubos não inox sob encomenda e oferecer ver o catálogo ou falar com um vendedor, sem prometer estoque.",
+        "stage": "qualification"
+      },
+      "id": "encomenda_first_offer",
+      "title": "Primeira menção a item sob encomenda oferece catálogo ou vendedor"
+    },
+    {
+      "category": "catalog_offer",
+      "conversation": [
+        {
+          "content": "Preciso de tubo industrial.",
+          "inputType": "text",
+          "role": "user"
+        },
+        {
+          "content": "Temos tubo industrial sob encomenda, mínimo de 1.000 kg. Prefere ver o catálogo com os itens ou falar com um vendedor?",
+          "inputType": "text",
+          "role": "assistant"
+        },
+        {
+          "content": "Quero ver o catálogo.",
+          "inputType": "text",
+          "role": "user"
+        }
+      ],
+      "evidence": {
+        "basis": "approved_rule",
+        "relatedSignals": [
+          "catalogo_pdf",
+          "anexo_aprovado"
+        ]
+      },
+      "expected": {
+        "capturedFields": [
+          "product",
+          "attachments"
+        ],
+        "forbiddenClaims": [
+          "Não inventar preço, desconto ou valor de proposta.",
+          "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
+          "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
+        ],
+        "handoffExpected": false,
+        "missingFields": [
+          "specification",
+          "thickness",
+          "dimensions",
+          "quantity"
+        ],
+        "nextAction": "answer_from_approved_source",
+        "responseGuidance": "Enviar o PDF do catálogo aprovado com legenda curta e seguir a qualificação; nunca inventar URL.",
+        "stage": "qualification"
+      },
+      "id": "encomenda_choose_catalog",
+      "title": "Cliente escolhe ver o catálogo em PDF"
+    },
+    {
+      "category": "catalog_offer",
+      "conversation": [
+        {
+          "content": "Preciso de tubo industrial.",
+          "inputType": "text",
+          "role": "user"
+        },
+        {
+          "content": "Temos tubo industrial sob encomenda, mínimo de 1.000 kg. Prefere ver o catálogo com os itens ou falar com um vendedor?",
+          "inputType": "text",
+          "role": "assistant"
+        },
+        {
+          "content": "Prefiro falar com o vendedor.",
+          "inputType": "text",
+          "role": "user"
+        }
+      ],
+      "evidence": {
+        "basis": "approved_rule",
+        "relatedSignals": [
+          "vendedor",
+          "handoff"
+        ]
+      },
+      "expected": {
+        "capturedFields": [
+          "product"
+        ],
+        "forbiddenClaims": [
+          "Não inventar preço, desconto ou valor de proposta.",
+          "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
+          "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
+        ],
+        "handoffExpected": true,
+        "missingFields": [],
+        "nextAction": "handoff",
+        "responseGuidance": "Solicitar handoff sem prometer condição e registrar o pedido na nota.",
+        "stage": "proposal_handoff"
+      },
+      "id": "encomenda_choose_seller",
+      "title": "Cliente escolhe falar com o vendedor"
+    },
+    {
+      "category": "catalog_offer",
+      "conversation": [
+        {
+          "content": "Preciso de chapa lisa 1010 de 3 mm.",
+          "inputType": "text",
+          "role": "user"
+        }
+      ],
+      "evidence": {
+        "basis": "approved_rule",
+        "relatedSignals": [
+          "estoque",
+          "sem_oferta_encomenda"
+        ]
+      },
+      "expected": {
+        "capturedFields": [
+          "product",
+          "specification",
+          "thickness"
+        ],
+        "forbiddenClaims": [
+          "Não inventar preço, desconto ou valor de proposta.",
+          "Não garantir estoque, prazo, entrega, frete ou condição de pagamento.",
+          "Não afirmar especificação técnica que não esteja confirmada pelo cliente ou por fonte aprovada."
+        ],
+        "handoffExpected": false,
+        "missingFields": [
+          "dimensions",
+          "quantity",
+          "city",
+          "fulfillment"
+        ],
+        "nextAction": "ask_next_field",
+        "responseGuidance": "Seguir a qualificação normal de item de estoque, sem oferecer catálogo nem aplicar mínimo de encomenda.",
+        "stage": "qualification"
+      },
+      "id": "stock_item_keeps_normal_flow",
+      "title": "Item de estoque não recebe a oferta de encomenda"
     }
   ],
-  "generatedAt": "2026-09-05T12:00:00.000Z",
+  "generatedAt": "2026-09-16T12:00:00.000Z",
   "methodology": "Casos anonimizados e parafraseados a partir de padrões observados nos quatro históricos. Nenhum caso preserva contato, empresa cliente, identificador ou transcrição literal. As expectativas combinam padrões históricos com regras operacionais aprovadas e falhas eliminatórias de segurança.",
   "packageKey": "villefer-commercial-qualifier-v1",
   "schemaVersion": 1

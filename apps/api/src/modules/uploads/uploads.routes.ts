@@ -64,6 +64,32 @@ export interface UploadsRoutesOptions {
   uploadDir: string;
 }
 
+export async function storeWorkspaceAsset(input: {
+  uploadDir: string;
+  publicTalkUrl: string;
+  workspaceId: string;
+  fileName: string;
+  base64: string;
+  maxBytes: number;
+}): Promise<{ url: string; size: number }> {
+  const fileBuffer = Buffer.from(input.base64, "base64");
+  if (fileBuffer.byteLength === 0 || fileBuffer.byteLength > input.maxBytes) {
+    throw new Error("UPLOAD_TOO_LARGE");
+  }
+
+  const storedFileName = `${Date.now().toString(36)}-${randomUUID()}-${safeFileName(input.fileName)}`;
+  const workspaceDir = path.join(input.uploadDir, "automations", input.workspaceId);
+  const storedPath = path.join(workspaceDir, storedFileName);
+
+  await mkdir(workspaceDir, { recursive: true });
+  await writeFile(storedPath, fileBuffer);
+
+  return {
+    url: publicUploadUrl(input.publicTalkUrl, input.workspaceId, storedFileName),
+    size: fileBuffer.byteLength
+  };
+}
+
 export const uploadsRoutes: FastifyPluginAsync<UploadsRoutesOptions> = async (app, options) => {
   async function serveAutomationAsset(request: FastifyRequest, reply: FastifyReply) {
     const params = z.object({
@@ -102,23 +128,25 @@ export const uploadsRoutes: FastifyPluginAsync<UploadsRoutesOptions> = async (ap
         return reply.code(400).send({ error: "Invalid upload request." });
       }
 
-      const fileBuffer = Buffer.from(body.data.base64, "base64");
-      if (fileBuffer.byteLength === 0 || fileBuffer.byteLength > MAX_AUTOMATION_ASSET_BYTES) {
+      let stored: { url: string; size: number };
+      try {
+        stored = await storeWorkspaceAsset({
+          uploadDir: options.uploadDir,
+          publicTalkUrl: options.publicTalkUrl,
+          workspaceId: request.talk.workspaceId,
+          fileName: body.data.fileName,
+          base64: body.data.base64,
+          maxBytes: MAX_AUTOMATION_ASSET_BYTES
+        });
+      } catch {
         return reply.code(413).send({ error: "Arquivo excede o limite de 15 MB." });
       }
-
-      const storedFileName = `${Date.now().toString(36)}-${randomUUID()}-${safeFileName(body.data.fileName)}`;
-      const workspaceDir = path.join(options.uploadDir, "automations", request.talk.workspaceId);
-      const storedPath = path.join(workspaceDir, storedFileName);
-
-      await mkdir(workspaceDir, { recursive: true });
-      await writeFile(storedPath, fileBuffer);
 
       return reply.code(201).send({
         fileName: body.data.fileName.trim(),
         mimeType: body.data.mimeType.trim(),
-        size: fileBuffer.byteLength,
-        url: publicUploadUrl(options.publicTalkUrl, request.talk.workspaceId, storedFileName)
+        size: stored.size,
+        url: stored.url
       });
     }
   );

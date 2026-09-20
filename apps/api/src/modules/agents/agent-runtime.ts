@@ -100,7 +100,24 @@ type KnowledgeSourceRecord = {
   id: string;
   title: string;
   content: string | null;
+  fileUrl?: string | null;
+  fileName?: string | null;
+  mimeType?: string | null;
   metadata?: JsonValue;
+};
+
+type ApprovedAttachment = {
+  title: string;
+  url: string;
+  fileName: string | null;
+  mimeType: string | null;
+};
+
+type PendingAttachment = {
+  url: string;
+  caption: string | null;
+  fileName: string | null;
+  mimeType: string | null;
 };
 
 type AgentSessionRecord = {
@@ -147,7 +164,7 @@ export type AgentRuntimeResult = {
 
 type AgentRuntimeEvolution = {
   mode: EvolutionRuntime["mode"];
-  client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText"> | null;
+  client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText" | "sendMedia"> | null;
 };
 
 type AgentRuntimeRealtime = {
@@ -454,6 +471,8 @@ export function createAgentRuntime(input: {
 
         const allowedActions = readAllowedActions(agent.allowedActions);
         const allowedTags = toAllowedTags(agent);
+        const approvedAttachments = knowledge.flatMap(toApprovedAttachment);
+        const approvedAttachmentUrls = new Set(approvedAttachments.map((attachment) => attachment.url));
         const taxonomy = readKnowledgeTaxonomy(agent.behaviorConfig);
         const knowledgeSelection = selectRelevantKnowledge({
           latestMessage: message.body,
@@ -466,6 +485,7 @@ export function createAgentRuntime(input: {
           conversation,
           message,
           knowledgeSelection.selected,
+          approvedAttachments,
           conversationContext,
           allowedActions,
           allowedTags
@@ -479,6 +499,7 @@ export function createAgentRuntime(input: {
           taxonomyKeys: taxonomy.map((entry) => entry.key),
           knowledgeCount: knowledgeSelection.selected.length,
           knowledgeTotal: knowledgeSelection.total,
+          attachmentCount: approvedAttachments.length,
           conversationMessageCount: conversationContext.messages.length
         };
         knowledgeMatches = knowledgeSelection.selected.map((source) => ({
@@ -528,7 +549,19 @@ export function createAgentRuntime(input: {
         });
         await applyBoardRulesForActionResults(runInput.workspaceId, actionResults);
 
-        if (!handoffReason && allowedActions.includes("send_message") && !providerOutput.reply) {
+        const pendingAttachments =
+          !handoffReason && allowedActions.includes("send_attachment")
+            ? actionResults
+                .flatMap(toPendingAttachment)
+                .filter((attachment) => approvedAttachmentUrls.has(attachment.url))
+            : [];
+
+        if (
+          !handoffReason &&
+          allowedActions.includes("send_message") &&
+          !providerOutput.reply &&
+          pendingAttachments.length === 0
+        ) {
           throw new Error("Agent did not produce a reply.");
         }
 
@@ -565,6 +598,50 @@ export function createAgentRuntime(input: {
             data: {
               lastMessageAt: new Date(),
               lastMessagePreview: providerOutput.reply
+            }
+          });
+        }
+
+        for (const attachment of pendingAttachments) {
+          const providerSend = await sendAgentAttachmentToProvider(
+            input.evolution,
+            conversation,
+            attachment
+          );
+          const outboundMessage = await prisma.message.create({
+            data: {
+              workspaceId: runInput.workspaceId,
+              conversationId: conversation.id,
+              direction: "outbound",
+              type: attachment.mimeType?.startsWith("image/") ? "image" : "file",
+              body: attachment.caption ?? attachment.fileName ?? "",
+              mediaUrl: attachment.url,
+              providerMessageId: providerSend?.providerMessageId ?? undefined,
+              status: providerSend ? "sent" : "pending",
+              sentByUserId: null,
+              metadata: {
+                source: "ai_agent",
+                agentId: agent.id,
+                attachment: true
+              }
+            }
+          });
+          input.realtime?.publish({
+            type: "message.created",
+            workspaceId: runInput.workspaceId,
+            payload: toMessageDto(outboundMessage)
+          });
+          await prisma.conversation.update({
+            where: {
+              workspaceId_id: {
+                workspaceId: runInput.workspaceId,
+                id: conversation.id
+              }
+            },
+            data: {
+              lastMessageAt: new Date(),
+              lastMessagePreview:
+                attachment.caption ?? attachment.fileName ?? "Anexo enviado"
             }
           });
         }
@@ -772,7 +849,8 @@ function buildUserPrompt(messageBody: string | null | undefined, instruction: st
 function buildContext(
   conversation: ConversationRecord,
   message: MessageRecord,
-  knowledge: Pick<SelectedKnowledgeSource, "title" | "content">[],
+  knowledge: Pick<SelectedKnowledgeSource, "title" | "content" | "fileUrl">[],
+  approvedAttachments: ApprovedAttachment[],
   conversationContext: ConversationContext,
   allowedActions: readonly AiAgentAllowedAction[],
   allowedTags: readonly AllowedAgentTag[]
@@ -807,7 +885,14 @@ function buildContext(
         .filter((name): name is string => Boolean(name)) ?? [],
     knowledge: knowledge.map((source) => ({
       title: source.title,
-      content: source.content
+      content: source.content,
+      ...(source.fileUrl ? { fileUrl: source.fileUrl } : {})
+    })),
+    attachments: approvedAttachments.map((attachment) => ({
+      title: attachment.title,
+      url: attachment.url,
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType
     }))
   };
 }
@@ -850,8 +935,97 @@ function toRetrievalSource(source: KnowledgeSourceRecord): KnowledgeRetrievalSou
     id: source.id,
     title: source.title,
     content: source.content,
-    metadata: isRecord(source.metadata) ? source.metadata : null
+    metadata: isRecord(source.metadata) ? source.metadata : null,
+    fileUrl: source.fileUrl ?? null,
+    fileName: source.fileName ?? null,
+    mimeType: source.mimeType ?? null
   };
+}
+
+function toApprovedAttachment(source: KnowledgeSourceRecord): ApprovedAttachment[] {
+  const url = source.fileUrl?.trim();
+  if (!url) {
+    return [];
+  }
+
+  return [
+    {
+      title: source.title,
+      url,
+      fileName: source.fileName?.trim() || null,
+      mimeType: source.mimeType?.trim() || null
+    }
+  ];
+}
+
+function toPendingAttachment(result: AgentToolExecutionResult): PendingAttachment[] {
+  if (result.type !== "send_attachment" || result.status !== "completed" || !result.attachmentUrl) {
+    return [];
+  }
+
+  const fileName = result.attachmentFileName?.trim() || fileNameFromUrl(result.attachmentUrl);
+
+  return [
+    {
+      url: result.attachmentUrl,
+      caption: result.attachmentCaption ?? null,
+      fileName,
+      mimeType: result.attachmentMimeType?.trim() || guessMimeType(fileName)
+    }
+  ];
+}
+
+function fileNameFromUrl(url: string) {
+  try {
+    const pathname = new URL(url).pathname;
+    const lastSegment = pathname.split("/").filter(Boolean).at(-1);
+    return lastSegment ? decodeURIComponent(lastSegment) : null;
+  } catch {
+    return null;
+  }
+}
+
+function guessMimeType(fileName: string | null) {
+  const extension = fileName?.toLocaleLowerCase("pt-BR").split(".").at(-1) ?? "";
+  const types: Record<string, string> = {
+    pdf: "application/pdf",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    gif: "image/gif",
+    txt: "text/plain",
+    csv: "text/csv",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    xls: "application/vnd.ms-excel",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    doc: "application/msword"
+  };
+
+  return types[extension] ?? "application/octet-stream";
+}
+
+async function sendAgentAttachmentToProvider(
+  evolution: AgentRuntimeEvolution | undefined,
+  conversation: ConversationRecord,
+  attachment: PendingAttachment
+) {
+  const instanceName = conversation.channel?.providerKey;
+  const number = conversation.contact?.phone;
+
+  if (evolution?.mode !== "real" || !evolution.client || !instanceName || !number) {
+    return null;
+  }
+
+  return await evolution.client.sendMedia({
+    instanceName,
+    number,
+    mediatype: attachment.mimeType?.startsWith("image/") ? "image" : "document",
+    mimetype: attachment.mimeType ?? "application/octet-stream",
+    media: attachment.url,
+    fileName: attachment.fileName ?? "anexo",
+    caption: attachment.caption ?? undefined
+  });
 }
 
 function getHandoffReason(output: AgentOutput, confidenceThreshold: number) {

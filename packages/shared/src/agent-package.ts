@@ -65,7 +65,10 @@ export const agentPackageKnowledgeSourceSchema = z.object({
   approvedBy: z.string().trim().min(1).max(160),
   approvedAt: z.string().datetime(),
   validUntil: z.string().datetime().nullable(),
-  aliases: z.array(z.string().trim().min(2).max(120)).max(80)
+  aliases: z.array(z.string().trim().min(2).max(120)).max(80),
+  fileUrl: z.string().trim().url().max(1000).nullable().optional(),
+  fileName: z.string().trim().min(1).max(240).nullable().optional(),
+  mimeType: z.string().trim().min(1).max(160).nullable().optional()
 });
 
 export const agentPackageSchema = z
@@ -89,7 +92,7 @@ export const agentPackageSchema = z
     agent: z.object({
       name: z.string().trim().min(1).max(120),
       description: z.string().trim().max(500).nullable(),
-      systemPrompt: z.string().trim().min(10).max(8000),
+      systemPrompt: z.string().trim().min(10).max(12_000),
       qualification: z.object({
         completionStage: agentPackageSlugSchema,
         fields: z.array(agentQualificationFieldSchema).max(100)

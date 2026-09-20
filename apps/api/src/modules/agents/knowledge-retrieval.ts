@@ -12,6 +12,9 @@ export type KnowledgeRetrievalSource = {
   title: string;
   content: string | null;
   metadata?: KnowledgeRetrievalMetadata | Record<string, unknown> | null;
+  fileUrl?: string | null;
+  fileName?: string | null;
+  mimeType?: string | null;
 };
 
 export type SelectedKnowledgeSource = {
@@ -22,6 +25,9 @@ export type SelectedKnowledgeSource = {
   score: number;
   reasons: KnowledgeRetrievalReason[];
   includedAs: "full_document" | "snippet";
+  fileUrl: string | null;
+  fileName: string | null;
+  mimeType: string | null;
 };
 
 export type KnowledgeRetrievalReason =
@@ -173,6 +179,9 @@ function scoreSource(
     score,
     reasons: Array.from(reasons),
     includedAs,
+    fileUrl: source.fileUrl?.trim() || null,
+    fileName: source.fileName?.trim() || null,
+    mimeType: source.mimeType?.trim() || null,
     index
   };
 }

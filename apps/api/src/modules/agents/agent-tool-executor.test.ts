@@ -424,4 +424,59 @@ describe("executeAgentActions", () => {
     expect(prisma.conversation.update).not.toHaveBeenCalled();
     expect(prisma.aiAgentSession.update).not.toHaveBeenCalled();
   });
+
+  it("returns allowed attachments for the runtime to deliver", async () => {
+    const prisma = buildPrisma();
+
+    const results = await executeAgentActions(prisma, {
+      ...baseInput,
+      allowedActions: [...baseInput.allowedActions, "send_attachment"],
+      actions: [
+        {
+          type: "send_catalog",
+          attachmentUrl: "https://villefer.com.br/catalogo.pdf",
+          caption: "Catálogo Villefer",
+          fileName: "catalogo.pdf",
+          mimeType: "application/pdf"
+        }
+      ]
+    });
+
+    expect(results).toEqual([
+      {
+        type: "send_attachment",
+        status: "completed",
+        conversationId: "conv_1",
+        attachmentUrl: "https://villefer.com.br/catalogo.pdf",
+        attachmentCaption: "Catálogo Villefer",
+        attachmentFileName: "catalogo.pdf",
+        attachmentMimeType: "application/pdf"
+      }
+    ]);
+  });
+
+  it("skips disallowed attachments and rejects non-http urls", async () => {
+    const prisma = buildPrisma();
+
+    const skipped = await executeAgentActions(prisma, {
+      ...baseInput,
+      actions: [{ type: "send_attachment", attachmentUrl: "https://example.com/a.pdf" }]
+    });
+    expect(skipped[0]).toEqual({
+      type: "send_attachment",
+      status: "skipped",
+      reason: "Agent action send_attachment is not allowed."
+    });
+
+    const invalid = await executeAgentActions(prisma, {
+      ...baseInput,
+      allowedActions: [...baseInput.allowedActions, "send_attachment"],
+      actions: [{ type: "send_attachment", attachmentUrl: "data:application/pdf;base64,abc" }]
+    });
+    expect(invalid[0]).toEqual({
+      type: "send_attachment",
+      status: "skipped",
+      reason: "attachmentUrl must use http or https."
+    });
+  });
 });

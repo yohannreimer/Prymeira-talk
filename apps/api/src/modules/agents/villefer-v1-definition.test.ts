@@ -8,7 +8,7 @@ describe("villeferV1Definition", () => {
     const parsed = agentPackageSchema.parse(villeferV1Definition.package);
     const fieldKeys = parsed.agent.qualification.fields.map((field) => field.key);
 
-    expect(parsed.agent.systemPrompt.length).toBeLessThanOrEqual(8000);
+    expect(parsed.agent.systemPrompt.length).toBeLessThanOrEqual(12000);
     expect(fieldKeys).toEqual(
       expect.arrayContaining([
         "company",
@@ -25,9 +25,35 @@ describe("villeferV1Definition", () => {
         "attachments"
       ])
     );
-    expect(parsed.agent.allowedActions).toEqual(
-      expect.arrayContaining(["send_message", "create_internal_note", "request_handoff"])
+    expect(fieldKeys).toEqual(
+      expect.arrayContaining(["registration_context", "payment_context", "open_questions"])
     );
+    expect(parsed.agent.knowledgeTaxonomy.map((entry) => entry.key)).toEqual(
+      expect.arrayContaining(["product_and_specification", "stock_and_availability"])
+    );
+    expect(parsed.agent.allowedActions).toEqual(
+      expect.arrayContaining([
+        "send_message",
+        "send_attachment",
+        "create_internal_note",
+        "request_handoff"
+      ])
+    );
+  });
+
+  it("ships the approved catalog attachment and the encomenda offer rule", () => {
+    const parsed = agentPackageSchema.parse(villeferV1Definition.package);
+    const catalogPdf = parsed.knowledge.find((source) => source.key === "approved_catalog_pdf_v1");
+
+    expect(catalogPdf?.type).toBe("file");
+    expect(catalogPdf?.category).toBe("product_and_specification");
+    expect(catalogPdf?.fileUrl).toBe(
+      "https://villefer.com.br/site/uploads/2024/07/catalogo-villefer.pdf"
+    );
+    expect(catalogPdf?.mimeType).toBe("application/pdf");
+    expect(parsed.agent.systemPrompt).toContain("Prefere ver o catálogo com os itens ou falar com um vendedor?");
+    expect(parsed.agent.systemPrompt).toContain("300 kg");
+    expect(parsed.agent.systemPrompt).toContain("1.000 kg");
   });
 
   it("contains three contextual follow-ups inside the approved business calendar", () => {

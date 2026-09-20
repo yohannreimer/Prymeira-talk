@@ -245,6 +245,21 @@ function normalizeActionType(type: string) {
     return "assign_department";
   }
 
+  if (
+    [
+      "send_attachment",
+      "send_catalog",
+      "send_document",
+      "send_file",
+      "send_media",
+      "send_pdf",
+      "attach",
+      "attachment"
+    ].includes(normalized)
+  ) {
+    return "send_attachment";
+  }
+
   return type;
 }
 
@@ -506,7 +521,10 @@ function buildOpenAiCompatibleSystemPrompt(systemPrompt: string): string {
     "- do not invent prices, policies, deadlines, guarantees, legal terms",
     "- if insufficient basis, request human handoff",
     "- use only supported action types from context.allowedActions",
-    "- supported action type names are: send_message, add_tag, remove_tag, change_priority, create_internal_note, assign_user, assign_department, request_handoff",
+    "- supported action type names are: send_message, send_attachment, add_tag, remove_tag, change_priority, create_internal_note, assign_user, assign_department, request_handoff",
+    "- for send_attachment use {\"type\":\"send_attachment\",\"attachmentUrl\":\"...\",\"caption\":\"optional short caption\"}",
+    "- attachmentUrl must be picked from the workspace's approved attachments referenced in the agent's knowledge sources; never invent or fabricate URLs",
+    "- when sending an attachment, also include a short textual reply so the customer sees a context message alongside the file",
     "- for tags use {\"type\":\"add_tag\",\"tagName\":\"...\"} and choose tagName only from context.allowedTags[].name",
     "- if context.allowedTags is empty, do not call add_tag",
     "- use create_internal_note for conversation-specific details that should not become a reusable tag",
