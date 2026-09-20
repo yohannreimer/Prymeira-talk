@@ -191,10 +191,10 @@ describe("villeferV1Definition", () => {
       (testCase) => testCase.id === "urgent_deadline"
     );
 
-    expect(prompt).toMatch(/uma (?:única|unica) mensagem curta/i);
-    expect(prompt).toMatch(/perda expl[ií]cita/i);
-    expect(prompt).toMatch(/aplica[cç][aã]o, norma, certificado, empresa e prazo desejado s[aã]o complementares/i);
-    expect(prompt).toMatch(/n[aã]o os pergunte apenas para completar cadastro/i);
+    expect(prompt).toMatch(/pend[êe]ncias relacionadas numa mensagem curta/i);
+    expect(prompt).toMatch(/perda, aus[êe]ncia de demanda e despedida/i);
+    expect(prompt).toMatch(/aplica[cç][aã]o, certificado, prazo desejado e anexos s[oó] quando relevantes/i);
+    expect(prompt).toMatch(/n[aã]o para preencher campos/i);
     expect(incompleteChapa?.expected.responseGuidance).toMatch(
       /tipo.*medida.*espessura.*quantidade/i
     );

@@ -181,7 +181,10 @@ export type AgentRuntimeResult = {
 
 type AgentRuntimeEvolution = {
   mode: EvolutionRuntime["mode"];
-  client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText" | "sendMedia"> | null;
+  client?:
+    | (Pick<NonNullable<EvolutionRuntime["client"]>, "sendText"> &
+        Partial<Pick<NonNullable<EvolutionRuntime["client"]>, "sendMedia">>)
+    | null;
 };
 
 type AgentRuntimeRealtime = {
@@ -1329,7 +1332,12 @@ async function sendAgentAttachmentToProvider(
   const instanceName = conversation.channel?.providerKey;
   const number = conversation.contact?.phone;
 
-  if (evolution?.mode !== "real" || !evolution.client || !instanceName || !number) {
+  if (
+    evolution?.mode !== "real" ||
+    !evolution.client?.sendMedia ||
+    !instanceName ||
+    !number
+  ) {
     return null;
   }
 
