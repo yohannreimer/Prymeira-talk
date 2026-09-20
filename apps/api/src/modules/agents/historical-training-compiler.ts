@@ -179,11 +179,15 @@ export function assertPrivacySafeArtifact(
   );
 
   visitStrings(value, (text) => {
+    const normalized = normalizeComparable(text);
+    if (allowed.has(normalized)) {
+      return;
+    }
+
     if (directIdentifierPatterns.some((pattern) => pattern.test(text))) {
       throw new Error("Generated artifact contains a private identifier.");
     }
 
-    const normalized = normalizeComparable(text);
     if (denied.some((item) => normalized.includes(item))) {
       throw new Error("Generated artifact contains a private identifier from source data.");
     }
@@ -245,11 +249,15 @@ export function compileHistoricalTraining(input: {
   };
 
   const sourcePrivateValues = collectSourcePrivateValues(parsedInputs);
+  const approvedAttachmentUrls = definition.package.knowledge
+    .map((item) => item.fileUrl)
+    .filter((url): url is string => Boolean(url));
   assertPrivacySafeArtifact(artifacts, {
     denyValues: sourcePrivateValues,
     allowValues: [
       definition.package.metadata.companyName,
-      ...perInstance.map((item) => item.instance)
+      ...perInstance.map((item) => item.instance),
+      ...approvedAttachmentUrls
     ]
   });
   return artifacts;

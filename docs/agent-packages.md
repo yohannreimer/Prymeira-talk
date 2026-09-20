@@ -31,9 +31,15 @@ O arquivo exportado preserva os marcadores originais, como `{{seller_name}}`, e 
 | `agent.limits` | Limita a atuação autônoma. |
 | `agent.followup` | Registra agenda comercial e sequência prevista de follow-up. |
 | `agent.allowedActions` | Restringe as ações que o agente pode executar. |
-| `knowledge` | Contém as fontes aprovadas e sua origem. |
+| `knowledge` | Contém as fontes aprovadas e sua origem. Quando a fonte for um arquivo enviável, também carrega `fileUrl`, `fileName` e `mimeType`. |
 
 As chaves técnicas usam letras minúsculas, números e `_`, começando por uma letra. Exemplos: `tipo_material`, `cidade_entrega` e `prazo_necessario`.
+
+## Anexos aprovados
+
+Uma fonte de conhecimento pode apontar para um arquivo aprovado usando `fileUrl` (com `fileName` e `mimeType` opcionais). Ao importar, a URL é persistida junto da fonte e passa a integrar a lista de anexos aprovados do agente. O runtime só entrega um `send_attachment` quando a URL enviada pelo modelo consta nessa lista; URLs não registradas são descartadas, mesmo que o modelo as invente.
+
+O envio de anexo depende da ação `send_attachment` estar em `agent.allowedActions` e, nesta versão, funciona apenas em canais Evolution. O modelo recebe em `context.attachments` a lista de anexos aprovados (título, URL, nome e tipo) para escolher a URL correta.
 
 ## Exemplo reduzido
 

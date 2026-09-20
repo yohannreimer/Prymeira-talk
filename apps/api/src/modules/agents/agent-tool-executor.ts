@@ -114,6 +114,10 @@ export type AgentToolExecutionResult = {
   rawType?: string;
   conversationId?: string;
   tagId?: string;
+  attachmentUrl?: string;
+  attachmentCaption?: string | null;
+  attachmentFileName?: string | null;
+  attachmentMimeType?: string | null;
 };
 
 export async function executeAgentActions(
@@ -249,6 +253,8 @@ async function executeNonSendAction(
     case "request_handoff":
       await requestHandoff(prisma, input, conversation, action);
       return;
+    case "send_attachment":
+      return sendAttachment(input, action);
     case "send_message":
       throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "send_message is handled elsewhere.");
   }
@@ -476,6 +482,51 @@ async function requestHandoff(
   });
 }
 
+function sendAttachment(
+  input: {
+    workspaceId: string;
+    conversationId: string;
+  },
+  action: AgentAction
+) {
+  const attachmentUrl =
+    getFirstString(action, ["attachmentUrl", "url", "mediaUrl", "fileUrl"])?.trim() ?? "";
+  const caption = getFirstString(action, ["caption", "message", "body", "text"])?.trim() ?? "";
+  const fileName =
+    getFirstString(action, ["attachmentFileName", "fileName", "filename"])?.trim() ?? "";
+  const mimeType =
+    getFirstString(action, ["attachmentMimeType", "mimeType", "mimetype", "contentType"])?.trim() ?? "";
+
+  if (!attachmentUrl) {
+    throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "attachmentUrl is required.");
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(attachmentUrl);
+  } catch {
+    throw new AgentToolExecutionError(
+      "TOOL_INVALID_INPUT",
+      "attachmentUrl must be a valid URL."
+    );
+  }
+
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    throw new AgentToolExecutionError(
+      "TOOL_INVALID_INPUT",
+      "attachmentUrl must use http or https."
+    );
+  }
+
+  return {
+    conversationId: input.conversationId,
+    attachmentUrl,
+    attachmentCaption: caption || null,
+    attachmentFileName: fileName || null,
+    attachmentMimeType: mimeType || null
+  };
+}
+
 function parseActionType(action: AgentAction): {
   actionType: AgentActionType | null;
   rawType?: string;
@@ -573,6 +624,21 @@ function normalizeActionType(actionType: string) {
 
   if (["assign_department", "assign_to_department", "assign_team"].includes(normalized)) {
     return "assign_department";
+  }
+
+  if (
+    [
+      "send_attachment",
+      "send_catalog",
+      "send_document",
+      "send_file",
+      "send_media",
+      "send_pdf",
+      "attach",
+      "attachment"
+    ].includes(normalized)
+  ) {
+    return "send_attachment";
   }
 
   return actionType;

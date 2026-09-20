@@ -13,6 +13,9 @@ export type KnowledgeRetrievalSource = {
   title: string;
   content: string | null;
   metadata?: KnowledgeRetrievalMetadata | Record<string, unknown> | null;
+  fileUrl?: string | null;
+  fileName?: string | null;
+  mimeType?: string | null;
 };
 
 export type SelectedKnowledgeSource = {
@@ -26,6 +29,9 @@ export type SelectedKnowledgeSource = {
   chunkIndex: number;
   start: number;
   end: number;
+  fileUrl: string | null;
+  fileName: string | null;
+  mimeType: string | null;
 };
 
 export type KnowledgeRetrievalReason =
@@ -228,7 +234,10 @@ function scoreChunk(
     chunkIndex: chunk.index,
     start: chunk.start,
     end: chunk.end,
-    sourceIndex
+    sourceIndex,
+    fileUrl: source.fileUrl?.trim() || null,
+    fileName: source.fileName?.trim() || null,
+    mimeType: source.mimeType?.trim() || null
   };
 }
 

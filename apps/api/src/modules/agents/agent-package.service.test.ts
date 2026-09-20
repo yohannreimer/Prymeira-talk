@@ -145,6 +145,42 @@ describe("createAgentPackageService", () => {
     });
   });
 
+  it("imports approved attachments with their file urls", async () => {
+    const { prisma, knowledgeCreate } = buildPrisma();
+    const service = createAgentPackageService(prisma);
+    const packageWithAttachment: AgentPackage = {
+      ...validPackage,
+      agent: {
+        ...validPackage.agent,
+        allowedActions: ["send_message", "send_attachment", "request_handoff"]
+      },
+      knowledge: [
+        {
+          ...validPackage.knowledge[0],
+          type: "file",
+          fileUrl: "https://example.com/catalogo.pdf",
+          fileName: "catalogo.pdf",
+          mimeType: "application/pdf"
+        }
+      ]
+    };
+
+    await service.importPackage({
+      workspaceId: "workspace_a",
+      package: packageWithAttachment,
+      variableValues: { seller_name: "Henry" }
+    });
+
+    expect(knowledgeCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        type: "file",
+        fileUrl: "https://example.com/catalogo.pdf",
+        fileName: "catalogo.pdf",
+        mimeType: "application/pdf"
+      })
+    });
+  });
+
   it("rejects missing required variables before writing", async () => {
     const { prisma } = buildPrisma();
     const service = createAgentPackageService(prisma);
@@ -226,9 +262,9 @@ describe("createAgentPackageService", () => {
         type: "faq",
         title: "Área de atendimento",
         content: "Henry confirmará a área de atendimento.",
-        fileUrl: null,
-        fileName: null,
-        mimeType: null,
+        fileUrl: "https://example.com/catalogo.pdf",
+        fileName: "catalogo.pdf",
+        mimeType: "application/pdf",
         status: "ready",
         metadata: {
           category: "service_area",
@@ -252,6 +288,8 @@ describe("createAgentPackageService", () => {
     expect(exported.agent.name).toBe("Agente de {{seller_name}}");
     expect(exported.agent.systemPrompt).toContain("{{seller_name}}");
     expect(exported.knowledge[0]?.content).toContain("{{seller_name}}");
+    expect(exported.knowledge[0]?.fileUrl).toBe("https://example.com/catalogo.pdf");
+    expect(exported.knowledge[0]?.mimeType).toBe("application/pdf");
     expect(JSON.stringify(exported)).not.toContain('"seller_name":"Henry"');
   });
 });

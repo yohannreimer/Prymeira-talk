@@ -113,6 +113,7 @@ export class AgentsServiceError extends Error {
 
 const allowedActionValues = new Set<AiAgentAllowedAction>([
   "send_message",
+  "send_attachment",
   "add_tag",
   "remove_tag",
   "change_priority",

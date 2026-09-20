@@ -121,4 +121,31 @@ describe("agentPackageSchema", () => {
       })
     ).toThrow(/qualification dependency/i);
   });
+
+  it("accepts approved knowledge attachments with a file url", () => {
+    const parsed = agentPackageSchema.parse({
+      ...validPackage,
+      knowledge: [
+        {
+          ...validPackage.knowledge[0],
+          type: "file",
+          fileUrl: "https://example.com/catalogo.pdf",
+          fileName: "catalogo.pdf",
+          mimeType: "application/pdf"
+        }
+      ]
+    });
+
+    expect(parsed.knowledge[0]?.fileUrl).toBe("https://example.com/catalogo.pdf");
+    expect(parsed.knowledge[0]?.mimeType).toBe("application/pdf");
+  });
+
+  it("rejects knowledge attachments with an invalid file url", () => {
+    expect(() =>
+      agentPackageSchema.parse({
+        ...validPackage,
+        knowledge: [{ ...validPackage.knowledge[0], fileUrl: "not-a-url" }]
+      })
+    ).toThrow(/fileUrl/i);
+  });
 });

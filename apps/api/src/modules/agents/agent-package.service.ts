@@ -127,9 +127,9 @@ export function createAgentPackageService(prisma: AgentPackagePrismaLike) {
               type: source.type,
               title: source.title,
               content: renderTemplate(source.content, variables),
-              fileUrl: null,
-              fileName: null,
-              mimeType: null,
+              fileUrl: source.fileUrl?.trim() || null,
+              fileName: source.fileName?.trim() || null,
+              mimeType: source.mimeType?.trim() || null,
               status: "ready",
               metadata: {
                 category: source.category,
@@ -339,7 +339,10 @@ function toPackageKnowledge(
     approvedAt:
       readString(metadata.approvedAt) ?? toIsoString(source.updatedAt),
     validUntil: readString(metadata.validUntil),
-    aliases: readStringList(metadata.aliases)
+    aliases: readStringList(metadata.aliases),
+    fileUrl: readString(source.fileUrl),
+    fileName: readString(source.fileName),
+    mimeType: readString(source.mimeType)
   } as const;
 }
 

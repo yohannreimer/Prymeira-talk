@@ -41,6 +41,18 @@ const defaultAllowedActions: AiAgentAllowedAction[] = [
   "request_handoff"
 ];
 
+const allowedActionLabels: Array<{ value: AiAgentAllowedAction; label: string; description: string }> = [
+  { value: "send_message", label: "Enviar mensagem", description: "Responde o cliente no WhatsApp." },
+  { value: "send_attachment", label: "Enviar anexo", description: "Envia catálogo ou arquivo aprovado." },
+  { value: "add_tag", label: "Adicionar tag", description: "Classifica a conversa com tags permitidas." },
+  { value: "remove_tag", label: "Remover tag", description: "Remove uma tag da conversa." },
+  { value: "change_priority", label: "Alterar prioridade", description: "Prioriza o atendimento." },
+  { value: "create_internal_note", label: "Nota interna", description: "Registra contexto para o vendedor." },
+  { value: "assign_user", label: "Atribuir a usuário", description: "Encaminha para um usuário do time." },
+  { value: "assign_department", label: "Atribuir a departamento", description: "Encaminha para um departamento." },
+  { value: "request_handoff", label: "Pedir handoff", description: "Passa a conversa para o vendedor." }
+];
+
 const defaultSystemPrompt =
   "Atue como um agente de atendimento da Prymeira Talk. Responda com clareza, use a base de conhecimento quando ela for relevante e solicite handoff quando faltar contexto.";
 
@@ -48,6 +60,7 @@ type AgentFormState = {
   name: string;
   status: AiAgentDto["status"];
   systemPrompt: string;
+  allowedActions: AiAgentAllowedAction[];
   allowedTagIds: string[];
   reasoningEffort: "none" | "low";
 };
@@ -56,6 +69,7 @@ type KnowledgeFormState = {
   type: "faq" | "text";
   title: string;
   content: string;
+  fileUrl: string;
 };
 
 type KnowledgeUploadFormState = {
@@ -85,6 +99,7 @@ function emptyAgentForm(): AgentFormState {
     status: "inactive",
     systemPrompt: defaultSystemPrompt,
     reasoningEffort: "none",
+    allowedActions: defaultAllowedActions,
     allowedTagIds: []
   };
 }
@@ -95,6 +110,7 @@ function agentFormFromAgent(agent: AiAgentDto): AgentFormState {
     status: agent.status,
     systemPrompt: agent.systemPrompt,
     reasoningEffort: agent.behaviorConfig.reasoningEffort === "low" ? "low" : "none",
+    allowedActions: agent.allowedActions,
     allowedTagIds: agent.allowedTags.map((tag) => tag.id)
   };
 }
@@ -103,7 +119,8 @@ function emptyKnowledgeForm(): KnowledgeFormState {
   return {
     type: "faq",
     title: "",
-    content: ""
+    content: "",
+    fileUrl: ""
   };
 }
 
@@ -313,6 +330,7 @@ export function AgentsPage() {
           status: agentForm.status,
           systemPrompt: agentForm.systemPrompt,
           reasoningEffort: agentForm.reasoningEffort,
+          allowedActions: agentForm.allowedActions,
           allowedTagIds: agentForm.allowedTagIds
         });
 
@@ -327,7 +345,7 @@ export function AgentsPage() {
         status: agentForm.status,
         systemPrompt: agentForm.systemPrompt,
         reasoningEffort: agentForm.reasoningEffort,
-        allowedActions: defaultAllowedActions,
+        allowedActions: agentForm.allowedActions,
         allowedTagIds: agentForm.allowedTagIds
       });
 
@@ -358,7 +376,8 @@ export function AgentsPage() {
       const createdSource = await apiCreateAgentKnowledge(getToken, selectedAgent.id, {
         type: knowledgeForm.type,
         title: knowledgeForm.title,
-        content: knowledgeForm.content
+        content: knowledgeForm.content,
+        fileUrl: knowledgeForm.fileUrl.trim() || null
       });
 
       setKnowledge((current) => [createdSource, ...current]);
@@ -486,6 +505,15 @@ export function AgentsPage() {
     }));
   }
 
+  function toggleAllowedAction(action: AiAgentAllowedAction) {
+    setAgentForm((current) => ({
+      ...current,
+      allowedActions: current.allowedActions.includes(action)
+        ? current.allowedActions.filter((currentAction) => currentAction !== action)
+        : [...current.allowedActions, action]
+    }));
+  }
+
   function acceptImportedAgent(agent: AiAgentDto) {
     testRequestGeneration.current += 1;
     setIsSendingTestMessage(false);
@@ -577,7 +605,7 @@ export function AgentsPage() {
               <h2>{selectedAgent ? "Editar agente" : "Novo agente"}</h2>
               <span className="status-badge status-badge--bot">
                 <ShieldCheck size={12} />
-                {defaultAllowedActions.length} ações padrão
+                {agentForm.allowedActions.length} ações permitidas
               </span>
             </div>
             <label className="form-field">
@@ -613,7 +641,7 @@ export function AgentsPage() {
                 rows={7}
               />
             </label>
-            <label className="form-field">
+<label className="form-field">
               Modo de resposta
               <select aria-label="Modo de resposta" value={agentForm.reasoningEffort} onChange={(event) => setAgentForm((current) => ({ ...current, reasoningEffort: event.target.value === "low" ? "low" : "none" }))}>
                 <option value="none">Rápido</option>
@@ -621,6 +649,37 @@ export function AgentsPage() {
               </select>
               <small>Nos modelos GPT-5.6, o modo cuidadoso usa raciocínio curto antes de responder. Pode aumentar o tempo e o consumo de tokens; não garante acerto.</small>
             </label>
+            <section className="agent-tag-selector" aria-label="Ações permitidas">
+              <div className="panel-title-row compact">
+                <div>
+                  <h3>Ações permitidas</h3>
+                  <p>Selecione o que este agente pode executar.</p>
+                </div>
+                <span>{agentForm.allowedActions.length} selecionadas</span>
+              </div>
+              <div className="tag-option-grid">
+                {allowedActionLabels.map((action) => {
+                  const isSelected = agentForm.allowedActions.includes(action.value);
+
+                  return (
+                    <label
+                      className={`tag-option-card${isSelected ? " is-selected" : ""}`}
+                      key={action.value}
+                    >
+                      <input
+                        checked={isSelected}
+                        onChange={() => toggleAllowedAction(action.value)}
+                        type="checkbox"
+                      />
+                      <span className="tag-option-card__body">
+                        <strong>{action.label}</strong>
+                        <span>{action.description}</span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </section>
             <section className="agent-tag-selector" aria-label="Tags permitidas">
               <div className="panel-title-row compact">
                 <div>
@@ -701,6 +760,11 @@ export function AgentsPage() {
                     <strong>{source.title}</strong>
                     {source.content ? <p className="assistant-log-result">{source.content}</p> : null}
                     {source.fileName ? <small>{source.fileName}</small> : null}
+                    {source.fileUrl ? (
+                      <a href={source.fileUrl} target="_blank" rel="noreferrer">
+                        {source.fileUrl}
+                      </a>
+                    ) : null}
                   </article>
                 );
               })}
@@ -838,6 +902,16 @@ export function AgentsPage() {
                       disabled={!selectedAgent}
                       required
                       rows={5}
+                    />
+                  </label>
+                  <label className="form-field">
+                    URL do anexo (opcional)
+                    <input
+                      value={knowledgeForm.fileUrl}
+                      onChange={(event) => setKnowledgeForm((current) => ({ ...current, fileUrl: event.target.value }))}
+                      placeholder="https://exemplo.com/catalogo.pdf"
+                      disabled={!selectedAgent}
+                      type="url"
                     />
                   </label>
                   <button className="secondary-button" type="submit" disabled={!selectedAgent || isSavingKnowledge}>

@@ -356,6 +356,8 @@ describe("AgentsPage", () => {
     expect(html).toContain("Inativo");
     expect(html).toContain("Ativo");
     expect(html).toContain("Prompt do sistema");
+    expect(html).toContain("Ações permitidas");
+    expect(html).toContain("Enviar anexo");
     expect(html).toContain("Tags permitidas");
     expect(html).toContain("Selecione as tags que este agente pode aplicar.");
     expect(html).toContain("Teste do agente");
@@ -380,8 +382,16 @@ describe("AgentsPage", () => {
     expect(page.apiGetTagsMock).toHaveBeenCalledTimes(1);
     expect(hasText(page.tree, "Lead quente")).toBe(true);
 
-    const tagCheckbox = findElement(
+    const tagsSection = findElement(
       page.tree,
+      (element) =>
+        element.type === "section" &&
+        (element.props as { "aria-label"?: string })["aria-label"] === "Tags permitidas"
+    );
+    expect(tagsSection).not.toBeNull();
+
+    const tagCheckbox = findElement(
+      tagsSection?.props.children,
       (element) => element.type === "input" && (element.props as { type?: string }).type === "checkbox"
     ) as ReactElement<{
       checked: boolean;
