@@ -15,9 +15,12 @@ import {
   messageMediaKind,
   messageMediaLabel,
   needsHumanAttention,
-  outboundStatusLabel
+  outboundStatusLabel,
+  sortConversationsByRecency,
+  upsertConversation
 } from "./InboxPage";
 import { quickReplyMatchesQuery, quickReplyMutationErrorMessage } from "./QuickRepliesPopover";
+import type { ConversationDto } from "@prymeira-talk/shared";
 
 describe("messageDisplayText", () => {
   it("uses message body when present", () => {
@@ -242,5 +245,56 @@ describe("quick reply helpers", () => {
   it("uses mutation error messages when available", () => {
     expect(quickReplyMutationErrorMessage(new Error("Falha da API"), "Fallback")).toBe("Falha da API");
     expect(quickReplyMutationErrorMessage("erro", "Fallback")).toBe("Fallback");
+  });
+});
+
+describe("conversation queue ordering", () => {
+  function conversationFixture(overrides: Partial<ConversationDto> & { id: string }): ConversationDto {
+    return {
+      workspaceId: "workspace-1",
+      channelId: "channel-1",
+      contactId: `contact-${overrides.id}`,
+      contactName: "Contato",
+      status: "open",
+      assignedUserId: null,
+      departmentId: null,
+      lastMessageAt: "2026-09-20T12:00:00.000Z",
+      lastMessagePreview: null,
+      unreadCount: 0,
+      priority: "normal",
+      ...overrides
+    };
+  }
+
+  it("orders the queue by the latest activity", () => {
+    const older = conversationFixture({ id: "older", lastMessageAt: "2026-09-20T10:00:00.000Z" });
+    const newer = conversationFixture({ id: "newer", lastMessageAt: "2026-09-20T11:00:00.000Z" });
+
+    expect(sortConversationsByRecency([older, newer]).map((item) => item.id)).toEqual([
+      "newer",
+      "older"
+    ]);
+  });
+
+  it("does not move an opened older conversation to the top", () => {
+    const older = conversationFixture({ id: "older", lastMessageAt: "2026-09-20T10:00:00.000Z" });
+    const newer = conversationFixture({ id: "newer", lastMessageAt: "2026-09-20T11:00:00.000Z" });
+
+    const markedRead = { ...older, unreadCount: 0 };
+    expect(upsertConversation([newer, older], markedRead).map((item) => item.id)).toEqual([
+      "newer",
+      "older"
+    ]);
+  });
+
+  it("moves a conversation up only when it receives newer activity", () => {
+    const older = conversationFixture({ id: "older", lastMessageAt: "2026-09-20T10:00:00.000Z" });
+    const newer = conversationFixture({ id: "newer", lastMessageAt: "2026-09-20T11:00:00.000Z" });
+
+    const withNewMessage = { ...older, lastMessageAt: "2026-09-20T13:00:00.000Z" };
+    expect(upsertConversation([newer, older], withNewMessage).map((item) => item.id)).toEqual([
+      "older",
+      "newer"
+    ]);
   });
 });

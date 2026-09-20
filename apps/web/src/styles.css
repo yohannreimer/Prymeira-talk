@@ -5824,6 +5824,7 @@ select:disabled {
 }
 
 .conversation-card {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -5852,12 +5853,15 @@ select:disabled {
 }
 
 .conversation-card.needs-human-attention {
-  background: #fff7df;
-  box-shadow: 0 0 0 1px rgba(178, 116, 23, 0.26), var(--shadow-card-hover);
+  background: #fff1f2;
+  box-shadow:
+    inset 3px 0 0 #dc2626,
+    0 0 0 1px rgba(220, 38, 38, 0.3),
+    var(--shadow-card-hover);
 }
 
 .conversation-card.needs-human-attention .conversation-avatar {
-  background: #8a5b12;
+  background: #be123c;
 }
 
 .conv-avatar-wrap {
@@ -5930,8 +5934,8 @@ select:disabled {
 .conv-human-tag {
   font-size: 10px;
   font-weight: 800;
-  background: #ffe9a8;
-  color: #76500f;
+  background: #dc2626;
+  color: #fff;
   padding: 1px 7px;
   border-radius: var(--radius-full);
   max-width: 118px;
@@ -5959,12 +5963,15 @@ select:disabled {
 }
 
 .conv-unread-badge {
+  position: absolute;
+  top: 28px;
+  right: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
+  min-width: 20px;
   height: 18px;
-  padding: 0 4px;
+  padding: 0 5px;
   border-radius: var(--radius-full);
   background: var(--color-brand-600);
   color: var(--color-surface-card);

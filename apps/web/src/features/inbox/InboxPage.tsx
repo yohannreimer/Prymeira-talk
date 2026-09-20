@@ -122,9 +122,23 @@ function formatNoteDate(value: string) {
   }).format(new Date(value));
 }
 
-function upsertConversation(list: ConversationDto[], conversation: ConversationDto) {
-  const withoutUpdated = list.filter((item) => item.id !== conversation.id);
-  return [conversation, ...withoutUpdated];
+export function sortConversationsByRecency(list: ConversationDto[]) {
+  return [...list].sort((left, right) => {
+    const rightActivity = Date.parse(right.lastMessageAt ?? "") || 0;
+    const leftActivity = Date.parse(left.lastMessageAt ?? "") || 0;
+    return rightActivity - leftActivity;
+  });
+}
+
+export function upsertConversation(list: ConversationDto[], conversation: ConversationDto) {
+  const index = list.findIndex((item) => item.id === conversation.id);
+  if (index === -1) {
+    return sortConversationsByRecency([...list, conversation]);
+  }
+
+  const next = [...list];
+  next[index] = conversation;
+  return sortConversationsByRecency(next);
 }
 
 export function insertComposerText(value: string, selectionStart: number, selectionEnd: number, text: string) {
