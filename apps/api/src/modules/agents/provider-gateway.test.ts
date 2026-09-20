@@ -122,6 +122,29 @@ describe("parseAgentOutput", () => {
       { type: "create_internal_note", note: "Cliente perguntou sobre planos." }
     ]);
   });
+
+  it("normalizes attachment aliases and keeps the attachment url", () => {
+    const output = parseAgentOutput({
+      confidence: 0.82,
+      reply: "Segue o catálogo.",
+      actions: [
+        {
+          type: "send_catalog",
+          attachmentUrl: "https://villefer.com.br/catalogo.pdf",
+          caption: "Catálogo Villefer"
+        }
+      ],
+      handoff: { required: false, reason: null }
+    });
+
+    expect(output.actions).toEqual([
+      {
+        type: "send_attachment",
+        attachmentUrl: "https://villefer.com.br/catalogo.pdf",
+        caption: "Catálogo Villefer"
+      }
+    ]);
+  });
 });
 
 describe("createSimulatedAgentProvider", () => {

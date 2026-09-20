@@ -56,7 +56,17 @@ type KnowledgeSourceRecord = {
   id: string;
   title: string;
   content: string | null;
+  fileUrl?: string | null;
+  fileName?: string | null;
+  mimeType?: string | null;
   metadata?: JsonValue;
+};
+
+type ApprovedAttachment = {
+  title: string;
+  url: string;
+  fileName: string | null;
+  mimeType: string | null;
 };
 
 export type AgentTestChatMessage = {
@@ -90,12 +100,14 @@ export type AgentTestChatDebug = {
   conversationCharacters: number;
   allowedTags: string[];
   taxonomyKeys: string[];
+  approvedAttachmentUrls: string[];
   knowledgeMatches: Array<Record<string, unknown>>;
   output?: {
     confidence: number;
     handoffRequired: boolean;
     handoffReason: string | null;
     replyCharacters: number;
+    requestedAttachments: Array<{ url: string; caption: string | null }>;
   };
   providerError?: string;
 };
@@ -214,6 +226,7 @@ export function createAgentTestChatService(input: {
         end: source.end
       }));
       const allowedTags = toAllowedTags(agent);
+      const approvedAttachments = knowledge.flatMap(toApprovedAttachment);
       const safety = evaluateAgentSafety({
         message: latestUserMessage.content,
         conversationHistory,
@@ -247,7 +260,8 @@ export function createAgentTestChatService(input: {
         conversationCharacters: conversationHistory.length,
         allowedTags: allowedTags.map((tag) => tag.name),
         taxonomyKeys: taxonomy.map((entry) => entry.key),
-        knowledgeMatches,
+knowledgeMatches,
+        approvedAttachmentUrls: approvedAttachments.map((attachment) => attachment.url),
         ...(media ? { media } : {})
       };
 
@@ -283,7 +297,14 @@ export function createAgentTestChatService(input: {
               testMode: true,
               knowledge: knowledgeSelection.selected.map((source) => ({
                 title: source.title,
-                content: source.content
+                content: source.content,
+                ...(source.fileUrl ? { fileUrl: source.fileUrl } : {})
+              })),
+              attachments: approvedAttachments.map((attachment) => ({
+                title: attachment.title,
+                url: attachment.url,
+                fileName: attachment.fileName,
+                mimeType: attachment.mimeType
               }))
             }
           });
@@ -318,7 +339,8 @@ export function createAgentTestChatService(input: {
           confidence: output.confidence,
           handoffRequired: output.handoff.required,
           handoffReason: output.handoff.reason,
-          replyCharacters: output.reply?.length ?? 0
+          replyCharacters: output.reply?.length ?? 0,
+          requestedAttachments: readAttachmentActions(output.actions)
         }
       };
 
@@ -362,8 +384,45 @@ function toRetrievalSource(source: KnowledgeSourceRecord): KnowledgeRetrievalSou
     id: source.id,
     title: source.title,
     content: source.content,
-    metadata: isRecord(source.metadata) ? source.metadata : null
+    metadata: isRecord(source.metadata) ? source.metadata : null,
+    fileUrl: source.fileUrl ?? null,
+    fileName: source.fileName ?? null,
+    mimeType: source.mimeType ?? null
   };
+}
+
+function toApprovedAttachment(source: KnowledgeSourceRecord): ApprovedAttachment[] {
+  const url = source.fileUrl?.trim();
+  if (!url) {
+    return [];
+  }
+
+  return [
+    {
+      title: source.title,
+      url,
+      fileName: source.fileName?.trim() || null,
+      mimeType: source.mimeType?.trim() || null
+    }
+  ];
+}
+
+function readAttachmentActions(actions: AgentOutput["actions"]) {
+  return actions.flatMap((action) => {
+    if (action.type !== "send_attachment") {
+      return [];
+    }
+
+    const url = typeof action.attachmentUrl === "string" ? action.attachmentUrl.trim() : "";
+    if (!url) {
+      return [];
+    }
+
+    const caption =
+      typeof action.caption === "string" && action.caption.trim() ? action.caption.trim() : null;
+
+    return [{ url, caption }];
+  });
 }
 
 function toAllowedTags(agent: Pick<AgentRecord, "allowedTags">): AllowedAgentTag[] {

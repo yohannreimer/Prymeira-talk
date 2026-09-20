@@ -82,6 +82,7 @@ export type AiAgentRunStatus = z.infer<typeof aiAgentRunStatusSchema>;
 
 export const aiAgentAllowedActionSchema = z.enum([
   "send_message",
+  "send_attachment",
   "add_tag",
   "remove_tag",
   "change_priority",

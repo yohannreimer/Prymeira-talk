@@ -312,6 +312,63 @@ describe("createAgentTestChatService", () => {
     expect(result.debug.taxonomyKeys).toEqual(["materials"]);
   });
 
+  it("exposes approved attachments to the provider and the test debug", async () => {
+    const prisma = buildPrisma({
+      aiKnowledgeSource: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "knowledge_catalog",
+            title: "Catálogo Villefer em PDF",
+            content: "Catálogo oficial aprovado para envio.",
+            fileUrl: "https://villefer.com.br/catalogo.pdf",
+            fileName: "catalogo.pdf",
+            mimeType: "application/pdf",
+            metadata: { category: "produto", keywords: ["catálogo"] }
+          }
+        ])
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "Segue o catálogo.",
+      actions: [
+        {
+          type: "send_attachment",
+          attachmentUrl: "https://villefer.com.br/catalogo.pdf",
+          caption: "Catálogo Villefer"
+        }
+      ],
+      handoff: { required: false, reason: null }
+    });
+    const service = createAgentTestChatService({ prisma, provider });
+
+    const result = await service.sendMessage({
+      workspaceId: "workspace_a",
+      agentId: baseAgent.id,
+      messages: [{ role: "user", content: "Quero ver o catálogo" }]
+    });
+
+    expect(result.debug.approvedAttachmentUrls).toEqual([
+      "https://villefer.com.br/catalogo.pdf"
+    ]);
+    expect(result.debug.output?.requestedAttachments).toEqual([
+      { url: "https://villefer.com.br/catalogo.pdf", caption: "Catálogo Villefer" }
+    ]);
+    expect(provider.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          attachments: [
+            expect.objectContaining({
+              url: "https://villefer.com.br/catalogo.pdf",
+              fileName: "catalogo.pdf",
+              mimeType: "application/pdf"
+            })
+          ]
+        })
+      })
+    );
+  });
+
   it("uses the real provider when workspace settings are active", async () => {
     const prisma = buildPrisma({
       integrationConfig: {

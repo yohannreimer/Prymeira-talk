@@ -1183,6 +1183,7 @@ describe("createAgentRuntime", () => {
       handoff: { required: false, reason: null }
     });
     const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-out-1" });
+    const sendMedia = vi.fn().mockResolvedValue({ providerMessageId: "evo-media-1" });
     const realtime = { publish: vi.fn() };
     const runtime = createAgentRuntime({
       prisma,
@@ -1190,7 +1191,7 @@ describe("createAgentRuntime", () => {
       realtime,
       evolution: {
         mode: "real",
-        client: { sendText }
+        client: { sendText, sendMedia }
       }
     });
 
@@ -1235,7 +1236,7 @@ describe("createAgentRuntime", () => {
     });
   });
 
-  it("continues after a material answer without requiring a document for its own previous question", async () => {
+it("continues after a material answer without requiring a document for its own previous question", async () => {
     const prisma = buildPrisma();
     vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
       ...baseAgent, behaviorConfig: { knowledgeTaxonomy: [{
@@ -1257,6 +1258,192 @@ describe("createAgentRuntime", () => {
     expect(provider.generate).toHaveBeenCalledOnce();
     expect(result.status).toBe("completed");
     expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "Qual a cidade de entrega?" }));
+  });
+
+  it("sends approved catalog attachments through Evolution in real mode", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          allowedActions: ["send_message", "send_attachment", "request_handoff"]
+        })
+      },
+      aiKnowledgeSource: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "knowledge_price",
+            title: "Tabela de preços",
+            content: "Plano profissional custa R$ 199 por mes.",
+            metadata: { category: "precos", keywords: ["plano profissional"] },
+            status: "ready"
+          },
+          {
+            id: "knowledge_catalog",
+            title: "Catálogo Villefer em PDF",
+            content: "Catálogo oficial aprovado para envio.",
+            fileUrl: "https://villefer.com.br/catalogo.pdf",
+            status: "ready"
+          }
+        ])
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "Segue o catálogo com os itens.",
+      actions: [
+        {
+          type: "send_attachment",
+          attachmentUrl: "https://villefer.com.br/catalogo.pdf",
+          caption: "Catálogo Villefer"
+        }
+      ],
+      handoff: { required: false, reason: null }
+    });
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-out-1" });
+    const sendMedia = vi.fn().mockResolvedValue({ providerMessageId: "evo-media-1" });
+    const realtime = { publish: vi.fn() };
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      realtime,
+      evolution: {
+        mode: "real",
+        client: { sendText, sendMedia }
+      }
+    });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({ status: "completed", runId: ids.run });
+    expect(sendMedia).toHaveBeenCalledWith({
+      instanceName: "instancia",
+      number: "5511999999999",
+      mediatype: "document",
+      mimetype: "application/pdf",
+      media: "https://villefer.com.br/catalogo.pdf",
+      fileName: "catalogo.pdf",
+      caption: "Catálogo Villefer"
+    });
+    expect(prisma.message.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        type: "file",
+        mediaUrl: "https://villefer.com.br/catalogo.pdf",
+        body: "Catálogo Villefer",
+        providerMessageId: "evo-media-1",
+        status: "sent"
+      })
+    });
+    expect(realtime.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "message.created",
+        payload: expect.objectContaining({ direction: "outbound" })
+      })
+    );
+  });
+
+  it("does not send attachments that are not approved in knowledge", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          allowedActions: ["send_message", "send_attachment", "request_handoff"]
+        })
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "Segue o catálogo.",
+      actions: [
+        {
+          type: "send_attachment",
+          attachmentUrl: "https://evil.example.com/catalogo.pdf"
+        }
+      ],
+      handoff: { required: false, reason: null }
+    });
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-out-1" });
+    const sendMedia = vi.fn().mockResolvedValue({ providerMessageId: "evo-media-1" });
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      evolution: { mode: "real", client: { sendText, sendMedia } }
+    });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result.status).toBe("completed");
+    expect(sendMedia).not.toHaveBeenCalled();
+  });
+
+  it("passes approved knowledge attachments to the provider context", async () => {
+    const prisma = buildPrisma({
+      aiKnowledgeSource: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "knowledge_price",
+            title: "Tabela de preços",
+            content: "Plano profissional custa R$ 199 por mes.",
+            metadata: { category: "precos", keywords: ["plano profissional"] },
+            status: "ready"
+          },
+          {
+            id: "knowledge_catalog",
+            title: "Catálogo Villefer em PDF",
+            content: "Catálogo oficial aprovado para envio.",
+            fileUrl: "https://villefer.com.br/catalogo.pdf",
+            fileName: "catalogo.pdf",
+            mimeType: "application/pdf",
+            metadata: {
+              category: "product_and_specification",
+              keywords: ["catalogo"],
+              aliases: ["catalogo"]
+            },
+            status: "ready"
+          }
+        ])
+      }
+    });
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "Temos. Quer ver o catálogo ou falar com um vendedor?",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({ prisma, provider });
+
+    await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(provider.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          attachments: [
+            expect.objectContaining({
+              url: "https://villefer.com.br/catalogo.pdf",
+              fileName: "catalogo.pdf",
+              mimeType: "application/pdf"
+            })
+          ]
+        })
+      })
+    );
   });
 
   it("requests handoff for document-dependent questions without relevant knowledge", async () => {

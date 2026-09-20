@@ -190,7 +190,10 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(teamRoutes);
   await app.register(tagsRoutes);
   await app.register(agentPackageRoutes);
-  await app.register(agentsRoutes);
+  await app.register(agentsRoutes, {
+    publicTalkUrl: env.PUBLIC_TALK_URL,
+    uploadDir: env.TALK_UPLOAD_DIR
+  });
   await app.register(assistantRoutes);
   await app.register(assistantInboxRoutes, { scheduler: assistantScheduler, evolution: evolutionRuntime });
   await app.register(crmRoutes, {
