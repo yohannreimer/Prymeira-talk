@@ -135,6 +135,13 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     apiKey: env.EVOLUTION_API_KEY,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET
   });
+  const evolutionHistorySource =
+    evolutionRuntime.mode === "real" && env.EVOLUTION_API_BASE_URL && env.EVOLUTION_API_KEY
+      ? createEvolutionHistorySource({
+          baseUrl: env.EVOLUTION_API_BASE_URL,
+          apiKey: env.EVOLUTION_API_KEY
+        })
+      : undefined;
   const agentRuntime =
     options.prismaEnabled === false
       ? undefined
@@ -142,6 +149,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           prisma: app.prisma as unknown as Parameters<typeof createAgentRuntime>[0]["prisma"],
           provider: createSimulatedAgentProvider(),
           evolution: evolutionRuntime,
+          chatHistory: evolutionHistorySource,
           realtime: app.realtime,
           boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike)
         });
@@ -159,9 +167,9 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     });
   }
 
-  const prepareAssistantHistory = options.prismaEnabled === false || evolutionRuntime.mode !== 'real' || !env.EVOLUTION_API_BASE_URL || !env.EVOLUTION_API_KEY
+  const prepareAssistantHistory = options.prismaEnabled === false || !evolutionHistorySource
     ? undefined
-    : createAssistantHistoryImporter(app.prisma, createEvolutionHistorySource({ baseUrl: env.EVOLUTION_API_BASE_URL, apiKey: env.EVOLUTION_API_KEY }), {
+    : createAssistantHistoryImporter(app.prisma, evolutionHistorySource, {
         prepareMedia: async ({ workspaceId, mediaUrl, kind }) => prepareInboundMedia({ settings: await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId }), mediaUrl, kind })
       });
   const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { prepareContext: prepareAssistantHistory, onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });

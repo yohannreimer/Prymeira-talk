@@ -39,6 +39,17 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       ...(typeof value.messageType === 'string' ? { messageType: value.messageType } : {}) };
   }
   return {
+    async hasPriorMessages(input: { instanceName: string; remoteJid: string; excludeMessageId?: string | null }): Promise<boolean> {
+      if (!direct(input.remoteJid)) throw new Error('HISTORY_IDENTITY');
+      const data = await post(`/chat/findMessages/${encodeURIComponent(input.instanceName)}`, {
+        where: { key: { remoteJid: input.remoteJid } }, page: 1, offset: 100
+      });
+      if (!record(data) || !record(data.messages) || !Array.isArray(data.messages.records)) throw new Error('HISTORY_SHAPE');
+      return data.messages.records.some((raw) => {
+        if (!record(raw) || !record(raw.key) || typeof raw.key.id !== 'string' || !raw.key.id) return true;
+        return raw.key.id !== (input.excludeMessageId ?? null);
+      });
+    },
     async load(input: { instanceName: string; anchorId: string; from: Date; to: Date }): Promise<HistoryRecord[]> {
       if (!input.anchorId || !Number.isFinite(input.from.getTime()) || !Number.isFinite(input.to.getTime()) || input.from > input.to) throw new Error('HISTORY_WINDOW');
       const anchorPage = await page(input.instanceName, { id: input.anchorId }, 1);

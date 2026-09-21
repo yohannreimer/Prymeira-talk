@@ -39,6 +39,7 @@ const createAgentBodySchema = z.object({
   description: z.string().trim().max(500).nullable().optional(),
   status: z.enum(["active", "inactive"]).optional(),
   reasoningEffort: z.enum(["none", "low"]).optional(),
+  onlyNewConversations: z.boolean().optional(),
   systemPrompt: z.string().trim().min(10).max(12000),
   allowedActions: z.array(allowedActionSchema).optional(),
   allowedTagIds: z.array(uuidSchema).max(100).optional()

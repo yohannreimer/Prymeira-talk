@@ -209,9 +209,16 @@ function validateAgentConfig(input: {
   status?: AiAgentStatus;
   allowedActions?: AiAgentAllowedAction[];
   reasoningEffort?: AgentReasoningEffort;
+  onlyNewConversations?: boolean;
 }) {
   if (input.reasoningEffort !== undefined && input.reasoningEffort !== "none" && input.reasoningEffort !== "low") {
     throw new AgentsServiceError("AGENT_INVALID_CONFIG", "Agent reasoning effort must be none or low.");
+  }
+  if (input.onlyNewConversations !== undefined && typeof input.onlyNewConversations !== "boolean") {
+    throw new AgentsServiceError(
+      "AGENT_INVALID_CONFIG",
+      "Agent onlyNewConversations must be a boolean."
+    );
   }
   if (
     input.status === "active" &&
@@ -328,13 +335,19 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       description?: string | null;
       status?: AiAgentStatus;
       reasoningEffort?: AgentReasoningEffort;
+      onlyNewConversations?: boolean;
       systemPrompt: string;
       allowedActions?: AiAgentAllowedAction[];
       allowedTagIds?: string[];
     }): Promise<AiAgentDto> {
       const allowedActions = input.allowedActions ?? ["send_message"];
       const status = input.status ?? "inactive";
-      validateAgentConfig({ status, allowedActions, reasoningEffort: input.reasoningEffort });
+      validateAgentConfig({
+        status,
+        allowedActions,
+        reasoningEffort: input.reasoningEffort,
+        onlyNewConversations: input.onlyNewConversations
+      });
       const createArgs = {
         data: {
           workspaceId: input.workspaceId,
@@ -345,7 +358,10 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
           provider: "simulated",
           model: "prymeira-simulated",
           systemPrompt: input.systemPrompt.trim(),
-          behaviorConfig: { reasoningEffort: input.reasoningEffort ?? "none" },
+          behaviorConfig: {
+            reasoningEffort: input.reasoningEffort ?? "none",
+            onlyNewConversations: input.onlyNewConversations === true
+          },
           handoffConfig: {
             confidenceThreshold: 0.55
           },
@@ -396,6 +412,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
         description: string | null;
         status: AiAgentStatus;
         reasoningEffort: AgentReasoningEffort;
+        onlyNewConversations: boolean;
         systemPrompt: string;
         allowedActions: AiAgentAllowedAction[];
         allowedTagIds: string[];
@@ -405,10 +422,23 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       validateAgentConfig({
         status: input.data.status ?? existingAgent.status,
         allowedActions: input.data.allowedActions ?? readAllowedActions(existingAgent.allowedActions),
-        reasoningEffort: input.data.reasoningEffort
+        reasoningEffort: input.data.reasoningEffort,
+        onlyNewConversations: input.data.onlyNewConversations
       });
 
       const description = nullableTrim(input.data.description);
+      const behaviorConfigPatch =
+        input.data.reasoningEffort !== undefined || input.data.onlyNewConversations !== undefined
+          ? {
+              ...toRecord(existingAgent.behaviorConfig),
+              ...(input.data.reasoningEffort !== undefined
+                ? { reasoningEffort: input.data.reasoningEffort }
+                : {}),
+              ...(input.data.onlyNewConversations !== undefined
+                ? { onlyNewConversations: input.data.onlyNewConversations === true }
+                : {})
+            }
+          : undefined;
       const updateArgs = {
         where: {
           workspaceId_id: {
@@ -420,9 +450,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
           ...(input.data.name !== undefined ? { name: input.data.name.trim() } : {}),
           ...(description !== undefined ? { description } : {}),
           ...(input.data.status !== undefined ? { status: input.data.status } : {}),
-          ...(input.data.reasoningEffort !== undefined
-            ? { behaviorConfig: { ...toRecord(existingAgent.behaviorConfig), reasoningEffort: input.data.reasoningEffort } }
-            : {}),
+          ...(behaviorConfigPatch !== undefined ? { behaviorConfig: behaviorConfigPatch } : {}),
           ...(input.data.systemPrompt !== undefined
             ? { systemPrompt: input.data.systemPrompt.trim() }
             : {}),

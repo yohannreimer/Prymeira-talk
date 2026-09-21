@@ -63,6 +63,7 @@ type AgentFormState = {
   allowedActions: AiAgentAllowedAction[];
   allowedTagIds: string[];
   reasoningEffort: "none" | "low";
+  onlyNewConversations: boolean;
 };
 
 type KnowledgeFormState = {
@@ -99,6 +100,7 @@ function emptyAgentForm(): AgentFormState {
     status: "inactive",
     systemPrompt: defaultSystemPrompt,
     reasoningEffort: "none",
+    onlyNewConversations: false,
     allowedActions: defaultAllowedActions,
     allowedTagIds: []
   };
@@ -110,6 +112,7 @@ function agentFormFromAgent(agent: AiAgentDto): AgentFormState {
     status: agent.status,
     systemPrompt: agent.systemPrompt,
     reasoningEffort: agent.behaviorConfig.reasoningEffort === "low" ? "low" : "none",
+    onlyNewConversations: agent.behaviorConfig.onlyNewConversations === true,
     allowedActions: agent.allowedActions,
     allowedTagIds: agent.allowedTags.map((tag) => tag.id)
   };
@@ -330,6 +333,7 @@ export function AgentsPage() {
           status: agentForm.status,
           systemPrompt: agentForm.systemPrompt,
           reasoningEffort: agentForm.reasoningEffort,
+          onlyNewConversations: agentForm.onlyNewConversations,
           allowedActions: agentForm.allowedActions,
           allowedTagIds: agentForm.allowedTagIds
         });
@@ -345,6 +349,7 @@ export function AgentsPage() {
         status: agentForm.status,
         systemPrompt: agentForm.systemPrompt,
         reasoningEffort: agentForm.reasoningEffort,
+        onlyNewConversations: agentForm.onlyNewConversations,
         allowedActions: agentForm.allowedActions,
         allowedTagIds: agentForm.allowedTagIds
       });
@@ -648,6 +653,15 @@ export function AgentsPage() {
                 <option value="low">Mais cuidadoso</option>
               </select>
               <small>Nos modelos GPT-5.6, o modo cuidadoso usa raciocínio curto antes de responder. Pode aumentar o tempo e o consumo de tokens; não garante acerto.</small>
+            </label>
+            <label className="form-field form-field--checkbox">
+              <input
+                type="checkbox"
+                checked={agentForm.onlyNewConversations}
+                onChange={(event) => setAgentForm((current) => ({ ...current, onlyNewConversations: event.target.checked }))}
+              />
+              <span>Responder só conversas novas</span>
+              <small>Ligado: a IA só inicia em conversas sem histórico anterior no WhatsApp. Conversas antigas ficam como "Humano necessário" para o time atender.</small>
             </label>
             <section className="agent-tag-selector" aria-label="Ações permitidas">
               <div className="panel-title-row compact">

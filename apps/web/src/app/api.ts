@@ -2877,6 +2877,7 @@ export async function apiCreateAgent(
     allowedActions?: AiAgentAllowedAction[];
     allowedTagIds?: string[];
     reasoningEffort?: "none" | "low";
+    onlyNewConversations?: boolean;
   }
 ): Promise<AiAgentDto> {
   return fetchJson(
@@ -2902,6 +2903,7 @@ export async function apiUpdateAgent(
     allowedTagIds: string[];
     status: AiAgentDto["status"];
     reasoningEffort: "none" | "low";
+    onlyNewConversations: boolean;
   }>
 ): Promise<AiAgentDto> {
   return fetchJson(

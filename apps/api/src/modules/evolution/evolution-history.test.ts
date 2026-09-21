@@ -56,3 +56,29 @@ describe('read-only Evolution history', () => {
     await expect(createEvolutionHistorySource({baseUrl:'https://evolution.invalid',apiKey:'test',fetch:fetchMock}).load(input)).rejects.toThrow('HISTORY_PAGE_LIMIT');
   });
 });
+
+describe('hasPriorMessages', () => {
+  const current = 'current-message';
+
+  it('reports prior history when any other message exists', async () => {
+    const { source } = setup([[row('old'), row(current, end.getTime())]]);
+    await expect(source.hasPriorMessages({ instanceName: 'Diogo', remoteJid: jid, excludeMessageId: current })).resolves.toBe(true);
+  });
+
+  it('ignores only the current message', async () => {
+    const { source } = setup([[row(current, end.getTime())]]);
+    await expect(source.hasPriorMessages({ instanceName: 'Diogo', remoteJid: jid, excludeMessageId: current })).resolves.toBe(false);
+    await expect(source.hasPriorMessages({ instanceName: 'Diogo', remoteJid: jid })).resolves.toBe(true);
+  });
+
+  it('treats malformed records as prior history instead of guessing', async () => {
+    const { source } = setup([[{ key: { remoteJid: jid } }]]);
+    await expect(source.hasPriorMessages({ instanceName: 'Diogo', remoteJid: jid, excludeMessageId: current })).resolves.toBe(true);
+  });
+
+  it('rejects non-direct identities before querying', async () => {
+    const { source, fetchMock } = setup();
+    await expect(source.hasPriorMessages({ instanceName: 'Diogo', remoteJid: '999@g.us' })).rejects.toThrow('HISTORY_IDENTITY');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

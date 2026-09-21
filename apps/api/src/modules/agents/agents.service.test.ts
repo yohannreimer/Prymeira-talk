@@ -137,6 +137,21 @@ describe("createAgentsService", () => {
     expect(prisma.aiAgent.update).toHaveBeenCalledWith(expect.objectContaining({ data: { name: "Renamed pilot" } }));
   });
 
+  it("stores the fresh-conversation requirement on create and update", async () => {
+    const prisma = buildPrisma();
+    const created = await createAgentsService(prisma).createAgent({ workspaceId: "workspace_a", name: "Pilot", systemPrompt: "Atenda com clareza.", onlyNewConversations: true });
+    expect(created.behaviorConfig.onlyNewConversations).toBe(true);
+    expect(created.behaviorConfig.reasoningEffort).toBe("none");
+
+    prisma.aiAgent.findFirst.mockResolvedValue({ ...baseAgent, behaviorConfig: { reasoningEffort: "none", qualification: { requiredFields: ["city"] } } });
+    const updated = await createAgentsService(prisma).updateAgent({ workspaceId: "workspace_a", agentId, data: { onlyNewConversations: true } });
+    expect(updated.behaviorConfig).toEqual({
+      reasoningEffort: "none",
+      qualification: { requiredFields: ["city"] },
+      onlyNewConversations: true
+    });
+  });
+
   it.each(["medium", "high", "", null])( "rejects unsupported reasoning values in service calls: %s", async (reasoningEffort) => {
     const prisma = buildPrisma();
     prisma.aiAgent.findFirst.mockResolvedValue(baseAgent);

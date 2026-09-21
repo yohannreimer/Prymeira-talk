@@ -4039,6 +4039,26 @@ select:disabled {
   line-height: 1.45;
 }
 
+.form-field--checkbox {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.form-field--checkbox input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  accent-color: var(--color-brand-600);
+}
+
+.form-field--checkbox small {
+  grid-column: 1 / -1;
+  text-transform: none;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
 .form-field input:focus,
 .form-field select:focus,
 .form-field textarea:focus {

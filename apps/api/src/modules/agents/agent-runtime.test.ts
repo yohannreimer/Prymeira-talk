@@ -132,7 +132,7 @@ function buildProvider(output: Awaited<ReturnType<AgentProvider["generate"]>>): 
 function buildPrisma(overrides: Record<string, any> = {}) {
   let transactionClient: AgentToolExecutorTransactionLike;
   const conversationFindUnique =
-    overrides.conversation?.findUnique ?? vi.fn().mockResolvedValue(baseConversation);
+    overrides.conversation?.findUnique ?? vi.fn().mockImplementation(async () => ({ ...baseConversation }));
   const conversationUpdate = overrides.conversation?.update ?? vi.fn().mockResolvedValue({});
   const transaction = vi.fn(
     <T,>(callback: Parameters<AgentToolExecutorPrismaLike["$transaction"]>[0]) =>
@@ -208,6 +208,7 @@ function buildPrisma(overrides: Record<string, any> = {}) {
     message: {
       findFirst: vi.fn().mockResolvedValue(baseMessage),
       findMany: vi.fn().mockResolvedValue(baseConversationMessages),
+      count: vi.fn().mockResolvedValue(0),
       update: overrides.message?.update ?? vi.fn().mockImplementation(
         async (args: { data: Partial<typeof baseMessage> }) => ({
           ...baseMessage,
@@ -1140,6 +1141,222 @@ describe("createAgentRuntime", () => {
       }
     });
     expect(prisma.message.create).not.toHaveBeenCalled();
+  });
+
+  it("starts only fresh WhatsApp conversations when the agent requires it", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          behaviorConfig: { onlyNewConversations: true }
+        })
+      }
+    });
+    const hasPriorMessages = vi.fn().mockResolvedValue(false);
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Olá!",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      chatHistory: { hasPriorMessages }
+    });
+
+    const result = await runtime.activateForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message
+    });
+
+    expect(result).toEqual({
+      status: "completed",
+      sessionId: ids.session,
+      message: "Agent session activated."
+    });
+    expect(hasPriorMessages).toHaveBeenCalledWith({
+      instanceName: "instancia",
+      remoteJid: "5511999999999@s.whatsapp.net",
+      excludeMessageId: null
+    });
+    expect(prisma.aiAgentSession.upsert).toHaveBeenCalled();
+  });
+
+  it("holds conversations that already have messages in Talk", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          behaviorConfig: { onlyNewConversations: true }
+        })
+      },
+      message: {
+        findFirst: vi.fn().mockResolvedValue(baseMessage),
+        findMany: vi.fn().mockResolvedValue(baseConversationMessages),
+        count: vi.fn().mockResolvedValue(3),
+        create: vi.fn()
+      }
+    });
+    const hasPriorMessages = vi.fn().mockResolvedValue(false);
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Olá!",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      chatHistory: { hasPriorMessages }
+    });
+
+    const result = await runtime.activateForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message
+    });
+
+    expect(result.status).toBe("skipped");
+    expect(result.message).toContain("Conversa anterior ao WhatsApp");
+    expect(hasPriorMessages).not.toHaveBeenCalled();
+    expect(prisma.aiAgentSession.upsert).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).toHaveBeenCalledWith({
+      where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.conversation } },
+      data: {
+        aiControlStatus: "human_controlled",
+        handoffReason: expect.stringContaining("Conversa anterior ao WhatsApp")
+      }
+    });
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ status: "skipped" })
+    });
+  });
+
+  it("holds fresh Talk conversations that already exist in Evolution", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          behaviorConfig: { onlyNewConversations: true }
+        })
+      }
+    });
+    const hasPriorMessages = vi.fn().mockResolvedValue(true);
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Olá!",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      chatHistory: { hasPriorMessages }
+    });
+
+    const result = await runtime.activateForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message
+    });
+
+    expect(result.status).toBe("skipped");
+    expect(hasPriorMessages).toHaveBeenCalled();
+    expect(prisma.aiAgentSession.upsert).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).toHaveBeenCalledWith({
+      where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.conversation } },
+      data: {
+        aiControlStatus: "human_controlled",
+        handoffReason: expect.stringContaining("Conversa anterior ao WhatsApp")
+      }
+    });
+  });
+
+  it("holds conversations when the WhatsApp history cannot be verified", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          behaviorConfig: { onlyNewConversations: true }
+        })
+      }
+    });
+    const hasPriorMessages = vi.fn().mockRejectedValue(new Error("HISTORY_HTTP_500"));
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Olá!",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      chatHistory: { hasPriorMessages }
+    });
+
+    const result = await runtime.activateForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message
+    });
+
+    expect(result.status).toBe("skipped");
+    expect(result.message).toContain("Não foi possível confirmar o histórico do WhatsApp");
+    expect(prisma.aiAgentSession.upsert).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).toHaveBeenCalledWith({
+      where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.conversation } },
+      data: {
+        aiControlStatus: "human_controlled",
+        handoffReason: expect.stringContaining("Não foi possível confirmar")
+      }
+    });
+  });
+
+  it("keeps existing sessions running after the fresh-conversation flag is enabled", async () => {
+    const prisma = buildPrisma({
+      aiAgent: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          behaviorConfig: { onlyNewConversations: true }
+        })
+      },
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseConversation,
+          activeAgentSessionId: ids.session
+        }),
+        update: vi.fn().mockResolvedValue({})
+      }
+    });
+    const hasPriorMessages = vi.fn().mockResolvedValue(true);
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Olá!",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      chatHistory: { hasPriorMessages }
+    });
+
+    const result = await runtime.activateForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message
+    });
+
+    expect(result.status).toBe("completed");
+    expect(hasPriorMessages).not.toHaveBeenCalled();
+    expect(prisma.aiAgentSession.upsert).toHaveBeenCalled();
   });
 
   it("explains activation failures when the selected agent is inactive", async () => {

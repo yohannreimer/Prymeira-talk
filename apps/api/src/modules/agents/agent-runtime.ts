@@ -135,6 +135,14 @@ type PendingAttachment = {
   mimeType: string | null;
 };
 
+type AgentRuntimeChatHistory = {
+  hasPriorMessages(input: {
+    instanceName: string;
+    remoteJid: string;
+    excludeMessageId?: string | null;
+  }): Promise<boolean>;
+};
+
 type AgentSessionRecord = {
   id: string;
   workspaceId: string;
@@ -165,6 +173,7 @@ type AgentRuntimePrismaLike = Omit<
     findMany: ConversationContextBuilderPrismaLike["message"]["findMany"];
     update(args: unknown): Promise<MessageRecord>;
     create(args: unknown): Promise<MessageRecord>;
+    count(args: unknown): Promise<number>;
   };
   aiAgentRun: {
     create(args: unknown): Promise<{ id: string; status: AgentRunStatus }>;
@@ -234,6 +243,7 @@ export function createAgentRuntime(input: {
     settings: Extract<OpenAiCompatibleSettings, { active: true }>
   ) => AgentAudioTranscriber;
   evolution?: AgentRuntimeEvolution;
+  chatHistory?: AgentRuntimeChatHistory;
   realtime?: AgentRuntimeRealtime;
   boardRules?: AgentRuntimeBoardRules;
 }) {
@@ -347,7 +357,7 @@ export function createAgentRuntime(input: {
             id: runInput.conversationId
             }
           },
-          include: { channel: true }
+          include: { channel: true, contact: true }
         }),
         prisma.message.findFirst({
           where: {
@@ -379,6 +389,44 @@ export function createAgentRuntime(input: {
 
       if (conversation.aiControlStatus === "human_controlled" || blocksAutonomousAgent(conversation.channel?.encryptedConfig)) {
         return { status: "skipped", message: "Conversation is controlled by a human." };
+      }
+
+      if (readOnlyNewConversations(activeAgent.behaviorConfig) && !conversation.activeAgentSessionId) {
+        const freshness = await evaluateFreshConversation({
+          prisma,
+          chatHistory: input.chatHistory,
+          workspaceId: runInput.workspaceId,
+          conversation,
+          message
+        });
+
+        if (!freshness.ok) {
+          await prisma.conversation.update({
+            where: {
+              workspaceId_id: {
+                workspaceId: runInput.workspaceId,
+                id: conversation.id
+              }
+            },
+            data: {
+              aiControlStatus: "human_controlled",
+              handoffReason: freshness.reason
+            }
+          });
+          const run = await createRun({
+            workspaceId: runInput.workspaceId,
+            agentId: activeAgent.id,
+            conversationId: conversation.id,
+            trigger: "automation",
+            input: runInput,
+            model: activeAgent.model,
+            status: "skipped",
+            errorMessage: freshness.reason
+          });
+          await publishConversationUpdated(runInput.workspaceId, conversation.id);
+
+          return { status: "skipped", runId: run.id, message: freshness.reason };
+        }
       }
 
       const metadata = runInput.instruction?.trim()
@@ -1158,6 +1206,61 @@ function readConfidenceThreshold(value: JsonValue) {
 
   const threshold = value.confidenceThreshold;
   return typeof threshold === "number" && Number.isFinite(threshold) ? threshold : 0.55;
+}
+
+function readOnlyNewConversations(value: JsonValue) {
+  return isRecord(value) && value.onlyNewConversations === true;
+}
+
+const FRESH_CONVERSATION_HANDOFF_REASON = "Conversa anterior ao WhatsApp — IA não iniciada.";
+const FRESH_CONVERSATION_UNVERIFIED_REASON =
+  "Não foi possível confirmar o histórico do WhatsApp — IA não iniciada.";
+
+function buildRemoteJid(phone: string | null | undefined) {
+  const digits = phone?.replace(/\D+/g, "") ?? "";
+  return digits.length >= 10 ? `${digits}@s.whatsapp.net` : null;
+}
+
+async function evaluateFreshConversation(input: {
+  prisma: AgentRuntimePrismaLike;
+  chatHistory: AgentRuntimeChatHistory | undefined;
+  workspaceId: string;
+  conversation: ConversationRecord;
+  message: MessageRecord;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const priorMessages = await input.prisma.message.count({
+    where: {
+      workspaceId: input.workspaceId,
+      conversationId: input.conversation.id,
+      id: { not: input.message.id }
+    }
+  });
+
+  if (priorMessages > 0) {
+    return { ok: false, reason: FRESH_CONVERSATION_HANDOFF_REASON };
+  }
+
+  const provider = input.conversation.channel?.provider;
+  const instanceName = input.conversation.channel?.providerKey;
+  const remoteJid = buildRemoteJid(input.conversation.contact?.phone);
+
+  if (provider !== "evolution" || !instanceName || !remoteJid || !input.chatHistory) {
+    return { ok: true };
+  }
+
+  try {
+    const hasPriorMessages = await input.chatHistory.hasPriorMessages({
+      instanceName,
+      remoteJid,
+      excludeMessageId: input.message.providerMessageId ?? null
+    });
+
+    return hasPriorMessages
+      ? { ok: false, reason: FRESH_CONVERSATION_HANDOFF_REASON }
+      : { ok: true };
+  } catch {
+    return { ok: false, reason: FRESH_CONVERSATION_UNVERIFIED_REASON };
+  }
 }
 
 function buildUserPrompt(messageBody: string | null | undefined, instruction: string | null | undefined) {

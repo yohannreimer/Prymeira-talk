@@ -358,6 +358,7 @@ describe("AgentsPage", () => {
     expect(html).toContain("Prompt do sistema");
     expect(html).toContain("Ações permitidas");
     expect(html).toContain("Enviar anexo");
+    expect(html).toContain("Responder só conversas novas");
     expect(html).toContain("Tags permitidas");
     expect(html).toContain("Selecione as tags que este agente pode aplicar.");
     expect(html).toContain("Teste do agente");
