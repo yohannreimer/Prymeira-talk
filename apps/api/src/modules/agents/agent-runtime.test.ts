@@ -240,6 +240,72 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentRuntime", () => {
+  it("skips generation when JEV identifies a social closure", async () => {
+    const socialMessage = { ...baseMessage, body: "Obrigado!" };
+    const prisma = buildPrisma({ aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([]) } });
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(socialMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([
+      { ...baseConversationMessages[0], body: "Posso ajudar em algo mais?" },
+      socialMessage
+    ]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Não deveria enviar.", actions: [], handoff: { required: false, reason: null } });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({ outcome: "silence", reason: "social_closure" })
+    };
+
+    const result = await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({ status: "skipped", runId: ids.run, message: "social_closure" });
+    expect(replyPreflight.evaluate).toHaveBeenCalledOnce();
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: "skipped",
+        contextSummary: expect.objectContaining({ replyPreflight: { outcome: "silence", reason: "social_closure" } })
+      })
+    }));
+  });
+
+  it("passes a continuing JEV plan into GPT context", async () => {
+    const prisma = buildPrisma();
+    const provider = buildProvider({ confidence: 0.9, reply: "Quer receber o catálogo ou falar com um vendedor?", actions: [], handoff: { required: false, reason: null } });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({
+        outcome: "continue",
+        plan: {
+          conversationStage: "new_quote",
+          commercialPath: "made_to_order",
+          nextAction: "offer_catalog_or_seller"
+        }
+      })
+    };
+
+    await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({
+        agentPreflight: {
+          conversationStage: "new_quote",
+          commercialPath: "made_to_order",
+          nextAction: "offer_catalog_or_seller"
+        }
+      })
+    }));
+  });
+
   it("uses the same context-first path for live generation without forced price handoff", async () => {
     const provider = buildProvider({ confidence: 0.9, reply: "Qual quantidade você precisa?", actions: [], handoff: { required: false, reason: null } });
     const prisma = buildPrisma({

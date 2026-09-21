@@ -34,6 +34,8 @@ export const envSchema = z
     EVOLUTION_API_BASE_URL: optionalUrl,
     EVOLUTION_API_KEY: optionalNonEmptyString,
     EVOLUTION_WEBHOOK_SECRET: z.string().min(1),
+    JEV_API_KEY: optionalNonEmptyString,
+    JEV_MODEL: z.string().min(1).default("jev-latest"),
     TALK_UPLOAD_DIR: z.string().min(1).default("storage/uploads"),
     VINCULA_CRM_API_URL: optionalUrl
   })

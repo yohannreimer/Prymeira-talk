@@ -143,6 +143,14 @@ Cada item de conhecimento registra fonte, responsável pela aprovação, data de
 
 Categorias com `requiresSource: true` indicam assuntos nos quais o agente só deve responder quando encontrar uma fonte adequada. A taxonomia é própria de cada modelo; ela não fica limitada a categorias genéricas nem ao setor de aço.
 
+## Pré-validação JEV de respostas
+
+Quando o ambiente tiver `JEV_API_KEY`, o runtime consulta o JEV antes de chamar o modelo que redige a mensagem. O JEV recebe as últimas dez mensagens, a mensagem atual e o conhecimento aprovado recuperado, e decide se existe uma resposta útil a enviar, em qual etapa está a conversa, qual caminho comercial se aplica e qual é a próxima ação.
+
+Encerramentos sociais explícitos — por exemplo, um agradecimento sem pergunta ou pendência — encerram a execução sem chamar o modelo de chat e sem enviar mensagem. Nos demais casos, o plano é fornecido ao agente como orientação interna para a próxima resposta. O JEV não é fonte de fatos comerciais: preço, estoque, prazo, mínimo e especificações continuam dependendo de conhecimento aprovado e das regras determinísticas do runtime.
+
+Defina também `JEV_MODEL` para trocar o modelo; o padrão é `jev-latest`. Sem `JEV_API_KEY`, o caminho de geração existente é preservado.
+
 ## Regras operacionais desta versão
 
 - A importação exige permissão de gestão de automações.

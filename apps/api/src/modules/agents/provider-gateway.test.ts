@@ -326,6 +326,9 @@ describe("createOpenAiCompatibleAgentProvider", () => {
       "protected factual claims must be supported by selected knowledge"
     );
     expect(body.messages[0].content).toContain(
+      "context.agentPreflight is present, it is trusted internal routing guidance"
+    );
+    expect(body.messages[0].content).toContain(
       'prefer {"type":"add_tag","tagId":"..."}'
     );
     expect(body.messages[0].content).toContain("if context.allowedTags is empty, do not call add_tag");

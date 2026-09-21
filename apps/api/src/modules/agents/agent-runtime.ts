@@ -40,6 +40,7 @@ import type { AgentAudioTranscriber } from "./audio-transcription.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { evaluateAgentLoopGuard } from "./agent-loop-guard.js";
+import type { AgentReplyPreflight, AgentReplyPreflightResult } from "./jev-reply-preflight.js";
 
 import { blocksAutonomousAgent } from '../assistant/assistant-policy.js';
 type JsonValue = unknown;
@@ -239,6 +240,7 @@ export function createAgentRuntime(input: {
   providerFactory?: (settings: Extract<OpenAiCompatibleSettings, { active: true }>) => AgentProvider;
   mediaResolver?: typeof resolveAgentMedia;
   mediaPreparer?: typeof prepareInboundMedia;
+  replyPreflight?: AgentReplyPreflight;
   audioTranscriberFactory?: (
     settings: Extract<OpenAiCompatibleSettings, { active: true }>
   ) => AgentAudioTranscriber;
@@ -839,6 +841,58 @@ export function createAgentRuntime(input: {
           selectedKnowledge: knowledgeSelection.selected
         });
         const safetyOutput = resolveConversationSafetyOutput(safety, agent.behaviorConfig);
+        const documentRequiresHuman =
+          !usesContextFirst(agent.behaviorConfig) &&
+          !attachmentAvailable &&
+          safety.outcome !== "await_approval" &&
+          isDocumentDependentQuestion(effectiveText, taxonomy) &&
+          knowledgeSelection.selected.length === 0;
+        let replyPreflight: AgentReplyPreflightResult | undefined;
+
+        if (input.replyPreflight && !mediaFallback && !safetyOutput && !documentRequiresHuman) {
+          try {
+            replyPreflight = await input.replyPreflight.evaluate({
+              currentMessage: {
+                id: message.id,
+                body: effectiveText,
+                type: message.type
+              },
+              conversationMessages: conversationContext.messages,
+              selectedKnowledge: knowledgeSelection.selected.map((source) => ({
+                title: source.title,
+                content: source.content
+              }))
+            });
+            contextSummary = { ...contextSummary, replyPreflight };
+          } catch {
+            contextSummary = { ...contextSummary, replyPreflight: { outcome: "unavailable" } };
+          }
+        }
+
+        if (replyPreflight?.outcome === "silence") {
+          await prisma.aiAgentSession.update({
+            where: {
+              workspaceId_id: {
+                workspaceId: runInput.workspaceId,
+                id: session.id
+              }
+            },
+            data: { lastRunAt: new Date() }
+          });
+          const run = await createRun({
+            workspaceId: runInput.workspaceId,
+            agentId: agent.id,
+            sessionId: session.id,
+            conversationId: conversation.id,
+            trigger: runInput.trigger,
+            input: runInputPayload,
+            contextSummary,
+            knowledgeMatches,
+            model: agent.model,
+            status: "skipped"
+          });
+          return { status: "skipped", runId: run.id, message: replyPreflight.reason };
+        }
 
         const runProvider = providerSettings.active
           ? (input.providerFactory ?? createOpenAiCompatibleAgentProvider)(providerSettings)
@@ -854,17 +908,20 @@ export function createAgentRuntime(input: {
             }
           : safetyOutput
           ? safetyOutput
-          : !usesContextFirst(agent.behaviorConfig) && !attachmentAvailable && safety.outcome !== "await_approval" && isDocumentDependentQuestion(
-                effectiveText,
-                taxonomy
-              ) && knowledgeSelection.selected.length === 0
+          : documentRequiresHuman
             ? createDocumentRequiredHandoffOutput()
           : await runProvider.generate({
             reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
             model: runModel,
             systemPrompt: agent.systemPrompt,
             userPrompt: buildUserPrompt(effectiveText, runInput.instruction),
-            context: { ...context, ...conversationReasoningContext(agent.behaviorConfig, safety) }
+            context: {
+              ...context,
+              ...conversationReasoningContext(agent.behaviorConfig, safety),
+              ...(replyPreflight?.outcome === "continue"
+                ? { agentPreflight: replyPreflight.plan }
+                : {})
+            }
           });
 
         const contextualHandoff = usesQualificationHandoff(agent.behaviorConfig);

@@ -37,4 +37,15 @@ describe("readEnv", () => {
       RATE_LIMIT_TIME_WINDOW: "1 minute"
     });
   });
+
+  it("loads optional JEV reply-preflight settings", () => {
+    expect(readEnv({
+      ...baseProductionEnv,
+      JEV_API_KEY: "jev-secret",
+      JEV_MODEL: "jev-1.13"
+    })).toMatchObject({
+      JEV_API_KEY: "jev-secret",
+      JEV_MODEL: "jev-1.13"
+    });
+  });
 });

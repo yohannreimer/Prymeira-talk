@@ -6,6 +6,7 @@ import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
+import { createJevReplyPreflight } from "./modules/agents/jev-reply-preflight.js";
 import { createAgentReplyScheduler } from "./modules/agents/agent-reply-scheduler.js";
 import { agentsRoutes } from "./modules/agents/agents.routes.js";
 import { agentPackageRoutes } from "./modules/agents/agent-package.routes.js";
@@ -148,6 +149,9 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
       : createAgentRuntime({
           prisma: app.prisma as unknown as Parameters<typeof createAgentRuntime>[0]["prisma"],
           provider: createSimulatedAgentProvider(),
+          replyPreflight: env.JEV_API_KEY
+            ? createJevReplyPreflight({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
+            : undefined,
           evolution: evolutionRuntime,
           chatHistory: evolutionHistorySource,
           realtime: app.realtime,
