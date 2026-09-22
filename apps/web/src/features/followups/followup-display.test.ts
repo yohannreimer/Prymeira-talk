@@ -1,0 +1,68 @@
+import type { ConversationFollowupDto } from "@prymeira-talk/shared";
+import { describe, expect, it } from "vitest";
+import {
+  followupKindLabel,
+  followupPurposeLabel,
+  followupReasonLabel,
+  followupStatusLabel,
+  formatFollowupDate,
+  matchesFollowupFilter
+} from "./followup-display";
+
+const reviewFollowup: ConversationFollowupDto = {
+  id: "followup-1",
+  workspaceId: "workspace-1",
+  conversationId: "conversation-1",
+  agentId: "agent-1",
+  kind: "qualification",
+  status: "review",
+  stepIndex: 0,
+  scheduledAt: "2026-09-22T15:30:00.000Z",
+  draftBody: "Ainda precisa de ajuda com as medidas?",
+  createdAt: "2026-09-22T12:00:00.000Z",
+  updatedAt: "2026-09-22T14:00:00.000Z"
+};
+
+describe("followup display", () => {
+  it("formats dates in the Talk business timezone", () => {
+    expect(formatFollowupDate(reviewFollowup.scheduledAt, {
+      locale: "pt-BR",
+      timeZone: "America/Sao_Paulo",
+      now: new Date("2026-09-22T12:00:00.000Z")
+    })).toMatch(/22 de set.*12:30/i);
+  });
+
+  it("provides safe labels for kind, status and derived purpose", () => {
+    expect(followupKindLabel(reviewFollowup.kind)).toBe("Qualificação");
+    expect(followupStatusLabel(reviewFollowup.status)).toBe("Para revisar");
+    expect(followupPurposeLabel(reviewFollowup)).toBe("Retomar dados da qualificação");
+    expect(followupPurposeLabel({
+      ...reviewFollowup,
+      kind: "human_commercial",
+      stepIndex: 1
+    })).toBe("Confirmar continuidade comercial");
+  });
+
+  it("translates known terminal reasons and safely falls back for unknown reasons", () => {
+    expect(followupReasonLabel("customer_replied")).toContain("cliente respondeu");
+    expect(followupReasonLabel("provider_new_reason")).toContain("mudança no contexto");
+    expect(followupReasonLabel(null)).toBeNull();
+  });
+
+  it("matches exact active filters and groups terminal outcomes under cancelled", () => {
+    expect(matchesFollowupFilter(reviewFollowup, "review")).toBe(true);
+    expect(matchesFollowupFilter(reviewFollowup, "scheduled")).toBe(false);
+    expect(matchesFollowupFilter({
+      ...reviewFollowup,
+      status: "failed",
+      reason: "manual_delivery_uncertain"
+    }, "cancelled")).toBe(true);
+    expect(matchesFollowupFilter({
+      ...reviewFollowup,
+      status: "sent",
+      finalBody: "Mensagem enviada",
+      sentAt: reviewFollowup.updatedAt,
+      sentByUserId: null
+    }, "cancelled")).toBe(false);
+  });
+});

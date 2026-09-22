@@ -2,6 +2,7 @@ import {
   BarChart3,
   BriefcaseBusiness,
   Headphones,
+  ListChecks,
   Radio,
   Send,
   Settings,
@@ -14,6 +15,7 @@ import type { LucideIcon } from "lucide-react";
 
 export type TalkModuleKey =
   | "atendimento"
+  | "followups"
   | "contatos"
   | "canais"
   | "automacoes"
@@ -35,6 +37,11 @@ export const talkModules: TalkModule[] = [
     key: "atendimento",
     label: "Atendimento",
     Icon: Headphones
+  },
+  {
+    key: "followups",
+    label: "Follow-ups",
+    Icon: ListChecks
   },
   {
     key: "contatos",

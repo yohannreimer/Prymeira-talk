@@ -10,6 +10,7 @@ import {
   channelSchema,
   channelTestInboundResultSchema,
   contactSchema,
+  conversationFollowupSchema,
   conversationSchema,
   messageSchema,
   tagSchema,
@@ -26,6 +27,7 @@ import {
   type ContactBoardMembershipDto,
   type ContactBoardStageDto,
   type ContactDto,
+  type ConversationFollowupDto,
   type ConversationDto,
   type MessageDto,
   type TagDto
@@ -1325,6 +1327,13 @@ export class ApiRequestError extends Error {
   }
 }
 
+export class FollowupStaleError extends Error {
+  constructor(public readonly followup: ConversationFollowupDto) {
+    super("O contexto mudou. Confira o estado atualizado antes de continuar.");
+    this.name = "FollowupStaleError";
+  }
+}
+
 async function readApiErrorPayload(response: Response, fallbackLabel: string) {
   try {
     const data = await response.clone().json() as unknown;
@@ -1380,6 +1389,126 @@ export async function apiGetConversations(
 
   const data = await response.json();
   return conversationSchema.array().parse(data);
+}
+
+export type FollowupListStatus = "review" | "scheduled" | "sent" | "cancelled";
+
+export type FollowupCancelReason =
+  | "manual_cancelled"
+  | "not_interested"
+  | "wrong_contact"
+  | "duplicate"
+  | "other";
+
+export async function apiListFollowups(
+  getToken: () => Promise<string | null>,
+  status: FollowupListStatus
+): Promise<ConversationFollowupDto[]> {
+  const token = await getRequiredToken(getToken);
+  const url = new URL(`${apiUrl}/followups`);
+  url.searchParams.set("status", status);
+
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (!response.ok) {
+    const payload = await readApiErrorPayload(response, "Não foi possível carregar os follow-ups");
+    throw new ApiRequestError(payload.message, payload.debug);
+  }
+
+  return conversationFollowupSchema.array().parse(await response.json());
+}
+
+export function apiSendFollowup(
+  getToken: () => Promise<string | null>,
+  id: string,
+  input: { body: string; expectedUpdatedAt: string }
+) {
+  if (input.body.trim().length < 1 || input.body.length > 4000) {
+    throw new ApiRequestError("A mensagem deve ter entre 1 e 4.000 caracteres.");
+  }
+  return mutateFollowup(getToken, id, "send", input, "Não foi possível enviar o follow-up");
+}
+
+export function apiPostponeFollowup(
+  getToken: () => Promise<string | null>,
+  id: string,
+  expectedUpdatedAt: string
+) {
+  return mutateFollowup(
+    getToken,
+    id,
+    "postpone",
+    { expectedUpdatedAt },
+    "Não foi possível adiar o follow-up"
+  );
+}
+
+export function apiCancelFollowup(
+  getToken: () => Promise<string | null>,
+  id: string,
+  input: { reason: FollowupCancelReason; expectedUpdatedAt: string }
+) {
+  return mutateFollowup(getToken, id, "cancel", input, "Não foi possível cancelar o follow-up");
+}
+
+export function apiMarkFollowupNoFollowup(
+  getToken: () => Promise<string | null>,
+  id: string,
+  expectedUpdatedAt: string
+) {
+  return mutateFollowup(
+    getToken,
+    id,
+    "no-followup",
+    { expectedUpdatedAt },
+    "Não foi possível encerrar o acompanhamento"
+  );
+}
+
+async function mutateFollowup(
+  getToken: () => Promise<string | null>,
+  id: string,
+  action: "send" | "postpone" | "cancel" | "no-followup",
+  body: Record<string, unknown>,
+  errorLabel: string
+): Promise<ConversationFollowupDto> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/followups/${encodeURIComponent(id)}/${action}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (response.status === 409) {
+    const stalePayload = await parseFollowupStalePayload(response);
+    if (stalePayload) {
+      throw new FollowupStaleError(stalePayload);
+    }
+  }
+
+  if (!response.ok) {
+    const payload = await readApiErrorPayload(response, errorLabel);
+    throw new ApiRequestError(payload.message, payload.debug);
+  }
+
+  return conversationFollowupSchema.parse(await response.json());
+}
+
+async function parseFollowupStalePayload(response: Response) {
+  try {
+    const data = await response.clone().json() as unknown;
+    if (!isRecord(data) || data.code !== "FOLLOWUP_STALE" || !("followup" in data)) {
+      return null;
+    }
+    return conversationFollowupSchema.parse(data.followup);
+  } catch {
+    return null;
+  }
 }
 
 export async function apiGetContacts(

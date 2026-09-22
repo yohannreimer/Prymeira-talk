@@ -5,6 +5,7 @@ import { ChannelsPage } from "../features/channels/ChannelsPage";
 import { ContactsPage } from "../features/contacts/ContactsPage";
 import { CrmPage } from "../features/crm/CrmPage";
 import { InboxPage } from "../features/inbox/InboxPage";
+import { FollowupsPage } from "../features/followups/FollowupsPage";
 import { ReportsPage } from "../features/reports/ReportsPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { TalkSuiteShell } from "../features/shell/TalkSuiteShell";
@@ -16,6 +17,8 @@ function renderModule(moduleKey: TalkModuleKey) {
   switch (moduleKey) {
     case "atendimento":
       return <InboxPage />;
+    case "followups":
+      return <FollowupsPage />;
     case "contatos":
       return <ContactsPage />;
     case "canais":
