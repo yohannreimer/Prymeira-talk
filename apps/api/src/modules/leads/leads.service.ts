@@ -708,7 +708,11 @@ export function createLeadsService(options: LeadsServiceOptions) {
       completedAt: null
     });
     try {
-      const remoteName = `prymeira-${job.id}`;
+      const remoteGeneration = typeof checkpoint.remoteGeneration === "number" &&
+        Number.isInteger(checkpoint.remoteGeneration) && checkpoint.remoteGeneration > 0
+        ? checkpoint.remoteGeneration
+        : 0;
+      const remoteName = `prymeira-${job.id}-g${remoteGeneration}`;
       let remoteJobId = typeof checkpoint.remoteJobId === "string" ? checkpoint.remoteJobId : null;
       let submittedAt = typeof checkpoint.remoteSubmittedAt === "string" ? new Date(checkpoint.remoteSubmittedAt) : null;
       if (!remoteJobId) {

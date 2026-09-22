@@ -755,7 +755,7 @@ describe("Leads service", () => {
     await context.service.runClaimedJob(job);
 
     expect(context.googleMapsClient.createJob).toHaveBeenCalledWith({
-      name: `prymeira-${job.id}`,
+      name: `prymeira-${job.id}-g0`,
       keywords: ["padarias em Campinas, SP"],
       latitude: -22.9056,
       longitude: -47.0608,
@@ -803,6 +803,44 @@ describe("Leads service", () => {
     expect(context.googleMapsClient.createJob).not.toHaveBeenCalled();
     expect(context.googleMapsClient.getJob).toHaveBeenCalledWith("remote-existing");
     expect(context.googleMapsClient.download).toHaveBeenCalledWith("remote-existing");
+  });
+
+  it("uses a persisted retry generation to avoid rediscovering a terminal remote job", async () => {
+    const context = setup();
+    const job = rawJob("google_maps_search", {
+      requestFingerprint: "a".repeat(64), niche: "padarias", city: "Campinas", state: "SP",
+      latitude: -22.9, longitude: -47.06, maxTimeSeconds: 600
+    });
+    job.output = { remoteGeneration: 2, retryRequestedAt: now.toISOString() };
+
+    await context.service.runClaimedJob(job);
+
+    expect(context.googleMapsClient.findJobByName).toHaveBeenCalledWith(`prymeira-${job.id}-g2`);
+    expect(context.googleMapsClient.createJob).toHaveBeenCalledWith(expect.objectContaining({
+      name: `prymeira-${job.id}-g2`
+    }));
+  });
+
+  it("recovers a post-POST crash by finding the same persisted retry generation", async () => {
+    const context = setup();
+    const job = rawJob("google_maps_search", {
+      requestFingerprint: "a".repeat(64), niche: "padarias", city: "Campinas", state: "SP",
+      latitude: -22.9, longitude: -47.06, maxTimeSeconds: 600
+    });
+    job.output = { remoteGeneration: 1, retryRequestedAt: now.toISOString() };
+    context.googleMapsClient.findJobByName.mockResolvedValue({ id: "remote-g1", status: "succeeded" } as any);
+    context.googleMapsClient.getJob.mockResolvedValue({ id: "remote-g1", status: "succeeded" } as any);
+
+    await context.service.runClaimedJob(job);
+
+    expect(context.googleMapsClient.findJobByName).toHaveBeenCalledWith(`prymeira-${job.id}-g1`);
+    expect(context.googleMapsClient.createJob).not.toHaveBeenCalled();
+    expect(context.repository.fencedCheckpointJob).toHaveBeenCalledWith(
+      expect.anything(),
+      { output: expect.objectContaining({ remoteGeneration: 1, remoteJobId: "remote-g1" }) },
+      now,
+      300_000
+    );
   });
 
   it("marks malformed Google rows partial while preserving useful rows and safe counts", async () => {

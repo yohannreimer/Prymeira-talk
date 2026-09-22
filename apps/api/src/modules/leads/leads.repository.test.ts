@@ -297,6 +297,7 @@ describe("Leads repository workspace isolation", () => {
     const savedOutput = calls[0]![0].data.output;
     expect(savedOutput).not.toHaveProperty("remoteJobId");
     expect(savedOutput).toHaveProperty("retryRequestedAt", now.toISOString());
+    expect(savedOutput).toHaveProperty("remoteGeneration", 1);
   });
 
   it.each(["LEAD_GOOGLE_TIMEOUT", "LEAD_GOOGLE_PARTIAL_ROWS"])(
@@ -335,6 +336,7 @@ describe("Leads repository workspace isolation", () => {
       const calls = updateMany.mock.calls as unknown as Array<[{ data: { output: Record<string, unknown> } }]>;
       expect(calls[0]![0].data.output).not.toHaveProperty("remoteJobId");
       expect(calls[0]![0].data.output).not.toHaveProperty("remoteSubmittedAt");
+      expect(calls[0]![0].data.output).toHaveProperty("remoteGeneration", 1);
     }
   );
 });

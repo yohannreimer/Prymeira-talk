@@ -391,6 +391,10 @@ export class LeadsRepository {
         throw new LeadsDomainError("LEAD_INVALID_TRANSITION", "Google lead job is not ready for retry.");
       }
       const output = { ...requestJsonRecord(current.output) };
+      const previousGeneration = typeof output.remoteGeneration === "number" &&
+        Number.isInteger(output.remoteGeneration) && output.remoteGeneration >= 0
+        ? output.remoteGeneration
+        : 0;
       for (const key of ["retryable", "totalCount", "processedCount", "failedCount", "downloadedRows"]) {
         delete output[key];
       }
@@ -401,6 +405,7 @@ export class LeadsRepository {
         "LEAD_GOOGLE_PARTIAL_ROWS"
       ].includes(current.errorMessage ?? "")) {
         for (const key of ["remoteJobId", "remoteStatus", "remoteSubmittedAt", "remotePolledAt"]) delete output[key];
+        output.remoteGeneration = previousGeneration + 1;
       }
       output.retryRequestedAt = now.toISOString();
       const updated = await tx.leadJob.updateMany({
