@@ -20,6 +20,7 @@ import type {
 import { canTransitionLeadJob } from "./leads.types.js";
 import { canonicalizePhone } from "../contacts/phone-normalization.js";
 import { aggregateLeadWhatsappStatus } from "./lead-whatsapp-status.js";
+import { whatsappPhoneCandidates } from "./lead-whatsapp-numbers.js";
 
 type DateLike = Date | string;
 
@@ -202,8 +203,8 @@ export function toLeadResultDto(
 ): LeadResultDto {
   const phones = new Set([record.normalizedPhone, ...strings(record.phones)]
     .filter((phone): phone is string => Boolean(phone))
-    .map(canonicalizePhone)
-    .filter((phone) => /^\d{8,15}$/.test(phone)));
+    .map((phone) => whatsappPhoneCandidates(phone)?.key ?? null)
+    .filter((phone): phone is string => phone !== null));
   return {
     id: record.id,
     workspaceId: record.workspaceId,
@@ -455,11 +456,18 @@ export class LeadsRepository {
       row.id,
       new Set([row.normalizedPhone, ...strings(row.phones)].flatMap((phone) => {
         if (!phone) return [];
-        const normalized = canonicalizePhone(phone);
-        return /^\d{8,15}$/.test(normalized) ? [normalized] : [];
+        const normalized = whatsappPhoneCandidates(phone)?.key;
+        return normalized ? [normalized] : [];
       }))
     ]));
-    const phones = [...new Set([...currentPhones.values()].flatMap((set) => [...set]))];
+    const phones = [...new Set(rows.flatMap((row) =>
+      [row.normalizedPhone, ...strings(row.phones)].flatMap((phone) => {
+        if (!phone) return [];
+        const current = whatsappPhoneCandidates(phone)?.key;
+        const legacy = canonicalizePhone(phone);
+        return current ? [current, legacy] : [];
+      })
+    ))];
     const recent = phones.length === 0 ? [] : await this.prisma.leadWhatsappVerification.findMany({
       where: {
         workspaceId: input.workspaceId,
@@ -470,7 +478,7 @@ export class LeadsRepository {
     });
     const latest = new Map<string, LeadWhatsappVerification>();
     for (const verification of recent) {
-      const key = `${verification.leadId}:${canonicalizePhone(verification.normalizedPhone)}`;
+      const key = `${verification.leadId}:${whatsappPhoneCandidates(verification.normalizedPhone)?.key ?? canonicalizePhone(verification.normalizedPhone)}`;
       if (!latest.has(key)) latest.set(key, verification);
     }
     return {
@@ -759,6 +767,21 @@ export class LeadsRepository {
         entries.push({ verificationId: row.id, leadId: row.leadId, phone: row.normalizedPhone });
       }
       const previous = inputRecord(current.input);
+      const previousLookups = Array.isArray(previous.lookups)
+        ? previous.lookups.map(inputRecord)
+        : [];
+      const lookups = [...new Set(rows.map((row) => whatsappPhoneCandidates(row.normalizedPhone)?.key))].map((phone) => {
+        if (!phone) throw new LeadsDomainError("LEAD_INVALID_INPUT", "WhatsApp retry number is invalid.");
+        const prior = previousLookups.find((lookup) => lookup.phone === phone &&
+          typeof lookup.primary === "string" &&
+          (typeof lookup.alternate === "string" || lookup.alternate === null));
+        if (prior) {
+          return { phone, primary: prior.primary as string, alternate: prior.alternate as string | null };
+        }
+        const candidates = whatsappPhoneCandidates(phone);
+        if (!candidates) throw new LeadsDomainError("LEAD_INVALID_INPUT", "WhatsApp retry number is invalid.");
+        return { phone, primary: candidates.primary, alternate: candidates.alternate };
+      });
       const updated = await tx.leadJob.updateMany({
         where: {
           workspaceId,
@@ -782,7 +805,8 @@ export class LeadsRepository {
             ],
             channelId: channel.id,
             instanceName: channel.providerKey.trim(),
-            numbers: [...new Set(rows.map((row) => row.normalizedPhone))],
+            numbers: lookups.map((lookup) => lookup.primary),
+            lookups,
             entries
           },
           output: { totalCount: rows.length, processedCount: 0, failedCount: 0, retryable: false }

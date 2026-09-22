@@ -209,6 +209,41 @@ describe("lead WhatsApp verification", () => {
     }]]);
   });
 
+  it("adds Brazil's country code to a local Google Maps mobile number", async () => {
+    const local = lead(1, "(47) 99139-6920");
+    local.normalizedPhone = "47991396920";
+    const context = setup([local]);
+
+    await context.service.createVerification({
+      workspaceId, listId, leadIds: [local.id], idempotencyKey: "local-google-mobile"
+    });
+
+    expect(context.repository.createWhatsappVerificationJobs.mock.calls[0]![0].batches).toEqual([[{
+      phone: "554791396920", primary: "5547991396920", alternate: "554791396920", leadIds: [local.id]
+    }]]);
+  });
+
+  it("can finish a legacy queued job with a local Brazilian number", async () => {
+    const context = setup();
+    const verificationId = randomUUID();
+    const job = claimed({
+      requestId: randomUUID(), instanceName: "workspace-instance", numbers: ["47991396920"],
+      entries: [{ verificationId, leadId: randomUUID(), phone: "47991396920" }]
+    });
+    context.evolution.checkWhatsappNumbersAvailability.mockResolvedValue({
+      numbers: [{ phone: "5547991396920", available: true }], raw: {}
+    });
+
+    await context.service.processClaimedJob(job);
+
+    expect(context.evolution.checkWhatsappNumbersAvailability).toHaveBeenCalledExactlyOnceWith({
+      instanceName: "workspace-instance", numbers: ["5547991396920"]
+    });
+    expect(context.repository.fencedFinishWhatsappVerificationJob).toHaveBeenCalledWith(expect.objectContaining({
+      results: [{ verificationId, status: "available", errorMessage: null }]
+    }));
+  });
+
   it("deduplicates normalized variants, preserves lead mapping and splits more than 25 numbers", async () => {
     const selected = Array.from({ length: 27 }, (_, index) => lead(index));
     selected[1]!.phones = ["+55 (11) 9999-0000"];

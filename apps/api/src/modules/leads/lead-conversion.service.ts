@@ -12,6 +12,7 @@ import {
   buildPhoneLookupCandidates,
   normalizePhoneForStorage
 } from "../contacts/phone-normalization.js";
+import { whatsappPhoneCandidates } from "./lead-whatsapp-numbers.js";
 
 const DEFAULT_QUICK_REPLY_TITLE = "Prospecção — Clínica padrão";
 const DEFAULT_QUICK_REPLY_CATEGORY = "Prospecção";
@@ -104,12 +105,17 @@ function currentPhoneState(input: {
     .map(validPhone)
     .filter((phone): phone is string => phone !== null)
     .filter((phone, index, phones) => phones.indexOf(phone) === index);
-  const candidateSet = new Set(candidates);
+  const candidateByKey = new Map<string, string>();
+  for (const candidate of candidates) {
+    const key = whatsappPhoneCandidates(candidate)?.key ?? candidate;
+    if (!candidateByKey.has(key)) candidateByKey.set(key, candidate);
+  }
   const latestByPhone = new Map<string, VerificationRow & { currentPhone: string }>();
   for (const verification of sortedVerifications(input.verifications)) {
-    const phone = validPhone(verification.normalizedPhone);
-    if (!phone || !candidateSet.has(phone) || latestByPhone.has(phone)) continue;
-    latestByPhone.set(phone, { ...verification, currentPhone: phone });
+    const phone = whatsappPhoneCandidates(verification.normalizedPhone)?.key ?? validPhone(verification.normalizedPhone);
+    const currentPhone = phone ? candidateByKey.get(phone) : null;
+    if (!phone || !currentPhone || latestByPhone.has(phone)) continue;
+    latestByPhone.set(phone, { ...verification, currentPhone });
   }
   const currentVerifications = sortedVerifications([...latestByPhone.values()]);
   const available = currentVerifications.find((verification) => verification.status === "available");

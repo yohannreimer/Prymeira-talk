@@ -111,6 +111,29 @@ function createPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("lead conversion", () => {
+  it("preserves a country-coded availability result for a local Google Maps phone", async () => {
+    const { prisma, tx } = createPrisma();
+    tx.lead.findMany.mockResolvedValue([{
+      ...lead, normalizedPhone: "47991396920", phones: ["(47) 99139-6920"]
+    }]);
+    tx.leadWhatsappVerification.findMany.mockResolvedValue([{
+      id: "verification-local", leadId: ids.lead1, normalizedPhone: "554791396920",
+      status: "available", checkedAt: now, createdAt: now
+    }]);
+    const service = createLeadConversionService(prisma as never, { now: () => now });
+
+    await service.importSelectedLeads({
+      workspaceId: "workspace-a", selectedLeadIds: [ids.lead1], actor: { id: "user-1" }
+    });
+
+    expect(tx.contact.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { workspaceId_phone: { workspaceId: "workspace-a", phone: "47991396920" } }
+    }));
+    expect(tx.leadContactProvenance.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ whatsappStatus: "available" })
+    }));
+  });
+
   it("imports a new contact transactionally with deterministic available phone, tag, snapshot and locked default reply", async () => {
     const { prisma, tx } = createPrisma();
     tx.leadWhatsappVerification.findMany.mockResolvedValue([

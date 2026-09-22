@@ -7,7 +7,6 @@ import {
 } from "@prymeira-talk/shared";
 import type { CheckWhatsappNumbersAvailabilityResult, WhatsappNumberAvailability } from "../evolution/evolution.client.js";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
-import { canonicalizePhone } from "../contacts/phone-normalization.js";
 import { whatsappPhoneCandidates, type WhatsappPhoneCandidates } from "./lead-whatsapp-numbers.js";
 import {
   LeadLeaseLostError,
@@ -48,8 +47,7 @@ export interface LeadWhatsappServiceOptions {
 
 function normalizedPhone(value: unknown) {
   if (typeof value !== "string") return null;
-  const phone = canonicalizePhone(value);
-  return /^\d{8,15}$/.test(phone) ? phone : null;
+  return whatsappPhoneCandidates(value)?.key ?? null;
 }
 
 function jsonStrings(value: unknown) {
@@ -185,14 +183,14 @@ export function createLeadWhatsappService(options: LeadWhatsappServiceOptions) {
       });
       const lookupByPhone = new Map(lookups.map((lookup) => [lookup.phone, lookup]));
       if (lookups.length !== input.data.numbers.length || lookupByPhone.size !== lookups.length ||
-          lookups.some((lookup, index) => lookup.primary !== input.data.numbers[index] ||
+          lookups.some((lookup, index) => (input.data.lookups && lookup.primary !== input.data.numbers[index]) ||
             normalizedPhone(lookup.primary) !== lookup.phone ||
             (lookup.alternate !== null && normalizedPhone(lookup.alternate) !== lookup.phone)) ||
-          input.data.entries.some((entry) => !lookupByPhone.has(entry.phone))) {
+          input.data.entries.some((entry) => !lookupByPhone.has(normalizedPhone(entry.phone) ?? ""))) {
         throw new LeadsDomainError("LEAD_INVALID_INPUT", "Persisted WhatsApp lookup does not match its entries.");
       }
 
-      const primary = await checkNumbers(input.data.instanceName, input.data.numbers);
+      const primary = await checkNumbers(input.data.instanceName, lookups.map((lookup) => lookup.primary));
       const needingAlternate = primary.failure === undefined
         ? lookups.filter((lookup) => lookup.alternate && !primary.byPhone.get(lookup.phone)?.available)
         : [];
@@ -200,9 +198,10 @@ export function createLeadWhatsappService(options: LeadWhatsappServiceOptions) {
         ? await checkNumbers(input.data.instanceName, needingAlternate.map((lookup) => lookup.alternate!))
         : null;
       const results = input.data.entries.map((entry) => {
-        const lookup = lookupByPhone.get(entry.phone)!;
-        const first = primary.byPhone.get(entry.phone);
-        const second = lookup.alternate ? alternate?.byPhone.get(entry.phone) : null;
+        const phone = normalizedPhone(entry.phone)!;
+        const lookup = lookupByPhone.get(phone)!;
+        const first = primary.byPhone.get(phone);
+        const second = lookup.alternate ? alternate?.byPhone.get(phone) : null;
         if (first?.available || second?.available) {
           return { verificationId: entry.verificationId, status: "available" as const, errorMessage: null };
         }

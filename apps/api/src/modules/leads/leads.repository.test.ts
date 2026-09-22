@@ -131,6 +131,35 @@ describe("Leads repository workspace isolation", () => {
     ]);
   });
 
+  it("matches a local Google Maps phone to its country-coded verification", async () => {
+    const row = {
+      id: leadId, workspaceId, listId, source: "google_maps", sourceExternalId: null,
+      sourceDedupeKey: "maps-local", companyName: "Padaria Sol", tradeName: null, cnpj: null,
+      cnaePrimary: null, cnaeSecondary: [], category: null, address: null, city: "Campinas", state: "SP",
+      postalCode: null, phones: ["(47) 99139-6920"], normalizedPhone: "47991396920",
+      email: null, website: null, rating: null, reviewCount: null, latitude: null,
+      longitude: null, sourceUrl: null, sourceSnapshot: {}, createdAt: now, updatedAt: now
+    };
+    const verification = {
+      id: randomUUID(), workspaceId, leadId, normalizedPhone: "554791396920", channelId: null,
+      status: "available", errorMessage: null, checkedAt: now, createdAt: now, updatedAt: now
+    };
+    const findVerifications = vi.fn(async () => [verification]);
+    const repository = new LeadsRepository({
+      leadList: { findFirst: vi.fn(async () => list()) },
+      lead: { findMany: vi.fn(async () => [row]), count: vi.fn(async () => 1) },
+      leadWhatsappVerification: { findMany: findVerifications },
+      $transaction: vi.fn(async (operations: unknown[]) => Promise.all(operations))
+    } as never);
+
+    const result = await repository.listLeads({ workspaceId, listId, page: 1, pageSize: 25 });
+
+    expect(result.items[0]?.whatsappStatus).toBe("available");
+    expect(findVerifications).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ normalizedPhone: { in: expect.arrayContaining(["554791396920", "47991396920"]) } })
+    }));
+  });
+
   it("persists checking rows and sequential batch jobs in one transaction", async () => {
     const createdRows: any[] = [];
     const createdJobs: any[] = [];
@@ -386,6 +415,45 @@ describe("Leads repository workspace isolation", () => {
     const retryCalls = updateMany.mock.calls as unknown as Array<[{ data: { input: Record<string, unknown> } }]>;
     const retryInput = retryCalls[0]![0].data.input;
     expect(retryInput.verificationHistoryIds).toEqual([olderId, failedId, createdRows[0].id]);
+  });
+
+  it("retains only the failed lookup and its original variants when retrying a new WhatsApp job", async () => {
+    const failedId = randomUUID();
+    const channelId = randomUUID();
+    const current = {
+      ...job(), operation: "whatsapp_availability", status: "partial" as const,
+      output: { retryable: true }, input: {
+        requestId: randomUUID(), instanceName: "old",
+        numbers: ["5511999990000", "5547991396920"],
+        lookups: [
+          { phone: "5511999990000", primary: "5511999990000", alternate: "55119999990000" },
+          { phone: "554791396920", primary: "5547991396920", alternate: "554791396920" }
+        ],
+        entries: [{ verificationId: failedId, leadId, phone: "554791396920" }]
+      }
+    };
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const findFirst = vi.fn()
+      .mockResolvedValueOnce(current)
+      .mockResolvedValueOnce({ ...current, status: "queued", attempts: 0, output: { retryable: false } });
+    const tx = {
+      leadJob: { findFirst, updateMany },
+      leadWhatsappVerification: {
+        findMany: vi.fn(async () => [{ id: failedId, workspaceId, leadId, normalizedPhone: "554791396920", status: "failed", channelId, errorMessage: "x", checkedAt: now, createdAt: now, updatedAt: now }]),
+        create: vi.fn(async ({ data }: any) => ({ id: randomUUID(), ...data, errorMessage: null, checkedAt: null, createdAt: now, updatedAt: now }))
+      },
+      channel: { findMany: vi.fn(async () => [{ id: channelId, workspaceId, provider: "evolution", providerKey: "new-instance", status: "connected", updatedAt: now }]) }
+    };
+    const repository = new LeadsRepository({ $transaction: vi.fn(async (callback: any) => callback(tx)) } as never);
+
+    await repository.retryWhatsappJob(workspaceId, jobId, now);
+
+    const retryInput = (updateMany.mock.calls as unknown as Array<[{ data: { input: Record<string, unknown> } }]>)[0]![0].data.input;
+    expect(retryInput.numbers).toEqual(["5547991396920"]);
+    expect(retryInput.lookups).toEqual([{
+      phone: "554791396920", primary: "5547991396920", alternate: "554791396920"
+    }]);
+    expect(retryInput.entries).toEqual([expect.objectContaining({ leadId, phone: "554791396920" })]);
   });
 
   it("replays the winning WhatsApp request after a concurrent idempotency insert", async () => {

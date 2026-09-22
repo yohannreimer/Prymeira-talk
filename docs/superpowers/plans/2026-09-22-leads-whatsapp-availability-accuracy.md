@@ -8,6 +8,8 @@
 
 **Tech Stack:** TypeScript, Evolution API client, Prisma JSON jobs, Vitest.
 
+**Implementation finding:** Google Maps also supplies local Brazilian phones without DDI (for example `(19) 99999-0000`). Normalize only recognizable 10/11-digit Brazilian local phones to `55` + DDD + number before querying; keep the displayed value unchanged. Add regression coverage for legacy local jobs, lead status/import matching, and partial retry jobs whose `lookups` must be narrowed to failed numbers.
+
 ---
 
 ### Task 1: Define safe phone candidates
