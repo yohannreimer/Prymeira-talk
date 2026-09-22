@@ -191,13 +191,16 @@ describe("conversation followups", () => {
   });
 
   it("schedules a human commercial candidate while a human controls the conversation", async () => {
+    const pausedSession = { ...baseSession, status: "paused_by_human" };
     const prisma = buildPrisma({
       conversation: {
         findUnique: vi.fn().mockResolvedValue({
           ...baseConversation,
-          aiControlStatus: "human_controlled"
+          aiControlStatus: "human_controlled",
+          activeAgentSession: pausedSession
         })
-      }
+      },
+      aiAgentSession: { findFirst: vi.fn().mockResolvedValue(null) }
     });
 
     const result = await createConversationFollowupsService(prisma).observeConversationActivity({
@@ -212,6 +215,31 @@ describe("conversation followups", () => {
     expect(prisma.conversationFollowup.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ kind: "human_commercial" })
     });
+  });
+
+  it("blocks qualification scheduling during the actual human takeover state", async () => {
+    const pausedSession = { ...baseSession, status: "paused_by_human" };
+    const prisma = buildPrisma({
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseConversation,
+          aiControlStatus: "human_controlled",
+          activeAgentSession: pausedSession
+        })
+      },
+      aiAgentSession: { findFirst: vi.fn().mockResolvedValue(null) }
+    });
+
+    const result = await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "agent"
+    });
+
+    expect(result).toEqual({ status: "ignored" });
+    expect(prisma.conversationFollowup.create).not.toHaveBeenCalled();
   });
 
   it("ignores outbound activity when no suitable agent session exists", async () => {
@@ -538,7 +566,14 @@ describe("conversation followups", () => {
 
   it.each([
     ["the conversation is closed", { ...baseConversation, status: "closed" }],
-    ["a human takes over", { ...baseConversation, aiControlStatus: "human_controlled" }]
+    [
+      "a human takes over",
+      {
+        ...baseConversation,
+        aiControlStatus: "human_controlled",
+        activeAgentSession: { ...baseSession, status: "paused_by_human" }
+      }
+    ]
   ])("cancels revalidation when %s", async (_label, conversation) => {
     const prisma = buildPrisma({
       conversation: { findUnique: vi.fn().mockResolvedValue(conversation) },
@@ -556,17 +591,20 @@ describe("conversation followups", () => {
   });
 
   it("keeps a human commercial cycle valid after human takeover", async () => {
+    const pausedSession = { ...baseSession, status: "paused_by_human" };
     const prisma = buildPrisma({
       conversation: {
         findUnique: vi.fn().mockResolvedValue({
           ...baseConversation,
-          aiControlStatus: "human_controlled"
+          aiControlStatus: "human_controlled",
+          activeAgentSession: pausedSession
         })
       },
       conversationFollowup: {
         findFirst: vi.fn().mockResolvedValue(activeFollowup({ kind: "human_commercial" }))
       },
-      message: { findFirst: vi.fn().mockResolvedValue(null) }
+      message: { findFirst: vi.fn().mockResolvedValue(null) },
+      aiAgentSession: { findFirst: vi.fn().mockResolvedValue(pausedSession) }
     });
 
     const result = await createConversationFollowupsService(prisma).revalidateActiveFollowup({

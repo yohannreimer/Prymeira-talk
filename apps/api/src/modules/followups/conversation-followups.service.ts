@@ -308,7 +308,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
         })
       : null;
     if (
-      !isCompatibleSession(session, input.workspaceId, followup.conversationId) ||
+      !isCompatibleSession(session, input.workspaceId, followup.conversationId, followup.kind) ||
       session.agentId !== followup.agentId ||
       (conversation.activeAgentSessionId != null && conversation.activeAgentSessionId !== session.id)
     ) {
@@ -425,21 +425,25 @@ async function resolveCandidate(
   const session = isCompatibleSession(
     conversation.activeAgentSession,
     input.workspaceId,
-    input.conversationId
+    input.conversationId,
+    kind
   )
     ? conversation.activeAgentSession
     : await prisma.aiAgentSession.findFirst({
         where: {
           workspaceId: input.workspaceId,
           conversationId: input.conversationId,
-          status: "active",
+          status:
+            kind === "human_commercial"
+              ? { in: ["active", "paused_by_human"] }
+              : "active",
           agent: { status: "active" }
         },
         include: { agent: true },
         orderBy: { updatedAt: "desc" }
       });
 
-  if (!isCompatibleSession(session, input.workspaceId, input.conversationId)) {
+  if (!isCompatibleSession(session, input.workspaceId, input.conversationId, kind)) {
     return null;
   }
 
@@ -495,13 +499,15 @@ async function cancelActiveFollowup(
 function isCompatibleSession(
   session: AgentSessionRecord | null | undefined,
   workspaceId: string,
-  conversationId: string
+  conversationId: string,
+  kind: ConversationFollowupRecord["kind"]
 ): session is AgentSessionRecord & { agent: AgentRecord } {
   return Boolean(
     session &&
       session.workspaceId === workspaceId &&
       session.conversationId === conversationId &&
-      session.status === "active" &&
+      (session.status === "active" ||
+        (kind === "human_commercial" && session.status === "paused_by_human")) &&
       session.agent?.workspaceId === workspaceId &&
       session.agent.status === "active"
   );
