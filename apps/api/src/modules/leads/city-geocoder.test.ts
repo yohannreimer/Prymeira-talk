@@ -113,4 +113,31 @@ describe("CityGeocoder", () => {
     });
     await expect(wrongState.geocode("Campinas", "SP")).rejects.toMatchObject({ code: "NO_RESULT" });
   });
+
+  it("bounds geocoder response time and size so the process throttle cannot be held forever", async () => {
+    const stalled = createCityGeocoder({
+      fetch: vi.fn(async (_input: string | URL | Request, init?: RequestInit) => new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+          }
+        }),
+        { status: 200 }
+      )),
+      requestTimeoutMs: 5,
+      throttle: new CityGeocoderThrottle(),
+      userAgent: "PrymeiraTalk-Leads/1.0 (ops@prymeira.example)"
+    });
+    await expect(stalled.geocode("Campinas", "SP")).rejects.toMatchObject({ code: "UNAVAILABLE" });
+
+    const oversized = createCityGeocoder({
+      fetch: vi.fn(async () => new Response("[]", {
+        status: 200,
+        headers: { "content-length": String(2 * 1024 * 1024) }
+      })),
+      throttle: new CityGeocoderThrottle(),
+      userAgent: "PrymeiraTalk-Leads/1.0 (ops@prymeira.example)"
+    });
+    await expect(oversized.geocode("Campinas", "SP")).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
 });

@@ -127,5 +127,10 @@ describe("readEnv", () => {
         LEAD_JOB_POLL_MS: "0"
       })
     ).toThrow(/LEAD_JOB_POLL_MS/);
+
+    expect(() => readEnv({ ...baseProductionEnv, LEAD_JOB_POLL_MS: "999" }))
+      .toThrow(/LEAD_JOB_POLL_MS/);
+    expect(() => readEnv({ ...baseProductionEnv, LEAD_JOB_POLL_MS: "60001" }))
+      .toThrow(/LEAD_JOB_POLL_MS/);
   });
 });

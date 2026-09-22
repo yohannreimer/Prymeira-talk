@@ -145,6 +145,17 @@ function strings(value: Prisma.JsonValue) {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
+function jobIsRetryable(record: Pick<LeadJob, "status" | "output">) {
+  if (record.status !== "failed" && record.status !== "partial") return false;
+  return requestJsonRecord(record.output).retryable === true;
+}
+
+function requestJsonRecord(value: Prisma.JsonValue): Record<string, Prisma.JsonValue> {
+  return value && !Array.isArray(value) && typeof value === "object"
+    ? value as Record<string, Prisma.JsonValue>
+    : {};
+}
+
 export function toLeadListDto(record: LeadList): LeadListDto {
   return {
     id: record.id,
@@ -174,6 +185,7 @@ export function toLeadJobDto(record: LeadJob): LeadJobDto {
     startedAt: toNullableIso(record.startedAt),
     finishedAt: toNullableIso(record.finishedAt),
     errorMessage: record.errorMessage,
+    retryable: jobIsRetryable(record),
     createdAt: toIso(record.createdAt),
     updatedAt: toIso(record.updatedAt)
   };
@@ -367,6 +379,56 @@ export class LeadsRepository {
     const row = await this.prisma.leadJob.findFirst({ where: { workspaceId, id: jobId } });
     if (!row) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead job not found.");
     return toLeadJobDto(row);
+  }
+
+  async retryGoogleJob(workspaceId: string, jobId: string, now: Date) {
+    return this.prisma.$transaction(async (tx) => {
+      const current = await tx.leadJob.findFirst({
+        where: { workspaceId, id: jobId, operation: "google_maps_search" }
+      });
+      if (!current) throw new LeadsDomainError("LEAD_NOT_FOUND", "Google lead job not found.");
+      if (!jobIsRetryable(current) || current.leaseToken !== null) {
+        throw new LeadsDomainError("LEAD_INVALID_TRANSITION", "Google lead job is not ready for retry.");
+      }
+      const output = { ...requestJsonRecord(current.output) };
+      for (const key of ["retryable", "totalCount", "processedCount", "failedCount", "downloadedRows"]) {
+        delete output[key];
+      }
+      if (["LEAD_GOOGLE_REMOTE_FAILED", "LEAD_GOOGLE_NO_RESULTS"].includes(current.errorMessage ?? "")) {
+        for (const key of ["remoteJobId", "remoteStatus", "remoteSubmittedAt", "remotePolledAt"]) delete output[key];
+      }
+      output.retryRequestedAt = now.toISOString();
+      const updated = await tx.leadJob.updateMany({
+        where: {
+          workspaceId,
+          id: jobId,
+          operation: "google_maps_search",
+          status: current.status,
+          leaseToken: null,
+          updatedAt: current.updatedAt
+        },
+        data: {
+          status: "queued",
+          output,
+          errorMessage: null,
+          attempts: 0,
+          startedAt: null,
+          finishedAt: null,
+          leaseUntil: null
+        }
+      });
+      if (updated.count !== 1) throw new LeadsDomainError("LEAD_INVALID_TRANSITION", "Google lead job retry raced with another transition.");
+      await tx.leadList.updateMany({
+        where: { workspaceId, id: current.listId },
+        data: { completedAt: null }
+      });
+      const [job, list] = await Promise.all([
+        tx.leadJob.findFirst({ where: { workspaceId, id: jobId } }),
+        tx.leadList.findFirst({ where: { workspaceId, id: current.listId } })
+      ]);
+      if (!job || !list) throw new LeadsDomainError("LEAD_NOT_FOUND", "Google lead retry state not found.");
+      return { job: toLeadJobDto(job), list: toLeadListDto(list) };
+    });
   }
 
   async findJobByIdempotency(workspaceId: string, operation: string, idempotencyKey: string): Promise<LeadJobCreationResult | null> {
@@ -933,6 +995,7 @@ export type LeadsRepositoryLike = Pick<
   | "listLeads"
   | "getLeadForSimilarity"
   | "getJob"
+  | "retryGoogleJob"
   | "findJobByIdempotency"
   | "createListAndJob"
   | "findQueuedJobs"

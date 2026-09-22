@@ -54,7 +54,10 @@ export interface CityGeocoderOptions {
   userAgent?: string;
   endpoint?: string;
   throttle?: CityGeocoderThrottle;
+  requestTimeoutMs?: number;
 }
+
+const MAX_GEOCODER_RESPONSE_BYTES = 1024 * 1024;
 
 function normalizeText(value: string) {
   return value.trim().normalize("NFD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("pt-BR");
@@ -85,6 +88,7 @@ export function createCityGeocoder(options: CityGeocoderOptions = {}) {
   const userAgent = options.userAgent ?? "PrymeiraTalk-Leads/1.0 (support@prymeiradigital.com.br)";
   const endpoint = options.endpoint ?? "https://nominatim.openstreetmap.org/search";
   const throttle = options.throttle ?? processThrottle;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
   const cache = new Map<string, { expiresAt: number; value: GeocodedCity }>();
   if (!userAgent.trim() || !userAgent.includes("/")) {
     throw new CityGeocoderError("INVALID_RESPONSE", "Geocoder User-Agent must identify the application.");
@@ -98,6 +102,9 @@ export function createCityGeocoder(options: CityGeocoderOptions = {}) {
         throw new CityGeocoderError("NO_RESULT", "Informe uma cidade e uma UF brasileira válidas.");
       }
       const key = `${normalizeText(city)}|${state}`;
+      for (const [cachedKey, entry] of cache) {
+        if (entry.expiresAt <= now()) cache.delete(cachedKey);
+      }
       const cached = cache.get(key);
       if (cached && cached.expiresAt > now()) return cached.value;
 
@@ -108,15 +115,43 @@ export function createCityGeocoder(options: CityGeocoderOptions = {}) {
         url.searchParams.set("addressdetails", "1");
         url.searchParams.set("countrycodes", "br");
         url.searchParams.set("limit", "5");
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+        timeout.unref?.();
         try {
           const response = await fetchImpl(url, {
-            headers: { "user-agent": userAgent, accept: "application/json" }
+            headers: { "user-agent": userAgent, accept: "application/json" },
+            signal: controller.signal
           });
           if (!response.ok) throw new CityGeocoderError("UNAVAILABLE", "Não foi possível localizar a cidade agora. Tente novamente.");
-          return await response.json() as unknown;
+          const declaredLength = Number(response.headers.get("content-length"));
+          if (Number.isFinite(declaredLength) && declaredLength > MAX_GEOCODER_RESPONSE_BYTES) {
+            throw new CityGeocoderError("INVALID_RESPONSE", "O geocodificador retornou uma resposta grande demais.");
+          }
+          if (!response.body) throw new CityGeocoderError("INVALID_RESPONSE", "O geocodificador retornou uma resposta vazia.");
+          const reader = response.body.getReader();
+          const chunks: Uint8Array[] = [];
+          let size = 0;
+          while (true) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            size += chunk.value.byteLength;
+            if (size > MAX_GEOCODER_RESPONSE_BYTES) {
+              controller.abort();
+              throw new CityGeocoderError("INVALID_RESPONSE", "O geocodificador retornou uma resposta grande demais.");
+            }
+            chunks.push(chunk.value);
+          }
+          try {
+            return JSON.parse(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), size).toString("utf8")) as unknown;
+          } catch {
+            throw new CityGeocoderError("INVALID_RESPONSE", "O geocodificador retornou uma resposta inválida.");
+          }
         } catch (error) {
           if (error instanceof CityGeocoderError) throw error;
           throw new CityGeocoderError("UNAVAILABLE", "Não foi possível localizar a cidade agora. Tente novamente.");
+        } finally {
+          clearTimeout(timeout);
         }
       }, now, sleep);
 

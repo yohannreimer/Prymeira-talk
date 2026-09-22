@@ -63,7 +63,7 @@ export const envSchema = z
     LEAD_GOOGLE_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(1),
     LEAD_GOOGLE_DEFAULT_DEPTH: z.coerce.number().int().positive().max(5).default(5),
     LEAD_WHATSAPP_BATCH_SIZE: z.coerce.number().int().positive().max(25).default(25),
-    LEAD_JOB_POLL_MS: z.coerce.number().int().positive().optional()
+    LEAD_JOB_POLL_MS: z.coerce.number().int().min(1_000).max(60_000).optional()
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === "production" && env.PRYMEIRA_LOCAL_AUTH_BYPASS) {

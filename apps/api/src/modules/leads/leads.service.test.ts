@@ -117,6 +117,7 @@ function setup(
     deleteList: vi.fn(),
     listLeads: vi.fn(),
     getJob: vi.fn(),
+    retryGoogleJob: vi.fn(),
     getLeadForSimilarity: vi.fn(),
     findJobByIdempotency: vi.fn(async (): Promise<any> => null),
     createListAndJob: vi.fn(async (input: any) => {
@@ -907,5 +908,21 @@ describe("Leads service", () => {
 
     context.cnpjRepository.searchEstablishments.mockResolvedValue({ items: [], total: 0 });
     await expect(service.runClaimedJob(rawJob("receita_search", { filters: {}, maxResults: 10 }))).resolves.toBeDefined();
+  });
+
+  it("exposes a workspace-scoped manual Google retry and publishes the atomic transition", async () => {
+    const context = setup();
+    context.repository.retryGoogleJob.mockResolvedValue({
+      list: listDto({ source: "google_maps", completedAt: null }),
+      job: jobDto("queued", { operation: "google_maps_search", retryable: false })
+    });
+
+    await expect(context.service.retryGoogleJob({ workspaceId, jobId })).resolves.toMatchObject({
+      job: { id: jobId, status: "queued" }
+    });
+    expect(context.repository.retryGoogleJob).toHaveBeenCalledWith(workspaceId, jobId, now);
+    expect(context.realtime.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: "lead_job.updated", workspaceId, payload: expect.objectContaining({ status: "queued" })
+    }));
   });
 });

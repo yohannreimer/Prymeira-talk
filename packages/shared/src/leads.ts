@@ -152,6 +152,7 @@ export const leadJobSchema = z.object({
   startedAt: z.string().datetime().nullable(),
   finishedAt: z.string().datetime().nullable(),
   errorMessage: z.string().nullable(),
+  retryable: z.boolean().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });
@@ -163,6 +164,12 @@ export const leadGoogleSearchResponseSchema = z.object({
   replayed: z.boolean()
 });
 export type LeadGoogleSearchResponse = z.infer<typeof leadGoogleSearchResponseSchema>;
+
+export const leadGoogleRetryResponseSchema = z.object({
+  list: leadListSchema,
+  job: leadJobSchema
+});
+export type LeadGoogleRetryResponse = z.infer<typeof leadGoogleRetryResponseSchema>;
 
 export const leadJobIdempotencyScopeSchema = z.object({
   workspaceId: z.string().min(1),

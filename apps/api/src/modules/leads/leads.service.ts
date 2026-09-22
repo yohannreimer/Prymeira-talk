@@ -471,7 +471,7 @@ export function createLeadsService(options: LeadsServiceOptions) {
   const cnpjRepository = options.cnpjRepository ?? new CnpjRepository();
   const now = options.now ?? (() => new Date());
   const sleep = options.sleep ?? ((milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
-  const googlePollIntervalMs = options.googlePollIntervalMs ?? 5_000;
+  const googlePollIntervalMs = Math.min(Math.max(options.googlePollIntervalMs ?? 5_000, 1_000), 60_000);
 
   function publishList(list: LeadListDto) {
     options.realtime?.publish({ type: "lead_list.updated", workspaceId: list.workspaceId, payload: list });
@@ -796,6 +796,7 @@ export function createLeadsService(options: LeadsServiceOptions) {
   }
 
   function toPublishedJob(job: LeadJob): LeadJobDto {
+    const output = jsonRecord(job.output);
     return {
       id: job.id,
       workspaceId: job.workspaceId,
@@ -807,6 +808,7 @@ export function createLeadsService(options: LeadsServiceOptions) {
       startedAt: job.startedAt?.toISOString() ?? null,
       finishedAt: job.finishedAt?.toISOString() ?? null,
       errorMessage: job.errorMessage,
+      retryable: (job.status === "failed" || job.status === "partial") && output.retryable === true,
       createdAt: job.createdAt.toISOString(),
       updatedAt: job.updatedAt.toISOString()
     };
@@ -834,6 +836,16 @@ export function createLeadsService(options: LeadsServiceOptions) {
       });
     },
     getJob: repository.getJob.bind(repository),
+    async retryGoogleJob(input: { workspaceId: string; jobId: string }) {
+      const updated = await repository.retryGoogleJob(
+        requiredText(input.workspaceId, "workspaceId"),
+        requiredText(input.jobId, "jobId", 200),
+        now()
+      );
+      publishList(updated.list);
+      publishJob(updated.job);
+      return updated;
+    },
     getArtifact: repository.getArtifact.bind(repository),
     findSimilarCompanies: similarityService.findSimilarCompanies,
     createSimilarListJob: similarityService.createSimilarListJob,

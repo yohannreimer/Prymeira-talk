@@ -262,4 +262,40 @@ describe("Leads repository workspace isolation", () => {
       take: 1
     }));
   });
+
+  it("atomically retries only a retryable workspace-owned Google terminal job", async () => {
+    const retryable = {
+      ...job(),
+      operation: "google_maps_search",
+      status: "failed" as const,
+      attempts: 3,
+      errorMessage: "LEAD_GOOGLE_REMOTE_FAILED",
+      output: { retryable: true, remoteJobId: "remote-failed" },
+      finishedAt: now,
+      updatedAt: now
+    };
+    const queued = { ...retryable, status: "queued" as const, attempts: 0, errorMessage: null, output: {} };
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const jobFindFirst = vi.fn()
+      .mockResolvedValueOnce(retryable)
+      .mockResolvedValueOnce(queued);
+    const listFindFirst = vi.fn(async () => ({ ...list(), source: "google_maps", completedAt: null }));
+    const transaction = vi.fn(async (callback: any) => callback({
+      leadJob: { findFirst: jobFindFirst, updateMany },
+      leadList: { findFirst: listFindFirst, updateMany: vi.fn(async () => ({ count: 1 })) }
+    }));
+    const repository = new LeadsRepository({ $transaction: transaction } as never);
+
+    await expect(repository.retryGoogleJob(workspaceId, jobId, now)).resolves.toMatchObject({
+      job: { status: "queued", retryable: false }
+    });
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ workspaceId, id: jobId, status: "failed", leaseToken: null, updatedAt: now }),
+      data: expect.objectContaining({ status: "queued", attempts: 0, errorMessage: null })
+    }));
+    const calls = updateMany.mock.calls as unknown as Array<[{ data: { output: Record<string, unknown> } }]>;
+    const savedOutput = calls[0]![0].data.output;
+    expect(savedOutput).not.toHaveProperty("remoteJobId");
+    expect(savedOutput).toHaveProperty("retryRequestedAt", now.toISOString());
+  });
 });

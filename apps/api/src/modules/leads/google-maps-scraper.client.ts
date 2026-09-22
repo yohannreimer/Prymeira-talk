@@ -39,6 +39,8 @@ export interface GoogleMapsScraperClientOptions {
 }
 
 const createResponseSchema = z.object({ id: z.string().min(1).max(200) });
+const MAX_JSON_RESPONSE_BYTES = 1024 * 1024;
+const MAX_CSV_RESPONSE_BYTES = 10 * 1024 * 1024;
 const remoteJobSchema = z.object({
   ID: z.string().min(1).max(200),
   Name: z.string().optional(),
@@ -99,7 +101,7 @@ export function createGoogleMapsScraperClient(options: GoogleMapsScraperClientOp
     }
   }
 
-  async function request(path: string, init: RequestInit = {}) {
+  async function requestText(path: string, init: RequestInit, maxBytes: number) {
     if (!baseUrl) {
       throw new GoogleMapsScraperError("UNAVAILABLE", "Google Maps scraper is not configured.", false);
     }
@@ -120,7 +122,25 @@ export function createGoogleMapsScraperClient(options: GoogleMapsScraperClientOp
           result.status >= 500 || result.status === 408
         );
       }
-      return result;
+      const declaredLength = Number(result.headers.get("content-length"));
+      if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+        throw invalidResponse("Google Maps scraper response exceeded the safe size limit.");
+      }
+      if (!result.body) return "";
+      const reader = result.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        size += chunk.value.byteLength;
+        if (size > maxBytes) {
+          controller.abort();
+          throw invalidResponse("Google Maps scraper response exceeded the safe size limit.");
+        }
+        chunks.push(chunk.value);
+      }
+      return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), size).toString("utf8");
     } catch (error) {
       if (error instanceof GoogleMapsScraperError) throw error;
       if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) {
@@ -133,9 +153,9 @@ export function createGoogleMapsScraperClient(options: GoogleMapsScraperClientOp
   }
 
   async function json(path: string, init?: RequestInit): Promise<unknown> {
-    const result = await request(path, init);
+    const text = await requestText(path, init ?? {}, MAX_JSON_RESPONSE_BYTES);
     try {
-      return await result.json();
+      return JSON.parse(text) as unknown;
     } catch {
       throw invalidResponse("Google Maps scraper returned malformed JSON.");
     }
@@ -197,12 +217,11 @@ export function createGoogleMapsScraperClient(options: GoogleMapsScraperClientOp
     },
 
     async download(id: string) {
-      const result = await request(`/api/v1/jobs/${encodeURIComponent(safeJobId(id))}/download`);
-      try {
-        return await result.text();
-      } catch {
-        throw invalidResponse("Google Maps scraper returned an unreadable CSV response.");
-      }
+      return requestText(
+        `/api/v1/jobs/${encodeURIComponent(safeJobId(id))}/download`,
+        { headers: { accept: "text/csv" } },
+        MAX_CSV_RESPONSE_BYTES
+      );
     }
   };
 }

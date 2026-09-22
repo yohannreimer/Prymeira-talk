@@ -121,6 +121,32 @@ describe("GoogleMapsScraperClient", () => {
     await expect(failed.getJob("job-1")).resolves.toMatchObject({ status: "failed" });
   });
 
+  it("keeps the timeout active while consuming bodies and rejects oversized downloads", async () => {
+    const stalledFetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+        }
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    ));
+    const stalled = createGoogleMapsScraperClient({
+      baseUrl: "http://127.0.0.1:8080",
+      fetch: stalledFetch,
+      requestTimeoutMs: 5
+    });
+    await expect(stalled.health()).rejects.toMatchObject({ code: "TIMEOUT" });
+
+    const oversized = createGoogleMapsScraperClient({
+      baseUrl: "http://127.0.0.1:8080",
+      fetch: vi.fn(async () => new Response("x", {
+        status: 200,
+        headers: { "content-type": "text/csv", "content-length": String(11 * 1024 * 1024) }
+      }))
+    });
+    await expect(oversized.download("job-1")).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
   it("fails only Google actions when configuration is absent and guards depth/max time", async () => {
     const unavailable = createGoogleMapsScraperClient({ baseUrl: undefined });
     await expect(unavailable.health()).rejects.toMatchObject({ code: "UNAVAILABLE" });
