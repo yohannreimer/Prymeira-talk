@@ -4,7 +4,7 @@ export type FollowupDecision = {
   outcome: "follow_up" | "skip";
   purpose: "missing_qualification" | "proposal_checkin" | "objection_help" | "confirm_active" | "none";
   route: "automatic_send" | "human_review" | "cancel" | "wait";
-  conversationStage: "qualification" | "post_proposal" | "seller_owned" | "closure" | "unclear";
+  stage: "qualification" | "post_proposal" | "seller_owned" | "closure" | "unclear";
   risk: "none" | "commercial" | "human_owned" | "unclear";
 };
 
@@ -67,7 +67,7 @@ const purposeSchema = z.enum([
   "none"
 ]);
 const routeSchema = z.enum(["automatic_send", "human_review", "cancel", "wait"]);
-const conversationStageSchema = z.enum([
+const stageSchema = z.enum([
   "qualification",
   "post_proposal",
   "seller_owned",
@@ -90,7 +90,7 @@ const responseSchema = z.object({
     outcome: choiceAnswerSchema(outcomeSchema),
     purpose: choiceAnswerSchema(purposeSchema),
     route: choiceAnswerSchema(routeSchema),
-    conversationStage: choiceAnswerSchema(conversationStageSchema),
+    stage: choiceAnswerSchema(stageSchema),
     risk: choiceAnswerSchema(riskSchema)
   })
 });
@@ -128,7 +128,7 @@ const followupDecisionQuestions = {
       wait: "Não agir agora; aguardar informação ou momento compatível antes de reavaliar."
     }
   },
-  conversationStage: {
+  stage: {
     type: "choice",
     instructions: `${decisionContextInstruction} Qual é a etapa dominante?`,
     criteria: {
@@ -198,7 +198,7 @@ export function createJevFollowupDecision(options: JevFollowupDecisionOptions): 
       outcome: answers.outcome.choice,
       purpose: answers.purpose.choice,
       route: answers.route.choice,
-      conversationStage: answers.conversationStage.choice,
+      stage: answers.stage.choice,
       risk: answers.risk.choice
     }, input);
   };
@@ -211,7 +211,7 @@ function applyGuardRails(decision: FollowupDecision, input: FollowupDecisionInpu
     decision.outcome === "skip" ||
     decision.route === "cancel" ||
     decision.route === "wait" ||
-    decision.conversationStage === "closure";
+    decision.stage === "closure";
 
   if (isNoFollowupDecision) {
     return {
@@ -228,7 +228,7 @@ function applyGuardRails(decision: FollowupDecision, input: FollowupDecisionInpu
     input.aiControlStatus === "agent_allowed" &&
     input.hasCompatibleActiveAgentSession &&
     decision.risk === "none" &&
-    decision.conversationStage === "qualification";
+    decision.stage === "qualification";
 
   if (decision.route === "automatic_send" && !canAutomaticallySend) {
     return { ...decision, route: "human_review" };

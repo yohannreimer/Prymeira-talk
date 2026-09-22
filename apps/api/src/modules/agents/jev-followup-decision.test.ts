@@ -51,7 +51,7 @@ function decisionResponse(overrides: Record<string, string> = {}) {
       outcome: choice(overrides.outcome ?? "follow_up"),
       purpose: choice(overrides.purpose ?? "missing_qualification"),
       route: choice(overrides.route ?? "human_review"),
-      conversationStage: choice(overrides.conversationStage ?? "qualification"),
+      stage: choice(overrides.stage ?? "qualification"),
       risk: choice(overrides.risk ?? "none")
     }
   }));
@@ -70,7 +70,7 @@ describe("createJevFollowupDecision", () => {
       outcome: "follow_up",
       purpose: "missing_qualification",
       route: "human_review",
-      conversationStage: "qualification",
+      stage: "qualification",
       risk: "none"
     });
 
@@ -96,7 +96,7 @@ describe("createJevFollowupDecision", () => {
       outcome: expect.any(Object),
       purpose: expect.any(Object),
       route: expect.any(Object),
-      conversationStage: expect.any(Object),
+      stage: expect.any(Object),
       risk: expect.any(Object)
     }));
   });
@@ -111,7 +111,7 @@ describe("createJevFollowupDecision", () => {
       outcome: "follow_up",
       purpose: "missing_qualification",
       route: "automatic_send",
-      conversationStage: "qualification",
+      stage: "qualification",
       risk: "none"
     });
   });
@@ -131,11 +131,56 @@ describe("createJevFollowupDecision", () => {
     });
   });
 
+  it("downshifts an automatic proposal when the seller owns the stage", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
+      route: "automatic_send",
+      stage: "seller_owned"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+
+    await expect(decision.decide(baseInput)).resolves.toMatchObject({
+      outcome: "follow_up",
+      route: "human_review",
+      stage: "seller_owned",
+      risk: "none"
+    });
+  });
+
+  it("downshifts an automatic proposal with human-owned risk", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
+      route: "automatic_send",
+      risk: "human_owned"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+
+    await expect(decision.decide(baseInput)).resolves.toMatchObject({
+      outcome: "follow_up",
+      route: "human_review",
+      stage: "qualification",
+      risk: "human_owned"
+    });
+  });
+
+  it("downshifts an automatic proposal with unclear risk", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
+      route: "automatic_send",
+      risk: "unclear"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+
+    await expect(decision.decide(baseInput)).resolves.toMatchObject({
+      outcome: "follow_up",
+      route: "human_review",
+      stage: "qualification",
+      risk: "unclear"
+    });
+  });
+
   it("downshifts unsupported commercial follow-ups to human review", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
       purpose: "proposal_checkin",
       route: "automatic_send",
-      conversationStage: "post_proposal",
+      stage: "post_proposal",
       risk: "commercial"
     }));
     const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
@@ -147,7 +192,7 @@ describe("createJevFollowupDecision", () => {
       outcome: "follow_up",
       purpose: "proposal_checkin",
       route: "human_review",
-      conversationStage: "post_proposal",
+      stage: "post_proposal",
       risk: "commercial"
     });
   });
@@ -155,7 +200,7 @@ describe("createJevFollowupDecision", () => {
   it("cancels a follow-up when the customer resolved the conversation and the stage is closed", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
       route: "automatic_send",
-      conversationStage: "closure"
+      stage: "closure"
     }));
     const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
 
@@ -175,7 +220,39 @@ describe("createJevFollowupDecision", () => {
       outcome: "skip",
       purpose: "none",
       route: "cancel",
-      conversationStage: "closure",
+      stage: "closure",
+      risk: "none"
+    });
+  });
+
+  it("canonicalizes a direct skip to no purpose and cancellation", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
+      outcome: "skip",
+      purpose: "proposal_checkin",
+      route: "human_review"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+
+    await expect(decision.decide(baseInput)).resolves.toEqual({
+      outcome: "skip",
+      purpose: "none",
+      route: "cancel",
+      stage: "qualification",
+      risk: "none"
+    });
+  });
+
+  it("canonicalizes a direct wait to a no-follow-up decision", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
+      route: "wait"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+
+    await expect(decision.decide(baseInput)).resolves.toEqual({
+      outcome: "skip",
+      purpose: "none",
+      route: "wait",
+      stage: "qualification",
       risk: "none"
     });
   });
@@ -184,7 +261,7 @@ describe("createJevFollowupDecision", () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
       purpose: "proposal_checkin",
       route: "automatic_send",
-      conversationStage: "post_proposal"
+      stage: "post_proposal"
     }));
     const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
 
@@ -196,7 +273,7 @@ describe("createJevFollowupDecision", () => {
       outcome: "follow_up",
       purpose: "proposal_checkin",
       route: "human_review",
-      conversationStage: "post_proposal",
+      stage: "post_proposal",
       risk: "none"
     });
   });
