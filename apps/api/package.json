@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:jev-live": "tsx scripts/test-jev-live.ts",
+    "test:jev-villefer-package-live": "tsx scripts/test-jev-villefer-package-live.ts",
     "compile:villefer-v1": "tsx scripts/compile-villefer-v1.ts",
     "prisma": "dotenv -e ../../.env -- prisma",
     "seed:demo": "dotenv -e ../../.env -- tsx prisma/seed-demo.ts"

@@ -192,8 +192,11 @@ const replyQualityAuditQuestions = {
   },
   assertsUnsupportedCommercialFact: {
     type: "noul",
-    instructions: "A resposta candidata afirma fato comercial protegido sem evidência explícita no conhecimento aprovado?",
-    criteria: { true: "Afirma ou promete fato sem fonte aprovada.", false: "Não afirma fato protegido sem evidência." }
+    instructions: "A resposta candidata afirma, promete ou oferece como certo um fato comercial ou equivalente técnico sem evidência explícita no conhecimento aprovado?",
+    criteria: {
+      true: "Afirma ou promete estoque, preço, prazo, frete, pagamento, especificação, substituição ou equivalência técnica sem fonte aprovada.",
+      false: "Não afirma, promete ou oferece fato comercial protegido sem evidência."
+    }
   }
 } as const;
 
@@ -268,7 +271,18 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
       }
 
       const { answers } = parsed.data;
-      if (answers.disposition.choice === "handoff" || answers.assertsUnsupportedCommercialFact.noul >= 0.6) {
+      const handoffConfidence = Math.max(
+        answers.disposition.confidence ?? 0,
+        answers.disposition.probabilities?.handoff ?? 0
+      );
+      const hasUnscoredHandoff =
+        answers.disposition.choice === "handoff" &&
+        answers.disposition.confidence === undefined &&
+        answers.disposition.probabilities?.handoff === undefined;
+      if (
+        answers.assertsUnsupportedCommercialFact.noul >= 0.6 ||
+        (answers.disposition.choice === "handoff" && (handoffConfidence >= 0.7 || hasUnscoredHandoff))
+      ) {
         return { outcome: "handoff", reason: "commercial_policy_risk" };
       }
       if (answers.disposition.choice === "suppress" || answers.followsPlan.noul < 0.2) {

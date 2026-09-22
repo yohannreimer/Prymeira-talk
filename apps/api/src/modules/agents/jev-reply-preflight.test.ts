@@ -126,4 +126,34 @@ describe("createJevReplyPreflight", () => {
       }
     })).resolves.toEqual({ outcome: "handoff", reason: "commercial_policy_risk" });
   });
+
+  it("does not hand off a candidate solely because a low-confidence disposition is indecisive", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        model: "jev-1.13.0",
+        answers: {
+          disposition: {
+            type: "choice",
+            choice: "handoff",
+            probabilities: { handoff: 0.53, send: 0.45, suppress: 0.02 },
+            confidence: 0.3
+          },
+          followsPlan: { type: "noul", noul: 0.87 },
+          assertsUnsupportedCommercialFact: { type: "noul", noul: 0.09 }
+        },
+        usage: { input_tokens: 120, output_tokens: 6 }
+      }))
+    );
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.audit!({
+      ...baseInput,
+      candidateReply: "Vou encaminhar ao vendedor para verificar a disponibilidade.",
+      plan: {
+        conversationStage: "new_quote",
+        commercialPath: "ambiguous",
+        nextAction: "handoff"
+      }
+    })).resolves.toEqual({ outcome: "send" });
+  });
 });
