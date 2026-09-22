@@ -1630,10 +1630,12 @@ it("continues after a material answer without requiring a document for its own p
     const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-out-1" });
     const sendMedia = vi.fn().mockResolvedValue({ providerMessageId: "evo-media-1" });
     const realtime = { publish: vi.fn() };
+    const observeConversationActivity = vi.fn().mockResolvedValue({ status: "scheduled" });
     const runtime = createAgentRuntime({
       prisma,
       provider,
       realtime,
+      followupService: { observeConversationActivity },
       evolution: {
         mode: "real",
         client: { sendText, sendMedia }
@@ -1666,6 +1668,14 @@ it("continues after a material answer without requiring a document for its own p
         providerMessageId: "evo-media-1",
         status: "sent"
       })
+    });
+    expect(observeConversationActivity).toHaveBeenCalledTimes(2);
+    expect(observeConversationActivity).toHaveBeenLastCalledWith({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: "outbound_1",
+      direction: "outbound",
+      source: "agent"
     });
     expect(realtime.publish).toHaveBeenCalledWith(
       expect.objectContaining({

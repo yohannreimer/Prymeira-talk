@@ -87,7 +87,11 @@ function buildPrisma(overrides: Record<string, any> = {}) {
         overrides.conversation?.findUnique ?? vi.fn().mockResolvedValue(baseConversation)
     },
     message: {
-      findFirst: overrides.message?.findFirst ?? vi.fn().mockResolvedValue(baseMessage)
+      findFirst:
+        overrides.message?.findFirst ??
+        vi.fn().mockImplementation(async (args: any) =>
+          args.where.direction === "inbound" ? null : baseMessage
+        )
     },
     aiAgentSession: {
       findFirst: overrides.aiAgentSession?.findFirst ?? vi.fn().mockResolvedValue(baseSession)
@@ -186,6 +190,30 @@ describe("conversation followups", () => {
     });
   });
 
+  it("schedules a human commercial candidate while a human controls the conversation", async () => {
+    const prisma = buildPrisma({
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseConversation,
+          aiControlStatus: "human_controlled"
+        })
+      }
+    });
+
+    const result = await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "human"
+    });
+
+    expect(result).toEqual({ status: "scheduled", followupId: ids.followup });
+    expect(prisma.conversationFollowup.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ kind: "human_commercial" })
+    });
+  });
+
   it("ignores outbound activity when no suitable agent session exists", async () => {
     const prisma = buildPrisma({
       conversation: {
@@ -261,6 +289,166 @@ describe("conversation followups", () => {
       })
     });
     expect(prisma.conversationFollowup.create).toHaveBeenCalledOnce();
+  });
+
+  it("clears an existing candidate when a customer reply was persisted before delayed outbound observation", async () => {
+    let active: ReturnType<typeof activeFollowup> | null = activeFollowup();
+    const newerCustomerMessage = {
+      ...baseMessage,
+      id: "customer_reply",
+      direction: "inbound" as const,
+      createdAt: new Date("2026-09-21T12:01:00.000Z")
+    };
+    const updateMany = vi.fn().mockImplementation(async () => {
+      active = null;
+      return { count: 1 };
+    });
+    const prisma = buildPrisma({
+      message: {
+        findFirst: vi.fn().mockImplementation(async (args: any) =>
+          args.where.id === ids.anchor
+            ? baseMessage
+            : args.where.direction === "inbound"
+              ? newerCustomerMessage
+              : null
+        )
+      },
+      conversationFollowup: {
+        findFirst: vi.fn().mockImplementation(async () => active),
+        updateMany
+      }
+    });
+
+    const result = await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "agent"
+    });
+
+    expect(result).toEqual({ status: "cancelled" });
+    expect(active).toBeNull();
+    expect(prisma.conversationFollowup.create).not.toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        conversationId: ids.conversation,
+        activeKey: "active",
+        anchorMessageAt: { lt: newerCustomerMessage.createdAt }
+      },
+      data: expect.objectContaining({
+        status: "cancelled",
+        activeKey: null,
+        reason: "customer_replied"
+      })
+    });
+  });
+
+  it("clears a newly created candidate when a customer reply arrives during outbound scheduling", async () => {
+    let active: ReturnType<typeof activeFollowup> | null = null;
+    let inboundChecks = 0;
+    const newerCustomerMessage = {
+      ...baseMessage,
+      id: "customer_reply_during_schedule",
+      direction: "inbound" as const,
+      createdAt: new Date("2026-09-21T12:01:00.000Z")
+    };
+    const updateMany = vi.fn().mockImplementation(async () => {
+      active = null;
+      return { count: 1 };
+    });
+    const create = vi.fn().mockImplementation(async () => {
+      active = activeFollowup({ id: "created_before_customer_reply" });
+      return active;
+    });
+    const prisma = buildPrisma({
+      message: {
+        findFirst: vi.fn().mockImplementation(async (args: any) => {
+          if (args.where.id === ids.anchor) return baseMessage;
+          if (args.where.direction === "inbound") {
+            inboundChecks += 1;
+            return inboundChecks === 1 ? null : newerCustomerMessage;
+          }
+          return null;
+        })
+      },
+      conversationFollowup: {
+        findFirst: vi.fn().mockImplementation(async () => active),
+        create,
+        updateMany
+      }
+    });
+
+    const result = await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "agent"
+    });
+
+    expect(result).toEqual({ status: "cancelled" });
+    expect(create).toHaveBeenCalledOnce();
+    expect(active).toBeNull();
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        conversationId: ids.conversation,
+        activeKey: "active",
+        anchorMessageAt: { lt: newerCustomerMessage.createdAt }
+      },
+      data: expect.objectContaining({ reason: "customer_replied", activeKey: null })
+    });
+  });
+
+  it("does not cancel a later outbound candidate while ignoring a stale anchor", async () => {
+    const laterActive = activeFollowup({
+      id: "later_outbound_candidate",
+      anchorMessageAt: new Date("2026-09-21T12:02:00.000Z")
+    });
+    const newerCustomerMessage = {
+      ...baseMessage,
+      id: "customer_reply_before_later_outbound",
+      direction: "inbound" as const,
+      createdAt: new Date("2026-09-21T12:01:00.000Z")
+    };
+    const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+    const prisma = buildPrisma({
+      message: {
+        findFirst: vi.fn().mockImplementation(async (args: any) =>
+          args.where.id === ids.anchor
+            ? baseMessage
+            : args.where.direction === "inbound"
+              ? newerCustomerMessage
+              : null
+        )
+      },
+      conversationFollowup: {
+        findFirst: vi.fn().mockResolvedValue(laterActive),
+        updateMany
+      }
+    });
+
+    const result = await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "agent"
+    });
+
+    expect(result).toEqual({ status: "ignored" });
+    expect(prisma.conversationFollowup.create).not.toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        conversationId: ids.conversation,
+        activeKey: "active",
+        anchorMessageAt: { lt: newerCustomerMessage.createdAt }
+      },
+      data: expect.objectContaining({ reason: "customer_replied", activeKey: null })
+    });
   });
 
   it("treats an active-key unique conflict as a safe re-read", async () => {
@@ -365,6 +553,29 @@ describe("conversation followups", () => {
 
     expect(result.status).toBe("cancelled");
     expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a human commercial cycle valid after human takeover", async () => {
+    const prisma = buildPrisma({
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseConversation,
+          aiControlStatus: "human_controlled"
+        })
+      },
+      conversationFollowup: {
+        findFirst: vi.fn().mockResolvedValue(activeFollowup({ kind: "human_commercial" }))
+      },
+      message: { findFirst: vi.fn().mockResolvedValue(null) }
+    });
+
+    const result = await createConversationFollowupsService(prisma).revalidateActiveFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup
+    });
+
+    expect(result.status).toBe("valid");
+    expect(prisma.conversationFollowup.updateMany).not.toHaveBeenCalled();
   });
 
   it("cancels revalidation when its session context is no longer compatible", async () => {

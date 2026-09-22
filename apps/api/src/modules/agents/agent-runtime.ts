@@ -253,6 +253,20 @@ export function createAgentRuntime(input: {
 }) {
   const { prisma, provider } = input;
 
+  async function observeAgentOutboundFollowup(
+    outboundMessage: Pick<MessageRecord, "id" | "workspaceId" | "conversationId">
+  ) {
+    await input.followupService?.observeConversationActivity({
+      workspaceId: outboundMessage.workspaceId,
+      conversationId: outboundMessage.conversationId,
+      messageId: outboundMessage.id,
+      direction: "outbound",
+      source: "agent"
+    }).catch((error: unknown) => {
+      console.error("Failed to observe agent outbound follow-up.", error);
+    });
+  }
+
   async function prepareAudioMessageRecord(
     message: MessageRecord,
     resolvedProviderSettings?: OpenAiCompatibleSettings
@@ -1073,15 +1087,7 @@ export function createAgentRuntime(input: {
               }
             }
           });
-          await input.followupService?.observeConversationActivity({
-            workspaceId: runInput.workspaceId,
-            conversationId: conversation.id,
-            messageId: outboundMessage.id,
-            direction: "outbound",
-            source: "agent"
-          }).catch((error: unknown) => {
-            console.error("Failed to observe agent outbound follow-up.", error);
-          });
+          await observeAgentOutboundFollowup(outboundMessage);
           input.realtime?.publish({
             type: "message.created",
             workspaceId: runInput.workspaceId,
@@ -1125,6 +1131,7 @@ export function createAgentRuntime(input: {
               }
             }
           });
+          await observeAgentOutboundFollowup(outboundMessage);
           input.realtime?.publish({
             type: "message.created",
             workspaceId: runInput.workspaceId,
