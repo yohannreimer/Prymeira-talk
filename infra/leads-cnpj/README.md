@@ -92,8 +92,9 @@ when invoked.
 ## Google Maps sidecar
 
 The dev sidecar is fixed at
-`gosom/google-maps-scraper:v1.15.0@sha256:8f5dc7f8fe57832faf1e93c5224d7451f0193154cf8d128e1f40b0773770ebd1`
-and deliberately binds only to loopback:
+`gosom/google-maps-scraper:v1.18.1@sha256:e205c02913c5a69c16fc2094b8e5b194a2f655166d2c1126d50548d216e6b1b2`
+and deliberately binds only to loopback. This image includes the Playwright
+driver and browser; do not mount a volume over `/opt`:
 
 ```bash
 cd infra/leads-cnpj

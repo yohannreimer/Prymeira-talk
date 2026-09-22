@@ -1,0 +1,30 @@
+services:
+  google-maps-scraper:
+    image: gosom/google-maps-scraper:v1.18.1@sha256:e205c02913c5a69c16fc2094b8e5b194a2f655166d2c1126d50548d216e6b1b2
+    command: ["-web", "-data-folder", "/gmapsdata"]
+    volumes:
+      - google-maps-scraper-data:/gmapsdata
+    networks:
+      - talk_internal
+      - egress
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == srv1904129
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 2G
+        reservations:
+          memory: 512M
+
+volumes:
+  google-maps-scraper-data:
+
+networks:
+  talk_internal:
+    external: true
+    name: prymeiratalk_prymeira_talk_internal
+  egress:
+    driver: overlay

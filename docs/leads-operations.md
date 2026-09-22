@@ -26,8 +26,9 @@ Leads; iniciar um disparo continua sujeito às regras próprias de Disparos.
    transações somente leitura. A base CNPJ é pública e compartilhada; dados de
    clientes nunca devem ser gravados nela.
 5. Para Google, execute o sidecar privado fixado no
-   [`docker-compose.dev.yml`](../docker-compose.dev.yml) e configure
-   `GOOGLE_MAPS_SCRAPER_URL` para a API. O sidecar não tem autenticação:
+   [`docker-compose.dev.yml`](../docker-compose.dev.yml) em desenvolvimento ou
+   na [stack Swarm isolada](../infra/leads-google-maps/README.md) em produção,
+   e configure `GOOGLE_MAPS_SCRAPER_URL` para a API. O sidecar não tem autenticação:
    exponha-o apenas em loopback ou rede interna, nunca na internet. Seus
    créditos/licença MIT e revisões estão em
    [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).

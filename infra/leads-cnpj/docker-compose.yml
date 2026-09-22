@@ -48,14 +48,13 @@ services:
       - cnpj-egress
 
   google-maps-scraper:
-    image: gosom/google-maps-scraper:v1.15.0@sha256:8f5dc7f8fe57832faf1e93c5224d7451f0193154cf8d128e1f40b0773770ebd1
+    image: gosom/google-maps-scraper:v1.18.1@sha256:e205c02913c5a69c16fc2094b8e5b194a2f655166d2c1126d50548d216e6b1b2
     profiles: ["google-maps-scraper"]
     command: ["-web", "-data-folder", "/gmapsdata"]
     ports:
       - "127.0.0.1:${GOOGLE_MAPS_SCRAPER_PORT:-8080}:8080"
     volumes:
       - google-maps-scraper-data:/gmapsdata
-      - google-maps-scraper-cache:/opt
     networks:
       - cnpj-private
       - cnpj-egress
@@ -63,7 +62,6 @@ services:
 volumes:
   cnpj-postgres-data:
   google-maps-scraper-data:
-  google-maps-scraper-cache:
 
 networks:
   cnpj-private:
