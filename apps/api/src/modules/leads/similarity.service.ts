@@ -21,6 +21,7 @@ import { normalizeCnpj } from "./leads.types.js";
 
 export const SIMILARITY_SCORING_VERSION = "cnpj-similarity-v1" as const;
 const MAX_CANDIDATES = 100;
+const MAX_CANDIDATE_POOL = 1_000;
 const LEASE_MS = 300_000;
 const INVALID_SEED_MESSAGE = "Escolha um lead da Receita Federal com CNPJ ou informe um CNPJ válido.";
 
@@ -183,7 +184,8 @@ export function scoreSimilarCompany(
     activityReasons.push(reason("activity_primary_cnae_exact", 20));
   }
   if ((seedPrimary && candidateSecondary.includes(seedPrimary)) ||
-      (candidatePrimary && seedSecondary.includes(candidatePrimary))) {
+      (candidatePrimary && seedSecondary.includes(candidatePrimary)) ||
+      seedSecondary.some((code) => candidateSecondary.includes(code))) {
     activityReasons.push(reason("activity_reciprocal_primary_secondary", 10));
   }
   const seedCnaes = [seedPrimary, ...seedSecondary].filter((value): value is string => Boolean(value));
@@ -462,8 +464,12 @@ export function createSimilarityService(options: SimilarityServiceOptions) {
     const candidates = await cnpjRepository.findSimilarCandidates({
       seedCnpj: seed.cnpj,
       cnaePrimary: seed.cnaePrimary ?? undefined,
+      cnaeSecondary: seed.cnaeSecondary,
+      city: seed.city ?? undefined,
       state: seed.state ?? undefined,
-      limit: MAX_CANDIDATES
+      porte: seed.porte ?? undefined,
+      legalNature: seed.legalNature ?? undefined,
+      limit: MAX_CANDIDATE_POOL
     });
     const scoringNow = now();
     const items = candidates

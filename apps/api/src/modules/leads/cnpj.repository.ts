@@ -3,7 +3,7 @@ import { normalizeCnpj } from "./leads.types.js";
 
 const MAX_PAGE_SIZE = 100;
 const MAX_PAGE = 10_000;
-const MAX_SIMILAR_CANDIDATES = 100;
+const MAX_SIMILAR_CANDIDATES = 1_000;
 const MAX_EXACT_BATCH_SIZE = 100;
 const ACCENTED_LOWERCASE = "áàâãäåæçéèêëíìîïñóòôõöøœúùûüýÿ";
 const ASCII_EQUIVALENTS = "aaaaaaaceeeeiiiinooooooouuuuyy";
@@ -55,7 +55,11 @@ export interface CnpjSearchFilters {
 export interface CnpjSimilarCandidatesInput {
   seedCnpj?: string;
   cnaePrimary?: string;
+  cnaeSecondary?: readonly string[];
+  city?: string;
   state?: string;
+  porte?: string;
+  legalNature?: string;
   limit?: number;
 }
 
@@ -288,28 +292,101 @@ export class CnpjRepository {
 
   async findSimilarCandidates(input: CnpjSimilarCandidatesInput = {}): Promise<CnpjCompanyRecord[]> {
     const values: unknown[] = [];
-    const where: string[] = ["e.situacao_cadastral = '02'"];
+    const eligibleWhere: string[] = ["e.situacao_cadastral = '02'"];
     if (input.seedCnpj) {
       const [cnpjBasico, cnpjOrdem, cnpjDv] = splitCnpj(normalizeCnpj(input.seedCnpj));
       values.push(cnpjBasico, cnpjOrdem, cnpjDv);
-      where.push(`NOT (e.cnpj_basico = $${values.length - 2} AND e.cnpj_ordem = $${values.length - 1} AND e.cnpj_dv = $${values.length})`);
+      eligibleWhere.push(`NOT (e.cnpj_basico = $${values.length - 2} AND e.cnpj_ordem = $${values.length - 1} AND e.cnpj_dv = $${values.length})`);
       values.push(cnpjBasico);
-      where.push(`e.cnpj_basico <> $${values.length}`);
+      eligibleWhere.push(`e.cnpj_basico <> $${values.length}`);
     }
-    if (input.cnaePrimary?.trim()) {
-      values.push(input.cnaePrimary.trim());
-      where.push(`e.cnae_fiscal_principal = $${values.length}`);
+
+    const seedCnaes = [...new Set([
+      input.cnaePrimary,
+      ...(input.cnaeSecondary ?? [])
+    ].map((value) => value?.trim()).filter((value): value is string => Boolean(value)))].slice(0, 50);
+    const seedPrefixes = [...new Set(seedCnaes.map((value) => value.replace(/[^0-9A-Za-z]/g, "").slice(0, 3)).filter((value) => value.length === 3))];
+    const buckets: Array<{ rank: number; condition: string }> = [];
+    if (seedCnaes.length > 0) {
+      values.push(seedCnaes);
+      const cnaes = `$${values.length}::text[]`;
+      buckets.push({
+        rank: 0,
+        condition: `(eligible.cnae_primary = ANY(${cnaes}) OR EXISTS (
+          SELECT 1 FROM unnest(string_to_array(COALESCE(eligible.cnae_secondary, ''), ',')) AS secondary_cnae(code)
+          WHERE btrim(secondary_cnae.code) = ANY(${cnaes})
+        ))`
+      });
     }
-    if (input.state?.trim()) {
-      values.push(input.state.trim().toUpperCase());
-      where.push(`e.uf = $${values.length}`);
+    if (seedPrefixes.length > 0) {
+      values.push(seedPrefixes);
+      const prefixes = `$${values.length}::text[]`;
+      buckets.push({
+        rank: 1,
+        condition: `(left(eligible.cnae_primary, 3) = ANY(${prefixes}) OR EXISTS (
+          SELECT 1 FROM unnest(string_to_array(COALESCE(eligible.cnae_secondary, ''), ',')) AS secondary_cnae(code)
+          WHERE left(btrim(secondary_cnae.code), 3) = ANY(${prefixes})
+        ))`
+      });
     }
+    const state = input.state?.trim().toUpperCase();
+    if (input.city?.trim()) {
+      values.push(input.city.trim());
+      const city = `$${values.length}`;
+      let condition = `${accentFold("eligible.city")} = ${accentFold(city)}`;
+      if (state) {
+        values.push(state);
+        condition = `(${condition} AND eligible.state = $${values.length})`;
+      }
+      buckets.push({ rank: 2, condition });
+    }
+    if (state) {
+      values.push(state);
+      buckets.push({ rank: 3, condition: `eligible.state = $${values.length}` });
+    }
+    const profileConditions: string[] = [];
+    if (input.porte?.trim()) {
+      values.push(input.porte.trim());
+      profileConditions.push(`eligible.porte = $${values.length}`);
+    }
+    if (input.legalNature?.trim()) {
+      values.push(input.legalNature.trim());
+      profileConditions.push(`eligible.legal_nature = $${values.length}`);
+    }
+    if (profileConditions.length > 0) buckets.push({ rank: 4, condition: `(${profileConditions.join(" OR ")})` });
+
     const limit = boundedInteger(input.limit, 25, MAX_SIMILAR_CANDIDATES);
     values.push(limit);
-    const rows = await this.query(`SELECT ${SELECT_FIELDS} ${FROM_CNPJ}
-      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-      ORDER BY company_name ASC, cnpj ASC
-      LIMIT $${values.length}`, values);
+    const bucketSql = buckets.length > 0
+      ? buckets.map(({ rank, condition }) => `SELECT cnpj_basico, cnpj_ordem, cnpj_dv, ${rank} AS coarse_relevance
+        FROM eligible WHERE ${condition}`).join("\n        UNION ALL\n        ")
+      : "SELECT cnpj_basico, cnpj_ordem, cnpj_dv, 9 AS coarse_relevance FROM eligible";
+    const rows = await this.query(`WITH eligible AS MATERIALIZED (
+      SELECT
+        e.cnpj_basico,
+        e.cnpj_ordem,
+        e.cnpj_dv,
+        e.cnae_fiscal_principal AS cnae_primary,
+        e.cnae_fiscal_secundaria AS cnae_secondary,
+        m.descricao AS city,
+        e.uf AS state,
+        em.porte AS porte,
+        em.natureza_juridica AS legal_nature
+      ${SEARCH_KEY_FROM}
+      ${eligibleWhere.length ? `WHERE ${eligibleWhere.join(" AND ")}` : ""}
+    ), candidate_keys AS (
+      ${bucketSql}
+    ), paged_keys AS (
+      SELECT cnpj_basico, cnpj_ordem, cnpj_dv, MIN(coarse_relevance) AS coarse_relevance
+      FROM candidate_keys
+      GROUP BY cnpj_basico, cnpj_ordem, cnpj_dv
+      ORDER BY coarse_relevance ASC, cnpj_basico ASC, cnpj_ordem ASC, cnpj_dv ASC
+      LIMIT $${values.length}
+    )
+    SELECT ${SELECT_FIELDS}
+    FROM paged_keys
+    ${SEARCH_DETAIL_JOINS}
+    ORDER BY paged_keys.coarse_relevance ASC, e.cnpj_basico ASC, e.cnpj_ordem ASC, e.cnpj_dv ASC`, values);
     return rows.map(toRecord);
   }
 

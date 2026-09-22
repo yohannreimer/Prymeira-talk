@@ -306,7 +306,7 @@ describe("CnpjRepository", () => {
 
     await repository.findSimilarCandidates({
       seedCnpj: "12.345.678/ABCD-90",
-      limit: 999
+      limit: 9_999
     });
 
     const call = client.calls[0];
@@ -314,7 +314,7 @@ describe("CnpjRepository", () => {
     expect(call?.text).toContain("e.cnpj_basico <> $4");
     expect(call?.text).toContain("e.situacao_cadastral = '02'");
     expect(call?.text).not.toContain("score");
-    expect(call?.values).toEqual(["12345678", "ABCD", "90", "12345678", 100]);
+    expect(call?.values).toEqual(["12345678", "ABCD", "90", "12345678", 1_000]);
   });
 
   it("always excludes the complete seed root when a seed CNPJ is supplied", async () => {
@@ -328,19 +328,34 @@ describe("CnpjRepository", () => {
     expect(client.calls[0]?.values).toEqual(["12345678", "ABCD", "90", "12345678", 25]);
   });
 
-  it("optionally narrows active similarity candidates by principal CNAE and UF without scoring", async () => {
+  it("builds a deduplicated active candidate pool from nationwide CNAE and location buckets", async () => {
     const client = new FakeCnpjClient();
 
     await new CnpjRepository(client).findSimilarCandidates({
       cnaePrimary: "6201500",
+      cnaeSecondary: ["6311900"],
+      city: "São Paulo",
       state: "sp"
     });
 
     const call = client.calls[0];
     expect(call?.text).toContain("e.situacao_cadastral = '02'");
-    expect(call?.text).toContain("e.cnae_fiscal_principal = $1");
-    expect(call?.text).toContain("e.uf = $2");
-    expect(call?.values).toEqual(["6201500", "SP", 25]);
+    expect(call?.text).toContain("WITH eligible AS MATERIALIZED");
+    expect(call?.text).toContain("eligible.cnae_primary = ANY($1::text[])");
+    expect(call?.text).toContain("btrim(secondary_cnae.code) = ANY($1::text[])");
+    expect(call?.text).toContain("left(eligible.cnae_primary, 3) = ANY($2::text[])");
+    expect(call?.text).toContain("UNION ALL");
+    expect(call?.text).toContain("MIN(coarse_relevance)");
+    expect(call?.text).toContain("ORDER BY coarse_relevance ASC, cnpj_basico ASC");
+    expect(call?.text).not.toContain("company_name ASC");
+    expect(call?.values).toEqual([
+      ["6201500", "6311900"],
+      ["620", "631"],
+      "São Paulo",
+      "SP",
+      "SP",
+      25
+    ]);
     expect(call?.text).not.toContain("score");
   });
 

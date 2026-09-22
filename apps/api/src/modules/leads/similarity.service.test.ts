@@ -186,6 +186,20 @@ describe("similar-company deterministic scoring", () => {
     expect(score.reasons.map((reason) => reason.key)).toEqual(["commercial_active"]);
   });
 
+  it("awards the 10-point activity signal once for an exact secondary CNAE overlap", () => {
+    const score = scoreSimilarCompany(
+      company(seed.cnpj, { cnaePrimary: "6201500", cnaeSecondary: ["6311900"] }),
+      company("87654321WXYZ10", { cnaePrimary: "4711302", cnaeSecondary: ["6311900"] }),
+      fixedNow
+    );
+
+    expect(score.components[0]?.score).toBe(15);
+    expect(score.components[0]?.reasons).toEqual([
+      expect.objectContaining({ key: "activity_reciprocal_primary_secondary", points: 10 }),
+      expect.objectContaining({ key: "activity_cnae_group", points: 5 })
+    ]);
+  });
+
   it.each([
     [-23.7755, -46.6333, 25, "location_distance_100km", 3],
     [-25.0, -46.6333, 250, "location_distance_250km", 1],
@@ -239,12 +253,67 @@ describe("similar-company service", () => {
     expect(context.cnpjRepository.findSimilarCandidates).toHaveBeenCalledWith({
       seedCnpj: seed.cnpj,
       cnaePrimary: seed.cnaePrimary,
+      cnaeSecondary: seed.cnaeSecondary,
+      city: seed.city,
       state: seed.state,
-      limit: 100
+      porte: seed.porte,
+      legalNature: seed.legalNature,
+      limit: 1_000
     });
     expect(result.items.map((item) => item.cnpj)).toEqual([
       "87654321WXYZ10", "87654321WXYZ11", "87654321WXYZ12"
     ]);
+  });
+
+  it("ranks a stronger nationwide activity match ahead of an alphabetically earlier weak candidate", async () => {
+    const context = setup();
+    context.cnpjRepository.findSimilarCandidates.mockResolvedValue([
+      company("87654321WXYZ10", { companyName: "Aardvark", status: "02" }),
+      company("87654321WXYZ11", {
+        companyName: "Zulu",
+        status: "02",
+        cnaePrimary: seed.cnaePrimary,
+        state: "RJ"
+      })
+    ]);
+
+    const result = await context.service.findSimilarCompanies({ workspaceId, seedCnpj: seed.cnpj, limit: 1 });
+
+    expect(result.items.map((item) => item.cnpj)).toEqual(["87654321WXYZ11"]);
+    expect(result.items[0]?.reasons.map((entry) => entry.key)).toContain("activity_primary_cnae_exact");
+  });
+
+  it("lets outside-UF exact, secondary, and group CNAE candidates reach pure scoring", async () => {
+    const context = setup();
+    const exact = company("87654321WXYZ10", {
+      companyName: "Exact",
+      cnaePrimary: seed.cnaePrimary,
+      state: "RJ",
+      status: "02"
+    });
+    const secondary = company("87654321WXYZ11", {
+      companyName: "Secondary",
+      cnaePrimary: "4711302",
+      cnaeSecondary: [seed.cnaePrimary!],
+      state: "MG",
+      status: "02"
+    });
+    const group = company("87654321WXYZ12", {
+      companyName: "Group",
+      cnaePrimary: "6209900",
+      state: "PR",
+      status: "02"
+    });
+    context.cnpjRepository.findSimilarCandidates.mockResolvedValue([group, secondary, exact]);
+
+    const result = await context.service.findSimilarCompanies({ workspaceId, seedCnpj: seed.cnpj, limit: 3 });
+
+    expect(result.items.find((item) => item.cnpj === exact.cnpj)?.reasons.map((entry) => entry.key))
+      .toContain("activity_primary_cnae_exact");
+    expect(result.items.find((item) => item.cnpj === secondary.cnpj)?.reasons.map((entry) => entry.key))
+      .toContain("activity_reciprocal_primary_secondary");
+    expect(result.items.find((item) => item.cnpj === group.cnpj)?.reasons.map((entry) => entry.key))
+      .toContain("activity_cnae_group");
   });
 
   it("rejects Google-only and no-CNPJ lead seeds with one stable actionable error", async () => {
