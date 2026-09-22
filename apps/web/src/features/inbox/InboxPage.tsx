@@ -35,6 +35,7 @@ import {
 import { QuickRepliesPopover } from "./QuickRepliesPopover";
 import { useRealtimeEvents } from "./useRealtimeEvents";
 import { AssistantPanel } from './AssistantPanel';
+import { buildHandoffBrief } from './handoff-brief';
 import { ContactIdentityCard } from './ContactIdentityCard';
 import { ContactAvatar, ContactPhotoProvider } from './ContactAvatar';
 import { InboxMedia, mediaCaption } from './InboxMedia';
@@ -97,6 +98,13 @@ export function needsHumanAttention(
   return (
     conversation.activeAgentSessionStatus === "handoff_requested" ||
     (conversation.aiControlStatus === "human_controlled" && Boolean(conversation.handoffReason))
+  );
+}
+
+export function filterConversationsNeedingHuman(conversations: ConversationDto[], onlyHuman: boolean) {
+  if (!onlyHuman) return conversations;
+  return conversations.filter((conversation) =>
+    conversation.status !== "closed" && needsHumanAttention(conversation)
   );
 }
 
@@ -405,6 +413,7 @@ function InboxPageContent() {
   const [selectedTagId, setSelectedTagId] = useState("");
   const [selectedQueueFilter, setSelectedQueueFilter] = useState<ConversationQueueFilter>("active");
   const [selectedChannelFilter, setSelectedChannelFilter] = useState("all");
+  const [onlyHumanAttention, setOnlyHumanAttention] = useState(false);
   const [conversationReloadKey, setConversationReloadKey] = useState(0);
   const [isSending, setIsSending] = useState(false);
   const [isRunningAction, setIsRunningAction] = useState(false);
@@ -785,9 +794,17 @@ function InboxPageContent() {
     () => getChannelFilterOptions(queueFilteredConversations),
     [queueFilteredConversations]
   );
-  const visibleConversations = useMemo(
+  const channelFilteredConversations = useMemo(
     () => filterConversationsByChannel(queueFilteredConversations, selectedChannelFilter),
     [queueFilteredConversations, selectedChannelFilter]
+  );
+  const humanAttentionCount = useMemo(
+    () => filterConversationsNeedingHuman(channelFilteredConversations, true).length,
+    [channelFilteredConversations]
+  );
+  const visibleConversations = useMemo(
+    () => filterConversationsNeedingHuman(channelFilteredConversations, onlyHumanAttention),
+    [channelFilteredConversations, onlyHumanAttention]
   );
 
   useEffect(() => {
@@ -814,6 +831,12 @@ function InboxPageContent() {
     [visibleConversations, selectedConversationId]
   );
   const visibleMessages = messagesConversationId === selectedConversationId ? messages : [];
+  const handoffBrief = useMemo(
+    () => selectedConversation && needsHumanAttention(selectedConversation)
+      ? buildHandoffBrief(selectedConversation.handoffReason, visibleMessages)
+      : null,
+    [selectedConversation, visibleMessages]
+  );
   useEffect(() => { assistant.refresh(); }, [selectedConversation?.lastMessageAt, selectedConversation?.aiControlStatus, assistant.refresh]);
   const originNeedsReview = draftNeedsReview(composerOrigin, assistant.data?.currentContextKey);
   function editSuggestion(suggestion: AssistantSuggestionDto, confirmed: boolean) {
@@ -1283,7 +1306,10 @@ function InboxPageContent() {
                 selectedQueueFilter === option.id ? "is-active" : ""
               ].filter(Boolean).join(" ")}
               key={option.id}
-              onClick={() => setSelectedQueueFilter(option.id)}
+              onClick={() => {
+                setOnlyHumanAttention(false);
+                setSelectedQueueFilter(option.id);
+              }}
               type="button"
             >
               {option.label}
@@ -1308,12 +1334,43 @@ function InboxPageContent() {
           ))}
         </div>
 
+        <div className="attention-filter-row" role="group" aria-label="Visualização das conversas">
+          <button
+            aria-pressed={!onlyHumanAttention}
+            className={`attention-filter-button${onlyHumanAttention ? "" : " is-active"}`}
+            onClick={() => setOnlyHumanAttention(false)}
+            type="button"
+          >
+            Conversas
+          </button>
+          <button
+            aria-label={`Próxima ação: ${humanAttentionCount} conversas com humano necessário`}
+            aria-pressed={onlyHumanAttention}
+            className={`attention-filter-button attention-filter-button--human${onlyHumanAttention ? " is-active" : ""}`}
+            onClick={() => {
+              setSelectedQueueFilter("active");
+              setOnlyHumanAttention(true);
+            }}
+            type="button"
+          >
+            <TriangleAlert size={14} aria-hidden="true" />
+            Próxima ação
+            <span className={`attention-filter-count${humanAttentionCount > 0 ? " has-items" : ""}`} aria-hidden="true">
+              {humanAttentionCount}
+            </span>
+          </button>
+        </div>
+
         {isLoading ? <p className="list-note">Carregando conversas...</p> : null}
         {error ? <p className="error-note">{error}</p> : null}
 
         <div className="conversation-items">
           {!isLoading && visibleConversations.length === 0 ? (
-            <p className="list-note">Nenhuma conversa encontrada para este canal.</p>
+            <p className="list-note">
+              {onlyHumanAttention
+                ? "Nenhuma conversa aguardando ação humana neste canal."
+                : "Nenhuma conversa encontrada para este canal."}
+            </p>
           ) : null}
           {visibleConversations.map((conversation) => {
             const conversationNeedsHuman = needsHumanAttention(conversation);
@@ -1499,7 +1556,7 @@ function InboxPageContent() {
         )}
 
         <div className="composer-shell">
-          <button ref={assistantTriggerRef} type="button" className="assistant-mobile-trigger" onClick={() => { setAssistantTab('assistant'); setAssistantOpen(true); }} disabled={!selectedConversation}><MessageSquare size={15} /> IA de apoio <span>{assistant.data?.status === 'ready' ? 'Sugestão pronta' : 'Abrir'}</span></button>
+          <button ref={assistantTriggerRef} type="button" className="assistant-mobile-trigger" onClick={() => { setAssistantTab('assistant'); setAssistantOpen(true); }} disabled={!selectedConversation}><MessageSquare size={15} /> IA de apoio <span>{handoffBrief ? 'Próxima ação' : assistant.data?.status === 'ready' ? 'Sugestão pronta' : 'Abrir'}</span></button>
           {composerOrigin ? <div className="assistant-composer-origin"><span>{originNeedsReview ? 'A conversa mudou. Confira o rascunho.' : 'Sugestão em edição. O texto enviado ficará registrado.'}</span>{originNeedsReview ? <button type="button" disabled={!assistant.data?.currentContextKey} onClick={() => setComposerOrigin(current => current && assistant.data?.currentContextKey ? { ...current, contextKey: assistant.data.currentContextKey } : current)}>Revisei o contexto</button> : null}</div> : null}
           {showQuickReplies ? (
             <QuickRepliesPopover
@@ -1621,8 +1678,8 @@ function InboxPageContent() {
       </section>
 
       <aside className={`contact-panel assistant-contact-panel${assistantOpen ? ' assistant-drawer-open' : ''}`} aria-label="Contato e IA de apoio">
-        <div className="assistant-tabs"><button type="button" aria-pressed={assistantTab === 'contact'} onClick={() => setAssistantTab('contact')}>Contato</button><button type="button" aria-pressed={assistantTab === 'assistant'} onClick={() => setAssistantTab('assistant')}>IA de apoio{assistant.data?.status === 'ready' ? <span className="assistant-tab-dot" /> : null}</button><button ref={assistantCloseRef} className="assistant-drawer-close" aria-label="Fechar apoio" type="button" onClick={() => { setAssistantOpen(false); assistantTriggerRef.current?.focus(); }}><X size={18} /></button></div>
-        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={sendSuggestion} onEdit={editSuggestion} /> : <>
+        <div className="assistant-tabs"><button type="button" aria-pressed={assistantTab === 'contact'} onClick={() => setAssistantTab('contact')}>Contato</button><button type="button" aria-pressed={assistantTab === 'assistant'} onClick={() => setAssistantTab('assistant')}>IA de apoio{handoffBrief ? <span className="assistant-tab-dot is-handoff" /> : assistant.data?.status === 'ready' ? <span className="assistant-tab-dot" /> : null}</button><button ref={assistantCloseRef} className="assistant-drawer-close" aria-label="Fechar apoio" type="button" onClick={() => { setAssistantOpen(false); assistantTriggerRef.current?.focus(); }}><X size={18} /></button></div>
+        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} handoffBrief={handoffBrief} handoffMessagesLoading={isLoadingMessages || messagesConversationId !== selectedConversationId} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={sendSuggestion} onEdit={editSuggestion} /> : <>
         {/* Card identidade */}
         {selectedConversation ? <ContactIdentityCard key={selectedConversation.contactId}
           conversationId={selectedConversation.id}
