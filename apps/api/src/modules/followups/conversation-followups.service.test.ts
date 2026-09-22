@@ -63,7 +63,7 @@ function activeFollowup(overrides: Record<string, unknown> = {}) {
     conversationId: ids.conversation,
     agentId: ids.agent,
     sessionId: ids.session,
-    kind: "qualification",
+    kind: "qualification" as const,
     status: "scheduled",
     activeKey: "active",
     stepIndex: 1,
@@ -904,5 +904,141 @@ describe("conversation followups", () => {
 
     expect(result).toMatchObject({ status: "cancelled", reason: "not_active" });
     expect(prisma.conversationFollowup.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("completeAutomaticFollowup", () => {
+  it("marks the delivered step sent and schedules exactly its next configured step on the original anchor", async () => {
+    const configWithThreeSteps = {
+      ...followupConfig,
+      steps: [
+        { afterBusinessMinutes: 60, instruction: "Primeiro lembrete técnico." },
+        { afterBusinessMinutes: 120, instruction: "Segundo lembrete técnico." },
+        { afterBusinessMinutes: 180, instruction: "Último lembrete técnico." }
+      ]
+    };
+    const followup = activeFollowup({
+      stepIndex: 1,
+      decision: { route: "automatic_send" }
+    });
+    const create = vi.fn().mockResolvedValue(activeFollowup({
+      id: "next_followup",
+      stepIndex: 2,
+      scheduledAt: new Date("2026-09-21T14:00:00.000Z")
+    }));
+    const prisma = buildPrisma({
+      conversationFollowup: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create
+      }
+    });
+
+    const result = await createConversationFollowupsService(prisma).completeAutomaticFollowup({
+      workspaceId: ids.workspace,
+      followupId: followup.id,
+      followup,
+      agentBehaviorConfig: { followup: configWithThreeSteps },
+      finalBody: "Você consegue confirmar a espessura?",
+      decision: { route: "automatic_send", purpose: "missing_qualification" },
+      now: new Date("2026-09-21T12:05:00.000Z")
+    });
+
+    expect(result).toEqual({ status: "scheduled", followupId: "next_followup" });
+    expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: followup.id,
+        workspaceId: ids.workspace,
+        activeKey: "active"
+      },
+      data: expect.objectContaining({
+        status: "sent",
+        activeKey: null,
+        finalBody: "Você consegue confirmar a espessura?",
+        decision: { route: "automatic_send", purpose: "missing_qualification" },
+        sentAt: new Date("2026-09-21T12:05:00.000Z")
+      })
+    });
+    expect(create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        workspaceId: ids.workspace,
+        conversationId: ids.conversation,
+        agentId: ids.agent,
+        sessionId: ids.session,
+        kind: "qualification",
+        status: "scheduled",
+        activeKey: "active",
+        stepIndex: 2,
+        anchorMessageId: ids.anchor,
+        anchorMessageAt: anchorAt,
+        anchorIngestedAt,
+        scheduledAt: new Date("2026-09-21T14:00:00.000Z"),
+        decision: {},
+        reason: "agent_followup_step"
+      })
+    });
+  });
+
+  it("does not create a fourth follow-up after the configured third step", async () => {
+    const configWithThreeSteps = {
+      ...followupConfig,
+      steps: [
+        { afterBusinessMinutes: 60, instruction: "Primeiro." },
+        { afterBusinessMinutes: 120, instruction: "Segundo." },
+        { afterBusinessMinutes: 180, instruction: "Terceiro." }
+      ]
+    };
+    const create = vi.fn();
+    const prisma = buildPrisma({
+      conversationFollowup: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create
+      }
+    });
+
+    const result = await createConversationFollowupsService(prisma).completeAutomaticFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      followup: activeFollowup({ stepIndex: 3 }),
+      agentBehaviorConfig: { followup: configWithThreeSteps },
+      finalBody: "Última confirmação técnica.",
+      decision: { route: "automatic_send" },
+      now: new Date("2026-09-21T12:05:00.000Z")
+    });
+
+    expect(result).toEqual({ status: "sent" });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("keeps the completed step sent when a malformed next-step schedule cannot be calculated", async () => {
+    const create = vi.fn();
+    const prisma = buildPrisma({
+      conversationFollowup: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create
+      }
+    });
+
+    await expect(createConversationFollowupsService(prisma).completeAutomaticFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      followup: activeFollowup({ stepIndex: 1 }),
+      agentBehaviorConfig: {
+        followup: {
+          ...followupConfig,
+          timeZone: "Not/AValid_TimeZone",
+          steps: [
+            { afterBusinessMinutes: 60, instruction: "Primeiro." },
+            { afterBusinessMinutes: 120, instruction: "Segundo." }
+          ]
+        }
+      },
+      finalBody: "Você consegue confirmar a espessura?",
+      decision: { route: "automatic_send" }
+    })).resolves.toEqual({ status: "sent" });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "sent", finalBody: "Você consegue confirmar a espessura?" })
+    }));
   });
 });

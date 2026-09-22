@@ -1,4 +1,4 @@
-import type { ConversationStatus, PrismaClient } from "@prisma/client";
+import type { ConversationStatus, Prisma, PrismaClient } from "@prisma/client";
 import { createHash } from 'node:crypto';
 import { prepareVoiceRecording } from './outbound-audio.js';
 import type {
@@ -368,6 +368,16 @@ interface ConversationsServiceOptions {
   } | null;
 }
 
+export type ConversationOutboundTextDelivery = {
+  createPendingOutboundMessage(input: {
+    workspaceId: string;
+    conversationId: string;
+    body: string;
+    sentByUserId: null;
+    metadata?: Record<string, unknown>;
+  }): Promise<{ message: Pick<MessageDto, "id" | "status"> }>;
+};
+
 function toIsoString(value: DateLike): string;
 function toIsoString(value: DateLike | null): string | null;
 function toIsoString(value: DateLike | null) {
@@ -678,6 +688,7 @@ export function createConversationsService(
         mediaUrl: string;
       };
       sentByUserId: string | null;
+      metadata?: Record<string, unknown>;
     }): Promise<{ message: MessageDto; conversation: ConversationDto }> {
       if (input.reservedMessageId && !prisma.message.update) throw new Error('Reserved outbound storage is unavailable.');
       const conversation = await prisma.conversation.findUnique({
@@ -812,7 +823,16 @@ export function createConversationsService(
           type: messageType,
           body: messageBody,
           mediaUrl: audio?.mediaUrl ?? input.attachment?.mediaUrl,
-          ...(audio ? { metadata: { attachment: { fileName: 'audio.ogg', durationSeconds: audio.durationSeconds } } } : {}),
+          ...(audio || input.metadata
+            ? {
+                metadata: {
+                  ...(audio
+                    ? { attachment: { fileName: "audio.ogg", durationSeconds: audio.durationSeconds } }
+                    : {}),
+                  ...(input.metadata ?? {})
+                } as Prisma.InputJsonValue
+              }
+            : {}),
           providerMessageId: providerSend?.providerMessageId ?? undefined,
           status: providerSend ? "sent" as const : "pending" as const,
           sentByUserId: input.sentByUserId

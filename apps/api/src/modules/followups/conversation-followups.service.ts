@@ -127,6 +127,11 @@ export type ConversationFollowupsObserver = Pick<
   "observeConversationActivity"
 >;
 
+export type CompleteAutomaticFollowupResult =
+  | { status: "sent" }
+  | { status: "scheduled"; followupId: string }
+  | { status: "not_active" };
+
 const ACTIVE_FOLLOWUP_STATUSES: ActiveFollowupStatus[] = ["scheduled", "processing", "review"];
 const MAX_UNIQUE_CONFLICT_RETRIES = 3;
 
@@ -334,7 +339,75 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
     };
   }
 
-  return { observeConversationActivity, revalidateActiveFollowup };
+  async function completeAutomaticFollowup(input: {
+    workspaceId: string;
+    followupId: string;
+    followup: ConversationFollowupRecord;
+    agentBehaviorConfig: unknown;
+    finalBody: string;
+    decision: unknown;
+    now?: Date;
+  }): Promise<CompleteAutomaticFollowupResult> {
+    if (
+      input.followup.workspaceId !== input.workspaceId ||
+      input.followup.id !== input.followupId ||
+      input.followup.activeKey !== "active"
+    ) {
+      return { status: "not_active" };
+    }
+
+    const sentAt = input.now ?? new Date();
+    const parsed = agentFollowupConfigSchema.safeParse(asRecord(input.agentBehaviorConfig)?.followup);
+    const nextStep = parsed.success ? parsed.data.steps[input.followup.stepIndex] : undefined;
+    const nextScheduledAt = nextStep && parsed.success
+      ? calculateScheduledAt(input.followup.anchorMessageAt, nextStep, parsed.data)
+      : null;
+
+    return prisma.$transaction(async (tx) => {
+      const markedSent = await tx.conversationFollowup.updateMany({
+        where: {
+          id: input.followupId,
+          workspaceId: input.workspaceId,
+          activeKey: "active"
+        },
+        data: {
+          status: "sent",
+          activeKey: null,
+          finalBody: input.finalBody,
+          decision: input.decision,
+          sentAt
+        }
+      });
+      if (markedSent.count !== 1) {
+        return { status: "not_active" } as const;
+      }
+
+      if (!nextScheduledAt) {
+        return { status: "sent" } as const;
+      }
+      const next = await tx.conversationFollowup.create({
+        data: {
+          workspaceId: input.workspaceId,
+          conversationId: input.followup.conversationId,
+          agentId: input.followup.agentId,
+          sessionId: input.followup.sessionId,
+          kind: input.followup.kind,
+          status: "scheduled",
+          activeKey: "active",
+          stepIndex: input.followup.stepIndex + 1,
+          anchorMessageId: input.followup.anchorMessageId,
+          anchorMessageAt: toDate(input.followup.anchorMessageAt),
+          anchorIngestedAt: toDate(input.followup.anchorIngestedAt),
+          scheduledAt: nextScheduledAt,
+          decision: {},
+          reason: "agent_followup_step"
+        }
+      });
+      return { status: "scheduled", followupId: next.id } as const;
+    });
+  }
+
+  return { observeConversationActivity, revalidateActiveFollowup, completeAutomaticFollowup };
 }
 
 async function findPersistedCustomerInboundMessage(
@@ -482,17 +555,25 @@ function calculateFirstScheduledAt(anchorMessageAt: Date | string, agent: AgentR
   }
 
   const firstStep = parsed.data.steps[0];
-  if (!firstStep) {
-    return null;
-  }
+  return firstStep ? calculateScheduledAt(anchorMessageAt, firstStep, parsed.data) : null;
+}
 
+function calculateScheduledAt(
+  anchorMessageAt: Date | string,
+  step: { afterBusinessMinutes: number },
+  config: {
+    timeZone: string;
+    businessDays: number[];
+    businessHours: { start: string; end: string };
+  }
+): Date | null {
   try {
     return addBusinessMinutes({
       from: toDate(anchorMessageAt),
-      minutes: firstStep.afterBusinessMinutes,
-      timeZone: parsed.data.timeZone,
-      businessDays: parsed.data.businessDays,
-      businessHours: parsed.data.businessHours
+      minutes: step.afterBusinessMinutes,
+      timeZone: config.timeZone,
+      businessDays: config.businessDays,
+      businessHours: config.businessHours
     });
   } catch {
     return null;
