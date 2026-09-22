@@ -97,6 +97,13 @@ type FollowupLifecycle = {
     workspaceId: string;
     followupId: string;
   }): Promise<{ status: "claimed"; lockedAt: Date } | { status: "not_scheduled" }>;
+  recoverClaimedFollowup(input: {
+    workspaceId: string;
+    followupId: string;
+    claim: { lockedAt: Date };
+    outcome: "retry" | "failed";
+    reason: string;
+  }): Promise<{ status: "recovered" } | { status: "not_active" }>;
 };
 
 export type AgentFollowupRuntimeResult =
@@ -172,6 +179,7 @@ export function createAgentFollowupRuntime(input: {
       if (claim.status !== "claimed") {
         return { status: "skipped", followupId: runInput.followupId };
       }
+      const claimToken = { lockedAt: claim.lockedAt };
 
       const initial = await input.followups.revalidateActiveFollowup(runInput);
       if (initial.status === "missing") {
@@ -322,7 +330,15 @@ export function createAgentFollowupRuntime(input: {
           })
         });
       } catch (error) {
-        return { status: "failed", followupId: followup.id, message: errorMessage(error) };
+        const message = errorMessage(error);
+        await input.followups.recoverClaimedFollowup({
+          workspaceId: runInput.workspaceId,
+          followupId: followup.id,
+          claim: claimToken,
+          outcome: "retry",
+          reason: `provider_generation_failed: ${message}`
+        });
+        return { status: "failed", followupId: followup.id, message };
       }
 
       const candidate = output.reply?.trim();
@@ -407,10 +423,25 @@ export function createAgentFollowupRuntime(input: {
           }
         });
       } catch (error) {
-        return { status: "failed", followupId: beforeDelivery.context.followup.id, message: errorMessage(error) };
+        const message = errorMessage(error);
+        await input.followups.recoverClaimedFollowup({
+          workspaceId: runInput.workspaceId,
+          followupId: beforeDelivery.context.followup.id,
+          claim: claimToken,
+          outcome: "failed",
+          reason: `outbound_delivery_failed: ${message}`
+        });
+        return { status: "failed", followupId: beforeDelivery.context.followup.id, message };
       }
 
       if (delivery.message.status !== "sent") {
+        await input.followups.recoverClaimedFollowup({
+          workspaceId: runInput.workspaceId,
+          followupId: beforeDelivery.context.followup.id,
+          claim: claimToken,
+          outcome: "failed",
+          reason: "outbound_delivery_unconfirmed"
+        });
         return {
           status: "failed",
           followupId: beforeDelivery.context.followup.id,
@@ -422,7 +453,7 @@ export function createAgentFollowupRuntime(input: {
         workspaceId: runInput.workspaceId,
         followupId: beforeDelivery.context.followup.id,
         followup: beforeDelivery.context.followup,
-        claim,
+        claim: claimToken,
         agentBehaviorConfig: agent.behaviorConfig,
         finalBody: candidate,
         decision

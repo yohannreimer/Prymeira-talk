@@ -1135,3 +1135,62 @@ describe("claimScheduledFollowup", () => {
     expect(updateMany).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("recoverClaimedFollowup", () => {
+  it("releases only the matching processing claim for a safe provider retry", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = buildPrisma({ conversationFollowup: { updateMany } });
+
+    await expect(createConversationFollowupsService(prisma).recoverClaimedFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: claimLockedAt },
+      outcome: "retry",
+      reason: "provider_generation_failed: provider down"
+    })).resolves.toEqual({ status: "recovered" });
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        id: ids.followup,
+        activeKey: "active",
+        status: "processing",
+        lockedAt: claimLockedAt
+      },
+      data: {
+        status: "scheduled",
+        lockedAt: null,
+        reason: "provider_generation_failed: provider down"
+      }
+    });
+  });
+
+  it("does not recover a record if its original lock token no longer matches", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+    const prisma = buildPrisma({ conversationFollowup: { updateMany } });
+
+    await expect(createConversationFollowupsService(prisma).recoverClaimedFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: claimLockedAt },
+      outcome: "failed",
+      reason: "outbound_delivery_failed: transport down"
+    })).resolves.toEqual({ status: "not_active" });
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        id: ids.followup,
+        activeKey: "active",
+        status: "processing",
+        lockedAt: claimLockedAt
+      },
+      data: {
+        status: "failed",
+        activeKey: null,
+        lockedAt: null,
+        reason: "outbound_delivery_failed: transport down"
+      }
+    });
+  });
+});

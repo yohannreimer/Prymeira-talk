@@ -121,6 +121,9 @@ function buildRuntime(overrides: Record<string, any> = {}) {
     status: "scheduled",
     followupId: "next_followup"
   });
+  const recoverClaimedFollowup = overrides.recoverClaimedFollowup ?? vi.fn().mockResolvedValue({
+    status: "recovered"
+  });
   const provider = overrides.provider ?? {
     generate: vi.fn().mockResolvedValue({
       confidence: 0.9,
@@ -179,7 +182,12 @@ function buildRuntime(overrides: Record<string, any> = {}) {
   const runtime = createAgentFollowupRuntime({
     prisma,
     provider,
-    followups: { claimScheduledFollowup, revalidateActiveFollowup, completeAutomaticFollowup },
+    followups: {
+      claimScheduledFollowup,
+      revalidateActiveFollowup,
+      completeAutomaticFollowup,
+      recoverClaimedFollowup
+    },
     jevFollowupDecision: { decide },
     replyPreflight,
     outbound: { createPendingOutboundMessage }
@@ -195,7 +203,8 @@ function buildRuntime(overrides: Record<string, any> = {}) {
     createPendingOutboundMessage,
     revalidateActiveFollowup,
     claimScheduledFollowup,
-    completeAutomaticFollowup
+    completeAutomaticFollowup,
+    recoverClaimedFollowup
   };
 }
 
@@ -376,17 +385,64 @@ describe("createAgentFollowupRuntime", () => {
     });
   });
 
-  it("does not persist outbound or final follow-up state when generation or transport fails", async () => {
-    const providerFailure = buildRuntime({ provider: { generate: vi.fn().mockRejectedValue(new Error("provider down")) } });
-    await expect(providerFailure.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
-      .resolves.toEqual({ status: "failed", followupId: ids.followup, message: "provider down" });
-    expect(providerFailure.prisma.conversationFollowup.updateMany).not.toHaveBeenCalled();
+  it("releases an exact provider claim so a later run can retry without duplicate delivery", async () => {
+    const firstClaimAt = new Date("2026-09-22T12:00:00.000Z");
+    const secondClaimAt = new Date("2026-09-22T12:05:00.000Z");
+    const provider = {
+      generate: vi.fn()
+        .mockRejectedValueOnce(new Error("provider down"))
+        .mockResolvedValueOnce({
+          confidence: 0.9,
+          reply: "Você consegue me informar a espessura da chapa?",
+          actions: [],
+          handoff: { required: false, reason: null }
+        })
+    };
+    const recoverClaimedFollowup = vi.fn().mockResolvedValue({ status: "recovered" });
+    const harness = buildRuntime({
+      provider,
+      recoverClaimedFollowup,
+      claimScheduledFollowup: vi.fn()
+        .mockResolvedValueOnce({ status: "claimed", lockedAt: firstClaimAt })
+        .mockResolvedValueOnce({ status: "claimed", lockedAt: secondClaimAt }),
+      revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context: validContext() })
+    });
 
-    const transportFailure = buildRuntime({ createPendingOutboundMessage: vi.fn().mockRejectedValue(new Error("transport down")) });
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({ status: "failed", followupId: ids.followup, message: "provider down" });
+    expect(recoverClaimedFollowup).toHaveBeenCalledWith({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: firstClaimAt },
+      outcome: "retry",
+      reason: "provider_generation_failed: provider down"
+    });
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({
+        status: "sent",
+        followupId: ids.followup,
+        nextFollowupId: "next_followup"
+      });
+    expect(provider.generate).toHaveBeenCalledTimes(2);
+    expect(harness.createPendingOutboundMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("terminally recovers an exact claim when outbound delivery fails or is unconfirmed", async () => {
+    const transportFailure = buildRuntime({
+      createPendingOutboundMessage: vi.fn().mockRejectedValue(new Error("transport down"))
+    });
     await expect(transportFailure.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
       .resolves.toEqual({ status: "failed", followupId: ids.followup, message: "transport down" });
     expect(transportFailure.completeAutomaticFollowup).not.toHaveBeenCalled();
-    expect(transportFailure.prisma.conversationFollowup.updateMany).not.toHaveBeenCalled();
+    expect(transportFailure.recoverClaimedFollowup).toHaveBeenCalledWith({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: now },
+      outcome: "failed",
+      reason: "outbound_delivery_failed: transport down"
+    });
 
     const unconfirmedDelivery = buildRuntime({
       createPendingOutboundMessage: vi.fn().mockResolvedValue({ message: { id: "pending_outbound", status: "pending" } })
@@ -398,7 +454,13 @@ describe("createAgentFollowupRuntime", () => {
         message: "Outbound delivery was not confirmed."
       });
     expect(unconfirmedDelivery.completeAutomaticFollowup).not.toHaveBeenCalled();
-    expect(unconfirmedDelivery.prisma.conversationFollowup.updateMany).not.toHaveBeenCalled();
+    expect(unconfirmedDelivery.recoverClaimedFollowup).toHaveBeenCalledWith({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: now },
+      outcome: "failed",
+      reason: "outbound_delivery_unconfirmed"
+    });
   });
 
   it("does nothing external when stale before generation or after candidate generation", async () => {

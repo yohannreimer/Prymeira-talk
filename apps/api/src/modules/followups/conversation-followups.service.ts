@@ -137,6 +137,10 @@ export type ScheduledFollowupClaimResult =
   | { status: "claimed"; lockedAt: Date }
   | { status: "not_scheduled" };
 
+export type ClaimedFollowupRecoveryResult =
+  | { status: "recovered" }
+  | { status: "not_active" };
+
 export const MAX_AUTOMATIC_FOLLOWUP_STEPS = 3;
 
 const ACTIVE_FOLLOWUP_STATUSES: ActiveFollowupStatus[] = ["scheduled", "processing", "review"];
@@ -371,6 +375,37 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
       : { status: "not_scheduled" };
   }
 
+  async function recoverClaimedFollowup(input: {
+    workspaceId: string;
+    followupId: string;
+    claim: { lockedAt: Date };
+    outcome: "retry" | "failed";
+    reason: string;
+  }): Promise<ClaimedFollowupRecoveryResult> {
+    const recovery = await prisma.conversationFollowup.updateMany({
+      where: {
+        workspaceId: input.workspaceId,
+        id: input.followupId,
+        activeKey: "active",
+        status: "processing",
+        lockedAt: input.claim.lockedAt
+      },
+      data: input.outcome === "retry"
+        ? {
+            status: "scheduled",
+            lockedAt: null,
+            reason: input.reason
+          }
+        : {
+            status: "failed",
+            activeKey: null,
+            lockedAt: null,
+            reason: input.reason
+          }
+    });
+    return recovery.count === 1 ? { status: "recovered" } : { status: "not_active" };
+  }
+
   async function completeAutomaticFollowup(input: {
     workspaceId: string;
     followupId: string;
@@ -451,6 +486,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
     observeConversationActivity,
     revalidateActiveFollowup,
     claimScheduledFollowup,
+    recoverClaimedFollowup,
     completeAutomaticFollowup
   };
 }
