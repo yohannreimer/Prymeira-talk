@@ -848,6 +848,7 @@ model ConversationFollowup {
   stepIndex         Int                      @default(0) @map("step_index")
   anchorMessageId   String                   @map("anchor_message_id") @db.Uuid
   anchorMessageAt   DateTime                 @map("anchor_message_at")
+  anchorIngestedAt  DateTime                 @map("anchor_ingested_at")
   scheduledAt       DateTime                 @map("scheduled_at")
   lockedAt          DateTime?                @map("locked_at")
   attempts          Int                      @default(0)

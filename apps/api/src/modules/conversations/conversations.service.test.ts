@@ -26,6 +26,9 @@ type MockPrisma = {
     findMany: ReturnType<typeof vi.fn<PrismaLike["message"]["findMany"]>>;
     deleteMany: ReturnType<typeof vi.fn<PrismaLike["message"]["deleteMany"]>>;
   };
+  conversationFollowup: {
+    deleteMany: ReturnType<typeof vi.fn<PrismaLike["conversationFollowup"]["deleteMany"]>>;
+  };
   contactNote: {
     create: ReturnType<typeof vi.fn<PrismaLike["contactNote"]["create"]>>;
     findMany: ReturnType<typeof vi.fn<PrismaLike["contactNote"]["findMany"]>>;
@@ -164,6 +167,9 @@ function createMockPrisma(overrides: {
           }
         ]),
       deleteMany: vi.fn<PrismaLike["message"]["deleteMany"]>().mockResolvedValue({ count: 1 })
+    },
+    conversationFollowup: {
+      deleteMany: vi.fn<PrismaLike["conversationFollowup"]["deleteMany"]>().mockResolvedValue({ count: 1 })
     },
     contactNote: {
       create: vi.fn<PrismaLike["contactNote"]["create"]>().mockResolvedValue({
@@ -1714,6 +1720,7 @@ describe("conversations service", () => {
     expect(prisma.aiAgentPendingReply.deleteMany).toHaveBeenCalledWith({ where: scope });
     expect(prisma.aiAgentRun.deleteMany).toHaveBeenCalledWith({ where: scope });
     expect(prisma.aiActionLog.deleteMany).toHaveBeenCalledWith({ where: scope });
+    expect(prisma.conversationFollowup.deleteMany).toHaveBeenCalledWith({ where: scope });
     expect(prisma.message.deleteMany).toHaveBeenCalledWith({ where: scope });
     expect(prisma.conversationTag.deleteMany).toHaveBeenCalledWith({ where: scope });
     expect(prisma.contactNote.deleteMany).toHaveBeenCalledWith({
@@ -1745,6 +1752,41 @@ describe("conversations service", () => {
     });
     expect(result.conversation.id).toBe("conv_1");
     expect(result.context.notes).toEqual([]);
+  });
+
+  it("deletes FK-bound followups before their anchor messages and sessions during reset", async () => {
+    const order: string[] = [];
+    let followupExists = true;
+    const prisma = createMockPrisma();
+    prisma.conversationFollowup.deleteMany.mockImplementation(async () => {
+      order.push("followups");
+      followupExists = false;
+      return { count: 1 };
+    });
+    prisma.message.deleteMany.mockImplementation(async () => {
+      order.push("messages");
+      if (followupExists) {
+        throw Object.assign(new Error("Followup anchor foreign key blocks message deletion"), { code: "P2003" });
+      }
+      return { count: 1 };
+    });
+    prisma.aiAgentSession.deleteMany.mockImplementation(async () => {
+      order.push("sessions");
+      if (followupExists) {
+        throw Object.assign(new Error("Followup session foreign key blocks session deletion"), { code: "P2003" });
+      }
+      return { count: 1 };
+    });
+
+    await expect(createConversationsService(prisma).resetConversation({
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      actorUserId: "user_1"
+    })).resolves.toMatchObject({ conversation: { id: "conv_1" } });
+
+    expect(order).toEqual(expect.arrayContaining(["followups", "messages", "sessions"]));
+    expect(order.indexOf("followups")).toBeLessThan(order.indexOf("messages"));
+    expect(order.indexOf("followups")).toBeLessThan(order.indexOf("sessions"));
   });
 });
 

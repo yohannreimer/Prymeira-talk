@@ -144,10 +144,44 @@ describe.skipIf(!url)('assistant PostgreSQL integration', () => {
       expect((await app.inject({ method: 'POST', url: `/assistant/conversations/${conversationId}/send`, payload: { userId, body: 'spoof' } })).statusCode).toBe(400);
     } finally { await app.close(); }
   });
-  it('explicit conversation reset clears private revisions before deleting their message references', async () => {
+  it('explicit conversation reset removes FK-bound followups before their anchor messages and sessions', async () => {
+    const session = await db.aiAgentSession.create({
+      data: { workspaceId, agentId, conversationId, status: 'active' }
+    });
+    const anchor = await db.message.create({
+      data: {
+        workspaceId,
+        conversationId,
+        direction: 'outbound',
+        type: 'text',
+        body: 'Mensagem com ciclo de acompanhamento',
+        status: 'sent',
+        ingestedAt: new Date('2026-09-22T12:00:00.100Z')
+      }
+    });
+    await db.conversationFollowup.create({
+      data: {
+        workspaceId,
+        conversationId,
+        agentId,
+        sessionId: session.id,
+        kind: 'qualification',
+        status: 'scheduled',
+        activeKey: 'active',
+        stepIndex: 1,
+        anchorMessageId: anchor.id,
+        anchorMessageAt: anchor.createdAt,
+        anchorIngestedAt: anchor.ingestedAt!,
+        scheduledAt: new Date('2026-09-22T13:00:00.000Z'),
+        decision: {}
+      }
+    });
+
     await createConversationsService(db as unknown as PrismaLike).resetConversation({ workspaceId, conversationId, actorUserId: userId });
     expect(await db.assistantSuggestion.count({ where: { workspaceId, conversationId } })).toBe(0);
     expect(await db.assistantConversationState.count({ where: { workspaceId, conversationId } })).toBe(0);
+    expect(await db.conversationFollowup.count({ where: { workspaceId, conversationId } })).toBe(0);
     expect(await db.message.count({ where: { workspaceId, conversationId } })).toBe(0);
+    expect(await db.aiAgentSession.count({ where: { workspaceId, conversationId } })).toBe(0);
   });
 });

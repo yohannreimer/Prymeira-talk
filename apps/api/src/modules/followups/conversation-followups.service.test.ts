@@ -11,6 +11,7 @@ const ids = {
 };
 
 const anchorAt = new Date("2026-09-21T12:00:00.000Z");
+const anchorIngestedAt = new Date("2026-09-21T12:00:00.100Z");
 
 const followupConfig = {
   timeZone: "America/Sao_Paulo",
@@ -51,7 +52,8 @@ const baseMessage = {
   workspaceId: ids.workspace,
   conversationId: ids.conversation,
   direction: "outbound",
-  createdAt: anchorAt
+  createdAt: anchorAt,
+  ingestedAt: anchorIngestedAt
 };
 
 function activeFollowup(overrides: Record<string, unknown> = {}) {
@@ -67,6 +69,7 @@ function activeFollowup(overrides: Record<string, unknown> = {}) {
     stepIndex: 1,
     anchorMessageId: ids.anchor,
     anchorMessageAt: anchorAt,
+    anchorIngestedAt,
     scheduledAt: new Date("2026-09-21T13:00:00.000Z"),
     decision: {},
     ...overrides
@@ -162,6 +165,7 @@ describe("conversation followups", () => {
         stepIndex: 1,
         anchorMessageId: ids.anchor,
         anchorMessageAt: anchorAt,
+        anchorIngestedAt,
         scheduledAt: new Date("2026-09-21T13:00:00.000Z"),
         decision: {},
         reason: "agent_outbound"
@@ -288,7 +292,11 @@ describe("conversation followups", () => {
   });
 
   it("clears a previous active row before scheduling a replacement", async () => {
-    const old = activeFollowup({ id: "old_followup", anchorMessageAt: new Date("2026-09-21T11:00:00.000Z") });
+    const old = activeFollowup({
+      id: "old_followup",
+      anchorMessageAt: new Date("2026-09-21T11:00:00.000Z"),
+      anchorIngestedAt: new Date("2026-09-21T11:00:00.100Z")
+    });
     const prisma = buildPrisma({
       conversationFollowup: {
         findFirst: vi.fn().mockResolvedValue(old),
@@ -325,7 +333,8 @@ describe("conversation followups", () => {
       ...baseMessage,
       id: "customer_reply",
       direction: "inbound" as const,
-      createdAt: new Date("2026-09-21T12:01:00.000Z")
+      createdAt: new Date("2026-09-21T12:01:00.000Z"),
+      ingestedAt: new Date("2026-09-21T12:01:00.100Z")
     };
     const updateMany = vi.fn().mockImplementation(async () => {
       active = null;
@@ -363,7 +372,7 @@ describe("conversation followups", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         activeKey: "active",
-        anchorMessageAt: { lt: newerCustomerMessage.createdAt }
+        anchorIngestedAt: { lt: newerCustomerMessage.ingestedAt }
       },
       data: expect.objectContaining({
         status: "cancelled",
@@ -373,6 +382,94 @@ describe("conversation followups", () => {
     });
   });
 
+  it("does not create a candidate after a same-second customer reply was ingested later", async () => {
+    let active: ReturnType<typeof activeFollowup> | null = activeFollowup();
+    const customerReply = {
+      ...baseMessage,
+      id: "same_second_customer_reply_before_observation",
+      direction: "inbound" as const,
+      createdAt: anchorAt,
+      ingestedAt: new Date("2026-09-21T12:00:00.200Z")
+    };
+    const updateMany = vi.fn().mockImplementation(async () => {
+      active = null;
+      return { count: 1 };
+    });
+    const prisma = buildPrisma({
+      message: {
+        findFirst: vi.fn().mockImplementation(async (args: any) =>
+          args.where.id === ids.anchor
+            ? baseMessage
+            : args.where.direction === "inbound"
+              ? customerReply
+              : null
+        )
+      },
+      conversationFollowup: {
+        findFirst: vi.fn().mockImplementation(async () => active),
+        updateMany
+      }
+    });
+
+    const result = await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "agent"
+    });
+
+    expect(result).toEqual({ status: "cancelled" });
+    expect(prisma.conversationFollowup.create).not.toHaveBeenCalled();
+    expect(prisma.message.findFirst).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ ingestedAt: { gt: anchorIngestedAt } })
+    }));
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ anchorIngestedAt: { lt: customerReply.ingestedAt } })
+    }));
+  });
+
+  it("does not create a candidate after a later customer ingestion with an older provider timestamp", async () => {
+    let active: ReturnType<typeof activeFollowup> | null = activeFollowup();
+    const customerReply = {
+      ...baseMessage,
+      id: "out_of_order_customer_reply_before_observation",
+      direction: "inbound" as const,
+      createdAt: new Date("2026-09-21T11:59:59.000Z"),
+      ingestedAt: new Date("2026-09-21T12:00:00.200Z")
+    };
+    const prisma = buildPrisma({
+      message: {
+        findFirst: vi.fn().mockImplementation(async (args: any) =>
+          args.where.id === ids.anchor
+            ? baseMessage
+            : args.where.direction === "inbound"
+              ? customerReply
+              : null
+        )
+      },
+      conversationFollowup: {
+        findFirst: vi.fn().mockImplementation(async () => active),
+        updateMany: vi.fn().mockImplementation(async () => {
+          active = null;
+          return { count: 1 };
+        })
+      }
+    });
+
+    const result = await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "agent"
+    });
+
+    expect(result).toEqual({ status: "cancelled" });
+    expect(active).toBeNull();
+    expect(prisma.conversationFollowup.create).not.toHaveBeenCalled();
+  });
+
   it("clears a newly created candidate when a customer reply arrives during outbound scheduling", async () => {
     let active: ReturnType<typeof activeFollowup> | null = null;
     let inboundChecks = 0;
@@ -380,7 +477,8 @@ describe("conversation followups", () => {
       ...baseMessage,
       id: "customer_reply_during_schedule",
       direction: "inbound" as const,
-      createdAt: new Date("2026-09-21T12:01:00.000Z")
+      createdAt: new Date("2026-09-21T12:01:00.000Z"),
+      ingestedAt: new Date("2026-09-21T12:01:00.100Z")
     };
     const updateMany = vi.fn().mockImplementation(async () => {
       active = null;
@@ -424,7 +522,7 @@ describe("conversation followups", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         activeKey: "active",
-        anchorMessageAt: { lt: newerCustomerMessage.createdAt }
+        anchorIngestedAt: { lt: newerCustomerMessage.ingestedAt }
       },
       data: expect.objectContaining({ reason: "customer_replied", activeKey: null })
     });
@@ -433,13 +531,15 @@ describe("conversation followups", () => {
   it("does not cancel a later outbound candidate while ignoring a stale anchor", async () => {
     const laterActive = activeFollowup({
       id: "later_outbound_candidate",
-      anchorMessageAt: new Date("2026-09-21T12:02:00.000Z")
+      anchorMessageAt: new Date("2026-09-21T12:02:00.000Z"),
+      anchorIngestedAt: new Date("2026-09-21T12:02:00.100Z")
     });
     const newerCustomerMessage = {
       ...baseMessage,
       id: "customer_reply_before_later_outbound",
       direction: "inbound" as const,
-      createdAt: new Date("2026-09-21T12:01:00.000Z")
+      createdAt: new Date("2026-09-21T12:01:00.000Z"),
+      ingestedAt: new Date("2026-09-21T12:01:00.100Z")
     };
     const updateMany = vi.fn().mockResolvedValue({ count: 0 });
     const prisma = buildPrisma({
@@ -473,7 +573,7 @@ describe("conversation followups", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         activeKey: "active",
-        anchorMessageAt: { lt: newerCustomerMessage.createdAt }
+        anchorIngestedAt: { lt: newerCustomerMessage.ingestedAt }
       },
       data: expect.objectContaining({ reason: "customer_replied", activeKey: null })
     });
@@ -507,7 +607,8 @@ describe("conversation followups", () => {
   it("retries a unique conflict when the re-read active candidate has an older anchor", async () => {
     const older = activeFollowup({
       id: "older_followup",
-      anchorMessageAt: new Date("2026-09-21T11:00:00.000Z")
+      anchorMessageAt: new Date("2026-09-21T11:00:00.000Z"),
+      anchorIngestedAt: new Date("2026-09-21T11:00:00.100Z")
     });
     const findFirst = vi.fn()
       .mockResolvedValueOnce(null)
@@ -538,8 +639,20 @@ describe("conversation followups", () => {
 
   it("cancels revalidation when customer or company activity supersedes the anchor", async () => {
     for (const newerMessage of [
-      { ...baseMessage, id: "customer_reply", direction: "inbound", createdAt: new Date("2026-09-21T12:01:00.000Z") },
-      { ...baseMessage, id: "human_reply", direction: "outbound", createdAt: new Date("2026-09-21T12:01:00.000Z") }
+      {
+        ...baseMessage,
+        id: "customer_reply",
+        direction: "inbound",
+        createdAt: new Date("2026-09-21T12:01:00.000Z"),
+        ingestedAt: new Date("2026-09-21T12:01:00.100Z")
+      },
+      {
+        ...baseMessage,
+        id: "human_reply",
+        direction: "outbound",
+        createdAt: new Date("2026-09-21T12:01:00.000Z"),
+        ingestedAt: new Date("2026-09-21T12:01:00.100Z")
+      }
     ]) {
       const prisma = buildPrisma({
         conversationFollowup: { findFirst: vi.fn().mockResolvedValue(activeFollowup()) },
@@ -562,6 +675,94 @@ describe("conversation followups", () => {
         data: expect.objectContaining({ status: "cancelled", activeKey: null })
       });
     }
+  });
+
+  it("cancels a candidate when a same-second customer reply was persisted later", async () => {
+    const customerReply = {
+      ...baseMessage,
+      id: "same_second_customer_reply",
+      direction: "inbound" as const,
+      createdAt: anchorAt,
+      ingestedAt: new Date("2026-09-21T12:00:00.200Z")
+    };
+    const prisma = buildPrisma({
+      message: {
+        findFirst: vi.fn().mockImplementation(async (args: any) =>
+          args.where.direction === "inbound" ? customerReply : null
+        )
+      },
+      conversationFollowup: { findFirst: vi.fn().mockResolvedValue(activeFollowup()) }
+    });
+
+    const result = await createConversationFollowupsService(prisma).revalidateActiveFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup
+    });
+
+    expect(result).toMatchObject({ status: "cancelled", reason: "customer_replied" });
+    expect(prisma.message.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ ingestedAt: { gt: anchorIngestedAt } })
+    }));
+  });
+
+  it("cancels a candidate when a provider timestamp arrives out of order", async () => {
+    const customerReply = {
+      ...baseMessage,
+      id: "out_of_order_customer_reply",
+      direction: "inbound" as const,
+      createdAt: new Date("2026-09-21T11:59:59.000Z"),
+      ingestedAt: new Date("2026-09-21T12:00:00.200Z")
+    };
+    const prisma = buildPrisma({
+      message: {
+        findFirst: vi.fn().mockImplementation(async (args: any) =>
+          args.where.direction === "inbound" ? customerReply : null
+        )
+      },
+      conversationFollowup: { findFirst: vi.fn().mockResolvedValue(activeFollowup()) }
+    });
+
+    const result = await createConversationFollowupsService(prisma).revalidateActiveFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup
+    });
+
+    expect(result).toMatchObject({ status: "cancelled", reason: "customer_replied" });
+  });
+
+  it("does not treat older inbound history without a later ingestion marker as a reply", async () => {
+    const historicalMessages: Array<{
+      id: string;
+      direction: "inbound";
+      createdAt: Date;
+      ingestedAt: Date | null;
+    }> = [{
+      id: "older_history",
+      direction: "inbound",
+      createdAt: new Date("2099-09-21T12:00:00.000Z"),
+      ingestedAt: null
+    }];
+    const findFirst = vi.fn().mockImplementation(async (args: any) => {
+      if (args.where.direction !== "inbound") return null;
+      const cutoff = args.where.ingestedAt?.gt as Date | undefined;
+      return historicalMessages.find((message) =>
+        message.ingestedAt !== null && cutoff !== undefined && message.ingestedAt > cutoff
+      ) ?? null;
+    });
+    const prisma = buildPrisma({
+      message: { findFirst },
+      conversationFollowup: { findFirst: vi.fn().mockResolvedValue(activeFollowup()) }
+    });
+
+    const result = await createConversationFollowupsService(prisma).revalidateActiveFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup
+    });
+
+    expect(result.status).toBe("valid");
+    expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ ingestedAt: { gt: anchorIngestedAt } })
+    }));
   });
 
   it.each([

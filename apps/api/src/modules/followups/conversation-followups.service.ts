@@ -37,6 +37,7 @@ type MessageRecord = {
   conversationId: string;
   direction: FollowupActivityDirection;
   createdAt: Date | string;
+  ingestedAt: Date | string | null;
 };
 
 export type ConversationFollowupRecord = {
@@ -51,6 +52,7 @@ export type ConversationFollowupRecord = {
   stepIndex: number;
   anchorMessageId: string;
   anchorMessageAt: Date | string;
+  anchorIngestedAt: Date | string;
   scheduledAt: Date | string;
   decision: unknown;
   reason?: string | null;
@@ -145,17 +147,17 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
 
     const kind = input.source === "agent" ? "qualification" : "human_commercial";
     const candidate = await resolveCandidate(prisma, input, kind);
-    if (!candidate) {
+    if (!candidate || !candidate.message.ingestedAt) {
       return { status: "ignored" };
     }
 
     const newerCustomerMessage = await findNewerCustomerReply(
       prisma,
       input,
-      candidate.message.createdAt
+      candidate.message.ingestedAt
     );
     if (newerCustomerMessage) {
-      return cancelForCustomerReply(prisma, input, newerCustomerMessage.createdAt);
+      return cancelForCustomerReply(prisma, input, newerCustomerMessage.ingestedAt);
     }
 
     const scheduledAt = calculateFirstScheduledAt(candidate.message.createdAt, candidate.agent);
@@ -175,6 +177,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
       stepIndex: 1,
       anchorMessageId: candidate.message.id,
       anchorMessageAt: toDate(candidate.message.createdAt),
+      anchorIngestedAt: toDate(candidate.message.ingestedAt),
       scheduledAt,
       decision: {},
       reason
@@ -191,7 +194,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
             }
           });
 
-          if (current && toDate(current.anchorMessageAt) >= candidateData.anchorMessageAt) {
+          if (current && toDate(current.anchorIngestedAt) >= candidateData.anchorIngestedAt) {
             return current;
           }
 
@@ -227,7 +230,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
             activeKey: "active"
           }
         });
-        if (active && toDate(active.anchorMessageAt) >= candidateData.anchorMessageAt) {
+        if (active && toDate(active.anchorIngestedAt) >= candidateData.anchorIngestedAt) {
           return finishOutboundScheduling(prisma, input, active);
         }
       }
@@ -273,15 +276,15 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
       return cancelActiveFollowup(prisma, followup, "human_controlled", input.now, conversation);
     }
 
-    const anchorMessageAt = toDate(followup.anchorMessageAt);
+    const anchorIngestedAt = toDate(followup.anchorIngestedAt);
     const newerCustomerMessage = await prisma.message.findFirst({
       where: {
         workspaceId: input.workspaceId,
         conversationId: followup.conversationId,
         direction: "inbound",
-        createdAt: { gt: anchorMessageAt }
+        ingestedAt: { gt: anchorIngestedAt }
       },
-      orderBy: { createdAt: "desc" }
+      orderBy: { ingestedAt: "desc" }
     });
     if (newerCustomerMessage) {
       return cancelActiveFollowup(prisma, followup, "customer_replied", input.now, conversation);
@@ -293,9 +296,9 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
         conversationId: followup.conversationId,
         direction: "outbound",
         id: { not: followup.anchorMessageId },
-        createdAt: { gt: anchorMessageAt }
+        ingestedAt: { gt: anchorIngestedAt }
       },
-      orderBy: { createdAt: "desc" }
+      orderBy: { ingestedAt: "desc" }
     });
     if (newerCompanyMessage) {
       return cancelActiveFollowup(prisma, followup, "outbound_replaced", input.now, conversation);
@@ -332,14 +335,16 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
 async function cancelForCustomerReply(
   prisma: Pick<ConversationFollowupsPrismaLike, "conversationFollowup">,
   input: Pick<ObserveConversationActivityInput, "workspaceId" | "conversationId">,
-  customerMessageAt?: Date | string
+  customerMessageIngestedAt?: Date | string | null
 ): Promise<ObserveConversationActivityResult> {
   const result = await prisma.conversationFollowup.updateMany({
     where: {
       workspaceId: input.workspaceId,
       conversationId: input.conversationId,
       activeKey: "active",
-      ...(customerMessageAt ? { anchorMessageAt: { lt: toDate(customerMessageAt) } } : {})
+      ...(customerMessageIngestedAt
+        ? { anchorIngestedAt: { lt: toDate(customerMessageIngestedAt) } }
+        : {})
     },
     data: {
       status: "cancelled",
@@ -355,31 +360,31 @@ async function cancelForCustomerReply(
 async function findNewerCustomerReply(
   prisma: Pick<ConversationFollowupsPrismaLike, "message">,
   input: Pick<ObserveConversationActivityInput, "workspaceId" | "conversationId">,
-  anchorMessageAt: Date | string
+  anchorIngestedAt: Date | string
 ): Promise<MessageRecord | null> {
   return prisma.message.findFirst({
     where: {
       workspaceId: input.workspaceId,
       conversationId: input.conversationId,
       direction: "inbound",
-      createdAt: { gt: toDate(anchorMessageAt) }
+      ingestedAt: { gt: toDate(anchorIngestedAt) }
     },
-    orderBy: { createdAt: "desc" }
+    orderBy: { ingestedAt: "desc" }
   });
 }
 
 async function finishOutboundScheduling(
   prisma: ConversationFollowupsPrismaLike,
   input: ObserveConversationActivityInput,
-  followup: Pick<ConversationFollowupRecord, "id" | "anchorMessageAt">
+  followup: Pick<ConversationFollowupRecord, "id" | "anchorIngestedAt">
 ): Promise<ObserveConversationActivityResult> {
   const newerCustomerMessage = await findNewerCustomerReply(
     prisma,
     input,
-    followup.anchorMessageAt
+    followup.anchorIngestedAt
   );
   if (newerCustomerMessage) {
-    return cancelForCustomerReply(prisma, input, newerCustomerMessage.createdAt);
+    return cancelForCustomerReply(prisma, input, newerCustomerMessage.ingestedAt);
   }
 
   return { status: "scheduled", followupId: followup.id };

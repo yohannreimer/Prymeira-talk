@@ -259,6 +259,7 @@ type ConversationUpdateArgs = Parameters<PrismaClient["conversation"]["update"]>
 type MessageCreateArgs = Parameters<PrismaClient["message"]["create"]>[0];
 type MessageFindManyArgs = Parameters<PrismaClient["message"]["findMany"]>[0];
 type MessageDeleteManyArgs = Parameters<PrismaClient["message"]["deleteMany"]>[0];
+type ConversationFollowupDeleteManyArgs = Parameters<PrismaClient["conversationFollowup"]["deleteMany"]>[0];
 type ContactNoteCreateArgs = Parameters<PrismaClient["contactNote"]["create"]>[0];
 type ContactNoteFindManyArgs = Parameters<PrismaClient["contactNote"]["findMany"]>[0];
 type ContactNoteDeleteManyArgs = Parameters<PrismaClient["contactNote"]["deleteMany"]>[0];
@@ -294,6 +295,9 @@ export interface PrismaLike {
     create(args: MessageCreateArgs): Promise<MessageRecord>;
     findMany(args: MessageFindManyArgs): Promise<MessageRecord[]>;
     deleteMany(args: MessageDeleteManyArgs): Promise<{ count: number }>;
+  };
+  conversationFollowup: {
+    deleteMany(args: ConversationFollowupDeleteManyArgs): Promise<{ count: number }>;
   };
   contactNote: {
     create(args: ContactNoteCreateArgs): Promise<ContactNoteRecord>;
@@ -1209,6 +1213,9 @@ export function createConversationsService(
         });
         await tx.assistantConversationState?.deleteMany({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
         await tx.assistantSuggestion?.deleteMany({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
+        await tx.conversationFollowup.deleteMany({
+          where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
+        });
         await tx.message.deleteMany({
           where: { workspaceId: input.workspaceId, conversationId: input.conversationId }
         });
