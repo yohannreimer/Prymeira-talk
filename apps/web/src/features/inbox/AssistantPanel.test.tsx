@@ -18,6 +18,19 @@ describe('assistant panel', () => {
     const html = renderToStaticMarkup(<AssistantPanel {...props} data={{ ...data, settings: { mode: 'disabled', agentId: null } }} />);
     expect(html).toContain('Apoio não ativado'); expect(html).not.toContain('Qual a cidade');
   });
+  it('shows the human handoff brief even when suggestions are disabled', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled data={{ ...data, settings: { mode: 'disabled', agentId: null } }} handoffBrief={{
+      customerContext: 'Material para porcas, quatro peças de aço 1045.',
+      lastReply: 'Vou consultar essas informações e já te dou um retorno.',
+      reason: 'A informação comercial precisa ser confirmada.',
+      nextStep: 'Confirme as condições e responda ao cliente.'
+    }} />);
+    expect(html).toContain('Próxima ação');
+    expect(html).toContain('quatro peças de aço 1045');
+    expect(html).toContain('Motivo do repasse');
+    expect(html).not.toContain('Apoio não ativado');
+    expect(html).not.toContain('Enviar resposta');
+  });
   it('escapes customer/provider text and shows media warnings', () => {
     const html = renderToStaticMarkup(<AssistantPanel {...props} data={{ ...data, suggestion: { ...data.suggestion!, body: '<script>unsafe()</script>', warnings: ['PDF não lido.'] } }} />);
     expect(html).not.toContain('<script>'); expect(html).toContain('PDF não lido.');

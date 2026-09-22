@@ -6,6 +6,7 @@ import {
   aiControlLabel,
   applyComposerMarker,
   canResetConversation,
+  filterConversationsNeedingHuman,
   insertComposerText,
   isBrowserPlayableAudio,
   metaClosedWindowMessage,
@@ -68,6 +69,48 @@ describe("AI control helpers", () => {
         handoffReason: null
       })
     ).toBe(false);
+  });
+});
+
+describe("human attention view", () => {
+  const conversation = (id: string, overrides: Partial<ConversationDto>): ConversationDto => ({
+    id,
+    workspaceId: "workspace-1",
+    channelId: "channel-1",
+    contactId: `contact-${id}`,
+    status: "open",
+    assignedUserId: null,
+    departmentId: null,
+    lastMessageAt: null,
+    lastMessagePreview: null,
+    unreadCount: 0,
+    priority: "normal",
+    ...overrides
+  });
+
+  it("shows only active conversations marked for human action", () => {
+    const handoff = conversation("handoff", {
+      activeAgentSessionStatus: "handoff_requested",
+      aiControlStatus: "human_controlled",
+      handoffReason: "Confirmar pedido"
+    });
+    const human = conversation("human", {
+      aiControlStatus: "human_controlled",
+      handoffReason: "Cliente pediu ajuda"
+    });
+    const agent = conversation("agent", {
+      aiControlStatus: "agent_allowed",
+      activeAgentSessionStatus: "active"
+    });
+    const closed = conversation("closed", {
+      status: "closed",
+      aiControlStatus: "human_controlled",
+      handoffReason: "Pedido encerrado"
+    });
+    const all = [handoff, human, agent, closed];
+
+    expect(filterConversationsNeedingHuman(all, false)).toBe(all);
+    expect(filterConversationsNeedingHuman(all, true).map(({ id }) => id)).toEqual(["handoff", "human"]);
   });
 });
 
