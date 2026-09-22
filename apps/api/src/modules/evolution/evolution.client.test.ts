@@ -597,7 +597,8 @@ describe("Evolution client", () => {
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: "secret-key" },
-        body: JSON.stringify({ numbers: ["5511999990000"] })
+        body: JSON.stringify({ numbers: ["5511999990000"] }),
+        signal: expect.any(AbortSignal)
       })
     );
     expect(result.numbers[0]).toMatchObject({ phone: "5511999990000" });

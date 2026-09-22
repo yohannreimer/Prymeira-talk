@@ -481,7 +481,8 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     async checkWhatsappNumbersAvailability(input) {
       const responseBody = await post(
         `/chat/whatsappNumbers/${encodeURIComponent(input.instanceName)}`,
-        { numbers: input.numbers }
+        { numbers: input.numbers },
+        15_000
       );
       const records = availabilityRecords(responseBody);
       if (!records) throw new Error("EVOLUTION_AVAILABILITY_INVALID_RESPONSE");

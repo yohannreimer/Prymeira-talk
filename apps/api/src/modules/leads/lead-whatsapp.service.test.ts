@@ -98,6 +98,22 @@ describe("lead WhatsApp verification", () => {
     }));
   });
 
+  it("treats an upstream request timeout as transient", async () => {
+    const context = setup();
+    const timeout = new Error("timed out");
+    timeout.name = "TimeoutError";
+    context.evolution.checkWhatsappNumbersAvailability
+      .mockRejectedValueOnce(timeout)
+      .mockResolvedValueOnce({ numbers: [{ phone: "551199990001", available: true }], raw: {} });
+    const verificationId = randomUUID();
+    await context.service.processClaimedJob(claimed({
+      requestId: randomUUID(), instanceName: "workspace-instance", numbers: ["551199990001"],
+      entries: [{ verificationId, leadId: randomUUID(), phone: "551199990001" }]
+    }));
+    expect(context.evolution.checkWhatsappNumbersAvailability).toHaveBeenCalledTimes(2);
+    expect(context.sleep).toHaveBeenCalledWith(250);
+  });
+
   it("does not retry permanent 4xx and marks missing partial response entries failed", async () => {
     const context = setup();
     context.evolution.checkWhatsappNumbersAvailability.mockResolvedValue({

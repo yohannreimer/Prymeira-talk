@@ -128,6 +128,12 @@ export const leadResultSchema = z.object({
   longitude: z.number().finite().nullable(),
   sourceUrl: z.string().url().nullable(),
   whatsappStatus: leadWhatsappStatusSchema,
+  whatsappVerifications: z.array(z.object({
+    normalizedPhone: z.string().min(1),
+    status: leadWhatsappStatusSchema,
+    checkedAt: z.string().datetime().nullable(),
+    errorMessage: z.string().nullable()
+  })),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });

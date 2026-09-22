@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { LeadArtifact, LeadJob, LeadList } from "@prisma/client";
+import { Prisma, type LeadArtifact, type LeadJob, type LeadList } from "@prisma/client";
 import { LeadsRepository } from "./leads.repository.js";
 
 const workspaceId = "workspace_a";
@@ -108,7 +108,7 @@ describe("Leads repository workspace isolation", () => {
       id: leadId, workspaceId, listId, source: "receita_federal", sourceExternalId: null,
       sourceDedupeKey: "lead", companyName: null, tradeName: null, cnpj: null, cnaePrimary: null,
       cnaeSecondary: [], category: null, address: null, city: null, state: null, postalCode: null,
-      phones: ["5511999990000"], normalizedPhone: "5511999990000", email: null, website: null,
+      phones: ["5511999990000", "5511888880000"], normalizedPhone: "5511999990000", email: null, website: null,
       rating: null, reviewCount: null, latitude: null, longitude: null, sourceUrl: null,
       sourceSnapshot: {}, createdAt: now, updatedAt: now
     };
@@ -117,6 +117,7 @@ describe("Leads repository workspace isolation", () => {
       lead: { findMany: vi.fn(async () => [lead]), count: vi.fn(async () => 1) },
       leadWhatsappVerification: { findMany: vi.fn(async () => [
         { id: randomUUID(), workspaceId, leadId, normalizedPhone: lead.normalizedPhone, channelId: null, status: "available", errorMessage: null, checkedAt: now, createdAt: new Date(now.getTime() + 2), updatedAt: now },
+        { id: randomUUID(), workspaceId, leadId, normalizedPhone: "5511888880000", channelId: null, status: "unavailable", errorMessage: null, checkedAt: now, createdAt: new Date(now.getTime() + 1), updatedAt: now },
         { id: randomUUID(), workspaceId, leadId, normalizedPhone: lead.normalizedPhone, channelId: null, status: "unavailable", errorMessage: null, checkedAt: now, createdAt: now, updatedAt: now }
       ]) },
       $transaction: vi.fn(async (operations: unknown[]) => Promise.all(operations))
@@ -124,6 +125,10 @@ describe("Leads repository workspace isolation", () => {
 
     const result = await repository.listLeads({ workspaceId, listId, page: 1, pageSize: 25 });
     expect(result.items[0]?.whatsappStatus).toBe("available");
+    expect(result.items[0]?.whatsappVerifications).toEqual([
+      expect.objectContaining({ normalizedPhone: "551199990000", status: "available" }),
+      expect.objectContaining({ normalizedPhone: "5511888880000", status: "unavailable" })
+    ]);
   });
 
   it("persists checking rows and sequential batch jobs in one transaction", async () => {
@@ -163,6 +168,8 @@ describe("Leads repository workspace isolation", () => {
     expect(createdRows.map((row) => row.status)).toEqual(["checking", "checking"]);
     expect(createdJobs).toHaveLength(2);
     expect(createdJobs.map((record) => record.input.batchIndex)).toEqual([0, 1]);
+    expect(createdJobs.map((record) => record.operation)).toEqual(["whatsapp_availability", "whatsapp_availability_batch"]);
+    expect(createdJobs.map((record) => record.idempotencyKey)).toEqual(["request-1", `${requestId}:1`]);
     expect(createdJobs[0].input.entries[0].verificationId).toBe(createdRows[0].id);
     expect(result).toMatchObject({ requestId, replayed: false });
   });
@@ -248,6 +255,53 @@ describe("Leads repository workspace isolation", () => {
       leaseToken: null,
       attempts: { lt: 3 }
     });
+  });
+
+  it("treats the durable per-instance unique index as a lost claim", async () => {
+    const updateMany = vi.fn().mockRejectedValue(new Prisma.PrismaClientKnownRequestError("duplicate instance", {
+      code: "P2002",
+      clientVersion: "6.19.0"
+    }));
+    const repository = new LeadsRepository({ leadJob: { updateMany } } as never);
+    await expect(repository.claimJob(workspaceId, jobId, now, 300_000, 3)).resolves.toBeNull();
+  });
+
+  it("atomically retries only failed WhatsApp rows in the caller workspace", async () => {
+    const failedId = randomUUID();
+    const channelId = randomUUID();
+    const current = {
+      ...job(), operation: "whatsapp_availability", status: "partial" as const,
+      output: { retryable: true }, input: { requestId: randomUUID(), instanceName: "old", numbers: ["5511999990000"], entries: [{ verificationId: failedId }] }
+    };
+    const createdRows: any[] = [];
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const findFirst = vi.fn()
+      .mockResolvedValueOnce(current)
+      .mockResolvedValueOnce({ ...current, status: "queued", attempts: 0, output: { retryable: false } });
+    const tx = {
+      leadJob: { findFirst, updateMany },
+      leadWhatsappVerification: {
+        findMany: vi.fn(async () => [{ id: failedId, workspaceId, leadId, normalizedPhone: "5511999990000", status: "failed", channelId: channelId, errorMessage: "x", checkedAt: now, createdAt: now, updatedAt: now }]),
+        create: vi.fn(async ({ data }: any) => {
+          const row = { id: randomUUID(), ...data, errorMessage: null, checkedAt: null, createdAt: now, updatedAt: now };
+          createdRows.push(row);
+          return row;
+        })
+      },
+      channel: { findMany: vi.fn(async () => [{ id: channelId, workspaceId, provider: "evolution", providerKey: "new-instance", status: "connected", updatedAt: now }]) }
+    };
+    const repository = new LeadsRepository({ $transaction: vi.fn(async (callback: any) => callback(tx)) } as never);
+
+    const result = await repository.retryWhatsappJob(workspaceId, jobId, now);
+
+    expect(result.job.status).toBe("queued");
+    expect(createdRows).toHaveLength(1);
+    expect(tx.leadWhatsappVerification.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { workspaceId, id: { in: [failedId] }, status: "failed" }
+    }));
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ workspaceId, id: jobId, status: "partial", leaseToken: null })
+    }));
   });
 
   it("recovers an expired lease with workspace+id and exhausts bounded attempts", async () => {

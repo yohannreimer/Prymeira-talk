@@ -253,7 +253,7 @@ describe("Leads scheduler", () => {
       }
     });
     const first = whatsapp("instance-one");
-    const second = whatsapp("instance-one");
+    const second = { ...whatsapp("instance-one"), operation: "whatsapp_availability_batch" };
     const other = whatsapp("instance-two");
     const releases = new Map<string, () => void>();
     const repo = repository({

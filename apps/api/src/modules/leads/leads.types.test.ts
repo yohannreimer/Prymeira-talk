@@ -140,6 +140,7 @@ describe("Leads domain contracts", () => {
           longitude: null,
           sourceUrl: null,
           whatsappStatus: "unverified",
+          whatsappVerifications: [],
           createdAt: "2026-09-22T00:00:00.000Z",
           updatedAt: "2026-09-22T00:00:00.000Z"
         }

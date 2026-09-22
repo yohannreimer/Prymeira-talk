@@ -53,7 +53,7 @@ function jsonStrings(value: unknown) {
 function transient(error: unknown) {
   return error instanceof EvolutionClientError
     ? error.statusCode === 429 || error.statusCode >= 500
-    : error instanceof TypeError || (error instanceof Error && error.name === "AbortError");
+    : error instanceof TypeError || (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name));
 }
 
 function safeFailure(error: unknown) {
@@ -74,9 +74,13 @@ function availabilityMap(results: WhatsappNumberAvailability[]) {
 }
 
 export function whatsappJobInstanceName(job: Pick<ClaimedLeadJob, "operation" | "input">) {
-  if (job.operation !== "whatsapp_availability") return null;
+  if (!isWhatsappAvailabilityOperation(job.operation)) return null;
   const parsed = whatsappJobInputSchema.safeParse(job.input);
   return parsed.success ? parsed.data.instanceName : null;
+}
+
+export function isWhatsappAvailabilityOperation(operation: string) {
+  return operation === "whatsapp_availability" || operation === "whatsapp_availability_batch";
 }
 
 export function createLeadWhatsappService(options: LeadWhatsappServiceOptions) {
