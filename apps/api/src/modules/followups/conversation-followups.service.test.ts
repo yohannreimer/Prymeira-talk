@@ -12,6 +12,7 @@ const ids = {
 
 const anchorAt = new Date("2026-09-21T12:00:00.000Z");
 const anchorIngestedAt = new Date("2026-09-21T12:00:00.100Z");
+const claimLockedAt = new Date("2026-09-21T12:04:00.000Z");
 
 const followupConfig = {
   timeZone: "America/Sao_Paulo",
@@ -74,6 +75,10 @@ function activeFollowup(overrides: Record<string, unknown> = {}) {
     decision: {},
     ...overrides
   };
+}
+
+function claimedFollowup(overrides: Record<string, unknown> = {}) {
+  return activeFollowup({ status: "processing", lockedAt: claimLockedAt, ...overrides });
 }
 
 function buildPrisma(overrides: Record<string, any> = {}) {
@@ -917,7 +922,7 @@ describe("completeAutomaticFollowup", () => {
         { afterBusinessMinutes: 180, instruction: "Último lembrete técnico." }
       ]
     };
-    const followup = activeFollowup({
+    const followup = claimedFollowup({
       stepIndex: 1,
       decision: { route: "automatic_send" }
     });
@@ -937,6 +942,7 @@ describe("completeAutomaticFollowup", () => {
       workspaceId: ids.workspace,
       followupId: followup.id,
       followup,
+      claim: { lockedAt: claimLockedAt },
       agentBehaviorConfig: { followup: configWithThreeSteps },
       finalBody: "Você consegue confirmar a espessura?",
       decision: { route: "automatic_send", purpose: "missing_qualification" },
@@ -948,7 +954,9 @@ describe("completeAutomaticFollowup", () => {
       where: {
         id: followup.id,
         workspaceId: ids.workspace,
-        activeKey: "active"
+        activeKey: "active",
+        status: "processing",
+        lockedAt: claimLockedAt
       },
       data: expect.objectContaining({
         status: "sent",
@@ -998,7 +1006,8 @@ describe("completeAutomaticFollowup", () => {
     const result = await createConversationFollowupsService(prisma).completeAutomaticFollowup({
       workspaceId: ids.workspace,
       followupId: ids.followup,
-      followup: activeFollowup({ stepIndex: 3 }),
+      followup: claimedFollowup({ stepIndex: 3 }),
+      claim: { lockedAt: claimLockedAt },
       agentBehaviorConfig: { followup: configWithThreeSteps },
       finalBody: "Última confirmação técnica.",
       decision: { route: "automatic_send" },
@@ -1030,7 +1039,8 @@ describe("completeAutomaticFollowup", () => {
     await expect(createConversationFollowupsService(prisma).completeAutomaticFollowup({
       workspaceId: ids.workspace,
       followupId: ids.followup,
-      followup: activeFollowup({ stepIndex: 3 }),
+      followup: claimedFollowup({ stepIndex: 3 }),
+      claim: { lockedAt: claimLockedAt },
       agentBehaviorConfig: { followup: configWithFourSteps },
       finalBody: "Terceira e última confirmação técnica.",
       decision: { route: "automatic_send" }
@@ -1051,7 +1061,8 @@ describe("completeAutomaticFollowup", () => {
     await expect(createConversationFollowupsService(prisma).completeAutomaticFollowup({
       workspaceId: ids.workspace,
       followupId: ids.followup,
-      followup: activeFollowup({ stepIndex: 1 }),
+      followup: claimedFollowup({ stepIndex: 1 }),
+      claim: { lockedAt: claimLockedAt },
       agentBehaviorConfig: {
         followup: {
           ...followupConfig,
@@ -1070,5 +1081,57 @@ describe("completeAutomaticFollowup", () => {
     expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: "sent", finalBody: "Você consegue confirmar a espessura?" })
     }));
+  });
+
+  it("does not mark a follow-up sent without the matching processing claim", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = buildPrisma({ conversationFollowup: { updateMany } });
+
+    await expect(createConversationFollowupsService(prisma).completeAutomaticFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      followup: activeFollowup(),
+      claim: { lockedAt: claimLockedAt },
+      agentBehaviorConfig: { followup: followupConfig },
+      finalBody: "Não pode persistir como enviado.",
+      decision: { route: "automatic_send" }
+    })).resolves.toEqual({ status: "not_active" });
+
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("claimScheduledFollowup", () => {
+  it("allows only one concurrent scheduled-to-processing claim", async () => {
+    const updateMany = vi.fn()
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    const prisma = buildPrisma({ conversationFollowup: { updateMany } });
+    const service = createConversationFollowupsService(prisma);
+
+    const [first, second] = await Promise.all([
+      service.claimScheduledFollowup({ workspaceId: ids.workspace, followupId: ids.followup, now: claimLockedAt }),
+      service.claimScheduledFollowup({ workspaceId: ids.workspace, followupId: ids.followup, now: claimLockedAt })
+    ]);
+
+    expect([first, second]).toEqual([
+      { status: "claimed", lockedAt: claimLockedAt },
+      { status: "not_scheduled" }
+    ]);
+    expect(updateMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        workspaceId: ids.workspace,
+        id: ids.followup,
+        status: "scheduled",
+        activeKey: "active",
+        lockedAt: null
+      },
+      data: {
+        status: "processing",
+        lockedAt: claimLockedAt,
+        attempts: { increment: 1 }
+      }
+    });
+    expect(updateMany).toHaveBeenCalledTimes(2);
   });
 });

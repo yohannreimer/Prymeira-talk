@@ -88,10 +88,15 @@ type FollowupLifecycle = {
     workspaceId: string;
     followupId: string;
     followup: ConversationFollowupRecord;
+    claim: { lockedAt: Date };
     agentBehaviorConfig: unknown;
     finalBody: string;
     decision: unknown;
   }): Promise<CompleteAutomaticFollowupResult>;
+  claimScheduledFollowup(input: {
+    workspaceId: string;
+    followupId: string;
+  }): Promise<{ status: "claimed"; lockedAt: Date } | { status: "not_scheduled" }>;
 };
 
 export type AgentFollowupRuntimeResult =
@@ -163,6 +168,11 @@ export function createAgentFollowupRuntime(input: {
       workspaceId: string;
       followupId: string;
     }): Promise<AgentFollowupRuntimeResult> {
+      const claim = await input.followups.claimScheduledFollowup(runInput);
+      if (claim.status !== "claimed") {
+        return { status: "skipped", followupId: runInput.followupId };
+      }
+
       const initial = await input.followups.revalidateActiveFollowup(runInput);
       if (initial.status === "missing") {
         return { status: "missing", followupId: runInput.followupId };
@@ -412,6 +422,7 @@ export function createAgentFollowupRuntime(input: {
         workspaceId: runInput.workspaceId,
         followupId: beforeDelivery.context.followup.id,
         followup: beforeDelivery.context.followup,
+        claim,
         agentBehaviorConfig: agent.behaviorConfig,
         finalBody: candidate,
         decision

@@ -110,6 +110,10 @@ function validContext(overrides: Record<string, unknown> = {}) {
 }
 
 function buildRuntime(overrides: Record<string, any> = {}) {
+  const claimScheduledFollowup = overrides.claimScheduledFollowup ?? vi.fn().mockResolvedValue({
+    status: "claimed",
+    lockedAt: now
+  });
   const revalidateActiveFollowup = overrides.revalidateActiveFollowup ?? vi.fn()
     .mockResolvedValueOnce({ status: "valid", context: validContext() })
     .mockResolvedValueOnce({ status: "valid", context: validContext() });
@@ -175,7 +179,7 @@ function buildRuntime(overrides: Record<string, any> = {}) {
   const runtime = createAgentFollowupRuntime({
     prisma,
     provider,
-    followups: { revalidateActiveFollowup, completeAutomaticFollowup },
+    followups: { claimScheduledFollowup, revalidateActiveFollowup, completeAutomaticFollowup },
     jevFollowupDecision: { decide },
     replyPreflight,
     outbound: { createPendingOutboundMessage }
@@ -190,11 +194,47 @@ function buildRuntime(overrides: Record<string, any> = {}) {
     audit,
     createPendingOutboundMessage,
     revalidateActiveFollowup,
+    claimScheduledFollowup,
     completeAutomaticFollowup
   };
 }
 
 describe("createAgentFollowupRuntime", () => {
+  it("never executes a review record automatically", async () => {
+    const revalidateActiveFollowup = vi.fn();
+    const harness = buildRuntime({
+      claimScheduledFollowup: vi.fn().mockResolvedValue({ status: "not_scheduled" }),
+      revalidateActiveFollowup
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({ status: "skipped", followupId: ids.followup });
+
+    expect(revalidateActiveFollowup).not.toHaveBeenCalled();
+    expect(harness.decide).not.toHaveBeenCalled();
+    expect(harness.provider.generate).not.toHaveBeenCalled();
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+  });
+
+  it("allows only the winner of concurrent claims to generate and send", async () => {
+    const claimScheduledFollowup = vi.fn()
+      .mockResolvedValueOnce({ status: "claimed", lockedAt: now })
+      .mockResolvedValueOnce({ status: "not_scheduled" });
+    const harness = buildRuntime({ claimScheduledFollowup });
+
+    const result = await Promise.all([
+      harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }),
+      harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup })
+    ]);
+
+    expect(result).toEqual([
+      { status: "sent", followupId: ids.followup, nextFollowupId: "next_followup" },
+      { status: "skipped", followupId: ids.followup }
+    ]);
+    expect(harness.provider.generate).toHaveBeenCalledTimes(1);
+    expect(harness.createPendingOutboundMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("generates an eligible qualification follow-up and delivers it through shared outbound semantics", async () => {
     const harness = buildRuntime();
 

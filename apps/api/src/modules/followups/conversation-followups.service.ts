@@ -54,6 +54,7 @@ export type ConversationFollowupRecord = {
   anchorMessageAt: Date | string;
   anchorIngestedAt: Date | string;
   scheduledAt: Date | string;
+  lockedAt?: Date | string | null;
   decision: unknown;
   reason?: string | null;
   cancelledAt?: Date | string | null;
@@ -131,6 +132,10 @@ export type CompleteAutomaticFollowupResult =
   | { status: "sent" }
   | { status: "scheduled"; followupId: string }
   | { status: "not_active" };
+
+export type ScheduledFollowupClaimResult =
+  | { status: "claimed"; lockedAt: Date }
+  | { status: "not_scheduled" };
 
 export const MAX_AUTOMATIC_FOLLOWUP_STEPS = 3;
 
@@ -341,10 +346,36 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
     };
   }
 
+  async function claimScheduledFollowup(input: {
+    workspaceId: string;
+    followupId: string;
+    now?: Date;
+  }): Promise<ScheduledFollowupClaimResult> {
+    const lockedAt = input.now ?? new Date();
+    const claim = await prisma.conversationFollowup.updateMany({
+      where: {
+        workspaceId: input.workspaceId,
+        id: input.followupId,
+        status: "scheduled",
+        activeKey: "active",
+        lockedAt: null
+      },
+      data: {
+        status: "processing",
+        lockedAt,
+        attempts: { increment: 1 }
+      }
+    });
+    return claim.count === 1
+      ? { status: "claimed", lockedAt }
+      : { status: "not_scheduled" };
+  }
+
   async function completeAutomaticFollowup(input: {
     workspaceId: string;
     followupId: string;
     followup: ConversationFollowupRecord;
+    claim: { lockedAt: Date };
     agentBehaviorConfig: unknown;
     finalBody: string;
     decision: unknown;
@@ -353,7 +384,9 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
     if (
       input.followup.workspaceId !== input.workspaceId ||
       input.followup.id !== input.followupId ||
-      input.followup.activeKey !== "active"
+      input.followup.activeKey !== "active" ||
+      input.followup.status !== "processing" ||
+      !sameTimestamp(input.followup.lockedAt, input.claim.lockedAt)
     ) {
       return { status: "not_active" };
     }
@@ -373,7 +406,9 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
         where: {
           id: input.followupId,
           workspaceId: input.workspaceId,
-          activeKey: "active"
+          activeKey: "active",
+          status: "processing",
+          lockedAt: input.claim.lockedAt
         },
         data: {
           status: "sent",
@@ -412,7 +447,12 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
     });
   }
 
-  return { observeConversationActivity, revalidateActiveFollowup, completeAutomaticFollowup };
+  return {
+    observeConversationActivity,
+    revalidateActiveFollowup,
+    claimScheduledFollowup,
+    completeAutomaticFollowup
+  };
 }
 
 async function findPersistedCustomerInboundMessage(
@@ -639,6 +679,18 @@ function toDate(value: Date | string): Date {
     throw new RangeError("Follow-up anchor message must have a valid timestamp.");
   }
   return date;
+}
+
+function sameTimestamp(left: Date | string | null | undefined, right: Date | string): boolean {
+  if (!left) {
+    return false;
+  }
+
+  try {
+    return toDate(left).getTime() === toDate(right).getTime();
+  } catch {
+    return false;
+  }
 }
 
 function isUniqueConstraintError(error: unknown): error is { code: string } {
