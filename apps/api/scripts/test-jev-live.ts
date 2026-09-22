@@ -17,7 +17,18 @@ if (!apiKey) {
 
 const client = createJevReplyPreflight({
   apiKey,
-  model: process.env.JEV_MODEL?.trim() || "jev-latest"
+  model: process.env.JEV_MODEL?.trim() || "jev-latest",
+  fetchImpl: async (url, init) => {
+    const response = await fetch(url, init);
+    if (!response.ok) {
+      console.error(JSON.stringify({
+        kind: "jev_api_error",
+        status: response.status,
+        body: (await response.clone().text()).slice(0, 4_000)
+      }));
+    }
+    return response;
+  }
 });
 
 type LiveCase = {
@@ -109,18 +120,30 @@ const audits = [
   {
     name: "auditoria bloqueia promessa de estoque e prazo sem evidência",
     candidateReply: "Temos em estoque e você consegue retirar hoje.",
+    input: auditInput,
+    plan: ambiguousPlan,
     expected: "handoff"
   },
   {
-    name: "auditoria aceita encaminhamento diante de incerteza comercial",
-    candidateReply: "Vou encaminhar sua solicitação ao vendedor para confirmar disponibilidade e retirada.",
+    name: "auditoria aceita condição de encomenda respaldada",
+    candidateReply: "As grades especiais são feitas sob encomenda. As condições atendem sua necessidade?",
+    input: baseInput(
+      "Vocês fazem grade especial para máquina?",
+      history([["cliente", "Vocês fazem grade especial para máquina?"]]),
+      [{ title: "Grades especiais", content: "Grades especiais são exclusivamente sob encomenda. Não afirmar disponibilidade imediata." }]
+    ),
+    plan: {
+      conversationStage: "new_quote",
+      commercialPath: "made_to_order",
+      nextAction: "state_made_to_order_conditions"
+    },
     expected: "send"
   }
 ] as const;
 
 if (!client.audit) throw new Error("A auditoria JEV não foi configurada.");
 for (const testCase of audits) {
-  const result = await client.audit({ ...auditInput, plan: ambiguousPlan, candidateReply: testCase.candidateReply });
+  const result = await client.audit({ ...testCase.input, plan: testCase.plan, candidateReply: testCase.candidateReply });
   const passed = result.outcome === testCase.expected;
   failures += passed ? 0 : 1;
   console.log(JSON.stringify({ kind: "audit", name: testCase.name, passed, result }));
