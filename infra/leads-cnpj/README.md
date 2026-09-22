@@ -17,8 +17,9 @@ cp .env.example .env
 ```
 
 The script invokes the upstream with no `--month`, its documented recurring
-mode for the newest Receita competence. Compose builds `DATABASE_URL` with
-`options=-c%20search_path%3Dcnpj`, so pipeline tables live in `cnpj`. It rejects
+mode for the newest Receita competence. Compose passes libpq `PG*` variables,
+including `PGOPTIONS=-c search_path=cnpj`, so pipeline tables live in `cnpj`
+without embedding a raw password in a URI. It rejects
 an uninitialized, dirty, branch-tracking, or wrong-SHA submodule before Docker
 runs, clears the caller environment for every compose call, and prints the
 loaded competence, timestamp, pipeline version, and SHA after success.
@@ -77,8 +78,9 @@ when invoked.
 
 ## Google Maps sidecar
 
-The dev sidecar is fixed at `gosom/google-maps-scraper:v1.15.0` and deliberately
-binds only to loopback:
+The dev sidecar is fixed at
+`gosom/google-maps-scraper:v1.15.0@sha256:8f5dc7f8fe57832faf1e93c5224d7451f0193154cf8d128e1f40b0773770ebd1`
+and deliberately binds only to loopback:
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d google-maps-scraper

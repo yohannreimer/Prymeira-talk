@@ -63,6 +63,15 @@ describe("readEnv", () => {
   });
 
   it("validates optional Leads source URLs and execution limits", () => {
+    expect(readEnv({
+      ...baseProductionEnv,
+      CNPJ_DATABASE_URL: "postgresql://reader:password@cnpj.internal/cnpj",
+      GOOGLE_MAPS_SCRAPER_URL: "https://scraper.internal"
+    })).toMatchObject({
+      CNPJ_DATABASE_URL: "postgresql://reader:password@cnpj.internal/cnpj",
+      GOOGLE_MAPS_SCRAPER_URL: "https://scraper.internal"
+    });
+
     expect(() =>
       readEnv({
         ...baseProductionEnv,
@@ -73,7 +82,21 @@ describe("readEnv", () => {
     expect(() =>
       readEnv({
         ...baseProductionEnv,
+        CNPJ_DATABASE_URL: "mysql://reader:password@cnpj.internal/cnpj"
+      })
+    ).toThrow(/CNPJ_DATABASE_URL/);
+
+    expect(() =>
+      readEnv({
+        ...baseProductionEnv,
         GOOGLE_MAPS_SCRAPER_URL: "not-a-url"
+      })
+    ).toThrow(/GOOGLE_MAPS_SCRAPER_URL/);
+
+    expect(() =>
+      readEnv({
+        ...baseProductionEnv,
+        GOOGLE_MAPS_SCRAPER_URL: "ftp://scraper.internal"
       })
     ).toThrow(/GOOGLE_MAPS_SCRAPER_URL/);
 

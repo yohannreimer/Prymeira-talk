@@ -27,7 +27,12 @@ services:
       cnpj-postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${CNPJ_POSTGRES_USER:?copy .env.example to .env first}:${CNPJ_POSTGRES_PASSWORD:?copy .env.example to .env first}@cnpj-postgres:5432/${CNPJ_POSTGRES_DB:?copy .env.example to .env first}?options=-c%20search_path%3Dcnpj
+      PGHOST: cnpj-postgres
+      PGPORT: "5432"
+      PGDATABASE: ${CNPJ_POSTGRES_DB:?copy .env.example to .env first}
+      PGUSER: ${CNPJ_POSTGRES_USER:?copy .env.example to .env first}
+      PGPASSWORD: ${CNPJ_POSTGRES_PASSWORD:?copy .env.example to .env first}
+      PGOPTIONS: "-c search_path=cnpj"
       TEMP_DIR: /app/temp
       KEEP_DOWNLOADED_FILES: "true"
       DOWNLOAD_WORKERS: ${CNPJ_DOWNLOAD_WORKERS:-1}
@@ -42,7 +47,7 @@ services:
       - cnpj-egress
 
   google-maps-scraper:
-    image: gosom/google-maps-scraper:v1.15.0
+    image: gosom/google-maps-scraper:v1.15.0@sha256:8f5dc7f8fe57832faf1e93c5224d7451f0193154cf8d128e1f40b0773770ebd1
     profiles: ["google-maps-scraper"]
     command: ["-web", "-data-folder", "/gmapsdata"]
     ports:
