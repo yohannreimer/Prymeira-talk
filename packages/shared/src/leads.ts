@@ -77,6 +77,16 @@ export const leadSearchFiltersSchema = z
   });
 export type LeadSearchFilters = z.infer<typeof leadSearchFiltersSchema>;
 
+export const leadGoogleSearchRequestSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  niche: z.string().trim().min(1).max(160),
+  city: z.string().trim().min(1).max(120),
+  state: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/),
+  idempotencyKey: z.string().trim().min(1).max(200),
+  maxTimeSeconds: z.coerce.number().int().min(180).max(900).default(600)
+});
+export type LeadGoogleSearchRequest = z.infer<typeof leadGoogleSearchRequestSchema>;
+
 export const leadListSchema = z.object({
   id: uuidSchema,
   workspaceId: z.string().min(1),
@@ -146,6 +156,13 @@ export const leadJobSchema = z.object({
   updatedAt: z.string().datetime()
 });
 export type LeadJobDto = z.infer<typeof leadJobSchema>;
+
+export const leadGoogleSearchResponseSchema = z.object({
+  list: leadListSchema,
+  job: leadJobSchema,
+  replayed: z.boolean()
+});
+export type LeadGoogleSearchResponse = z.infer<typeof leadGoogleSearchResponseSchema>;
 
 export const leadJobIdempotencyScopeSchema = z.object({
   workspaceId: z.string().min(1),

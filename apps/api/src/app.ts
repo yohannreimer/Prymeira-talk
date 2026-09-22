@@ -41,6 +41,8 @@ import { CnpjRepository } from "./modules/leads/cnpj.repository.js";
 import { LeadsRepository } from "./modules/leads/leads.repository.js";
 import { createLeadsService } from "./modules/leads/leads.service.js";
 import { createLeadsScheduler } from "./modules/leads/leads.scheduler.js";
+import { createCityGeocoder } from "./modules/leads/city-geocoder.js";
+import { createGoogleMapsScraperClient } from "./modules/leads/google-maps-scraper.client.js";
 
 export interface CreateAppOptions {
   authEnabled?: boolean;
@@ -144,6 +146,14 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     ? createLeadsService({
         repository: leadsRepository,
         cnpjRepository: new CnpjRepository(app.cnpj),
+        googleMapsClient: env.GOOGLE_MAPS_SCRAPER_URL
+          ? createGoogleMapsScraperClient({
+              baseUrl: env.GOOGLE_MAPS_SCRAPER_URL,
+              depth: env.LEAD_GOOGLE_DEFAULT_DEPTH
+            })
+          : undefined,
+        cityGeocoder: createCityGeocoder(),
+        googlePollIntervalMs: env.LEAD_JOB_POLL_MS,
         realtime: app.realtime
       })
     : undefined;
@@ -152,6 +162,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
         repository: leadsRepository,
         service: leadsService,
         pollIntervalMs: env.LEAD_JOB_POLL_MS,
+        maxGoogleConcurrentJobs: env.LEAD_GOOGLE_MAX_CONCURRENT_JOBS,
         onError: (error) => app.log.error({ err: error }, "Leads scheduler failed; jobs remain persisted.")
       })
     : undefined;

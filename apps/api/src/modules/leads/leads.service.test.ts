@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { LeadJob, LeadJobStatus } from "@prisma/client";
 import { LeadSourceUnavailableError, type CnpjCompanyRecord } from "./cnpj.repository.js";
+import { GoogleMapsScraperError } from "./google-maps-scraper.client.js";
 import { LeadLeaseLostError, LeadsDomainError, type ClaimedLeadJob } from "./leads.repository.js";
 import {
   MAX_CSV_BYTES,
@@ -104,7 +105,10 @@ function company(cnpj: string): CnpjCompanyRecord {
   };
 }
 
-function setup(csv = "cnpj\n12345678ABCD90\n") {
+function setup(
+  csv = "cnpj\n12345678ABCD90\n",
+  timing: { now?: () => Date; sleep?: (milliseconds: number) => Promise<void>; pollIntervalMs?: number } = {}
+) {
   const stored = new Map<string, unknown>();
   const repository = {
     listLists: vi.fn(),
@@ -118,7 +122,7 @@ function setup(csv = "cnpj\n12345678ABCD90\n") {
     createListAndJob: vi.fn(async (input: any) => {
       stored.set("create", input);
       return {
-        list: listDto(),
+        list: listDto({ source: input.source, name: input.name, criteria: input.criteria }),
         job: jobDto("queued", { operation: input.operation }),
         artifact: input.artifact
           ? {
@@ -194,11 +198,17 @@ function setup(csv = "cnpj\n12345678ABCD90\n") {
     })),
     fencedUpsertLeads: vi.fn(),
     fencedUpdateListProgress: vi.fn(),
+    fencedCheckpointJob: vi.fn(),
     fencedUpsertArtifact: vi.fn(),
     fencedFinishJob: vi.fn()
   };
   repository.fencedUpsertLeads.mockImplementation(async (_job: unknown, leads: any[]) => repository.upsertLeads(leads));
   repository.fencedUpdateListProgress.mockImplementation(async (_job: unknown, input: any) => repository.updateListProgress(input));
+  repository.fencedCheckpointJob.mockImplementation(async (claimed: any, data: any) => {
+    const updated = { ...claimed, ...data, output: data.output ?? claimed.output, input: data.input ?? claimed.input };
+    stored.set("checkpoint", updated.output);
+    return updated;
+  });
   repository.fencedUpsertArtifact.mockImplementation(async (_job: unknown, input: any) => repository.upsertArtifact(input));
   repository.fencedFinishJob.mockImplementation(async (input: any) => ({
     job: await repository.finishJob({
@@ -234,13 +244,27 @@ function setup(csv = "cnpj\n12345678ABCD90\n") {
     };
   });
   const realtime = { publish: vi.fn() };
+  const googleMapsClient = {
+    health: vi.fn(async () => ({ ok: true as const })),
+    findJobByName: vi.fn(async () => null),
+    createJob: vi.fn(async () => ({ id: "remote-job-1" })),
+    getJob: vi.fn(async () => ({ id: "remote-job-1", status: "succeeded" as const })),
+    download: vi.fn(async () => "title,link,category,address,phone,website,review_rating,review_count,latitude,longitude,place_id,complete_address\nPadaria Sol,https://www.google.com/maps/place/sol,Padaria,Rua A 1,(19) 99999-0000,https://padariasol.example,4.7,120,-22.90,-47.06,place-sol,\"{\"\"city\"\":\"\"Campinas\"\",\"\"state\"\":\"\"SP\"\"}\"\n")
+  };
+  const cityGeocoder = {
+    geocode: vi.fn(async () => ({ city: "Campinas", state: "SP", latitude: -22.9056, longitude: -47.0608 }))
+  };
   const service = createLeadsService({
     repository: repository as never,
     cnpjRepository: cnpjRepository as never,
     realtime,
-    now: () => now
+    now: timing.now ?? (() => now),
+    googleMapsClient: googleMapsClient as never,
+    cityGeocoder: cityGeocoder as never,
+    googlePollIntervalMs: timing.pollIntervalMs ?? 1,
+    sleep: timing.sleep ?? vi.fn(async () => undefined)
   });
-  return { service, repository, cnpjRepository, realtime, stored };
+  return { service, repository, cnpjRepository, googleMapsClient, cityGeocoder, realtime, stored };
 }
 
 describe("Leads service", () => {
@@ -678,5 +702,210 @@ describe("Leads service", () => {
     await expect(context.service.getCsvErrorArtifact({ workspaceId, jobId }))
       .resolves.toMatchObject({ id: artifactId, workspaceId, jobId, kind: "csv_error" });
     expect(context.repository.getJobArtifact).toHaveBeenLastCalledWith(workspaceId, jobId, "csv_error");
+  });
+
+  it("creates a workspace-scoped Google job from canonical geocoding without accepting scraper controls", async () => {
+    const context = setup();
+    const created = await context.service.createGoogleSearchJob({
+      workspaceId,
+      name: "Padarias Campinas",
+      niche: "padarias",
+      city: "campinas",
+      state: "sp",
+      idempotencyKey: "google-1",
+      maxTimeSeconds: 600,
+      depth: 99,
+      concurrency: 99
+    });
+
+    expect(created.list.source).toBe("google_maps");
+    expect(context.cityGeocoder.geocode).toHaveBeenCalledWith("campinas", "SP");
+    expect(context.repository.createListAndJob).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId,
+      source: "google_maps",
+      operation: "google_maps_search",
+      criteria: { niche: "padarias", city: "Campinas", state: "SP" },
+      input: expect.objectContaining({
+        niche: "padarias",
+        city: "Campinas",
+        state: "SP",
+        latitude: -22.9056,
+        longitude: -47.0608,
+        maxTimeSeconds: 600
+      })
+    }));
+    const persisted = (context.repository.createListAndJob.mock.calls[0]?.[0] as any).input;
+    expect(persisted).not.toHaveProperty("depth");
+    expect(persisted).not.toHaveProperty("concurrency");
+  });
+
+  it("submits, checkpoints, polls, downloads, and normalizes Google rows", async () => {
+    const context = setup();
+    const job = rawJob("google_maps_search", {
+      requestFingerprint: "a".repeat(64),
+      niche: "padarias",
+      city: "Campinas",
+      state: "SP",
+      latitude: -22.9056,
+      longitude: -47.0608,
+      maxTimeSeconds: 600
+    });
+
+    await context.service.runClaimedJob(job);
+
+    expect(context.googleMapsClient.createJob).toHaveBeenCalledWith({
+      name: `prymeira-${job.id}`,
+      keywords: ["padarias em Campinas, SP"],
+      latitude: -22.9056,
+      longitude: -47.0608,
+      maxTimeSeconds: 600
+    });
+    expect(context.repository.fencedCheckpointJob).toHaveBeenCalledWith(
+      expect.objectContaining({ id: job.id, workspaceId }),
+      { output: expect.objectContaining({ remoteJobId: "remote-job-1" }) },
+      now,
+      300_000
+    );
+    expect(context.repository.upsertLeads).toHaveBeenCalledWith([
+      expect.objectContaining({
+        workspaceId,
+        listId,
+        source: "google_maps",
+        companyName: "Padaria Sol",
+        category: "Padaria",
+        normalizedPhone: "19999990000",
+        rating: 4.7,
+        reviewCount: 120,
+        sourceExternalId: "place-sol",
+        sourceUrl: "https://www.google.com/maps/place/sol"
+      })
+    ]);
+    expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({ status: "completed", errorMessage: null }));
+  });
+
+  it("resumes polling from a persisted remote id after restart without resubmitting", async () => {
+    const context = setup();
+    const job = rawJob("google_maps_search", {
+      requestFingerprint: "a".repeat(64), niche: "padarias", city: "Campinas", state: "SP",
+      latitude: -22.9, longitude: -47.06, maxTimeSeconds: 600
+    });
+    job.output = {
+      remoteJobId: "remote-existing",
+      remoteStatus: "running",
+      remoteSubmittedAt: now.toISOString()
+    };
+    context.googleMapsClient.getJob.mockResolvedValue({ id: "remote-existing", status: "succeeded" });
+
+    await context.service.runClaimedJob(job);
+
+    expect(context.googleMapsClient.findJobByName).not.toHaveBeenCalled();
+    expect(context.googleMapsClient.createJob).not.toHaveBeenCalled();
+    expect(context.googleMapsClient.getJob).toHaveBeenCalledWith("remote-existing");
+    expect(context.googleMapsClient.download).toHaveBeenCalledWith("remote-existing");
+  });
+
+  it("marks malformed Google rows partial while preserving useful rows and safe counts", async () => {
+    const context = setup();
+    context.googleMapsClient.download.mockResolvedValue([
+      "title,link,address,phone",
+      "Good,https://maps.google.com/good,Rua 1,11999990000",
+      ",,,"
+    ].join("\n"));
+    const job = rawJob("google_maps_search", {
+      requestFingerprint: "a".repeat(64), niche: "x", city: "Campinas", state: "SP",
+      latitude: -22.9, longitude: -47.06, maxTimeSeconds: 600
+    });
+
+    await context.service.runClaimedJob(job);
+
+    expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({
+      status: "partial",
+      errorMessage: "LEAD_GOOGLE_PARTIAL_ROWS",
+      output: expect.objectContaining({ totalCount: 2, processedCount: 1, failedCount: 1 })
+    }));
+  });
+
+  it("turns Google rate limits into a retryable terminal failure and leaves Receita available", async () => {
+    const context = setup();
+    context.googleMapsClient.findJobByName.mockRejectedValue(
+      new GoogleMapsScraperError("RATE_LIMITED", "limited", true)
+    );
+    await context.service.runClaimedJob(rawJob("google_maps_search", {
+      requestFingerprint: "a".repeat(64), niche: "x", city: "Campinas", state: "SP",
+      latitude: -22.9, longitude: -47.06, maxTimeSeconds: 600
+    }));
+
+    expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      errorMessage: "LEAD_GOOGLE_RATE_LIMITED",
+      output: expect.objectContaining({ retryable: true })
+    }));
+
+    context.cnpjRepository.searchEstablishments.mockResolvedValue({ items: [], total: 0 });
+    await expect(context.service.runClaimedJob(rawJob("receita_search", { filters: {}, maxResults: 10 }))).resolves.toBeDefined();
+  });
+
+  it("polls queued and running remote states until success within the overall deadline", async () => {
+    let clock = now.getTime();
+    const sleep = vi.fn(async (milliseconds: number) => { clock += milliseconds; });
+    const context = setup(undefined, { now: () => new Date(clock), sleep, pollIntervalMs: 5_000 });
+    context.googleMapsClient.getJob
+      .mockResolvedValueOnce({ id: "remote-job-1", status: "queued" } as any)
+      .mockResolvedValueOnce({ id: "remote-job-1", status: "running" } as any)
+      .mockResolvedValueOnce({ id: "remote-job-1", status: "succeeded" });
+
+    await context.service.runClaimedJob(rawJob("google_maps_search", {
+      requestFingerprint: "a".repeat(64), niche: "x", city: "Campinas", state: "SP",
+      latitude: -22.9, longitude: -47.06, maxTimeSeconds: 180
+    }));
+
+    expect(context.googleMapsClient.getJob).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenNthCalledWith(1, 5_000);
+    expect(sleep).toHaveBeenNthCalledWith(2, 5_000);
+    expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+  });
+
+  it("terminalizes persisted Google jobs on deadline and explicit remote failure", async () => {
+    const timedOut = setup();
+    const timeoutJob = rawJob("google_maps_search", {
+      requestFingerprint: "a".repeat(64), niche: "x", city: "Campinas", state: "SP",
+      latitude: -22.9, longitude: -47.06, maxTimeSeconds: 180
+    });
+    timeoutJob.output = {
+      remoteJobId: "remote-old",
+      remoteSubmittedAt: new Date(now.getTime() - 211_000).toISOString()
+    };
+    await timedOut.service.runClaimedJob(timeoutJob);
+    expect(timedOut.googleMapsClient.getJob).not.toHaveBeenCalled();
+    expect(timedOut.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed", errorMessage: "LEAD_GOOGLE_TIMEOUT"
+    }));
+
+    const failed = setup();
+    failed.googleMapsClient.getJob.mockResolvedValue({ id: "remote-job-1", status: "failed" } as any);
+    await failed.service.runClaimedJob(rawJob("google_maps_search", {
+      requestFingerprint: "b".repeat(64), niche: "x", city: "Campinas", state: "SP",
+      latitude: -22.9, longitude: -47.06, maxTimeSeconds: 180
+    }));
+    expect(failed.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed", errorMessage: "LEAD_GOOGLE_REMOTE_FAILED"
+    }));
+  });
+
+  it("reports missing scraper configuration only for Google job creation", async () => {
+    const context = setup();
+    const service = createLeadsService({
+      repository: context.repository as never,
+      cnpjRepository: context.cnpjRepository as never,
+      cityGeocoder: context.cityGeocoder as never,
+      now: () => now
+    });
+    await expect(service.createGoogleSearchJob({
+      workspaceId, name: "Google", niche: "padarias", city: "Campinas", state: "SP",
+      idempotencyKey: "missing-google"
+    })).rejects.toMatchObject({ code: "LEAD_SOURCE_UNAVAILABLE" });
+
+    context.cnpjRepository.searchEstablishments.mockResolvedValue({ items: [], total: 0 });
+    await expect(service.runClaimedJob(rawJob("receita_search", { filters: {}, maxResults: 10 }))).resolves.toBeDefined();
   });
 });

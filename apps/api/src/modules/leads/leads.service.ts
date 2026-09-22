@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { parse } from "csv-parse/sync";
 import { z } from "zod";
 import {
+  leadGoogleSearchRequestSchema,
   leadSearchFiltersSchema,
   type LeadJobDto,
   type LeadListDto,
@@ -25,12 +26,19 @@ import {
 } from "./leads.repository.js";
 import { normalizeCnpj } from "./leads.types.js";
 import { createSimilarityService } from "./similarity.service.js";
+import { CityGeocoderError, type CityGeocoder } from "./city-geocoder.js";
+import {
+  GoogleMapsScraperError,
+  type GoogleMapsScraperClient
+} from "./google-maps-scraper.client.js";
 
 export const MAX_RECEITA_LEADS = 5_000;
 export const MAX_CSV_BYTES = 5 * 1024 * 1024;
 export const MAX_CSV_ROWS = 5_000;
 const RECEITA_PAGE_SIZE = 100;
 const CSV_LOOKUP_BATCH_SIZE = 25;
+const GOOGLE_LEASE_MS = 300_000;
+const GOOGLE_MAX_CSV_ROWS = 5_000;
 
 export type CsvUpload = Buffer | Uint8Array | string | AsyncIterable<Uint8Array | Buffer | string>;
 
@@ -68,6 +76,16 @@ const searchJobInputSchema = z.object({
 
 const csvJobInputSchema = z.object({
   artifactId: z.string().uuid()
+});
+
+const googleJobInputSchema = z.object({
+  requestFingerprint: z.string().length(64),
+  niche: z.string().min(1).max(160),
+  city: z.string().min(1).max(120),
+  state: z.string().regex(/^[A-Z]{2}$/),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  maxTimeSeconds: z.number().int().min(180).max(900)
 });
 
 function requiredText(value: string, field: string, max = 160) {
@@ -306,6 +324,135 @@ function isSourceUnavailable(error: unknown) {
     (typeof error === "object" && error !== null && "code" in error && error.code === "LEAD_SOURCE_UNAVAILABLE");
 }
 
+function optionalCsvText(row: Record<string, string>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = row[key]?.trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+function optionalHttpUrl(value: string | null) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function optionalFinite(value: string | null, min: number, max: number) {
+  if (!value) return null;
+  const parsed = Number(value.replace(",", "."));
+  return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : null;
+}
+
+function optionalInteger(value: string | null) {
+  if (!value) return null;
+  const parsed = Number(value.replace(/[^0-9-]/g, ""));
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function completeAddress(value: string | null) {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return jsonRecord(parsed);
+  } catch {
+    return {};
+  }
+}
+
+export function parseGoogleMapsCsv(
+  csv: string,
+  context: { workspaceId: string; listId: string; city: string; state: string }
+) {
+  let rows: Record<string, string>[];
+  try {
+    rows = parse(csv, {
+      bom: true,
+      columns: (headers: string[]) => headers.map(normalizeHeader),
+      skip_empty_lines: true,
+      relax_column_count: false,
+      trim: false,
+      max_record_size: 1_000_000
+    }) as Record<string, string>[];
+  } catch {
+    throw new LeadsDomainError("LEAD_INVALID_INPUT", "Google Maps scraper CSV is malformed.");
+  }
+  if (rows.length > GOOGLE_MAX_CSV_ROWS) {
+    throw new LeadsDomainError("LEAD_LIMIT_EXCEEDED", `Google Maps CSV cannot contain more than ${GOOGLE_MAX_CSV_ROWS} rows.`);
+  }
+  const leads = new Map<string, LeadUpsertInput>();
+  let failedCount = 0;
+  for (const row of rows) {
+    const companyName = optionalCsvText(row, "title", "name");
+    const address = optionalCsvText(row, "address");
+    const phone = optionalCsvText(row, "phone");
+    const sourceUrl = optionalHttpUrl(optionalCsvText(row, "link", "source_url"));
+    const placeIdentity = optionalCsvText(row, "place_id", "data_id", "cid");
+    if (!companyName || (!sourceUrl && !placeIdentity && !address && !phone)) {
+      failedCount += 1;
+      continue;
+    }
+    const detailedAddress = completeAddress(optionalCsvText(row, "complete_address"));
+    const city = typeof detailedAddress.city === "string" && detailedAddress.city.trim()
+      ? detailedAddress.city.trim()
+      : context.city;
+    const detailedState = typeof detailedAddress.state === "string" ? detailedAddress.state.trim().toUpperCase() : "";
+    const state = /^[A-Z]{2}$/.test(detailedState) ? detailedState : context.state;
+    const normalizedPhone = phone?.replace(/\D/g, "") || null;
+    const sourceDedupeKey = sourceUrl
+      ? `maps:url:${sourceUrl}`
+      : placeIdentity
+        ? `maps:place:${placeIdentity}`
+        : `maps:fallback:${sha256(`${normalizeTextForDedupe(companyName)}|${normalizeTextForDedupe(address ?? "")}|${normalizedPhone ?? ""}`)}`;
+    leads.set(sourceDedupeKey, {
+      workspaceId: context.workspaceId,
+      listId: context.listId,
+      source: "google_maps",
+      sourceDedupeKey,
+      sourceExternalId: placeIdentity,
+      companyName,
+      category: optionalCsvText(row, "category"),
+      address,
+      city,
+      state,
+      postalCode: typeof detailedAddress.postal_code === "string" ? detailedAddress.postal_code.trim() || null : null,
+      phones: phone ? [phone] : [],
+      normalizedPhone,
+      website: optionalHttpUrl(optionalCsvText(row, "website", "web_site")),
+      rating: optionalFinite(optionalCsvText(row, "review_rating", "rating"), 0, 5),
+      reviewCount: optionalInteger(optionalCsvText(row, "review_count", "reviews")),
+      latitude: optionalFinite(optionalCsvText(row, "latitude", "lat"), -90, 90),
+      longitude: optionalFinite(optionalCsvText(row, "longitude", "longtitude", "lon"), -180, 180),
+      sourceUrl,
+      sourceSnapshot: {
+        ...(placeIdentity ? { placeIdentity } : {}),
+        queryCity: context.city,
+        queryState: context.state
+      }
+    });
+  }
+  return { leads: [...leads.values()], failedCount, totalCount: rows.length };
+}
+
+function normalizeTextForDedupe(value: string) {
+  return value.normalize("NFKD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("pt-BR").replace(/\s+/g, " ").trim();
+}
+
+function googleFailure(error: GoogleMapsScraperError) {
+  const codes = {
+    UNAVAILABLE: "LEAD_SOURCE_UNAVAILABLE",
+    RATE_LIMITED: "LEAD_GOOGLE_RATE_LIMITED",
+    TIMEOUT: "LEAD_GOOGLE_TIMEOUT",
+    REMOTE_FAILED: "LEAD_GOOGLE_REMOTE_FAILED",
+    INVALID_RESPONSE: "LEAD_GOOGLE_INVALID_RESPONSE"
+  } as const;
+  return codes[error.code];
+}
+
 export { LeadLeaseLostError };
 
 export interface LeadsServiceOptions {
@@ -313,12 +460,18 @@ export interface LeadsServiceOptions {
   cnpjRepository?: CnpjRepository;
   realtime?: RealtimePublisher;
   now?: () => Date;
+  sleep?: (milliseconds: number) => Promise<void>;
+  googleMapsClient?: GoogleMapsScraperClient;
+  cityGeocoder?: CityGeocoder;
+  googlePollIntervalMs?: number;
 }
 
 export function createLeadsService(options: LeadsServiceOptions) {
   const repository = options.repository;
   const cnpjRepository = options.cnpjRepository ?? new CnpjRepository();
   const now = options.now ?? (() => new Date());
+  const sleep = options.sleep ?? ((milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const googlePollIntervalMs = options.googlePollIntervalMs ?? 5_000;
 
   function publishList(list: LeadListDto) {
     options.realtime?.publish({ type: "lead_list.updated", workspaceId: list.workspaceId, payload: list });
@@ -533,6 +686,132 @@ export function createLeadsService(options: LeadsServiceOptions) {
     });
   }
 
+  async function processGoogle(job: ClaimedLeadJob) {
+    const input = googleJobInputSchema.safeParse(job.input);
+    if (!input.success || !options.googleMapsClient) {
+      return finishJob(job, {
+        status: "failed",
+        output: { ...jsonRecord(job.output), processedCount: 0, failedCount: 1, retryable: false },
+        errorMessage: input.success ? "LEAD_SOURCE_UNAVAILABLE" : "LEAD_INVALID_INPUT",
+        progress: { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() }
+      });
+    }
+    let activeJob = job;
+    let checkpoint = jsonRecord(job.output);
+    await updateProgress(activeJob, {
+      workspaceId: job.workspaceId,
+      listId: job.listId,
+      totalCount: 0,
+      processedCount: 0,
+      failedCount: 0,
+      startedAt: job.startedAt ?? now(),
+      completedAt: null
+    });
+    try {
+      const remoteName = `prymeira-${job.id}`;
+      let remoteJobId = typeof checkpoint.remoteJobId === "string" ? checkpoint.remoteJobId : null;
+      let submittedAt = typeof checkpoint.remoteSubmittedAt === "string" ? new Date(checkpoint.remoteSubmittedAt) : null;
+      if (!remoteJobId) {
+        const recovered = await options.googleMapsClient.findJobByName(remoteName);
+        const remote = recovered ?? await options.googleMapsClient.createJob({
+          name: remoteName,
+          keywords: [`${input.data.niche} em ${input.data.city}, ${input.data.state}`],
+          latitude: input.data.latitude,
+          longitude: input.data.longitude,
+          maxTimeSeconds: input.data.maxTimeSeconds
+        });
+        remoteJobId = remote.id;
+        submittedAt = now();
+        checkpoint = {
+          ...checkpoint,
+          remoteJobId,
+          remoteStatus: "status" in remote ? remote.status : "queued",
+          remoteSubmittedAt: submittedAt.toISOString()
+        };
+        activeJob = await repository.fencedCheckpointJob(activeJob, { output: checkpoint as Prisma.InputJsonObject }, now(), GOOGLE_LEASE_MS);
+        publishJob({ ...toPublishedJob(activeJob), status: "running" });
+      }
+      if (!submittedAt || Number.isNaN(submittedAt.getTime())) submittedAt = now();
+      const deadline = submittedAt.getTime() + input.data.maxTimeSeconds * 1_000 + 30_000;
+      while (true) {
+        if (now().getTime() >= deadline) {
+          throw new GoogleMapsScraperError("TIMEOUT", "Google Maps scrape exceeded its overall timeout.", true);
+        }
+        const remote = await options.googleMapsClient.getJob(remoteJobId);
+        checkpoint = { ...checkpoint, remoteStatus: remote.status, remotePolledAt: now().toISOString() };
+        activeJob = await repository.fencedCheckpointJob(activeJob, { output: checkpoint as Prisma.InputJsonObject }, now(), GOOGLE_LEASE_MS);
+        if (remote.status === "failed") {
+          throw new GoogleMapsScraperError("REMOTE_FAILED", "Google Maps scraper reported a failed job.", true);
+        }
+        if (remote.status === "succeeded") break;
+        await sleep(Math.min(googlePollIntervalMs, Math.max(1, deadline - now().getTime())));
+      }
+
+      const parsed = parseGoogleMapsCsv(await options.googleMapsClient.download(remoteJobId), {
+        workspaceId: job.workspaceId,
+        listId: job.listId,
+        city: input.data.city,
+        state: input.data.state
+      });
+      if (parsed.leads.length > 0) {
+        await repository.fencedUpsertLeads(activeJob, parsed.leads, now(), GOOGLE_LEASE_MS);
+      }
+      const processedCount = parsed.leads.length;
+      const failedCount = processedCount === 0 ? Math.max(parsed.failedCount, 1) : parsed.failedCount;
+      const totalCount = processedCount + failedCount;
+      const status = processedCount === 0 ? "failed" : failedCount > 0 ? "partial" : "completed";
+      return finishJob(activeJob, {
+        status,
+        output: {
+          ...checkpoint,
+          downloadedRows: parsed.totalCount,
+          totalCount,
+          processedCount,
+          failedCount,
+          retryable: status !== "completed"
+        },
+        errorMessage: status === "failed" ? "LEAD_GOOGLE_NO_RESULTS" : failedCount > 0 ? "LEAD_GOOGLE_PARTIAL_ROWS" : null,
+        progress: { workspaceId: job.workspaceId, listId: job.listId, totalCount, processedCount, failedCount, completedAt: now() }
+      });
+    } catch (error) {
+      if (error instanceof LeadLeaseLostError) throw error;
+      if (!(error instanceof GoogleMapsScraperError)) {
+        if (error instanceof LeadsDomainError && ["LEAD_INVALID_INPUT", "LEAD_LIMIT_EXCEEDED"].includes(error.code)) {
+          return finishJob(activeJob, {
+            status: "failed",
+            output: { ...checkpoint, processedCount: 0, failedCount: 1, retryable: false },
+            errorMessage: "LEAD_GOOGLE_INVALID_RESPONSE",
+            progress: { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() }
+          });
+        }
+        throw error;
+      }
+      return finishJob(activeJob, {
+        status: "failed",
+        output: { ...checkpoint, processedCount: 0, failedCount: 1, retryable: error.retryable },
+        errorMessage: googleFailure(error),
+        progress: { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() }
+      });
+    }
+  }
+
+  function toPublishedJob(job: LeadJob): LeadJobDto {
+    return {
+      id: job.id,
+      workspaceId: job.workspaceId,
+      listId: job.listId,
+      operation: job.operation,
+      status: job.status,
+      attempts: job.attempts,
+      leaseUntil: job.leaseUntil?.toISOString() ?? null,
+      startedAt: job.startedAt?.toISOString() ?? null,
+      finishedAt: job.finishedAt?.toISOString() ?? null,
+      errorMessage: job.errorMessage,
+      createdAt: job.createdAt.toISOString(),
+      updatedAt: job.updatedAt.toISOString()
+    };
+  }
+
   return {
     listLists: repository.listLists.bind(repository),
     getList: repository.getList.bind(repository),
@@ -593,6 +872,65 @@ export function createLeadsService(options: LeadsServiceOptions) {
         operation: "receita_search",
         input: { requestFingerprint, filters: filters.data, maxResults },
         idempotencyKey
+      });
+      if (!created.replayed) {
+        publishList(created.list);
+        publishJob(created.job);
+      }
+      return created;
+    },
+
+    async createGoogleSearchJob(input: unknown) {
+      if (!options.googleMapsClient) {
+        throw new LeadsDomainError("LEAD_SOURCE_UNAVAILABLE", "Google Maps scraper is not configured.");
+      }
+      if (!options.cityGeocoder) {
+        throw new LeadsDomainError("LEAD_SOURCE_UNAVAILABLE", "City geocoder is not configured.");
+      }
+      const request = leadGoogleSearchRequestSchema.safeParse(input);
+      if (!request.success) throw new LeadsDomainError("LEAD_INVALID_INPUT", "Google Maps search is invalid.");
+      const workspaceId = requiredText((input as { workspaceId?: string }).workspaceId ?? "", "workspaceId");
+      const requestFingerprint = sha256(stableSerialize({
+        name: request.data.name,
+        niche: request.data.niche,
+        city: normalizeTextForDedupe(request.data.city),
+        state: request.data.state,
+        maxTimeSeconds: request.data.maxTimeSeconds
+      }));
+      const replay = await repository.findJobByIdempotency(
+        workspaceId,
+        "google_maps_search",
+        request.data.idempotencyKey
+      );
+      if (replay) {
+        assertReplayFingerprint(replay.persistedInput, requestFingerprint);
+        return replay;
+      }
+      let place;
+      try {
+        place = await options.cityGeocoder.geocode(request.data.city, request.data.state);
+      } catch (error) {
+        if (!(error instanceof CityGeocoderError)) throw error;
+        if (error.code === "NO_RESULT") throw new LeadsDomainError("LEAD_CITY_NOT_FOUND", error.message);
+        if (error.code === "AMBIGUOUS") throw new LeadsDomainError("LEAD_CITY_AMBIGUOUS", error.message);
+        throw new LeadsDomainError("LEAD_GEOCODER_UNAVAILABLE", error.message);
+      }
+      const created = await repository.createListAndJob({
+        workspaceId,
+        name: request.data.name,
+        source: "google_maps",
+        criteria: { niche: request.data.niche, city: place.city, state: place.state },
+        operation: "google_maps_search",
+        input: {
+          requestFingerprint,
+          niche: request.data.niche,
+          city: place.city,
+          state: place.state,
+          latitude: place.latitude,
+          longitude: place.longitude,
+          maxTimeSeconds: request.data.maxTimeSeconds
+        },
+        idempotencyKey: request.data.idempotencyKey
       });
       if (!created.replayed) {
         publishList(created.list);
@@ -670,6 +1008,7 @@ export function createLeadsService(options: LeadsServiceOptions) {
     },
 
     async runClaimedJob(job: ClaimedLeadJob) {
+      if (job.operation === "google_maps_search") return processGoogle(job);
       if (job.operation === "receita_search") return processSearch(job);
       if (job.operation === "similar_company_save") return similarityService.processSimilarListJob(job);
       if (job.operation === "cnpj_csv_import") {
@@ -687,20 +1026,7 @@ export function createLeadsService(options: LeadsServiceOptions) {
     },
 
     publishRecoveredJob(job: LeadJob) {
-      publishJob({
-        id: job.id,
-        workspaceId: job.workspaceId,
-        listId: job.listId,
-        operation: job.operation,
-        status: job.status,
-        attempts: job.attempts,
-        leaseUntil: job.leaseUntil?.toISOString() ?? null,
-        startedAt: job.startedAt?.toISOString() ?? null,
-        finishedAt: job.finishedAt?.toISOString() ?? null,
-        errorMessage: job.errorMessage,
-        createdAt: job.createdAt.toISOString(),
-        updatedAt: job.updatedAt.toISOString()
-      });
+      publishJob(toPublishedJob(job));
     },
 
     publishRecoveredList(list: LeadListDto) {

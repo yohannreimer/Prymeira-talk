@@ -9,18 +9,23 @@ export interface LeadsSchedulerOptions {
   leaseMs?: number;
   maxAttempts?: number;
   batchSize?: number;
+  maxGoogleConcurrentJobs?: number;
   now?: () => Date;
   onError?: (error: unknown) => void;
 }
+
+let activeGoogleJobsInProcess = 0;
 
 export function createLeadsScheduler(options: LeadsSchedulerOptions) {
   const pollIntervalMs = options.pollIntervalMs ?? 5_000;
   const leaseMs = options.leaseMs ?? 300_000;
   const maxAttempts = options.maxAttempts ?? 3;
-  const batchSize = options.batchSize ?? 2;
+  const batchSize = Math.max(options.batchSize ?? 2, 2);
+  const maxGoogleConcurrentJobs = options.maxGoogleConcurrentJobs ?? 1;
   const now = options.now ?? (() => new Date());
   let timer: ReturnType<typeof setInterval> | undefined;
   let activeTick: Promise<void> | undefined;
+  const activeWorkers = new Set<Promise<void>>();
   let stopping = false;
 
   async function performTick() {
@@ -32,22 +37,37 @@ export function createLeadsScheduler(options: LeadsSchedulerOptions) {
     const candidates = await options.repository.findQueuedJobs(batchSize, maxAttempts);
     for (const candidate of candidates) {
       if (stopping) break;
-      const claimed = await options.repository.claimJob(
-        candidate.workspaceId,
-        candidate.id,
-        now(),
-        leaseMs,
-        maxAttempts
-      );
+      const isGoogle = candidate.operation === "google_maps_search";
+      if (isGoogle && activeGoogleJobsInProcess >= maxGoogleConcurrentJobs) continue;
+      if (isGoogle) activeGoogleJobsInProcess += 1;
+      let claimed;
+      try {
+        claimed = await options.repository.claimJob(
+          candidate.workspaceId,
+          candidate.id,
+          now(),
+          leaseMs,
+          maxAttempts
+        );
+      } catch (error) {
+        if (isGoogle) activeGoogleJobsInProcess -= 1;
+        throw error;
+      }
+      if (!claimed && isGoogle) activeGoogleJobsInProcess -= 1;
       if (!claimed) continue;
       options.service.publishRecoveredJob(claimed as LeadJob);
-      try {
-        await options.service.runClaimedJob(claimed);
-      } catch (error) {
-        // The service normally persists a terminal status. Unexpected repository
-        // failures are left leased and recovered durably after expiry.
-        options.onError?.(error);
-      }
+      const worker = options.service.runClaimedJob(claimed)
+        .then(() => undefined)
+        .catch((error) => {
+          // The service normally persists a terminal status. Unexpected repository
+          // failures are left leased and recovered durably after expiry.
+          options.onError?.(error);
+        })
+        .finally(() => {
+          activeWorkers.delete(worker);
+          if (isGoogle) activeGoogleJobsInProcess -= 1;
+        });
+      activeWorkers.add(worker);
     }
   }
 
@@ -75,6 +95,7 @@ export function createLeadsScheduler(options: LeadsSchedulerOptions) {
       if (timer) clearInterval(timer);
       timer = undefined;
       await activeTick;
+      await Promise.allSettled([...activeWorkers]);
     }
   };
 }

@@ -96,7 +96,8 @@ The dev sidecar is fixed at
 and deliberately binds only to loopback:
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d google-maps-scraper
+cd infra/leads-cnpj
+docker compose --profile google-maps-scraper up -d google-maps-scraper
 curl http://127.0.0.1:8080/api/v1/jobs
 ```
 

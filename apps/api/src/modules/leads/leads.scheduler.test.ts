@@ -163,4 +163,44 @@ describe("Leads scheduler", () => {
     expect(attempts).toBe(3);
     expect(status).toBe("failed");
   });
+
+  it("runs at most one Google scrape while starting non-Google work without starvation", async () => {
+    const firstGoogle = job({ operation: "google_maps_search" });
+    const secondGoogle = job({ id: randomUUID(), operation: "google_maps_search" });
+    const receita = job({ id: randomUUID(), operation: "receita_search" });
+    let releaseGoogle!: () => void;
+    const googleRunning = new Promise<void>((resolve) => { releaseGoogle = resolve; });
+    const claimed = new Set<string>();
+    const repo = repository({
+      findQueuedJobs: vi.fn(async () => [firstGoogle, secondGoogle, receita]),
+      claimJob: vi.fn(async (_workspaceId: string, id: string) => {
+        const candidate = [firstGoogle, secondGoogle, receita].find((entry) => entry.id === id);
+        if (!candidate || claimed.has(id)) return null;
+        claimed.add(id);
+        return { ...candidate, status: "running", leaseToken: randomUUID(), leaseUntil: new Date(now.getTime() + 300_000) };
+      })
+    });
+    const service = {
+      runClaimedJob: vi.fn(async (candidate: LeadJob) => {
+        if (candidate.operation === "google_maps_search") await googleRunning;
+      }),
+      publishRecoveredJob: vi.fn(),
+      publishRecoveredList: vi.fn()
+    };
+    const scheduler = createLeadsScheduler({
+      repository: repo,
+      service: service as any,
+      maxGoogleConcurrentJobs: 1,
+      batchSize: 3,
+      now: () => now
+    });
+
+    await scheduler.tick();
+
+    expect(service.runClaimedJob).toHaveBeenCalledWith(expect.objectContaining({ id: firstGoogle.id }));
+    expect(service.runClaimedJob).not.toHaveBeenCalledWith(expect.objectContaining({ id: secondGoogle.id }));
+    expect(service.runClaimedJob).toHaveBeenCalledWith(expect.objectContaining({ id: receita.id }));
+    releaseGoogle();
+    await scheduler.stop();
+  });
 });

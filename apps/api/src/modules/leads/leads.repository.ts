@@ -26,6 +26,9 @@ export type LeadsErrorCode =
   | "LEAD_LIMIT_EXCEEDED"
   | "LEAD_INVALID_INPUT"
   | "LEAD_INVALID_ENCODING"
+  | "LEAD_CITY_NOT_FOUND"
+  | "LEAD_CITY_AMBIGUOUS"
+  | "LEAD_GEOCODER_UNAVAILABLE"
   | "LEAD_SIMILARITY_SEED_INVALID"
   | "LEAD_IDEMPOTENCY_CONFLICT"
   | "LEAD_LEASE_LOST";
@@ -483,11 +486,21 @@ export class LeadsRepository {
   }
 
   async findQueuedJobs(limit: number, maxAttempts: number) {
-    return this.prisma.leadJob.findMany({
-      where: { status: "queued", leaseToken: null, attempts: { lt: maxAttempts } },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      take: Math.min(Math.max(limit, 1), 50)
-    });
+    const take = Math.min(Math.max(limit, 1), 50);
+    const baseWhere = { status: "queued" as const, leaseToken: null, attempts: { lt: maxAttempts } };
+    const [nonGoogle, google] = await Promise.all([
+      this.prisma.leadJob.findMany({
+        where: { ...baseWhere, operation: { not: "google_maps_search" } },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take: Math.max(take - 1, 1)
+      }),
+      this.prisma.leadJob.findMany({
+        where: { ...baseWhere, operation: "google_maps_search" },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take: 1
+      })
+    ]);
+    return [...nonGoogle, ...google].slice(0, take);
   }
 
   async claimJob(workspaceId: string, jobId: string, now: Date, leaseMs: number, maxAttempts: number): Promise<ClaimedLeadJob | null> {
@@ -649,6 +662,36 @@ export class LeadsRepository {
       const list = await tx.leadList.findFirst({ where: { workspaceId: job.workspaceId, id: job.listId } });
       if (!list) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
       return toLeadListDto(list);
+    });
+  }
+
+  async fencedCheckpointJob(
+    job: LeadJobFence,
+    data: { input?: Prisma.InputJsonValue; output?: Prisma.InputJsonValue },
+    now: Date,
+    leaseMs: number
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.fence(tx, job, now, leaseMs);
+      const updated = await tx.leadJob.updateMany({
+        where: {
+          workspaceId: job.workspaceId,
+          id: job.id,
+          listId: job.listId,
+          status: "running",
+          leaseToken: job.leaseToken
+        },
+        data: {
+          ...(data.input !== undefined ? { input: data.input } : {}),
+          ...(data.output !== undefined ? { output: data.output } : {})
+        }
+      });
+      if (updated.count !== 1) throw new LeadLeaseLostError();
+      const record = await tx.leadJob.findFirst({
+        where: { workspaceId: job.workspaceId, id: job.id, listId: job.listId, leaseToken: job.leaseToken }
+      });
+      if (!record) throw new LeadLeaseLostError();
+      return { ...record, leaseToken: job.leaseToken } as ClaimedLeadJob;
     });
   }
 
@@ -897,6 +940,7 @@ export type LeadsRepositoryLike = Pick<
   | "recoverExpiredJobs"
   | "fencedUpsertLeads"
   | "fencedUpdateListProgress"
+  | "fencedCheckpointJob"
   | "fencedUpsertArtifact"
   | "fencedFinishJob"
   | "getArtifact"

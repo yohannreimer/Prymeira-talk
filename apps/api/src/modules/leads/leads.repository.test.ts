@@ -218,4 +218,48 @@ describe("Leads repository workspace isolation", () => {
       finishedAt: now
     })).rejects.toMatchObject({ code: "LEAD_INVALID_TRANSITION" });
   });
+
+  it("checkpoints remote state only while the workspace-scoped lease fence is valid", async () => {
+    const leaseToken = randomUUID();
+    const running = {
+      ...job(),
+      status: "running" as const,
+      leaseToken,
+      leaseUntil: new Date(now.getTime() + 300_000),
+      output: { remoteJobId: "remote-1" }
+    };
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const findFirst = vi.fn(async () => running);
+    const transaction = vi.fn(async (callback: any) => callback({ leadJob: { updateMany, findFirst } }));
+    const repository = new LeadsRepository({ $transaction: transaction } as never);
+
+    await expect(repository.fencedCheckpointJob(
+      { workspaceId, id: jobId, listId, leaseToken },
+      { output: { remoteJobId: "remote-1" } },
+      now,
+      300_000
+    )).resolves.toMatchObject({ output: { remoteJobId: "remote-1" }, leaseToken });
+    expect(updateMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      where: expect.objectContaining({ workspaceId, id: jobId, listId, leaseToken, status: "running" })
+    }));
+  });
+
+  it("selects non-Google work and at most one Google candidate in each fair scheduler batch", async () => {
+    const nonGoogle = { ...job(), id: randomUUID(), operation: "receita_search" };
+    const google = { ...job(), id: randomUUID(), operation: "google_maps_search" };
+    const findMany = vi.fn()
+      .mockResolvedValueOnce([nonGoogle])
+      .mockResolvedValueOnce([google]);
+    const repository = new LeadsRepository({ leadJob: { findMany } } as never);
+
+    await expect(repository.findQueuedJobs(2, 3)).resolves.toEqual([nonGoogle, google]);
+    expect(findMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      where: expect.objectContaining({ operation: { not: "google_maps_search" } }),
+      take: 1
+    }));
+    expect(findMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      where: expect.objectContaining({ operation: "google_maps_search" }),
+      take: 1
+    }));
+  });
 });

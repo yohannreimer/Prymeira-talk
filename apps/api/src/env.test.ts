@@ -110,6 +110,13 @@ describe("readEnv", () => {
     expect(() =>
       readEnv({
         ...baseProductionEnv,
+        LEAD_GOOGLE_DEFAULT_DEPTH: "6"
+      })
+    ).toThrow(/LEAD_GOOGLE_DEFAULT_DEPTH/);
+
+    expect(() =>
+      readEnv({
+        ...baseProductionEnv,
         LEAD_WHATSAPP_BATCH_SIZE: "26"
       })
     ).toThrow(/LEAD_WHATSAPP_BATCH_SIZE/);
