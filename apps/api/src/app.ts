@@ -37,6 +37,10 @@ import { tagsRoutes } from "./modules/tags/tags.routes.js";
 import { teamRoutes } from "./modules/team/team.routes.js";
 import { quickRepliesRoutes } from "./modules/quick-replies/quick-replies.routes.js";
 import { uploadsRoutes } from "./modules/uploads/uploads.routes.js";
+import { CnpjRepository } from "./modules/leads/cnpj.repository.js";
+import { LeadsRepository } from "./modules/leads/leads.repository.js";
+import { createLeadsService } from "./modules/leads/leads.service.js";
+import { createLeadsScheduler } from "./modules/leads/leads.scheduler.js";
 
 export interface CreateAppOptions {
   authEnabled?: boolean;
@@ -132,6 +136,31 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   }));
 
   await app.register(realtimeRoutes);
+
+  const leadsRepository = options.prismaEnabled === false
+    ? undefined
+    : new LeadsRepository(app.prisma);
+  const leadsService = leadsRepository
+    ? createLeadsService({
+        repository: leadsRepository,
+        cnpjRepository: new CnpjRepository(app.cnpj),
+        realtime: app.realtime
+      })
+    : undefined;
+  const leadsScheduler = leadsRepository && leadsService
+    ? createLeadsScheduler({
+        repository: leadsRepository,
+        service: leadsService,
+        pollIntervalMs: env.LEAD_JOB_POLL_MS,
+        onError: (error) => app.log.error({ err: error }, "Leads scheduler failed; jobs remain persisted.")
+      })
+    : undefined;
+  leadsScheduler?.start();
+  if (leadsScheduler) {
+    app.addHook("onClose", async () => {
+      await leadsScheduler.stop();
+    });
+  }
 
   const evolutionRuntime = createEvolutionRuntime({
     mode: env.EVOLUTION_MODE,

@@ -471,6 +471,7 @@ model LeadList {
 
   leads       Lead[]
   jobs        LeadJob[]
+  artifacts   LeadArtifact[]
   provenances LeadContactProvenance[]
 
   @@unique([workspaceId, id])
@@ -543,12 +544,35 @@ model LeadJob {
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
   list LeadList @relation(fields: [workspaceId, listId], references: [workspaceId, id], onDelete: Cascade)
+  artifacts LeadArtifact[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, operation, idempotencyKey])
   @@index([workspaceId, status, leaseUntil])
   @@index([workspaceId, listId, createdAt])
   @@map("lead_jobs")
+}
+
+model LeadArtifact {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  listId      String   @map("list_id") @db.Uuid
+  jobId       String   @map("job_id") @db.Uuid
+  kind        String
+  fileName    String   @map("file_name")
+  mimeType    String   @map("mime_type")
+  content     Bytes
+  sizeBytes   Int      @map("size_bytes")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  list LeadList @relation(fields: [workspaceId, listId], references: [workspaceId, id], onDelete: Cascade)
+  job  LeadJob  @relation(fields: [workspaceId, jobId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, jobId, kind])
+  @@index([workspaceId, listId, createdAt])
+  @@map("lead_artifacts")
 }
 
 model LeadWhatsappVerification {

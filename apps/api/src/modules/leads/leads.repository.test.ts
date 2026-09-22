@@ -1,0 +1,199 @@
+import { randomUUID } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
+import type { LeadArtifact, LeadJob, LeadList } from "@prisma/client";
+import { LeadsRepository } from "./leads.repository.js";
+
+const workspaceId = "workspace_a";
+const foreignWorkspaceId = "workspace_b";
+const listId = randomUUID();
+const jobId = randomUUID();
+const artifactId = randomUUID();
+const now = new Date("2026-09-22T15:00:00.000Z");
+
+function list(): LeadList {
+  return {
+    id: listId,
+    workspaceId,
+    name: "Receita",
+    source: "receita_federal",
+    criteria: {},
+    totalCount: 0,
+    processedCount: 0,
+    failedCount: 0,
+    startedAt: null,
+    completedAt: null,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function job(): LeadJob {
+  return {
+    id: jobId,
+    workspaceId,
+    listId,
+    operation: "receita_search",
+    status: "queued",
+    input: {},
+    output: {},
+    errorMessage: null,
+    attempts: 0,
+    leaseToken: null,
+    leaseUntil: null,
+    startedAt: null,
+    finishedAt: null,
+    idempotencyKey: "same",
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function artifact(): LeadArtifact {
+  return {
+    id: artifactId,
+    workspaceId,
+    listId,
+    jobId,
+    kind: "csv_error",
+    fileName: "errors.csv",
+    mimeType: "text/csv",
+    content: Uint8Array.from(Buffer.from("error")),
+    sizeBytes: 5,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+describe("Leads repository workspace isolation", () => {
+  it("makes a foreign list indistinguishable from a missing list", async () => {
+    const findFirst = vi.fn(async () => null);
+    const repository = new LeadsRepository({ leadList: { findFirst } } as never);
+
+    await expect(repository.getList(foreignWorkspaceId, listId)).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
+    await expect(repository.getList(foreignWorkspaceId, randomUUID())).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
+    expect(findFirst).toHaveBeenNthCalledWith(1, { where: { workspaceId: foreignWorkspaceId, id: listId } });
+  });
+
+  it("includes workspace and resource id in list update and delete mutations", async () => {
+    const updateMany = vi.fn(async () => ({ count: 0 }));
+    const deleteMany = vi.fn(async () => ({ count: 0 }));
+    const repository = new LeadsRepository({ leadList: { updateMany, deleteMany } } as never);
+
+    await expect(repository.updateList(foreignWorkspaceId, listId, { name: "x" })).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
+    await expect(repository.deleteList(foreignWorkspaceId, listId)).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: foreignWorkspaceId, id: listId } }));
+    expect(deleteMany).toHaveBeenCalledWith({ where: { workspaceId: foreignWorkspaceId, id: listId } });
+  });
+
+  it("scopes job and authorized artifact retrieval to the caller workspace", async () => {
+    const jobFindFirst = vi.fn(async () => null);
+    const artifactFindFirst = vi.fn(async (args: any) => args.where.workspaceId === workspaceId ? artifact() : null);
+    const repository = new LeadsRepository({
+      leadJob: { findFirst: jobFindFirst },
+      leadArtifact: { findFirst: artifactFindFirst }
+    } as never);
+
+    await expect(repository.getJob(foreignWorkspaceId, jobId)).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
+    await expect(repository.getArtifact(foreignWorkspaceId, artifactId)).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
+    const own = await repository.getArtifact(workspaceId, artifactId);
+    expect(own.content.toString()).toBe("error");
+    expect(jobFindFirst).toHaveBeenCalledWith({ where: { workspaceId: foreignWorkspaceId, id: jobId } });
+    expect(artifactFindFirst).toHaveBeenCalledWith({ where: { workspaceId: workspaceId, id: artifactId } });
+  });
+
+  it("returns one existing list/job for duplicate workspace-operation idempotency", async () => {
+    const existing = { ...job(), list: list(), artifacts: [] };
+    const findUnique = vi.fn(async () => existing);
+    const transaction = vi.fn(async (callback: any) => callback({
+      leadJob: { findUnique },
+      leadList: { create: vi.fn() },
+      leadArtifact: { create: vi.fn() }
+    }));
+    const repository = new LeadsRepository({ $transaction: transaction } as never);
+    const input = {
+      workspaceId,
+      name: "Busca",
+      source: "receita_federal" as const,
+      criteria: {},
+      operation: "receita_search",
+      input: {},
+      idempotencyKey: "same"
+    };
+
+    const first = await repository.createListAndJob(input);
+    const second = await repository.createListAndJob(input);
+
+    expect(first.job.id).toBe(second.job.id);
+    expect(findUnique).toHaveBeenCalledWith(expect.objectContaining({
+      where: { workspaceId_operation_idempotencyKey: { workspaceId, operation: "receita_search", idempotencyKey: "same" } }
+    }));
+  });
+
+  it("lets only one atomic lease update claim a queued job", async () => {
+    const queued = job();
+    const updateMany = vi.fn()
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    const findFirst = vi.fn(async (args: any) => ({
+      ...queued,
+      status: "running",
+      attempts: 1,
+      leaseToken: args.where.leaseToken,
+      leaseUntil: new Date(now.getTime() + 300_000)
+    }));
+    const repository = new LeadsRepository({ leadJob: { updateMany, findFirst } } as never);
+
+    const first = await repository.claimJob(workspaceId, jobId, now, 300_000, 3);
+    const second = await repository.claimJob(workspaceId, jobId, now, 300_000, 3);
+
+    expect(first?.leaseToken).toEqual(expect.any(String));
+    expect(second).toBeNull();
+    expect(updateMany.mock.calls[0]?.[0].where).toEqual({
+      workspaceId,
+      id: jobId,
+      status: "queued",
+      leaseToken: null,
+      attempts: { lt: 3 }
+    });
+  });
+
+  it("recovers an expired lease with workspace+id and exhausts bounded attempts", async () => {
+    const expired = {
+      ...job(),
+      status: "running" as const,
+      attempts: 3,
+      leaseToken: randomUUID(),
+      leaseUntil: new Date(now.getTime() - 1)
+    };
+    const findMany = vi.fn(async () => [expired]);
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const findFirst = vi.fn(async () => ({ ...expired, status: "failed", finishedAt: now, leaseToken: null, leaseUntil: null }));
+    const repository = new LeadsRepository({ leadJob: { findMany, updateMany, findFirst } } as never);
+
+    const recovered = await repository.recoverExpiredJobs(now, 3);
+
+    expect(recovered[0]?.status).toBe("failed");
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ workspaceId, id: jobId, status: "running", leaseToken: expired.leaseToken }),
+      data: expect.objectContaining({ status: "failed", errorMessage: "LEAD_JOB_ATTEMPTS_EXHAUSTED" })
+    }));
+  });
+
+  it("returns a stable invalid-transition error for a stale lease completion", async () => {
+    const current = { ...job(), status: "completed" as const, finishedAt: now };
+    const transaction = vi.fn(async (callback: any) => callback({
+      leadJob: { findFirst: vi.fn(async () => current), updateMany: vi.fn() }
+    }));
+    const repository = new LeadsRepository({ $transaction: transaction } as never);
+
+    await expect(repository.finishJob({
+      workspaceId,
+      jobId,
+      leaseToken: randomUUID(),
+      status: "completed",
+      output: {},
+      errorMessage: null,
+      finishedAt: now
+    })).rejects.toMatchObject({ code: "LEAD_INVALID_TRANSITION" });
+  });
+});
