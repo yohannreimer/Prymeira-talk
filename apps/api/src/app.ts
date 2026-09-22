@@ -5,6 +5,7 @@ import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
+import { cnpjDatabasePlugin } from "./plugins/cnpj-database.js";
 import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
 import { createJevReplyPreflight } from "./modules/agents/jev-reply-preflight.js";
 import { createAgentReplyScheduler } from "./modules/agents/agent-reply-scheduler.js";
@@ -91,6 +92,10 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
 
   if (options.prismaEnabled !== false) {
     await app.register(prismaPlugin, { databaseUrl: env.DATABASE_URL });
+  }
+
+  if (env.CNPJ_DATABASE_URL) {
+    await app.register(cnpjDatabasePlugin, { databaseUrl: env.CNPJ_DATABASE_URL });
   }
 
   if (options.authEnabled !== false) {
