@@ -4,6 +4,8 @@ import { normalizeCnpj } from "./leads.types.js";
 const MAX_PAGE_SIZE = 100;
 const MAX_PAGE = 10_000;
 const MAX_SIMILAR_CANDIDATES = 100;
+const ACCENTED_LOWERCASE = "áàâãäåæçéèêëíìîïñóòôõöøœúùûüýÿ";
+const ASCII_EQUIVALENTS = "aaaaaaaceeeeiiiinooooooouuuuyy";
 
 export class LeadSourceUnavailableError extends Error {
   readonly code = "LEAD_SOURCE_UNAVAILABLE" as const;
@@ -29,6 +31,8 @@ export interface CnpjSearchFilters {
   capitalMax?: number;
   phone?: string;
   email?: string;
+  hasPhone?: boolean;
+  hasEmail?: boolean;
   activeOnly?: boolean;
   page?: number;
   pageSize?: number;
@@ -40,7 +44,6 @@ export interface CnpjSimilarCandidatesInput {
   seedCnpj?: string;
   /** Exclude every branch sharing the seed's eight-character company root. */
   excludeSeedRoot?: boolean;
-  activeOnly?: boolean;
   limit?: number;
 }
 
@@ -127,6 +130,10 @@ function escapeLike(value: string) {
   return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
+function accentFold(expression: string) {
+  return `translate(lower(${expression}), '${ACCENTED_LOWERCASE}', '${ASCII_EQUIVALENTS}')`;
+}
+
 function boundedInteger(value: unknown, fallback: number, max: number) {
   const number = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : fallback;
   return Math.min(Math.max(number, 1), max);
@@ -201,7 +208,7 @@ export class CnpjRepository {
 
   async findSimilarCandidates(input: CnpjSimilarCandidatesInput = {}): Promise<CnpjCompanyRecord[]> {
     const values: unknown[] = [];
-    const where: string[] = [];
+    const where: string[] = ["e.situacao_cadastral = '02'"];
     if (input.seedCnpj) {
       const seedCnpj = normalizeCnpj(input.seedCnpj);
       values.push(seedCnpj);
@@ -211,7 +218,6 @@ export class CnpjRepository {
         where.push(`e.cnpj_basico <> $${values.length}`);
       }
     }
-    if (input.activeOnly) where.push("e.situacao_cadastral = '02'");
     const limit = boundedInteger(input.limit, 25, MAX_SIMILAR_CANDIDATES);
     values.push(limit);
     const rows = await this.query(`SELECT ${SELECT_FIELDS} ${FROM_CNPJ}
@@ -228,14 +234,19 @@ export class CnpjRepository {
       values.push(value);
       return `$${values.length}`;
     };
-    const like = (column: string, value: string | undefined) => {
-      if (value?.trim()) where.push(`LOWER(${column}) LIKE LOWER(${bind(`%${escapeLike(value.trim())}%`)}) ESCAPE '\\'`);
+    const like = (column: string, value: string | undefined, accentInsensitive = false) => {
+      if (value?.trim()) {
+        const placeholder = bind(`%${escapeLike(value.trim())}%`);
+        const columnExpression = accentInsensitive ? accentFold(column) : `LOWER(${column})`;
+        const valueExpression = accentInsensitive ? accentFold(placeholder) : `LOWER(${placeholder})`;
+        where.push(`${columnExpression} LIKE ${valueExpression} ESCAPE '\\'`);
+      }
     };
 
     if (filters.cnpj?.trim()) where.push(`e.cnpj_basico || e.cnpj_ordem || e.cnpj_dv = ${bind(normalizeCnpj(filters.cnpj))}`);
-    like("em.razao_social", filters.companyName);
-    like("e.nome_fantasia", filters.tradeName);
-    like("m.descricao", filters.city);
+    like("em.razao_social", filters.companyName, true);
+    like("e.nome_fantasia", filters.tradeName, true);
+    like("m.descricao", filters.city, true);
     if (filters.state?.trim()) where.push(`e.uf = ${bind(filters.state.trim().toUpperCase())}`);
     if (filters.cnaePrimary?.trim()) where.push(`e.cnae_fiscal_principal = ${bind(filters.cnaePrimary.trim())}`);
     if (filters.cnaeSecondary?.trim()) {
@@ -246,9 +257,21 @@ export class CnpjRepository {
     if (filters.openedTo?.trim()) where.push(`e.data_inicio_atividade <= ${bind(filters.openedTo.trim())}`);
     if (typeof filters.capitalMin === "number" && Number.isFinite(filters.capitalMin)) where.push(`em.capital_social >= ${bind(filters.capitalMin)}`);
     if (typeof filters.capitalMax === "number" && Number.isFinite(filters.capitalMax)) where.push(`em.capital_social <= ${bind(filters.capitalMax)}`);
-    like("e.ddd_1 || e.telefone_1", filters.phone);
-    if (filters.phone?.trim()) like("e.ddd_2 || e.telefone_2", filters.phone);
+    if (filters.phone?.trim()) {
+      const placeholder = bind(`%${escapeLike(filters.phone.trim())}%`);
+      where.push(`(LOWER(e.ddd_1 || e.telefone_1) LIKE LOWER(${placeholder}) ESCAPE '\\' OR LOWER(e.ddd_2 || e.telefone_2) LIKE LOWER(${placeholder}) ESCAPE '\\')`);
+    }
     like("e.correio_eletronico", filters.email);
+    if (filters.hasPhone === true) {
+      where.push("(NULLIF(e.ddd_1 || e.telefone_1, '') IS NOT NULL OR NULLIF(e.ddd_2 || e.telefone_2, '') IS NOT NULL)");
+    } else if (filters.hasPhone === false) {
+      where.push("(NULLIF(e.ddd_1 || e.telefone_1, '') IS NULL AND NULLIF(e.ddd_2 || e.telefone_2, '') IS NULL)");
+    }
+    if (filters.hasEmail === true) {
+      where.push("NULLIF(btrim(e.correio_eletronico), '') IS NOT NULL");
+    } else if (filters.hasEmail === false) {
+      where.push("NULLIF(btrim(e.correio_eletronico), '') IS NULL");
+    }
     if (filters.activeOnly) where.push("e.situacao_cadastral = '02'");
 
     const page = boundedInteger(filters.page, 1, MAX_PAGE);

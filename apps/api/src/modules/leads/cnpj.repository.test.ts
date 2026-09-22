@@ -43,10 +43,47 @@ describe("CnpjRepository", () => {
     await repository.searchEstablishments({ companyName: needle, page: 0, pageSize: 9999 });
 
     const call = client.calls[0];
-    expect(call?.text).toContain("LIKE LOWER($1) ESCAPE '\\'");
+    expect(call?.text).toContain("LIKE translate(lower($1)");
     expect(call?.text).not.toContain(needle);
     expect(call?.values[0]).toBe("%x\\%' OR 1=1 --\\_\\\\%");
     expect(call?.values.slice(-2)).toEqual([100, 0]);
+  });
+
+  it("matches a phone filter against either phone column with one escaped bound placeholder", async () => {
+    const client = new FakeCnpjClient();
+    const needle = "11%_\\";
+
+    await new CnpjRepository(client).searchEstablishments({ phone: needle });
+
+    const call = client.calls[0];
+    expect(call?.text).toContain(
+      "(LOWER(e.ddd_1 || e.telefone_1) LIKE LOWER($1) ESCAPE '\\' OR LOWER(e.ddd_2 || e.telefone_2) LIKE LOWER($1) ESCAPE '\\')"
+    );
+    expect(call?.values[0]).toBe("%11\\%\\_\\\\%");
+    expect(call?.text).not.toContain(needle);
+  });
+
+  it("uses static accent folding and placeholders for company, trade name, and city search", async () => {
+    const client = new FakeCnpjClient();
+    const needle = "São %_ Paulo";
+
+    await new CnpjRepository(client).searchEstablishments({
+      companyName: needle,
+      tradeName: needle,
+      city: needle
+    });
+
+    const call = client.calls[0];
+    expect(call?.text).toContain("translate(lower(em.razao_social), 'áàâãäå");
+    expect(call?.text).toContain("translate(lower($1), 'áàâãäå");
+    expect(call?.text).toContain("translate(lower(e.nome_fantasia)");
+    expect(call?.text).toContain("translate(lower(m.descricao)");
+    expect(call?.text).not.toContain(needle);
+    expect(call?.values.slice(0, 3)).toEqual([
+      "%São \\%\\_ Paulo%",
+      "%São \\%\\_ Paulo%",
+      "%São \\%\\_ Paulo%"
+    ]);
   });
 
   it("matches a secondary CNAE as a comma-delimited item rather than a substring", async () => {
@@ -96,6 +133,22 @@ describe("CnpjRepository", () => {
     expect(inactiveClient.calls[0]?.text).not.toContain("e.situacao_cadastral = '02'");
   });
 
+  it("maps phone and email presence filters for both true and false values", async () => {
+    const presentClient = new FakeCnpjClient();
+    await new CnpjRepository(presentClient).searchEstablishments({ hasPhone: true, hasEmail: true });
+    expect(presentClient.calls[0]?.text).toContain(
+      "(NULLIF(e.ddd_1 || e.telefone_1, '') IS NOT NULL OR NULLIF(e.ddd_2 || e.telefone_2, '') IS NOT NULL)"
+    );
+    expect(presentClient.calls[0]?.text).toContain("NULLIF(btrim(e.correio_eletronico), '') IS NOT NULL");
+
+    const absentClient = new FakeCnpjClient();
+    await new CnpjRepository(absentClient).searchEstablishments({ hasPhone: false, hasEmail: false });
+    expect(absentClient.calls[0]?.text).toContain(
+      "(NULLIF(e.ddd_1 || e.telefone_1, '') IS NULL AND NULLIF(e.ddd_2 || e.telefone_2, '') IS NULL)"
+    );
+    expect(absentClient.calls[0]?.text).toContain("NULLIF(btrim(e.correio_eletronico), '') IS NULL");
+  });
+
   it("uses a fixed sort whitelist and bounded pagination", async () => {
     const client = new FakeCnpjClient();
     const repository = new CnpjRepository(client);
@@ -120,7 +173,6 @@ describe("CnpjRepository", () => {
     await repository.findSimilarCandidates({
       seedCnpj: "12.345.678/ABCD-90",
       excludeSeedRoot: true,
-      activeOnly: true,
       limit: 999
     });
 
@@ -172,11 +224,30 @@ describe("CNPJ database plugin", () => {
 
     const queryCalls = client.query.mock.calls as unknown as Array<readonly unknown[]>;
     expect(queryCalls.map(([text]) => text)).toEqual([
+      "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY",
       "BEGIN READ ONLY",
       "SELECT $1",
       "COMMIT"
     ]);
     expect(client.release).toHaveBeenCalledOnce();
     expect(pool.end).toHaveBeenCalledOnce();
+  });
+
+  it("rejects multi-statement and transaction-control input before checking out a connection", async () => {
+    const pool = {
+      connect: vi.fn(),
+      end: vi.fn(async () => undefined)
+    };
+    const app = Fastify();
+    await app.register(cnpjDatabasePlugin, {
+      databaseUrl: "postgresql://not-a-real-database/test",
+      pool: pool as never
+    });
+
+    await expect(app.cnpj?.query("COMMIT; DELETE FROM cnpj.empresas")).rejects.toThrow(
+      "CNPJ query was rejected."
+    );
+    expect(pool.connect).not.toHaveBeenCalled();
+    await app.close();
   });
 });
