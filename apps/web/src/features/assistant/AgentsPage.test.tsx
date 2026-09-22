@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { AgentsPage } from "./AgentsPage";
-import type { AiAgentDto, TagDto } from "../../app/api";
+import type { AiAgentDto, AiAgentImprovementDto, TagDto } from "../../app/api";
 
 vi.mock("../../app/auth", () => ({
   useTalkAuth: () => ({
@@ -18,6 +18,10 @@ vi.mock("../../app/api", () => ({
   },
   apiCreateAgent: vi.fn(),
   apiCreateAgentKnowledge: vi.fn(),
+  apiApproveAgentImprovement: vi.fn(),
+  apiDeleteAgent: vi.fn(),
+  apiDeleteAgentKnowledge: vi.fn(),
+  apiGetAgentImprovements: vi.fn(async () => []),
   apiGetAgentKnowledge: vi.fn(),
   apiGetAgents: vi.fn(async () => []),
   apiGetTags: vi.fn(async () => [
@@ -34,8 +38,11 @@ vi.mock("../../app/api", () => ({
       updatedAt: "2026-07-05T12:00:00.000Z"
     }
   ]),
+  apiNormalizeAgentImprovement: vi.fn(),
   apiSendAgentTestChatMessage: vi.fn(),
   apiUpdateAgent: vi.fn(),
+  apiUpdateAgentImprovement: vi.fn(),
+  apiUpdateAgentKnowledge: vi.fn(),
   apiUploadAgentKnowledge: vi.fn()
 }));
 
@@ -77,6 +84,42 @@ const baseAgent: AiAgentDto = {
   allowedTags: [],
   createdAt: "2026-07-05T12:00:00.000Z",
   updatedAt: "2026-07-05T12:00:00.000Z"
+};
+
+const baseImprovement: AiAgentImprovementDto = {
+  id: "improvement-1",
+  workspaceId: "workspace-1",
+  agentId: baseAgent.id,
+  conversationId: "conversation-1",
+  sourceMessageId: "message-1",
+  status: "pending",
+  kind: "not_sold",
+  title: "Produto não comercializado — revisar",
+  content: "Não comercializamos este produto.",
+  rationale: "O humano confirmou uma decisão comercial reutilizável.",
+  sourceCustomerMessage: "Vocês têm barra chata galvanizada?",
+  sourceHumanReply: "Não trabalhamos com esse produto.",
+  detector: { confidence: 0.95 },
+  clarification: {
+    questions: [
+      {
+        id: "scope",
+        question: "A decisão vale para todas as medidas?",
+        help: "Delimite o escopo."
+      },
+      {
+        id: "exceptions",
+        question: "Quais exceções existem?",
+        help: "Escreva Nenhuma se não houver."
+      }
+    ],
+    answers: {},
+    normalization: null
+  },
+  reviewedAt: null,
+  acceptedKnowledgeSourceId: null,
+  createdAt: "2026-09-22T14:00:00.000Z",
+  updatedAt: "2026-09-22T14:00:00.000Z"
 };
 
 function depsChanged(previous: readonly unknown[] | undefined, next: readonly unknown[] | undefined) {
@@ -171,6 +214,7 @@ async function renderAgentsPageContainer() {
       }
     ]);
   const apiGetTagsMock = vi.fn(async () => [baseTag]);
+  const apiGetAgentImprovementsMock = vi.fn(async () => [baseImprovement]);
   const apiSendTestMock = vi.fn().mockResolvedValue({
     message: { role: "assistant", content: "Qual cidade?" },
     processedMessage: { role: "user", content: "[Texto do PDF — conteúdo enviado pelo cliente]\n8 chapas A36" },
@@ -269,11 +313,18 @@ async function renderAgentsPageContainer() {
       ...original,
       apiCreateAgent: vi.fn(),
       apiCreateAgentKnowledge: vi.fn(),
+      apiApproveAgentImprovement: vi.fn(),
+      apiDeleteAgent: vi.fn(),
+      apiDeleteAgentKnowledge: vi.fn(),
+      apiGetAgentImprovements: apiGetAgentImprovementsMock,
       apiGetAgentKnowledge: vi.fn(async () => []),
       apiGetAgents: apiGetAgentsMock,
       apiGetTags: apiGetTagsMock,
+      apiNormalizeAgentImprovement: vi.fn(),
       apiSendAgentTestChatMessage: apiSendTestMock,
       apiUpdateAgent: apiUpdateAgentMock,
+      apiUpdateAgentImprovement: vi.fn(),
+      apiUpdateAgentKnowledge: vi.fn(),
       apiUploadAgentKnowledge: vi.fn()
     };
   });
@@ -302,6 +353,7 @@ async function renderAgentsPageContainer() {
       return tree;
     },
     apiGetAgentsMock,
+    apiGetAgentImprovementsMock,
     apiGetTagsMock,
     apiUpdateAgentMock,
     apiSendTestMock,
@@ -347,6 +399,25 @@ describe("AgentsPage", () => {
     reset.props.onClick();
     expect(hasText(page.tree, "8 chapas A36")).toBe(false);
   });
+  it("requires a scoped team answer before a pending improvement can be approved", async () => {
+    const page = await renderAgentsPageContainer();
+    const improvementsTab = findButtonByName(page.tree, "Aprimoramentos") as ReactElement<{
+      onClick: () => void;
+    }> | null;
+
+    expect(improvementsTab).not.toBeNull();
+    improvementsTab?.props.onClick();
+    await page.settle();
+
+    expect(page.apiGetAgentImprovementsMock).toHaveBeenCalled();
+    expect(hasText(page.tree, "Complete o escopo antes de incluir")).toBe(true);
+    expect(hasText(page.tree, "A decisão vale para todas as medidas?")).toBe(true);
+    expect(hasText(page.tree, "Interpretar com JEV")).toBe(true);
+    const approveButton = findButtonByName(page.tree, "Aprovar e incluir") as ReactElement<{
+      disabled: boolean;
+    }> | null;
+    expect(approveButton?.props.disabled).toBe(true);
+  });
   it("renders the agents management controls", () => {
     const html = renderToStaticMarkup(<AgentsPage />);
 
@@ -369,6 +440,7 @@ describe("AgentsPage", () => {
     expect(html).toContain("Resetar teste");
     expect(html).toContain("Logs do teste");
     expect(html).toContain("Conhecimento");
+    expect(html).toContain("Aprimoramentos");
     expect(html).toContain("Fontes de conhecimento salvas");
     expect(html).toContain("Arquivo PDF ou TXT");
     expect(html).toContain("Subir documento");
@@ -430,5 +502,16 @@ describe("AgentsPage", () => {
         allowedTagIds: []
       })
     );
+  });
+
+  it("shows a guarded agent deletion control after an agent is selected", async () => {
+    const page = await renderAgentsPageContainer();
+    const deleteButton = findButtonByName(page.tree, "Excluir agente") as ReactElement<{
+      disabled: boolean;
+    }> | null;
+
+    expect(deleteButton).not.toBeNull();
+    expect(deleteButton?.props.disabled).toBe(true);
+    expect(hasText(page.tree, "Inative e salve o agente antes de excluí-lo.")).toBe(true);
   });
 });

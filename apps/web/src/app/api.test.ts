@@ -449,4 +449,192 @@ describe("agent API helpers", () => {
       })
     );
   });
+
+  it("updates and deletes agent knowledge through scoped endpoints", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const source = {
+      id: "source-1",
+      workspaceId: "workspace_a",
+      agentId: "agent-1",
+      type: "faq",
+      title: "Horário atualizado",
+      content: "Atendemos das 9h às 18h.",
+      fileUrl: null,
+      fileName: null,
+      mimeType: null,
+      status: "ready",
+      metadata: {},
+      createdAt: "2026-07-05T12:00:00.000Z",
+      updatedAt: "2026-07-05T12:00:00.000Z"
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(source), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+
+    const { apiDeleteAgent, apiDeleteAgentKnowledge, apiUpdateAgentKnowledge } = await import("./api");
+
+    await apiUpdateAgentKnowledge(async () => null, "agent-1", "source-1", {
+      title: "Horário atualizado",
+      content: "Atendemos das 9h às 18h.",
+      fileUrl: null
+    });
+    await apiDeleteAgentKnowledge(async () => null, "agent-1", "source-1");
+    await apiDeleteAgent(async () => null, "agent-1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:3002/agents/agent-1/knowledge/source-1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          title: "Horário atualizado",
+          content: "Atendemos das 9h às 18h.",
+          fileUrl: null
+        })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:3002/agents/agent-1/knowledge/source-1",
+      expect.objectContaining({ method: "DELETE" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "http://localhost:3002/agents/agent-1",
+      expect.objectContaining({ method: "DELETE" })
+    );
+  });
+
+  it("lists, edits and approves reviewed agent improvements through scoped endpoints", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const improvement = {
+      id: "improvement-1",
+      workspaceId: "workspace_a",
+      agentId: "agent-1",
+      conversationId: "conversation-1",
+      sourceMessageId: "message-1",
+      status: "pending",
+      kind: "not_sold",
+      title: "Produto não comercializado: barra chata galvanizada com furos",
+      content: "Não comercializamos este produto.",
+      rationale: "A equipe confirmou uma decisão comercial reutilizável.",
+      sourceCustomerMessage: "Vocês têm esse material?",
+      sourceHumanReply: "Não trabalhamos com esse produto.",
+      detector: { confidence: 0.95 },
+      clarification: {
+        questions: [
+          {
+            id: "scope",
+            question: "A decisão vale para todas as variações?",
+            help: "Delimite o escopo."
+          }
+        ],
+        answers: {},
+        normalization: null
+      },
+      reviewedAt: null,
+      acceptedKnowledgeSourceId: null,
+      createdAt: "2026-09-22T12:00:00.000Z",
+      updatedAt: "2026-09-22T12:00:00.000Z"
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([improvement]), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ...improvement, title: "Produto confirmado" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          ...improvement,
+          clarification: {
+            ...improvement.clarification,
+            normalization: {
+              scope: "requested_item_variations",
+              confidence: 0.95,
+              requiresHandoffOutsideScope: true
+            }
+          }
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ...improvement, status: "accepted" }), {
+          status: 201,
+          headers: { "content-type": "application/json" }
+        })
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+
+    const {
+      apiApproveAgentImprovement,
+      apiGetAgentImprovements,
+      apiNormalizeAgentImprovement,
+      apiUpdateAgentImprovement
+    } = await import("./api");
+
+    await expect(apiGetAgentImprovements(async () => null, "agent-1", "all")).resolves.toEqual([improvement]);
+    await apiUpdateAgentImprovement(async () => null, "agent-1", "improvement-1", {
+      title: "Produto confirmado",
+      content: "Não comercializamos este produto."
+    });
+    await apiNormalizeAgentImprovement(async () => null, "agent-1", "improvement-1");
+    await apiApproveAgentImprovement(async () => null, "agent-1", "improvement-1", {
+      title: "Produto confirmado"
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:3002/agents/agent-1/improvements?status=all",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer local-dev-bypass" })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:3002/agents/agent-1/improvements/improvement-1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          title: "Produto confirmado",
+          content: "Não comercializamos este produto."
+        })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "http://localhost:3002/agents/agent-1/improvements/improvement-1/normalize",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({})
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "http://localhost:3002/agents/agent-1/improvements/improvement-1/approve",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ title: "Produto confirmado" })
+      })
+    );
+  });
 });

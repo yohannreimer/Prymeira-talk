@@ -15,10 +15,20 @@ type MockPrisma = {
     findFirst: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
   };
   aiKnowledgeSource: {
+    findFirst: ReturnType<typeof vi.fn>;
     findMany: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
+  };
+  assistantSuggestion: {
+    deleteMany: ReturnType<typeof vi.fn>;
+  };
+  conversationFollowup: {
+    deleteMany: ReturnType<typeof vi.fn>;
   };
   tag: {
     count: ReturnType<typeof vi.fn>;
@@ -28,6 +38,10 @@ type MockPrisma = {
     createMany: ReturnType<typeof vi.fn>;
   };
   $transaction: ReturnType<typeof vi.fn>;
+};
+
+type MockPrismaOverrides = {
+  [Key in keyof MockPrisma]?: Partial<MockPrisma[Key]>;
 };
 
 const baseAgent = {
@@ -64,7 +78,7 @@ const baseKnowledgeSource = {
   updatedAt: now
 };
 
-function buildPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & AgentsPrismaLike {
+function buildPrisma(overrides: MockPrismaOverrides = {}): MockPrisma & AgentsPrismaLike {
   const prisma = {
     aiAgent: {
       findMany: overrides.aiAgent?.findMany ?? vi.fn().mockResolvedValue([]),
@@ -80,16 +94,31 @@ function buildPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & AgentsPr
         vi.fn().mockImplementation(async (args) => ({
           ...baseAgent,
           ...args.data
-        }))
+        })),
+      delete: overrides.aiAgent?.delete ?? vi.fn().mockResolvedValue(baseAgent)
     },
     aiKnowledgeSource: {
+      findFirst: overrides.aiKnowledgeSource?.findFirst ?? vi.fn().mockResolvedValue(null),
       findMany: overrides.aiKnowledgeSource?.findMany ?? vi.fn().mockResolvedValue([]),
       create:
         overrides.aiKnowledgeSource?.create ??
         vi.fn().mockImplementation(async (args) => ({
           ...baseKnowledgeSource,
           ...args.data
-        }))
+        })),
+      update:
+        overrides.aiKnowledgeSource?.update ??
+        vi.fn().mockImplementation(async (args) => ({
+          ...baseKnowledgeSource,
+          ...args.data
+        })),
+      delete: overrides.aiKnowledgeSource?.delete ?? vi.fn().mockResolvedValue(baseKnowledgeSource)
+    },
+    assistantSuggestion: {
+      deleteMany: overrides.assistantSuggestion?.deleteMany ?? vi.fn().mockResolvedValue({ count: 0 })
+    },
+    conversationFollowup: {
+      deleteMany: overrides.conversationFollowup?.deleteMany ?? vi.fn().mockResolvedValue({ count: 0 })
     },
     tag: {
       count: overrides.tag?.count ?? vi.fn().mockResolvedValue(0)
@@ -104,6 +133,9 @@ function buildPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & AgentsPr
   prisma.$transaction.mockImplementation(async (callback) => {
     const tx = {
       aiAgent: prisma.aiAgent,
+      aiKnowledgeSource: prisma.aiKnowledgeSource,
+      assistantSuggestion: prisma.assistantSuggestion,
+      conversationFollowup: prisma.conversationFollowup,
       tag: prisma.tag,
       aiAgentAllowedTag: prisma.aiAgentAllowedTag
     };
@@ -636,5 +668,101 @@ describe("createAgentsService", () => {
       })
     ).rejects.toBeInstanceOf(AgentsServiceError);
     expect(prisma.aiKnowledgeSource.create).not.toHaveBeenCalled();
+  });
+
+  it("updates a knowledge source only after it is scoped to the selected agent", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgent.findFirst.mockResolvedValue(baseAgent);
+    prisma.aiKnowledgeSource.findFirst.mockResolvedValue(baseKnowledgeSource);
+    const service = createAgentsService(prisma);
+
+    const source = await service.updateKnowledgeSource({
+      workspaceId: "workspace_a",
+      agentId,
+      sourceId: knowledgeSourceId,
+      data: {
+        title: " Horário atualizado ",
+        content: " Atendimento das 9h às 18h. ",
+        fileUrl: " "
+      }
+    });
+
+    expect(source).toEqual(expect.objectContaining({
+      id: knowledgeSourceId,
+      title: "Horário atualizado",
+      content: "Atendimento das 9h às 18h.",
+      fileUrl: null
+    }));
+    expect(prisma.aiKnowledgeSource.findFirst).toHaveBeenCalledWith({
+      where: {
+        workspaceId: "workspace_a",
+        agentId,
+        id: knowledgeSourceId
+      }
+    });
+    expect(prisma.aiKnowledgeSource.update).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: {
+          workspaceId: "workspace_a",
+          id: knowledgeSourceId
+        }
+      },
+      data: {
+        title: "Horário atualizado",
+        content: "Atendimento das 9h às 18h.",
+        fileUrl: null
+      }
+    });
+  });
+
+  it("does not delete a knowledge source that is outside the agent scope", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgent.findFirst.mockResolvedValue(baseAgent);
+    const service = createAgentsService(prisma);
+
+    await expect(
+      service.deleteKnowledgeSource({
+        workspaceId: "workspace_a",
+        agentId,
+        sourceId: knowledgeSourceId
+      })
+    ).rejects.toMatchObject({ code: "KNOWLEDGE_SOURCE_NOT_FOUND" });
+
+    expect(prisma.aiKnowledgeSource.delete).not.toHaveBeenCalled();
+  });
+
+  it("deletes an inactive agent and the operational records that would block it", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgent.findFirst.mockResolvedValue(baseAgent);
+    const service = createAgentsService(prisma);
+
+    await service.deleteAgent({ workspaceId: "workspace_a", agentId });
+
+    expect(prisma.assistantSuggestion.deleteMany).toHaveBeenCalledWith({
+      where: { workspaceId: "workspace_a", agentId }
+    });
+    expect(prisma.conversationFollowup.deleteMany).toHaveBeenCalledWith({
+      where: { workspaceId: "workspace_a", agentId }
+    });
+    expect(prisma.aiAgent.delete).toHaveBeenCalledWith({
+      where: {
+        workspaceId_id: { workspaceId: "workspace_a", id: agentId }
+      }
+    });
+  });
+
+  it("requires an agent to be inactive before deleting it", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgent.findFirst.mockResolvedValue({ ...baseAgent, status: "active" });
+    const service = createAgentsService(prisma);
+
+    await expect(
+      service.deleteAgent({ workspaceId: "workspace_a", agentId })
+    ).rejects.toMatchObject({
+      code: "AGENT_INVALID_CONFIG",
+      message: "Deactivate the agent before deleting it."
+    });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.aiAgent.delete).not.toHaveBeenCalled();
   });
 });

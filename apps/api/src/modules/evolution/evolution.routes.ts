@@ -24,10 +24,12 @@ import {
   evolutionWebhookSchema
 } from "./evolution.schemas.js";
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
+import type { AgentImprovementObserver } from "../agents/agent-improvements.service.js";
 
 export interface EvolutionRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
   followupService?: ConversationFollowupsObserver;
+  agentImprovements?: AgentImprovementObserver;
   webhookSecret: string;
   agentRuntime?: AutomationRunnerAgentRuntime & {
     prepareAudioMessage(input: {
@@ -763,6 +765,14 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           messageId: message.id
         }).catch((error: unknown) => {
           request.log.error({ error }, "Failed to schedule agent reply.");
+        });
+      } else if (options.agentImprovements) {
+        void options.agentImprovements.observeHumanReply({
+          workspaceId,
+          conversationId: message.conversationId,
+          messageId: message.id
+        }).catch((error: unknown) => {
+          request.log.error({ error }, "Failed to prepare agent improvement suggestion.");
         });
       }
 

@@ -9,6 +9,11 @@ import { createAgentFollowupRuntime } from "./modules/agents/agent-followup-runt
 import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
 import { createJevFollowupDecision } from "./modules/agents/jev-followup-decision.js";
 import { createJevReplyPreflight } from "./modules/agents/jev-reply-preflight.js";
+import {
+  createJevAgentImprovementDetector,
+  createJevAgentImprovementNormalizer
+} from "./modules/agents/jev-agent-improvement.js";
+import { createAgentImprovementsService } from "./modules/agents/agent-improvements.service.js";
 import { createAgentReplyScheduler } from "./modules/agents/agent-reply-scheduler.js";
 import { createConversationFollowupScheduler } from "./modules/followups/conversation-followup-scheduler.js";
 import { createConversationFollowupsService } from "./modules/followups/conversation-followups.service.js";
@@ -167,6 +172,23 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   const replyPreflight = env.JEV_API_KEY
     ? createJevReplyPreflight({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
     : undefined;
+  const agentImprovements = options.prismaEnabled === false
+    ? undefined
+    : createAgentImprovementsService(
+        app.prisma as unknown as Parameters<typeof createAgentImprovementsService>[0],
+        env.JEV_API_KEY
+          ? {
+              detector: createJevAgentImprovementDetector({
+                apiKey: env.JEV_API_KEY,
+                model: env.JEV_MODEL
+              }),
+              normalizer: createJevAgentImprovementNormalizer({
+                apiKey: env.JEV_API_KEY,
+                model: env.JEV_MODEL
+              })
+            }
+          : undefined
+      );
   const agentRuntime =
     options.prismaEnabled === false
       ? undefined
@@ -282,6 +304,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     assistantScheduler,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,
     followupService,
+    agentImprovements,
     agentRuntime,
     agentReplyScheduler,
     evolution: evolutionRuntime
@@ -290,7 +313,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(conversationsRoutes, {
     evolution: evolutionRuntime,
     assistantScheduler,
-    followupService
+    followupService,
+    agentImprovements
   });
   if (followupService && followupOutbound) {
     await app.register(conversationFollowupsRoutes, {
@@ -315,7 +339,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(agentPackageRoutes);
   await app.register(agentsRoutes, {
     publicTalkUrl: env.PUBLIC_TALK_URL,
-    uploadDir: env.TALK_UPLOAD_DIR
+    uploadDir: env.TALK_UPLOAD_DIR,
+    agentImprovements
   });
   await app.register(assistantRoutes);
   await app.register(assistantInboxRoutes, { scheduler: assistantScheduler, evolution: evolutionRuntime });

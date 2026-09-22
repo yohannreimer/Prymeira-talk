@@ -340,6 +340,7 @@ model Conversation {
   aiRuns       AiAgentRun[]
   aiPendingReplies AiAgentPendingReply[]
   followups    ConversationFollowup[]
+  improvementSuggestions AiAgentImprovement[]
   assistantState AssistantConversationState?
   assistantSuggestions AssistantSuggestion[]
 
@@ -374,6 +375,7 @@ model Message {
   assistantInputs AssistantConversationState[]
   assistantSends AssistantSuggestionSend[]
   anchoredFollowups ConversationFollowup[] @relation("ConversationFollowupAnchorMessage")
+  improvementSuggestions AiAgentImprovement[] @relation("AiAgentImprovementSourceMessage")
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, providerEventId])
@@ -669,6 +671,7 @@ model AiAgent {
   followups        ConversationFollowup[]
   allowedTags      AiAgentAllowedTag[]
   assistantSuggestions AssistantSuggestion[]
+  improvementSuggestions AiAgentImprovement[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status])
@@ -781,6 +784,38 @@ model AiKnowledgeSource {
   @@unique([workspaceId, id])
   @@index([workspaceId, agentId])
   @@map("ai_knowledge_sources")
+}
+
+model AiAgentImprovement {
+  id                      String   @id @default(uuid()) @db.Uuid
+  workspaceId             String   @map("workspace_id")
+  agentId                 String   @map("agent_id") @db.Uuid
+  conversationId          String   @map("conversation_id") @db.Uuid
+  sourceMessageId         String   @map("source_message_id") @db.Uuid
+  status                  String   @default("pending")
+  kind                    String
+  title                   String
+  content                 String
+  rationale               String?
+  sourceCustomerMessage   String   @map("source_customer_message")
+  sourceHumanReply        String   @map("source_human_reply")
+  detector                Json     @default("{}")
+  clarificationAnswers    Json     @default("{}") @map("clarification_answers")
+  clarificationNormalization Json @default("{}") @map("clarification_normalization")
+  reviewedAt              DateTime? @map("reviewed_at")
+  acceptedKnowledgeSourceId String? @map("accepted_knowledge_source_id") @db.Uuid
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  agent         AiAgent      @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
+  conversation  Conversation  @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  sourceMessage Message       @relation("AiAgentImprovementSourceMessage", fields: [workspaceId, sourceMessageId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, sourceMessageId])
+  @@index([workspaceId, agentId, status, createdAt])
+  @@index([workspaceId, conversationId, createdAt])
+  @@map("ai_agent_improvements")
 }
 
 model AiAgentSession {

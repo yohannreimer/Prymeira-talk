@@ -39,6 +39,7 @@ function auditResponse(input: {
   disposition: "send" | "suppress" | "handoff";
   followsPlan: number;
   assertsUnsupportedCommercialFact: number;
+  advancesOpenQualification?: number;
 }) {
   return new Response(JSON.stringify({
     model: "jev-1.13.0",
@@ -48,6 +49,10 @@ function auditResponse(input: {
       assertsUnsupportedCommercialFact: {
         type: "noul",
         noul: input.assertsUnsupportedCommercialFact
+      },
+      advancesOpenQualification: {
+        type: "noul",
+        noul: input.advancesOpenQualification ?? 0
       }
     }
   }));
@@ -74,6 +79,87 @@ describe("createJevReplyPreflight", () => {
     const body = JSON.parse(String(init?.body));
     expect(body.questions.disposition.instructions).toContain("not_sold");
     expect(body.questions.assertsUnsupportedCommercialFact.instructions).toContain("explicitamente não vendido");
+  });
+
+  it("sends the next valid qualification question even when JEV marks it as suppress", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
+      disposition: "suppress",
+      followsPlan: 0.98,
+      assertsUnsupportedCommercialFact: 0.02,
+      advancesOpenQualification: 0.96
+    }));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.audit!({
+      currentMessage: { id: "message-pickup", body: "Retirada", type: "text" },
+      conversationMessages: [
+        {
+          id: "message-question",
+          label: "atendente",
+          body: "Certo, Joinville. Será entrega ou retirada?",
+          type: "text",
+          createdAt: "2026-09-22T17:16:00.000Z"
+        },
+        {
+          id: "message-pickup",
+          label: "cliente",
+          body: "Retirada",
+          type: "text",
+          createdAt: "2026-09-22T17:16:30.000Z"
+        }
+      ],
+      selectedKnowledge: [],
+      candidateReply: "Certo, retirada em Joinville. Para seguir, informe a empresa e CNPJ ou, se for pessoa física, seu nome.",
+      plan: {
+        conversationStage: "qualification",
+        commercialPath: "stock",
+        nextAction: "ask_missing_technical"
+      }
+    })).resolves.toEqual({ outcome: "send" });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body));
+    expect(body.questions.advancesOpenQualification.instructions).toContain("empresa e CNPJ");
+  });
+
+  it("keeps a genuine duplicate or social closure suppressed", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
+      disposition: "suppress",
+      followsPlan: 0.97,
+      assertsUnsupportedCommercialFact: 0.01,
+      advancesOpenQualification: 0.03
+    }));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.audit!({
+      ...baseInput,
+      candidateReply: "Fico à disposição!",
+      plan: {
+        conversationStage: "closure",
+        commercialPath: "not_applicable",
+        nextAction: "silence"
+      }
+    })).resolves.toEqual({ outcome: "suppress", reason: "redundant_or_unhelpful" });
+  });
+
+  it("routes a reply that clearly conflicts with its plan to a human instead of silently suppressing it", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
+      disposition: "suppress",
+      followsPlan: 0.03,
+      assertsUnsupportedCommercialFact: 0.01,
+      advancesOpenQualification: 0.04
+    }));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.audit!({
+      ...baseInput,
+      candidateReply: "Posso entregar amanhã.",
+      plan: {
+        conversationStage: "qualification",
+        commercialPath: "stock",
+        nextAction: "ask_missing_technical"
+      }
+    })).resolves.toEqual({ outcome: "handoff", reason: "plan_mismatch" });
   });
 
   it("suppresses a social closure before a generative reply is created", async () => {
@@ -149,7 +235,8 @@ describe("createJevReplyPreflight", () => {
         answers: {
           disposition: choice("handoff"),
           followsPlan: { type: "noul", noul: 0.1 },
-          assertsUnsupportedCommercialFact: { type: "noul", noul: 0.98 }
+          assertsUnsupportedCommercialFact: { type: "noul", noul: 0.98 },
+          advancesOpenQualification: { type: "noul", noul: 0.01 }
         },
         usage: { input_tokens: 120, output_tokens: 6 }
       }))
@@ -179,7 +266,8 @@ describe("createJevReplyPreflight", () => {
             confidence: 0.3
           },
           followsPlan: { type: "noul", noul: 0.87 },
-          assertsUnsupportedCommercialFact: { type: "noul", noul: 0.09 }
+          assertsUnsupportedCommercialFact: { type: "noul", noul: 0.09 },
+          advancesOpenQualification: { type: "noul", noul: 0.02 }
         },
         usage: { input_tokens: 120, output_tokens: 6 }
       }))
@@ -204,7 +292,8 @@ describe("createJevReplyPreflight", () => {
         answers: {
           disposition: { type: "choice", choice: "handoff" },
           followsPlan: { type: "noul", noul: 0.91 },
-          assertsUnsupportedCommercialFact: { type: "noul", noul: 0.08 }
+          assertsUnsupportedCommercialFact: { type: "noul", noul: 0.08 },
+          advancesOpenQualification: { type: "noul", noul: 0.02 }
         }
       }))
     );

@@ -1,6 +1,7 @@
 import {
   agentPackageSchema,
   aiAgentSchema,
+  aiAgentImprovementSchema,
   aiKnowledgeSourceSchema,
   contactBoardMembershipSchema,
   contactBoardSchema,
@@ -18,6 +19,7 @@ import {
   type AgentPackage,
   type AiAgentAllowedAction,
   type AiAgentDto,
+  type AiAgentImprovementDto,
   type AiKnowledgeSourceDto,
   type ChannelDto,
   type ChannelOperationResultDto,
@@ -56,6 +58,7 @@ export type {
   AgentPackage,
   AiAgentAllowedAction,
   AiAgentDto,
+  AiAgentImprovementDto,
   AiKnowledgeSourceDto,
   TagDto
 } from "@prymeira-talk/shared";
@@ -1111,6 +1114,10 @@ export function parseTag(data: unknown): TagDto {
 
 function parseKnowledgeSource(data: unknown): AiKnowledgeSourceDto {
   return aiKnowledgeSourceSchema.parse(data);
+}
+
+function parseAgentImprovement(data: unknown): AiAgentImprovementDto {
+  return aiAgentImprovementSchema.parse(data);
 }
 
 function parseAgentTestChatResult(data: unknown): AgentTestChatResultDto {
@@ -3047,6 +3054,91 @@ export async function apiUpdateAgent(
   );
 }
 
+export async function apiDeleteAgent(
+  getToken: () => Promise<string | null>,
+  agentId: string
+): Promise<void> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/agents/${agentId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (!response.ok) {
+    const payload = await readApiErrorPayload(response, "Failed to delete agent");
+    throw new ApiRequestError(payload.message, payload.debug);
+  }
+}
+
+export async function apiGetAgentImprovements(
+  getToken: () => Promise<string | null>,
+  agentId: string,
+  status: AiAgentImprovementDto["status"] | "all" = "pending"
+): Promise<AiAgentImprovementDto[]> {
+  return fetchJson(
+    getToken,
+    `/agents/${agentId}/improvements?status=${encodeURIComponent(status)}`,
+    {},
+    (data) => Array.isArray(data) ? data.map(parseAgentImprovement) : [],
+    "Failed to load agent improvements"
+  );
+}
+
+export async function apiUpdateAgentImprovement(
+  getToken: () => Promise<string | null>,
+  agentId: string,
+  improvementId: string,
+  body: Partial<{
+    title: string;
+    content: string;
+    reject: true;
+    clarificationAnswers: Record<string, string>;
+  }>
+): Promise<AiAgentImprovementDto> {
+  return fetchJson(
+    getToken,
+    `/agents/${agentId}/improvements/${improvementId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    },
+    parseAgentImprovement,
+    "Failed to update agent improvement"
+  );
+}
+
+export async function apiNormalizeAgentImprovement(
+  getToken: () => Promise<string | null>,
+  agentId: string,
+  improvementId: string
+): Promise<AiAgentImprovementDto> {
+  return fetchJson(
+    getToken,
+    `/agents/${agentId}/improvements/${improvementId}/normalize`,
+    { method: "POST", body: JSON.stringify({}) },
+    parseAgentImprovement,
+    "Failed to normalize agent improvement"
+  );
+}
+
+export async function apiApproveAgentImprovement(
+  getToken: () => Promise<string | null>,
+  agentId: string,
+  improvementId: string,
+  body: Partial<{ title: string; content: string }> = {}
+): Promise<AiAgentImprovementDto> {
+  return fetchJson(
+    getToken,
+    `/agents/${agentId}/improvements/${improvementId}/approve`,
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    parseAgentImprovement,
+    "Failed to approve agent improvement"
+  );
+}
+
 export async function apiGetAgentKnowledge(
   getToken: () => Promise<string | null>,
   agentId: string
@@ -3082,6 +3174,45 @@ export async function apiCreateAgentKnowledge(
     parseKnowledgeSource,
     "Failed to create agent knowledge"
   );
+}
+
+export async function apiUpdateAgentKnowledge(
+  getToken: () => Promise<string | null>,
+  agentId: string,
+  sourceId: string,
+  body: Partial<{
+    title: string;
+    content: string | null;
+    fileUrl: string | null;
+  }>
+): Promise<AiKnowledgeSourceDto> {
+  return fetchJson(
+    getToken,
+    `/agents/${agentId}/knowledge/${sourceId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    },
+    parseKnowledgeSource,
+    "Failed to update agent knowledge"
+  );
+}
+
+export async function apiDeleteAgentKnowledge(
+  getToken: () => Promise<string | null>,
+  agentId: string,
+  sourceId: string
+): Promise<void> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/agents/${agentId}/knowledge/${sourceId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (!response.ok) {
+    const payload = await readApiErrorPayload(response, "Failed to delete agent knowledge");
+    throw new ApiRequestError(payload.message, payload.debug);
+  }
 }
 
 export async function apiUploadAgentKnowledge(

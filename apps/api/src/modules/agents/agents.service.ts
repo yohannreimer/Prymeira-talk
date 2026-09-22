@@ -59,9 +59,19 @@ type AgentCreateArgs = Parameters<PrismaClient["aiAgent"]["create"]>[0];
 type AgentFindFirstArgs = Parameters<PrismaClient["aiAgent"]["findFirst"]>[0];
 type AgentFindManyArgs = Parameters<PrismaClient["aiAgent"]["findMany"]>[0];
 type AgentUpdateArgs = Parameters<PrismaClient["aiAgent"]["update"]>[0];
+type AgentDeleteArgs = Parameters<PrismaClient["aiAgent"]["delete"]>[0];
 type KnowledgeCreateArgs = Parameters<PrismaClient["aiKnowledgeSource"]["create"]>[0];
+type KnowledgeFindFirstArgs = Parameters<PrismaClient["aiKnowledgeSource"]["findFirst"]>[0];
 type KnowledgeFindManyArgs = Parameters<PrismaClient["aiKnowledgeSource"]["findMany"]>[0];
+type KnowledgeUpdateArgs = Parameters<PrismaClient["aiKnowledgeSource"]["update"]>[0];
+type KnowledgeDeleteArgs = Parameters<PrismaClient["aiKnowledgeSource"]["delete"]>[0];
 type TagCountArgs = Parameters<PrismaClient["tag"]["count"]>[0];
+type AssistantSuggestionDeleteManyArgs = Parameters<
+  PrismaClient["assistantSuggestion"]["deleteMany"]
+>[0];
+type ConversationFollowupDeleteManyArgs = Parameters<
+  PrismaClient["conversationFollowup"]["deleteMany"]
+>[0];
 type AgentAllowedTagCreateManyArgs = Parameters<
   PrismaClient["aiAgentAllowedTag"]["createMany"]
 >[0];
@@ -73,6 +83,17 @@ type AgentsTransactionPrismaLike = {
   aiAgent: {
     create(args: AgentCreateArgs): Promise<AiAgentRecord>;
     update(args: AgentUpdateArgs): Promise<AiAgentRecord>;
+    delete(args: AgentDeleteArgs): Promise<AiAgentRecord>;
+  };
+  aiKnowledgeSource: {
+    update(args: KnowledgeUpdateArgs): Promise<AiKnowledgeSourceRecord>;
+    delete(args: KnowledgeDeleteArgs): Promise<AiKnowledgeSourceRecord>;
+  };
+  assistantSuggestion: {
+    deleteMany(args: AssistantSuggestionDeleteManyArgs): Promise<unknown>;
+  };
+  conversationFollowup: {
+    deleteMany(args: ConversationFollowupDeleteManyArgs): Promise<unknown>;
   };
   tag: {
     count(args: TagCountArgs): Promise<number>;
@@ -89,10 +110,20 @@ export interface AgentsPrismaLike {
     findFirst(args: AgentFindFirstArgs): Promise<AiAgentRecord | null>;
     create(args: AgentCreateArgs): Promise<AiAgentRecord>;
     update(args: AgentUpdateArgs): Promise<AiAgentRecord>;
+    delete(args: AgentDeleteArgs): Promise<AiAgentRecord>;
   };
   aiKnowledgeSource: {
+    findFirst(args: KnowledgeFindFirstArgs): Promise<AiKnowledgeSourceRecord | null>;
     findMany(args: KnowledgeFindManyArgs): Promise<AiKnowledgeSourceRecord[]>;
     create(args: KnowledgeCreateArgs): Promise<AiKnowledgeSourceRecord>;
+    update(args: KnowledgeUpdateArgs): Promise<AiKnowledgeSourceRecord>;
+    delete(args: KnowledgeDeleteArgs): Promise<AiKnowledgeSourceRecord>;
+  };
+  assistantSuggestion: {
+    deleteMany(args: AssistantSuggestionDeleteManyArgs): Promise<unknown>;
+  };
+  conversationFollowup: {
+    deleteMany(args: ConversationFollowupDeleteManyArgs): Promise<unknown>;
   };
   tag: {
     count(args: TagCountArgs): Promise<number>;
@@ -103,7 +134,10 @@ export interface AgentsPrismaLike {
 
 export class AgentsServiceError extends Error {
   constructor(
-    public readonly code: "AGENT_INVALID_CONFIG" | "AGENT_NOT_FOUND",
+    public readonly code:
+      | "AGENT_INVALID_CONFIG"
+      | "AGENT_NOT_FOUND"
+      | "KNOWLEDGE_SOURCE_NOT_FOUND",
     message: string
   ) {
     super(message);
@@ -318,6 +352,26 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
     return agent;
   }
 
+  async function ensureKnowledgeSource(input: {
+    workspaceId: string;
+    agentId: string;
+    sourceId: string;
+  }) {
+    const source = await prisma.aiKnowledgeSource.findFirst({
+      where: {
+        workspaceId: input.workspaceId,
+        agentId: input.agentId,
+        id: input.sourceId
+      }
+    });
+
+    if (!source) {
+      throw new AgentsServiceError("KNOWLEDGE_SOURCE_NOT_FOUND", "Knowledge source not found.");
+    }
+
+    return source;
+  }
+
   return {
     async listAgents(input: { workspaceId: string }): Promise<AiAgentDto[]> {
       const agents = await prisma.aiAgent.findMany({
@@ -486,6 +540,40 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       return toAgentDto(agent);
     },
 
+    async deleteAgent(input: { workspaceId: string; agentId: string }): Promise<void> {
+      const agent = await ensureAgent(input);
+
+      if (agent.status !== "inactive") {
+        throw new AgentsServiceError(
+          "AGENT_INVALID_CONFIG",
+          "Deactivate the agent before deleting it."
+        );
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.assistantSuggestion.deleteMany({
+          where: {
+            workspaceId: input.workspaceId,
+            agentId: input.agentId
+          }
+        });
+        await tx.conversationFollowup.deleteMany({
+          where: {
+            workspaceId: input.workspaceId,
+            agentId: input.agentId
+          }
+        });
+        await tx.aiAgent.delete({
+          where: {
+            workspaceId_id: {
+              workspaceId: input.workspaceId,
+              id: input.agentId
+            }
+          }
+        });
+      });
+    },
+
     async listKnowledgeSources(input: {
       workspaceId: string;
       agentId: string;
@@ -531,6 +619,58 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       });
 
       return toKnowledgeSourceDto(source);
+    },
+
+    async updateKnowledgeSource(input: {
+      workspaceId: string;
+      agentId: string;
+      sourceId: string;
+      data: Partial<{
+        title: string;
+        content: string | null;
+        fileUrl: string | null;
+      }>;
+    }): Promise<AiKnowledgeSourceDto> {
+      await ensureAgent(input);
+      await ensureKnowledgeSource(input);
+
+      const source = await prisma.aiKnowledgeSource.update({
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: input.sourceId
+          }
+        },
+        data: {
+          ...(input.data.title !== undefined ? { title: input.data.title.trim() } : {}),
+          ...(input.data.content !== undefined
+            ? { content: nullableTrim(input.data.content) }
+            : {}),
+          ...(input.data.fileUrl !== undefined
+            ? { fileUrl: nullableTrim(input.data.fileUrl) }
+            : {})
+        }
+      });
+
+      return toKnowledgeSourceDto(source);
+    },
+
+    async deleteKnowledgeSource(input: {
+      workspaceId: string;
+      agentId: string;
+      sourceId: string;
+    }): Promise<void> {
+      await ensureAgent(input);
+      await ensureKnowledgeSource(input);
+
+      await prisma.aiKnowledgeSource.delete({
+        where: {
+          workspaceId_id: {
+            workspaceId: input.workspaceId,
+            id: input.sourceId
+          }
+        }
+      });
     }
   };
 }

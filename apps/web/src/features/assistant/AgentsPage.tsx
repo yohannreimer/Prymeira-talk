@@ -2,31 +2,44 @@ import { useTalkAuth } from "../../app/auth";
 import {
   apiCreateAgent,
   apiCreateAgentKnowledge,
+  apiApproveAgentImprovement,
+  apiDeleteAgent,
+  apiDeleteAgentKnowledge,
   apiGetAgentKnowledge,
+  apiGetAgentImprovements,
   apiGetAgents,
   apiGetTags,
+  apiNormalizeAgentImprovement,
   apiSendAgentTestChatMessage,
   apiUpdateAgent,
+  apiUpdateAgentImprovement,
+  apiUpdateAgentKnowledge,
   apiUploadAgentKnowledge,
   ApiRequestError,
   type AgentTestChatMessageDto,
   type AiAgentAllowedAction,
   type AiAgentDto,
+  type AiAgentImprovementDto,
   type AiKnowledgeSourceDto,
   type TagDto
 } from "../../app/api";
 import {
   BookOpen,
   Bot,
+  Check,
   FileText,
   HelpCircle,
+  Lightbulb,
   MessageSquare,
+  Pencil,
   Plus,
   RefreshCw,
   RotateCcw,
   Save,
   Send,
   ShieldCheck,
+  Sparkles,
+  Trash2,
   UploadCloud
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -80,6 +93,13 @@ type KnowledgeUploadFormState = {
 };
 
 type KnowledgeInputMode = "file" | "text";
+type AgentDetailTab = "knowledge" | "improvements";
+type ImprovementFilter = AiAgentImprovementDto["status"] | "all";
+
+type ImprovementFormState = {
+  title: string;
+  content: string;
+};
 
 type AgentTestDebugState = Record<string, unknown> | null;
 
@@ -135,6 +155,10 @@ function emptyKnowledgeUploadForm(): KnowledgeUploadFormState {
   };
 }
 
+function emptyImprovementForm(): ImprovementFormState {
+  return { title: "", content: "" };
+}
+
 function agentStatusLabel(status: AiAgentDto["status"]) {
   return status === "active" ? "Ativo" : "Inativo";
 }
@@ -143,6 +167,26 @@ function knowledgeTypeLabel(type: AiKnowledgeSourceDto["type"]) {
   if (type === "faq") return "FAQ";
   if (type === "text") return "Texto";
   return "Arquivo";
+}
+
+function improvementKindLabel(kind: AiAgentImprovementDto["kind"]) {
+  if (kind === "not_sold") return "Produto não comercializado";
+  if (kind === "made_to_order") return "Sob encomenda";
+  if (kind === "policy") return "Política";
+  return "FAQ";
+}
+
+function improvementStatusLabel(status: AiAgentImprovementDto["status"]) {
+  if (status === "accepted") return "Incluída na base";
+  if (status === "rejected") return "Recusada";
+  return "Pendente de revisão";
+}
+
+function improvementScopeLabel(scope: NonNullable<AiAgentImprovementDto["clarification"]["normalization"]>["scope"]) {
+  if (scope === "requested_item_only") return "Apenas o item exatamente solicitado.";
+  if (scope === "requested_item_variations") return "As variações confirmadas do item solicitado.";
+  if (scope === "material_or_finish_family") return "A família de material ou acabamento confirmada.";
+  return "O escopo amplo de catálogo confirmado pelo time.";
 }
 
 function readKnowledgeCategory(source: AiKnowledgeSourceDto) {
@@ -214,6 +258,13 @@ export function AgentsPage() {
   const [knowledgeUploadForm, setKnowledgeUploadForm] =
     useState<KnowledgeUploadFormState>(emptyKnowledgeUploadForm);
   const [knowledgeInputMode, setKnowledgeInputMode] = useState<KnowledgeInputMode>("file");
+  const [editingKnowledgeId, setEditingKnowledgeId] = useState<string | null>(null);
+  const [agentDetailTab, setAgentDetailTab] = useState<AgentDetailTab>("knowledge");
+  const [improvements, setImprovements] = useState<AiAgentImprovementDto[]>([]);
+  const [improvementFilter, setImprovementFilter] = useState<ImprovementFilter>("pending");
+  const [editingImprovementId, setEditingImprovementId] = useState<string | null>(null);
+  const [improvementForm, setImprovementForm] = useState<ImprovementFormState>(emptyImprovementForm);
+  const [clarificationDrafts, setClarificationDrafts] = useState<Record<string, Record<string, string>>>({});
   const [testMessages, setTestMessages] = useState<AgentTestChatMessageDto[]>([]);
   const [testMessageBody, setTestMessageBody] = useState("");
   const [testDebug, setTestDebug] = useState<AgentTestDebugState>(null);
@@ -223,7 +274,11 @@ export function AgentsPage() {
   const [isLoadingAgents, setIsLoadingAgents] = useState(true);
   const [isLoadingKnowledge, setIsLoadingKnowledge] = useState(false);
   const [isSavingAgent, setIsSavingAgent] = useState(false);
+  const [isDeletingAgent, setIsDeletingAgent] = useState(false);
   const [isSavingKnowledge, setIsSavingKnowledge] = useState(false);
+  const [deletingKnowledgeId, setDeletingKnowledgeId] = useState<string | null>(null);
+  const [isLoadingImprovements, setIsLoadingImprovements] = useState(false);
+  const [improvementActionId, setImprovementActionId] = useState<string | null>(null);
   const [isUploadingKnowledge, setIsUploadingKnowledge] = useState(false);
   const [isSendingTestMessage, setIsSendingTestMessage] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -232,6 +287,24 @@ export function AgentsPage() {
   const selectedAgent = useMemo(
     () => agents.find((agent) => agent.id === selectedAgentId) ?? null,
     [agents, selectedAgentId]
+  );
+
+  const editingKnowledgeSource = useMemo(
+    () => knowledge.find((source) => source.id === editingKnowledgeId) ?? null,
+    [editingKnowledgeId, knowledge]
+  );
+
+  const pendingImprovementCount = useMemo(
+    () => improvements.filter((improvement) => improvement.status === "pending").length,
+    [improvements]
+  );
+
+  const visibleImprovements = useMemo(
+    () =>
+      improvementFilter === "all"
+        ? improvements
+        : improvements.filter((improvement) => improvement.status === improvementFilter),
+    [improvementFilter, improvements]
   );
 
   async function loadAgents() {
@@ -278,6 +351,22 @@ export function AgentsPage() {
     }
   }
 
+  async function loadImprovements(agentId: string) {
+    setIsLoadingImprovements(true);
+
+    try {
+      setImprovements(await apiGetAgentImprovements(getToken, agentId, "all"));
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Não foi possível carregar os aprimoramentos do agente."
+      );
+    } finally {
+      setIsLoadingImprovements(false);
+    }
+  }
+
   useEffect(() => {
     void loadAgents();
   }, [getToken]);
@@ -285,10 +374,13 @@ export function AgentsPage() {
   useEffect(() => {
     if (!selectedAgentId) {
       setKnowledge([]);
+      setImprovements([]);
+      setClarificationDrafts({});
       return;
     }
 
     void loadKnowledge(selectedAgentId);
+    void loadImprovements(selectedAgentId);
   }, [getToken, selectedAgentId]);
 
   function startNewAgent() {
@@ -299,6 +391,13 @@ export function AgentsPage() {
     setSelectedAgentId(null);
     setAgentForm(emptyAgentForm());
     setKnowledge([]);
+    setEditingKnowledgeId(null);
+    setKnowledgeForm(emptyKnowledgeForm());
+    setAgentDetailTab("knowledge");
+    setImprovements([]);
+    setEditingImprovementId(null);
+    setImprovementForm(emptyImprovementForm());
+    setClarificationDrafts({});
     setTestMessages([]);
     setTestMessageBody("");
     setTestDebug(null);
@@ -313,6 +412,13 @@ export function AgentsPage() {
     setTestFileKey((value) => value + 1);
     setSelectedAgentId(agent.id);
     setAgentForm(agentFormFromAgent(agent));
+    setEditingKnowledgeId(null);
+    setKnowledgeForm(emptyKnowledgeForm());
+    setAgentDetailTab("knowledge");
+    setImprovements([]);
+    setEditingImprovementId(null);
+    setImprovementForm(emptyImprovementForm());
+    setClarificationDrafts({});
     setTestMessages([]);
     setTestMessageBody("");
     setTestDebug(null);
@@ -365,7 +471,71 @@ export function AgentsPage() {
     }
   }
 
-  async function addKnowledge(event: FormEvent<HTMLFormElement>) {
+  async function deleteAgent() {
+    if (!selectedAgent || isDeletingAgent || selectedAgent.status !== "inactive") {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Excluir o agente “${selectedAgent.name}”? Esta ação apaga a base de conhecimento, sessões, sugestões e follow-ups ligados a ele. Antes de continuar, altere automações ou canais que ainda usam este agente.`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsDeletingAgent(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      await apiDeleteAgent(getToken, selectedAgent.id);
+      const remainingAgents = agents.filter((agent) => agent.id !== selectedAgent.id);
+      const nextAgent = remainingAgents[0] ?? null;
+
+      testRequestGeneration.current += 1;
+      setAgents(remainingAgents);
+      setSelectedAgentId(nextAgent?.id ?? null);
+      setAgentForm(nextAgent ? agentFormFromAgent(nextAgent) : emptyAgentForm());
+      setKnowledge([]);
+      setImprovements([]);
+      setClarificationDrafts({});
+      setKnowledgeForm(emptyKnowledgeForm());
+      setKnowledgeUploadForm(emptyKnowledgeUploadForm());
+      setEditingKnowledgeId(null);
+      setTestFile(null);
+      setTestFileKey((value) => value + 1);
+      setTestMessages([]);
+      setTestMessageBody("");
+      setTestDebug(null);
+      setNotice(`Agente “${selectedAgent.name}” excluído.`);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Não foi possível excluir o agente.");
+    } finally {
+      setIsDeletingAgent(false);
+    }
+  }
+
+  function startEditingKnowledge(source: AiKnowledgeSourceDto) {
+    setEditingKnowledgeId(source.id);
+    setKnowledgeForm({
+      type: source.type === "faq" ? "faq" : "text",
+      title: source.title,
+      content: source.content ?? "",
+      fileUrl: source.fileUrl ?? ""
+    });
+    setKnowledgeInputMode("text");
+    setError(null);
+    setNotice(null);
+  }
+
+  function cancelKnowledgeEditing() {
+    setEditingKnowledgeId(null);
+    setKnowledgeForm(emptyKnowledgeForm());
+    setError(null);
+  }
+
+  async function saveKnowledge(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (!selectedAgent) {
@@ -378,6 +548,27 @@ export function AgentsPage() {
     setNotice(null);
 
     try {
+      if (editingKnowledgeSource) {
+        const updatedSource = await apiUpdateAgentKnowledge(
+          getToken,
+          selectedAgent.id,
+          editingKnowledgeSource.id,
+          {
+            title: knowledgeForm.title,
+            content: knowledgeForm.content,
+            fileUrl: knowledgeForm.fileUrl.trim() || null
+          }
+        );
+
+        setKnowledge((current) =>
+          current.map((source) => source.id === updatedSource.id ? updatedSource : source)
+        );
+        setEditingKnowledgeId(null);
+        setKnowledgeForm(emptyKnowledgeForm());
+        setNotice("Conhecimento atualizado.");
+        return;
+      }
+
       const createdSource = await apiCreateAgentKnowledge(getToken, selectedAgent.id, {
         type: knowledgeForm.type,
         title: knowledgeForm.title,
@@ -392,6 +583,286 @@ export function AgentsPage() {
       setError(saveError instanceof Error ? saveError.message : "Não foi possível adicionar conhecimento.");
     } finally {
       setIsSavingKnowledge(false);
+    }
+  }
+
+  async function deleteKnowledgeSource(source: AiKnowledgeSourceDto) {
+    if (!selectedAgent || deletingKnowledgeId) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Excluir a fonte “${source.title}”? O agente deixará de usar esse conteúdo e a ação não poderá ser desfeita.`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingKnowledgeId(source.id);
+    setError(null);
+    setNotice(null);
+
+    try {
+      await apiDeleteAgentKnowledge(getToken, selectedAgent.id, source.id);
+      setKnowledge((current) => current.filter((item) => item.id !== source.id));
+      if (editingKnowledgeId === source.id) {
+        setEditingKnowledgeId(null);
+        setKnowledgeForm(emptyKnowledgeForm());
+      }
+      setNotice("Fonte de conhecimento excluída.");
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Não foi possível excluir a fonte de conhecimento."
+      );
+    } finally {
+      setDeletingKnowledgeId(null);
+    }
+  }
+
+  function startEditingImprovement(improvement: AiAgentImprovementDto) {
+    setEditingImprovementId(improvement.id);
+    setImprovementForm({
+      title: improvement.title,
+      content: improvement.content
+    });
+    setError(null);
+    setNotice(null);
+  }
+
+  function cancelImprovementEditing() {
+    setEditingImprovementId(null);
+    setImprovementForm(emptyImprovementForm());
+  }
+
+  function clarificationAnswersFor(improvement: AiAgentImprovementDto) {
+    return clarificationDrafts[improvement.id] ?? improvement.clarification.answers;
+  }
+
+  function clarificationIsComplete(improvement: AiAgentImprovementDto) {
+    const answers = clarificationAnswersFor(improvement);
+    return improvement.clarification.questions.every((question) => Boolean(answers[question.id]?.trim()));
+  }
+
+  function clarificationIsSaved(improvement: AiAgentImprovementDto) {
+    const answers = clarificationAnswersFor(improvement);
+    return improvement.clarification.questions.every(
+      (question) => answers[question.id]?.trim() === improvement.clarification.answers[question.id]?.trim()
+    );
+  }
+
+  function setClarificationAnswer(improvement: AiAgentImprovementDto, questionId: string, answer: string) {
+    setClarificationDrafts((current) => ({
+      ...current,
+      [improvement.id]: {
+        ...(current[improvement.id] ?? improvement.clarification.answers),
+        [questionId]: answer
+      }
+    }));
+  }
+
+  async function saveClarification(improvement: AiAgentImprovementDto) {
+    if (!selectedAgent || improvementActionId) {
+      return;
+    }
+
+    if (!clarificationIsComplete(improvement)) {
+      setError("Responda todas as perguntas de escopo. Quando não houver exceção, escreva “Nenhuma”.");
+      return;
+    }
+
+    setImprovementActionId(improvement.id);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const updated = await apiUpdateAgentImprovement(
+        getToken,
+        selectedAgent.id,
+        improvement.id,
+        { clarificationAnswers: clarificationAnswersFor(improvement) }
+      );
+      setImprovements((current) =>
+        current.map((item) => item.id === updated.id ? updated : item)
+      );
+      setClarificationDrafts((current) => ({
+        ...current,
+        [updated.id]: updated.clarification.answers
+      }));
+      setNotice("Escopo salvo e incorporado ao conhecimento proposto.");
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Não foi possível salvar as respostas de escopo."
+      );
+    } finally {
+      setImprovementActionId(null);
+    }
+  }
+
+  async function normalizeImprovement(improvement: AiAgentImprovementDto) {
+    if (!selectedAgent || improvementActionId) {
+      return;
+    }
+
+    if (!clarificationIsComplete(improvement) || !clarificationIsSaved(improvement)) {
+      setError("Complete e salve as respostas de escopo antes de pedir a interpretação do JEV.");
+      return;
+    }
+
+    setImprovementActionId(improvement.id);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const updated = await apiNormalizeAgentImprovement(getToken, selectedAgent.id, improvement.id);
+      setImprovements((current) =>
+        current.map((item) => item.id === updated.id ? updated : item)
+      );
+      setClarificationDrafts((current) => ({
+        ...current,
+        [updated.id]: updated.clarification.answers
+      }));
+      setNotice("O JEV interpretou o escopo e atualizou a regra proposta para sua revisão.");
+    } catch (normalizationError) {
+      setError(
+        normalizationError instanceof Error
+          ? normalizationError.message
+          : "Não foi possível interpretar o escopo com o JEV."
+      );
+    } finally {
+      setImprovementActionId(null);
+    }
+  }
+
+  async function saveImprovement(improvement: AiAgentImprovementDto) {
+    if (!selectedAgent || improvementActionId) {
+      return;
+    }
+
+    setImprovementActionId(improvement.id);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const updated = await apiUpdateAgentImprovement(
+        getToken,
+        selectedAgent.id,
+        improvement.id,
+        improvementForm
+      );
+      setImprovements((current) =>
+        current.map((item) => item.id === updated.id ? updated : item)
+      );
+      setEditingImprovementId(null);
+      setImprovementForm(emptyImprovementForm());
+      setNotice("Sugestão de aprimoramento atualizada.");
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Não foi possível atualizar a sugestão de aprimoramento."
+      );
+    } finally {
+      setImprovementActionId(null);
+    }
+  }
+
+  async function approveImprovement(improvement: AiAgentImprovementDto) {
+    if (!selectedAgent || improvementActionId) {
+      return;
+    }
+
+    const isEditing = editingImprovementId === improvement.id;
+    if (!clarificationIsComplete(improvement)) {
+      setError("Complete e salve as perguntas de escopo antes de incluir este aprimoramento na base.");
+      return;
+    }
+    if (!clarificationIsSaved(improvement)) {
+      setError("Salve as respostas de escopo antes de incluir este aprimoramento na base.");
+      return;
+    }
+    if (!improvement.clarification.normalization) {
+      setError("Peça para o JEV interpretar o escopo antes de incluir este aprimoramento na base.");
+      return;
+    }
+    const confirmed = window.confirm(
+      "Aprovar esta sugestão e incluí-la na base de conhecimento do agente? O conteúdo aprovado poderá ser usado nas próximas conversas equivalentes."
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setImprovementActionId(improvement.id);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const updated = await apiApproveAgentImprovement(
+        getToken,
+        selectedAgent.id,
+        improvement.id,
+        isEditing ? improvementForm : {}
+      );
+      setImprovements((current) =>
+        current.map((item) => item.id === updated.id ? updated : item)
+      );
+      setEditingImprovementId(null);
+      setImprovementForm(emptyImprovementForm());
+      await loadKnowledge(selectedAgent.id);
+      setNotice("Sugestão aprovada e adicionada à base de conhecimento.");
+    } catch (approveError) {
+      setError(
+        approveError instanceof Error
+          ? approveError.message
+          : "Não foi possível aprovar a sugestão de aprimoramento."
+      );
+    } finally {
+      setImprovementActionId(null);
+    }
+  }
+
+  async function rejectImprovement(improvement: AiAgentImprovementDto) {
+    if (!selectedAgent || improvementActionId) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Recusar a sugestão “${improvement.title}”? Ela não será adicionada à base de conhecimento.`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setImprovementActionId(improvement.id);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const updated = await apiUpdateAgentImprovement(
+        getToken,
+        selectedAgent.id,
+        improvement.id,
+        { reject: true }
+      );
+      setImprovements((current) =>
+        current.map((item) => item.id === updated.id ? updated : item)
+      );
+      if (editingImprovementId === improvement.id) {
+        cancelImprovementEditing();
+      }
+      setNotice("Sugestão de aprimoramento recusada.");
+    } catch (rejectError) {
+      setError(
+        rejectError instanceof Error
+          ? rejectError.message
+          : "Não foi possível recusar a sugestão de aprimoramento."
+      );
+    } finally {
+      setImprovementActionId(null);
     }
   }
 
@@ -530,6 +1001,8 @@ export function AgentsPage() {
     setSelectedAgentId(agent.id);
     setAgentForm(agentFormFromAgent(agent));
     setKnowledge([]);
+    setImprovements([]);
+    setClarificationDrafts({});
     setTestMessages([]);
     setTestDebug(null);
   }
@@ -740,8 +1213,61 @@ export function AgentsPage() {
               <Save size={15} />
               {isSavingAgent ? "Salvando" : selectedAgent ? "Salvar alterações" : "Criar agente"}
             </button>
+            {selectedAgent ? (
+              <section className="agent-danger-zone" aria-label="Excluir agente">
+                <div>
+                  <h3>Excluir agente</h3>
+                  <p>
+                    A exclusão remove a base de conhecimento e o histórico operacional deste agente.
+                    {selectedAgent.status === "active"
+                      ? " Inative e salve o agente antes de excluí-lo."
+                      : " Confira antes se automações ou canais ainda dependem dele."}
+                  </p>
+                </div>
+                <button
+                  className="secondary-button danger-button"
+                  type="button"
+                  onClick={() => void deleteAgent()}
+                  disabled={
+                    isDeletingAgent ||
+                    isSavingAgent ||
+                    isSendingTestMessage ||
+                    selectedAgent.status !== "inactive"
+                  }
+                >
+                  <Trash2 size={15} />
+                  {isDeletingAgent ? "Excluindo" : "Excluir agente"}
+                </button>
+              </section>
+            ) : null}
           </form>
 
+          <nav className="agent-detail-tabs" aria-label="Conteúdo do agente" role="tablist">
+            <button
+              className={agentDetailTab === "knowledge" ? "is-active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={agentDetailTab === "knowledge"}
+              onClick={() => setAgentDetailTab("knowledge")}
+            >
+              <BookOpen size={15} />
+              Conhecimento
+            </button>
+            <button
+              className={agentDetailTab === "improvements" ? "is-active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={agentDetailTab === "improvements"}
+              onClick={() => setAgentDetailTab("improvements")}
+              disabled={!selectedAgent}
+            >
+              <Lightbulb size={15} />
+              Aprimoramentos
+              {pendingImprovementCount > 0 ? <span>{pendingImprovementCount}</span> : null}
+            </button>
+          </nav>
+
+          {agentDetailTab === "knowledge" ? (
           <section className="module-panel agent-knowledge-panel" aria-label="Conhecimento">
             <div className="panel-title-row">
               <h2>Conhecimento</h2>
@@ -759,17 +1285,41 @@ export function AgentsPage() {
 
                 return (
                   <article className="knowledge-source-card" key={source.id}>
-                    <div className="assistant-log-header">
-                      <span className="status-badge status-badge--bot">
-                        {source.type === "faq" ? <HelpCircle size={12} /> : <FileText size={12} />}
-                        {knowledgeTypeLabel(source.type)}
-                      </span>
-                      {categoryLabel ? (
-                        <span className="status-badge status-badge--bot">{categoryLabel}</span>
-                      ) : null}
-                      <span className={`status-badge status-badge--${source.status === "ready" ? "open" : "waiting"}`}>
-                        {source.status}
-                      </span>
+                    <div className="knowledge-source-card__header">
+                      <div className="assistant-log-header">
+                        <span className="status-badge status-badge--bot">
+                          {source.type === "faq" ? <HelpCircle size={12} /> : <FileText size={12} />}
+                          {knowledgeTypeLabel(source.type)}
+                        </span>
+                        {categoryLabel ? (
+                          <span className="status-badge status-badge--bot">{categoryLabel}</span>
+                        ) : null}
+                        <span className={`status-badge status-badge--${source.status === "ready" ? "open" : "waiting"}`}>
+                          {source.status}
+                        </span>
+                      </div>
+                      <div className="knowledge-source-card__actions">
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => startEditingKnowledge(source)}
+                          disabled={!selectedAgent || Boolean(deletingKnowledgeId)}
+                          aria-label={`Editar conhecimento ${source.title}`}
+                        >
+                          <Pencil size={14} />
+                          Editar
+                        </button>
+                        <button
+                          className="secondary-button danger-button"
+                          type="button"
+                          onClick={() => void deleteKnowledgeSource(source)}
+                          disabled={!selectedAgent || Boolean(deletingKnowledgeId)}
+                          aria-label={`Excluir conhecimento ${source.title}`}
+                        >
+                          <Trash2 size={14} />
+                          {deletingKnowledgeId === source.id ? "Excluindo" : "Excluir"}
+                        </button>
+                      </div>
                     </div>
                     <strong>{source.title}</strong>
                     {source.content ? <p className="assistant-log-result">{source.content}</p> : null}
@@ -786,28 +1336,34 @@ export function AgentsPage() {
 
             <div className="knowledge-composer">
               <div className="panel-title-row compact">
-                <h3>Adicionar conhecimento</h3>
-                <div className="segmented-control" role="tablist" aria-label="Tipo de conhecimento">
-                  <button
-                    className={knowledgeInputMode === "file" ? "is-active" : ""}
-                    onClick={() => setKnowledgeInputMode("file")}
-                    type="button"
-                  >
-                    <UploadCloud size={14} />
-                    Arquivo
+                <h3>{editingKnowledgeSource ? "Editar conhecimento" : "Adicionar conhecimento"}</h3>
+                {editingKnowledgeSource ? (
+                  <button className="secondary-button" onClick={cancelKnowledgeEditing} type="button">
+                    Cancelar
                   </button>
-                  <button
-                    className={knowledgeInputMode === "text" ? "is-active" : ""}
-                    onClick={() => setKnowledgeInputMode("text")}
-                    type="button"
-                  >
-                    <MessageSquare size={14} />
-                    Texto
-                  </button>
-                </div>
+                ) : (
+                  <div className="segmented-control" role="tablist" aria-label="Tipo de conhecimento">
+                    <button
+                      className={knowledgeInputMode === "file" ? "is-active" : ""}
+                      onClick={() => setKnowledgeInputMode("file")}
+                      type="button"
+                    >
+                      <UploadCloud size={14} />
+                      Arquivo
+                    </button>
+                    <button
+                      className={knowledgeInputMode === "text" ? "is-active" : ""}
+                      onClick={() => setKnowledgeInputMode("text")}
+                      type="button"
+                    >
+                      <MessageSquare size={14} />
+                      Texto
+                    </button>
+                  </div>
+                )}
               </div>
 
-              {knowledgeInputMode === "file" ? (
+              {!editingKnowledgeSource && knowledgeInputMode === "file" ? (
                 <form className="module-form" onSubmit={(event) => void uploadKnowledge(event)}>
                   <div className="knowledge-form-grid">
                     <label className="form-field">
@@ -880,22 +1436,29 @@ export function AgentsPage() {
                   </button>
                 </form>
               ) : (
-                <form className="module-form" onSubmit={(event) => void addKnowledge(event)}>
+                <form className="module-form" onSubmit={(event) => void saveKnowledge(event)}>
                   <div className="knowledge-form-grid">
-                    <label className="form-field">
-                      Tipo
-                      <select
-                        value={knowledgeForm.type}
-                        onChange={(event) => setKnowledgeForm((current) => ({
-                          ...current,
-                          type: event.target.value as KnowledgeFormState["type"]
-                        }))}
-                        disabled={!selectedAgent}
-                      >
-                        <option value="faq">FAQ</option>
-                        <option value="text">Texto</option>
-                      </select>
-                    </label>
+                    {editingKnowledgeSource ? (
+                      <div className="form-field form-field--read-only">
+                        Tipo da fonte
+                        <strong>{knowledgeTypeLabel(editingKnowledgeSource.type)}</strong>
+                      </div>
+                    ) : (
+                      <label className="form-field">
+                        Tipo
+                        <select
+                          value={knowledgeForm.type}
+                          onChange={(event) => setKnowledgeForm((current) => ({
+                            ...current,
+                            type: event.target.value as KnowledgeFormState["type"]
+                          }))}
+                          disabled={!selectedAgent}
+                        >
+                          <option value="faq">FAQ</option>
+                          <option value="text">Texto</option>
+                        </select>
+                      </label>
+                    )}
                     <label className="form-field">
                       Título
                       <input
@@ -908,13 +1471,13 @@ export function AgentsPage() {
                     </label>
                   </div>
                   <label className="form-field">
-                    Conteúdo
+                    {editingKnowledgeSource?.type === "file" ? "Conteúdo extraído" : "Conteúdo"}
                     <textarea
                       value={knowledgeForm.content}
                       onChange={(event) => setKnowledgeForm((current) => ({ ...current, content: event.target.value }))}
                       placeholder="Resposta, instruções ou texto de referência para o agente."
                       disabled={!selectedAgent}
-                      required
+                      required={editingKnowledgeSource?.type !== "file"}
                       rows={5}
                     />
                   </label>
@@ -929,13 +1492,283 @@ export function AgentsPage() {
                     />
                   </label>
                   <button className="secondary-button" type="submit" disabled={!selectedAgent || isSavingKnowledge}>
-                    <Plus size={15} />
-                    {isSavingKnowledge ? "Adicionando" : "Adicionar texto"}
+                    {editingKnowledgeSource ? <Save size={15} /> : <Plus size={15} />}
+                    {isSavingKnowledge
+                      ? editingKnowledgeSource ? "Salvando" : "Adicionando"
+                      : editingKnowledgeSource ? "Salvar conhecimento" : "Adicionar texto"}
                   </button>
                 </form>
               )}
             </div>
           </section>
+          ) : (
+            <section className="module-panel agent-improvements-panel" aria-label="Aprimoramentos do agente">
+              <div className="panel-title-row">
+                <div>
+                  <h2>Aprimoramentos</h2>
+                  <p className="agent-improvements-panel__intro">
+                    O JEV identifica decisões explícitas do time depois de um repasse. Nada entra na
+                    base automaticamente: revise, edite, aprove ou recuse cada sugestão.
+                  </p>
+                </div>
+                <span className={`status-badge status-badge--${pendingImprovementCount > 0 ? "waiting" : "open"}`}>
+                  {pendingImprovementCount} pendentes
+                </span>
+              </div>
+
+              <div className="segmented-control" role="tablist" aria-label="Filtro de aprimoramentos">
+                {([
+                  ["pending", "Pendentes"],
+                  ["accepted", "Incluídas"],
+                  ["rejected", "Recusadas"],
+                  ["all", "Todas"]
+                ] as Array<[ImprovementFilter, string]>).map(([filter, label]) => (
+                  <button
+                    className={improvementFilter === filter ? "is-active" : ""}
+                    key={filter}
+                    onClick={() => setImprovementFilter(filter)}
+                    role="tab"
+                    aria-selected={improvementFilter === filter}
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="agent-improvement-list" aria-label="Sugestões de aprimoramento">
+                {isLoadingImprovements ? <p className="list-note">Carregando aprimoramentos...</p> : null}
+                {!isLoadingImprovements && !selectedAgent ? (
+                  <p className="list-note">Selecione um agente para revisar seus aprimoramentos.</p>
+                ) : null}
+                {!isLoadingImprovements && selectedAgent && visibleImprovements.length === 0 ? (
+                  <div className="agent-improvements-empty">
+                    <Lightbulb size={20} aria-hidden="true" />
+                    <div>
+                      <strong>Nenhuma sugestão nesta lista</strong>
+                      <p>
+                        Novas sugestões aparecem quando o humano resolve um repasse com uma orientação
+                        comercial clara e reutilizável.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+                {visibleImprovements.map((improvement) => {
+                  const isEditing = editingImprovementId === improvement.id;
+                  const isWorking = improvementActionId === improvement.id;
+                  const clarificationComplete = clarificationIsComplete(improvement);
+                  const clarificationSaved = clarificationIsSaved(improvement);
+                  const clarificationAnswers = clarificationAnswersFor(improvement);
+                  const normalization = improvement.clarification.normalization;
+
+                  return (
+                    <article className="agent-improvement-card" key={improvement.id}>
+                      <div className="agent-improvement-card__header">
+                        <div className="assistant-log-header">
+                          <span className="status-badge status-badge--bot">
+                            <Lightbulb size={12} />
+                            {improvementKindLabel(improvement.kind)}
+                          </span>
+                          <span className={`status-badge status-badge--${
+                            improvement.status === "pending"
+                              ? "waiting"
+                              : improvement.status === "accepted" ? "open" : "closed"
+                          }`}>
+                            {improvementStatusLabel(improvement.status)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {isEditing ? (
+                        <form
+                          className="module-form agent-improvement-form"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            void saveImprovement(improvement);
+                          }}
+                        >
+                          <label className="form-field">
+                            Título da regra
+                            <input
+                              value={improvementForm.title}
+                              onChange={(event) =>
+                                setImprovementForm((current) => ({ ...current, title: event.target.value }))
+                              }
+                              required
+                            />
+                          </label>
+                          <label className="form-field">
+                            Conteúdo que será usado pelo agente
+                            <textarea
+                              value={improvementForm.content}
+                              onChange={(event) =>
+                                setImprovementForm((current) => ({ ...current, content: event.target.value }))
+                              }
+                              rows={7}
+                              required
+                            />
+                          </label>
+                          <div className="agent-improvement-card__actions">
+                            <button className="secondary-button" type="button" onClick={cancelImprovementEditing}>
+                              Cancelar
+                            </button>
+                            <button className="secondary-button" type="submit" disabled={isWorking}>
+                              <Save size={15} />
+                              {isWorking ? "Salvando" : "Salvar edição"}
+                            </button>
+                            <button
+                              className="primary-button"
+                              type="button"
+                              disabled={
+                                isWorking ||
+                                !clarificationComplete ||
+                                !clarificationSaved ||
+                                !normalization
+                              }
+                              onClick={() => void approveImprovement(improvement)}
+                            >
+                              <Check size={15} />
+                              Aprovar e incluir
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <>
+                          <h3>{improvement.title}</h3>
+                          {improvement.rationale ? (
+                            <p className="agent-improvement-card__rationale">{improvement.rationale}</p>
+                          ) : null}
+                          <div className="agent-improvement-evidence">
+                            <div>
+                              <span>Pedido que originou a sugestão</span>
+                              <p>{improvement.sourceCustomerMessage}</p>
+                            </div>
+                            <div>
+                              <span>Resposta confirmada pelo humano</span>
+                              <p>{improvement.sourceHumanReply}</p>
+                            </div>
+                          </div>
+                          <div className="agent-improvement-proposal">
+                            <span>Conhecimento proposto</span>
+                            <p>{improvement.content}</p>
+                          </div>
+                          {improvement.status === "pending" ? (
+                            <>
+                              <section className="agent-improvement-clarification" aria-label="Completar escopo">
+                                <div className="agent-improvement-clarification__header">
+                                  <HelpCircle size={17} aria-hidden="true" />
+                                  <div>
+                                    <h4>Complete o escopo antes de incluir</h4>
+                                    <p>
+                                      Essas respostas tornam a regra específica. Se não houver exceção,
+                                      responda “Nenhuma”.
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="agent-improvement-clarification__questions">
+                                  {improvement.clarification.questions.map((question) => (
+                                    <label className="form-field" key={question.id}>
+                                      {question.question}
+                                      <textarea
+                                        rows={3}
+                                        value={clarificationAnswers[question.id] ?? ""}
+                                        onChange={(event) =>
+                                          setClarificationAnswer(improvement, question.id, event.target.value)
+                                        }
+                                        disabled={isWorking}
+                                        required
+                                      />
+                                      <small>{question.help}</small>
+                                    </label>
+                                  ))}
+                                </div>
+                                <div className="agent-improvement-card__actions">
+                                  <p className="agent-improvement-clarification__status">
+                                    {clarificationComplete
+                                      ? clarificationSaved
+                                        ? normalization
+                                          ? "Escopo interpretado pelo JEV. Revise a regra e inclua quando estiver correta."
+                                          : "Escopo salvo. Agora peça para o JEV interpretar a regra antes de incluir."
+                                        : "Respostas prontas. Salve o escopo para atualizar a regra proposta."
+                                      : "Responda as duas perguntas para liberar a aprovação."}
+                                  </p>
+                                  <button
+                                    className="secondary-button"
+                                    type="button"
+                                    onClick={() => void saveClarification(improvement)}
+                                    disabled={isWorking || !clarificationComplete || clarificationSaved}
+                                  >
+                                    <Save size={15} />
+                                    {isWorking ? "Salvando" : "Salvar escopo"}
+                                  </button>
+                                  <button
+                                    className="primary-button"
+                                    type="button"
+                                    onClick={() => void normalizeImprovement(improvement)}
+                                    disabled={isWorking || !clarificationComplete || !clarificationSaved}
+                                  >
+                                    <Sparkles size={15} />
+                                    {isWorking ? "Interpretando" : "Interpretar com JEV"}
+                                  </button>
+                                </div>
+                              </section>
+                              {normalization ? (
+                                <div className="agent-improvement-normalization" aria-live="polite">
+                                  <ShieldCheck size={17} aria-hidden="true" />
+                                  <div>
+                                    <strong>Regra interpretada pelo JEV</strong>
+                                    <p>
+                                      {improvementScopeLabel(normalization.scope)} {normalization.requiresHandoffOutsideScope
+                                        ? "Qualquer caso fora desse escopo seguirá para o comercial."
+                                        : "O escopo amplo foi confirmado pelo time."}
+                                    </p>
+                                  </div>
+                                </div>
+                              ) : null}
+                              <div className="agent-improvement-card__actions">
+                                <button
+                                  className="secondary-button"
+                                  type="button"
+                                  onClick={() => startEditingImprovement(improvement)}
+                                  disabled={isWorking}
+                                >
+                                  <Pencil size={15} />
+                                  Editar
+                                </button>
+                                <button
+                                  className="secondary-button danger-button"
+                                  type="button"
+                                  onClick={() => void rejectImprovement(improvement)}
+                                  disabled={isWorking}
+                                >
+                                  <Trash2 size={15} />
+                                  {isWorking ? "Processando" : "Recusar"}
+                                </button>
+                                <button
+                                  className="primary-button"
+                                  type="button"
+                                  onClick={() => void approveImprovement(improvement)}
+                                  disabled={
+                                    isWorking ||
+                                    !clarificationComplete ||
+                                    !clarificationSaved ||
+                                    !normalization
+                                  }
+                                >
+                                  <Check size={15} />
+                                  {isWorking ? "Processando" : "Aprovar e incluir"}
+                                </button>
+                              </div>
+                            </>
+                          ) : null}
+                        </>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
           <section className="module-panel agent-test-panel" aria-label="Teste do agente">
             <div className="panel-title-row">

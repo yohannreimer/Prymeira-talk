@@ -254,6 +254,51 @@ export const aiKnowledgeSourceSchema = z.object({
 });
 export type AiKnowledgeSourceDto = z.infer<typeof aiKnowledgeSourceSchema>;
 
+export const aiAgentImprovementStatusSchema = z.enum(["pending", "accepted", "rejected"]);
+export const aiAgentImprovementKindSchema = z.enum(["not_sold", "made_to_order", "policy", "faq"]);
+export const aiAgentImprovementClarificationQuestionSchema = z.object({
+  id: z.string().min(1),
+  question: z.string().min(1),
+  help: z.string().min(1)
+});
+export const aiAgentImprovementScopeSchema = z.enum([
+  "requested_item_only",
+  "requested_item_variations",
+  "material_or_finish_family",
+  "broader_catalog_scope"
+]);
+export const aiAgentImprovementNormalizationSchema = z.object({
+  scope: aiAgentImprovementScopeSchema,
+  confidence: z.number().min(0).max(1),
+  requiresHandoffOutsideScope: z.boolean()
+});
+
+export const aiAgentImprovementSchema = z.object({
+  id: z.string().min(1),
+  workspaceId: z.string().min(1),
+  agentId: z.string().min(1),
+  conversationId: z.string().min(1),
+  sourceMessageId: z.string().min(1),
+  status: aiAgentImprovementStatusSchema,
+  kind: aiAgentImprovementKindSchema,
+  title: z.string().min(1),
+  content: z.string().min(1),
+  rationale: z.string().nullable(),
+  sourceCustomerMessage: z.string().min(1),
+  sourceHumanReply: z.string().min(1),
+  detector: z.record(z.string(), z.unknown()),
+  clarification: z.object({
+    questions: z.array(aiAgentImprovementClarificationQuestionSchema).max(3),
+    answers: z.record(z.string(), z.string()),
+    normalization: aiAgentImprovementNormalizationSchema.nullable()
+  }),
+  reviewedAt: z.string().datetime().nullable(),
+  acceptedKnowledgeSourceId: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+export type AiAgentImprovementDto = z.infer<typeof aiAgentImprovementSchema>;
+
 export const aiAgentSessionSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),

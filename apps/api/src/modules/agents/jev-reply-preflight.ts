@@ -56,7 +56,7 @@ export type AgentReplyQualityAuditInput = AgentReplyPreflightInput & {
 export type AgentReplyQualityAuditResult =
   | { outcome: "send" }
   | { outcome: "suppress"; reason: "redundant_or_unhelpful" }
-  | { outcome: "handoff"; reason: "commercial_policy_risk" };
+  | { outcome: "handoff"; reason: "commercial_policy_risk" | "plan_mismatch" };
 
 export type AgentReplyPreflight = {
   evaluate(input: AgentReplyPreflightInput): Promise<AgentReplyPreflightResult>;
@@ -120,7 +120,8 @@ const auditResponseSchema = z.object({
   answers: z.object({
     disposition: choiceAnswerSchema(z.enum(["send", "suppress", "handoff"])),
     followsPlan: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) }),
-    assertsUnsupportedCommercialFact: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) })
+    assertsUnsupportedCommercialFact: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) }),
+    advancesOpenQualification: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) })
   })
 });
 
@@ -178,10 +179,10 @@ const replyPreflightQuestions = {
 const replyQualityAuditQuestions = {
   disposition: {
     type: "choice",
-    instructions: "A resposta candidata deve ser enviada, suprimida ou encaminhada para humano? Uma recusa objetiva de item explicitamente classificado como not_sold no plano e sustentado pelo conhecimento aprovado segue o plano. Uma mensagem que apenas informa que um vendedor verificará disponibilidade ou especificação também segue um plano handoff e não afirma que o item está disponível.",
+    instructions: "A resposta candidata deve ser enviada, suprimida ou encaminhada para humano? Avalie `candidateReply` contra `agentPreflight`, `currentMessage` e `conversationMessages`. Uma recusa objetiva de item explicitamente classificado como not_sold no plano e sustentado pelo conhecimento aprovado segue o plano. Uma mensagem que apenas informa que um vendedor verificará disponibilidade ou especificação também segue um plano handoff e não afirma que o item está disponível. Nunca escolha suppress para uma resposta que confirma uma informação nova do cliente e solicita o próximo dado necessário de uma qualificação em aberto.",
     criteria: {
-      send: "A resposta avança a demanda, segue o plano interno e não afirma fato comercial sem fonte aprovada. Inclui uma recusa curta sustentada quando agentPreflight.commercialPath é not_sold e um aviso de encaminhamento/verificação quando nextAction é handoff.",
-      suppress: "A resposta é redundante, socialmente desnecessária ou não ajuda a conversa.",
+      send: "A resposta avança a demanda, segue o plano interno e não afirma fato comercial sem fonte aprovada. Inclui uma recusa curta sustentada quando agentPreflight.commercialPath é not_sold e um aviso de encaminhamento/verificação quando nextAction é handoff. Exemplo: depois de o atendente perguntar 'Será entrega ou retirada?' e o cliente responder 'Retirada', a resposta 'Certo, retirada em Joinville. Para seguir, informe a empresa e CNPJ ou, se for pessoa física, seu nome.' deve ser send: confirma a informação nova e coleta o próximo dado, sem prometer preço, estoque ou prazo.",
+      suppress: "Somente quando candidateReply for uma duplicação real de resposta já enviada, ou uma confirmação social/encerramento sem pergunta, sem novo dado e sem pendência aberta. Não é suppress uma etapa que registra uma decisão do cliente e pede o próximo dado de qualificação.",
       handoff: "A resposta afirma, promete ou decide preço, estoque, prazo, frete, pagamento, especificação ou exceção sem base aprovada, ou conflita com o plano."
     }
   },
@@ -196,6 +197,14 @@ const replyQualityAuditQuestions = {
     criteria: {
       true: "Afirma ou promete estoque, preço, prazo, frete, pagamento, especificação, substituição ou equivalência técnica sem fonte aprovada.",
       false: "Não afirma, promete ou oferece fato comercial protegido sem evidência."
+    }
+  },
+  advancesOpenQualification: {
+    type: "noul",
+    instructions: "`candidateReply` confirma uma informação que o cliente acabou de fornecer e solicita o próximo dado necessário para uma qualificação ou cotação ainda em aberto? Use `agentPreflight`, `currentMessage` e `conversationMessages`. Considere dados de identificação, retirada ou entrega, cidade, medidas, quantidade e outros dados que faltam para seguir a etapa. Exemplo verdadeiro: após 'Será entrega ou retirada?' / 'Retirada', 'Certo, retirada em Joinville. Para seguir, informe a empresa e CNPJ ou, se for pessoa física, seu nome.' avança a qualificação.",
+    criteria: {
+      true: "A resposta reconhece dado novo e avança uma pendência aberta com a próxima pergunta ou ação necessária, sem inventar fato comercial.",
+      false: "A resposta apenas repete algo já respondido, encerra socialmente, ou não há qualificação/cotação pendente que ela faça avançar."
     }
   }
 } as const;
@@ -277,7 +286,13 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
       ) {
         return { outcome: "handoff", reason: "commercial_policy_risk" };
       }
-      if (answers.disposition.choice === "suppress" || answers.followsPlan.noul < 0.2) {
+      if (answers.followsPlan.noul < 0.2) {
+        return { outcome: "handoff", reason: "plan_mismatch" };
+      }
+      if (answers.advancesOpenQualification.noul >= 0.8) {
+        return { outcome: "send" };
+      }
+      if (answers.disposition.choice === "suppress") {
         return { outcome: "suppress", reason: "redundant_or_unhelpful" };
       }
       return { outcome: "send" };

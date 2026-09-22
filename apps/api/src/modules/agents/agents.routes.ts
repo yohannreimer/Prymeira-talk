@@ -9,6 +9,12 @@ import {
 import { AgentsServiceError, createAgentsService } from "./agents.service.js";
 import type { AgentsPrismaLike } from "./agents.service.js";
 import {
+  AgentImprovementsServiceError,
+  createAgentImprovementsService,
+  type AgentImprovementsService,
+  type AgentImprovementsPrismaLike
+} from "./agent-improvements.service.js";
+import {
   ingestKnowledgeUpload,
   MAX_KNOWLEDGE_UPLOAD_BYTES
 } from "./knowledge-ingestion.js";
@@ -20,6 +26,14 @@ const uuidSchema = z.string().uuid();
 
 const agentParamsSchema = z.object({
   agentId: uuidSchema
+});
+
+const knowledgeSourceParamsSchema = agentParamsSchema.extend({
+  sourceId: uuidSchema
+});
+
+const improvementParamsSchema = agentParamsSchema.extend({
+  improvementId: uuidSchema
 });
 
 const allowedActionSchema = z.enum([
@@ -59,6 +73,34 @@ const createKnowledgeSourceBodySchema = z.object({
   fileUrl: z.string().trim().max(1000).nullable().optional(),
   fileName: z.string().trim().max(240).nullable().optional(),
   mimeType: z.string().trim().max(160).nullable().optional()
+});
+
+const updateKnowledgeSourceBodySchema = z
+  .object({
+    title: z.string().trim().min(1).max(160).optional(),
+    content: z.string().trim().max(20000).nullable().optional(),
+    fileUrl: z.string().trim().max(1000).nullable().optional()
+  })
+  .refine((body) => Object.keys(body).length > 0, "At least one knowledge source field is required.");
+
+const improvementsQuerySchema = z.object({
+  status: z.enum(["pending", "accepted", "rejected", "all"]).optional()
+});
+
+const updateImprovementBodySchema = z
+  .object({
+    title: z.string().trim().min(1).max(160).optional(),
+    content: z.string().trim().min(1).max(20000).optional(),
+    reject: z.literal(true).optional(),
+    clarificationAnswers: z
+      .record(z.string().trim().min(1).max(80), z.string().trim().min(1).max(600))
+      .optional()
+  })
+  .refine((body) => Object.keys(body).length > 0, "At least one improvement field is required.");
+
+const approveImprovementBodySchema = z.object({
+  title: z.string().trim().min(1).max(160).optional(),
+  content: z.string().trim().min(1).max(20000).optional()
 });
 
 const knowledgeCategorySchema = z
@@ -124,6 +166,29 @@ function handleAgentTestChatError(reply: FastifyReply, error: unknown) {
   return handleAgentsError(reply, error);
 }
 
+function handleAgentImprovementsError(reply: FastifyReply, error: unknown) {
+  if (error instanceof AgentImprovementsServiceError) {
+    const statusCode =
+      error.code === "AGENT_NOT_FOUND" || error.code === "IMPROVEMENT_NOT_FOUND"
+        ? 404
+        : error.code === "IMPROVEMENT_NORMALIZER_UNAVAILABLE"
+          ? 503
+          : [
+              "IMPROVEMENT_CLARIFICATION_REQUIRED",
+              "IMPROVEMENT_NORMALIZATION_REQUIRED",
+              "IMPROVEMENT_NORMALIZATION_AMBIGUOUS"
+            ].includes(error.code)
+          ? 400
+          : 409;
+    return reply.code(statusCode).send({
+      code: error.code,
+      error: error.message
+    });
+  }
+
+  throw error;
+}
+
 function requireAgentManage(role: Parameters<typeof canPerform>[0], reply: FastifyReply) {
   if (canPerform(role, "automation.manage")) {
     return true;
@@ -155,10 +220,14 @@ function isKnowledgeUploadError(error: unknown): error is Error {
 export interface AgentsRoutesOptions {
   publicTalkUrl?: string;
   uploadDir?: string;
+  agentImprovements?: AgentImprovementsService;
 }
 
 export const agentsRoutes: FastifyPluginAsync<AgentsRoutesOptions> = async (app, options) => {
   const service = createAgentsService(app.prisma as unknown as AgentsPrismaLike);
+  const improvementsService = options.agentImprovements ?? createAgentImprovementsService(
+    app.prisma as unknown as AgentImprovementsPrismaLike
+  );
   const testChatService = createAgentTestChatService({
     prisma: app.prisma as unknown as AgentTestChatPrismaLike,
     provider: createSimulatedAgentProvider()
@@ -212,6 +281,123 @@ export const agentsRoutes: FastifyPluginAsync<AgentsRoutesOptions> = async (app,
     }
   });
 
+  app.delete("/agents/:agentId", async (request, reply) => {
+    if (!requireAgentManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = agentParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid agent delete request." });
+    }
+
+    try {
+      await service.deleteAgent({
+        workspaceId: request.talk.workspaceId,
+        agentId: params.data.agentId
+      });
+
+      return reply.code(204).send();
+    } catch (error) {
+      return handleAgentsError(reply, error);
+    }
+  });
+
+  app.get("/agents/:agentId/improvements", async (request, reply) => {
+    if (!requireAgentManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = agentParamsSchema.safeParse(request.params);
+    const query = improvementsQuerySchema.safeParse(request.query);
+    if (!params.success || !query.success) {
+      return reply.code(400).send({ error: "Invalid agent improvement request." });
+    }
+
+    try {
+      return await improvementsService.listImprovements({
+        workspaceId: request.talk.workspaceId,
+        agentId: params.data.agentId,
+        status: query.data.status
+      });
+    } catch (error) {
+      return handleAgentImprovementsError(reply, error);
+    }
+  });
+
+  app.patch("/agents/:agentId/improvements/:improvementId", async (request, reply) => {
+    if (!requireAgentManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = improvementParamsSchema.safeParse(request.params);
+    const body = updateImprovementBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid agent improvement update request." });
+    }
+
+    try {
+      return await improvementsService.updateImprovement({
+        workspaceId: request.talk.workspaceId,
+        agentId: params.data.agentId,
+        improvementId: params.data.improvementId,
+        title: body.data.title,
+        content: body.data.content,
+        reject: body.data.reject === true,
+        clarificationAnswers: body.data.clarificationAnswers
+      });
+    } catch (error) {
+      return handleAgentImprovementsError(reply, error);
+    }
+  });
+
+  app.post("/agents/:agentId/improvements/:improvementId/normalize", async (request, reply) => {
+    if (!requireAgentManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = improvementParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid agent improvement normalization request." });
+    }
+
+    try {
+      return await improvementsService.normalizeImprovement({
+        workspaceId: request.talk.workspaceId,
+        agentId: params.data.agentId,
+        improvementId: params.data.improvementId
+      });
+    } catch (error) {
+      return handleAgentImprovementsError(reply, error);
+    }
+  });
+
+  app.post("/agents/:agentId/improvements/:improvementId/approve", async (request, reply) => {
+    if (!requireAgentManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = improvementParamsSchema.safeParse(request.params);
+    const body = approveImprovementBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid agent improvement approval request." });
+    }
+
+    try {
+      const improvement = await improvementsService.approveImprovement({
+        workspaceId: request.talk.workspaceId,
+        agentId: params.data.agentId,
+        improvementId: params.data.improvementId,
+        title: body.data.title,
+        content: body.data.content
+      });
+
+      return reply.code(201).send(improvement);
+    } catch (error) {
+      return handleAgentImprovementsError(reply, error);
+    }
+  });
+
   app.get("/agents/:agentId/knowledge", async (request, reply) => {
     const params = agentParamsSchema.safeParse(request.params);
     if (!params.success) {
@@ -247,6 +433,52 @@ export const agentsRoutes: FastifyPluginAsync<AgentsRoutesOptions> = async (app,
       });
 
       return reply.code(201).send(source);
+    } catch (error) {
+      return handleAgentsError(reply, error);
+    }
+  });
+
+  app.patch("/agents/:agentId/knowledge/:sourceId", async (request, reply) => {
+    if (!requireAgentManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = knowledgeSourceParamsSchema.safeParse(request.params);
+    const body = updateKnowledgeSourceBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid knowledge source update request." });
+    }
+
+    try {
+      return await service.updateKnowledgeSource({
+        workspaceId: request.talk.workspaceId,
+        agentId: params.data.agentId,
+        sourceId: params.data.sourceId,
+        data: body.data
+      });
+    } catch (error) {
+      return handleAgentsError(reply, error);
+    }
+  });
+
+  app.delete("/agents/:agentId/knowledge/:sourceId", async (request, reply) => {
+    if (!requireAgentManage(request.talk.role, reply)) {
+      return reply;
+    }
+
+    const params = knowledgeSourceParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: "Invalid knowledge source delete request." });
+    }
+
+    try {
+      await service.deleteKnowledgeSource({
+        workspaceId: request.talk.workspaceId,
+        agentId: params.data.agentId,
+        sourceId: params.data.sourceId
+      });
+
+      return reply.code(204).send();
     } catch (error) {
       return handleAgentsError(reply, error);
     }

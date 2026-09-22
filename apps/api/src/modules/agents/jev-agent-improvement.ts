@@ -1,0 +1,265 @@
+import { z } from "zod";
+
+export type AgentImprovementKind = "not_sold" | "made_to_order" | "policy" | "faq";
+export type AgentImprovementScope =
+  | "requested_item_only"
+  | "requested_item_variations"
+  | "material_or_finish_family"
+  | "broader_catalog_scope";
+
+export type AgentImprovementDetectorInput = {
+  customerMessage: string;
+  humanReply: string;
+  conversationMessages: Array<{
+    label: "cliente" | "atendente" | "nota interna" | "sistema";
+    body: string | null;
+    createdAt: string | null;
+  }>;
+};
+
+export type AgentImprovementAssessment =
+  | { outcome: "ignore"; reason: string }
+  | { outcome: "suggest"; kind: AgentImprovementKind; confidence: number };
+
+export type AgentImprovementDetector = {
+  assess(input: AgentImprovementDetectorInput): Promise<AgentImprovementAssessment>;
+};
+
+export type AgentImprovementNormalizationInput = {
+  kind: AgentImprovementKind;
+  customerMessage: string;
+  humanReply: string;
+  proposedContent: string;
+  clarificationAnswers: Record<string, string>;
+};
+
+export type AgentImprovementNormalization = {
+  scope: AgentImprovementScope;
+  confidence: number;
+  requiresHandoffOutsideScope: boolean;
+};
+
+export type AgentImprovementNormalizationResult =
+  | { outcome: "ready"; normalization: AgentImprovementNormalization }
+  | { outcome: "needs_clarification"; reason: string };
+
+export type AgentImprovementNormalizer = {
+  normalize(input: AgentImprovementNormalizationInput): Promise<AgentImprovementNormalizationResult>;
+};
+
+export type JevAgentImprovementDetectorOptions = {
+  apiKey: string;
+  model?: string;
+  fetchImpl?: typeof fetch;
+};
+
+const kindSchema = z.enum(["not_sold", "made_to_order", "policy", "faq", "none"]);
+const normalizationScopeSchema = z.enum([
+  "requested_item_only",
+  "requested_item_variations",
+  "material_or_finish_family",
+  "broader_catalog_scope",
+  "ambiguous"
+]);
+
+const responseSchema = z.object({
+  answers: z.object({
+    shouldSuggest: z.object({
+      type: z.literal("noul"),
+      noul: z.number().min(0).max(1)
+    }),
+    kind: z.object({
+      type: z.literal("choice"),
+      choice: kindSchema,
+      confidence: z.number().min(0).max(1)
+    })
+  })
+});
+
+const normalizationResponseSchema = z.object({
+  answers: z.object({
+    scope: z.object({
+      type: z.literal("choice"),
+      choice: normalizationScopeSchema,
+      confidence: z.number().min(0).max(1)
+    }),
+    understandsAnswers: z.object({
+      type: z.literal("noul"),
+      noul: z.number().min(0).max(1)
+    }),
+    requiresHandoffOutsideScope: z.object({
+      type: z.literal("noul"),
+      noul: z.number().min(0).max(1)
+    })
+  })
+});
+
+const questions = {
+  shouldSuggest: {
+    type: "noul",
+    instructions:
+      "A última resposta do atendente humano, depois de um repasse do agente, confirma uma regra comercial ou de atendimento reutilizável para consultas futuras? Só considere verdadeiro quando a resposta for explícita e possa ser reutilizada sem inventar preço, estoque, prazo, frete, equivalência técnica ou uma decisão particular do cliente.",
+    criteria: {
+      true: "Há uma orientação explícita e durável, como item não comercializado, atendimento sob encomenda sob condições informadas, política fixa ou resposta recorrente de FAQ.",
+      false: "É apenas conferência pontual de estoque, preço, prazo, negociação, resposta incompleta, decisão individual ou algo que ainda exige confirmação humana."
+    }
+  },
+  kind: {
+    type: "choice",
+    instructions:
+      "Qual categoria descreve a regra confirmada pelo humano? Escolha none se não houver base segura para sugerir aprendizado.",
+    criteria: {
+      not_sold: "O humano confirmou que o item ou variação solicitada não é comercializado.",
+      made_to_order: "O humano confirmou de forma explícita um atendimento sob encomenda ou sob condição comercial reutilizável.",
+      policy: "O humano confirmou uma política estável de atendimento ou comercial.",
+      faq: "O humano deu uma resposta factual recorrente que pode entrar como FAQ.",
+      none: "Não há regra reutilizável com segurança."
+    }
+  }
+} as const;
+
+const normalizationQuestions = {
+  scope: {
+    type: "choice",
+    instructions:
+      "Interprete as respostas dadas pelo time, no contexto do pedido e da decisão humana. Qual é o alcance exato que pode ser usado pelo agente? Escolha ambiguous se as respostas não permitirem uma regra comercial clara.",
+    criteria: {
+      requested_item_only: "A decisão é limitada exatamente ao item solicitado, sem incluir suas medidas, acabamentos ou variações.",
+      requested_item_variations: "A decisão vale para as variações do mesmo item solicitado, como medidas, espessuras, acabamentos ou furações explicitamente abrangidos.",
+      material_or_finish_family: "A decisão se estende a uma família pelo material ou acabamento, como 'nada galvanizado', mas não deve ser aplicada a outros materiais sem confirmação.",
+      broader_catalog_scope: "O time confirmou uma regra de catálogo mais ampla e inequívoca, além do item, variações e família de material/acabamento.",
+      ambiguous: "Há conflito, falta de detalhe ou texto que não permite definir um escopo seguro."
+    }
+  },
+  understandsAnswers: {
+    type: "noul",
+    instructions:
+      "As respostas internas do time são suficientes, específicas e coerentes com o pedido e a decisão original para registrar uma regra? Não presuma informação ausente.",
+    criteria: {
+      true: "As respostas delimitam o escopo e as exceções de modo claro.",
+      false: "Há contradição, linguagem vaga, medida/especificação sem referência clara ou falta de escopo."
+    }
+  },
+  requiresHandoffOutsideScope: {
+    type: "noul",
+    instructions:
+      "Uma nova consulta que fique fora do escopo definido deve ser encaminhada ao comercial para não generalizar a regra?",
+    criteria: {
+      true: "Qualquer diferença fora do escopo precisa de confirmação humana.",
+      false: "A regra aprovada descreve explicitamente um catálogo amplo o bastante para responder sem encaminhamento."
+    }
+  }
+} as const;
+
+export function createJevAgentImprovementDetector(
+  input: JevAgentImprovementDetectorOptions
+): AgentImprovementDetector {
+  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+
+  return {
+    async assess(state) {
+      const response = await fetchImpl("https://api.typesafe.ai/v1/systemone", {
+        method: "POST",
+        signal: AbortSignal.timeout(12_000),
+        headers: {
+          Authorization: `Bearer ${input.apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: input.model ?? "jev-latest",
+          state: {
+            customerMessage: state.customerMessage.slice(0, 2_500),
+            humanReply: state.humanReply.slice(0, 2_500),
+            conversationMessages: state.conversationMessages.slice(-12).map((message) => ({
+              label: message.label,
+              body: message.body?.slice(0, 1_500) ?? null,
+              createdAt: message.createdAt
+            }))
+          },
+          questions
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`JEV_AGENT_IMPROVEMENT_HTTP_${response.status}`);
+      }
+
+      const parsed = responseSchema.safeParse(await response.json());
+      if (!parsed.success) {
+        throw new Error("JEV_AGENT_IMPROVEMENT_RESPONSE_INVALID");
+      }
+
+      const { shouldSuggest, kind } = parsed.data.answers;
+      const confidence = Math.min(shouldSuggest.noul, kind.confidence);
+
+      if (confidence < 0.8 || kind.choice === "none") {
+        return { outcome: "ignore", reason: "not_a_durable_human_resolution" };
+      }
+
+      return {
+        outcome: "suggest",
+        kind: kind.choice,
+        confidence
+      };
+    }
+  };
+}
+
+export function createJevAgentImprovementNormalizer(
+  input: JevAgentImprovementDetectorOptions
+): AgentImprovementNormalizer {
+  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+
+  return {
+    async normalize(state) {
+      const response = await fetchImpl("https://api.typesafe.ai/v1/systemone", {
+        method: "POST",
+        signal: AbortSignal.timeout(12_000),
+        headers: {
+          Authorization: `Bearer ${input.apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: input.model ?? "jev-latest",
+          state: {
+            kind: state.kind,
+            customerMessage: state.customerMessage.slice(0, 2_500),
+            humanReply: state.humanReply.slice(0, 2_500),
+            proposedContent: state.proposedContent.slice(0, 4_000),
+            clarificationAnswers: Object.fromEntries(
+              Object.entries(state.clarificationAnswers).map(([questionId, answer]) => [
+                questionId.slice(0, 80),
+                answer.slice(0, 800)
+              ])
+            )
+          },
+          questions: normalizationQuestions
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`JEV_AGENT_IMPROVEMENT_NORMALIZATION_HTTP_${response.status}`);
+      }
+
+      const parsed = normalizationResponseSchema.safeParse(await response.json());
+      if (!parsed.success) {
+        throw new Error("JEV_AGENT_IMPROVEMENT_NORMALIZATION_RESPONSE_INVALID");
+      }
+
+      const { scope, understandsAnswers, requiresHandoffOutsideScope } = parsed.data.answers;
+      const confidence = Math.min(scope.confidence, understandsAnswers.noul);
+      if (scope.choice === "ambiguous" || confidence < 0.8) {
+        return { outcome: "needs_clarification", reason: "normalization_ambiguous" };
+      }
+
+      return {
+        outcome: "ready",
+        normalization: {
+          scope: scope.choice,
+          confidence,
+          requiresHandoffOutsideScope: requiresHandoffOutsideScope.noul >= 0.5
+        }
+      };
+    }
+  };
+}
