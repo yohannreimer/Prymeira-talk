@@ -574,4 +574,44 @@ describe("Evolution client", () => {
     });
     await expect(promise).rejects.toBeInstanceOf(EvolutionClientError);
   });
+
+  it.each([
+    [[{ number: "5511999990000", exists: true, jid: "5511999990000@s.whatsapp.net" }]],
+    [{ data: [{ phone: "+55 (11) 99999-0000", available: false }] }],
+    [{ response: [{ id: "5511999990000@s.whatsapp.net", isWhatsApp: true }] }]
+  ])("checks number availability through the v2 chat endpoint without sending content", async (body) => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse(body));
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br/",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    const result = await client.checkWhatsappNumbersAvailability({
+      instanceName: "workspace instance",
+      numbers: ["5511999990000"]
+    });
+
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      "https://wsapi.yrdnegocios.com.br/chat/whatsappNumbers/workspace%20instance",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: "secret-key" },
+        body: JSON.stringify({ numbers: ["5511999990000"] })
+      })
+    );
+    expect(result.numbers[0]).toMatchObject({ phone: "5511999990000" });
+    const calledUrl = String(fetchMock.mock.calls[0]?.[0]).toLowerCase();
+    expect(calledUrl).not.toMatch(/\/message\/|\/send|media|template/);
+  });
+
+  it("rejects an invalid availability envelope and never falls back to a send endpoint", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse({ ok: true }));
+    const client = createEvolutionClient({ baseUrl: "https://evolution.invalid", apiKey: "key", fetch: fetchMock });
+
+    await expect(client.checkWhatsappNumbersAvailability({ instanceName: "instance", numbers: ["5511999990000"] }))
+      .rejects.toThrow("EVOLUTION_AVAILABILITY_INVALID_RESPONSE");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://evolution.invalid/chat/whatsappNumbers/instance");
+  });
 });

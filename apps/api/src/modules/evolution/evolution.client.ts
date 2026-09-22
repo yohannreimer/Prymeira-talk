@@ -131,6 +131,22 @@ export interface ListTemplatesResult {
   raw: unknown;
 }
 
+export interface CheckWhatsappNumbersAvailabilityInput {
+  instanceName: string;
+  numbers: string[];
+}
+
+export interface WhatsappNumberAvailability {
+  phone: string;
+  available: boolean;
+  jid?: string;
+}
+
+export interface CheckWhatsappNumbersAvailabilityResult {
+  numbers: WhatsappNumberAvailability[];
+  raw: unknown;
+}
+
 export interface EvolutionClient {
   sendAudio?(input: { instanceName: string; number: string; audio: string }): Promise<SendMediaResult>;
   fetchProfilePicture?(input: { instanceName: string; number: string }): Promise<string | null>;
@@ -142,6 +158,15 @@ export interface EvolutionClient {
   sendMedia(input: SendMediaInput): Promise<SendMediaResult>;
   sendTemplate?(input: SendTemplateInput): Promise<SendTemplateResult>;
   listTemplates?(input: ListTemplatesInput): Promise<ListTemplatesResult>;
+  checkWhatsappNumbersAvailability?(
+    input: CheckWhatsappNumbersAvailabilityInput
+  ): Promise<CheckWhatsappNumbersAvailabilityResult>;
+}
+
+export interface EvolutionClientWithAvailability extends EvolutionClient {
+  checkWhatsappNumbersAvailability(
+    input: CheckWhatsappNumbersAvailabilityInput
+  ): Promise<CheckWhatsappNumbersAvailabilityResult>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -306,6 +331,34 @@ function collectStrings(value: unknown): string[] {
   return [];
 }
 
+function availabilityRecords(value: unknown): unknown[] | null {
+  if (Array.isArray(value)) return value;
+  if (!isRecord(value)) return null;
+  for (const key of ["data", "response", "result", "numbers", "whatsappNumbers"]) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  return null;
+}
+
+function normalizeAvailabilityRecord(value: unknown): WhatsappNumberAvailability | null {
+  if (!isRecord(value)) return null;
+  const jid = getString(value, "jid") ?? getString(value, "id");
+  const rawPhone = getString(value, "number") ?? getString(value, "phone") ?? jid?.split("@")[0];
+  const phone = rawPhone?.replace(/\D/g, "") ?? "";
+  if (!/^\d{8,15}$/.test(phone)) return null;
+  const flag = value.exists ?? value.available ?? value.isWhatsApp ?? value.isWhatsapp;
+  const status = getString(value, "status")?.toLowerCase();
+  const available = typeof flag === "boolean"
+    ? flag
+    : status === "available" || status === "exists" || status === "registered"
+      ? true
+      : status === "unavailable" || status === "not_found" || status === "unregistered"
+        ? false
+        : null;
+  if (available === null) return null;
+  return { phone, available, ...(jid ? { jid } : {}) };
+}
+
 export function isEvolutionInstanceNameInUseError(error: unknown): error is EvolutionClientError {
   return (
     error instanceof EvolutionClientError &&
@@ -385,7 +438,7 @@ async function parseResponseBody(response: Response, maxBytes?: number) {
   }
 }
 
-export function createEvolutionClient(options: CreateEvolutionClientOptions): EvolutionClient {
+export function createEvolutionClient(options: CreateEvolutionClientOptions): EvolutionClientWithAvailability {
   const baseUrl = options.baseUrl.replace(/\/$/, "");
   const fetchImpl = options.fetch ?? globalThis.fetch;
 
@@ -425,6 +478,21 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
   }
 
   return {
+    async checkWhatsappNumbersAvailability(input) {
+      const responseBody = await post(
+        `/chat/whatsappNumbers/${encodeURIComponent(input.instanceName)}`,
+        { numbers: input.numbers }
+      );
+      const records = availabilityRecords(responseBody);
+      if (!records) throw new Error("EVOLUTION_AVAILABILITY_INVALID_RESPONSE");
+      return {
+        numbers: records.flatMap((record) => {
+          const normalized = normalizeAvailabilityRecord(record);
+          return normalized ? [normalized] : [];
+        }),
+        raw: responseBody
+      };
+    },
     async fetchProfilePicture(input) {
       const data = await post(`/chat/fetchProfilePictureUrl/${encodeURIComponent(input.instanceName)}`, { number: input.number }, 8000);
       const url = getString(data, 'profilePictureUrl');

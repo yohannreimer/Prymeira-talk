@@ -239,4 +239,43 @@ describe("Leads scheduler", () => {
     for (const release of releases.values()) release();
     await scheduler.stop();
   });
+
+  it("serializes WhatsApp availability jobs per Evolution instance while allowing another instance", async () => {
+    const requestId = randomUUID();
+    const whatsapp = (instanceName: string) => job({
+      id: randomUUID(),
+      operation: "whatsapp_availability",
+      input: {
+        requestId,
+        instanceName,
+        numbers: ["5511999990000"],
+        entries: [{ verificationId: randomUUID(), leadId: randomUUID(), phone: "5511999990000" }]
+      }
+    });
+    const first = whatsapp("instance-one");
+    const second = whatsapp("instance-one");
+    const other = whatsapp("instance-two");
+    const releases = new Map<string, () => void>();
+    const repo = repository({
+      findQueuedJobs: vi.fn(async () => [first, second, other]),
+      claimJob: vi.fn(async (_workspaceId: string, id: string) => {
+        const candidate = [first, second, other].find((item) => item.id === id)!;
+        return { ...candidate, status: "running", leaseToken: randomUUID(), leaseUntil: new Date(now.getTime() + 300_000) };
+      })
+    });
+    const service = {
+      runClaimedJob: vi.fn(async (candidate: LeadJob) => new Promise<void>((resolve) => releases.set(candidate.id, resolve))),
+      publishRecoveredJob: vi.fn(),
+      publishRecoveredList: vi.fn()
+    };
+    const scheduler = createLeadsScheduler({ repository: repo, service: service as any, batchSize: 3, maxConcurrentJobs: 3, now: () => now });
+
+    await scheduler.tick();
+
+    expect(service.runClaimedJob).toHaveBeenCalledWith(expect.objectContaining({ id: first.id }));
+    expect(service.runClaimedJob).not.toHaveBeenCalledWith(expect.objectContaining({ id: second.id }));
+    expect(service.runClaimedJob).toHaveBeenCalledWith(expect.objectContaining({ id: other.id }));
+    for (const release of releases.values()) release();
+    await scheduler.stop();
+  });
 });

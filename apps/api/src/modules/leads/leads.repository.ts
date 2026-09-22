@@ -7,15 +7,18 @@ import {
   type LeadJobStatus,
   type LeadList,
   type LeadSource,
+  type LeadWhatsappVerification,
   type PrismaClient
 } from "@prisma/client";
 import type {
   LeadJobDto,
   LeadListDto,
   LeadPaginatedResultDto,
-  LeadResultDto
+  LeadResultDto,
+  LeadWhatsappVerificationResult
 } from "@prymeira-talk/shared";
 import { canTransitionLeadJob } from "./leads.types.js";
+import { canonicalizePhone } from "../contacts/phone-normalization.js";
 
 type DateLike = Date | string;
 
@@ -31,6 +34,7 @@ export type LeadsErrorCode =
   | "LEAD_GEOCODER_UNAVAILABLE"
   | "LEAD_SIMILARITY_SEED_INVALID"
   | "LEAD_IDEMPOTENCY_CONFLICT"
+  | "LEAD_EVOLUTION_NOT_CONNECTED"
   | "LEAD_LEASE_LOST";
 
 export class LeadsDomainError extends Error {
@@ -191,7 +195,7 @@ export function toLeadJobDto(record: LeadJob): LeadJobDto {
   };
 }
 
-export function toLeadResultDto(record: Lead): LeadResultDto {
+export function toLeadResultDto(record: Lead, whatsappStatus: LeadResultDto["whatsappStatus"] = "unverified"): LeadResultDto {
   return {
     id: record.id,
     workspaceId: record.workspaceId,
@@ -216,10 +220,35 @@ export function toLeadResultDto(record: Lead): LeadResultDto {
     latitude: record.latitude,
     longitude: record.longitude,
     sourceUrl: record.sourceUrl,
-    whatsappStatus: "unverified",
+    whatsappStatus,
     createdAt: toIso(record.createdAt),
     updatedAt: toIso(record.updatedAt)
   };
+}
+
+function toWhatsappVerificationResult(record: LeadWhatsappVerification): LeadWhatsappVerificationResult {
+  return {
+    leadId: record.leadId,
+    normalizedPhone: record.normalizedPhone,
+    status: record.status,
+    checkedAt: toNullableIso(record.checkedAt),
+    errorMessage: record.errorMessage
+  };
+}
+
+function inputRecord(value: Prisma.JsonValue): Record<string, Prisma.JsonValue> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, Prisma.JsonValue>
+    : {};
+}
+
+function verificationIds(value: Prisma.JsonValue) {
+  const entries = inputRecord(value).entries;
+  if (!Array.isArray(entries)) return [];
+  return entries.flatMap((entry) => {
+    const id = inputRecord(entry).verificationId;
+    return typeof id === "string" ? [id] : [];
+  });
 }
 
 function toArtifactMetadata(record: LeadArtifact): LeadArtifactMetadata {
@@ -364,7 +393,191 @@ export class LeadsRepository {
       }),
       this.prisma.lead.count({ where })
     ]);
-    return { items: rows.map(toLeadResultDto), page: input.page, pageSize: input.pageSize, total };
+    const phones = rows.flatMap((row) => row.normalizedPhone ? [canonicalizePhone(row.normalizedPhone)] : []);
+    const recent = phones.length === 0 ? [] : await this.prisma.leadWhatsappVerification.findMany({
+      where: {
+        workspaceId: input.workspaceId,
+        leadId: { in: rows.map((row) => row.id) },
+        normalizedPhone: { in: phones }
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }]
+    });
+    const latest = new Map<string, LeadWhatsappVerification>();
+    for (const verification of recent) {
+      const key = `${verification.leadId}:${canonicalizePhone(verification.normalizedPhone)}`;
+      if (!latest.has(key)) latest.set(key, verification);
+    }
+    return {
+      items: rows.map((row) => toLeadResultDto(
+        row,
+        row.normalizedPhone ? latest.get(`${row.id}:${canonicalizePhone(row.normalizedPhone)}`)?.status : undefined
+      )),
+      page: input.page,
+      pageSize: input.pageSize,
+      total
+    };
+  }
+
+  async getWhatsappVerificationContext(workspaceId: string, listId: string, leadIds: string[]) {
+    const [list, leads, channels] = await Promise.all([
+      this.prisma.leadList.findFirst({ where: { workspaceId, id: listId } }),
+      this.prisma.lead.findMany({ where: { workspaceId, listId, id: { in: leadIds } } }),
+      this.prisma.channel.findMany({
+        where: { workspaceId, provider: "evolution", status: "connected" },
+        orderBy: [{ updatedAt: "desc" }, { id: "asc" }]
+      })
+    ]);
+    if (!list || leads.length !== leadIds.length) {
+      throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list or selected lead not found.");
+    }
+    const channel = channels.find((candidate) => candidate.providerKey.trim().length > 0);
+    if (!channel) {
+      throw new LeadsDomainError(
+        "LEAD_EVOLUTION_NOT_CONNECTED",
+        "A connected Evolution channel is required to check WhatsApp availability."
+      );
+    }
+    return { list: toLeadListDto(list), leads, channel };
+  }
+
+  async createWhatsappVerificationJobs(input: {
+    workspaceId: string;
+    listId: string;
+    channelId: string;
+    instanceName: string;
+    idempotencyKey: string;
+    requestId: string;
+    requestFingerprint: string;
+    batches: Array<Array<{ phone: string; leadIds: string[] }>>;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.leadJob.findUnique({
+        where: {
+          workspaceId_operation_idempotencyKey: {
+            workspaceId: input.workspaceId,
+            operation: "whatsapp_availability",
+            idempotencyKey: input.idempotencyKey
+          }
+        }
+      });
+      if (existing) {
+        if (inputRecord(existing.input).requestFingerprint !== input.requestFingerprint) {
+          throw new LeadsDomainError("LEAD_IDEMPOTENCY_CONFLICT", "Idempotency key was already used for a different lead request.");
+        }
+        const requestId = String(inputRecord(existing.input).requestId ?? "");
+        const jobs = await tx.leadJob.findMany({
+          where: { workspaceId: input.workspaceId, operation: "whatsapp_availability", input: { path: ["requestId"], equals: requestId } },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+        });
+        const ids = jobs.flatMap((job) => verificationIds(job.input));
+        const rows = ids.length === 0 ? [] : await tx.leadWhatsappVerification.findMany({
+          where: { workspaceId: input.workspaceId, id: { in: ids } },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+        });
+        return {
+          requestId,
+          jobs: jobs.map(toLeadJobDto),
+          requestedCount: new Set(rows.map((row) => row.leadId)).size,
+          verifications: rows.map(toWhatsappVerificationResult),
+          replayed: true
+        };
+      }
+
+      const jobs: LeadJob[] = [];
+      const rows: LeadWhatsappVerification[] = [];
+      for (const [batchIndex, batch] of input.batches.entries()) {
+        const entries: Array<{ verificationId: string; leadId: string; phone: string }> = [];
+        for (const item of batch) {
+          for (const leadId of item.leadIds) {
+            const row = await tx.leadWhatsappVerification.create({
+              data: {
+                workspaceId: input.workspaceId,
+                leadId,
+                normalizedPhone: item.phone,
+                channelId: input.channelId,
+                status: "checking"
+              }
+            });
+            rows.push(row);
+            entries.push({ verificationId: row.id, leadId, phone: item.phone });
+          }
+        }
+        jobs.push(await tx.leadJob.create({
+          data: {
+            workspaceId: input.workspaceId,
+            listId: input.listId,
+            operation: "whatsapp_availability",
+            idempotencyKey: batchIndex === 0 ? input.idempotencyKey : `${input.idempotencyKey}:batch:${batchIndex}`,
+            input: {
+              requestId: input.requestId,
+              requestFingerprint: input.requestFingerprint,
+              batchIndex,
+              totalBatches: input.batches.length,
+              channelId: input.channelId,
+              instanceName: input.instanceName,
+              numbers: batch.map((item) => item.phone),
+              entries
+            },
+            output: { totalCount: entries.length, processedCount: 0, failedCount: 0 }
+          }
+        }));
+      }
+      return {
+        requestId: input.requestId,
+        jobs: jobs.map(toLeadJobDto),
+        requestedCount: new Set(rows.map((row) => row.leadId)).size,
+        verifications: rows.map(toWhatsappVerificationResult),
+        replayed: false
+      };
+    });
+  }
+
+  async fencedFinishWhatsappVerificationJob(input: {
+    job: LeadJobFence;
+    now: Date;
+    results: Array<{ verificationId: string; status: "available" | "unavailable" | "failed"; errorMessage: string | null }>;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      const current = await tx.leadJob.findFirst({
+        where: {
+          workspaceId: input.job.workspaceId,
+          id: input.job.id,
+          listId: input.job.listId,
+          status: "running",
+          leaseToken: input.job.leaseToken,
+          leaseUntil: { gt: input.now }
+        }
+      });
+      if (!current) throw new LeadLeaseLostError();
+      const allowed = new Set(verificationIds(current.input));
+      if (input.results.some((result) => !allowed.has(result.verificationId))) {
+        throw new LeadsDomainError("LEAD_INVALID_INPUT", "Verification result does not belong to the claimed job.");
+      }
+      for (const result of input.results) {
+        const updated = await tx.leadWhatsappVerification.updateMany({
+          where: { workspaceId: input.job.workspaceId, id: result.verificationId, status: "checking" },
+          data: { status: result.status, errorMessage: result.errorMessage, checkedAt: input.now }
+        });
+        if (updated.count !== 1) throw new LeadLeaseLostError();
+      }
+      const failedCount = input.results.filter((result) => result.status === "failed").length;
+      const status = failedCount === 0 ? "completed" : failedCount === input.results.length ? "failed" : "partial";
+      const finished = await tx.leadJob.updateMany({
+        where: { workspaceId: input.job.workspaceId, id: input.job.id, status: "running", leaseToken: input.job.leaseToken },
+        data: {
+          status,
+          output: { totalCount: input.results.length, processedCount: input.results.length - failedCount, failedCount },
+          errorMessage: failedCount > 0 ? "LEAD_WHATSAPP_PARTIAL_FAILURE" : null,
+          leaseToken: null,
+          leaseUntil: null,
+          finishedAt: input.now
+        }
+      });
+      if (finished.count !== 1) throw new LeadLeaseLostError();
+      const job = await tx.leadJob.findFirst({ where: { workspaceId: input.job.workspaceId, id: input.job.id } });
+      if (!job) throw new LeadLeaseLostError();
+      return toLeadJobDto(job);
+    });
   }
 
   async getLeadForSimilarity(workspaceId: string, listId: string, leadId: string) {
@@ -634,25 +847,35 @@ export class LeadsRepository {
         if (result.count !== 1) return null;
         let list: LeadList | null = null;
         if (exhausted) {
-          const currentList = await tx.leadList.findFirst({
-            where: { workspaceId: job.workspaceId, id: job.listId }
-          });
-          if (!currentList) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
-          const failedCount = Math.max(
-            currentList.failedCount,
-            currentList.totalCount - currentList.processedCount,
-            1
-          );
-          const totalCount = Math.max(currentList.totalCount, currentList.processedCount + failedCount);
-          await tx.leadList.updateMany({
-            where: { workspaceId: job.workspaceId, id: job.listId },
-            data: { totalCount, failedCount, completedAt: now }
-          });
-          await tx.leadJob.updateMany({
-            where: { workspaceId: job.workspaceId, id: job.id, listId: job.listId, status: "failed" },
-            data: { output: { totalCount, processedCount: currentList.processedCount, failedCount } }
-          });
-          list = await tx.leadList.findFirst({ where: { workspaceId: job.workspaceId, id: job.listId } });
+          if (job.operation === "whatsapp_availability") {
+            const ids = verificationIds(job.input);
+            if (ids.length > 0) {
+              await tx.leadWhatsappVerification.updateMany({
+                where: { workspaceId: job.workspaceId, id: { in: ids }, status: "checking" },
+                data: { status: "failed", errorMessage: "LEAD_JOB_ATTEMPTS_EXHAUSTED", checkedAt: now }
+              });
+            }
+          } else {
+            const currentList = await tx.leadList.findFirst({
+              where: { workspaceId: job.workspaceId, id: job.listId }
+            });
+            if (!currentList) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
+            const failedCount = Math.max(
+              currentList.failedCount,
+              currentList.totalCount - currentList.processedCount,
+              1
+            );
+            const totalCount = Math.max(currentList.totalCount, currentList.processedCount + failedCount);
+            await tx.leadList.updateMany({
+              where: { workspaceId: job.workspaceId, id: job.listId },
+              data: { totalCount, failedCount, completedAt: now }
+            });
+            await tx.leadJob.updateMany({
+              where: { workspaceId: job.workspaceId, id: job.id, listId: job.listId, status: "failed" },
+              data: { output: { totalCount, processedCount: currentList.processedCount, failedCount } }
+            });
+            list = await tx.leadList.findFirst({ where: { workspaceId: job.workspaceId, id: job.listId } });
+          }
         }
         const updatedJob = await tx.leadJob.findFirst({ where: { workspaceId: job.workspaceId, id: job.id } });
         if (!updatedJob) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead job not found.");
@@ -1003,6 +1226,9 @@ export type LeadsRepositoryLike = Pick<
   | "updateList"
   | "deleteList"
   | "listLeads"
+  | "getWhatsappVerificationContext"
+  | "createWhatsappVerificationJobs"
+  | "fencedFinishWhatsappVerificationJob"
   | "getLeadForSimilarity"
   | "getJob"
   | "retryGoogleJob"

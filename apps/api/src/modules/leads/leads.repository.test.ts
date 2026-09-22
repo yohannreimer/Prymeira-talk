@@ -86,6 +86,87 @@ describe("Leads repository workspace isolation", () => {
     });
   });
 
+  it("requires every selected lead/list and connected Evolution channel in the caller workspace", async () => {
+    const leadFindMany = vi.fn(async () => []);
+    const channelFindMany = vi.fn(async () => []);
+    const repository = new LeadsRepository({
+      leadList: { findFirst: vi.fn(async () => list()) },
+      lead: { findMany: leadFindMany },
+      channel: { findMany: channelFindMany }
+    } as never);
+
+    await expect(repository.getWhatsappVerificationContext(foreignWorkspaceId, listId, [leadId]))
+      .rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
+    expect(leadFindMany).toHaveBeenCalledWith({ where: { workspaceId: foreignWorkspaceId, listId, id: { in: [leadId] } } });
+    expect(channelFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { workspaceId: foreignWorkspaceId, provider: "evolution", status: "connected" }
+    }));
+  });
+
+  it("uses only the newest verification for the lead's normalized phone in list results", async () => {
+    const lead = {
+      id: leadId, workspaceId, listId, source: "receita_federal", sourceExternalId: null,
+      sourceDedupeKey: "lead", companyName: null, tradeName: null, cnpj: null, cnaePrimary: null,
+      cnaeSecondary: [], category: null, address: null, city: null, state: null, postalCode: null,
+      phones: ["5511999990000"], normalizedPhone: "5511999990000", email: null, website: null,
+      rating: null, reviewCount: null, latitude: null, longitude: null, sourceUrl: null,
+      sourceSnapshot: {}, createdAt: now, updatedAt: now
+    };
+    const repository = new LeadsRepository({
+      leadList: { findFirst: vi.fn(async () => list()) },
+      lead: { findMany: vi.fn(async () => [lead]), count: vi.fn(async () => 1) },
+      leadWhatsappVerification: { findMany: vi.fn(async () => [
+        { id: randomUUID(), workspaceId, leadId, normalizedPhone: lead.normalizedPhone, channelId: null, status: "available", errorMessage: null, checkedAt: now, createdAt: new Date(now.getTime() + 2), updatedAt: now },
+        { id: randomUUID(), workspaceId, leadId, normalizedPhone: lead.normalizedPhone, channelId: null, status: "unavailable", errorMessage: null, checkedAt: now, createdAt: now, updatedAt: now }
+      ]) },
+      $transaction: vi.fn(async (operations: unknown[]) => Promise.all(operations))
+    } as never);
+
+    const result = await repository.listLeads({ workspaceId, listId, page: 1, pageSize: 25 });
+    expect(result.items[0]?.whatsappStatus).toBe("available");
+  });
+
+  it("persists checking rows and sequential batch jobs in one transaction", async () => {
+    const createdRows: any[] = [];
+    const createdJobs: any[] = [];
+    const tx = {
+      leadJob: {
+        findUnique: vi.fn(async () => null),
+        create: vi.fn(async ({ data }: any) => {
+          const record = { ...job(), id: randomUUID(), operation: data.operation, input: data.input, output: data.output, idempotencyKey: data.idempotencyKey };
+          createdJobs.push(record);
+          return record;
+        })
+      },
+      leadWhatsappVerification: {
+        create: vi.fn(async ({ data }: any) => {
+          const record = { id: randomUUID(), ...data, errorMessage: null, checkedAt: null, createdAt: now, updatedAt: now };
+          createdRows.push(record);
+          return record;
+        })
+      }
+    };
+    const transaction = vi.fn(async (callback: any) => callback(tx));
+    const repository = new LeadsRepository({ $transaction: transaction } as never);
+    const requestId = randomUUID();
+
+    const result = await repository.createWhatsappVerificationJobs({
+      workspaceId, listId, channelId: randomUUID(), instanceName: "instance-one",
+      idempotencyKey: "request-1", requestId, requestFingerprint: "fingerprint",
+      batches: [
+        [{ phone: "5511999990000", leadIds: [leadId] }],
+        [{ phone: "5511999990001", leadIds: [leadId] }]
+      ]
+    });
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(createdRows.map((row) => row.status)).toEqual(["checking", "checking"]);
+    expect(createdJobs).toHaveLength(2);
+    expect(createdJobs.map((record) => record.input.batchIndex)).toEqual([0, 1]);
+    expect(createdJobs[0].input.entries[0].verificationId).toBe(createdRows[0].id);
+    expect(result).toMatchObject({ requestId, replayed: false });
+  });
+
   it("includes workspace and resource id in list update and delete mutations", async () => {
     const updateMany = vi.fn(async () => ({ count: 0 }));
     const deleteMany = vi.fn(async () => ({ count: 0 }));
@@ -199,6 +280,51 @@ describe("Leads repository workspace isolation", () => {
       where: expect.objectContaining({ workspaceId, id: jobId, status: "running", leaseToken: expired.leaseToken }),
       data: expect.objectContaining({ status: "failed", errorMessage: "LEAD_JOB_ATTEMPTS_EXHAUSTED" })
     }));
+  });
+
+  it("fails only still-checking verification rows when a WhatsApp lease is exhausted", async () => {
+    const verificationId = randomUUID();
+    const expired = {
+      ...job(), operation: "whatsapp_availability", status: "running" as const, attempts: 3,
+      input: { entries: [{ verificationId }] }, leaseToken: randomUUID(), leaseUntil: new Date(now.getTime() - 1)
+    };
+    const jobUpdateMany = vi.fn(async () => ({ count: 1 }));
+    const verificationUpdateMany = vi.fn(async () => ({ count: 1 }));
+    const listUpdateMany = vi.fn(async () => ({ count: 1 }));
+    const repository = new LeadsRepository({
+      leadJob: { findMany: vi.fn(async () => [expired]) },
+      $transaction: vi.fn(async (callback: any) => callback({
+        leadJob: { updateMany: jobUpdateMany, findFirst: vi.fn(async () => ({ ...expired, status: "failed", leaseToken: null })) },
+        leadWhatsappVerification: { updateMany: verificationUpdateMany },
+        leadList: { findFirst: vi.fn(), updateMany: listUpdateMany }
+      }))
+    } as never);
+
+    const recovered = await repository.recoverExpiredJobs(now, 3);
+
+    expect(recovered[0]?.list).toBeUndefined();
+    expect(verificationUpdateMany).toHaveBeenCalledWith({
+      where: { workspaceId, id: { in: [verificationId] }, status: "checking" },
+      data: { status: "failed", errorMessage: "LEAD_JOB_ATTEMPTS_EXHAUSTED", checkedAt: now }
+    });
+    expect(listUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("does not update verification rows after the job lease was replaced", async () => {
+    const verificationUpdateMany = vi.fn();
+    const repository = new LeadsRepository({
+      $transaction: vi.fn(async (callback: any) => callback({
+        leadJob: { findFirst: vi.fn(async () => null) },
+        leadWhatsappVerification: { updateMany: verificationUpdateMany }
+      }))
+    } as never);
+
+    await expect(repository.fencedFinishWhatsappVerificationJob({
+      job: { workspaceId, id: jobId, listId, leaseToken: randomUUID() },
+      now,
+      results: [{ verificationId: randomUUID(), status: "available", errorMessage: null }]
+    })).rejects.toMatchObject({ code: "LEAD_LEASE_LOST" });
+    expect(verificationUpdateMany).not.toHaveBeenCalled();
   });
 
   it("returns a stable invalid-transition error for a stale lease completion", async () => {

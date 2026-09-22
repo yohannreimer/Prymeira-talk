@@ -1,6 +1,7 @@
 import type { LeadJob } from "@prisma/client";
 import type { LeadsRepositoryLike } from "./leads.repository.js";
 import type { LeadsService } from "./leads.service.js";
+import { whatsappJobInstanceName } from "./lead-whatsapp.service.js";
 
 export interface LeadsSchedulerOptions {
   repository: LeadsRepositoryLike;
@@ -17,6 +18,7 @@ export interface LeadsSchedulerOptions {
 
 let activeGoogleJobsInProcess = 0;
 let activeLeadJobsInProcess = 0;
+const activeWhatsappInstancesInProcess = new Set<string>();
 
 export function createLeadsScheduler(options: LeadsSchedulerOptions) {
   const pollIntervalMs = options.pollIntervalMs ?? 5_000;
@@ -43,9 +45,12 @@ export function createLeadsScheduler(options: LeadsSchedulerOptions) {
       if (stopping) break;
       if (activeLeadJobsInProcess >= maxConcurrentJobs) break;
       const isGoogle = candidate.operation === "google_maps_search";
+      const whatsappInstance = whatsappJobInstanceName(candidate as LeadJob);
       if (isGoogle && activeGoogleJobsInProcess >= maxGoogleConcurrentJobs) continue;
+      if (whatsappInstance && activeWhatsappInstancesInProcess.has(whatsappInstance)) continue;
       activeLeadJobsInProcess += 1;
       if (isGoogle) activeGoogleJobsInProcess += 1;
+      if (whatsappInstance) activeWhatsappInstancesInProcess.add(whatsappInstance);
       let claimed;
       try {
         claimed = await options.repository.claimJob(
@@ -58,11 +63,13 @@ export function createLeadsScheduler(options: LeadsSchedulerOptions) {
       } catch (error) {
         activeLeadJobsInProcess -= 1;
         if (isGoogle) activeGoogleJobsInProcess -= 1;
+        if (whatsappInstance) activeWhatsappInstancesInProcess.delete(whatsappInstance);
         throw error;
       }
       if (!claimed) {
         activeLeadJobsInProcess -= 1;
         if (isGoogle) activeGoogleJobsInProcess -= 1;
+        if (whatsappInstance) activeWhatsappInstancesInProcess.delete(whatsappInstance);
       }
       if (!claimed) continue;
       options.service.publishRecoveredJob(claimed as LeadJob);
@@ -77,6 +84,7 @@ export function createLeadsScheduler(options: LeadsSchedulerOptions) {
           activeWorkers.delete(worker);
           activeLeadJobsInProcess -= 1;
           if (isGoogle) activeGoogleJobsInProcess -= 1;
+          if (whatsappInstance) activeWhatsappInstancesInProcess.delete(whatsappInstance);
         });
       activeWorkers.add(worker);
     }

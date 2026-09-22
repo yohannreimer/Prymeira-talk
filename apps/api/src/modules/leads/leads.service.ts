@@ -26,6 +26,8 @@ import {
 } from "./leads.repository.js";
 import { normalizeCnpj } from "./leads.types.js";
 import { createSimilarityService } from "./similarity.service.js";
+import { createLeadWhatsappService } from "./lead-whatsapp.service.js";
+import type { CheckWhatsappNumbersAvailabilityResult } from "../evolution/evolution.client.js";
 import { CityGeocoderError, type CityGeocoder } from "./city-geocoder.js";
 import {
   GoogleMapsScraperError,
@@ -490,6 +492,9 @@ export interface LeadsServiceOptions {
   googleMapsClient?: GoogleMapsScraperClient;
   cityGeocoder?: CityGeocoder;
   googlePollIntervalMs?: number;
+  evolutionClient?: {
+    checkWhatsappNumbersAvailability(input: { instanceName: string; numbers: string[] }): Promise<CheckWhatsappNumbersAvailabilityResult>;
+  } | null;
 }
 
 export function createLeadsService(options: LeadsServiceOptions) {
@@ -514,6 +519,9 @@ export function createLeadsService(options: LeadsServiceOptions) {
     onListUpdated: publishList,
     onJobUpdated: publishJob
   });
+  const whatsappService = options.evolutionClient
+    ? createLeadWhatsappService({ repository, evolution: options.evolutionClient, now, sleep })
+    : null;
 
   async function updateProgress(job: ClaimedLeadJob, input: LeadListProgressInput) {
     const list = await repository.fencedUpdateListProgress(job, input, now(), 300_000);
@@ -889,6 +897,22 @@ export function createLeadsService(options: LeadsServiceOptions) {
     getArtifact: repository.getArtifact.bind(repository),
     findSimilarCompanies: similarityService.findSimilarCompanies,
     createSimilarListJob: similarityService.createSimilarListJob,
+    async createWhatsappVerification(input: {
+      workspaceId: string;
+      listId: string;
+      leadIds: string[];
+      idempotencyKey: string;
+    }) {
+      if (!whatsappService) {
+        throw new LeadsDomainError(
+          "LEAD_EVOLUTION_NOT_CONNECTED",
+          "A connected Evolution channel is required to check WhatsApp availability."
+        );
+      }
+      const created = await whatsappService.createVerification(input);
+      if (!created.replayed) for (const job of created.jobs) publishJob(job);
+      return created;
+    },
     async getCsvErrorArtifact(input: { workspaceId: string; jobId: string }) {
       return repository.getJobArtifact(input.workspaceId, input.jobId, "csv_error");
     },
@@ -1060,6 +1084,12 @@ export function createLeadsService(options: LeadsServiceOptions) {
     },
 
     async runClaimedJob(job: ClaimedLeadJob) {
+      if (job.operation === "whatsapp_availability") {
+        if (!whatsappService) throw new LeadsDomainError("LEAD_EVOLUTION_NOT_CONNECTED", "Evolution is not configured.");
+        const completed = await whatsappService.processClaimedJob(job);
+        publishJob(completed);
+        return completed;
+      }
       if (job.operation === "google_maps_search") return processGoogle(job);
       if (job.operation === "receita_search") return processSearch(job);
       if (job.operation === "similar_company_save") return similarityService.processSimilarListJob(job);

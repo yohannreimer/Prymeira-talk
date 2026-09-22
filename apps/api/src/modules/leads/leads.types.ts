@@ -1,5 +1,7 @@
 import {
   MAX_LEAD_WHATSAPP_BATCH_SIZE as sharedMaxLeadWhatsappBatchSize,
+  MAX_LEAD_WHATSAPP_SELECTION_SIZE as sharedMaxLeadWhatsappSelectionSize,
+  MAX_LEAD_WHATSAPP_UNIQUE_NUMBERS as sharedMaxLeadWhatsappUniqueNumbers,
   leadJobIdempotencyScopeSchema,
   leadJobStatusSchema,
   leadSourceSchema,
@@ -13,6 +15,8 @@ import {
 } from "@prymeira-talk/shared";
 
 export const MAX_LEAD_WHATSAPP_BATCH_SIZE = sharedMaxLeadWhatsappBatchSize;
+export const MAX_LEAD_WHATSAPP_SELECTION_SIZE = sharedMaxLeadWhatsappSelectionSize;
+export const MAX_LEAD_WHATSAPP_UNIQUE_NUMBERS = sharedMaxLeadWhatsappUniqueNumbers;
 
 export const leadJobTransitions: Readonly<Record<LeadJobStatus, readonly LeadJobStatus[]>> = {
   queued: ["running", "failed"],

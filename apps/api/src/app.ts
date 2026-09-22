@@ -139,6 +139,15 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
 
   await app.register(realtimeRoutes);
 
+  const evolutionRuntime = createEvolutionRuntime({
+    mode: env.EVOLUTION_MODE,
+    publicTalkUrl: env.PUBLIC_TALK_URL,
+    localTalkUrl: env.LOCAL_TALK_URL,
+    apiBaseUrl: env.EVOLUTION_API_BASE_URL,
+    apiKey: env.EVOLUTION_API_KEY,
+    webhookSecret: env.EVOLUTION_WEBHOOK_SECRET
+  });
+
   const leadsRepository = options.prismaEnabled === false
     ? undefined
     : new LeadsRepository(app.prisma);
@@ -153,6 +162,11 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
             })
           : undefined,
         cityGeocoder: createCityGeocoder(),
+        evolutionClient: evolutionRuntime.client?.checkWhatsappNumbersAvailability
+          ? {
+              checkWhatsappNumbersAvailability: evolutionRuntime.client.checkWhatsappNumbersAvailability.bind(evolutionRuntime.client)
+            }
+          : null,
         googlePollIntervalMs: env.LEAD_JOB_POLL_MS,
         realtime: app.realtime
       })
@@ -173,14 +187,6 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     });
   }
 
-  const evolutionRuntime = createEvolutionRuntime({
-    mode: env.EVOLUTION_MODE,
-    publicTalkUrl: env.PUBLIC_TALK_URL,
-    localTalkUrl: env.LOCAL_TALK_URL,
-    apiBaseUrl: env.EVOLUTION_API_BASE_URL,
-    apiKey: env.EVOLUTION_API_KEY,
-    webhookSecret: env.EVOLUTION_WEBHOOK_SECRET
-  });
   const evolutionHistorySource =
     evolutionRuntime.mode === "real" && env.EVOLUTION_API_BASE_URL && env.EVOLUTION_API_KEY
       ? createEvolutionHistorySource({

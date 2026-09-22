@@ -259,18 +259,21 @@ export const similarCompanySearchResultSchema = z.object({
 export type SimilarCompanySearchResult = z.infer<typeof similarCompanySearchResultSchema>;
 
 export const MAX_LEAD_WHATSAPP_BATCH_SIZE = 25;
+export const MAX_LEAD_WHATSAPP_SELECTION_SIZE = 250;
+export const MAX_LEAD_WHATSAPP_UNIQUE_NUMBERS = 250;
 
 export const leadWhatsappVerificationRequestSchema = z.object({
   listId: uuidSchema,
   leadIds: z
     .array(uuidSchema)
     .min(1)
-    .max(MAX_LEAD_WHATSAPP_BATCH_SIZE)
+    .max(MAX_LEAD_WHATSAPP_SELECTION_SIZE)
     .refine(
       (leadIds) =>
         new Set(leadIds.map((leadId) => leadId.toLowerCase())).size === leadIds.length,
       { message: "leadIds must not contain duplicates." }
-    )
+    ),
+  idempotencyKey: z.string().trim().min(1).max(200)
 });
 export type LeadWhatsappVerificationRequest = z.infer<typeof leadWhatsappVerificationRequestSchema>;
 
@@ -284,7 +287,8 @@ export const leadWhatsappVerificationResultSchema = z.object({
 export type LeadWhatsappVerificationResult = z.infer<typeof leadWhatsappVerificationResultSchema>;
 
 export const leadWhatsappVerificationResponseSchema = z.object({
-  job: leadJobSchema,
+  requestId: uuidSchema,
+  jobs: z.array(leadJobSchema).min(1),
   requestedCount: z.number().int().positive(),
   verifications: z.array(leadWhatsappVerificationResultSchema)
 });

@@ -13,6 +13,7 @@ import {
   canTransitionLeadJob,
   hasLeadJobIdempotencyConflict,
   MAX_LEAD_WHATSAPP_BATCH_SIZE,
+  MAX_LEAD_WHATSAPP_SELECTION_SIZE,
   normalizeCnpj
 } from "./leads.types.js";
 
@@ -36,45 +37,48 @@ describe("Leads domain contracts", () => {
     expect(() => normalizedCnpjSchema.parse(value)).toThrow();
   });
 
-  it("enforces the WhatsApp verification batch boundary", () => {
-    const leadIds = Array.from({ length: MAX_LEAD_WHATSAPP_BATCH_SIZE }, (_, index) =>
+  it("allows a selection larger than one upstream WhatsApp batch", () => {
+    const leadIds = Array.from({ length: MAX_LEAD_WHATSAPP_BATCH_SIZE + 1 }, (_, index) =>
       testUuid(index + 100)
     );
 
     expect(
       leadWhatsappVerificationRequestSchema.parse({
         listId: testUuid(1),
-        leadIds
+        leadIds,
+        idempotencyKey: "request-1"
       }).leadIds
-    ).toHaveLength(MAX_LEAD_WHATSAPP_BATCH_SIZE);
+    ).toHaveLength(MAX_LEAD_WHATSAPP_BATCH_SIZE + 1);
+  });
 
-    expect(() =>
-      leadWhatsappVerificationRequestSchema.parse({
-        listId: testUuid(1),
-        leadIds: [...leadIds, testUuid(126)]
-      })
-    ).toThrow();
+  it("enforces the overall WhatsApp selection and idempotency-key limits", () => {
+    const leadIds = Array.from({ length: MAX_LEAD_WHATSAPP_SELECTION_SIZE + 1 }, (_, index) => testUuid(index + 500));
+    expect(() => leadWhatsappVerificationRequestSchema.parse({ listId: testUuid(1), leadIds, idempotencyKey: "request-1" })).toThrow();
+    expect(() => leadWhatsappVerificationRequestSchema.parse({ listId: testUuid(1), leadIds: [testUuid(2)], idempotencyKey: "" })).toThrow();
   });
 
   it("rejects invalid and duplicate WhatsApp verification request IDs", () => {
     expect(() =>
       leadWhatsappVerificationRequestSchema.parse({
         listId: "not-a-uuid",
-        leadIds: [testUuid(101)]
+        leadIds: [testUuid(101)],
+        idempotencyKey: "request-1"
       })
     ).toThrow();
 
     expect(() =>
       leadWhatsappVerificationRequestSchema.parse({
         listId: testUuid(1),
-        leadIds: [testUuid(101), testUuid(101)]
+        leadIds: [testUuid(101), testUuid(101)],
+        idempotencyKey: "request-1"
       })
     ).toThrow();
 
     expect(() =>
       leadWhatsappVerificationRequestSchema.parse({
         listId: testUuid(1),
-        leadIds: [testUuid(101), testUuid(101).toUpperCase()]
+        leadIds: [testUuid(101), testUuid(101).toUpperCase()],
+        idempotencyKey: "request-1"
       })
     ).toThrow();
   });
