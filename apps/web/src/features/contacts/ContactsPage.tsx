@@ -677,6 +677,7 @@ export function ContactsPage() {
       const url = new URL(window.location.href);
       url.searchParams.set("module", "atendimento");
       url.searchParams.set("conversation", conversation.id);
+      url.searchParams.set("leadDraft", "1");
       window.history.pushState({ module: "atendimento", conversation: conversation.id }, "", `${url.pathname}${url.search}${url.hash}`);
       window.dispatchEvent(new PopStateEvent("popstate"));
     } catch (startError) {

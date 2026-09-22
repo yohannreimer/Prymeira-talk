@@ -440,6 +440,14 @@ export function CampaignsPage() {
         if (!isMounted) return;
 
         setCampaigns(nextCampaigns);
+        const requestedCampaignId = new URLSearchParams(window.location.search).get("campaign");
+        if (requestedCampaignId && nextCampaigns.some(campaign => campaign.id === requestedCampaignId)) {
+          setSelectedCampaignId(requestedCampaignId);
+          setViewMode("editor");
+          const url = new URL(window.location.href);
+          url.searchParams.delete("campaign");
+          window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+        }
         setBoards(nextBoards);
         setChannels(nextChannels);
         setForm((current) => ({
