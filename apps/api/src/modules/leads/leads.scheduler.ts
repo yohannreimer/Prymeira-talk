@@ -10,11 +10,13 @@ export interface LeadsSchedulerOptions {
   maxAttempts?: number;
   batchSize?: number;
   maxGoogleConcurrentJobs?: number;
+  maxConcurrentJobs?: number;
   now?: () => Date;
   onError?: (error: unknown) => void;
 }
 
 let activeGoogleJobsInProcess = 0;
+let activeLeadJobsInProcess = 0;
 
 export function createLeadsScheduler(options: LeadsSchedulerOptions) {
   const pollIntervalMs = options.pollIntervalMs ?? 5_000;
@@ -22,6 +24,7 @@ export function createLeadsScheduler(options: LeadsSchedulerOptions) {
   const maxAttempts = options.maxAttempts ?? 3;
   const batchSize = Math.max(options.batchSize ?? 2, 2);
   const maxGoogleConcurrentJobs = options.maxGoogleConcurrentJobs ?? 1;
+  const maxConcurrentJobs = Math.min(Math.max(options.maxConcurrentJobs ?? batchSize, 1), 16);
   const now = options.now ?? (() => new Date());
   let timer: ReturnType<typeof setInterval> | undefined;
   let activeTick: Promise<void> | undefined;
@@ -34,11 +37,14 @@ export function createLeadsScheduler(options: LeadsSchedulerOptions) {
       options.service.publishRecoveredJob(transition.job);
       if (transition.list) options.service.publishRecoveredList(transition.list);
     }
+    if (activeLeadJobsInProcess >= maxConcurrentJobs) return;
     const candidates = await options.repository.findQueuedJobs(batchSize, maxAttempts);
     for (const candidate of candidates) {
       if (stopping) break;
+      if (activeLeadJobsInProcess >= maxConcurrentJobs) break;
       const isGoogle = candidate.operation === "google_maps_search";
       if (isGoogle && activeGoogleJobsInProcess >= maxGoogleConcurrentJobs) continue;
+      activeLeadJobsInProcess += 1;
       if (isGoogle) activeGoogleJobsInProcess += 1;
       let claimed;
       try {
@@ -50,10 +56,14 @@ export function createLeadsScheduler(options: LeadsSchedulerOptions) {
           maxAttempts
         );
       } catch (error) {
+        activeLeadJobsInProcess -= 1;
         if (isGoogle) activeGoogleJobsInProcess -= 1;
         throw error;
       }
-      if (!claimed && isGoogle) activeGoogleJobsInProcess -= 1;
+      if (!claimed) {
+        activeLeadJobsInProcess -= 1;
+        if (isGoogle) activeGoogleJobsInProcess -= 1;
+      }
       if (!claimed) continue;
       options.service.publishRecoveredJob(claimed as LeadJob);
       const worker = options.service.runClaimedJob(claimed)
@@ -65,6 +75,7 @@ export function createLeadsScheduler(options: LeadsSchedulerOptions) {
         })
         .finally(() => {
           activeWorkers.delete(worker);
+          activeLeadJobsInProcess -= 1;
           if (isGoogle) activeGoogleJobsInProcess -= 1;
         });
       activeWorkers.add(worker);

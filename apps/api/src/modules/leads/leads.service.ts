@@ -39,6 +39,7 @@ const RECEITA_PAGE_SIZE = 100;
 const CSV_LOOKUP_BATCH_SIZE = 25;
 const GOOGLE_LEASE_MS = 300_000;
 const GOOGLE_MAX_CSV_ROWS = 5_000;
+const GOOGLE_UPSERT_BATCH_SIZE = 100;
 
 export type CsvUpload = Buffer | Uint8Array | string | AsyncIterable<Uint8Array | Buffer | string>;
 
@@ -342,6 +343,19 @@ function optionalHttpUrl(value: string | null) {
   }
 }
 
+function canonicalSourceUrl(value: string | null) {
+  const parsed = optionalHttpUrl(value);
+  if (!parsed) return null;
+  const url = new URL(parsed);
+  url.username = "";
+  url.password = "";
+  url.search = "";
+  url.hash = "";
+  url.hostname = url.hostname.toLowerCase();
+  url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+  return url.toString();
+}
+
 function optionalFinite(value: string | null, min: number, max: number) {
   if (!value) return null;
   const parsed = Number(value.replace(",", "."));
@@ -391,7 +405,10 @@ export function parseGoogleMapsCsv(
     const address = optionalCsvText(row, "address");
     const phone = optionalCsvText(row, "phone");
     const sourceUrl = optionalHttpUrl(optionalCsvText(row, "link", "source_url"));
-    const placeIdentity = optionalCsvText(row, "place_id", "data_id", "cid");
+    const placeId = optionalCsvText(row, "place_id");
+    const dataId = optionalCsvText(row, "data_id");
+    const cid = optionalCsvText(row, "cid");
+    const placeIdentity = placeId ?? dataId ?? cid;
     if (!companyName || (!sourceUrl && !placeIdentity && !address && !phone)) {
       failedCount += 1;
       continue;
@@ -403,10 +420,15 @@ export function parseGoogleMapsCsv(
     const detailedState = typeof detailedAddress.state === "string" ? detailedAddress.state.trim().toUpperCase() : "";
     const state = /^[A-Z]{2}$/.test(detailedState) ? detailedState : context.state;
     const normalizedPhone = phone?.replace(/\D/g, "") || null;
-    const sourceDedupeKey = sourceUrl
-      ? `maps:url:${sourceUrl}`
-      : placeIdentity
-        ? `maps:place:${placeIdentity}`
+    const canonicalUrl = canonicalSourceUrl(sourceUrl);
+    const sourceDedupeKey = placeId
+      ? `maps:place_id:${normalizeSourceIdentity(placeId)}`
+      : dataId
+        ? `maps:data_id:${normalizeSourceIdentity(dataId)}`
+        : cid
+          ? `maps:cid:${normalizeSourceIdentity(cid)}`
+          : canonicalUrl
+            ? `maps:url:${canonicalUrl}`
         : `maps:fallback:${sha256(`${normalizeTextForDedupe(companyName)}|${normalizeTextForDedupe(address ?? "")}|${normalizedPhone ?? ""}`)}`;
     leads.set(sourceDedupeKey, {
       workspaceId: context.workspaceId,
@@ -440,6 +462,10 @@ export function parseGoogleMapsCsv(
 
 function normalizeTextForDedupe(value: string) {
   return value.normalize("NFKD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("pt-BR").replace(/\s+/g, " ").trim();
+}
+
+function normalizeSourceIdentity(value: string) {
+  return value.normalize("NFKC").trim();
 }
 
 function googleFailure(error: GoogleMapsScraperError) {
@@ -757,10 +783,20 @@ export function createLeadsService(options: LeadsServiceOptions) {
         city: input.data.city,
         state: input.data.state
       });
-      if (parsed.leads.length > 0) {
-        await repository.fencedUpsertLeads(activeJob, parsed.leads, now(), GOOGLE_LEASE_MS);
+      let processedCount = 0;
+      const expectedTotal = parsed.leads.length + parsed.failedCount;
+      for (let offset = 0; offset < parsed.leads.length; offset += GOOGLE_UPSERT_BATCH_SIZE) {
+        const batch = parsed.leads.slice(offset, offset + GOOGLE_UPSERT_BATCH_SIZE);
+        await repository.fencedUpsertLeads(activeJob, batch, now(), GOOGLE_LEASE_MS);
+        processedCount += batch.length;
+        await updateProgress(activeJob, {
+          workspaceId: job.workspaceId,
+          listId: job.listId,
+          totalCount: expectedTotal,
+          processedCount,
+          failedCount: parsed.failedCount
+        });
       }
-      const processedCount = parsed.leads.length;
       const failedCount = processedCount === 0 ? Math.max(parsed.failedCount, 1) : parsed.failedCount;
       const totalCount = processedCount + failedCount;
       const status = processedCount === 0 ? "failed" : failedCount > 0 ? "partial" : "completed";

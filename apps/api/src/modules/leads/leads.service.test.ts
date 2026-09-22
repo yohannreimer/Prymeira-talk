@@ -7,7 +7,8 @@ import { LeadLeaseLostError, LeadsDomainError, type ClaimedLeadJob } from "./lea
 import {
   MAX_CSV_BYTES,
   createErrorCsv,
-  createLeadsService
+  createLeadsService,
+  parseGoogleMapsCsv
 } from "./leads.service.js";
 
 const workspaceId = "workspace_a";
@@ -862,6 +863,71 @@ describe("Leads service", () => {
       errorMessage: "LEAD_GOOGLE_PARTIAL_ROWS",
       output: expect.objectContaining({ totalCount: 2, processedCount: 1, failedCount: 1 })
     }));
+  });
+
+  it("deduplicates Maps rows by stable identity before canonical URL and fallback keys", () => {
+    const csv = [
+      "title,link,address,phone,place_id,data_id,cid",
+      "A,https://www.google.com/maps/place/a?hl=pt,Rua 1,11999990000,Place-ABC,,",
+      "A changed,https://google.com/maps/place/other?x=1,Rua 1,11999990000,Place-ABC,,",
+      "B,https://MAPS.google.com/place/b?hl=pt#fragment,Rua 2,11888880000,,Data-B,",
+      "B changed,https://maps.google.com/place/else,Rua 2,11888880000,,Data-B,",
+      "C,https://maps.google.com/place/c?hl=pt,Rua 3,11777770000,,,",
+      "C changed,https://maps.google.com/place/c?authuser=1#x,Rua 3,11777770000,,,"
+    ].join("\n");
+
+    const parsed = parseGoogleMapsCsv(csv, { workspaceId, listId, city: "Campinas", state: "SP" });
+
+    expect(parsed.leads).toHaveLength(3);
+    expect(parsed.leads.map((lead) => lead.sourceDedupeKey).sort()).toEqual([
+      "maps:data_id:Data-B",
+      "maps:place_id:Place-ABC",
+      "maps:url:https://maps.google.com/place/c"
+    ]);
+  });
+
+  it("persists a maximum-size Google result in bounded fenced chunks", async () => {
+    const context = setup();
+    const header = "title,link,address,phone,place_id";
+    const rows = Array.from({ length: 5_000 }, (_, index) =>
+      `Lead ${index},https://maps.google.com/place/${index},Rua ${index},1199999${String(index).padStart(4, "0")},place-${index}`
+    );
+    context.googleMapsClient.download.mockResolvedValue([header, ...rows].join("\n"));
+
+    await context.service.runClaimedJob(rawJob("google_maps_search", {
+      requestFingerprint: "a".repeat(64), niche: "x", city: "Campinas", state: "SP",
+      latitude: -22.9, longitude: -47.06, maxTimeSeconds: 600
+    }));
+
+    expect(context.repository.upsertLeads).toHaveBeenCalledTimes(50);
+    expect(context.repository.upsertLeads.mock.calls.every(([batch]) => batch.length <= 100)).toBe(true);
+    expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({
+      status: "completed",
+      output: expect.objectContaining({ processedCount: 5_000, failedCount: 0 })
+    }));
+  });
+
+  it("stops Google chunk writes immediately after lease loss", async () => {
+    const context = setup();
+    const rows = Array.from({ length: 201 }, (_, index) =>
+      `Lead ${index},https://maps.google.com/place/${index},place-${index}`
+    );
+    context.googleMapsClient.download.mockResolvedValue([
+      "title,link,place_id",
+      ...rows
+    ].join("\n"));
+    context.repository.fencedUpsertLeads
+      .mockImplementationOnce(async (_job: unknown, leads: any[]) => context.repository.upsertLeads(leads))
+      .mockRejectedValueOnce(new LeadLeaseLostError());
+
+    await expect(context.service.runClaimedJob(rawJob("google_maps_search", {
+      requestFingerprint: "a".repeat(64), niche: "x", city: "Campinas", state: "SP",
+      latitude: -22.9, longitude: -47.06, maxTimeSeconds: 600
+    }))).rejects.toMatchObject({ code: "LEAD_LEASE_LOST" });
+
+    expect(context.repository.fencedUpsertLeads).toHaveBeenCalledTimes(2);
+    expect(context.repository.upsertLeads).toHaveBeenCalledTimes(1);
+    expect(context.repository.finishJob).not.toHaveBeenCalled();
   });
 
   it("turns Google rate limits into a retryable terminal failure and leaves Receita available", async () => {

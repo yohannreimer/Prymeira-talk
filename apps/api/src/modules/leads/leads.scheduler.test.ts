@@ -203,4 +203,40 @@ describe("Leads scheduler", () => {
     releaseGoogle();
     await scheduler.stop();
   });
+
+  it("does not admit unbounded non-Google workers across polling ticks", async () => {
+    const candidates = Array.from({ length: 4 }, (_, index) => job({ id: randomUUID(), operation: index % 2 ? "cnpj_csv_import" : "receita_search" }));
+    const claimed = new Set<string>();
+    const releases = new Map<string, () => void>();
+    const repo = repository({
+      findQueuedJobs: vi.fn(async () => candidates.filter((candidate) => !claimed.has(candidate.id))),
+      claimJob: vi.fn(async (_workspaceId: string, id: string) => {
+        const candidate = candidates.find((entry) => entry.id === id);
+        if (!candidate || claimed.has(id)) return null;
+        claimed.add(id);
+        return { ...candidate, status: "running", leaseToken: randomUUID(), leaseUntil: new Date(now.getTime() + 300_000) };
+      })
+    });
+    const service = {
+      runClaimedJob: vi.fn(async (candidate: LeadJob) => new Promise<void>((resolve) => releases.set(candidate.id, resolve))),
+      publishRecoveredJob: vi.fn(),
+      publishRecoveredList: vi.fn()
+    };
+    const scheduler = createLeadsScheduler({
+      repository: repo,
+      service: service as any,
+      batchSize: 4,
+      maxConcurrentJobs: 2,
+      now: () => now
+    });
+
+    await scheduler.tick();
+    await scheduler.tick();
+    await scheduler.tick();
+
+    expect(repo.claimJob).toHaveBeenCalledTimes(2);
+    expect(service.runClaimedJob).toHaveBeenCalledTimes(2);
+    for (const release of releases.values()) release();
+    await scheduler.stop();
+  });
 });
