@@ -188,7 +188,8 @@ function setup(csv = "cnpj\n12345678ABCD90\n") {
   };
   const cnpjRepository = {
     searchEstablishments: vi.fn(),
-    findByCnpj: vi.fn()
+    findByCnpj: vi.fn(),
+    findByCnpjs: vi.fn()
   };
   const realtime = { publish: vi.fn() };
   const service = createLeadsService({
@@ -318,9 +319,7 @@ describe("Leads service", () => {
       "invalid,-company,context"
     ].join("\n");
     const context = setup(csv);
-    context.cnpjRepository.findByCnpj.mockImplementation(async (cnpj: string) =>
-      cnpj === "12345678ABCD90" ? company(cnpj) : null
-    );
+    context.cnpjRepository.findByCnpjs.mockResolvedValue([company("12345678ABCD90")]);
     const job = rawJob("cnpj_csv_import", {});
     context.stored.set("operation", "cnpj_csv_import");
 
@@ -338,6 +337,140 @@ describe("Leads service", () => {
     expect(errorCsv).toContain("'@cmd");
     expect(errorCsv).toContain("'+context");
     expect(errorCsv).toContain("'-company");
+    expect(context.cnpjRepository.findByCnpjs).toHaveBeenCalledTimes(1);
+    expect(context.cnpjRepository.findByCnpjs).toHaveBeenCalledWith([
+      "12345678ABCD90",
+      "11111111AAAA11"
+    ]);
+    expect(context.cnpjRepository.findByCnpj).not.toHaveBeenCalled();
+  });
+
+  it("accepts exactly 5,000 CSV rows and rejects row 5,001 independently of byte size", async () => {
+    const context = setup();
+    const csv = (count: number) => [
+      "cnpj",
+      ...Array.from({ length: count }, (_, index) => `${String(index).padStart(8, "0")}ABCD90`)
+    ].join("\n");
+
+    await expect(context.service.createCsvImportJob({
+      workspaceId,
+      name: "Limite",
+      fileName: "limit.csv",
+      upload: csv(5_000),
+      idempotencyKey: "rows-5000"
+    })).resolves.toMatchObject({ acceptedRows: 5_000 });
+    await expect(context.service.createCsvImportJob({
+      workspaceId,
+      name: "Excesso",
+      fileName: "too-many.csv",
+      upload: csv(5_001),
+      idempotencyKey: "rows-5001"
+    })).rejects.toMatchObject({ code: "LEAD_LIMIT_EXCEEDED" });
+  });
+
+  it("stops a search without further writes when its lease is reclaimed mid-processing", async () => {
+    const context = setup();
+    const firstPage = Array.from({ length: 100 }, (_, index) => company(`${String(index).padStart(8, "0")}ABCD90`));
+    context.cnpjRepository.searchEstablishments
+      .mockResolvedValueOnce({ items: firstPage, page: 1, pageSize: 100, total: 101 })
+      .mockResolvedValueOnce({ items: [company("99999999ABCD90")], page: 2, pageSize: 100, total: 101 });
+    context.repository.extendLease
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    await expect(context.service.runClaimedJob(rawJob("receita_search", { filters: {}, maxResults: 5_000 })))
+      .rejects.toMatchObject({ code: "LEAD_LEASE_LOST" });
+
+    expect(context.repository.upsertLeads).toHaveBeenCalledTimes(1);
+    expect(context.repository.updateListProgress).toHaveBeenCalledTimes(2);
+    expect(context.repository.finishJob).not.toHaveBeenCalled();
+    expect(context.repository.upsertArtifact).not.toHaveBeenCalled();
+  });
+
+  it("propagates operational repository failures without terminalizing the job", async () => {
+    const context = setup();
+    context.cnpjRepository.searchEstablishments.mockResolvedValue({
+      items: [company("12345678ABCD90")], page: 1, pageSize: 100, total: 1
+    });
+    context.repository.upsertLeads.mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(context.service.runClaimedJob(rawJob("receita_search", { filters: {}, maxResults: 5_000 })))
+      .rejects.toThrow("database unavailable");
+    expect(context.repository.finishJob).not.toHaveBeenCalled();
+  });
+
+  it("propagates unexpected CNPJ query failures instead of converting them to terminal status", async () => {
+    const context = setup();
+    context.cnpjRepository.searchEstablishments.mockRejectedValue(new Error("unexpected adapter bug"));
+
+    await expect(context.service.runClaimedJob(rawJob("receita_search", { filters: {}, maxResults: 5_000 })))
+      .rejects.toThrow("unexpected adapter bug");
+    expect(context.repository.finishJob).not.toHaveBeenCalled();
+  });
+
+  it("propagates progress and artifact storage failures for durable scheduler retry", async () => {
+    const progress = setup();
+    progress.repository.updateListProgress.mockRejectedValueOnce(new Error("progress database unavailable"));
+    await expect(progress.service.runClaimedJob(rawJob("receita_search", { filters: {}, maxResults: 5_000 })))
+      .rejects.toThrow("progress database unavailable");
+    expect(progress.repository.finishJob).not.toHaveBeenCalled();
+
+    const artifact = setup("cnpj\ninvalid\n");
+    artifact.repository.upsertArtifact.mockRejectedValueOnce(new Error("artifact database unavailable"));
+    await expect(artifact.service.runClaimedJob(rawJob("cnpj_csv_import", {})))
+      .rejects.toThrow("artifact database unavailable");
+    expect(artifact.repository.finishJob).not.toHaveBeenCalled();
+  });
+
+  it("propagates lease storage failures without making processing writes", async () => {
+    const context = setup();
+    context.repository.extendLease.mockRejectedValueOnce(new Error("lease database unavailable"));
+
+    await expect(context.service.runClaimedJob(rawJob("receita_search", { filters: {}, maxResults: 5_000 })))
+      .rejects.toThrow("lease database unavailable");
+    expect(context.repository.updateListProgress).not.toHaveBeenCalled();
+    expect(context.repository.upsertLeads).not.toHaveBeenCalled();
+    expect(context.repository.finishJob).not.toHaveBeenCalled();
+  });
+
+  it("stops CSV processing on lease loss before lead, progress, artifact, or terminal writes", async () => {
+    const context = setup("cnpj\n12345678ABCD90\n");
+    context.cnpjRepository.findByCnpjs.mockResolvedValue([company("12345678ABCD90")]);
+    context.repository.extendLease.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    await expect(context.service.runClaimedJob(rawJob("cnpj_csv_import", {})))
+      .rejects.toMatchObject({ code: "LEAD_LEASE_LOST" });
+
+    expect(context.repository.upsertLeads).not.toHaveBeenCalled();
+    expect(context.repository.updateListProgress).toHaveBeenCalledTimes(1);
+    expect(context.repository.upsertArtifact).not.toHaveBeenCalled();
+    expect(context.repository.finishJob).not.toHaveBeenCalled();
+  });
+
+  it("publishes list deletion only after the workspace-scoped delete succeeds", async () => {
+    const success = setup();
+    success.repository.getList.mockResolvedValue(listDto());
+    success.repository.deleteList.mockResolvedValue(undefined);
+    await success.service.deleteList(workspaceId, listId);
+    expect(success.realtime.publish).toHaveBeenCalledWith({
+      type: "lead_list.updated",
+      workspaceId,
+      payload: listDto()
+    });
+
+    const failure = setup();
+    failure.repository.getList.mockRejectedValue(new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found."));
+    await expect(failure.service.deleteList(foreignWorkspaceId, listId)).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
+    expect(failure.repository.deleteList).not.toHaveBeenCalled();
+    expect(failure.realtime.publish).not.toHaveBeenCalled();
+
+    const deleteFailure = setup();
+    deleteFailure.repository.getList.mockResolvedValue(listDto());
+    deleteFailure.repository.deleteList.mockRejectedValue(new Error("delete database unavailable"));
+    await expect(deleteFailure.service.deleteList(workspaceId, listId)).rejects.toThrow("delete database unavailable");
+    expect(deleteFailure.realtime.publish).not.toHaveBeenCalled();
   });
 
   it("retries idempotently without duplicating natural-key leads", async () => {

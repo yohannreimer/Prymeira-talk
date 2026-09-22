@@ -262,15 +262,18 @@ function cnpjToLead(record: CnpjCompanyRecord, workspaceId: string, listId: stri
   };
 }
 
-function safeErrorCode(error: unknown) {
-  if (error instanceof LeadSourceUnavailableError) return "LEAD_SOURCE_UNAVAILABLE";
-  if (error instanceof LeadsDomainError) return error.code;
-  return "LEAD_JOB_FAILED";
-}
-
 function isSourceUnavailable(error: unknown) {
   return error instanceof LeadSourceUnavailableError ||
     (typeof error === "object" && error !== null && "code" in error && error.code === "LEAD_SOURCE_UNAVAILABLE");
+}
+
+export class LeadLeaseLostError extends Error {
+  readonly code = "LEAD_LEASE_LOST" as const;
+
+  constructor() {
+    super("Lead job lease ownership was lost.");
+    this.name = "LeadLeaseLostError";
+  }
 }
 
 export interface LeadsServiceOptions {
@@ -293,7 +296,12 @@ export function createLeadsService(options: LeadsServiceOptions) {
     options.realtime?.publish({ type: "lead_job.updated", workspaceId: job.workspaceId, payload: job });
   }
 
-  async function updateProgress(input: Parameters<LeadsRepositoryLike["updateListProgress"]>[0]) {
+  async function assertLease(job: ClaimedLeadJob) {
+    if (!await repository.extendLease(job, now(), 300_000)) throw new LeadLeaseLostError();
+  }
+
+  async function updateProgress(job: ClaimedLeadJob, input: Parameters<LeadsRepositoryLike["updateListProgress"]>[0]) {
+    await assertLease(job);
     const list = await repository.updateListProgress(input);
     publishList(list);
     return list;
@@ -304,6 +312,7 @@ export function createLeadsService(options: LeadsServiceOptions) {
     output: Prisma.InputJsonObject;
     errorMessage: string | null;
   }) {
+    await assertLease(job);
     const updated = await repository.finishJob({
       workspaceId: job.workspaceId,
       jobId: job.id,
@@ -320,47 +329,51 @@ export function createLeadsService(options: LeadsServiceOptions) {
   async function processSearch(job: ClaimedLeadJob) {
     const input = searchJobInputSchema.safeParse(job.input);
     if (!input.success) {
-      await updateProgress({ workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
+      await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
       return finishJob(job, { status: "failed", output: { processedCount: 0, failedCount: 1 }, errorMessage: "LEAD_INVALID_INPUT" });
     }
     const filters = leadSearchFiltersSchema.safeParse(input.data.filters);
     if (!filters.success || (filters.data.source && filters.data.source !== "receita_federal")) {
-      await updateProgress({ workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
+      await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
       return finishJob(job, { status: "failed", output: { processedCount: 0, failedCount: 1 }, errorMessage: "LEAD_INVALID_INPUT" });
     }
 
     let processedCount = 0;
     let totalCount = 0;
     let failure: string | null = null;
-    await updateProgress({ workspaceId: job.workspaceId, listId: job.listId, totalCount: 0, processedCount: 0, failedCount: 0, startedAt: now(), completedAt: null });
+    await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount: 0, processedCount: 0, failedCount: 0, startedAt: now(), completedAt: null });
 
     for (let page = 1; processedCount < input.data.maxResults; page += 1) {
+      let result;
       try {
-        const result = await cnpjRepository.searchEstablishments(toCnpjFilters(filters.data, page));
-        totalCount = Math.min(result.total, input.data.maxResults);
-        const remaining = input.data.maxResults - processedCount;
-        const pageItems = result.items.slice(0, remaining);
-        await repository.upsertLeads(pageItems.map((record) => cnpjToLead(record, job.workspaceId, job.listId)));
-        processedCount += pageItems.length;
-        await updateProgress({
-          workspaceId: job.workspaceId,
-          listId: job.listId,
-          totalCount,
-          processedCount,
-          failedCount: 0
-        });
-        await repository.extendLease(job, now(), 300_000);
-        if (pageItems.length === 0 || processedCount >= totalCount || result.items.length < RECEITA_PAGE_SIZE) break;
+        result = await cnpjRepository.searchEstablishments(toCnpjFilters(filters.data, page));
       } catch (error) {
-        failure = safeErrorCode(error);
+        if (!isSourceUnavailable(error)) throw error;
+        failure = "LEAD_SOURCE_UNAVAILABLE";
         break;
       }
+      totalCount = Math.min(result.total, input.data.maxResults);
+      const remaining = input.data.maxResults - processedCount;
+      const pageItems = result.items.slice(0, remaining);
+      if (pageItems.length > 0) {
+        await assertLease(job);
+        await repository.upsertLeads(pageItems.map((record) => cnpjToLead(record, job.workspaceId, job.listId)));
+      }
+      processedCount += pageItems.length;
+      await updateProgress(job, {
+        workspaceId: job.workspaceId,
+        listId: job.listId,
+        totalCount,
+        processedCount,
+        failedCount: 0
+      });
+      if (pageItems.length === 0 || processedCount >= totalCount || result.items.length < RECEITA_PAGE_SIZE) break;
     }
 
     const failedCount = failure ? Math.max(totalCount - processedCount, 1) : 0;
     const finalTotal = Math.max(totalCount, processedCount + failedCount);
     const status = failure ? (processedCount > 0 ? "partial" : "failed") : "completed";
-    await updateProgress({
+    await updateProgress(job, {
       workspaceId: job.workspaceId,
       listId: job.listId,
       totalCount: finalTotal,
@@ -378,23 +391,23 @@ export function createLeadsService(options: LeadsServiceOptions) {
   async function processCsv(job: ClaimedLeadJob) {
     const input = csvJobInputSchema.safeParse(job.input);
     if (!input.success) {
-      await updateProgress({ workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
+      await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
       return finishJob(job, { status: "failed", output: { processedCount: 0, failedCount: 1 }, errorMessage: "LEAD_INVALID_INPUT" });
     }
-    let artifact: LeadArtifactDownload;
+    const artifact: LeadArtifactDownload = await repository.getArtifact(job.workspaceId, input.data.artifactId);
     let parsed: ParsedCsv;
     try {
-      artifact = await repository.getArtifact(job.workspaceId, input.data.artifactId);
       parsed = parseCsvBytes(artifact.content);
     } catch (error) {
-      const code = safeErrorCode(error);
-      await updateProgress({ workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
+      if (!(error instanceof LeadsDomainError)) throw error;
+      const code = error.code;
+      await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
       return finishJob(job, { status: "failed", output: { processedCount: 0, failedCount: 1 }, errorMessage: code });
     }
 
     const errors = [...parsed.errors];
     let processedCount = 0;
-    await updateProgress({
+    await updateProgress(job, {
       workspaceId: job.workspaceId,
       listId: job.listId,
       totalCount: parsed.rows.length,
@@ -406,31 +419,38 @@ export function createLeadsService(options: LeadsServiceOptions) {
 
     for (let offset = 0; offset < parsed.validRows.length; offset += CSV_LOOKUP_BATCH_SIZE) {
       const batch = parsed.validRows.slice(offset, offset + CSV_LOOKUP_BATCH_SIZE);
-      const results = await Promise.allSettled(batch.map((row) => cnpjRepository.findByCnpj(row.normalizedCnpj!)));
       let sourceUnavailable = false;
+      let results: CnpjCompanyRecord[] = [];
+      try {
+        results = await cnpjRepository.findByCnpjs(batch.map((row) => row.normalizedCnpj!));
+      } catch (error) {
+        if (!isSourceUnavailable(error)) throw error;
+        sourceUnavailable = true;
+      }
       const found: LeadUpsertInput[] = [];
-      for (const [index, result] of results.entries()) {
-        const row = batch[index]!;
-        if (result.status === "rejected") {
-          const reason = isSourceUnavailable(result.reason) ? "SOURCE_UNAVAILABLE" : "SOURCE_FAILURE";
-          errors.push(rowError(row, reason));
-          sourceUnavailable ||= reason === "SOURCE_UNAVAILABLE";
-        } else if (!result.value) {
+      const byCnpj = new Map(results.map((record) => [record.cnpj, record]));
+      for (const row of batch) {
+        const result = byCnpj.get(row.normalizedCnpj!);
+        if (sourceUnavailable) {
+          errors.push(rowError(row, "SOURCE_UNAVAILABLE"));
+        } else if (!result) {
           errors.push(rowError(row, "CNPJ_NOT_FOUND"));
         } else {
-          found.push(cnpjToLead(result.value, job.workspaceId, job.listId, row.metadata));
+          found.push(cnpjToLead(result, job.workspaceId, job.listId, row.metadata));
         }
       }
-      await repository.upsertLeads(found);
+      if (found.length > 0) {
+        await assertLease(job);
+        await repository.upsertLeads(found);
+      }
       processedCount += found.length;
-      await updateProgress({
+      await updateProgress(job, {
         workspaceId: job.workspaceId,
         listId: job.listId,
         totalCount: parsed.rows.length,
         processedCount,
         failedCount: errors.length
       });
-      await repository.extendLease(job, now(), 300_000);
       if (sourceUnavailable) {
         for (const remaining of parsed.validRows.slice(offset + batch.length)) {
           errors.push(rowError(remaining, "SOURCE_UNAVAILABLE"));
@@ -441,6 +461,7 @@ export function createLeadsService(options: LeadsServiceOptions) {
 
     let errorArtifactId: string | null = null;
     if (errors.length > 0) {
+      await assertLease(job);
       const errorArtifact = await repository.upsertArtifact({
         workspaceId: job.workspaceId,
         listId: job.listId,
@@ -457,7 +478,7 @@ export function createLeadsService(options: LeadsServiceOptions) {
     const errorMessage = errors.some((error) => error.reason === "SOURCE_UNAVAILABLE")
       ? "LEAD_SOURCE_UNAVAILABLE"
       : status === "failed" ? "LEAD_CSV_NO_RESULTS" : null;
-    await updateProgress({
+    await updateProgress(job, {
       workspaceId: job.workspaceId,
       listId: job.listId,
       totalCount: parsed.rows.length,
@@ -487,7 +508,11 @@ export function createLeadsService(options: LeadsServiceOptions) {
       publishList(list);
       return list;
     },
-    deleteList: repository.deleteList.bind(repository),
+    async deleteList(workspaceId: string, listId: string) {
+      const list = await repository.getList(workspaceId, listId);
+      await repository.deleteList(workspaceId, listId);
+      publishList(list);
+    },
     async listLeads(input: { workspaceId: string; listId: string; page?: number; pageSize?: number }) {
       return repository.listLeads({
         workspaceId: input.workspaceId,
@@ -582,7 +607,7 @@ export function createLeadsService(options: LeadsServiceOptions) {
         const hydrated = { ...job, input: { artifactId: artifact.id } } as ClaimedLeadJob;
         return processCsv(hydrated);
       }
-      await updateProgress({ workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
+      await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
       return finishJob(job, {
         status: "failed",
         output: { processedCount: 0, failedCount: 1 },

@@ -118,4 +118,42 @@ describe("Leads scheduler", () => {
     await stop;
     expect(stopped).toBe(true);
   });
+
+  it("retries a failed worker only after durable lease recovery and within the attempt bound", async () => {
+    const candidate = job();
+    let attempts = 0;
+    let status: "queued" | "running" | "failed" = "queued";
+    const repo = repository({
+      recoverExpiredJobs: vi.fn(async () => {
+        if (status === "running") {
+          status = attempts >= 3 ? "failed" : "queued";
+          return [{ ...candidate, status, attempts, leaseToken: null, leaseUntil: null }];
+        }
+        return [];
+      }),
+      findQueuedJobs: vi.fn(async () => status === "queued" && attempts < 3 ? [{ ...candidate, status, attempts }] : []),
+      claimJob: vi.fn(async () => {
+        if (status !== "queued" || attempts >= 3) return null;
+        status = "running";
+        attempts += 1;
+        return { ...candidate, status, attempts, leaseToken: randomUUID(), leaseUntil: new Date(now.getTime() - 1) };
+      })
+    });
+    const service = {
+      runClaimedJob: vi.fn(async () => { throw new Error("operational failure"); }),
+      publishRecoveredJob: vi.fn()
+    };
+    const scheduler = createLeadsScheduler({ repository: repo, service: service as any, now: () => now, maxAttempts: 3 });
+
+    await scheduler.tick();
+    expect(service.runClaimedJob).toHaveBeenCalledTimes(1);
+    await scheduler.tick();
+    expect(service.runClaimedJob).toHaveBeenCalledTimes(2);
+    await scheduler.tick();
+    expect(service.runClaimedJob).toHaveBeenCalledTimes(3);
+    await scheduler.tick();
+    expect(service.runClaimedJob).toHaveBeenCalledTimes(3);
+    expect(attempts).toBe(3);
+    expect(status).toBe("failed");
+  });
 });

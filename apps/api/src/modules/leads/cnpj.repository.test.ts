@@ -42,6 +42,40 @@ describe("CnpjRepository", () => {
     expect(result?.openedAt).toBe("2024-02-03");
   });
 
+  it("performs one bounded, parameterized batch lookup using composite CNPJ components", async () => {
+    const client = new FakeCnpjClient([
+      { cnpj: "12345678ABCD90", cnpj_basico: "12345678" },
+      { cnpj: "87654321WXYZ10", cnpj_basico: "87654321" }
+    ]);
+
+    const result = await new CnpjRepository(client).findByCnpjs([
+      "12.345.678/abcd-90",
+      "87654321WXYZ10",
+      "12.345.678/ABCD-90"
+    ]);
+
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0]?.values).toEqual([
+      "12345678", "ABCD", "90",
+      "87654321", "WXYZ", "10"
+    ]);
+    expect(client.calls[0]?.text).toContain("WITH requested(cnpj_basico, cnpj_ordem, cnpj_dv) AS");
+    expect(client.calls[0]?.text).toContain("e.cnpj_basico = requested.cnpj_basico");
+    expect(client.calls[0]?.text).toContain("e.cnpj_ordem = requested.cnpj_ordem");
+    expect(client.calls[0]?.text).toContain("e.cnpj_dv = requested.cnpj_dv");
+    expect(result.map((row) => row.cnpj)).toEqual(["12345678ABCD90", "87654321WXYZ10"]);
+  });
+
+  it("rejects an oversized exact CNPJ batch before querying", async () => {
+    const client = new FakeCnpjClient();
+    const cnpjs = Array.from({ length: 101 }, (_, index) => `${String(index).padStart(8, "0")}ABCD90`);
+
+    await expect(new CnpjRepository(client).findByCnpjs(cnpjs)).rejects.toMatchObject({
+      code: "LEAD_LIMIT_EXCEEDED"
+    });
+    expect(client.calls).toHaveLength(0);
+  });
+
   it("splits an exact CNPJ search filter into the composite primary-key columns", async () => {
     const client = new FakeCnpjClient();
 

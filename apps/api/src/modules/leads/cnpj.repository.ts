@@ -4,6 +4,7 @@ import { normalizeCnpj } from "./leads.types.js";
 const MAX_PAGE_SIZE = 100;
 const MAX_PAGE = 10_000;
 const MAX_SIMILAR_CANDIDATES = 100;
+const MAX_EXACT_BATCH_SIZE = 100;
 const ACCENTED_LOWERCASE = "áàâãäåæçéèêëíìîïñóòôõöøœúùûüýÿ";
 const ASCII_EQUIVALENTS = "aaaaaaaceeeeiiiinooooooouuuuyy";
 const PHONE_1 = "CASE WHEN NULLIF(btrim(e.telefone_1), '') IS NULL THEN NULL ELSE concat_ws('', NULLIF(btrim(e.ddd_1), ''), NULLIF(btrim(e.telefone_1), '')) END";
@@ -15,6 +16,15 @@ export class LeadSourceUnavailableError extends Error {
   constructor() {
     super("CNPJ lead source is unavailable.");
     this.name = "LeadSourceUnavailableError";
+  }
+}
+
+export class CnpjBatchLimitError extends Error {
+  readonly code = "LEAD_LIMIT_EXCEEDED" as const;
+
+  constructor() {
+    super(`CNPJ lookup batches are limited to ${MAX_EXACT_BATCH_SIZE} identifiers.`);
+    this.name = "CnpjBatchLimitError";
   }
 }
 
@@ -220,6 +230,34 @@ export class CnpjRepository {
       cnpjDv
     ]);
     return rows[0] ? toRecord(rows[0]) : null;
+  }
+
+  async findByCnpjs(cnpjs: readonly string[]): Promise<CnpjCompanyRecord[]> {
+    const normalized = [...new Set(cnpjs.map((cnpj) => normalizeCnpj(cnpj)))];
+    if (normalized.length === 0) return [];
+    if (normalized.length > MAX_EXACT_BATCH_SIZE) throw new CnpjBatchLimitError();
+    const values: string[] = [];
+    const tuples = normalized.map((cnpj) => {
+      const [cnpjBasico, cnpjOrdem, cnpjDv] = splitCnpj(cnpj);
+      values.push(cnpjBasico, cnpjOrdem, cnpjDv);
+      return `($${values.length - 2}, $${values.length - 1}, $${values.length})`;
+    });
+    const rows = await this.query(`WITH requested(cnpj_basico, cnpj_ordem, cnpj_dv) AS (
+      VALUES ${tuples.join(", ")}
+    )
+    SELECT ${SELECT_FIELDS}
+    FROM requested
+    INNER JOIN cnpj.estabelecimentos e
+      ON e.cnpj_basico = requested.cnpj_basico
+      AND e.cnpj_ordem = requested.cnpj_ordem
+      AND e.cnpj_dv = requested.cnpj_dv
+    INNER JOIN cnpj.empresas em ON em.cnpj_basico = e.cnpj_basico
+    LEFT JOIN cnpj.cnaes primary_cnae ON primary_cnae.codigo = e.cnae_fiscal_principal
+    LEFT JOIN cnpj.municipios m ON m.codigo = e.municipio
+    LEFT JOIN cnpj.naturezas_juridicas nj ON nj.codigo = em.natureza_juridica
+    LEFT JOIN cnpj.dados_simples simples ON simples.cnpj_basico = e.cnpj_basico
+    ORDER BY e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv`, values);
+    return rows.map(toRecord);
   }
 
   async getCompanyProfile(cnpj: string): Promise<CnpjCompanyRecord | null> {
