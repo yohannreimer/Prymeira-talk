@@ -107,6 +107,22 @@ enum AiAgentSessionStatus {
   closed
 }
 
+enum ConversationFollowupKind {
+  qualification
+  human_commercial
+}
+
+enum ConversationFollowupStatus {
+  scheduled
+  processing
+  review
+  sent
+  cancelled
+  skipped
+  expired
+  failed
+}
+
 enum AiAgentRunStatus {
   completed
   handoff_requested
@@ -170,6 +186,8 @@ model UserProfile {
   assistantRequests AssistantConversationState[]
   assistantSuggestions AssistantSuggestion[]
   assistantSends AssistantSuggestionSend[]
+  sentConversationFollowups ConversationFollowup[] @relation("ConversationFollowupSentBy")
+  cancelledConversationFollowups ConversationFollowup[] @relation("ConversationFollowupCancelledBy")
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, clerkUserId])
@@ -321,6 +339,7 @@ model Conversation {
   aiSessions   AiAgentSession[]  @relation("AiAgentSessionConversation")
   aiRuns       AiAgentRun[]
   aiPendingReplies AiAgentPendingReply[]
+  followups    ConversationFollowup[]
   assistantState AssistantConversationState?
   assistantSuggestions AssistantSuggestion[]
 
@@ -354,6 +373,7 @@ model Message {
   sentBy       UserProfile? @relation("UserSentMessages", fields: [workspaceId, sentByUserId], references: [workspaceId, id], onDelete: NoAction)
   assistantInputs AssistantConversationState[]
   assistantSends AssistantSuggestionSend[]
+  anchoredFollowups ConversationFollowup[] @relation("ConversationFollowupAnchorMessage")
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, providerEventId])
@@ -646,6 +666,7 @@ model AiAgent {
   sessions         AiAgentSession[]
   runs             AiAgentRun[]
   pendingReplies   AiAgentPendingReply[]
+  followups        ConversationFollowup[]
   allowedTags      AiAgentAllowedTag[]
   assistantSuggestions AssistantSuggestion[]
 
@@ -779,6 +800,7 @@ model AiAgentSession {
   conversation           Conversation   @relation("AiAgentSessionConversation", fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
   runs                   AiAgentRun[]
   pendingReplies         AiAgentPendingReply[]
+  followups              ConversationFollowup[]
   activeForConversations Conversation[] @relation("ActiveAgentSessionConversation")
 
   @@unique([workspaceId, id])
@@ -812,6 +834,46 @@ model AiAgentPendingReply {
   @@index([status, scheduledAt])
   @@index([workspaceId, agentId])
   @@map("ai_agent_pending_replies")
+}
+
+model ConversationFollowup {
+  id                String                   @id @default(uuid()) @db.Uuid
+  workspaceId       String                   @map("workspace_id")
+  conversationId    String                   @map("conversation_id") @db.Uuid
+  agentId           String                   @map("agent_id") @db.Uuid
+  sessionId         String?                  @map("session_id") @db.Uuid
+  kind              ConversationFollowupKind
+  status            ConversationFollowupStatus @default(scheduled)
+  activeKey         String?                  @map("active_key")
+  stepIndex         Int                      @default(0) @map("step_index")
+  anchorMessageId   String                   @map("anchor_message_id") @db.Uuid
+  anchorMessageAt   DateTime                 @map("anchor_message_at")
+  scheduledAt       DateTime                 @map("scheduled_at")
+  lockedAt          DateTime?                @map("locked_at")
+  attempts          Int                      @default(0)
+  decision          Json                     @default("{}")
+  draftBody         String?                  @map("draft_body")
+  finalBody         String?                  @map("final_body")
+  reason            String?
+  sentByUserId      String?                  @map("sent_by_user_id") @db.Uuid
+  sentAt            DateTime?                @map("sent_at")
+  cancelledAt       DateTime?                @map("cancelled_at")
+  cancelledByUserId String?                  @map("cancelled_by_user_id") @db.Uuid
+  createdAt         DateTime                 @default(now()) @map("created_at")
+  updatedAt         DateTime                 @updatedAt @map("updated_at")
+
+  conversation  Conversation    @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  agent         AiAgent         @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: NoAction)
+  session       AiAgentSession? @relation(fields: [workspaceId, sessionId], references: [workspaceId, id], onDelete: NoAction)
+  anchorMessage Message         @relation("ConversationFollowupAnchorMessage", fields: [workspaceId, anchorMessageId], references: [workspaceId, id], onDelete: NoAction)
+  sentBy        UserProfile?    @relation("ConversationFollowupSentBy", fields: [workspaceId, sentByUserId], references: [workspaceId, id], onDelete: NoAction)
+  cancelledBy   UserProfile?    @relation("ConversationFollowupCancelledBy", fields: [workspaceId, cancelledByUserId], references: [workspaceId, id], onDelete: NoAction)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, conversationId, activeKey])
+  @@index([status, scheduledAt])
+  @@index([workspaceId, conversationId, createdAt])
+  @@map("conversation_followups")
 }
 
 model AiAgentRun {
