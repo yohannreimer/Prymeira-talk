@@ -6,6 +6,7 @@ import { MetaClientError } from "../meta/meta.client.js";
 import {
   ConversationActionError,
   ConversationNotFoundError,
+  OutboundDeliveryUncertainError,
   OutboundMessageValidationError,
   createConversationsService
 } from "./conversations.service.js";
@@ -22,6 +23,7 @@ type MockPrisma = {
     update: ReturnType<typeof vi.fn<PrismaLike["conversation"]["update"]>>;
   };
   message: {
+    update: ReturnType<typeof vi.fn<NonNullable<PrismaLike["message"]["update"]>>>;
     create: ReturnType<typeof vi.fn<PrismaLike["message"]["create"]>>;
     findMany: ReturnType<typeof vi.fn<PrismaLike["message"]["findMany"]>>;
     deleteMany: ReturnType<typeof vi.fn<PrismaLike["message"]["deleteMany"]>>;
@@ -137,6 +139,18 @@ function createMockPrisma(overrides: {
         })
     },
     message: {
+      update: vi.fn<NonNullable<PrismaLike["message"]["update"]>>().mockResolvedValue({
+        id: "msg_reserved",
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        providerMessageId: "provider_reserved",
+        direction: "outbound",
+        type: "text",
+        body: "Oi",
+        status: "sent",
+        sentByUserId: "user_1",
+        createdAt: new Date("2026-05-20T12:00:00.000Z")
+      }),
       create:
         overrides.create ??
         vi.fn<PrismaLike["message"]["create"]>().mockResolvedValue({
@@ -696,6 +710,79 @@ describe("conversations service", () => {
         contact: { select: { phone: true } }
       }
     });
+  });
+
+  it("marks a reserved delivery uncertain when the provider accepts but message persistence fails", async () => {
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "provider_accepted", raw: {} });
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        status: "open",
+        assignedUserId: null,
+        departmentId: null,
+        lastMessageAt: null,
+        lastMessagePreview: null,
+        unreadCount: 0,
+        priority: "normal",
+        channel: { provider: "evolution", providerKey: "instance_1" },
+        contact: { phone: "5547999990000" },
+        tags: []
+      })
+    });
+    prisma.message.update.mockRejectedValue(new Error("database write failed"));
+    const service = createConversationsService(prisma, {
+      evolution: { mode: "real", client: { sendText } } as never
+    });
+
+    await expect(service.createPendingOutboundMessage({
+      reservedMessageId: "00000000-0000-4000-8000-000000000701",
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      body: "Oi",
+      sentByUserId: "user_1"
+    })).rejects.toBeInstanceOf(OutboundDeliveryUncertainError);
+
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(prisma.message.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a reserved delivery retryable when validation fails before the provider is called", async () => {
+    const sendText = vi.fn();
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        status: "open",
+        assignedUserId: null,
+        departmentId: null,
+        lastMessageAt: null,
+        lastMessagePreview: null,
+        unreadCount: 0,
+        priority: "normal",
+        channel: { provider: "evolution", providerKey: "instance_1" },
+        contact: { phone: null },
+        tags: []
+      })
+    });
+    const service = createConversationsService(prisma, {
+      evolution: { mode: "real", client: { sendText } } as never
+    });
+
+    await expect(service.createPendingOutboundMessage({
+      reservedMessageId: "00000000-0000-4000-8000-000000000701",
+      workspaceId: "workspace_a",
+      conversationId: "conv_1",
+      body: "Oi",
+      sentByUserId: "user_1"
+    })).rejects.toBeInstanceOf(OutboundMessageValidationError);
+
+    expect(sendText).not.toHaveBeenCalled();
+    expect(prisma.message.update).not.toHaveBeenCalled();
   });
 
   it("sends Meta Cloud text when the customer service window is open", async () => {

@@ -176,6 +176,19 @@ function buildRuntime(overrides: Record<string, any> = {}) {
       findMany: overrides.message?.findMany ?? vi.fn().mockResolvedValue(baseMessages)
     },
     conversationFollowup: {
+      findFirst: overrides.conversationFollowup?.findFirst ?? vi.fn().mockResolvedValue({
+        ...baseFollowup,
+        status: "review",
+        draftBody: "Você consegue me informar a espessura da chapa?",
+        finalBody: null,
+        reason: "jev_human_review",
+        sentByUserId: null,
+        sentAt: null,
+        cancelledByUserId: null,
+        cancelledAt: null,
+        createdAt: now,
+        updatedAt: now
+      }),
       updateMany: overrides.conversationFollowup?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 })
     }
   };
@@ -190,7 +203,8 @@ function buildRuntime(overrides: Record<string, any> = {}) {
     },
     jevFollowupDecision: { decide },
     replyPreflight,
-    outbound: { createPendingOutboundMessage }
+    outbound: { createPendingOutboundMessage },
+    publisher: overrides.publisher
   });
 
   return {
@@ -314,8 +328,10 @@ describe("createAgentFollowupRuntime", () => {
   });
 
   it("persists a private draft for human review without changing control or calling transport", async () => {
+    const publishUpdated = vi.fn();
     const harness = buildRuntime({
-      decide: vi.fn().mockResolvedValue({ ...automaticDecision, route: "human_review", risk: "commercial" })
+      decide: vi.fn().mockResolvedValue({ ...automaticDecision, route: "human_review", risk: "commercial" }),
+      publisher: { publishUpdated }
     });
 
     await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
@@ -333,6 +349,10 @@ describe("createAgentFollowupRuntime", () => {
       })
     });
     expect(harness.prisma.conversation.update).not.toHaveBeenCalled();
+    expect(publishUpdated).toHaveBeenCalledWith(expect.objectContaining({
+      status: "review",
+      draftBody: "Você consegue me informar a espessura da chapa?"
+    }));
   });
 
   it.each([

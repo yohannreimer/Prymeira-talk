@@ -116,6 +116,64 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("conversation followups", () => {
+  it("publishes the persisted state after a customer-reply cancellation", async () => {
+    const cancelled = activeFollowup({
+      status: "cancelled",
+      activeKey: null,
+      reason: "customer_replied",
+      cancelledAt: new Date("2026-09-21T12:01:00.000Z"),
+      createdAt: anchorAt,
+      updatedAt: new Date("2026-09-21T12:01:00.000Z")
+    });
+    const findFirst = vi.fn()
+      .mockResolvedValueOnce(activeFollowup())
+      .mockResolvedValueOnce(cancelled);
+    const prisma = buildPrisma({
+      message: { findFirst: vi.fn().mockResolvedValue({ ...baseMessage, direction: "inbound" }) },
+      conversationFollowup: {
+        findFirst,
+        updateMany: vi.fn().mockResolvedValue({ count: 1 })
+      }
+    });
+    const publishUpdated = vi.fn();
+
+    await createConversationFollowupsService(prisma, { publisher: { publishUpdated } })
+      .observeConversationActivity({
+        workspaceId: ids.workspace,
+        conversationId: ids.conversation,
+        messageId: ids.anchor,
+        direction: "inbound",
+        source: "customer"
+      });
+
+    expect(publishUpdated).toHaveBeenCalledOnce();
+    expect(publishUpdated).toHaveBeenCalledWith(expect.objectContaining({ status: "cancelled", reason: "customer_replied" }));
+  });
+
+  it("publishes persisted processing and recovery transitions", async () => {
+    const processing = claimedFollowup({ createdAt: anchorAt, updatedAt: claimLockedAt });
+    const scheduled = activeFollowup({ createdAt: anchorAt, updatedAt: new Date("2026-09-21T12:05:00.000Z") });
+    const prisma = buildPrisma({
+      conversationFollowup: {
+        findFirst: vi.fn().mockResolvedValueOnce(processing).mockResolvedValueOnce(scheduled),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 })
+      }
+    });
+    const publishUpdated = vi.fn();
+    const service = createConversationFollowupsService(prisma, { publisher: { publishUpdated } });
+
+    await service.claimScheduledFollowup({ workspaceId: ids.workspace, followupId: ids.followup, now: claimLockedAt });
+    await service.recoverClaimedFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: claimLockedAt },
+      outcome: "retry",
+      reason: "transport_retry"
+    });
+
+    expect(publishUpdated.mock.calls.map(([record]) => record.status)).toEqual(["processing", "scheduled"]);
+  });
+
   it("cancels the active cycle immediately when the customer replies", async () => {
     const customerMessage = {
       ...baseMessage,
@@ -926,19 +984,34 @@ describe("completeAutomaticFollowup", () => {
       stepIndex: 1,
       decision: { route: "automatic_send" }
     });
-    const create = vi.fn().mockResolvedValue(activeFollowup({
+    const nextFollowup = activeFollowup({
       id: "next_followup",
       stepIndex: 2,
-      scheduledAt: new Date("2026-09-21T14:00:00.000Z")
-    }));
+      scheduledAt: new Date("2026-09-21T14:00:00.000Z"),
+      createdAt: anchorAt,
+      updatedAt: new Date("2026-09-21T12:05:00.000Z")
+    });
+    const sentFollowup = claimedFollowup({
+      status: "sent",
+      activeKey: null,
+      finalBody: "Você consegue confirmar a espessura?",
+      sentAt: new Date("2026-09-21T12:05:00.000Z"),
+      createdAt: anchorAt,
+      updatedAt: new Date("2026-09-21T12:05:00.000Z")
+    });
+    const create = vi.fn().mockResolvedValue(nextFollowup);
     const prisma = buildPrisma({
       conversationFollowup: {
+        findFirst: vi.fn().mockImplementation(async (args: any) =>
+          args.where.id === "next_followup" ? nextFollowup : sentFollowup
+        ),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         create
       }
     });
+    const publishUpdated = vi.fn();
 
-    const result = await createConversationFollowupsService(prisma).completeAutomaticFollowup({
+    const result = await createConversationFollowupsService(prisma, { publisher: { publishUpdated } }).completeAutomaticFollowup({
       workspaceId: ids.workspace,
       followupId: followup.id,
       followup,
@@ -984,6 +1057,7 @@ describe("completeAutomaticFollowup", () => {
         reason: "agent_followup_step"
       })
     });
+    expect(publishUpdated.mock.calls.map(([record]) => record.status)).toEqual(["sent", "scheduled"]);
   });
 
   it("does not create a fourth follow-up after the configured third step", async () => {

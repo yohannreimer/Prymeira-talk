@@ -7,6 +7,11 @@ import {
   type NormalizedConversationMessage
 } from "./conversation-context-builder.js";
 import { MAX_AUTOMATIC_FOLLOWUP_STEPS } from "../followups/conversation-followups.service.js";
+import {
+  publishPersistedConversationFollowup,
+  type ConversationFollowupPublisher,
+  type ConversationFollowupPublicRecord
+} from "../followups/conversation-followup-events.js";
 import type {
   ConversationFollowupRecord,
   CompleteAutomaticFollowupResult,
@@ -75,6 +80,7 @@ export type AgentFollowupRuntimePrismaLike = ConversationContextBuilderPrismaLik
     findMany(args: unknown): Promise<KnowledgeSource[]>;
   };
   conversationFollowup: {
+    findFirst?(args: unknown): Promise<ConversationFollowupPublicRecord | null>;
     updateMany(args: unknown): Promise<{ count: number }>;
   };
 };
@@ -125,11 +131,22 @@ export function createAgentFollowupRuntime(input: {
   jevFollowupDecision: Pick<JevFollowupDecision, "decide">;
   replyPreflight?: AgentReplyPreflight;
   outbound: ConversationOutboundTextDelivery;
+  publisher?: ConversationFollowupPublisher;
 }) {
   const { prisma } = input;
 
+  async function publish(followup: ConversationFollowupRecord) {
+    if (!input.publisher || !prisma.conversationFollowup.findFirst) return;
+    await publishPersistedConversationFollowup({
+      store: { findFirst: prisma.conversationFollowup.findFirst.bind(prisma.conversationFollowup) },
+      publisher: input.publisher,
+      workspaceId: followup.workspaceId,
+      followupId: followup.id
+    });
+  }
+
   async function markSkipped(followup: ConversationFollowupRecord, decision: unknown, reason: string) {
-    await prisma.conversationFollowup.updateMany({
+    const updated = await prisma.conversationFollowup.updateMany({
       where: { workspaceId: followup.workspaceId, id: followup.id, activeKey: "active" },
       data: {
         status: "skipped",
@@ -138,10 +155,11 @@ export function createAgentFollowupRuntime(input: {
         reason
       }
     });
+    if (updated.count === 1) await publish(followup);
   }
 
   async function markCancelled(followup: ConversationFollowupRecord, decision: unknown, reason: string) {
-    await prisma.conversationFollowup.updateMany({
+    const updated = await prisma.conversationFollowup.updateMany({
       where: { workspaceId: followup.workspaceId, id: followup.id, activeKey: "active" },
       data: {
         status: "cancelled",
@@ -151,6 +169,7 @@ export function createAgentFollowupRuntime(input: {
         cancelledAt: new Date()
       }
     });
+    if (updated.count === 1) await publish(followup);
   }
 
   async function markReview(input: {
@@ -159,7 +178,7 @@ export function createAgentFollowupRuntime(input: {
     reason: string;
     draftBody?: string;
   }) {
-    await prisma.conversationFollowup.updateMany({
+    const updated = await prisma.conversationFollowup.updateMany({
       where: { workspaceId: input.followup.workspaceId, id: input.followup.id, activeKey: "active" },
       data: {
         status: "review",
@@ -168,6 +187,7 @@ export function createAgentFollowupRuntime(input: {
         ...(input.draftBody ? { draftBody: input.draftBody } : {})
       }
     });
+    if (updated.count === 1) await publish(input.followup);
   }
 
   return {

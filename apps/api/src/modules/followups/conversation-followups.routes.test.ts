@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { realtimeEventSchema } from "@prymeira-talk/shared";
+import { OutboundDeliveryUncertainError } from "../conversations/conversations.service.js";
 import { conversationFollowupsRoutes } from "./conversation-followups.routes.js";
 
 const ids = {
@@ -83,6 +84,7 @@ function matches(value: unknown, where: Record<string, unknown>): boolean {
 }
 
 function createMemoryPrisma(records: Followup[]) {
+  const messages: Array<Record<string, unknown>> = [];
   let sequence = initialUpdatedAt.getTime();
   const touch = (record: Followup) => {
     sequence += 1_000;
@@ -111,11 +113,45 @@ function createMemoryPrisma(records: Followup[]) {
     }),
     create: vi.fn()
   };
-  return {
+  const db = {
     conversationFollowup: store,
+    message: {
+      findUnique: vi.fn(async ({ where }: { where: { workspaceId_id: { workspaceId: string; id: string } } }) =>
+        messages.find((message) =>
+          message.workspaceId === where.workspaceId_id.workspaceId && message.id === where.workspaceId_id.id
+        ) ?? null
+      ),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const message = { ...data };
+        messages.push(message);
+        return message;
+      }),
+      update: vi.fn(async ({ where, data }: { where: { workspaceId_id: { workspaceId: string; id: string } }; data: Record<string, unknown> }) => {
+        const index = messages.findIndex((message) =>
+          message.workspaceId === where.workspaceId_id.workspaceId && message.id === where.workspaceId_id.id
+        );
+        if (index < 0) throw new Error("reserved message missing");
+        messages[index] = { ...messages[index], ...data };
+        return messages[index];
+      }),
+      findFirst: vi.fn()
+    },
     userProfile: { findFirst: vi.fn().mockResolvedValue({ id: "user_current" }) },
-    records
+    records,
+    messages,
+    $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => {
+      const recordSnapshot = records.map((record) => ({ ...record }));
+      const messageSnapshot = messages.map((message) => ({ ...message }));
+      try {
+        return await callback(db);
+      } catch (error) {
+        records.splice(0, records.length, ...recordSnapshot);
+        messages.splice(0, messages.length, ...messageSnapshot);
+        throw error;
+      }
+    })
   };
+  return db;
 }
 
 async function buildRouteApp(input: {
@@ -248,7 +284,7 @@ describe("conversation follow-up review routes", () => {
 
   it("cancels after a customer reply during server revalidation and never sends", async () => {
     let dbRef: ReturnType<typeof createMemoryPrisma> | undefined;
-    const { app, db, outbound, events } = await buildRouteApp({
+    const { app, db, outbound } = await buildRouteApp({
       revalidate: async () => {
         const record = dbRef!.records[0];
         record.status = "cancelled";
@@ -272,7 +308,6 @@ describe("conversation follow-up review routes", () => {
         followup: expect.objectContaining({ status: "cancelled", reason: "customer_replied" })
       }));
       expect(outbound).not.toHaveBeenCalled();
-      expect(events).toContainEqual(expect.objectContaining({ type: "conversation_followup.updated" }));
     } finally {
       await app.close();
     }
@@ -313,6 +348,51 @@ describe("conversation follow-up review routes", () => {
         code: "FOLLOWUP_STALE",
         followup: expect.objectContaining({ status: "sent" })
       }));
+      expect(outbound).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("never retries after the provider may have accepted a reserved manual delivery", async () => {
+    const outbound = vi.fn().mockRejectedValue(new OutboundDeliveryUncertainError());
+    const { app, db } = await buildRouteApp({ outbound });
+    const request = {
+      method: "POST" as const,
+      url: `/followups/${ids.followup}/send`,
+      payload: { body: "Mensagem única", expectedUpdatedAt: expected(db.records[0]) }
+    };
+    try {
+      const first = await app.inject(request);
+      expect(first.statusCode).toBe(502);
+      expect(first.json().code).toBe("FOLLOWUP_DELIVERY_UNCERTAIN");
+      expect(db.records[0]).toMatchObject({ status: "failed", activeKey: null });
+
+      const second = await app.inject(request);
+      expect(second.statusCode).toBe(409);
+      expect(outbound).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("can retry safely when durable reservation fails before transport starts", async () => {
+    const { app, db, outbound } = await buildRouteApp();
+    db.message.create.mockRejectedValueOnce(new Error("database unavailable before provider"));
+    const request = {
+      method: "POST" as const,
+      url: `/followups/${ids.followup}/send`,
+      payload: { body: "Mensagem reservada", expectedUpdatedAt: expected(db.records[0]) }
+    };
+    try {
+      const first = await app.inject(request);
+      expect(first.statusCode).toBe(503);
+      expect(first.json().code).toBe("FOLLOWUP_RESERVATION_FAILED");
+      expect(outbound).not.toHaveBeenCalled();
+      expect(db.records[0]).toMatchObject({ status: "review", activeKey: "active", updatedAt: initialUpdatedAt });
+
+      const second = await app.inject(request);
+      expect(second.statusCode).toBe(200);
       expect(outbound).toHaveBeenCalledTimes(1);
     } finally {
       await app.close();

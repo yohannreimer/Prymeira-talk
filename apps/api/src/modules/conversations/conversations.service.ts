@@ -61,6 +61,16 @@ export class OutboundMessageValidationError extends Error {
   }
 }
 
+export class OutboundDeliveryUncertainError extends Error {
+  code = "OUTBOUND_DELIVERY_UNCERTAIN" as const;
+  statusCode = 502 as const;
+
+  constructor() {
+    super("The outbound provider may have accepted the message, so this delivery cannot be retried safely.");
+    this.name = "OutboundDeliveryUncertainError";
+  }
+}
+
 export interface ConversationRecord {
   id: string;
   workspaceId: string;
@@ -370,6 +380,7 @@ interface ConversationsServiceOptions {
 
 export type ConversationOutboundTextDelivery = {
   createPendingOutboundMessage(input: {
+    reservedMessageId?: string;
     workspaceId: string;
     conversationId: string;
     body: string;
@@ -719,6 +730,16 @@ export function createConversationsService(
         : "text";
 
       let providerSend: { providerMessageId: string | null; raw: unknown } | null = null;
+      let providerStarted = false;
+      const callProvider = async <T>(operation: () => Promise<T>): Promise<T> => {
+        providerStarted = true;
+        try {
+          return await operation();
+        } catch (error) {
+          if (input.reservedMessageId) throw new OutboundDeliveryUncertainError();
+          throw error;
+        }
+      };
 
       if (
         options.evolution?.mode === "real" &&
@@ -746,22 +767,25 @@ export function createConversationsService(
           if (!options.evolution.client.sendAudio) throw new OutboundMessageValidationError('AUDIO_CHANNEL_NOT_SUPPORTED', 'Este canal ainda não oferece envio de voz.');
           try { audio = await prepareVoiceRecording(input.attachment.mediaUrl, input.attachment.mimetype); }
           catch (e) { throw new OutboundMessageValidationError('INVALID_VOICE_RECORDING', e instanceof Error ? e.message : 'Áudio inválido.'); }
-          providerSend = await options.evolution.client.sendAudio({ instanceName: providerKey, number: contactPhone, audio: audio.mediaUrl });
-        } else providerSend = input.attachment
-          ? await options.evolution.client.sendMedia({
+          providerSend = await callProvider(() => options.evolution!.client!.sendAudio!({ instanceName: providerKey, number: contactPhone, audio: audio!.mediaUrl }));
+        } else {
+          const attachment = input.attachment;
+          providerSend = attachment
+          ? await callProvider(() => options.evolution!.client!.sendMedia({
               instanceName: providerKey,
               number: contactPhone,
               mediatype: messageType === "image" ? "image" : "document",
-              mimetype: input.attachment.mimetype,
-              media: input.attachment.mediaUrl,
-              fileName: input.attachment.fileName,
+              mimetype: attachment.mimetype,
+              media: attachment.mediaUrl,
+              fileName: attachment.fileName,
               caption: input.body
-            })
-          : await options.evolution.client.sendText({
+            }))
+          : await callProvider(() => options.evolution!.client!.sendText({
               instanceName: providerKey,
               number: contactPhone,
               text: messageBody
-            });
+            }));
+        }
       }
 
       if (conversation.channel?.provider === "meta_cloud") {
@@ -793,11 +817,11 @@ export function createConversationsService(
             );
           }
 
-          providerSend = await metaEvolutionClient.sendText({
+          providerSend = await callProvider(() => metaEvolutionClient.sendText({
             instanceName: providerKey,
             number: contactPhone,
             text: messageBody
-          });
+          }));
         } else if (!metaClient || !phoneNumberId) {
           throw new OutboundMessageValidationError(
             "META_NOT_CONFIGURED",
@@ -811,11 +835,11 @@ export function createConversationsService(
             );
           }
 
-          providerSend = await metaClient.sendText({
+          providerSend = await callProvider(() => metaClient.sendText({
             phoneNumberId,
             to: contactPhone,
             text: messageBody
-          });
+          }));
         }
       }
 
@@ -840,24 +864,29 @@ export function createConversationsService(
           status: providerSend ? "sent" as const : "pending" as const,
           sentByUserId: input.sentByUserId
       };
-      const message = input.reservedMessageId
-        ? await prisma.message.update!({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.reservedMessageId } }, data: messageData })
-        : await prisma.message.create({ data: messageData });
+      try {
+        const message = input.reservedMessageId
+          ? await prisma.message.update!({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.reservedMessageId } }, data: messageData })
+          : await prisma.message.create({ data: messageData });
 
-      const updatedConversation = await prisma.conversation.update({
-        where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
-        data: {
-          lastMessageAt:
-            message.createdAt instanceof Date ? message.createdAt : new Date(message.createdAt),
-          lastMessagePreview: messageBody
-        },
-        include: conversationDtoInclude
-      });
+        const updatedConversation = await prisma.conversation.update({
+          where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+          data: {
+            lastMessageAt:
+              message.createdAt instanceof Date ? message.createdAt : new Date(message.createdAt),
+            lastMessagePreview: messageBody
+          },
+          include: conversationDtoInclude
+        });
 
-      return {
-        message: toMessageDto(message),
-        conversation: toConversationDto(updatedConversation)
-      };
+        return {
+          message: toMessageDto(message),
+          conversation: toConversationDto(updatedConversation)
+        };
+      } catch (error) {
+        if (input.reservedMessageId && providerStarted) throw new OutboundDeliveryUncertainError();
+        throw error;
+      }
     },
 
     async markConversationRead(input: {

@@ -1,5 +1,9 @@
 import { agentFollowupConfigSchema } from "@prymeira-talk/shared";
 import { addBusinessMinutes } from "./business-time.js";
+import {
+  publishPersistedConversationFollowup,
+  type ConversationFollowupPublisher
+} from "./conversation-followup-events.js";
 
 type FollowupActivityDirection = "inbound" | "outbound";
 export type FollowupActivitySource = "customer" | "human" | "agent";
@@ -56,8 +60,15 @@ export type ConversationFollowupRecord = {
   scheduledAt: Date | string;
   lockedAt?: Date | string | null;
   decision: unknown;
+  draftBody?: string | null;
+  finalBody?: string | null;
   reason?: string | null;
+  sentByUserId?: string | null;
+  sentAt?: Date | string | null;
+  cancelledByUserId?: string | null;
   cancelledAt?: Date | string | null;
+  createdAt?: Date | string;
+  updatedAt?: Date | string;
 };
 
 type ConversationFollowupStore = {
@@ -146,7 +157,18 @@ export const MAX_AUTOMATIC_FOLLOWUP_STEPS = 3;
 const ACTIVE_FOLLOWUP_STATUSES: ActiveFollowupStatus[] = ["scheduled", "processing", "review"];
 const MAX_UNIQUE_CONFLICT_RETRIES = 3;
 
-export function createConversationFollowupsService(prisma: ConversationFollowupsPrismaLike) {
+export function createConversationFollowupsService(
+  prisma: ConversationFollowupsPrismaLike,
+  options: { publisher?: ConversationFollowupPublisher } = {}
+) {
+  const publish = (workspaceId: string, followupId: string) =>
+    publishPersistedConversationFollowup({
+      store: prisma.conversationFollowup,
+      publisher: options.publisher,
+      workspaceId,
+      followupId
+    });
+
   async function observeConversationActivity(
     input: ObserveConversationActivityInput
   ): Promise<ObserveConversationActivityResult> {
@@ -156,7 +178,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
         return { status: "ignored" };
       }
 
-      return cancelForCustomerReply(prisma, input, customerMessage.ingestedAt);
+      return cancelForCustomerReply(prisma, input, customerMessage.ingestedAt, options.publisher);
     }
 
     if (
@@ -178,7 +200,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
       candidate.message.ingestedAt
     );
     if (newerCustomerMessage) {
-      return cancelForCustomerReply(prisma, input, newerCustomerMessage.ingestedAt);
+      return cancelForCustomerReply(prisma, input, newerCustomerMessage.ingestedAt, options.publisher);
     }
 
     const scheduledAt = calculateFirstScheduledAt(candidate.message.createdAt, candidate.agent);
@@ -206,7 +228,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
 
     for (let attempt = 0; attempt < MAX_UNIQUE_CONFLICT_RETRIES; attempt += 1) {
       try {
-        const followup = await prisma.$transaction(async (tx) => {
+        const mutation = await prisma.$transaction(async (tx) => {
           const current = await tx.conversationFollowup.findFirst({
             where: {
               workspaceId: input.workspaceId,
@@ -216,11 +238,12 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
           });
 
           if (current && toDate(current.anchorIngestedAt) >= candidateData.anchorIngestedAt) {
-            return current;
+            return { followup: current, created: false, replacedId: null };
           }
 
+          let replacedId: string | null = null;
           if (current) {
-            await tx.conversationFollowup.updateMany({
+            const replaced = await tx.conversationFollowup.updateMany({
               where: {
                 id: current.id,
                 workspaceId: input.workspaceId,
@@ -233,12 +256,16 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
                 cancelledAt: new Date()
               }
             });
+            if (replaced.count === 1) replacedId = current.id;
           }
 
-          return tx.conversationFollowup.create({ data: candidateData });
+          const followup = await tx.conversationFollowup.create({ data: candidateData });
+          return { followup, created: true, replacedId };
         });
 
-        return finishOutboundScheduling(prisma, input, followup);
+        if (mutation.replacedId) await publish(input.workspaceId, mutation.replacedId);
+        if (mutation.created) await publish(input.workspaceId, mutation.followup.id);
+        return finishOutboundScheduling(prisma, input, mutation.followup, options.publisher);
       } catch (error) {
         if (!isUniqueConstraintError(error)) {
           throw error;
@@ -252,7 +279,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
           }
         });
         if (active && toDate(active.anchorIngestedAt) >= candidateData.anchorIngestedAt) {
-          return finishOutboundScheduling(prisma, input, active);
+          return finishOutboundScheduling(prisma, input, active, options.publisher);
         }
       }
     }
@@ -285,16 +312,16 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
       return { status: "cancelled", reason: "not_active", followup, conversation: conversation ?? undefined };
     }
     if (!conversation) {
-      return cancelActiveFollowup(prisma, followup, "conversation_missing", input.now);
+      return cancelActiveFollowup(prisma, followup, "conversation_missing", input.now, undefined, options.publisher);
     }
     if (conversation.status === "closed") {
-      return cancelActiveFollowup(prisma, followup, "conversation_closed", input.now, conversation);
+      return cancelActiveFollowup(prisma, followup, "conversation_closed", input.now, conversation, options.publisher);
     }
     if (
       conversation.aiControlStatus === "human_controlled" &&
       followup.kind === "qualification"
     ) {
-      return cancelActiveFollowup(prisma, followup, "human_controlled", input.now, conversation);
+      return cancelActiveFollowup(prisma, followup, "human_controlled", input.now, conversation, options.publisher);
     }
 
     const anchorIngestedAt = toDate(followup.anchorIngestedAt);
@@ -308,7 +335,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
       orderBy: { ingestedAt: "desc" }
     });
     if (newerCustomerMessage) {
-      return cancelActiveFollowup(prisma, followup, "customer_replied", input.now, conversation);
+      return cancelActiveFollowup(prisma, followup, "customer_replied", input.now, conversation, options.publisher);
     }
 
     const newerCompanyMessage = await prisma.message.findFirst({
@@ -322,7 +349,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
       orderBy: { ingestedAt: "desc" }
     });
     if (newerCompanyMessage) {
-      return cancelActiveFollowup(prisma, followup, "outbound_replaced", input.now, conversation);
+      return cancelActiveFollowup(prisma, followup, "outbound_replaced", input.now, conversation, options.publisher);
     }
 
     const session = followup.sessionId
@@ -336,7 +363,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
       session.agentId !== followup.agentId ||
       (conversation.activeAgentSessionId != null && conversation.activeAgentSessionId !== session.id)
     ) {
-      return cancelActiveFollowup(prisma, followup, "session_context_changed", input.now, conversation);
+      return cancelActiveFollowup(prisma, followup, "session_context_changed", input.now, conversation, options.publisher);
     }
 
     return {
@@ -370,9 +397,9 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
         attempts: { increment: 1 }
       }
     });
-    return claim.count === 1
-      ? { status: "claimed", lockedAt }
-      : { status: "not_scheduled" };
+    if (claim.count !== 1) return { status: "not_scheduled" };
+    await publish(input.workspaceId, input.followupId);
+    return { status: "claimed", lockedAt };
   }
 
   async function recoverClaimedFollowup(input: {
@@ -403,7 +430,9 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
             reason: input.reason
           }
     });
-    return recovery.count === 1 ? { status: "recovered" } : { status: "not_active" };
+    if (recovery.count !== 1) return { status: "not_active" };
+    await publish(input.workspaceId, input.followupId);
+    return { status: "recovered" };
   }
 
   async function completeAutomaticFollowup(input: {
@@ -436,7 +465,7 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
       ? calculateScheduledAt(input.followup.anchorMessageAt, nextStep, parsed.data)
       : null;
 
-    return prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const markedSent = await tx.conversationFollowup.updateMany({
         where: {
           id: input.followupId,
@@ -480,6 +509,11 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
       });
       return { status: "scheduled", followupId: next.id } as const;
     });
+    if (result.status !== "not_active") {
+      await publish(input.workspaceId, input.followupId);
+      if (result.status === "scheduled") await publish(input.workspaceId, result.followupId);
+    }
+    return result;
   }
 
   return {
@@ -508,17 +542,21 @@ async function findPersistedCustomerInboundMessage(
 async function cancelForCustomerReply(
   prisma: Pick<ConversationFollowupsPrismaLike, "conversationFollowup">,
   input: Pick<ObserveConversationActivityInput, "workspaceId" | "conversationId">,
-  customerMessageIngestedAt?: Date | string | null
+  customerMessageIngestedAt?: Date | string | null,
+  publisher?: ConversationFollowupPublisher
 ): Promise<ObserveConversationActivityResult> {
+  const where = {
+    workspaceId: input.workspaceId,
+    conversationId: input.conversationId,
+    activeKey: "active",
+    ...(customerMessageIngestedAt
+      ? { anchorIngestedAt: { lt: toDate(customerMessageIngestedAt) } }
+      : {})
+  };
+  const active = publisher ? await prisma.conversationFollowup.findFirst({ where }) : null;
+  if (publisher && !active) return { status: "ignored" };
   const result = await prisma.conversationFollowup.updateMany({
-    where: {
-      workspaceId: input.workspaceId,
-      conversationId: input.conversationId,
-      activeKey: "active",
-      ...(customerMessageIngestedAt
-        ? { anchorIngestedAt: { lt: toDate(customerMessageIngestedAt) } }
-        : {})
-    },
+    where: active ? { ...where, id: active.id } : where,
     data: {
       status: "cancelled",
       activeKey: null,
@@ -527,7 +565,16 @@ async function cancelForCustomerReply(
     }
   });
 
-  return result.count > 0 ? { status: "cancelled" } : { status: "ignored" };
+  if (result.count !== 1) return { status: "ignored" };
+  if (active) {
+    await publishPersistedConversationFollowup({
+      store: prisma.conversationFollowup,
+      publisher,
+      workspaceId: input.workspaceId,
+      followupId: active.id
+    });
+  }
+  return { status: "cancelled" };
 }
 
 async function findNewerCustomerReply(
@@ -549,7 +596,8 @@ async function findNewerCustomerReply(
 async function finishOutboundScheduling(
   prisma: ConversationFollowupsPrismaLike,
   input: ObserveConversationActivityInput,
-  followup: Pick<ConversationFollowupRecord, "id" | "anchorIngestedAt">
+  followup: Pick<ConversationFollowupRecord, "id" | "anchorIngestedAt">,
+  publisher?: ConversationFollowupPublisher
 ): Promise<ObserveConversationActivityResult> {
   const newerCustomerMessage = await findNewerCustomerReply(
     prisma,
@@ -557,7 +605,7 @@ async function finishOutboundScheduling(
     followup.anchorIngestedAt
   );
   if (newerCustomerMessage) {
-    return cancelForCustomerReply(prisma, input, newerCustomerMessage.ingestedAt);
+    return cancelForCustomerReply(prisma, input, newerCustomerMessage.ingestedAt, publisher);
   }
 
   return { status: "scheduled", followupId: followup.id };
@@ -666,13 +714,23 @@ async function cancelActiveFollowup(
   followup: ConversationFollowupRecord,
   reason: Extract<RevalidateActiveFollowupResult, { status: "cancelled" }>["reason"],
   now?: Date,
-  conversation?: ConversationRecord
+  conversation?: ConversationRecord,
+  publisher?: ConversationFollowupPublisher
 ): Promise<Extract<RevalidateActiveFollowupResult, { status: "cancelled" }>> {
   const cancelledAt = now ?? new Date();
-  await prisma.conversationFollowup.updateMany({
+  const updated = await prisma.conversationFollowup.updateMany({
     where: { id: followup.id, workspaceId: followup.workspaceId, activeKey: "active" },
     data: { status: "cancelled", activeKey: null, reason, cancelledAt }
   });
+
+  if (updated.count === 1) {
+    await publishPersistedConversationFollowup({
+        store: prisma.conversationFollowup,
+        publisher,
+        workspaceId: followup.workspaceId,
+        followupId: followup.id
+      });
+  }
 
   return {
     status: "cancelled",

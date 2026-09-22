@@ -12,6 +12,7 @@ import { createJevReplyPreflight } from "./modules/agents/jev-reply-preflight.js
 import { createAgentReplyScheduler } from "./modules/agents/agent-reply-scheduler.js";
 import { createConversationFollowupScheduler } from "./modules/followups/conversation-followup-scheduler.js";
 import { createConversationFollowupsService } from "./modules/followups/conversation-followups.service.js";
+import { createConversationFollowupRealtimePublisher } from "./modules/followups/conversation-followup-events.js";
 import { agentsRoutes } from "./modules/agents/agents.routes.js";
 import { agentPackageRoutes } from "./modules/agents/agent-package.routes.js";
 import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.js";
@@ -138,6 +139,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   }));
 
   await app.register(realtimeRoutes);
+  const followupPublisher = createConversationFollowupRealtimePublisher(app.realtime);
 
   const evolutionRuntime = createEvolutionRuntime({
     mode: env.EVOLUTION_MODE,
@@ -158,7 +160,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     options.prismaEnabled === false
       ? undefined
       : createConversationFollowupsService(
-          app.prisma as unknown as Parameters<typeof createConversationFollowupsService>[0]
+          app.prisma as unknown as Parameters<typeof createConversationFollowupsService>[0],
+          { publisher: followupPublisher }
         );
   const replyPreflight = env.JEV_API_KEY
     ? createJevReplyPreflight({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
@@ -230,7 +233,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
             model: env.JEV_MODEL
           }),
           replyPreflight,
-          outbound: followupOutbound
+          outbound: followupOutbound,
+          publisher: followupPublisher
         });
   const conversationFollowupScheduler = followupRuntime
     ? createConversationFollowupScheduler({
@@ -285,7 +289,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   if (followupService && followupOutbound) {
     await app.register(conversationFollowupsRoutes, {
       followups: followupService,
-      outbound: followupOutbound
+      outbound: followupOutbound,
+      publisher: followupPublisher
     });
   }
   await app.register(quickRepliesRoutes);
