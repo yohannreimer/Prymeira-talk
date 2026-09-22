@@ -394,7 +394,12 @@ export class LeadsRepository {
       for (const key of ["retryable", "totalCount", "processedCount", "failedCount", "downloadedRows"]) {
         delete output[key];
       }
-      if (["LEAD_GOOGLE_REMOTE_FAILED", "LEAD_GOOGLE_NO_RESULTS"].includes(current.errorMessage ?? "")) {
+      if ([
+        "LEAD_GOOGLE_REMOTE_FAILED",
+        "LEAD_GOOGLE_NO_RESULTS",
+        "LEAD_GOOGLE_TIMEOUT",
+        "LEAD_GOOGLE_PARTIAL_ROWS"
+      ].includes(current.errorMessage ?? "")) {
         for (const key of ["remoteJobId", "remoteStatus", "remoteSubmittedAt", "remotePolledAt"]) delete output[key];
       }
       output.retryRequestedAt = now.toISOString();

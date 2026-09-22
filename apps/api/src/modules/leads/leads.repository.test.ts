@@ -298,4 +298,43 @@ describe("Leads repository workspace isolation", () => {
     expect(savedOutput).not.toHaveProperty("remoteJobId");
     expect(savedOutput).toHaveProperty("retryRequestedAt", now.toISOString());
   });
+
+  it.each(["LEAD_GOOGLE_TIMEOUT", "LEAD_GOOGLE_PARTIAL_ROWS"])(
+    "clears an expired remote checkpoint when retrying %s",
+    async (errorMessage) => {
+      const terminal = {
+        ...job(),
+        operation: "google_maps_search",
+        status: "failed" as const,
+        errorMessage,
+        output: {
+          retryable: true,
+          remoteJobId: "remote-old",
+          remoteSubmittedAt: new Date(now.getTime() - 1_000_000).toISOString()
+        },
+        finishedAt: now,
+        updatedAt: now
+      };
+      const updateMany = vi.fn(async () => ({ count: 1 }));
+      const transaction = vi.fn(async (callback: any) => callback({
+        leadJob: {
+          findFirst: vi.fn()
+            .mockResolvedValueOnce(terminal)
+            .mockResolvedValueOnce({ ...terminal, status: "queued", output: {}, errorMessage: null }),
+          updateMany
+        },
+        leadList: {
+          findFirst: vi.fn(async () => ({ ...list(), source: "google_maps" })),
+          updateMany: vi.fn(async () => ({ count: 1 }))
+        }
+      }));
+      const repository = new LeadsRepository({ $transaction: transaction } as never);
+
+      await repository.retryGoogleJob(workspaceId, jobId, now);
+
+      const calls = updateMany.mock.calls as unknown as Array<[{ data: { output: Record<string, unknown> } }]>;
+      expect(calls[0]![0].data.output).not.toHaveProperty("remoteJobId");
+      expect(calls[0]![0].data.output).not.toHaveProperty("remoteSubmittedAt");
+    }
+  );
 });
