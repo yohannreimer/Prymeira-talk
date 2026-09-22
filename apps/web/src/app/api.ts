@@ -3461,8 +3461,19 @@ export function buildRealtimeUrl() {
 type TokenProvider = () => Promise<string | null>;
 const leadPath = (id: string) => encodeURIComponent(id);
 
-export function apiGetLeadLists(getToken: TokenProvider, source?: LeadSource): Promise<LeadListDto[]> {
-  return fetchJson(getToken, `/leads/lists${source ? `?source=${source}` : ""}`, {}, value => leadListSchema.array().parse(value), "Não foi possível carregar listas.");
+export function apiGetLeadLists(getToken: TokenProvider, page = 1, pageSize = 50): Promise<LeadListDto[]> {
+  return fetchJson(getToken, `/leads/lists?page=${page}&pageSize=${pageSize}`, {}, value => leadListSchema.array().parse(value), "Não foi possível carregar listas.");
+}
+
+export async function apiDeleteLeadList(getToken: TokenProvider, listId: string): Promise<void> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/leads/lists/${leadPath(listId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    throw new ApiRequestError(await readApiErrorMessage(response, "Não foi possível excluir a lista."));
+  }
 }
 
 export function apiGetLeadResults(getToken: TokenProvider, listId: string, page = 1): Promise<LeadPaginatedResultDto> {
