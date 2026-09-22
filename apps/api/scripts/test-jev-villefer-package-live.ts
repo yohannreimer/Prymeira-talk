@@ -10,6 +10,11 @@ import {
   type AgentReplyPreflightResult
 } from "../src/modules/agents/jev-reply-preflight.js";
 import {
+  createJevFollowupDecision,
+  type FollowupDecision,
+  type FollowupDecisionInput
+} from "../src/modules/agents/jev-followup-decision.js";
+import {
   selectRelevantKnowledge,
   type KnowledgeRetrievalSource,
   type SelectedKnowledgeSource
@@ -19,17 +24,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(__dirname, "../../..");
 config({ path: resolve(repositoryRoot, ".env") });
 
-const packagePath = process.argv.slice(2).find((argument) => argument !== "--")?.trim();
-if (!packagePath) {
-  throw new Error("Informe o caminho do pacote: pnpm test:jev-villefer-package-live -- /caminho/agente.json");
-}
+const packagePath = resolvePackagePath();
 
 const apiKey = process.env.JEV_API_KEY?.trim();
 if (!apiKey) {
   throw new Error("Defina JEV_API_KEY no .env antes de executar este teste.");
 }
 
-const rawPackage = JSON.parse(await readFile(resolve(packagePath), "utf8")) as unknown;
+const rawPackage = JSON.parse(await readFile(packagePath, "utf8")) as unknown;
 const agentPackage = agentPackageSchema.parse(rawPackage);
 const variables = resolveVariables(agentPackage);
 const renderedPrompt = renderTemplate(agentPackage.agent.systemPrompt, variables);
@@ -37,57 +39,39 @@ if (/{{\s*[a-zA-Z0-9_]+\s*}}/.test(renderedPrompt)) {
   throw new Error("O prompt do pacote ainda tem variáveis não resolvidas.");
 }
 
-const sources = agentPackage.knowledge.map((source) => ({
-  id: source.key,
-  title: source.title,
-  content: renderTemplate(source.content, variables),
-  metadata: {
-    category: source.category,
-    aliases: source.aliases
-  }
-}));
+const sources = agentPackage.knowledge
+  .filter((source) => source.approvalStatus === "confirmed")
+  .map((source) => ({
+    id: source.key,
+    title: source.title,
+    content: renderTemplate(source.content, variables),
+    metadata: {
+      category: source.category,
+      aliases: source.aliases
+    }
+  }));
 const sourceById = new Map(agentPackage.knowledge.map((source) => [source.key, source]));
 const debugJev = process.env.JEV_TEST_DEBUG === "1";
 let activeJevCall = "";
 
-const client = createJevReplyPreflight({
-  apiKey,
-  model: process.env.JEV_MODEL?.trim() || "jev-latest",
-  fetchImpl: async (url, init) => {
-    const response = await fetch(url, init);
-    if (debugJev) {
-      const request = JSON.parse(String(init?.body)) as {
-        state?: {
-          currentMessage?: { body?: string };
-          approvedKnowledge?: Array<{ title?: string; content?: string }>;
-          candidateReply?: string;
-        };
-      };
-      const responseBody = await response.clone().json().catch(() => null);
-      console.error(JSON.stringify({
-        kind: "jev_wire_debug",
-        call: activeJevCall,
-        request: {
-          currentMessage: request.state?.currentMessage?.body,
-          candidateReply: request.state?.candidateReply,
-          approvedKnowledge: request.state?.approvedKnowledge?.map((source) => ({
-            title: source.title,
-            characters: source.content?.length ?? 0
-          }))
-        },
-        response: responseBody
-      }));
-    }
-    if (!response.ok) {
-      console.error(JSON.stringify({
-        kind: "jev_api_error",
-        status: response.status,
-        body: (await response.clone().text()).slice(0, 4_000)
-      }));
-    }
-    return response;
+const jevFetch: typeof fetch = async (url, init) => {
+  const response = await fetch(url, init);
+  if (debugJev) {
+    console.error(JSON.stringify({
+      kind: "jev_wire_debug",
+      call: activeJevCall,
+      status: response.status
+    }));
   }
-});
+  if (!response.ok) {
+    console.error(JSON.stringify({ kind: "jev_api_error", call: activeJevCall, status: response.status }));
+  }
+  return response;
+};
+
+const jevModel = process.env.JEV_MODEL?.trim() || "jev-latest";
+const client = createJevReplyPreflight({ apiKey, model: jevModel, fetchImpl: jevFetch });
+const followupClient = createJevFollowupDecision({ apiKey, model: jevModel, fetchImpl: jevFetch });
 
 type ConversationEntry = ["cliente" | "atendente" | "nota interna", string];
 type PreflightExpectation = {
@@ -102,6 +86,12 @@ type LiveCase = {
   body: string;
   history: ConversationEntry[];
   expected: PreflightExpectation;
+};
+type FollowupLiveCase = {
+  name: string;
+  history: ConversationEntry[];
+  input: Omit<FollowupDecisionInput, "conversationMessages" | "selectedKnowledge">;
+  expected: FollowupDecision;
 };
 
 const history = (entries: ConversationEntry[]): AgentReplyPreflightInput["conversationMessages"] =>
@@ -201,6 +191,57 @@ const cases: LiveCase[] = [
   }
 ];
 
+const firstFollowupInstruction = agentPackage.agent.followup.steps[0]?.instruction;
+if (!firstFollowupInstruction) {
+  throw new Error("O pacote não contém a primeira instrução de follow-up.");
+}
+
+const followupCases: FollowupLiveCase[] = [
+  {
+    name: "qualificação aguardando medida e espessura pode seguir automaticamente",
+    history: [
+      ["cliente", "Preciso de chapas para fabricar uma peça."],
+      ["atendente", "Qual medida e espessura você precisa?"]
+    ],
+    input: {
+      followupKind: "qualification",
+      step: 1,
+      instruction: firstFollowupInstruction,
+      aiControlStatus: "agent_allowed",
+      hasCompatibleActiveAgentSession: true
+    },
+    expected: {
+      outcome: "follow_up",
+      purpose: "missing_qualification",
+      route: "automatic_send",
+      stage: "qualification",
+      risk: "none"
+    }
+  },
+  {
+    name: "proposta de vendedor aguardando retorno exige revisão humana",
+    history: [
+      ["cliente", "Pode preparar uma proposta para o item já qualificado?"],
+      ["atendente", "A proposta foi preparada pelo vendedor e enviada para sua avaliação."],
+      ["nota interna", "Acompanhamento autorizado caso o cliente não responda."]
+    ],
+    input: {
+      followupKind: "human_commercial",
+      step: 1,
+      instruction: firstFollowupInstruction,
+      aiControlStatus: "human_controlled",
+      hasCompatibleActiveAgentSession: false
+    },
+    expected: {
+      outcome: "follow_up",
+      purpose: "proposal_checkin",
+      route: "human_review",
+      stage: "post_proposal",
+      risk: "human_owned"
+    }
+  }
+];
+
 let failures = 0;
 console.log(JSON.stringify({
   kind: "package",
@@ -250,6 +291,44 @@ for (const testCase of cases) {
       selectedKnowledge
     },
     result
+  }));
+}
+
+for (const testCase of followupCases) {
+  const conversationMessages = history(testCase.history);
+  const selection = selectRelevantKnowledge({
+    latestMessage: conversationMessages.at(-1)?.body,
+    conversationHistory: formatHistory(testCase.history),
+    instruction: testCase.input.instruction,
+    taxonomy: agentPackage.agent.knowledgeTaxonomy,
+    sources
+  });
+  const input: FollowupDecisionInput = {
+    ...testCase.input,
+    conversationMessages,
+    selectedKnowledge: selection.selected.map((source) => ({
+      title: source.title,
+      content: source.content
+    }))
+  };
+  activeJevCall = `followup:${testCase.name}`;
+  const decision = await followupClient.decide(input);
+  const assertionFailures = assertFollowupDecision(decision, testCase.expected);
+  const passed = assertionFailures.length === 0;
+  failures += passed ? 0 : 1;
+
+  console.log(JSON.stringify({
+    kind: "followup_decision",
+    case: testCase.name,
+    expected: testCase.expected,
+    decision,
+    route: decision.route,
+    passed,
+    assertionFailures,
+    selection: {
+      approvedSources: selection.selected.map((source) => source.id),
+      selectedCharacters: selection.selected.reduce((total, source) => total + source.content.length, 0)
+    }
   }));
 }
 
@@ -371,6 +450,16 @@ function assertPreflight(result: AgentReplyPreflightResult, expected: PreflightE
   return failures;
 }
 
+function assertFollowupDecision(result: FollowupDecision, expected: FollowupDecision) {
+  const failures: string[] = [];
+  for (const key of ["outcome", "purpose", "route", "stage", "risk"] as const) {
+    if (result[key] !== expected[key]) {
+      failures.push(`${key} esperado ${expected[key]}, recebido ${result[key]}`);
+    }
+  }
+  return failures;
+}
+
 function planOf(
   result: AgentReplyPreflightResult,
   fallback: Pick<AgentReplyPreflightPlan, "commercialPath" | "nextAction">
@@ -393,4 +482,10 @@ function resolveVariables(agentPackage: AgentPackage) {
 
 function renderTemplate(value: string, values: Record<string, string>) {
   return value.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_, key: string) => values[key] ?? `{{${key}}}`);
+}
+
+function resolvePackagePath() {
+  const cliPath = process.argv.slice(2).find((argument) => argument !== "--")?.trim();
+  const configuredPath = cliPath || process.env.VILLEFER_AGENT_PACKAGE_PATH?.trim();
+  return resolve(configuredPath || resolve(repositoryRoot, "artifacts/agents/villefer/villefer-v1.agent-package.json"));
 }
