@@ -406,8 +406,37 @@ export class LeadsRepository {
   }
 
   async deleteList(workspaceId: string, listId: string) {
-    const result = await this.prisma.leadList.deleteMany({ where: { workspaceId, id: listId } });
-    if (result.count !== 1) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const list = await tx.leadList.findFirst({ where: { workspaceId, id: listId } });
+        if (!list) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
+
+        const activeJobs = await tx.leadJob.count({
+          where: { workspaceId, listId, status: { in: ["queued", "running"] } }
+        });
+        if (activeJobs > 0) {
+          throw new LeadsDomainError(
+            "LEAD_INVALID_TRANSITION", "Aguarde a busca ou verificação em andamento antes de excluir esta lista."
+          );
+        }
+
+        const importedContacts = await tx.leadContactProvenance.count({ where: { workspaceId, listId } });
+        if (importedContacts > 0) {
+          throw new LeadsDomainError("LEAD_INVALID_TRANSITION", "Esta lista já originou contatos e não pode ser excluída.");
+        }
+
+        const result = await tx.leadList.deleteMany({ where: { workspaceId, id: listId } });
+        if (result.count !== 1) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003") {
+        throw new LeadsDomainError("LEAD_INVALID_TRANSITION", "Esta lista possui contatos vinculados e não pode ser excluída.");
+      }
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
+        throw new LeadsDomainError("LEAD_INVALID_TRANSITION", "A lista mudou durante a exclusão. Atualize e tente novamente.");
+      }
+      throw error;
+    }
   }
 
   async listLeads(input: { workspaceId: string; listId: string; page: number; pageSize: number }): Promise<LeadPaginatedResultDto> {

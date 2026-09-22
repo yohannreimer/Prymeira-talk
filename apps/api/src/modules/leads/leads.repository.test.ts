@@ -180,13 +180,86 @@ describe("Leads repository workspace isolation", () => {
 
   it("includes workspace and resource id in list update and delete mutations", async () => {
     const updateMany = vi.fn(async () => ({ count: 0 }));
-    const deleteMany = vi.fn(async () => ({ count: 0 }));
-    const repository = new LeadsRepository({ leadList: { updateMany, deleteMany } } as never);
+    const findFirst = vi.fn(async () => null);
+    const deleteMany = vi.fn(async () => ({ count: 1 }));
+    const tx = { leadList: { findFirst, deleteMany } };
+    const repository = new LeadsRepository({
+      leadList: { updateMany },
+      $transaction: vi.fn(async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx))
+    } as never);
 
     await expect(repository.updateList(foreignWorkspaceId, listId, { name: "x" })).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
     await expect(repository.deleteList(foreignWorkspaceId, listId)).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
     expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: foreignWorkspaceId, id: listId } }));
-    expect(deleteMany).toHaveBeenCalledWith({ where: { workspaceId: foreignWorkspaceId, id: listId } });
+    expect(findFirst).toHaveBeenCalledWith({ where: { workspaceId: foreignWorkspaceId, id: listId } });
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [1, 0, "busca ou verificação"],
+    [0, 1, "originou contatos"]
+  ] as const)("rejects deletion with %s active jobs and %s imported sources", async (active, imported, message) => {
+    const deleteMany = vi.fn(async () => ({ count: 1 }));
+    const countJobs = vi.fn(async () => active);
+    const countProvenances = vi.fn(async () => imported);
+    const tx = {
+      leadList: { findFirst: vi.fn(async () => list()), deleteMany },
+      leadJob: { count: countJobs },
+      leadContactProvenance: { count: countProvenances }
+    };
+    const repository = new LeadsRepository({
+      $transaction: vi.fn(async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx))
+    } as never);
+
+    await expect(repository.deleteList(workspaceId, listId)).rejects.toMatchObject({
+      code: "LEAD_INVALID_TRANSITION", message: expect.stringContaining(message)
+    });
+    expect(countJobs).toHaveBeenCalledWith({ where: {
+      workspaceId, listId, status: { in: ["queued", "running"] }
+    } });
+    if (active === 0) expect(countProvenances).toHaveBeenCalledWith({ where: { workspaceId, listId } });
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("deletes an eligible list inside a serializable transaction", async () => {
+    const deleteMany = vi.fn(async () => ({ count: 1 }));
+    const tx = {
+      leadList: { findFirst: vi.fn(async () => list()), deleteMany },
+      leadJob: { count: vi.fn(async () => 0) },
+      leadContactProvenance: { count: vi.fn(async () => 0) }
+    };
+    const transaction = vi.fn(async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx));
+    const repository = new LeadsRepository({ $transaction: transaction } as never);
+
+    await repository.deleteList(workspaceId, listId);
+
+    expect(deleteMany).toHaveBeenCalledWith({ where: { workspaceId, id: listId } });
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+    });
+  });
+
+  it.each([
+    ["P2003", "contatos vinculados"],
+    ["P2034", "mudou durante a exclusão"]
+  ] as const)("turns database race %s into a safe conflict", async (code, message) => {
+    const tx = {
+      leadList: {
+        findFirst: vi.fn(async () => list()),
+        deleteMany: vi.fn(async () => { throw new Prisma.PrismaClientKnownRequestError("race", {
+          code, clientVersion: "6.19.0"
+        }); })
+      },
+      leadJob: { count: vi.fn(async () => 0) },
+      leadContactProvenance: { count: vi.fn(async () => 0) }
+    };
+    const repository = new LeadsRepository({
+      $transaction: vi.fn(async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx))
+    } as never);
+
+    await expect(repository.deleteList(workspaceId, listId)).rejects.toMatchObject({
+      code: "LEAD_INVALID_TRANSITION", message: expect.stringContaining(message)
+    });
   });
 
   it("scopes job and authorized artifact retrieval to the caller workspace", async () => {

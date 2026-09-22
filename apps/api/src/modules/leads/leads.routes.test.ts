@@ -176,6 +176,19 @@ describe("Leads routes", () => {
     await app.close();
   });
 
+  it("returns a conflict with the reason when a list cannot be deleted", async () => {
+    const { app, service } = await setup();
+    service.deleteList.mockRejectedValueOnce(new LeadsDomainError(
+      "LEAD_INVALID_TRANSITION", "Esta lista já originou contatos e não pode ser excluída."
+    ));
+
+    const response = await app.inject({ method: "DELETE", url: `/leads/lists/${listId}`, headers: headers(workspaceA) });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ code: "LEAD_INVALID_TRANSITION", error: expect.stringContaining("originou contatos") });
+    await app.close();
+  });
+
   it("queues independent Receita, CSV, Google and similar jobs in both workspaces", async () => {
     const { app, service } = await setup();
     const receita = await app.inject({ method: "POST", url: "/leads/receita/search", headers: headers(workspaceA), payload: {
