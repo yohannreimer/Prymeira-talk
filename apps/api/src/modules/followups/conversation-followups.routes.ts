@@ -99,6 +99,7 @@ type FollowupLifecycle = {
     workspaceId: string;
     followupId: string;
     now?: Date;
+    claim?: { lockedAt: Date };
   }): Promise<RevalidateActiveFollowupResult>;
 };
 
@@ -227,7 +228,9 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
           : query.data.status
       },
       select: followupSelect,
-      orderBy: [{ scheduledAt: "asc" }, { createdAt: "asc" }],
+      orderBy: query.data.status === "review" || query.data.status === "scheduled"
+        ? [{ scheduledAt: "asc" }, { createdAt: "asc" }]
+        : [{ updatedAt: "desc" }],
       take: 100
     });
     return records.map(toConversationFollowupDto);
@@ -290,6 +293,7 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
       now: now()
     });
     if (beforeDelivery.status !== "valid") {
+      await removePendingReservation(prisma, request.talk.workspaceId, current.id);
       const latest = await load(request.talk.workspaceId, current.id);
       if (!latest) {
         return reply.code(404).send({ code: "FOLLOWUP_NOT_FOUND", error: "Follow-up not found." });
@@ -321,6 +325,19 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
           code: "FOLLOWUP_DELIVERY_UNCERTAIN",
           error: "The provider may have accepted the follow-up. It will not be retried automatically."
         });
+      }
+      const afterRejection = await followups.revalidateActiveFollowup({
+        workspaceId: request.talk.workspaceId,
+        followupId: current.id,
+        now: now(),
+        claim: { lockedAt: claimAt }
+      });
+      if (afterRejection.status !== "valid") {
+        await removePendingReservation(prisma, request.talk.workspaceId, current.id);
+        const latest = await load(request.talk.workspaceId, current.id);
+        return latest
+          ? stale(reply, latest)
+          : reply.code(404).send({ code: "FOLLOWUP_NOT_FOUND", error: "Follow-up not found." });
       }
       const restored = await restoreReviewAndRemoveReservation(prisma, request.talk.workspaceId, current.id, claimAt);
       if (restored) await publish(request.talk.workspaceId, current.id);
@@ -605,20 +622,34 @@ async function restoreReviewAndRemoveReservation(
       data: { status: "review", lockedAt: null, reason: "manual_send_failed" }
     });
     if (result.count !== 1) return false;
-    const reservation = await tx.message.findUnique({
-      where: { workspaceId_id: { workspaceId, id } }
-    });
-    const metadata = asRecord(reservation?.metadata);
-    if (
-      reservation?.status === "pending" &&
-      reservation.direction === "outbound" &&
-      metadata?.source === "followup_review" &&
-      metadata.followupId === id
-    ) {
-      await tx.message.deleteMany({ where: { workspaceId, id, status: "pending" } });
-    }
+    await removePendingReservationFromStore(tx.message, workspaceId, id);
     return true;
   });
+}
+
+async function removePendingReservation(
+  prisma: ConversationFollowupsRoutesPrismaLike,
+  workspaceId: string,
+  id: string
+) {
+  return prisma.$transaction((tx) => removePendingReservationFromStore(tx.message, workspaceId, id));
+}
+
+async function removePendingReservationFromStore(
+  message: ManualSendTransaction["message"],
+  workspaceId: string,
+  id: string
+) {
+  const reservation = await message.findUnique({ where: { workspaceId_id: { workspaceId, id } } });
+  const metadata = asRecord(reservation?.metadata);
+  if (
+    reservation?.status !== "pending" ||
+    reservation.direction !== "outbound" ||
+    metadata?.source !== "followup_review" ||
+    metadata.followupId !== id
+  ) return false;
+  const deleted = await message.deleteMany({ where: { workspaceId, id, status: "pending" } });
+  return deleted.count === 1;
 }
 
 async function respondConditionalMutation(input: {

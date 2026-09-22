@@ -296,6 +296,7 @@ export function createConversationFollowupsService(
     workspaceId: string;
     followupId: string;
     now?: Date;
+    claim?: { lockedAt: Date };
   }): Promise<RevalidateActiveFollowupResult> {
     const followup = await prisma.conversationFollowup.findFirst({
       where: { workspaceId: input.workspaceId, id: input.followupId }
@@ -317,16 +318,16 @@ export function createConversationFollowupsService(
       return { status: "cancelled", reason: "not_active", followup, conversation: conversation ?? undefined };
     }
     if (!conversation) {
-      return cancelActiveFollowup(prisma, followup, "conversation_missing", input.now, undefined, options.publisher);
+      return cancelActiveFollowup(prisma, followup, "conversation_missing", input.now, undefined, options.publisher, input.claim);
     }
     if (conversation.status === "closed") {
-      return cancelActiveFollowup(prisma, followup, "conversation_closed", input.now, conversation, options.publisher);
+      return cancelActiveFollowup(prisma, followup, "conversation_closed", input.now, conversation, options.publisher, input.claim);
     }
     if (
       conversation.aiControlStatus === "human_controlled" &&
       followup.kind === "qualification"
     ) {
-      return cancelActiveFollowup(prisma, followup, "human_controlled", input.now, conversation, options.publisher);
+      return cancelActiveFollowup(prisma, followup, "human_controlled", input.now, conversation, options.publisher, input.claim);
     }
 
     const anchorIngestedAt = toDate(followup.anchorIngestedAt);
@@ -340,7 +341,7 @@ export function createConversationFollowupsService(
       orderBy: { ingestedAt: "desc" }
     });
     if (newerCustomerMessage) {
-      return cancelActiveFollowup(prisma, followup, "customer_replied", input.now, conversation, options.publisher);
+      return cancelActiveFollowup(prisma, followup, "customer_replied", input.now, conversation, options.publisher, input.claim);
     }
 
     const newerCompanyMessage = await findNewerCompanyMessage(
@@ -349,7 +350,7 @@ export function createConversationFollowupsService(
       anchorIngestedAt
     );
     if (newerCompanyMessage) {
-      return cancelActiveFollowup(prisma, followup, "outbound_replaced", input.now, conversation, options.publisher);
+      return cancelActiveFollowup(prisma, followup, "outbound_replaced", input.now, conversation, options.publisher, input.claim);
     }
 
     const session = followup.sessionId
@@ -363,7 +364,7 @@ export function createConversationFollowupsService(
       session.agentId !== followup.agentId ||
       (conversation.activeAgentSessionId != null && conversation.activeAgentSessionId !== session.id)
     ) {
-      return cancelActiveFollowup(prisma, followup, "session_context_changed", input.now, conversation, options.publisher);
+      return cancelActiveFollowup(prisma, followup, "session_context_changed", input.now, conversation, options.publisher, input.claim);
     }
 
     return {
@@ -804,11 +805,17 @@ async function cancelActiveFollowup(
   reason: Extract<RevalidateActiveFollowupResult, { status: "cancelled" }>["reason"],
   now?: Date,
   conversation?: ConversationRecord,
-  publisher?: ConversationFollowupPublisher
+  publisher?: ConversationFollowupPublisher,
+  claim?: { lockedAt: Date }
 ): Promise<Extract<RevalidateActiveFollowupResult, { status: "cancelled" }>> {
   const cancelledAt = now ?? new Date();
   const updated = await prisma.conversationFollowup.updateMany({
-    where: { id: followup.id, workspaceId: followup.workspaceId, activeKey: "active" },
+    where: {
+      id: followup.id,
+      workspaceId: followup.workspaceId,
+      activeKey: "active",
+      ...(claim ? { status: "processing", lockedAt: claim.lockedAt } : {})
+    },
     data: { status: "cancelled", activeKey: null, reason, cancelledAt }
   });
 

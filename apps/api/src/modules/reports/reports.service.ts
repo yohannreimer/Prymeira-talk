@@ -1,3 +1,5 @@
+import { visibleConversationMessageWhere } from "../conversations/internal-message.js";
+
 type CountGroup = {
   _count: {
     _all: number;
@@ -274,7 +276,7 @@ export function createReportsService(prisma: PrismaLike) {
         channelId: filters.channelId,
         departmentId: filters.departmentId
       });
-      const messageWhere = withoutUndefined({
+      const messageWhere = visibleConversationMessageWhere(withoutUndefined({
         workspaceId: input.workspaceId,
         createdAt: dateWhere,
         conversation: withoutUndefined({
@@ -283,7 +285,7 @@ export function createReportsService(prisma: PrismaLike) {
           channelId: filters.channelId,
           departmentId: filters.departmentId
         })
-      });
+      }));
       const dateOnlyWhere = withoutUndefined({
         workspaceId: input.workspaceId,
         createdAt: dateWhere

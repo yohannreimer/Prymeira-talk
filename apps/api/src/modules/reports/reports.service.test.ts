@@ -271,7 +271,8 @@ describe("reports service", () => {
         status: "open",
         channelId,
         departmentId
-      }
+      },
+      NOT: { status: "pending", metadata: { path: ["source"], equals: "followup_review" } }
     };
 
     expect(prisma.conversation.count).toHaveBeenCalledWith({ where: conversationWhere });

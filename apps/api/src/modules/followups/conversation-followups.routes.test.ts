@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { realtimeEventSchema } from "@prymeira-talk/shared";
 import { OutboundDeliveryUncertainError } from "../conversations/conversations.service.js";
+import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { conversationFollowupsRoutes } from "./conversation-followups.routes.js";
 
 const ids = {
@@ -312,6 +313,13 @@ describe("conversation follow-up review routes", () => {
       expect(response.body).not.toContain("private_provider_failure");
       expect(db.conversationFollowup.findMany).toHaveBeenCalledWith(expect.objectContaining({
         where: { workspaceId: ids.workspaceA, status: { in: ["cancelled", "failed", "skipped", "expired"] } },
+        orderBy: [{ updatedAt: "desc" }],
+        take: 100
+      }));
+      expect((await app.inject("/followups?status=sent")).statusCode).toBe(200);
+      expect(db.conversationFollowup.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+        where: { workspaceId: ids.workspaceA, status: "sent" },
+        orderBy: [{ updatedAt: "desc" }],
         take: 100
       }));
     } finally {
@@ -414,6 +422,33 @@ describe("conversation follow-up review routes", () => {
       expect(response.statusCode).toBe(409);
       expect(outbound).not.toHaveBeenCalled();
       expect(db.records[0]).toMatchObject({ status: "cancelled", activeKey: null, reason: "outbound_replaced" });
+      expect(db.messages.map((message) => message.id)).toEqual(["00000000-0000-4000-8000-000000000799"]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("cancels instead of reopening review when inbound arrives during a definitive provider rejection", async () => {
+    let rejectProvider!: (error: unknown) => void;
+    const outbound = vi.fn().mockImplementation(() => new Promise((_resolve, reject) => { rejectProvider = reject; }));
+    const { app, db } = await buildRouteApp({ realFollowups: true, outbound });
+    const request = app.inject({
+      method: "POST", url: `/followups/${ids.followup}/send`,
+      payload: { body: "Mensagem em voo", expectedUpdatedAt: expected(db.records[0]) }
+    });
+    try {
+      await vi.waitFor(() => expect(outbound).toHaveBeenCalledTimes(1));
+      db.messages.push({
+        id: "00000000-0000-4000-8000-000000000798", workspaceId: ids.workspaceA,
+        conversationId: ids.conversation, direction: "inbound", status: "delivered", metadata: {},
+        ingestedAt: new Date(fixedNow.getTime() + 1_000), createdAt: new Date(fixedNow.getTime() + 1_000)
+      });
+      rejectProvider(new EvolutionClientError(400, {}));
+      const response = await request;
+      expect(response.statusCode).toBe(409);
+      expect(db.records[0]).toMatchObject({ status: "cancelled", activeKey: null, reason: "customer_replied" });
+      expect(db.messages.map((message) => message.id)).toEqual(["00000000-0000-4000-8000-000000000798"]);
+      expect(outbound).toHaveBeenCalledTimes(1);
     } finally {
       await app.close();
     }
