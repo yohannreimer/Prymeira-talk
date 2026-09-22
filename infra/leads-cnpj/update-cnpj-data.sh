@@ -15,9 +15,11 @@ repo_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
 pipeline_dir="$script_dir/cnpj-data-pipeline"
 compose_file="$script_dir/docker-compose.yml"
 env_file="$script_dir/.env"
+similarity_indexes_file="$script_dir/similarity-indexes.sql"
 
 test -f "$env_file" || fail "missing $env_file; copy .env.example and configure only CNPJ stack settings"
 test -d "$pipeline_dir" || fail "submodule is not initialized; run git submodule update --init --recursive"
+test -f "$similarity_indexes_file" || fail "missing $similarity_indexes_file"
 
 gitlink_sha="$(git -C "$repo_root" ls-files --stage -- "$PIPELINE_SUBMODULE" | awk '$1 == "160000" { print $2 }')"
 test "$gitlink_sha" = "$EXPECTED_PIPELINE_SHA" || fail "submodule gitlink is not pinned to $EXPECTED_PIPELINE_SHA"
@@ -46,6 +48,8 @@ run_compose() {
 run_compose up -d --wait cnpj-postgres
 # Omitting --month is the upstream's documented recurring monthly mode.
 run_compose run --rm cnpj-pipeline
+run_compose exec -T cnpj-postgres sh -ec \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < "$similarity_indexes_file"
 
 dataset_state="$(run_compose exec -T cnpj-postgres sh -ec 'psql -At -F "|" -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT max(directory), max(processed_at) FROM cnpj.processed_files"')"
 dataset_month="${dataset_state%%|*}"
