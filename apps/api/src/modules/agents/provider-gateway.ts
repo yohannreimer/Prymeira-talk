@@ -108,7 +108,18 @@ function normalizeAgentOutputShape(value: unknown) {
   const outputRecord = nested ? { ...record, ...nested } : record;
   const confidence = normalizeConfidence(outputRecord.confidence ?? outputRecord.score);
   const actions = normalizeActions(outputRecord.actions);
-  const alternateReply = readReply(outputRecord) ?? readReplyFromActions(actions);
+  // A private handoff brief may be returned directly as JSON rather than in
+  // the generic agent envelope. Keep it in reply for the brief validator.
+  const directBrief = typeof outputRecord.nextAction === "string" &&
+    typeof outputRecord.summary === "string" &&
+    Array.isArray(outputRecord.evidenceMessageIds)
+    ? JSON.stringify({
+      nextAction: outputRecord.nextAction,
+      summary: outputRecord.summary,
+      evidenceMessageIds: outputRecord.evidenceMessageIds
+    })
+    : undefined;
+  const alternateReply = readReply(outputRecord) ?? directBrief ?? readReplyFromActions(actions);
   const handoff = normalizeHandoff(
     outputRecord.handoff ?? outputRecord.shouldHandoff ?? outputRecord.handoffRequired
   );

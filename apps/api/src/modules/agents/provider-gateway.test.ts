@@ -6,6 +6,10 @@ import {
 } from "./provider-gateway.js";
 
 describe("parseAgentOutput", () => {
+  it("preserves a directly returned handoff brief as a private reply", () => {
+    const brief = { nextAction: "Verifique o pedido.", summary: "Cliente aguarda confirmação da equipe.", evidenceMessageIds: ["00000000-0000-4000-8000-000000000001"] };
+    expect(parseAgentOutput(brief).reply).toBe(JSON.stringify(brief));
+  });
   it('preserves the private attachment assessment', () => {
     const attachmentRelevance = [{ messageId: 'old', requiredForReply: false }];
     expect(parseAgentOutput({ reply: 'Tudo bem.', attachmentRelevance }).attachmentRelevance).toEqual(attachmentRelevance);

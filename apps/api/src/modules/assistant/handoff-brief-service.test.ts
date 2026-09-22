@@ -113,4 +113,35 @@ describe("createHandoffBriefService", () => {
     expect(generate).toHaveBeenCalledTimes(1);
     service.stop();
   });
+
+  it("retries a failed brief once after its cooldown", async () => {
+    vi.useFakeTimers();
+    const { service, generate, metadata } = setup();
+    generate.mockRejectedValueOnce(new Error("temporary provider failure"));
+    await service.get({ workspaceId, conversationId });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(await service.get({ workspaceId, conversationId })).toMatchObject({ status: "failed" });
+    expect(generate).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await service.get({ workspaceId, conversationId });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(await service.get({ workspaceId, conversationId })).toMatchObject({ status: "ready" });
+    expect(metadata.existingFlag).toBe("keep-me");
+    service.stop();
+  });
+
+  it("regenerates a legacy failed brief that has no retry fields", async () => {
+    vi.useFakeTimers();
+    const { service, generate, metadata } = setup();
+    metadata.handoffBrief = {
+      status: "failed", contextKey: "context-1", updatedAt: new Date().toISOString(),
+      error: "Não foi possível atualizar o apoio agora. Confira a conversa e tente novamente."
+    };
+    expect(await service.get({ workspaceId, conversationId })).toMatchObject({ status: "failed" });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(await service.get({ workspaceId, conversationId })).toMatchObject({ status: "ready" });
+    service.stop();
+  });
 });

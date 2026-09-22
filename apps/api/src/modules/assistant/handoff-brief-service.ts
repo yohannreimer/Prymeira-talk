@@ -13,8 +13,27 @@ type StoredBrief = HandoffBriefDto & {
   reasonCode: string | null;
   runId: string | null;
   evidenceMessageIds: string[];
+  attempts: number;
+  retryAfter: string | null;
+  failureCode: string | null;
 };
 const SAFE_FAILURE = "Não foi possível atualizar o apoio agora. Confira a conversa e tente novamente.";
+const RETRY_DELAY_MS = 30_000;
+const MAX_ATTEMPTS = 2;
+
+function safeFailureCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (["HANDOFF_BRIEF_INVALID_RESPONSE", "HANDOFF_BRIEF_INVALID_EVIDENCE", "HANDOFF_BRIEF_PROVIDER_UNAVAILABLE"].includes(message)) return message;
+  const providerStatus = message.match(/^OpenAI-compatible provider request failed with status (\d{3})\b/);
+  if (providerStatus) return `PROVIDER_HTTP_${providerStatus[1]}`;
+  if (message.startsWith("OpenAI-compatible provider")) return "PROVIDER_RESPONSE_ERROR";
+  return "UNKNOWN_GENERATION_ERROR";
+}
+
+function retryDue(brief: StoredBrief, now = Date.now()): boolean {
+  return brief.status === "failed" && brief.attempts < MAX_ATTEMPTS &&
+    (brief.retryAfter === null || Date.parse(brief.retryAfter) <= now);
+}
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -34,7 +53,10 @@ function readStored(metadata: unknown): StoredBrief | null {
     source: typeof raw.source === "string" ? raw.source : "legacy",
     reasonCode: typeof raw.reasonCode === "string" ? raw.reasonCode : null,
     runId: typeof raw.runId === "string" ? raw.runId : null,
-    evidenceMessageIds: Array.isArray(raw.evidenceMessageIds) ? raw.evidenceMessageIds.filter((id): id is string => typeof id === "string") : []
+    evidenceMessageIds: Array.isArray(raw.evidenceMessageIds) ? raw.evidenceMessageIds.filter((id): id is string => typeof id === "string") : [],
+    attempts: typeof raw.attempts === "number" && Number.isInteger(raw.attempts) && raw.attempts >= 0 ? raw.attempts : 0,
+    retryAfter: typeof raw.retryAfter === "string" ? raw.retryAfter : null,
+    failureCode: typeof raw.failureCode === "string" ? raw.failureCode : null
   };
 }
 
@@ -75,22 +97,28 @@ export function createHandoffBriefService(prisma: PrismaClient, dependencies: {
   let stopped = false;
   const keyFor = ({ workspaceId, conversationId }: Target) => `${workspaceId}:${conversationId}`;
 
-  async function persist(target: Target, expected: HandoffBriefContext, result: GeneratedHandoffBrief | null): Promise<boolean> {
+  async function persist(target: Target, expected: HandoffBriefContext, result: GeneratedHandoffBrief | null, failureCode: string | null): Promise<boolean> {
     return prisma.$transaction(async (tx) => {
       await lockAssistantConversation(tx, target.workspaceId, target.conversationId);
       const current = await loadContext(tx, target.workspaceId, target.conversationId);
       if (!current || current.session.id !== expected.session.id || current.contextKey !== expected.contextKey) return false;
+      const previous = readStored(current.session.metadata);
+      const attempts = previous?.contextKey === current.contextKey ? previous.attempts + 1 : 1;
+      const updatedAt = new Date();
       const brief: StoredBrief = {
         status: result ? "ready" : "failed",
         nextAction: result?.nextAction ?? null,
         summary: result?.summary ?? null,
         contextKey: current.contextKey,
-        updatedAt: new Date().toISOString(),
+        updatedAt: updatedAt.toISOString(),
         error: result ? null : SAFE_FAILURE,
         source: current.source,
         reasonCode: current.reasonCode,
         runId: current.run?.id ?? null,
-        evidenceMessageIds: result?.evidenceMessageIds ?? []
+        evidenceMessageIds: result?.evidenceMessageIds ?? [],
+        attempts,
+        retryAfter: result ? null : new Date(updatedAt.getTime() + RETRY_DELAY_MS).toISOString(),
+        failureCode: result ? null : failureCode
       };
       const updated = await tx.aiAgentSession.updateMany({
         where: { id: current.session.id, workspaceId: target.workspaceId, updatedAt: current.session.updatedAt },
@@ -108,10 +136,11 @@ export function createHandoffBriefService(prisma: PrismaClient, dependencies: {
       const context = await loadContext(prisma, target.workspaceId, target.conversationId);
       if (!context) return;
       const cached = readStored(context.session.metadata);
-      if (cached?.contextKey === context.contextKey && ["ready", "failed"].includes(cached.status)) return;
+      if (cached?.contextKey === context.contextKey && (cached.status === "ready" || !retryDue(cached))) return;
       let result: GeneratedHandoffBrief | null = null;
-      try { result = await generate(context); } catch { /* Failure is stored without provider secrets. */ }
-      const published = await persist(target, context, result);
+      let failureCode: string | null = null;
+      try { result = await generate(context); } catch (error) { failureCode = safeFailureCode(error); }
+      const published = await persist(target, context, result, failureCode);
       if (!published) rerun.add(key);
     } catch {
       // A database failure must not turn a private brief into a customer-facing action.
@@ -136,7 +165,10 @@ export function createHandoffBriefService(prisma: PrismaClient, dependencies: {
     const context = await loadContext(prisma, target.workspaceId, target.conversationId);
     if (!context) return dto("failed", null, null);
     const cached = readStored(context.session.metadata);
-    if (cached?.contextKey === context.contextKey) return dto(cached.status, cached, context.contextKey);
+    if (cached?.contextKey === context.contextKey) {
+      if (retryDue(cached)) schedule(target);
+      return dto(cached.status, cached, context.contextKey);
+    }
     schedule(target);
     return dto(cached ? "stale" : "pending", cached, context.contextKey);
   }
