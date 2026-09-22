@@ -132,6 +132,8 @@ export type CompleteAutomaticFollowupResult =
   | { status: "scheduled"; followupId: string }
   | { status: "not_active" };
 
+export const MAX_AUTOMATIC_FOLLOWUP_STEPS = 3;
+
 const ACTIVE_FOLLOWUP_STATUSES: ActiveFollowupStatus[] = ["scheduled", "processing", "review"];
 const MAX_UNIQUE_CONFLICT_RETRIES = 3;
 
@@ -358,7 +360,10 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
 
     const sentAt = input.now ?? new Date();
     const parsed = agentFollowupConfigSchema.safeParse(asRecord(input.agentBehaviorConfig)?.followup);
-    const nextStep = parsed.success ? parsed.data.steps[input.followup.stepIndex] : undefined;
+    const nextStep =
+      parsed.success && input.followup.stepIndex < MAX_AUTOMATIC_FOLLOWUP_STEPS
+        ? parsed.data.steps[input.followup.stepIndex]
+        : undefined;
     const nextScheduledAt = nextStep && parsed.success
       ? calculateScheduledAt(input.followup.anchorMessageAt, nextStep, parsed.data)
       : null;

@@ -6,6 +6,7 @@ import {
   type ConversationContextBuilderPrismaLike,
   type NormalizedConversationMessage
 } from "./conversation-context-builder.js";
+import { MAX_AUTOMATIC_FOLLOWUP_STEPS } from "../followups/conversation-followups.service.js";
 import type {
   ConversationFollowupRecord,
   CompleteAutomaticFollowupResult,
@@ -187,6 +188,10 @@ export function createAgentFollowupRuntime(input: {
       }
 
       const followupConfig = agentFollowupConfigSchema.safeParse(asRecord(agent.behaviorConfig)?.followup);
+      if (followup.stepIndex > MAX_AUTOMATIC_FOLLOWUP_STEPS) {
+        await markSkipped(followup, { outcome: "skip", reason: "followup_step_limit" }, "followup_step_limit");
+        return { status: "skipped", followupId: followup.id };
+      }
       const step = followupConfig.success ? followupConfig.data.steps[followup.stepIndex - 1] : undefined;
       if (!step) {
         await markSkipped(followup, { outcome: "skip", reason: "followup_step_unconfigured" }, "followup_step_unconfigured");
@@ -411,6 +416,9 @@ export function createAgentFollowupRuntime(input: {
         finalBody: candidate,
         decision
       });
+      if (completion.status === "not_active") {
+        return { status: "skipped", followupId: beforeDelivery.context.followup.id };
+      }
       return completion.status === "scheduled"
         ? { status: "sent", followupId: beforeDelivery.context.followup.id, nextFollowupId: completion.followupId }
         : { status: "sent", followupId: beforeDelivery.context.followup.id };

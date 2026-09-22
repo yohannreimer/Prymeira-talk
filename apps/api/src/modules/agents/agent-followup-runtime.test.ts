@@ -387,6 +387,48 @@ describe("createAgentFollowupRuntime", () => {
     expect(staleAfter.completeAutomaticFollowup).not.toHaveBeenCalled();
   });
 
+  it("does not automatically generate or send a fourth configured step", async () => {
+    const configWithFourSteps = {
+      ...followupConfig,
+      steps: [
+        ...followupConfig.steps,
+        { afterBusinessMinutes: 240, instruction: "Quarto passo proibido." }
+      ]
+    };
+    const fourthStep = validContext({ stepIndex: 4 });
+    const harness = buildRuntime({
+      revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context: fourthStep }),
+      aiAgent: {
+        findFirst: vi.fn().mockResolvedValue({
+          ...baseAgent,
+          behaviorConfig: { followup: configWithFourSteps }
+        })
+      }
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({ status: "skipped", followupId: ids.followup });
+
+    expect(harness.decide).not.toHaveBeenCalled();
+    expect(harness.provider.generate).not.toHaveBeenCalled();
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith({
+      where: { workspaceId: ids.workspace, id: ids.followup, activeKey: "active" },
+      data: expect.objectContaining({ reason: "followup_step_limit" })
+    });
+  });
+
+  it("does not report sent when the completion claim lost its active follow-up", async () => {
+    const harness = buildRuntime({
+      completeAutomaticFollowup: vi.fn().mockResolvedValue({ status: "not_active" })
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({ status: "skipped", followupId: ids.followup });
+
+    expect(harness.createPendingOutboundMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("moves an oversized complete context to review before JEV, provider, or transport", async () => {
     const harness = buildRuntime({
       message: {

@@ -1009,6 +1009,36 @@ describe("completeAutomaticFollowup", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it("does not schedule a fourth follow-up when the package config exposes more than three steps", async () => {
+    const configWithFourSteps = {
+      ...followupConfig,
+      steps: [
+        { afterBusinessMinutes: 60, instruction: "Primeiro." },
+        { afterBusinessMinutes: 120, instruction: "Segundo." },
+        { afterBusinessMinutes: 180, instruction: "Terceiro." },
+        { afterBusinessMinutes: 240, instruction: "Quarto proibido." }
+      ]
+    };
+    const create = vi.fn();
+    const prisma = buildPrisma({
+      conversationFollowup: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create
+      }
+    });
+
+    await expect(createConversationFollowupsService(prisma).completeAutomaticFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      followup: activeFollowup({ stepIndex: 3 }),
+      agentBehaviorConfig: { followup: configWithFourSteps },
+      finalBody: "Terceira e última confirmação técnica.",
+      decision: { route: "automatic_send" }
+    })).resolves.toEqual({ status: "sent" });
+
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it("keeps the completed step sent when a malformed next-step schedule cannot be calculated", async () => {
     const create = vi.fn();
     const prisma = buildPrisma({
