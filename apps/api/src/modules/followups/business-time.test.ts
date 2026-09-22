@@ -58,6 +58,28 @@ describe("addBusinessMinutes", () => {
     expect(result.toISOString()).toBe("2026-09-28T13:00:00.000Z");
   });
 
+  it("preserves years from 0000 through 0099 when crossing a business day", () => {
+    const result = addBusinessMinutes({
+      from: new Date("0099-01-02T17:30:00.000Z"),
+      minutes: 60,
+      timeZone: "UTC",
+      businessDays: [0, 1, 2, 3, 4, 5, 6],
+      businessHours: { start: "08:00", end: "18:00" }
+    });
+
+    expect(result.toISOString()).toBe("0099-01-03T08:30:00.000Z");
+  });
+
+  it("rejects a duration that would scan too many sparse business windows", () => {
+    expect(() => addBusinessMinutes({
+      from: new Date("2026-09-21T11:00:00.000Z"),
+      minutes: 1500,
+      timeZone: "UTC",
+      businessDays: [1],
+      businessHours: { start: "08:00", end: "08:01" }
+    })).toThrow(/supported calendar range/i);
+  });
+
   it("rejects zero duration and invalid calendar configuration", () => {
     expect(() => addBusinessMinutes({
       ...villeferBusinessCalendar,

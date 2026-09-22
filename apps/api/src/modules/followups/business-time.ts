@@ -1,5 +1,6 @@
 const MINUTE_IN_MILLISECONDS = 60_000;
 const DAY_IN_MILLISECONDS = 24 * 60 * MINUTE_IN_MILLISECONDS;
+const MAXIMUM_BUSINESS_WINDOWS = 1_000;
 
 type BusinessHours = { start: string; end: string };
 
@@ -89,6 +90,7 @@ function createBusinessCalendar(input: AddBusinessMinutesInput): BusinessCalenda
   if (start >= end) {
     throw new RangeError("businessHours.start must be earlier than businessHours.end.");
   }
+  assertSupportedCalculationRange(input.minutes, end - start);
 
   if (typeof input.timeZone !== "string" || input.timeZone.trim().length === 0) {
     throw new RangeError("timeZone must be a valid IANA time zone.");
@@ -111,6 +113,14 @@ function createBusinessCalendar(input: AddBusinessMinutesInput): BusinessCalenda
   }
 
   return { businessDays, businessHours: { start, end }, formatter };
+}
+
+function assertSupportedCalculationRange(minutes: number, businessWindowMinutes: number): void {
+  if (Math.ceil(minutes / businessWindowMinutes) > MAXIMUM_BUSINESS_WINDOWS) {
+    throw new RangeError(
+      `minutes exceed the supported calendar range of ${MAXIMUM_BUSINESS_WINDOWS} business windows.`
+    );
+  }
 }
 
 function nextBusinessInstant(from: Date, calendar: BusinessCalendar): Date {
@@ -149,7 +159,7 @@ function localDateTimeToInstant(
     minute: timeInMinutes % 60,
     second: 0
   };
-  const utcGuess = Date.UTC(
+  const utcGuess = getUtcMilliseconds(
     target.year,
     target.month - 1,
     target.day,
@@ -189,7 +199,7 @@ function localDateTimeToInstant(
 
 function getTimeZoneOffset(instant: number, formatter: Intl.DateTimeFormat): number {
   const local = getLocalDateTime(new Date(instant), formatter);
-  return Date.UTC(
+  return getUtcMilliseconds(
     local.year,
     local.month - 1,
     local.day,
@@ -243,12 +253,28 @@ function compareLocalDateTimes(left: LocalDateTime, right: LocalDateTime): numbe
 }
 
 function getWeekday(date: LocalDate): number {
-  return new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay();
+  return new Date(getUtcMilliseconds(date.year, date.month - 1, date.day)).getUTCDay();
 }
 
 function nextLocalDate(date: LocalDate): LocalDate {
-  const next = new Date(Date.UTC(date.year, date.month - 1, date.day) + DAY_IN_MILLISECONDS);
+  const next = new Date(
+    getUtcMilliseconds(date.year, date.month - 1, date.day) + DAY_IN_MILLISECONDS
+  );
   return { year: next.getUTCFullYear(), month: next.getUTCMonth() + 1, day: next.getUTCDate() };
+}
+
+function getUtcMilliseconds(
+  year: number,
+  month: number,
+  day: number,
+  hour = 0,
+  minute = 0,
+  second = 0
+): number {
+  const date = new Date(0);
+  date.setUTCFullYear(year, month, day);
+  date.setUTCHours(hour, minute, second, 0);
+  return date.getTime();
 }
 
 function parseTime(value: unknown, label: string): number {
