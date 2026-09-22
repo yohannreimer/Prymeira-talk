@@ -30,21 +30,28 @@ export function createConversationFollowupScheduler(input: {
   runtime: ConversationFollowupSchedulerRuntime;
   pollIntervalMs?: number;
   batchSize?: number;
-  onError?: (error: unknown, followup: DueConversationFollowup) => void;
+  onError?: (error: unknown, followup?: DueConversationFollowup) => void;
 }) {
   const pollIntervalMs = input.pollIntervalMs ?? DEFAULT_CONVERSATION_FOLLOWUP_POLL_INTERVAL_MS;
   const batchSize = input.batchSize ?? DEFAULT_CONVERSATION_FOLLOWUP_BATCH_SIZE;
   let timer: NodeJS.Timeout | null = null;
-  let isProcessing = false;
+  let activePoll: Promise<Array<{ id: string; status: string }>> | null = null;
+  let stopped = false;
 
-  async function processDueFollowups(processInput: { now?: Date } = {}) {
-    if (isProcessing) {
-      return [];
+  function reportError(error: unknown, followup?: DueConversationFollowup) {
+    try {
+      if (followup) {
+        input.onError?.(error, followup);
+      } else {
+        input.onError?.(error);
+      }
+    } catch {
+      // Reporting must not prevent future polls or shutdown from completing.
     }
+  }
 
-    isProcessing = true;
+  async function executePoll(processInput: { now?: Date } = {}) {
     const now = processInput.now ?? new Date();
-
     try {
       const followups = await input.prisma.conversationFollowup.findMany({
         where: {
@@ -66,19 +73,34 @@ export function createConversationFollowupScheduler(input: {
           });
           results.push({ id: followup.id, status: result.status });
         } catch (error) {
-          try {
-            input.onError?.(error, followup);
-          } catch {
-            // Reporting must not prevent the remainder of the batch from running.
-          }
+          reportError(error, followup);
           results.push({ id: followup.id, status: "failed" });
         }
       }
 
       return results;
-    } finally {
-      isProcessing = false;
+    } catch (error) {
+      reportError(error);
+      return [];
     }
+  }
+
+  function processDueFollowups(processInput: { now?: Date } = {}) {
+    if (activePoll) {
+      return Promise.resolve([]);
+    }
+
+    const poll = executePoll(processInput);
+    activePoll = poll;
+    void poll.then(
+      () => {
+        if (activePoll === poll) activePoll = null;
+      },
+      () => {
+        if (activePoll === poll) activePoll = null;
+      }
+    );
+    return poll;
   }
 
   function start() {
@@ -86,19 +108,26 @@ export function createConversationFollowupScheduler(input: {
       return;
     }
 
+    stopped = false;
     timer = setInterval(() => {
-      void processDueFollowups();
+      if (!stopped) {
+        void processDueFollowups();
+      }
     }, pollIntervalMs);
     timer.unref?.();
   }
 
-  function stop() {
-    if (!timer) {
-      return;
+  async function stop() {
+    stopped = true;
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
     }
 
-    clearInterval(timer);
-    timer = null;
+    const poll = activePoll;
+    if (poll) {
+      await poll;
+    }
   }
 
   return {

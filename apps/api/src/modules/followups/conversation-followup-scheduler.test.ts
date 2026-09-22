@@ -103,6 +103,60 @@ describe("createConversationFollowupScheduler", () => {
     expect(runFollowup).toHaveBeenCalledTimes(2);
   });
 
+  it("contains poll-level database errors from the scheduled callback", async () => {
+    vi.useFakeTimers();
+    const failure = new Error("database unavailable");
+    const prisma = {
+      conversationFollowup: {
+        findMany: vi.fn().mockRejectedValue(failure)
+      }
+    };
+    const onError = vi.fn();
+    const scheduler = createConversationFollowupScheduler({
+      prisma,
+      runtime: { runFollowup: vi.fn() },
+      onError
+    });
+
+    try {
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(onError).toHaveBeenCalledWith(failure);
+    } finally {
+      await scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("drains an active poll before stop resolves", async () => {
+    let release: (() => void) | undefined;
+    const completed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prisma = buildPrisma([{ id: ids.first, workspaceId: ids.workspace }]);
+    const runFollowup = vi.fn().mockImplementation(async () => {
+      await completed;
+      return { status: "sent" };
+    });
+    const scheduler = createConversationFollowupScheduler({ prisma, runtime: { runFollowup } });
+
+    const poll = scheduler.processDueFollowups();
+    await vi.waitFor(() => expect(runFollowup).toHaveBeenCalledTimes(1));
+
+    let stopped = false;
+    const stopping = Promise.resolve(scheduler.stop()).then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    release?.();
+    await poll;
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
   it("starts one unref'd polling interval and stops it cleanly", async () => {
     vi.useFakeTimers();
     const prisma = buildPrisma([{ id: ids.first, workspaceId: ids.workspace }]);

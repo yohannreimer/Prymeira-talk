@@ -181,6 +181,7 @@ export function createAgentFollowupRuntime(input: {
       }
       const claimToken = { lockedAt: claim.lockedAt };
 
+      try {
       const initial = await input.followups.revalidateActiveFollowup(runInput);
       if (initial.status === "missing") {
         return { status: "missing", followupId: runInput.followupId };
@@ -472,6 +473,21 @@ export function createAgentFollowupRuntime(input: {
       return completion.status === "scheduled"
         ? { status: "sent", followupId: beforeDelivery.context.followup.id, nextFollowupId: completion.followupId }
         : { status: "sent", followupId: beforeDelivery.context.followup.id };
+      } catch (error) {
+        const message = errorMessage(error);
+        try {
+          await input.followups.recoverClaimedFollowup({
+            workspaceId: runInput.workspaceId,
+            followupId: runInput.followupId,
+            claim: claimToken,
+            outcome: "retry",
+            reason: `followup_runtime_unexpected: ${message}`
+          });
+        } catch {
+          // A recovery write can fail only when the backing store is unavailable.
+        }
+        return { status: "failed", followupId: runInput.followupId, message };
+      }
     }
   };
 }

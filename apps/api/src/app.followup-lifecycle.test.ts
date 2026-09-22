@@ -19,6 +19,11 @@ describe("conversation follow-up scheduler lifecycle", () => {
   });
 
   it("starts the scheduler when JEV is configured and stops it when the app closes", async () => {
+    let releaseStop: (() => void) | undefined;
+    const stopped = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    schedulerMock.stop.mockImplementationOnce(() => stopped);
     const app = await buildApp(
       { JEV_API_KEY: "jev-test-key" },
       { prismaEnabled: true }
@@ -28,7 +33,14 @@ describe("conversation follow-up scheduler lifecycle", () => {
       expect(createConversationFollowupSchedulerMock).toHaveBeenCalledTimes(1);
       expect(schedulerMock.start).toHaveBeenCalledTimes(1);
     } finally {
-      await app.close();
+      let closed = false;
+      const close = app.close().then(() => {
+        closed = true;
+      });
+      await vi.waitFor(() => expect(schedulerMock.stop).toHaveBeenCalledTimes(1));
+      expect(closed).toBe(false);
+      releaseStop?.();
+      await close;
     }
 
     expect(schedulerMock.stop).toHaveBeenCalledTimes(1);

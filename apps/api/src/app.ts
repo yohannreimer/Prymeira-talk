@@ -226,16 +226,25 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
         runtime: followupRuntime,
         onError(error, followup) {
           app.log.error(
-            { err: error, followupId: followup.id, workspaceId: followup.workspaceId },
-            "Conversation follow-up scheduler failed."
+            {
+              err: error,
+              ...(followup
+                ? { followupId: followup.id, workspaceId: followup.workspaceId }
+                : {})
+            },
+            followup
+              ? "Conversation follow-up scheduler failed."
+              : "Conversation follow-up polling failed."
           );
         }
       })
     : undefined;
   conversationFollowupScheduler?.start();
   if (conversationFollowupScheduler) {
+    // Fastify closes hooks in reverse registration order, before the earlier
+    // Prisma plugin hook disconnects the database client.
     app.addHook("onClose", async () => {
-      conversationFollowupScheduler.stop();
+      await conversationFollowupScheduler.stop();
     });
   }
 

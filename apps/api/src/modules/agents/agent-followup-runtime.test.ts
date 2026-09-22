@@ -244,6 +244,27 @@ describe("createAgentFollowupRuntime", () => {
     expect(harness.createPendingOutboundMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("recovers the exact claim when unexpected post-claim work throws", async () => {
+    const failure = new Error("AI agent lookup failed");
+    const aiAgentFindFirst = vi.fn().mockRejectedValue(failure);
+    const harness = buildRuntime({ aiAgent: { findFirst: aiAgentFindFirst } });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({
+        status: "failed",
+        followupId: ids.followup,
+        message: "AI agent lookup failed"
+      });
+
+    expect(harness.recoverClaimedFollowup).toHaveBeenCalledWith({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: now },
+      outcome: "retry",
+      reason: "followup_runtime_unexpected: AI agent lookup failed"
+    });
+  });
+
   it("generates an eligible qualification follow-up and delivers it through shared outbound semantics", async () => {
     const harness = buildRuntime();
 
