@@ -37,7 +37,12 @@ const reasonLabels: Record<string, string> = {
   jev_followup_decision_unavailable: "A análise do acompanhamento está temporariamente indisponível.",
   reply_preflight_unavailable: "A validação da resposta está temporariamente indisponível.",
   reply_audit_unavailable: "A auditoria da resposta está temporariamente indisponível.",
-  outbound_delivery_unconfirmed: "A entrega da mensagem ainda não foi confirmada."
+  outbound_delivery_unconfirmed: "A entrega da mensagem ainda não foi confirmada.",
+  agent_unavailable: "O agente responsável não está disponível; revisão humana necessária.",
+  context_unavailable: "O contexto da conversa não está disponível; revisão humana necessária.",
+  handoff_required: "A resposta gerada exige atendimento humano.",
+  provider_reply_missing: "O provedor não gerou uma resposta para revisão.",
+  audit_blocked: "A auditoria de segurança bloqueou o envio automático."
 };
 
 export function followupKindLabel(kind: ConversationFollowupKind) {
@@ -73,8 +78,16 @@ export function followupStepLabel(stepIndex: number) {
   return `Etapa ${Math.min(3, Math.max(1, stepIndex))} de 3`;
 }
 
-export function followupReasonLabel(reason: string | null | undefined) {
-  if (!reason) return null;
+export function followupReasonLabel(
+  reason: string | null | undefined,
+  status?: ConversationFollowupStatus
+) {
+  if (!reason) {
+    if (status === "review") return "Revisão humana necessária antes de continuar.";
+    if (status === "scheduled") return "Aguardando o horário previsto para o próximo acompanhamento.";
+    if (status === "processing") return "Acompanhamento em processamento.";
+    return null;
+  }
   return reasonLabels[reason] ?? "O acompanhamento foi encerrado após uma mudança no contexto.";
 }
 

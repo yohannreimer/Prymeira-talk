@@ -121,6 +121,15 @@ describe("domain schemas", () => {
 
     expect(parsed.purpose).toBe("proposal_checkin");
     expect(parsed.anchorMessage.body).toBe("Vou avaliar a proposta.");
+    for (const reasonCode of [
+      "agent_unavailable",
+      "context_unavailable",
+      "handoff_required",
+      "provider_reply_missing",
+      "audit_blocked"
+    ]) {
+      expect(conversationFollowupSchema.parse({ ...parsed, reasonCode }).reasonCode).toBe(reasonCode);
+    }
     expect(() => conversationFollowupSchema.parse({
       ...parsed,
       purpose: "provider_secret",

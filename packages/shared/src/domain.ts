@@ -341,7 +341,12 @@ export const conversationFollowupReasonCodeSchema = z.enum([
   "jev_followup_decision_unavailable",
   "reply_preflight_unavailable",
   "reply_audit_unavailable",
-  "outbound_delivery_unconfirmed"
+  "outbound_delivery_unconfirmed",
+  "agent_unavailable",
+  "context_unavailable",
+  "handoff_required",
+  "provider_reply_missing",
+  "audit_blocked"
 ]);
 export type ConversationFollowupReasonCode = z.infer<typeof conversationFollowupReasonCodeSchema>;
 

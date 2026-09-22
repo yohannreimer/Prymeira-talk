@@ -362,7 +362,7 @@ function FollowupCard(props: {
   const contactDetail = [followup.contact.phone, followup.channel.displayName].filter(Boolean).join(" · ") || `ID ${followup.conversationId}`;
   const messagePreview = followup.anchorMessage.body?.trim() || anchorTypeLabel(followup.anchorMessage.type);
   const terminalReason = "reason" in followup ? followup.reason : null;
-  const reason = followupReasonLabel(terminalReason ?? followup.reasonCode);
+  const reason = followupReasonLabel(terminalReason ?? followup.reasonCode, followup.status);
   const text = followup.status === "sent" ? followup.finalBody : followup.draftBody;
   const datePrefix = followup.status === "sent"
     ? "Enviado"
@@ -410,7 +410,12 @@ function FollowupCard(props: {
           </dl>
         </div>
 
-        {reason ? <p className="followup-reason"><Clock3 size={15} aria-hidden="true" />{reason}</p> : null}
+        {reason ? (
+          <p className="followup-reason">
+            <Clock3 size={15} aria-hidden="true" />
+            <span><strong>Motivo:</strong> {reason}</span>
+          </p>
+        ) : null}
 
         {text ? (
           <blockquote className="followup-copy">

@@ -55,10 +55,17 @@ describe("followup display", () => {
     expect(followupPurposeLabel({ ...reviewFollowup, purpose: "none" })).toBe("Continuidade da conversa");
   });
 
-  it("translates known terminal reasons and safely falls back for unknown reasons", () => {
+  it("translates safe reason categories and uses neutral active fallbacks", () => {
     expect(followupReasonLabel("customer_replied")).toContain("cliente respondeu");
     expect(followupReasonLabel("provider_new_reason")).toContain("mudança no contexto");
     expect(followupReasonLabel("jev_human_review")).toContain("revisão humana");
+    expect(followupReasonLabel("agent_unavailable")).toContain("agente responsável");
+    expect(followupReasonLabel("context_unavailable")).toContain("contexto da conversa");
+    expect(followupReasonLabel("handoff_required")).toContain("atendimento humano");
+    expect(followupReasonLabel("provider_reply_missing")).toContain("não gerou uma resposta");
+    expect(followupReasonLabel("audit_blocked")).toContain("auditoria de segurança");
+    expect(followupReasonLabel(null, "review")).toBe("Revisão humana necessária antes de continuar.");
+    expect(followupReasonLabel(null, "scheduled")).toBe("Aguardando o horário previsto para o próximo acompanhamento.");
     expect(followupReasonLabel(null)).toBeNull();
   });
 

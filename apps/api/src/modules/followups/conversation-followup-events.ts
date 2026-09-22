@@ -192,7 +192,20 @@ function safePurpose(decision: unknown) {
 
 function safeActiveReason(reason: string | null | undefined) {
   const parsed = conversationFollowupReasonCodeSchema.safeParse(reason);
-  return parsed.success ? parsed.data : null;
+  if (parsed.success) return parsed.data;
+
+  switch (reason) {
+    case "followup_agent_unavailable":
+      return "agent_unavailable";
+    case "followup_conversation_unavailable":
+      return "context_unavailable";
+    case "provider_handoff_required":
+      return "handoff_required";
+    case "provider_reply_missing":
+      return "provider_reply_missing";
+    default:
+      return reason?.startsWith("audit_") ? "audit_blocked" : null;
+  }
 }
 
 function isActiveStatus(status: string) {

@@ -168,7 +168,17 @@ describe("FollowupsPage", () => {
 
     expect(mocks.list).toHaveBeenCalledWith(mocks.getToken, "scheduled");
     expect(container.textContent).toContain("Completar dados da qualificação");
+    expect(container.textContent).toContain("Motivo:");
+    expect(container.textContent).toContain("Aguardando o horário previsto");
     expect(buttonByText(container, "Agendados")?.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("shows a neutral review reason when no public reason category is available", async () => {
+    mocks.list.mockResolvedValueOnce([{ ...review, reasonCode: null }]);
+    await renderPage();
+
+    expect(container.textContent).toContain("Motivo:");
+    expect(container.textContent).toContain("Revisão humana necessária antes de continuar.");
   });
 
   it("edits the draft inline and sends body with the expected version", async () => {

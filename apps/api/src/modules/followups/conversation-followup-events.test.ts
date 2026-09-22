@@ -108,4 +108,31 @@ describe("conversation follow-up realtime events", () => {
       decision: { purpose: "inject_private_data", prompt: "private" }
     })).toEqual(expect.objectContaining({ purpose: null, reasonCode: null }));
   });
+
+  it.each([
+    ["followup_agent_unavailable", "agent_unavailable"],
+    ["followup_conversation_unavailable", "context_unavailable"],
+    ["provider_handoff_required", "handoff_required"],
+    ["provider_reply_missing", "provider_reply_missing"],
+    ["audit_commercial_policy_risk: raw provider detail", "audit_blocked"]
+  ])("categorizes active reason %s without exposing its raw detail", (reason, reasonCode) => {
+    const dto = toConversationFollowupDto({
+      id: "00000000-0000-4000-8000-000000000701",
+      workspaceId: "persisted_workspace",
+      conversationId: "00000000-0000-4000-8000-000000000704",
+      agentId: "00000000-0000-4000-8000-000000000703",
+      kind: "qualification",
+      status: "review",
+      stepIndex: 1,
+      scheduledAt: new Date("2026-09-22T12:00:00.000Z"),
+      draftBody: null,
+      reason,
+      createdAt: new Date("2026-09-21T10:00:00.000Z"),
+      updatedAt: new Date("2026-09-21T12:00:00.000Z")
+    });
+
+    expect(dto.reasonCode).toBe(reasonCode);
+    expect(JSON.stringify(dto)).not.toContain("raw provider detail");
+    expect(JSON.stringify(dto)).not.toContain("commercial_policy_risk");
+  });
 });
