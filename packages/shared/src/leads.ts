@@ -300,12 +300,44 @@ export const leadWhatsappVerificationResponseSchema = z.object({
 });
 export type LeadWhatsappVerificationResponse = z.infer<typeof leadWhatsappVerificationResponseSchema>;
 
+export const leadContactSourceTagSummarySchema = z.object({
+  name: z.string().min(1),
+  color: z.string().min(1)
+});
+export type LeadContactSourceTagSummary = z.infer<typeof leadContactSourceTagSummarySchema>;
+
+export const leadContactProvenanceSummarySchema = z.object({
+  id: uuidSchema,
+  source: leadSourceSchema,
+  listId: uuidSchema,
+  importedAt: z.string().datetime(),
+  whatsappStatus: leadWhatsappStatusSchema,
+  suggestedMessage: z.string().nullable()
+});
+export type LeadContactProvenanceSummary = z.infer<typeof leadContactProvenanceSummarySchema>;
+
 export const leadContactImportItemSchema = z.object({
   leadId: uuidSchema,
-  contactId: uuidSchema,
-  status: z.enum(["created", "reconciled", "skipped"])
+  contactId: uuidSchema.nullable(),
+  provenanceId: uuidSchema.nullable(),
+  phone: z.string().min(1).nullable(),
+  status: z.enum(["created", "reconciled", "skipped"]),
+  reason: z.enum(["missing_valid_phone"]).nullable(),
+  sourceTag: leadContactSourceTagSummarySchema.nullable(),
+  provenance: leadContactProvenanceSummarySchema.nullable()
 });
 export type LeadContactImportItem = z.infer<typeof leadContactImportItemSchema>;
+
+export const leadContactImportRequestSchema = z.object({
+  selectedLeadIds: z
+    .array(uuidSchema)
+    .min(1)
+    .max(5000)
+    .refine((ids) => new Set(ids.map((id) => id.toLowerCase())).size === ids.length, {
+      message: "selectedLeadIds must not contain duplicates."
+    })
+});
+export type LeadContactImportRequest = z.infer<typeof leadContactImportRequestSchema>;
 
 export const leadContactImportResultSchema = z.object({
   requestedCount: z.number().int().positive(),
@@ -316,6 +348,30 @@ export const leadContactImportResultSchema = z.object({
   contacts: z.array(leadContactImportItemSchema)
 });
 export type LeadContactImportResult = z.infer<typeof leadContactImportResultSchema>;
+
+export const leadComposerDraftSchema = z.object({
+  body: z.string().min(1),
+  provenanceId: uuidSchema
+});
+export type LeadComposerDraft = z.infer<typeof leadComposerDraftSchema>;
+
+export const leadCampaignDraftRequestSchema = z
+  .object({
+    selectedLeadIds: z
+      .array(uuidSchema)
+      .min(1)
+      .max(5000)
+      .refine((ids) => new Set(ids.map((id) => id.toLowerCase())).size === ids.length, {
+        message: "selectedLeadIds must not contain duplicates."
+      }),
+    name: z.string().trim().min(1).max(160).optional(),
+    messageBody: z.string().trim().min(1).max(2000).optional(),
+    quickReplyId: uuidSchema.optional()
+  })
+  .refine((value) => !(value.messageBody && value.quickReplyId), {
+    message: "Choose either messageBody or quickReplyId, not both."
+  });
+export type LeadCampaignDraftRequest = z.infer<typeof leadCampaignDraftRequestSchema>;
 
 export const leadCampaignDraftResultSchema = z.object({
   campaignId: uuidSchema,
