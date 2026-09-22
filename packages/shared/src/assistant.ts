@@ -27,3 +27,13 @@ export type AssistantConversationDto={
   suggestion:AssistantSuggestionDto|null;history:AssistantSuggestionDto[];
   agentName:string|null;error:string|null;
 };
+
+export const handoffBriefDtoSchema = z.object({
+  status: z.enum(['pending', 'ready', 'stale', 'failed']),
+  nextAction: z.string().nullable(),
+  summary: z.string().nullable(),
+  contextKey: z.string().nullable(),
+  updatedAt: z.string().datetime().nullable(),
+  error: z.string().nullable()
+}).strict();
+export type HandoffBriefDto = z.infer<typeof handoffBriefDtoSchema>;
