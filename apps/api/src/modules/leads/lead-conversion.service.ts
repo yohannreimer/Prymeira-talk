@@ -210,7 +210,9 @@ function renderCompany(body: string, company: string | null) {
 
 async function ensureDefaultQuickReply(tx: TransactionClient, workspaceId: string) {
   const lockKey = `lead-conversion:${workspaceId}:${DEFAULT_QUICK_REPLY_TITLE}`;
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+  // pg_advisory_xact_lock returns PostgreSQL's void type, which Prisma cannot deserialize.
+  // IS NULL keeps the locking call in the query while returning a supported boolean.
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0)) IS NULL AS locked`;
   const existing = await tx.quickReply.findFirst({
     where: { workspaceId, title: DEFAULT_QUICK_REPLY_TITLE },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }]
