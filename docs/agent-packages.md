@@ -153,6 +153,10 @@ Quando o plano envolver caminho comercial, condições de encomenda, catálogo o
 
 Defina também `JEV_MODEL` para trocar o modelo; o padrão é `jev-latest`. Sem `JEV_API_KEY`, o caminho de geração existente é preservado.
 
+### Checagem controlada com JEV real
+
+Após definir `JEV_API_KEY` no `.env` local, execute `pnpm --filter @prymeira-talk/api test:jev-live`. O comando usa apenas conversas sintéticas e faz seis consultas ao JEV: quatro pré-validações e duas auditorias. Ele não chama o GPT, não acessa o banco e não envia mensagens por WhatsApp. A saída mostra cada decisão esperada e termina com erro quando algum cenário divergir, para que o critério ou as instruções sejam ajustados antes de liberar o uso real.
+
 ## Regras operacionais desta versão
 
 - A importação exige permissão de gestão de automações.
