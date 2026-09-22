@@ -185,6 +185,21 @@ contextSummary = {
 - [ ] **Step 3: Run no-send replay if credentials are available.** Use existing `apps/api/scripts/test-jev-villefer-package-live.ts` or a local test harness with the attached agent package; inspect its behavior before running and do not send WhatsApp/customer messages. Compare João, Ricardo, end-of-prompt rule, unrelated topic, and JEV request sizes. If unavailable, mark live validation not run; do not claim it passed.
 - [ ] **Step 4: Review diff and commit task-owned tests.** Check `git diff --check`, `git status --short`, and staged paths before committing. Do not push or deploy without a separate explicit request.
 
+## Task 5: Keep follow-up reply validation consistent
+
+**Files:**
+- Modify `apps/api/src/modules/agents/agent-followup-runtime.ts`
+- Test `apps/api/src/modules/agents/agent-followup-runtime.test.ts`
+
+- [ ] **Step 1: Write failing tests.** In `agent-followup-runtime.test.ts`, make `baseAgent.systemPrompt` longer than 4.000 characters with a trailing commercial rule. Provide 21 visible messages including one long body. Assert the reply preflight and audit receive the full prompt and the same last 20 untruncated messages. Add a `ready` source with `metadata.source: "approved_agent_improvement"` at position 51 and assert it reaches the selected knowledge for the follow-up reply. Do not change the separate `jevFollowupDecision` prompt contract.
+- [ ] **Step 2: Run the test to verify red.** Run `pnpm --filter @prymeira-talk/api test -- src/modules/agents/agent-followup-runtime.test.ts`; expect missing prompt or 50-source-cap assertions to fail.
+- [ ] **Step 3: Reuse the existing full-prompt evidence contract.** After loading `conversationContext`, compute `const jevMessages = conversationContext.messages.filter((entry) => entry.label === "cliente" || entry.label === "atendente").slice(-20);` and `const jevKnowledge = selectedKnowledge.map((source) => ({ id: source.id, title: source.title, content: source.content }));`. Pass `agentRules: agent.systemPrompt`, `conversationMessages: jevMessages`, and `selectedKnowledge: jevKnowledge` to both reply preflight and audit. Remove `take: 50` from the `ready`-source query. In `isConfirmedKnowledge`, accept `metadata.approvalStatus === "confirmed"` or `metadata.source === "approved_agent_improvement"`; keep behavioral-only sources excluded. The separate `jevFollowupDecision` still gets its current scoped input and no agent prompt.
+- [ ] **Step 4: Run follow-up tests and typecheck.** Run `pnpm --filter @prymeira-talk/api test -- src/modules/agents/agent-followup-runtime.test.ts` and `pnpm --filter @prymeira-talk/api typecheck`; both must pass. Commit only follow-up runtime and test changes with `fix(agents): align follow-up JEV reply validation with agent rules`.
+
 ## Completion criteria
 
-The JEV preflight and audit see the same full prompt, last 20 complete messages, and the same relevant approved-source text. GPT behavior is unchanged except for improved relevant knowledge retrieval. No older approved source disappears solely because it is beyond the first 50. Tests demonstrate supported negatives, ambiguous cases, and no-send behavior. Report measured payload sizes and any remaining live-test limitation.
+The JEV reply preflight and audit in both direct replies and automatic follow-ups see the same full prompt, last 20 complete messages, and the same relevant approved-source text. GPT behavior is unchanged except for improved relevant knowledge retrieval. No older approved source disappears solely because it is beyond the first 50. Tests demonstrate supported negatives, ambiguous cases, and no-send behavior. Report measured payload sizes and any remaining live-test limitation.
+
+## Execution status (2026-09-22)
+
+Tasks 1–5 were implemented and checked with focused tests, the complete API suite, typecheck, and production bundle build. The Villefer package was replayed locally without network or customer messages. The live JEV step in Task 4 remains unverified because `JEV_API_KEY` is not available in this checkout or process environment; do not describe the model's decisions as tested until that step runs.
