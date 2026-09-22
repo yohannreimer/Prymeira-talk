@@ -238,6 +238,34 @@ describe("FollowupsPage", () => {
     expect(mocks.list).toHaveBeenCalledTimes(callsBeforeEvent);
   });
 
+  it("keeps a newer realtime DTO when an older GET resolves afterward", async () => {
+    let resolveInitialLoad!: (value: ConversationFollowupDto[]) => void;
+    mocks.list.mockReturnValueOnce(new Promise((resolve) => { resolveInitialLoad = resolve; }));
+    await renderPage();
+    expect(mocks.list).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      mocks.realtimeHandler?.({
+        type: "conversation_followup.updated",
+        workspaceId: review.workspaceId,
+        payload: {
+          ...review,
+          draftBody: "Rascunho realtime mais novo.",
+          updatedAt: "2026-09-22T14:10:00.000Z"
+        }
+      });
+    });
+    await settle();
+    expect(container.textContent).toContain("Rascunho realtime mais novo.");
+    expect(container.textContent).not.toContain("Organizando acompanhamentos");
+
+    await act(async () => resolveInitialLoad([review]));
+    await settle();
+
+    expect(container.textContent).toContain("Rascunho realtime mais novo.");
+    expect(container.textContent).not.toContain(review.draftBody);
+  });
+
   it("disables filter tabs while an action is pending", async () => {
     let resolveSend!: (value: ConversationFollowupDto) => void;
     mocks.send.mockReturnValue(new Promise((resolve) => { resolveSend = resolve; }));
@@ -292,6 +320,26 @@ describe("FollowupsPage", () => {
 
     expect(mocks.noFollowup).toHaveBeenCalledWith(mocks.getToken, review.id, review.updatedAt);
     expect(container.textContent).toContain("Conversa marcada para não acompanhar.");
+  });
+
+  it("focuses confirmation and restores focus to each trigger on back", async () => {
+    await renderPage();
+
+    await act(async () => buttonByText(container, "Cancelar")?.click());
+    const confirmCancel = buttonByText(container, "Confirmar cancelamento");
+    expect(document.activeElement).toBe(confirmCancel);
+
+    await act(async () => buttonByText(container, "Voltar")?.click());
+    await settle();
+    expect(document.activeElement).toBe(buttonByText(container, "Cancelar"));
+
+    await act(async () => buttonByText(container, "Não acompanhar")?.click());
+    const confirmNoFollowup = buttonByText(container, "Confirmar não acompanhar");
+    expect(document.activeElement).toBe(confirmNoFollowup);
+
+    await act(async () => buttonByText(container, "Voltar")?.click());
+    await settle();
+    expect(document.activeElement).toBe(buttonByText(container, "Não acompanhar"));
   });
 
   it("closes an open confirmation when realtime updates the same follow-up", async () => {

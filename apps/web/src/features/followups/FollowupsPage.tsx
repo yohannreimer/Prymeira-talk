@@ -158,6 +158,8 @@ export function FollowupsPage() {
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "conversation_followup.updated") {
+      loadSequence.current += 1;
+      setIsLoading(false);
       const activeFilter = filterRef.current;
       setFollowups((current) => {
         const withoutCurrent = current.filter((item) => item.id !== event.payload.id);
@@ -452,6 +454,23 @@ function FollowupCard(props: {
     onCancel,
     onNoFollowup
   } = props;
+  const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  const cancelTriggerRef = useRef<HTMLButtonElement>(null);
+  const noFollowupTriggerRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusRef = useRef<FollowupConfirmation["action"] | null>(null);
+
+  useEffect(() => {
+    if (confirmation) {
+      confirmButtonRef.current?.focus();
+      return;
+    }
+
+    const trigger = restoreFocusRef.current;
+    if (!trigger) return;
+    restoreFocusRef.current = null;
+    (trigger === "cancel" ? cancelTriggerRef : noFollowupTriggerRef).current?.focus();
+  }, [confirmation]);
+
   const contactName = followup.contact.name?.trim() || `Conversa ${followup.conversationId.slice(0, 8)}`;
   const contactDetail = [followup.contact.phone, followup.channel.displayName].filter(Boolean).join(" · ") || `ID ${followup.conversationId}`;
   const messagePreview = followup.anchorMessage.body?.trim() || anchorTypeLabel(followup.anchorMessage.type);
@@ -558,6 +577,7 @@ function FollowupCard(props: {
 
         {confirmation ? (
           <div
+            aria-describedby={`followup-confirmation-description-${followup.id}`}
             aria-labelledby={`followup-confirmation-${followup.id}`}
             aria-modal="false"
             className="followup-confirmation"
@@ -569,20 +589,29 @@ function FollowupCard(props: {
                   ? "Cancelar este acompanhamento?"
                   : "Não acompanhar mais esta conversa?"}
               </strong>
-              <p>
+              <p id={`followup-confirmation-description-${followup.id}`}>
                 {confirmation === "cancel"
                   ? "O follow-up será encerrado e ficará no histórico de cancelados."
                   : "A conversa deixará de receber novos follow-ups automáticos desta sequência."}
               </p>
             </div>
             <div className="followup-confirmation-actions">
-              <button className="followups-button followups-button-ghost" disabled={busy} onClick={onCloseConfirmation} type="button">
+              <button
+                className="followups-button followups-button-ghost"
+                disabled={busy}
+                onClick={() => {
+                  restoreFocusRef.current = confirmation;
+                  onCloseConfirmation();
+                }}
+                type="button"
+              >
                 Voltar
               </button>
               <button
                 className="followups-button followups-button-danger"
                 disabled={busy}
                 onClick={confirmation === "cancel" ? onCancel : onNoFollowup}
+                ref={confirmButtonRef}
                 type="button"
               >
                 {confirmation === "cancel" ? "Confirmar cancelamento" : "Confirmar não acompanhar"}
@@ -613,11 +642,17 @@ function FollowupCard(props: {
           <button className="followups-button" disabled={busy} onClick={onPostpone} type="button">
             <CalendarClock size={14} aria-hidden="true" /> Adiar
           </button>
-          <button className="followups-button" disabled={busy} onClick={onAskCancel} type="button">
+          <button className="followups-button" disabled={busy} onClick={onAskCancel} ref={cancelTriggerRef} type="button">
             <X size={14} aria-hidden="true" /> Cancelar
           </button>
           {isReview ? (
-            <button className="followups-button followups-button-quiet" disabled={busy} onClick={onAskNoFollowup} type="button">
+            <button
+              className="followups-button followups-button-quiet"
+              disabled={busy}
+              onClick={onAskNoFollowup}
+              ref={noFollowupTriggerRef}
+              type="button"
+            >
               <UserRoundCheck size={14} aria-hidden="true" /> Não acompanhar
             </button>
           ) : null}
