@@ -24,6 +24,7 @@ import {
   type LeadsRepositoryLike
 } from "./leads.repository.js";
 import { normalizeCnpj } from "./leads.types.js";
+import { createSimilarityService } from "./similarity.service.js";
 
 export const MAX_RECEITA_LEADS = 5_000;
 export const MAX_CSV_BYTES = 5 * 1024 * 1024;
@@ -327,6 +328,14 @@ export function createLeadsService(options: LeadsServiceOptions) {
     options.realtime?.publish({ type: "lead_job.updated", workspaceId: job.workspaceId, payload: job });
   }
 
+  const similarityService = createSimilarityService({
+    repository,
+    cnpjRepository,
+    now,
+    onListUpdated: publishList,
+    onJobUpdated: publishJob
+  });
+
   async function updateProgress(job: ClaimedLeadJob, input: LeadListProgressInput) {
     const list = await repository.fencedUpdateListProgress(job, input, now(), 300_000);
     publishList(list);
@@ -547,6 +556,8 @@ export function createLeadsService(options: LeadsServiceOptions) {
     },
     getJob: repository.getJob.bind(repository),
     getArtifact: repository.getArtifact.bind(repository),
+    findSimilarCompanies: similarityService.findSimilarCompanies,
+    createSimilarListJob: similarityService.createSimilarListJob,
     async getCsvErrorArtifact(input: { workspaceId: string; jobId: string }) {
       return repository.getJobArtifact(input.workspaceId, input.jobId, "csv_error");
     },
@@ -660,6 +671,7 @@ export function createLeadsService(options: LeadsServiceOptions) {
 
     async runClaimedJob(job: ClaimedLeadJob) {
       if (job.operation === "receita_search") return processSearch(job);
+      if (job.operation === "similar_company_save") return similarityService.processSimilarListJob(job);
       if (job.operation === "cnpj_csv_import") {
         // createListAndJob persists the input artifact in the same transaction.
         const artifact = await repository.getJobArtifact(job.workspaceId, job.id, "csv_input");

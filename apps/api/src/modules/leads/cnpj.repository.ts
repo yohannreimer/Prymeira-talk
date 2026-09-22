@@ -54,8 +54,6 @@ export interface CnpjSearchFilters {
 
 export interface CnpjSimilarCandidatesInput {
   seedCnpj?: string;
-  /** Exclude every branch sharing the seed's eight-character company root. */
-  excludeSeedRoot?: boolean;
   cnaePrimary?: string;
   state?: string;
   limit?: number;
@@ -86,6 +84,9 @@ export interface CnpjCompanyRecord {
   email: string | null;
   simples: boolean | null;
   mei: boolean | null;
+  /** Coordinates are optional enrichment; Receita tables do not invent them. */
+  latitude: number | null;
+  longitude: number | null;
 }
 
 export interface CnpjSearchResult {
@@ -225,7 +226,9 @@ function toRecord(row: DatabaseRow): CnpjCompanyRecord {
     phone2: nullableString(row.phone_2),
     email: nullableString(row.email),
     simples: nullableBoolean(row.simples),
-    mei: nullableBoolean(row.mei)
+    mei: nullableBoolean(row.mei),
+    latitude: nullableNumber(row.latitude),
+    longitude: nullableNumber(row.longitude)
   };
 }
 
@@ -290,10 +293,8 @@ export class CnpjRepository {
       const [cnpjBasico, cnpjOrdem, cnpjDv] = splitCnpj(normalizeCnpj(input.seedCnpj));
       values.push(cnpjBasico, cnpjOrdem, cnpjDv);
       where.push(`NOT (e.cnpj_basico = $${values.length - 2} AND e.cnpj_ordem = $${values.length - 1} AND e.cnpj_dv = $${values.length})`);
-      if (input.excludeSeedRoot) {
-        values.push(cnpjBasico);
-        where.push(`e.cnpj_basico <> $${values.length}`);
-      }
+      values.push(cnpjBasico);
+      where.push(`e.cnpj_basico <> $${values.length}`);
     }
     if (input.cnaePrimary?.trim()) {
       values.push(input.cnaePrimary.trim());

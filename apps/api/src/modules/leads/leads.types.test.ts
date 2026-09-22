@@ -4,6 +4,7 @@ import {
   leadJobIdempotencyScopeSchema,
   leadJobStatusSchema,
   leadPaginatedResultSchema,
+  similarCompanySearchResultSchema,
   leadWhatsappVerificationRequestSchema,
   normalizedCnpjSchema,
   realtimeEventSchema
@@ -152,6 +153,57 @@ describe("Leads domain contracts", () => {
         contactCount: 1
       })
     ).toEqual({ campaignId: testUuid(3), status: "draft", contactCount: 1 });
+  });
+
+  it("parses typed similar-company scores, rule reasons, and results", () => {
+    const parsed = similarCompanySearchResultSchema.parse({
+      scoringVersion: "cnpj-similarity-v1",
+      seed: {
+        cnpj: "12.345.678/ABCD-90",
+        companyName: "Empresa Semente",
+        tradeName: null
+      },
+      items: [{
+        cnpj: "87654321WXYZ10",
+        companyName: "Empresa Parecida",
+        tradeName: null,
+        cnaePrimary: "6201500",
+        cnaeSecondary: [],
+        address: "Rua Um, 10",
+        city: "São Paulo",
+        state: "SP",
+        postalCode: "01001000",
+        phone: "11999999999",
+        email: "contato@example.com",
+        score: 20,
+        components: [{
+          key: "activity",
+          weight: 35,
+          score: 20,
+          reasons: [{ key: "activity_primary_cnae_exact", label: "Mesmo CNAE principal", points: 20 }]
+        }, {
+          key: "location",
+          weight: 25,
+          score: 0,
+          reasons: []
+        }, {
+          key: "profile",
+          weight: 20,
+          score: 0,
+          reasons: []
+        }, {
+          key: "commercial_readiness",
+          weight: 20,
+          score: 0,
+          reasons: []
+        }],
+        reasons: [{ key: "activity_primary_cnae_exact", label: "Mesmo CNAE principal", points: 20 }]
+      }]
+    });
+
+    expect(parsed.seed.cnpj).toBe("12345678ABCD90");
+    expect(parsed.items[0]?.components.map((component) => component.weight)).toEqual([35, 25, 20, 20]);
+    expect(parsed.items[0]?.reasons[0]?.key).toBe("activity_primary_cnae_exact");
   });
 
   it("requires lead realtime payloads to remain in the event workspace", () => {

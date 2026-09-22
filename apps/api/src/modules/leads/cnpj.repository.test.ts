@@ -306,7 +306,6 @@ describe("CnpjRepository", () => {
 
     await repository.findSimilarCandidates({
       seedCnpj: "12.345.678/ABCD-90",
-      excludeSeedRoot: true,
       limit: 999
     });
 
@@ -316,6 +315,17 @@ describe("CnpjRepository", () => {
     expect(call?.text).toContain("e.situacao_cadastral = '02'");
     expect(call?.text).not.toContain("score");
     expect(call?.values).toEqual(["12345678", "ABCD", "90", "12345678", 100]);
+  });
+
+  it("always excludes the complete seed root when a seed CNPJ is supplied", async () => {
+    const client = new FakeCnpjClient();
+
+    await new CnpjRepository(client).findSimilarCandidates({
+      seedCnpj: "12.345.678/ABCD-90"
+    });
+
+    expect(client.calls[0]?.text).toContain("e.cnpj_basico <> $4");
+    expect(client.calls[0]?.values).toEqual(["12345678", "ABCD", "90", "12345678", 25]);
   });
 
   it("optionally narrows active similarity candidates by principal CNAE and UF without scoring", async () => {

@@ -26,6 +26,7 @@ export type LeadsErrorCode =
   | "LEAD_LIMIT_EXCEEDED"
   | "LEAD_INVALID_INPUT"
   | "LEAD_INVALID_ENCODING"
+  | "LEAD_SIMILARITY_SEED_INVALID"
   | "LEAD_IDEMPOTENCY_CONFLICT"
   | "LEAD_LEASE_LOST";
 
@@ -349,6 +350,14 @@ export class LeadsRepository {
       this.prisma.lead.count({ where })
     ]);
     return { items: rows.map(toLeadResultDto), page: input.page, pageSize: input.pageSize, total };
+  }
+
+  async getLeadForSimilarity(workspaceId: string, listId: string, leadId: string) {
+    const lead = await this.prisma.lead.findFirst({
+      where: { workspaceId, listId, id: leadId }
+    });
+    if (!lead) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead not found.");
+    return lead;
   }
 
   async getJob(workspaceId: string, jobId: string) {
@@ -879,6 +888,7 @@ export type LeadsRepositoryLike = Pick<
   | "updateList"
   | "deleteList"
   | "listLeads"
+  | "getLeadForSimilarity"
   | "getJob"
   | "findJobByIdempotency"
   | "createListAndJob"

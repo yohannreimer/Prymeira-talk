@@ -164,20 +164,75 @@ export const leadCsvImportResponseSchema = z.object({
 });
 export type LeadCsvImportResponseDto = z.infer<typeof leadCsvImportResponseSchema>;
 
+export const similarCompanyReasonKeySchema = z.enum([
+  "activity_primary_cnae_exact",
+  "activity_reciprocal_primary_secondary",
+  "activity_cnae_group",
+  "location_same_city",
+  "location_same_state",
+  "location_distance_25km",
+  "location_distance_100km",
+  "location_distance_250km",
+  "profile_same_size",
+  "profile_same_legal_nature",
+  "profile_same_simples",
+  "profile_comparable_capital",
+  "profile_comparable_age",
+  "commercial_active",
+  "commercial_usable_address",
+  "commercial_phone",
+  "commercial_email"
+]);
+export type SimilarCompanyReasonKey = z.infer<typeof similarCompanyReasonKeySchema>;
+
+export const similarCompanyScoreReasonSchema = z.object({
+  key: similarCompanyReasonKeySchema,
+  label: z.string().min(1),
+  points: z.number().int().positive()
+});
+export type SimilarCompanyScoreReason = z.infer<typeof similarCompanyScoreReasonSchema>;
+
 export const similarCompanyScoreComponentSchema = z.object({
   key: z.enum(["activity", "location", "profile", "commercial_readiness"]),
   weight: z.number().int().positive(),
   score: z.number().min(0).max(100),
-  reasons: z.array(z.string().min(1))
+  reasons: z.array(similarCompanyScoreReasonSchema)
 });
 export type SimilarCompanyScoreComponent = z.infer<typeof similarCompanyScoreComponentSchema>;
 
 export const similarCompanyScoreExplanationSchema = z.object({
   score: z.number().min(0).max(100),
   components: z.array(similarCompanyScoreComponentSchema),
-  reasons: z.array(z.string().min(1))
+  reasons: z.array(similarCompanyScoreReasonSchema)
 });
 export type SimilarCompanyScoreExplanation = z.infer<typeof similarCompanyScoreExplanationSchema>;
+
+export const similarCompanyResultSchema = z.object({
+  cnpj: normalizedCnpjSchema,
+  companyName: z.string().nullable(),
+  tradeName: z.string().nullable(),
+  cnaePrimary: z.string().nullable(),
+  cnaeSecondary: z.array(z.string()),
+  address: z.string().nullable(),
+  city: z.string().nullable(),
+  state: z.string().nullable(),
+  postalCode: z.string().nullable(),
+  phone: z.string().nullable(),
+  email: z.string().nullable(),
+  ...similarCompanyScoreExplanationSchema.shape
+});
+export type SimilarCompanyResult = z.infer<typeof similarCompanyResultSchema>;
+
+export const similarCompanySearchResultSchema = z.object({
+  scoringVersion: z.literal("cnpj-similarity-v1"),
+  seed: z.object({
+    cnpj: normalizedCnpjSchema,
+    companyName: z.string().nullable(),
+    tradeName: z.string().nullable()
+  }),
+  items: z.array(similarCompanyResultSchema)
+});
+export type SimilarCompanySearchResult = z.infer<typeof similarCompanySearchResultSchema>;
 
 export const MAX_LEAD_WHATSAPP_BATCH_SIZE = 25;
 

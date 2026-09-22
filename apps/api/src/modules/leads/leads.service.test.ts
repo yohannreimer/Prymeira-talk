@@ -98,7 +98,9 @@ function company(cnpj: string): CnpjCompanyRecord {
     phone2: null,
     email: null,
     simples: null,
-    mei: null
+    mei: null,
+    latitude: null,
+    longitude: null
   };
 }
 
@@ -111,6 +113,7 @@ function setup(csv = "cnpj\n12345678ABCD90\n") {
     deleteList: vi.fn(),
     listLeads: vi.fn(),
     getJob: vi.fn(),
+    getLeadForSimilarity: vi.fn(),
     findJobByIdempotency: vi.fn(async (): Promise<any> => null),
     createListAndJob: vi.fn(async (input: any) => {
       stored.set("create", input);
@@ -214,7 +217,8 @@ function setup(csv = "cnpj\n12345678ABCD90\n") {
     findByCnpj: vi.fn(),
     findByCnpjs: vi.fn(),
     countEstablishments: vi.fn(),
-    scanEstablishments: vi.fn()
+    scanEstablishments: vi.fn(),
+    findSimilarCandidates: vi.fn()
   };
   cnpjRepository.countEstablishments.mockImplementation(async (filters: unknown) =>
     (await cnpjRepository.searchEstablishments(filters)).total

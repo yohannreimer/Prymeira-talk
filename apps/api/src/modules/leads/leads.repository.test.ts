@@ -6,6 +6,7 @@ import { LeadsRepository } from "./leads.repository.js";
 const workspaceId = "workspace_a";
 const foreignWorkspaceId = "workspace_b";
 const listId = randomUUID();
+const leadId = randomUUID();
 const jobId = randomUUID();
 const artifactId = randomUUID();
 const now = new Date("2026-09-22T15:00:00.000Z");
@@ -72,6 +73,17 @@ describe("Leads repository workspace isolation", () => {
     await expect(repository.getList(foreignWorkspaceId, listId)).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
     await expect(repository.getList(foreignWorkspaceId, randomUUID())).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
     expect(findFirst).toHaveBeenNthCalledWith(1, { where: { workspaceId: foreignWorkspaceId, id: listId } });
+  });
+
+  it("scopes a similarity seed lead to its workspace and list", async () => {
+    const findFirst = vi.fn(async () => null);
+    const repository = new LeadsRepository({ lead: { findFirst } } as never);
+
+    await expect(repository.getLeadForSimilarity(foreignWorkspaceId, listId, leadId))
+      .rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
+    expect(findFirst).toHaveBeenCalledWith({
+      where: { workspaceId: foreignWorkspaceId, listId, id: leadId }
+    });
   });
 
   it("includes workspace and resource id in list update and delete mutations", async () => {
