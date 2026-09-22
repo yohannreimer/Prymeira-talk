@@ -78,6 +78,27 @@ enum CampaignStatus {
   failed
 }
 
+enum LeadSource {
+  google_maps
+  receita_federal
+}
+
+enum LeadJobStatus {
+  queued
+  running
+  completed
+  partial
+  failed
+}
+
+enum LeadWhatsappStatus {
+  unverified
+  checking
+  available
+  unavailable
+  failed
+}
+
 enum AiAgentStatus {
   active
   inactive
@@ -210,6 +231,7 @@ model Channel {
   conversations  Conversation[]
   contactBoards  ContactBoardChannel[]
   departmentRules DepartmentChannelRule[]
+  leadWhatsappVerifications LeadWhatsappVerification[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, provider, providerKey])
@@ -235,6 +257,8 @@ model Contact {
   boardMemberships   ContactBoardMembership[]
   notes              ContactNote[]
   campaignRecipients CampaignRecipient[]
+  contactTags        ContactTag[]
+  leadProvenances    LeadContactProvenance[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, phone])
@@ -289,7 +313,7 @@ model DepartmentMember {
 }
 
 model DepartmentChannelRule {
-  id           String   @id @default(uuid()) @db.Uuid
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId  String   @map("workspace_id")
   departmentId String   @map("department_id") @db.Uuid
   channelId    String   @map("channel_id") @db.Uuid
@@ -394,6 +418,7 @@ model Tag {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   conversations       ConversationTag[]
+  contactTags        ContactTag[]
   allowedAgents       AiAgentAllowedTag[]
   boardStageTriggers  ContactBoardStageTag[]
 
@@ -414,6 +439,161 @@ model ConversationTag {
   @@id([workspaceId, conversationId, tagId])
   @@index([workspaceId, tagId])
   @@map("conversation_tags")
+}
+
+model ContactTag {
+  workspaceId String   @map("workspace_id")
+  contactId   String   @map("contact_id") @db.Uuid
+  tagId       String   @map("tag_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  contact Contact @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [workspaceId, tagId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@id([workspaceId, contactId, tagId])
+  @@index([workspaceId, tagId])
+  @@map("contact_tags")
+}
+
+model LeadList {
+  id             String     @id @default(uuid()) @db.Uuid
+  workspaceId    String     @map("workspace_id")
+  name           String
+  source         LeadSource
+  criteria       Json       @default("{}")
+  totalCount     Int        @default(0) @map("total_count")
+  processedCount Int        @default(0) @map("processed_count")
+  failedCount    Int        @default(0) @map("failed_count")
+  startedAt      DateTime?  @map("started_at")
+  completedAt    DateTime?  @map("completed_at")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  leads       Lead[]
+  jobs        LeadJob[]
+  provenances LeadContactProvenance[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, source, createdAt])
+  @@index([workspaceId, updatedAt])
+  @@map("lead_lists")
+}
+
+model Lead {
+  id               String     @id @default(uuid()) @db.Uuid
+  workspaceId      String     @map("workspace_id")
+  listId           String     @map("list_id") @db.Uuid
+  source           LeadSource
+  sourceExternalId String?    @map("source_external_id")
+  sourceDedupeKey  String     @map("source_dedupe_key")
+  companyName      String?    @map("company_name")
+  tradeName        String?    @map("trade_name")
+  cnpj             String?
+  cnaePrimary      String?    @map("cnae_primary")
+  cnaeSecondary    Json       @default("[]") @map("cnae_secondary")
+  category         String?
+  address          String?
+  city             String?
+  state            String?
+  postalCode       String?    @map("postal_code")
+  phones           Json       @default("[]")
+  normalizedPhone  String?    @map("normalized_phone")
+  email            String?
+  website          String?
+  rating           Float?
+  reviewCount      Int?       @map("review_count")
+  latitude         Float?
+  longitude        Float?
+  sourceUrl        String?    @map("source_url")
+  sourceSnapshot   Json       @default("{}") @map("source_snapshot")
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
+
+  list                  LeadList                   @relation(fields: [workspaceId, listId], references: [workspaceId, id], onDelete: Cascade)
+  whatsappVerifications LeadWhatsappVerification[]
+  contactProvenance     LeadContactProvenance?
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, listId, sourceDedupeKey])
+  @@index([workspaceId, listId, createdAt])
+  @@index([workspaceId, cnpj])
+  @@index([workspaceId, normalizedPhone])
+  @@index([workspaceId, sourceExternalId])
+  @@map("leads")
+}
+
+model LeadJob {
+  id             String        @id @default(uuid()) @db.Uuid
+  workspaceId    String        @map("workspace_id")
+  listId         String        @map("list_id") @db.Uuid
+  operation      String
+  status         LeadJobStatus @default(queued)
+  input          Json          @default("{}")
+  output         Json          @default("{}")
+  errorMessage   String?       @map("error_message")
+  attempts       Int           @default(0)
+  leaseToken     String?       @map("lease_token") @db.Uuid
+  leaseUntil     DateTime?     @map("lease_until")
+  startedAt      DateTime?     @map("started_at")
+  finishedAt     DateTime?     @map("finished_at")
+  idempotencyKey String        @map("idempotency_key")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  list LeadList @relation(fields: [workspaceId, listId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, idempotencyKey])
+  @@index([workspaceId, status, leaseUntil])
+  @@index([workspaceId, listId, createdAt])
+  @@map("lead_jobs")
+}
+
+model LeadWhatsappVerification {
+  id              String             @id @default(uuid()) @db.Uuid
+  workspaceId     String             @map("workspace_id")
+  leadId          String             @map("lead_id") @db.Uuid
+  normalizedPhone String             @map("normalized_phone")
+  channelId       String?            @map("channel_id") @db.Uuid
+  status          LeadWhatsappStatus @default(unverified)
+  errorMessage    String?            @map("error_message")
+  checkedAt       DateTime?          @map("checked_at")
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  lead    Lead     @relation(fields: [workspaceId, leadId], references: [workspaceId, id], onDelete: Cascade)
+  channel Channel? @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: NoAction)
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, leadId, normalizedPhone, checkedAt])
+  @@index([workspaceId, channelId, status])
+  @@map("lead_whatsapp_verifications")
+}
+
+model LeadContactProvenance {
+  id                 String             @id @default(uuid()) @db.Uuid
+  workspaceId        String             @map("workspace_id")
+  contactId          String             @map("contact_id") @db.Uuid
+  leadId             String             @map("lead_id") @db.Uuid
+  listId             String             @map("list_id") @db.Uuid
+  source             LeadSource
+  sourceUrl          String?            @map("source_url")
+  whatsappStatus     LeadWhatsappStatus @default(unverified) @map("whatsapp_status")
+  suggestedMessage   String?            @map("suggested_message")
+  quickReplySnapshot Json               @default("{}") @map("quick_reply_snapshot")
+  importedAt         DateTime           @default(now()) @map("imported_at")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  contact Contact  @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  lead    Lead     @relation(fields: [workspaceId, leadId], references: [workspaceId, id], onDelete: Cascade)
+  list    LeadList @relation(fields: [workspaceId, listId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, leadId])
+  @@index([workspaceId, contactId, importedAt])
+  @@index([workspaceId, listId, importedAt])
+  @@map("lead_contact_provenances")
 }
 
 model ContactBoard {
@@ -563,7 +743,7 @@ model AutomationRun {
 }
 
 model QuickReply {
-  id          String   @id @default(uuid()) @db.Uuid
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId String   @map("workspace_id")
   title       String
   body        String
@@ -578,7 +758,7 @@ model QuickReply {
 }
 
 model MetaMessageTemplate {
-  id          String   @id @default(uuid()) @db.Uuid
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId String   @map("workspace_id")
   wabaId      String   @map("waba_id")
   templateId  String?  @map("template_id")
@@ -646,7 +826,7 @@ model CampaignRecipient {
 }
 
 model AiAgent {
-  id             String         @id @default(uuid()) @db.Uuid
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId    String         @map("workspace_id")
   name           String
   description    String?
@@ -762,7 +942,7 @@ model AiAgentAllowedTag {
 }
 
 model AiKnowledgeSource {
-  id          String                  @id @default(uuid()) @db.Uuid
+  id          String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId String                  @map("workspace_id")
   agentId     String                  @map("agent_id") @db.Uuid
   type        AiKnowledgeSourceType
@@ -784,7 +964,7 @@ model AiKnowledgeSource {
 }
 
 model AiAgentSession {
-  id             String               @id @default(uuid()) @db.Uuid
+  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId    String               @map("workspace_id")
   agentId        String               @map("agent_id") @db.Uuid
   conversationId String               @map("conversation_id") @db.Uuid
@@ -810,7 +990,7 @@ model AiAgentSession {
 }
 
 model AiAgentPendingReply {
-  id             String    @id @default(uuid()) @db.Uuid
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId    String    @map("workspace_id")
   conversationId String    @map("conversation_id") @db.Uuid
   agentId        String    @map("agent_id") @db.Uuid
@@ -877,7 +1057,7 @@ model ConversationFollowup {
 }
 
 model AiAgentRun {
-  id             String            @id @default(uuid()) @db.Uuid
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId    String            @map("workspace_id")
   agentId        String            @map("agent_id") @db.Uuid
   sessionId      String?           @map("session_id") @db.Uuid
