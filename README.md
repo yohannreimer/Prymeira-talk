@@ -80,6 +80,16 @@ Do not commit the Evolution API key or webhook secret. Store both as deployment 
 
 Production Docker/Swarm deployment is documented in `docs/production-deploy.md`.
 
+## Leads
+
+Leads reúne buscas no Google Maps e na base pública da Receita Federal,
+verificação opcional de WhatsApp e cadastro seletivo de contatos. A sugestão de
+prospecção no Atendimento é um rascunho editável; criar um lote em Disparos
+também gera apenas uma campanha `draft`, sem envio automático. Configuração,
+atualização mensal do CNPJ, limites e recuperação estão em
+[`docs/leads-operations.md`](docs/leads-operations.md). As fontes externas são
+opcionais e precisam ficar em rede privada.
+
 ## Meta WhatsApp Cloud API
 
 Prymeira Talk can run Evolution and official Meta WhatsApp Cloud API channels side by side. Owner and manager users activate Meta in Settings.
