@@ -18,6 +18,7 @@ import {
   type KnowledgeRetrievalSource
 } from "../src/modules/agents/knowledge-retrieval.js";
 import { villeferV1Package } from "../src/modules/agents/villefer-v1-package.js";
+import { resolveFollowupStepInstruction } from "../src/modules/agents/followup-step-instruction.js";
 import { addBusinessMinutes } from "../src/modules/followups/business-time.js";
 import {
   createConversationFollowupsService,
@@ -107,8 +108,10 @@ async function main() {
   if (!firstInstruction) {
     throw new Error("O pacote Villefer não contém a primeira instrução de follow-up.");
   }
-  const qualificationInstruction =
-    "Retome somente a qualificação técnica explicitamente pendente, pedindo os dados faltantes sem inferir medida, espessura, disponibilidade ou condição comercial.";
+  const qualificationInstruction = resolveFollowupStepInstruction({
+    kind: "qualification",
+    configuredInstruction: firstInstruction
+  });
   const packageCadence = agentPackage.agent.followup.steps.map((step) => step.afterBusinessMinutes);
   const productionCadence = villeferV1Package.agent.followup.steps.map((step) => step.afterBusinessMinutes);
   console.log(JSON.stringify({

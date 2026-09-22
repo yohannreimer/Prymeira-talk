@@ -178,9 +178,9 @@ const replyPreflightQuestions = {
 const replyQualityAuditQuestions = {
   disposition: {
     type: "choice",
-    instructions: "A resposta candidata deve ser enviada, suprimida ou encaminhada para humano?",
+    instructions: "A resposta candidata deve ser enviada, suprimida ou encaminhada para humano? Uma recusa objetiva de item explicitamente classificado como not_sold no plano e sustentado pelo conhecimento aprovado segue o plano. Uma mensagem que apenas informa que um vendedor verificará disponibilidade ou especificação também segue um plano handoff e não afirma que o item está disponível.",
     criteria: {
-      send: "A resposta avança a demanda, segue o plano interno e não afirma fato comercial sem fonte aprovada.",
+      send: "A resposta avança a demanda, segue o plano interno e não afirma fato comercial sem fonte aprovada. Inclui uma recusa curta sustentada quando agentPreflight.commercialPath é not_sold e um aviso de encaminhamento/verificação quando nextAction é handoff.",
       suppress: "A resposta é redundante, socialmente desnecessária ou não ajuda a conversa.",
       handoff: "A resposta afirma, promete ou decide preço, estoque, prazo, frete, pagamento, especificação ou exceção sem base aprovada, ou conflita com o plano."
     }
@@ -192,7 +192,7 @@ const replyQualityAuditQuestions = {
   },
   assertsUnsupportedCommercialFact: {
     type: "noul",
-    instructions: "A resposta candidata afirma, promete ou oferece como certo um fato comercial ou equivalente técnico sem evidência explícita no conhecimento aprovado?",
+    instructions: "A resposta candidata afirma, promete ou oferece como certo um fato comercial ou equivalente técnico sem evidência explícita no conhecimento aprovado? Uma recusa que repete fielmente um item explicitamente não vendido no conhecimento aprovado é suportada. Dizer que um vendedor ainda verificará disponibilidade ou especificação não afirma disponibilidade, estoque ou especificação.",
     criteria: {
       true: "Afirma ou promete estoque, preço, prazo, frete, pagamento, especificação, substituição ou equivalência técnica sem fonte aprovada.",
       false: "Não afirma, promete ou oferece fato comercial protegido sem evidência."
@@ -275,13 +275,9 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
         answers.disposition.confidence ?? 0,
         answers.disposition.probabilities?.handoff ?? 0
       );
-      const hasUnscoredHandoff =
-        answers.disposition.choice === "handoff" &&
-        answers.disposition.confidence === undefined &&
-        answers.disposition.probabilities?.handoff === undefined;
       if (
         answers.assertsUnsupportedCommercialFact.noul >= 0.6 ||
-        (answers.disposition.choice === "handoff" && (handoffConfidence >= 0.7 || hasUnscoredHandoff))
+        (answers.disposition.choice === "handoff" && handoffConfidence >= 0.7)
       ) {
         return { outcome: "handoff", reason: "commercial_policy_risk" };
       }

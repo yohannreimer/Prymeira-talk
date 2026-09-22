@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAgentFollowupRuntime } from "./agent-followup-runtime.js";
+import { resolveFollowupStepInstruction } from "./followup-step-instruction.js";
 
 const ids = {
   workspace: "workspace_a",
@@ -307,6 +308,10 @@ describe("createAgentFollowupRuntime", () => {
 
   it("generates an eligible qualification follow-up and delivers it through shared outbound semantics", async () => {
     const harness = buildRuntime();
+    const effectiveInstruction = resolveFollowupStepInstruction({
+      kind: "qualification",
+      configuredInstruction: followupConfig.steps[0]!.instruction
+    });
 
     await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
       .resolves.toEqual({ status: "sent", followupId: ids.followup, nextFollowupId: "next_followup" });
@@ -314,7 +319,7 @@ describe("createAgentFollowupRuntime", () => {
     expect(harness.decide).toHaveBeenCalledWith(expect.objectContaining({
       followupKind: "qualification",
       step: 1,
-      instruction: followupConfig.steps[0]?.instruction,
+      instruction: effectiveInstruction,
       aiControlStatus: "agent_allowed",
       hasCompatibleActiveAgentSession: true,
       selectedKnowledge: [{
@@ -325,7 +330,7 @@ describe("createAgentFollowupRuntime", () => {
     expect(JSON.stringify(harness.decide.mock.calls[0]?.[0])).not.toContain("FULL STORED AGENT PROMPT");
     expect(harness.provider.generate).toHaveBeenCalledWith(expect.objectContaining({
       systemPrompt: baseAgent.systemPrompt,
-      userPrompt: expect.stringContaining(followupConfig.steps[0]?.instruction),
+      userPrompt: expect.stringContaining(effectiveInstruction),
       context: expect.objectContaining({
         followupGuidance: expect.objectContaining({
           purpose: "missing_qualification",

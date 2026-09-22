@@ -35,7 +35,47 @@ function choice(value: string) {
   };
 }
 
+function auditResponse(input: {
+  disposition: "send" | "suppress" | "handoff";
+  followsPlan: number;
+  assertsUnsupportedCommercialFact: number;
+}) {
+  return new Response(JSON.stringify({
+    model: "jev-1.13.0",
+    answers: {
+      disposition: choice(input.disposition),
+      followsPlan: { type: "noul", noul: input.followsPlan },
+      assertsUnsupportedCommercialFact: {
+        type: "noul",
+        noul: input.assertsUnsupportedCommercialFact
+      }
+    }
+  }));
+}
+
 describe("createJevReplyPreflight", () => {
+  it("tells the auditor that an approved not-sold refusal is supported", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
+      disposition: "send",
+      followsPlan: 1,
+      assertsUnsupportedCommercialFact: 0
+    }));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await preflight.audit!({
+      currentMessage: { id: "message-1", body: "Vocês vendem barra maciça quadrada?", type: "text" },
+      conversationMessages: [],
+      selectedKnowledge: [{ title: "Catálogo aprovado", content: "Não vendemos barra maciça quadrada." }],
+      candidateReply: "Não trabalhamos com barra maciça quadrada.",
+      plan: { conversationStage: "new_quote", commercialPath: "not_sold", nextAction: "answer_current_request" }
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body));
+    expect(body.questions.disposition.instructions).toContain("not_sold");
+    expect(body.questions.assertsUnsupportedCommercialFact.instructions).toContain("explicitamente não vendido");
+  });
+
   it("suppresses a social closure before a generative reply is created", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({
@@ -142,6 +182,30 @@ describe("createJevReplyPreflight", () => {
           assertsUnsupportedCommercialFact: { type: "noul", noul: 0.09 }
         },
         usage: { input_tokens: 120, output_tokens: 6 }
+      }))
+    );
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.audit!({
+      ...baseInput,
+      candidateReply: "Vou encaminhar ao vendedor para verificar a disponibilidade.",
+      plan: {
+        conversationStage: "new_quote",
+        commercialPath: "ambiguous",
+        nextAction: "handoff"
+      }
+    })).resolves.toEqual({ outcome: "send" });
+  });
+
+  it("uses the scored policy answers when a safe handoff disposition has no confidence metadata", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        model: "jev-1.13.0",
+        answers: {
+          disposition: { type: "choice", choice: "handoff" },
+          followsPlan: { type: "noul", noul: 0.91 },
+          assertsUnsupportedCommercialFact: { type: "noul", noul: 0.08 }
+        }
       }))
     );
     const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });

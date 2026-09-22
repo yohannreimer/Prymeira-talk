@@ -110,11 +110,15 @@ describe("createJevFollowupDecision", () => {
     }));
     const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
 
-    await decision.decide({
+    await expect(decision.decide({
       ...baseInput,
       followupKind: "human_commercial",
       aiControlStatus: "human_controlled",
       hasCompatibleActiveAgentSession: false
+    })).resolves.toMatchObject({
+      outcome: "follow_up",
+      route: "human_review",
+      risk: "human_owned"
     });
 
     const [, init] = fetchImpl.mock.calls[0] ?? [];
@@ -343,7 +347,7 @@ describe("createJevFollowupDecision", () => {
       purpose: "proposal_checkin",
       route: "human_review",
       stage: "post_proposal",
-      risk: "none"
+      risk: "human_owned"
     });
   });
 

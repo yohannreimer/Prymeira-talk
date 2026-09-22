@@ -14,6 +14,7 @@ import {
   type FollowupDecision,
   type FollowupDecisionInput
 } from "../src/modules/agents/jev-followup-decision.js";
+import { resolveFollowupStepInstruction } from "../src/modules/agents/followup-step-instruction.js";
 import {
   selectRelevantKnowledge,
   type KnowledgeRetrievalSource,
@@ -196,8 +197,10 @@ const firstFollowupInstruction = agentPackage.agent.followup.steps[0]?.instructi
 if (!firstFollowupInstruction) {
   throw new Error("O pacote não contém a primeira instrução de follow-up.");
 }
-const qualificationFollowupInstruction =
-  "Retome somente a qualificação técnica pendente: peça a medida e a espessura que faltam, sem inferir disponibilidade nem qualquer condição comercial.";
+const qualificationFollowupInstruction = resolveFollowupStepInstruction({
+  kind: "qualification",
+  configuredInstruction: firstFollowupInstruction
+});
 
 const followupCases: FollowupLiveCase[] = [
   {

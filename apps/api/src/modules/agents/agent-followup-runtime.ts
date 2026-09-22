@@ -26,6 +26,7 @@ import {
 } from "./knowledge-retrieval.js";
 import { readKnowledgeTaxonomy } from "./knowledge-taxonomy.js";
 import { readAgentReasoningEffort, type AgentOutput, type AgentProvider } from "./provider-gateway.js";
+import { resolveFollowupStepInstruction } from "./followup-step-instruction.js";
 
 type AgentFollowupAgent = {
   id: string;
@@ -237,6 +238,10 @@ export function createAgentFollowupRuntime(input: {
         await markSkipped(followup, { outcome: "skip", reason: "followup_step_unconfigured" }, "followup_step_unconfigured");
         return { status: "skipped", followupId: followup.id };
       }
+      const stepInstruction = resolveFollowupStepInstruction({
+        kind: followup.kind,
+        configuredInstruction: step.instruction
+      });
 
       let conversationContext;
       let selectedKnowledge: SelectedKnowledgeSource[];
@@ -259,9 +264,9 @@ export function createAgentFollowupRuntime(input: {
         ]);
         conversationContext = context;
         selectedKnowledge = selectRelevantKnowledge({
-          latestMessage: step.instruction,
+          latestMessage: stepInstruction,
           conversationHistory: context.formattedHistory,
-          instruction: step.instruction,
+          instruction: stepInstruction,
           taxonomy: readKnowledgeTaxonomy(agent.behaviorConfig),
           sources: knowledge.filter(isConfirmedKnowledge).map(toRetrievalSource)
         }).selected;
@@ -292,7 +297,7 @@ export function createAgentFollowupRuntime(input: {
           selectedKnowledge: selectedKnowledge.map(toJevKnowledge),
           followupKind: followup.kind,
           step: followup.stepIndex,
-          instruction: step.instruction,
+          instruction: stepInstruction,
           aiControlStatus: conversation.aiControlStatus === "agent_allowed" ? "agent_allowed" : "human_controlled",
           hasCompatibleActiveAgentSession: true
         });
@@ -323,7 +328,7 @@ export function createAgentFollowupRuntime(input: {
       if (input.replyPreflight) {
         try {
           const preflight = await input.replyPreflight.evaluate({
-            currentMessage: toPreflightCurrentMessage(conversationContext.messages, followup, step.instruction),
+            currentMessage: toPreflightCurrentMessage(conversationContext.messages, followup, stepInstruction),
             conversationMessages: conversationContext.messages,
             selectedKnowledge: selectedKnowledge.map(toJevKnowledge)
           });
@@ -348,13 +353,13 @@ export function createAgentFollowupRuntime(input: {
           reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
           model: agent.model,
           systemPrompt: agent.systemPrompt,
-          userPrompt: buildFollowupUserPrompt(step.instruction, decision),
+          userPrompt: buildFollowupUserPrompt(stepInstruction, decision),
           context: buildFollowupContext({
             conversation,
             conversationMessages: conversationContext.messages,
             formattedHistory: conversationContext.formattedHistory,
             selectedKnowledge,
-            stepInstruction: step.instruction,
+            stepInstruction,
             decision,
             preflightPlan
           })
@@ -385,7 +390,7 @@ export function createAgentFollowupRuntime(input: {
       if (input.replyPreflight?.audit && preflightPlan) {
         try {
           const audit = await input.replyPreflight.audit({
-            currentMessage: toPreflightCurrentMessage(conversationContext.messages, followup, step.instruction),
+            currentMessage: toPreflightCurrentMessage(conversationContext.messages, followup, stepInstruction),
             conversationMessages: conversationContext.messages,
             selectedKnowledge: selectedKnowledge.map(toJevKnowledge),
             candidateReply: candidate,

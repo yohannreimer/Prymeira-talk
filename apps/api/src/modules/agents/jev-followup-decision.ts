@@ -223,6 +223,17 @@ function applyGuardRails(decision: FollowupDecision, input: FollowupDecisionInpu
     };
   }
 
+  if (
+    input.followupKind === "human_commercial" &&
+    input.aiControlStatus === "human_controlled"
+  ) {
+    return {
+      ...decision,
+      route: "human_review",
+      risk: "human_owned"
+    };
+  }
+
   const canAutomaticallySend =
     decision.outcome === "follow_up" &&
     decision.purpose === "missing_qualification" &&
