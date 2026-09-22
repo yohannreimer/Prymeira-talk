@@ -25,6 +25,8 @@ type HandoffSessionRecord = {
   agentId: string;
 };
 
+type ConversationRecord = { activeAgentSessionId: string | null };
+
 type MessageRecord = {
   id: string;
   direction: "inbound" | "outbound";
@@ -68,6 +70,9 @@ type TransactionPrismaLike = {
 };
 
 export interface AgentImprovementsPrismaLike {
+  conversation: {
+    findFirst(args: unknown): Promise<ConversationRecord | null>;
+  };
   aiAgent: {
     findFirst(args: unknown): Promise<AgentRecord | null>;
   };
@@ -314,6 +319,17 @@ function isAiAgentMessage(message: MessageRecord) {
   );
 }
 
+function recentCustomerRequest(messages: MessageRecord[]): string | null {
+  const inbound = messages.filter((message) => message.direction === "inbound" && message.body?.trim()).slice(-6);
+  const latest = inbound.at(-1);
+  if (!latest) return null;
+  const latestAt = new Date(latest.createdAt).getTime();
+  const relevant = inbound.filter((message) =>
+    !Number.isFinite(latestAt) || latestAt - new Date(message.createdAt).getTime() <= 2 * 60 * 60 * 1000
+  );
+  return relevant.map((message) => message.body!.trim()).join("\n").slice(0, 2_500);
+}
+
 function buildProposal(input: {
   kind: AgentImprovementKind;
   customerMessage: string;
@@ -416,7 +432,7 @@ export function createAgentImprovementsService(
         return { created: false, reason: "detector_unavailable" };
       }
 
-      const [existing, humanReply, session] = await Promise.all([
+      const [existing, humanReply, conversation] = await Promise.all([
         prisma.aiAgentImprovement.findFirst({
           where: { workspaceId: input.workspaceId, sourceMessageId: input.messageId }
         }),
@@ -427,13 +443,9 @@ export function createAgentImprovementsService(
             id: input.messageId
           }
         }),
-        prisma.aiAgentSession.findFirst({
-          where: {
-            workspaceId: input.workspaceId,
-            conversationId: input.conversationId,
-            status: "handoff_requested"
-          },
-          orderBy: { updatedAt: "desc" }
+        prisma.conversation.findFirst({
+          where: { workspaceId: input.workspaceId, id: input.conversationId },
+          select: { activeAgentSessionId: true }
         })
       ]);
 
@@ -450,6 +462,17 @@ export function createAgentImprovementsService(
         return { created: false, reason: "not_a_text_human_reply" };
       }
 
+      const session = conversation?.activeAgentSessionId
+        ? await prisma.aiAgentSession.findFirst({
+            where: {
+              workspaceId: input.workspaceId,
+              id: conversation.activeAgentSessionId,
+              conversationId: input.conversationId,
+              status: { in: ["handoff_requested", "paused_by_human"] },
+              handoffReason: { not: null }
+            }
+          })
+        : null;
       if (!session) {
         return { created: false, reason: "no_agent_handoff" };
       }
@@ -465,16 +488,14 @@ export function createAgentImprovementsService(
       const chronological = [...messages].reverse();
       const humanReplyIndex = chronological.findIndex((message) => message.id === input.messageId);
       const previousMessages = humanReplyIndex === -1 ? chronological : chronological.slice(0, humanReplyIndex);
-      const customerMessage = [...previousMessages]
-        .reverse()
-        .find((message) => message.direction === "inbound" && Boolean(message.body?.trim()));
+      const customerMessage = recentCustomerRequest(previousMessages);
 
-      if (!customerMessage?.body?.trim()) {
+      if (!customerMessage) {
         return { created: false, reason: "no_customer_request" };
       }
 
       const assessment = await options.detector.assess({
-        customerMessage: customerMessage.body,
+        customerMessage,
         humanReply: humanReply.body,
         conversationMessages: chronological.map((message) => ({
           label: messageLabel(message),
@@ -489,7 +510,7 @@ export function createAgentImprovementsService(
 
       const proposal = buildProposal({
         kind: assessment.kind,
-        customerMessage: customerMessage.body,
+        customerMessage,
         humanReply: humanReply.body,
         assessment
       });
@@ -504,7 +525,7 @@ export function createAgentImprovementsService(
           title: proposal.title,
           content: proposal.content,
           rationale: proposal.rationale,
-          sourceCustomerMessage: customerMessage.body,
+          sourceCustomerMessage: customerMessage,
           sourceHumanReply: humanReply.body,
           detector: {
             provider: "jev",
