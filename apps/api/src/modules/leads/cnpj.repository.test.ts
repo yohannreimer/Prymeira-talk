@@ -76,6 +76,35 @@ describe("CnpjRepository", () => {
     expect(client.calls).toHaveLength(0);
   });
 
+  it("counts once and scans deterministic composite keys without OFFSET", async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ total: "201" }], rowCount: 1 })
+      .mockResolvedValueOnce({
+        rows: [{ cnpj: "12345678ABCD90", cnpj_basico: "12345678" }],
+        rowCount: 1
+      });
+    const repository = new CnpjRepository({ query } as never);
+
+    await expect(repository.countEstablishments({ state: "sp", activeOnly: true })).resolves.toBe(201);
+    const page = await repository.scanEstablishments({
+      filters: { state: "sp", activeOnly: true },
+      cursor: { cnpjBasico: "11111111", cnpjOrdem: "AAAA", cnpjDv: "01" },
+      limit: 25
+    });
+
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[0]?.[0]).toContain("SELECT COUNT(*)::text AS total");
+    expect(query.mock.calls[0]?.[1]).toEqual(["SP"]);
+    const scanSql = query.mock.calls[1]?.[0] as string;
+    expect(scanSql).toContain("(e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv) > ($2, $3, $4)");
+    expect(scanSql).toContain("ORDER BY e.cnpj_basico ASC, e.cnpj_ordem ASC, e.cnpj_dv ASC");
+    expect(scanSql.indexOf("WITH paged_keys AS")).toBeLessThan(scanSql.indexOf("LEFT JOIN cnpj.cnaes primary_cnae"));
+    expect(scanSql).not.toContain("OFFSET");
+    expect(scanSql).not.toContain("COUNT(");
+    expect(query.mock.calls[1]?.[1]).toEqual(["SP", "11111111", "AAAA", "01", 25]);
+    expect(page.nextCursor).toBeNull();
+  });
+
   it("splits an exact CNPJ search filter into the composite primary-key columns", async () => {
     const client = new FakeCnpjClient();
 

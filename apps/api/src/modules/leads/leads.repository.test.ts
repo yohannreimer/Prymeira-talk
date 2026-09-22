@@ -34,7 +34,7 @@ function job(): LeadJob {
     listId,
     operation: "receita_search",
     status: "queued",
-    input: {},
+    input: { requestFingerprint: "same-fingerprint" },
     output: {},
     errorMessage: null,
     attempts: 0,
@@ -116,7 +116,7 @@ describe("Leads repository workspace isolation", () => {
       source: "receita_federal" as const,
       criteria: {},
       operation: "receita_search",
-      input: {},
+      input: { requestFingerprint: "same-fingerprint" },
       idempotencyKey: "same"
     };
 
@@ -168,11 +168,21 @@ describe("Leads repository workspace isolation", () => {
     const findMany = vi.fn(async () => [expired]);
     const updateMany = vi.fn(async () => ({ count: 1 }));
     const findFirst = vi.fn(async () => ({ ...expired, status: "failed", finishedAt: now, leaseToken: null, leaseUntil: null }));
-    const repository = new LeadsRepository({ leadJob: { findMany, updateMany, findFirst } } as never);
+    const leadList = {
+      findFirst: vi.fn(async () => list()),
+      updateMany: vi.fn(async () => ({ count: 1 }))
+    };
+    const transaction = vi.fn(async (callback: any) => callback({ leadJob: { updateMany, findFirst }, leadList }));
+    const repository = new LeadsRepository({
+      leadJob: { findMany },
+      $transaction: transaction
+    } as never);
 
     const recovered = await repository.recoverExpiredJobs(now, 3);
 
-    expect(recovered[0]?.status).toBe("failed");
+    expect(recovered[0]?.job.status).toBe("failed");
+    expect(recovered[0]?.list).toBeDefined();
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 50 }));
     expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ workspaceId, id: jobId, status: "running", leaseToken: expired.leaseToken }),
       data: expect.objectContaining({ status: "failed", errorMessage: "LEAD_JOB_ATTEMPTS_EXHAUSTED" })

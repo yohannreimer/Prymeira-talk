@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { parse } from "csv-parse/sync";
 import { z } from "zod";
 import {
@@ -15,8 +16,10 @@ import {
 } from "./cnpj.repository.js";
 import {
   LeadsDomainError,
+  LeadLeaseLostError,
   type ClaimedLeadJob,
   type LeadArtifactDownload,
+  type LeadListProgressInput,
   type LeadUpsertInput,
   type LeadsRepositoryLike
 } from "./leads.repository.js";
@@ -105,9 +108,15 @@ function rowError(row: ParsedCsvRow, reason: string): CsvRowError {
 }
 
 function parseCsvBytes(bytes: Buffer): ParsedCsv {
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new LeadsDomainError("LEAD_INVALID_ENCODING", "CSV must be valid UTF-8 text.");
+  }
   let records: string[][];
   try {
-    records = parse(bytes, {
+    records = parse(text, {
       bom: true,
       columns: false,
       relax_column_count: false,
@@ -165,6 +174,39 @@ function parseCsvBytes(bytes: Buffer): ParsedCsv {
   return { rows, validRows, errors, duplicateRows, invalidRows };
 }
 
+function stableSerialize(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableSerialize(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256(value: Buffer | string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function assertReplayFingerprint(persistedInput: unknown, requestFingerprint: string) {
+  if (jsonRecord(persistedInput).requestFingerprint !== requestFingerprint) {
+    throw new LeadsDomainError(
+      "LEAD_IDEMPOTENCY_CONFLICT",
+      "Idempotency key was already used for a different lead request."
+    );
+  }
+}
+
+function persistedCount(value: unknown, key: string) {
+  const count = jsonRecord(value)[key];
+  return typeof count === "number" && Number.isInteger(count) && count >= 0 ? count : 0;
+}
+
 async function readUpload(upload: CsvUpload): Promise<Buffer> {
   if (typeof upload === "string") {
     const bytes = Buffer.from(upload, "utf8");
@@ -203,7 +245,7 @@ export function createErrorCsv(errors: CsvRowError[]) {
   return Buffer.from(`\uFEFF${lines.join("\r\n")}\r\n`, "utf8");
 }
 
-function toCnpjFilters(filters: z.infer<typeof leadSearchFiltersSchema>, page: number): CnpjSearchFilters {
+function toCnpjFilters(filters: z.infer<typeof leadSearchFiltersSchema>): CnpjSearchFilters {
   return {
     cnpj: filters.cnpj,
     companyName: filters.query,
@@ -217,11 +259,7 @@ function toCnpjFilters(filters: z.infer<typeof leadSearchFiltersSchema>, page: n
     capitalMax: filters.capitalMax,
     hasPhone: filters.hasPhone,
     hasEmail: filters.hasEmail,
-    activeOnly: filters.active,
-    page,
-    pageSize: RECEITA_PAGE_SIZE,
-    sortBy: "cnpj",
-    sortDirection: "ASC"
+    activeOnly: filters.active
   };
 }
 
@@ -267,14 +305,7 @@ function isSourceUnavailable(error: unknown) {
     (typeof error === "object" && error !== null && "code" in error && error.code === "LEAD_SOURCE_UNAVAILABLE");
 }
 
-export class LeadLeaseLostError extends Error {
-  readonly code = "LEAD_LEASE_LOST" as const;
-
-  constructor() {
-    super("Lead job lease ownership was lost.");
-    this.name = "LeadLeaseLostError";
-  }
-}
+export { LeadLeaseLostError };
 
 export interface LeadsServiceOptions {
   repository: LeadsRepositoryLike;
@@ -296,13 +327,8 @@ export function createLeadsService(options: LeadsServiceOptions) {
     options.realtime?.publish({ type: "lead_job.updated", workspaceId: job.workspaceId, payload: job });
   }
 
-  async function assertLease(job: ClaimedLeadJob) {
-    if (!await repository.extendLease(job, now(), 300_000)) throw new LeadLeaseLostError();
-  }
-
-  async function updateProgress(job: ClaimedLeadJob, input: Parameters<LeadsRepositoryLike["updateListProgress"]>[0]) {
-    await assertLease(job);
-    const list = await repository.updateListProgress(input);
+  async function updateProgress(job: ClaimedLeadJob, input: LeadListProgressInput) {
+    const list = await repository.fencedUpdateListProgress(job, input, now(), 300_000);
     publishList(list);
     return list;
   }
@@ -311,88 +337,98 @@ export function createLeadsService(options: LeadsServiceOptions) {
     status: "completed" | "partial" | "failed";
     output: Prisma.InputJsonObject;
     errorMessage: string | null;
+    progress: LeadListProgressInput;
   }) {
-    await assertLease(job);
-    const updated = await repository.finishJob({
-      workspaceId: job.workspaceId,
-      jobId: job.id,
-      leaseToken: job.leaseToken,
+    const updated = await repository.fencedFinishJob({
+      job,
+      now: now(),
       status: input.status,
       output: input.output,
       errorMessage: input.errorMessage,
-      finishedAt: now()
+      progress: input.progress
     });
-    publishJob(updated);
-    return updated;
+    publishList(updated.list);
+    publishJob(updated.job);
+    return updated.job;
   }
 
   async function processSearch(job: ClaimedLeadJob) {
     const input = searchJobInputSchema.safeParse(job.input);
     if (!input.success) {
-      await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
-      return finishJob(job, { status: "failed", output: { processedCount: 0, failedCount: 1 }, errorMessage: "LEAD_INVALID_INPUT" });
+      return finishJob(job, {
+        status: "failed",
+        output: { processedCount: 0, failedCount: 1 },
+        errorMessage: "LEAD_INVALID_INPUT",
+        progress: { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() }
+      });
     }
     const filters = leadSearchFiltersSchema.safeParse(input.data.filters);
     if (!filters.success || (filters.data.source && filters.data.source !== "receita_federal")) {
-      await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
-      return finishJob(job, { status: "failed", output: { processedCount: 0, failedCount: 1 }, errorMessage: "LEAD_INVALID_INPUT" });
+      return finishJob(job, {
+        status: "failed",
+        output: { processedCount: 0, failedCount: 1 },
+        errorMessage: "LEAD_INVALID_INPUT",
+        progress: { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() }
+      });
     }
 
     let processedCount = 0;
     let totalCount = 0;
     let failure: string | null = null;
     await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount: 0, processedCount: 0, failedCount: 0, startedAt: now(), completedAt: null });
-
-    for (let page = 1; processedCount < input.data.maxResults; page += 1) {
+    const sourceFilters = toCnpjFilters(filters.data);
+    try {
+      totalCount = Math.min(await cnpjRepository.countEstablishments(sourceFilters), input.data.maxResults);
+    } catch (error) {
+      if (!isSourceUnavailable(error)) throw error;
+      failure = "LEAD_SOURCE_UNAVAILABLE";
+    }
+    let cursor = null;
+    while (!failure && processedCount < totalCount) {
       let result;
       try {
-        result = await cnpjRepository.searchEstablishments(toCnpjFilters(filters.data, page));
+        result = await cnpjRepository.scanEstablishments({
+          filters: sourceFilters,
+          cursor,
+          limit: Math.min(RECEITA_PAGE_SIZE, totalCount - processedCount)
+        });
       } catch (error) {
         if (!isSourceUnavailable(error)) throw error;
         failure = "LEAD_SOURCE_UNAVAILABLE";
         break;
       }
-      totalCount = Math.min(result.total, input.data.maxResults);
-      const remaining = input.data.maxResults - processedCount;
-      const pageItems = result.items.slice(0, remaining);
-      if (pageItems.length > 0) {
-        await assertLease(job);
-        await repository.upsertLeads(pageItems.map((record) => cnpjToLead(record, job.workspaceId, job.listId)));
-      }
+      const pageItems = result.items.slice(0, totalCount - processedCount);
+      if (pageItems.length === 0) break;
+      await repository.fencedUpsertLeads(
+        job,
+        pageItems.map((record) => cnpjToLead(record, job.workspaceId, job.listId)),
+        now(),
+        300_000
+      );
       processedCount += pageItems.length;
-      await updateProgress(job, {
-        workspaceId: job.workspaceId,
-        listId: job.listId,
-        totalCount,
-        processedCount,
-        failedCount: 0
-      });
-      if (pageItems.length === 0 || processedCount >= totalCount || result.items.length < RECEITA_PAGE_SIZE) break;
+      cursor = result.nextCursor;
+      await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount, processedCount, failedCount: 0 });
+      if (!cursor) break;
     }
 
     const failedCount = failure ? Math.max(totalCount - processedCount, 1) : 0;
     const finalTotal = Math.max(totalCount, processedCount + failedCount);
     const status = failure ? (processedCount > 0 ? "partial" : "failed") : "completed";
-    await updateProgress(job, {
-      workspaceId: job.workspaceId,
-      listId: job.listId,
-      totalCount: finalTotal,
-      processedCount,
-      failedCount,
-      completedAt: now()
-    });
     return finishJob(job, {
       status,
       output: { totalCount: finalTotal, processedCount, failedCount, capped: totalCount >= input.data.maxResults },
-      errorMessage: failure
+      errorMessage: failure,
+      progress: { workspaceId: job.workspaceId, listId: job.listId, totalCount: finalTotal, processedCount, failedCount, completedAt: now() }
     });
   }
 
   async function processCsv(job: ClaimedLeadJob) {
     const input = csvJobInputSchema.safeParse(job.input);
     if (!input.success) {
-      await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
-      return finishJob(job, { status: "failed", output: { processedCount: 0, failedCount: 1 }, errorMessage: "LEAD_INVALID_INPUT" });
+      return finishJob(job, {
+        status: "failed", output: { processedCount: 0, failedCount: 1 }, errorMessage: "LEAD_INVALID_INPUT",
+        progress: { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() }
+      });
     }
     const artifact: LeadArtifactDownload = await repository.getArtifact(job.workspaceId, input.data.artifactId);
     let parsed: ParsedCsv;
@@ -401,8 +437,10 @@ export function createLeadsService(options: LeadsServiceOptions) {
     } catch (error) {
       if (!(error instanceof LeadsDomainError)) throw error;
       const code = error.code;
-      await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
-      return finishJob(job, { status: "failed", output: { processedCount: 0, failedCount: 1 }, errorMessage: code });
+      return finishJob(job, {
+        status: "failed", output: { processedCount: 0, failedCount: 1 }, errorMessage: code,
+        progress: { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() }
+      });
     }
 
     const errors = [...parsed.errors];
@@ -440,8 +478,7 @@ export function createLeadsService(options: LeadsServiceOptions) {
         }
       }
       if (found.length > 0) {
-        await assertLease(job);
-        await repository.upsertLeads(found);
+        await repository.fencedUpsertLeads(job, found, now(), 300_000);
       }
       processedCount += found.length;
       await updateProgress(job, {
@@ -461,16 +498,10 @@ export function createLeadsService(options: LeadsServiceOptions) {
 
     let errorArtifactId: string | null = null;
     if (errors.length > 0) {
-      await assertLease(job);
-      const errorArtifact = await repository.upsertArtifact({
-        workspaceId: job.workspaceId,
-        listId: job.listId,
-        jobId: job.id,
-        kind: "csv_error",
-        fileName: "cnpj-import-errors.csv",
-        mimeType: "text/csv; charset=utf-8",
-        content: createErrorCsv(errors)
-      });
+      const errorArtifact = await repository.fencedUpsertArtifact(job, {
+        workspaceId: job.workspaceId, listId: job.listId, jobId: job.id, kind: "csv_error",
+        fileName: "cnpj-import-errors.csv", mimeType: "text/csv; charset=utf-8", content: createErrorCsv(errors)
+      }, now(), 300_000);
       errorArtifactId = errorArtifact.id;
     }
     const failedCount = errors.length;
@@ -478,14 +509,6 @@ export function createLeadsService(options: LeadsServiceOptions) {
     const errorMessage = errors.some((error) => error.reason === "SOURCE_UNAVAILABLE")
       ? "LEAD_SOURCE_UNAVAILABLE"
       : status === "failed" ? "LEAD_CSV_NO_RESULTS" : null;
-    await updateProgress(job, {
-      workspaceId: job.workspaceId,
-      listId: job.listId,
-      totalCount: parsed.rows.length,
-      processedCount,
-      failedCount,
-      completedAt: now()
-    });
     return finishJob(job, {
       status,
       output: {
@@ -496,7 +519,8 @@ export function createLeadsService(options: LeadsServiceOptions) {
         failedCount,
         errorArtifactId
       },
-      errorMessage
+      errorMessage,
+      progress: { workspaceId: job.workspaceId, listId: job.listId, totalCount: parsed.rows.length, processedCount, failedCount, completedAt: now() }
     });
   }
 
@@ -542,17 +566,27 @@ export function createLeadsService(options: LeadsServiceOptions) {
       if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > MAX_RECEITA_LEADS) {
         throw new LeadsDomainError("LEAD_LIMIT_EXCEEDED", `Receita searches are limited to ${MAX_RECEITA_LEADS} leads.`);
       }
+      const normalizedName = requiredText(input.name, "name");
+      const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey", 200);
+      const requestFingerprint = sha256(stableSerialize({ name: normalizedName, filters: filters.data, maxResults }));
+      const replay = await repository.findJobByIdempotency(input.workspaceId, "receita_search", idempotencyKey);
+      if (replay) {
+        assertReplayFingerprint(replay.persistedInput, requestFingerprint);
+        return replay;
+      }
       const created = await repository.createListAndJob({
         workspaceId: requiredText(input.workspaceId, "workspaceId"),
-        name: requiredText(input.name, "name"),
+        name: normalizedName,
         source: "receita_federal",
         criteria: filters.data,
         operation: "receita_search",
-        input: { filters: filters.data, maxResults },
-        idempotencyKey: requiredText(input.idempotencyKey, "idempotencyKey", 200)
+        input: { requestFingerprint, filters: filters.data, maxResults },
+        idempotencyKey
       });
-      publishList(created.list);
-      publishJob(created.job);
+      if (!created.replayed) {
+        publishList(created.list);
+        publishJob(created.job);
+      }
       return created;
     },
 
@@ -564,20 +598,43 @@ export function createLeadsService(options: LeadsServiceOptions) {
       idempotencyKey: string;
     }) {
       const bytes = await readUpload(input.upload);
+      const requestFingerprint = sha256(bytes);
+      const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey", 200);
+      const replay = await repository.findJobByIdempotency(input.workspaceId, "cnpj_csv_import", idempotencyKey);
+      if (replay) {
+        assertReplayFingerprint(replay.persistedInput, requestFingerprint);
+        return {
+          listId: replay.list.id,
+          jobId: replay.job.id,
+          acceptedRows: persistedCount(replay.persistedOutput, "acceptedRows"),
+          duplicateRows: persistedCount(replay.persistedOutput, "duplicateRows"),
+          invalidRows: persistedCount(replay.persistedOutput, "invalidRows"),
+          errorCsvUrl: null,
+          inputArtifactId: replay.artifact?.id ?? null
+        };
+      }
       const parsed = parseCsvBytes(bytes);
+      const originalRows = parsed.rows.length;
       const created = await repository.createListAndJob({
         workspaceId: requiredText(input.workspaceId, "workspaceId"),
         name: requiredText(input.name, "name"),
         source: "receita_federal",
         criteria: { type: "csv_import", fileName: requiredText(input.fileName, "fileName", 180) },
         operation: "cnpj_csv_import",
-        input: {},
-        output: {
+        input: {
+          requestFingerprint,
+          originalRows,
           acceptedRows: parsed.validRows.length,
           duplicateRows: parsed.duplicateRows,
           invalidRows: parsed.invalidRows
         },
-        idempotencyKey: requiredText(input.idempotencyKey, "idempotencyKey", 200),
+        output: {
+          originalRows,
+          acceptedRows: parsed.validRows.length,
+          duplicateRows: parsed.duplicateRows,
+          invalidRows: parsed.invalidRows
+        },
+        idempotencyKey,
         artifact: {
           kind: "csv_input",
           fileName: requiredText(input.fileName, "fileName", 180),
@@ -586,14 +643,16 @@ export function createLeadsService(options: LeadsServiceOptions) {
         }
       });
       if (!created.artifact) throw new LeadsDomainError("LEAD_INVALID_INPUT", "CSV artifact was not persisted.");
-      publishList(created.list);
-      publishJob(created.job);
+      if (!created.replayed) {
+        publishList(created.list);
+        publishJob(created.job);
+      }
       return {
         listId: created.list.id,
         jobId: created.job.id,
-        acceptedRows: parsed.validRows.length,
-        duplicateRows: parsed.duplicateRows,
-        invalidRows: parsed.invalidRows,
+        acceptedRows: persistedCount(created.persistedOutput, "acceptedRows"),
+        duplicateRows: persistedCount(created.persistedOutput, "duplicateRows"),
+        invalidRows: persistedCount(created.persistedOutput, "invalidRows"),
         errorCsvUrl: null,
         inputArtifactId: created.artifact.id
       };
@@ -607,11 +666,11 @@ export function createLeadsService(options: LeadsServiceOptions) {
         const hydrated = { ...job, input: { artifactId: artifact.id } } as ClaimedLeadJob;
         return processCsv(hydrated);
       }
-      await updateProgress(job, { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() });
       return finishJob(job, {
         status: "failed",
         output: { processedCount: 0, failedCount: 1 },
-        errorMessage: "LEAD_INVALID_OPERATION"
+        errorMessage: "LEAD_INVALID_OPERATION",
+        progress: { workspaceId: job.workspaceId, listId: job.listId, totalCount: 1, processedCount: 0, failedCount: 1, completedAt: now() }
       });
     },
 
@@ -630,6 +689,10 @@ export function createLeadsService(options: LeadsServiceOptions) {
         createdAt: job.createdAt.toISOString(),
         updatedAt: job.updatedAt.toISOString()
       });
+    },
+
+    publishRecoveredList(list: LeadListDto) {
+      publishList(list);
     }
   };
 }

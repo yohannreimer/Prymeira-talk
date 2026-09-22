@@ -4,7 +4,7 @@ import type { LeadsService } from "./leads.service.js";
 
 export interface LeadsSchedulerOptions {
   repository: LeadsRepositoryLike;
-  service: Pick<LeadsService, "runClaimedJob" | "publishRecoveredJob">;
+  service: Pick<LeadsService, "runClaimedJob" | "publishRecoveredJob" | "publishRecoveredList">;
   pollIntervalMs?: number;
   leaseMs?: number;
   maxAttempts?: number;
@@ -25,7 +25,10 @@ export function createLeadsScheduler(options: LeadsSchedulerOptions) {
 
   async function performTick() {
     const recovered = await options.repository.recoverExpiredJobs(now(), maxAttempts);
-    for (const job of recovered) options.service.publishRecoveredJob(job);
+    for (const transition of recovered) {
+      options.service.publishRecoveredJob(transition.job);
+      if (transition.list) options.service.publishRecoveredList(transition.list);
+    }
     const candidates = await options.repository.findQueuedJobs(batchSize, maxAttempts);
     for (const candidate of candidates) {
       if (stopping) break;

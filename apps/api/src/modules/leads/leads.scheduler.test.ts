@@ -54,7 +54,7 @@ describe("Leads scheduler", () => {
         };
       })
     });
-    const service = { runClaimedJob: vi.fn(async () => undefined), publishRecoveredJob: vi.fn() };
+    const service = { runClaimedJob: vi.fn(async () => undefined), publishRecoveredJob: vi.fn(), publishRecoveredList: vi.fn() };
     const first = createLeadsScheduler({ repository: repo, service: service as any, now: () => now });
     const second = createLeadsScheduler({ repository: repo, service: service as any, now: () => now });
 
@@ -74,18 +74,24 @@ describe("Leads scheduler", () => {
       updatedAt: new Date(now.getTime() + 1)
     });
     const calls: string[] = [];
+    const recoveredList = { id: recovered.listId, workspaceId: recovered.workspaceId };
     const repo = repository({
-      recoverExpiredJobs: vi.fn(async () => { calls.push("recover"); return [recovered]; }),
+      recoverExpiredJobs: vi.fn(async () => { calls.push("recover"); return [{ job: recovered, list: recoveredList }]; }),
       findQueuedJobs: vi.fn(async () => { calls.push("find"); return []; })
     });
-    const service = { runClaimedJob: vi.fn(), publishRecoveredJob: vi.fn(() => calls.push("publish")) };
+    const service = {
+      runClaimedJob: vi.fn(),
+      publishRecoveredJob: vi.fn(() => calls.push("publish-job")),
+      publishRecoveredList: vi.fn(() => calls.push("publish-list"))
+    };
     const scheduler = createLeadsScheduler({ repository: repo, service: service as any, maxAttempts: 3, now: () => now });
 
     await scheduler.tick();
 
-    expect(calls).toEqual(["recover", "publish", "find"]);
+    expect(calls).toEqual(["recover", "publish-job", "publish-list", "find"]);
     expect(repo.recoverExpiredJobs).toHaveBeenCalledWith(now, 3);
     expect(service.publishRecoveredJob).toHaveBeenCalledWith(recovered);
+    expect(service.publishRecoveredList).toHaveBeenCalledWith(recoveredList);
   });
 
   it("does not overlap ticks and waits for active work during graceful stop", async () => {
@@ -102,7 +108,7 @@ describe("Leads scheduler", () => {
         leaseUntil: new Date(now.getTime() + 300_000)
       }))
     });
-    const service = { runClaimedJob: vi.fn(async () => running), publishRecoveredJob: vi.fn() };
+    const service = { runClaimedJob: vi.fn(async () => running), publishRecoveredJob: vi.fn(), publishRecoveredList: vi.fn() };
     const scheduler = createLeadsScheduler({ repository: repo, service: service as any, now: () => now });
 
     const first = scheduler.tick();
@@ -127,7 +133,7 @@ describe("Leads scheduler", () => {
       recoverExpiredJobs: vi.fn(async () => {
         if (status === "running") {
           status = attempts >= 3 ? "failed" : "queued";
-          return [{ ...candidate, status, attempts, leaseToken: null, leaseUntil: null }];
+          return [{ job: { ...candidate, status, attempts, leaseToken: null, leaseUntil: null } }];
         }
         return [];
       }),
@@ -141,7 +147,8 @@ describe("Leads scheduler", () => {
     });
     const service = {
       runClaimedJob: vi.fn(async () => { throw new Error("operational failure"); }),
-      publishRecoveredJob: vi.fn()
+      publishRecoveredJob: vi.fn(),
+      publishRecoveredList: vi.fn()
     };
     const scheduler = createLeadsScheduler({ repository: repo, service: service as any, now: () => now, maxAttempts: 3 });
 

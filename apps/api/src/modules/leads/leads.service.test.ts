@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { LeadJob, LeadJobStatus } from "@prisma/client";
 import { LeadSourceUnavailableError, type CnpjCompanyRecord } from "./cnpj.repository.js";
-import { LeadsDomainError, type ClaimedLeadJob } from "./leads.repository.js";
+import { LeadLeaseLostError, LeadsDomainError, type ClaimedLeadJob } from "./leads.repository.js";
 import {
   MAX_CSV_BYTES,
   createErrorCsv,
@@ -111,6 +111,7 @@ function setup(csv = "cnpj\n12345678ABCD90\n") {
     deleteList: vi.fn(),
     listLeads: vi.fn(),
     getJob: vi.fn(),
+    findJobByIdempotency: vi.fn(async (): Promise<any> => null),
     createListAndJob: vi.fn(async (input: any) => {
       stored.set("create", input);
       return {
@@ -128,7 +129,10 @@ function setup(csv = "cnpj\n12345678ABCD90\n") {
               size: input.artifact.content.byteLength,
               createdAt: now.toISOString()
             }
-          : undefined
+          : undefined,
+        persistedInput: input.input,
+        persistedOutput: input.output ?? {},
+        replayed: false
       };
     }),
     findQueuedJobs: vi.fn(),
@@ -184,13 +188,47 @@ function setup(csv = "cnpj\n12345678ABCD90\n") {
       size: Buffer.byteLength(csv),
       createdAt: now.toISOString(),
       content: Buffer.from(csv)
-    }))
+    })),
+    fencedUpsertLeads: vi.fn(),
+    fencedUpdateListProgress: vi.fn(),
+    fencedUpsertArtifact: vi.fn(),
+    fencedFinishJob: vi.fn()
   };
+  repository.fencedUpsertLeads.mockImplementation(async (_job: unknown, leads: any[]) => repository.upsertLeads(leads));
+  repository.fencedUpdateListProgress.mockImplementation(async (_job: unknown, input: any) => repository.updateListProgress(input));
+  repository.fencedUpsertArtifact.mockImplementation(async (_job: unknown, input: any) => repository.upsertArtifact(input));
+  repository.fencedFinishJob.mockImplementation(async (input: any) => ({
+    job: await repository.finishJob({
+      workspaceId: input.job.workspaceId,
+      jobId: input.job.id,
+      leaseToken: input.job.leaseToken,
+      status: input.status,
+      output: input.output,
+      errorMessage: input.errorMessage,
+      finishedAt: input.now
+    }),
+    list: await repository.updateListProgress(input.progress)
+  }));
   const cnpjRepository = {
     searchEstablishments: vi.fn(),
     findByCnpj: vi.fn(),
-    findByCnpjs: vi.fn()
+    findByCnpjs: vi.fn(),
+    countEstablishments: vi.fn(),
+    scanEstablishments: vi.fn()
   };
+  cnpjRepository.countEstablishments.mockImplementation(async (filters: unknown) =>
+    (await cnpjRepository.searchEstablishments(filters)).total
+  );
+  cnpjRepository.scanEstablishments.mockImplementation(async (input: any) => {
+    const result = await cnpjRepository.searchEstablishments(input.filters);
+    const last = result.items.at(-1);
+    return {
+      items: result.items,
+      nextCursor: result.items.length >= 100 && last
+        ? { cnpjBasico: last.cnpj.slice(0, 8), cnpjOrdem: last.cnpj.slice(8, 12), cnpjDv: last.cnpj.slice(12, 14) }
+        : null
+    };
+  });
   const realtime = { publish: vi.fn() };
   const service = createLeadsService({
     repository: repository as never,
@@ -204,27 +242,58 @@ function setup(csv = "cnpj\n12345678ABCD90\n") {
 describe("Leads service", () => {
   it("returns the same persisted job for a repeated workspace operation idempotency key", async () => {
     const context = setup();
-    context.repository.createListAndJob.mockResolvedValue({ list: listDto(), job: jobDto(), artifact: undefined });
-
     const first = await context.service.createReceitaSearchJob({
       workspaceId,
       name: "Busca",
       filters: { state: "SP" },
       idempotencyKey: "same"
     });
+    const created = context.stored.get("create") as any;
+    context.repository.findJobByIdempotency.mockResolvedValue({
+      list: listDto(),
+      job: jobDto("queued"),
+      artifact: undefined,
+      persistedInput: created.input,
+      persistedOutput: {},
+      replayed: true
+    });
     const second = await context.service.createReceitaSearchJob({
       workspaceId,
-      name: "Busca repetida",
+      name: "Busca",
       filters: { state: "SP" },
       idempotencyKey: "same"
     });
 
     expect(first.job.id).toBe(second.job.id);
+    expect(context.repository.createListAndJob).toHaveBeenCalledTimes(1);
     expect(context.repository.createListAndJob).toHaveBeenNthCalledWith(1, expect.objectContaining({
       workspaceId,
       operation: "receita_search",
       idempotencyKey: "same"
     }));
+  });
+
+  it("rejects a reused search idempotency key when the filters differ", async () => {
+    const context = setup();
+    await context.service.createReceitaSearchJob({
+      workspaceId,
+      name: "Busca",
+      filters: { state: "SP" },
+      idempotencyKey: "search-conflict"
+    });
+    const created = context.stored.get("create") as any;
+    context.repository.findJobByIdempotency.mockResolvedValue({
+      list: listDto(), job: jobDto(), artifact: undefined,
+      persistedInput: created.input, persistedOutput: {}, replayed: true
+    });
+
+    await expect(context.service.createReceitaSearchJob({
+      workspaceId,
+      name: "Busca",
+      filters: { state: "RJ" },
+      idempotencyKey: "search-conflict"
+    })).rejects.toMatchObject({ code: "LEAD_IDEMPOTENCY_CONFLICT" });
+    expect(context.repository.createListAndJob).toHaveBeenCalledTimes(1);
   });
 
   it("enforces the hard Receita result ceiling", async () => {
@@ -256,11 +325,37 @@ describe("Leads service", () => {
     expect(context.realtime.publish).toHaveBeenCalledWith(expect.objectContaining({ type: "lead_job.updated", workspaceId }));
   });
 
+  it("counts Receita results once and advances deterministic keyset cursors", async () => {
+    const context = setup();
+    const first = Array.from({ length: 100 }, (_, index) => company(`${String(index).padStart(8, "0")}ABCD90`));
+    const second = Array.from({ length: 100 }, (_, index) => company(`${String(index + 100).padStart(8, "0")}ABCD90`));
+    const cursor1 = { cnpjBasico: "00000099", cnpjOrdem: "ABCD", cnpjDv: "90" };
+    const cursor2 = { cnpjBasico: "00000199", cnpjOrdem: "ABCD", cnpjDv: "90" };
+    context.cnpjRepository.countEstablishments.mockResolvedValueOnce(201);
+    context.cnpjRepository.scanEstablishments
+      .mockResolvedValueOnce({ items: first, nextCursor: cursor1 })
+      .mockResolvedValueOnce({ items: second, nextCursor: cursor2 })
+      .mockResolvedValueOnce({ items: [company("00000200ABCD90")], nextCursor: null });
+
+    await context.service.runClaimedJob(rawJob("receita_search", { filters: { state: "SP" }, maxResults: 5_000 }));
+
+    expect(context.cnpjRepository.countEstablishments).toHaveBeenCalledTimes(1);
+    expect(context.cnpjRepository.scanEstablishments).toHaveBeenNthCalledWith(1, expect.objectContaining({ cursor: null, limit: 100 }));
+    expect(context.cnpjRepository.scanEstablishments).toHaveBeenNthCalledWith(2, expect.objectContaining({ cursor: cursor1, limit: 100 }));
+    expect(context.cnpjRepository.scanEstablishments).toHaveBeenNthCalledWith(3, expect.objectContaining({ cursor: cursor2, limit: 1 }));
+    expect(context.repository.finishJob).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+    expect((context.stored.get("leads") as Map<string, unknown>).size).toBe(201);
+  });
+
   it("marks a search partial after persisting a page and failing the next source page", async () => {
     const context = setup();
     const items = Array.from({ length: 100 }, (_, index) => company(`${String(index).padStart(8, "0")}ABCD90`));
-    context.cnpjRepository.searchEstablishments
-      .mockResolvedValueOnce({ items, page: 1, pageSize: 100, total: 101 })
+    context.cnpjRepository.countEstablishments.mockResolvedValueOnce(101);
+    context.cnpjRepository.scanEstablishments
+      .mockResolvedValueOnce({
+        items,
+        nextCursor: { cnpjBasico: "00000099", cnpjOrdem: "ABCD", cnpjDv: "90" }
+      })
       .mockRejectedValueOnce(new LeadSourceUnavailableError());
 
     await context.service.runClaimedJob(rawJob("receita_search", { filters: {}, maxResults: 5_000 }));
@@ -308,6 +403,68 @@ describe("Leads service", () => {
       .rejects.toMatchObject({ code: "LEAD_INVALID_INPUT" });
     await expect(context.service.createCsvImportJob({ workspaceId, name: "x", fileName: "x.csv", upload: Buffer.alloc(MAX_CSV_BYTES + 1), idempotencyKey: "large" }))
       .rejects.toMatchObject({ code: "LEAD_LIMIT_EXCEEDED" });
+  });
+
+  it("rejects non-UTF-8 CSV with a stable encoding error", async () => {
+    const context = setup();
+    await expect(context.service.createCsvImportJob({
+      workspaceId,
+      name: "Encoding inválido",
+      fileName: "invalid.csv",
+      upload: Buffer.from([0x63, 0x6e, 0x70, 0x6a, 0x0a, 0xc3, 0x28]),
+      idempotencyKey: "invalid-utf8"
+    })).rejects.toMatchObject({ code: "LEAD_INVALID_ENCODING" });
+    expect(context.repository.createListAndJob).not.toHaveBeenCalled();
+  });
+
+  it("replays queued and completed CSV jobs from persisted metadata and rejects changed bytes", async () => {
+    const context = setup();
+    const upload = "cnpj\n12345678ABCD90\n12345678ABCD90\ninvalid\n";
+    const initial = await context.service.createCsvImportJob({
+      workspaceId,
+      name: "Importação",
+      fileName: "input.csv",
+      upload,
+      idempotencyKey: "csv-replay"
+    });
+    const created = context.stored.get("create") as any;
+    const persisted = {
+      list: listDto(),
+      job: jobDto("queued", { operation: "cnpj_csv_import" }),
+      artifact: {
+        id: artifactId, workspaceId, listId, jobId, kind: "csv_input", fileName: "input.csv",
+        mimeType: "text/csv; charset=utf-8", size: Buffer.byteLength(upload), createdAt: now.toISOString()
+      },
+      persistedInput: created.input,
+      persistedOutput: created.output,
+      replayed: true
+    };
+    context.repository.findJobByIdempotency.mockResolvedValue(persisted);
+
+    const queuedReplay = await context.service.createCsvImportJob({
+      workspaceId, name: "Ignored replay name", fileName: "ignored.csv", upload, idempotencyKey: "csv-replay"
+    });
+    context.repository.findJobByIdempotency.mockResolvedValue({
+      ...persisted,
+      job: jobDto("completed", { operation: "cnpj_csv_import", finishedAt: now.toISOString() })
+    });
+    const completedReplay = await context.service.createCsvImportJob({
+      workspaceId, name: "Ignored replay name", fileName: "ignored.csv", upload, idempotencyKey: "csv-replay"
+    });
+
+    expect(queuedReplay).toEqual(initial);
+    expect(completedReplay).toEqual(initial);
+    expect(context.repository.createListAndJob).toHaveBeenCalledTimes(1);
+    expect(context.realtime.publish).toHaveBeenCalledTimes(2);
+
+    await expect(context.service.createCsvImportJob({
+      workspaceId,
+      name: "Importação",
+      fileName: "input.csv",
+      upload: "cnpj\n99999999WXYZ10\n",
+      idempotencyKey: "csv-replay"
+    })).rejects.toMatchObject({ code: "LEAD_IDEMPOTENCY_CONFLICT" });
+    expect(context.repository.createListAndJob).toHaveBeenCalledTimes(1);
   });
 
   it("deduplicates input, reports not-found rows in original order, and escapes spreadsheet formulas", async () => {
@@ -371,20 +528,21 @@ describe("Leads service", () => {
   it("stops a search without further writes when its lease is reclaimed mid-processing", async () => {
     const context = setup();
     const firstPage = Array.from({ length: 100 }, (_, index) => company(`${String(index).padStart(8, "0")}ABCD90`));
-    context.cnpjRepository.searchEstablishments
-      .mockResolvedValueOnce({ items: firstPage, page: 1, pageSize: 100, total: 101 })
-      .mockResolvedValueOnce({ items: [company("99999999ABCD90")], page: 2, pageSize: 100, total: 101 });
-    context.repository.extendLease
-      .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(false);
+    context.cnpjRepository.countEstablishments.mockResolvedValueOnce(101);
+    context.cnpjRepository.scanEstablishments.mockResolvedValueOnce({
+      items: firstPage,
+      nextCursor: { cnpjBasico: "00000099", cnpjOrdem: "ABCD", cnpjDv: "90" }
+    });
+    context.repository.fencedUpdateListProgress
+      .mockImplementationOnce(async (_job: unknown, input: any) => context.repository.updateListProgress(input))
+      .mockRejectedValueOnce(new LeadLeaseLostError());
 
     await expect(context.service.runClaimedJob(rawJob("receita_search", { filters: {}, maxResults: 5_000 })))
       .rejects.toMatchObject({ code: "LEAD_LEASE_LOST" });
 
     expect(context.repository.upsertLeads).toHaveBeenCalledTimes(1);
-    expect(context.repository.updateListProgress).toHaveBeenCalledTimes(2);
+    expect(context.repository.updateListProgress).toHaveBeenCalledTimes(1);
+    expect(context.cnpjRepository.scanEstablishments).toHaveBeenCalledTimes(1);
     expect(context.repository.finishJob).not.toHaveBeenCalled();
     expect(context.repository.upsertArtifact).not.toHaveBeenCalled();
   });
@@ -426,7 +584,7 @@ describe("Leads service", () => {
 
   it("propagates lease storage failures without making processing writes", async () => {
     const context = setup();
-    context.repository.extendLease.mockRejectedValueOnce(new Error("lease database unavailable"));
+    context.repository.fencedUpdateListProgress.mockRejectedValueOnce(new Error("lease database unavailable"));
 
     await expect(context.service.runClaimedJob(rawJob("receita_search", { filters: {}, maxResults: 5_000 })))
       .rejects.toThrow("lease database unavailable");
@@ -438,7 +596,7 @@ describe("Leads service", () => {
   it("stops CSV processing on lease loss before lead, progress, artifact, or terminal writes", async () => {
     const context = setup("cnpj\n12345678ABCD90\n");
     context.cnpjRepository.findByCnpjs.mockResolvedValue([company("12345678ABCD90")]);
-    context.repository.extendLease.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    context.repository.fencedUpsertLeads.mockRejectedValueOnce(new LeadLeaseLostError());
 
     await expect(context.service.runClaimedJob(rawJob("cnpj_csv_import", {})))
       .rejects.toMatchObject({ code: "LEAD_LEASE_LOST" });

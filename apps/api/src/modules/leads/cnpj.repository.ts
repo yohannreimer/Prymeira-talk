@@ -95,6 +95,17 @@ export interface CnpjSearchResult {
   total: number;
 }
 
+export interface CnpjScanCursor {
+  cnpjBasico: string;
+  cnpjOrdem: string;
+  cnpjDv: string;
+}
+
+export interface CnpjScanResult {
+  items: CnpjCompanyRecord[];
+  nextCursor: CnpjScanCursor | null;
+}
+
 type DatabaseRow = Record<string, unknown>;
 
 const SELECT_FIELDS = `
@@ -301,7 +312,50 @@ export class CnpjRepository {
     return rows.map(toRecord);
   }
 
-  private async search(filters: CnpjSearchFilters, initialWhere?: string): Promise<CnpjSearchResult> {
+  async countEstablishments(filters: CnpjSearchFilters = {}) {
+    const { values, where } = this.buildFilter(filters);
+    const rows = await this.query(`SELECT COUNT(*)::text AS total
+      ${SEARCH_KEY_FROM}
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}`, values);
+    return Number(rows[0]?.total ?? 0) || 0;
+  }
+
+  async scanEstablishments(input: {
+    filters?: CnpjSearchFilters;
+    cursor?: CnpjScanCursor | null;
+    limit?: number;
+  } = {}): Promise<CnpjScanResult> {
+    const { values, where, bind } = this.buildFilter(input.filters ?? {});
+    if (input.cursor) {
+      const base = bind(input.cursor.cnpjBasico);
+      const order = bind(input.cursor.cnpjOrdem);
+      const dv = bind(input.cursor.cnpjDv);
+      where.push(`(e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv) > (${base}, ${order}, ${dv})`);
+    }
+    const limit = boundedInteger(input.limit, 100, MAX_PAGE_SIZE);
+    values.push(limit);
+    const rows = await this.query(`WITH paged_keys AS (
+      SELECT e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv
+      ${SEARCH_KEY_FROM}
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY e.cnpj_basico ASC, e.cnpj_ordem ASC, e.cnpj_dv ASC
+      LIMIT $${values.length}
+    )
+    SELECT ${SELECT_FIELDS}
+    FROM paged_keys
+    ${SEARCH_DETAIL_JOINS}
+    ORDER BY e.cnpj_basico ASC, e.cnpj_ordem ASC, e.cnpj_dv ASC`, values);
+    const items = rows.map(toRecord);
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: last && items.length === limit
+        ? { cnpjBasico: last.cnpj.slice(0, 8), cnpjOrdem: last.cnpj.slice(8, 12), cnpjDv: last.cnpj.slice(12, 14) }
+        : null
+    };
+  }
+
+  private buildFilter(filters: CnpjSearchFilters, initialWhere?: string) {
     const values: unknown[] = [];
     const where = initialWhere ? [initialWhere] : [];
     const bind = (value: unknown) => {
@@ -316,7 +370,6 @@ export class CnpjRepository {
         where.push(`${columnExpression} LIKE ${valueExpression} ESCAPE '\\'`);
       }
     };
-
     if (filters.cnpj?.trim()) {
       const [cnpjBasico, cnpjOrdem, cnpjDv] = splitCnpj(normalizeCnpj(filters.cnpj));
       where.push(`e.cnpj_basico = ${bind(cnpjBasico)} AND e.cnpj_ordem = ${bind(cnpjOrdem)} AND e.cnpj_dv = ${bind(cnpjDv)}`);
@@ -326,9 +379,7 @@ export class CnpjRepository {
     like("m.descricao", filters.city, true);
     if (filters.state?.trim()) where.push(`e.uf = ${bind(filters.state.trim().toUpperCase())}`);
     if (filters.cnaePrimary?.trim()) where.push(`e.cnae_fiscal_principal = ${bind(filters.cnaePrimary.trim())}`);
-    if (filters.cnaeSecondary?.trim()) {
-      where.push(`EXISTS (SELECT 1 FROM unnest(string_to_array(COALESCE(e.cnae_fiscal_secundaria, ''), ',')) AS secondary_cnae(code) WHERE btrim(secondary_cnae.code) = ${bind(filters.cnaeSecondary.trim())})`);
-    }
+    if (filters.cnaeSecondary?.trim()) where.push(`EXISTS (SELECT 1 FROM unnest(string_to_array(COALESCE(e.cnae_fiscal_secundaria, ''), ',')) AS secondary_cnae(code) WHERE btrim(secondary_cnae.code) = ${bind(filters.cnaeSecondary.trim())})`);
     if (filters.porte?.trim()) where.push(`em.porte = ${bind(filters.porte.trim())}`);
     if (filters.openedFrom?.trim()) where.push(`e.data_inicio_atividade >= ${bind(filters.openedFrom.trim())}`);
     if (filters.openedTo?.trim()) where.push(`e.data_inicio_atividade <= ${bind(filters.openedTo.trim())}`);
@@ -339,17 +390,16 @@ export class CnpjRepository {
       where.push(`(LOWER(${PHONE_1}) LIKE LOWER(${placeholder}) ESCAPE '\\' OR LOWER(${PHONE_2}) LIKE LOWER(${placeholder}) ESCAPE '\\')`);
     }
     like("e.correio_eletronico", filters.email);
-    if (filters.hasPhone === true) {
-      where.push("(NULLIF(btrim(e.telefone_1), '') IS NOT NULL OR NULLIF(btrim(e.telefone_2), '') IS NOT NULL)");
-    } else if (filters.hasPhone === false) {
-      where.push("(NULLIF(btrim(e.telefone_1), '') IS NULL AND NULLIF(btrim(e.telefone_2), '') IS NULL)");
-    }
-    if (filters.hasEmail === true) {
-      where.push("NULLIF(btrim(e.correio_eletronico), '') IS NOT NULL");
-    } else if (filters.hasEmail === false) {
-      where.push("NULLIF(btrim(e.correio_eletronico), '') IS NULL");
-    }
+    if (filters.hasPhone === true) where.push("(NULLIF(btrim(e.telefone_1), '') IS NOT NULL OR NULLIF(btrim(e.telefone_2), '') IS NOT NULL)");
+    else if (filters.hasPhone === false) where.push("(NULLIF(btrim(e.telefone_1), '') IS NULL AND NULLIF(btrim(e.telefone_2), '') IS NULL)");
+    if (filters.hasEmail === true) where.push("NULLIF(btrim(e.correio_eletronico), '') IS NOT NULL");
+    else if (filters.hasEmail === false) where.push("NULLIF(btrim(e.correio_eletronico), '') IS NULL");
     if (filters.activeOnly) where.push("e.situacao_cadastral = '02'");
+    return { values, where, bind };
+  }
+
+  private async search(filters: CnpjSearchFilters, initialWhere?: string): Promise<CnpjSearchResult> {
+    const { values, where } = this.buildFilter(filters, initialWhere);
 
     const page = boundedInteger(filters.page, 1, MAX_PAGE);
     const pageSize = boundedInteger(filters.pageSize, 25, MAX_PAGE_SIZE);

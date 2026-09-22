@@ -547,9 +547,12 @@ model LeadJob {
   artifacts LeadArtifact[]
 
   @@unique([workspaceId, id])
+  @@unique([workspaceId, id, listId])
   @@unique([workspaceId, operation, idempotencyKey])
   @@index([workspaceId, status, leaseUntil])
   @@index([workspaceId, listId, createdAt])
+  @@index([status, createdAt, id])
+  @@index([status, leaseUntil])
   @@map("lead_jobs")
 }
 
@@ -567,7 +570,7 @@ model LeadArtifact {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   list LeadList @relation(fields: [workspaceId, listId], references: [workspaceId, id], onDelete: Cascade)
-  job  LeadJob  @relation(fields: [workspaceId, jobId], references: [workspaceId, id], onDelete: Cascade)
+  job  LeadJob  @relation(fields: [workspaceId, jobId, listId], references: [workspaceId, id, listId], onDelete: Cascade)
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, jobId, kind])

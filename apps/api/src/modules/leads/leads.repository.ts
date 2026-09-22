@@ -24,12 +24,22 @@ export type LeadsErrorCode =
   | "LEAD_SOURCE_UNAVAILABLE"
   | "LEAD_INVALID_TRANSITION"
   | "LEAD_LIMIT_EXCEEDED"
-  | "LEAD_INVALID_INPUT";
+  | "LEAD_INVALID_INPUT"
+  | "LEAD_INVALID_ENCODING"
+  | "LEAD_IDEMPOTENCY_CONFLICT"
+  | "LEAD_LEASE_LOST";
 
 export class LeadsDomainError extends Error {
   constructor(public readonly code: LeadsErrorCode, message: string) {
     super(message);
     this.name = "LeadsDomainError";
+  }
+}
+
+export class LeadLeaseLostError extends LeadsDomainError {
+  constructor() {
+    super("LEAD_LEASE_LOST", "Lead job lease ownership was lost.");
+    this.name = "LeadLeaseLostError";
   }
 }
 
@@ -96,6 +106,27 @@ export interface CreateLeadJobInput {
 
 export interface ClaimedLeadJob extends LeadJob {
   leaseToken: string;
+}
+
+export type LeadJobFence = Pick<ClaimedLeadJob, "workspaceId" | "id" | "listId" | "leaseToken">;
+
+export interface LeadListProgressInput {
+  workspaceId: string;
+  listId: string;
+  totalCount: number;
+  processedCount: number;
+  failedCount: number;
+  startedAt?: Date;
+  completedAt?: Date | null;
+}
+
+export interface LeadJobCreationResult {
+  list: LeadListDto;
+  job: LeadJobDto;
+  artifact?: LeadArtifactMetadata;
+  persistedInput: Prisma.JsonValue;
+  persistedOutput: Prisma.JsonValue;
+  replayed: boolean;
 }
 
 function toIso(value: DateLike) {
@@ -193,6 +224,33 @@ function isUniqueViolation(error: unknown) {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
+function requestFingerprint(value: Prisma.JsonValue) {
+  if (!value || Array.isArray(value) || typeof value !== "object") return null;
+  const fingerprint = (value as Record<string, Prisma.JsonValue>).requestFingerprint;
+  return typeof fingerprint === "string" ? fingerprint : null;
+}
+
+function assertSameFingerprint(existing: LeadJob, requestedInput: Prisma.InputJsonValue) {
+  const existingFingerprint = requestFingerprint(existing.input);
+  const requestedFingerprint = requestFingerprint(requestedInput as Prisma.JsonValue);
+  if (!existingFingerprint || !requestedFingerprint || existingFingerprint !== requestedFingerprint) {
+    throw new LeadsDomainError(
+      "LEAD_IDEMPOTENCY_CONFLICT",
+      "Idempotency key was already used for a different lead request."
+    );
+  }
+}
+
+function listProgressData(input: LeadListProgressInput): Prisma.LeadListUpdateManyMutationInput {
+  return {
+    totalCount: input.totalCount,
+    processedCount: input.processedCount,
+    failedCount: input.failedCount,
+    ...(input.startedAt ? { startedAt: input.startedAt } : {}),
+    ...(input.completedAt !== undefined ? { completedAt: input.completedAt } : {})
+  };
+}
+
 function prismaBytes(content: Buffer) {
   return Uint8Array.from(content);
 }
@@ -229,6 +287,26 @@ function leadData(input: LeadUpsertInput): Prisma.LeadUncheckedCreateInput {
 
 export class LeadsRepository {
   constructor(private readonly prisma: PrismaClient) {}
+
+  private async fence(
+    tx: Prisma.TransactionClient,
+    job: LeadJobFence,
+    now: Date,
+    leaseMs: number
+  ) {
+    const fenced = await tx.leadJob.updateMany({
+      where: {
+        workspaceId: job.workspaceId,
+        id: job.id,
+        listId: job.listId,
+        status: "running",
+        leaseToken: job.leaseToken,
+        leaseUntil: { gt: now }
+      },
+      data: { leaseUntil: new Date(now.getTime() + leaseMs) }
+    });
+    if (fenced.count !== 1) throw new LeadLeaseLostError();
+  }
 
   async listLists(workspaceId: string, source?: LeadSource) {
     const rows = await this.prisma.leadList.findMany({
@@ -279,7 +357,25 @@ export class LeadsRepository {
     return toLeadJobDto(row);
   }
 
-  async createListAndJob(input: CreateLeadJobInput): Promise<{ list: LeadListDto; job: LeadJobDto; artifact?: LeadArtifactMetadata }> {
+  async findJobByIdempotency(workspaceId: string, operation: string, idempotencyKey: string): Promise<LeadJobCreationResult | null> {
+    const existing = await this.prisma.leadJob.findUnique({
+      where: { workspaceId_operation_idempotencyKey: { workspaceId, operation, idempotencyKey } },
+      include: { list: true, artifacts: true }
+    });
+    if (!existing) return null;
+    return {
+      list: toLeadListDto(existing.list),
+      job: toLeadJobDto(existing),
+      artifact: existing.artifacts.find((artifact) => artifact.kind === "csv_input")
+        ? toArtifactMetadata(existing.artifacts.find((artifact) => artifact.kind === "csv_input")!)
+        : undefined,
+      persistedInput: existing.input,
+      persistedOutput: existing.output,
+      replayed: true
+    };
+  }
+
+  async createListAndJob(input: CreateLeadJobInput): Promise<LeadJobCreationResult> {
     const create = () => this.prisma.$transaction(async (tx) => {
       const existing = await tx.leadJob.findUnique({
         where: {
@@ -292,13 +388,17 @@ export class LeadsRepository {
         include: { list: true, artifacts: true }
       });
       if (existing) {
+        assertSameFingerprint(existing, input.input);
         const matchingArtifact = input.artifact
           ? existing.artifacts.find((artifact) => artifact.kind === input.artifact?.kind)
           : undefined;
         return {
           list: toLeadListDto(existing.list),
           job: toLeadJobDto(existing),
-          artifact: matchingArtifact ? toArtifactMetadata(matchingArtifact) : undefined
+          artifact: matchingArtifact ? toArtifactMetadata(matchingArtifact) : undefined,
+          persistedInput: existing.input,
+          persistedOutput: existing.output,
+          replayed: true
         };
       }
       const list = await tx.leadList.create({
@@ -336,7 +436,10 @@ export class LeadsRepository {
       return {
         list: toLeadListDto(list),
         job: toLeadJobDto(job),
-        artifact: artifact ? toArtifactMetadata(artifact) : undefined
+        artifact: artifact ? toArtifactMetadata(artifact) : undefined,
+        persistedInput: job.input,
+        persistedOutput: job.output,
+        replayed: false
       };
     });
 
@@ -355,13 +458,17 @@ export class LeadsRepository {
         include: { list: true, artifacts: true }
       });
       if (!existing) throw error;
+      assertSameFingerprint(existing, input.input);
       const matchingArtifact = input.artifact
         ? existing.artifacts.find((artifact) => artifact.kind === input.artifact?.kind)
         : undefined;
       return {
         list: toLeadListDto(existing.list),
         job: toLeadJobDto(existing),
-        artifact: matchingArtifact ? toArtifactMetadata(matchingArtifact) : undefined
+        artifact: matchingArtifact ? toArtifactMetadata(matchingArtifact) : undefined,
+        persistedInput: existing.input,
+        persistedOutput: existing.output,
+        replayed: true
       };
     }
   }
@@ -370,7 +477,7 @@ export class LeadsRepository {
     return this.prisma.leadJob.findMany({
       where: { status: "queued", leaseToken: null, attempts: { lt: maxAttempts } },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      take: limit
+      take: Math.min(Math.max(limit, 1), 50)
     });
   }
 
@@ -401,38 +508,218 @@ export class LeadsRepository {
     return result.count === 1;
   }
 
-  async recoverExpiredJobs(now: Date, maxAttempts: number) {
+  async recoverExpiredJobs(now: Date, maxAttempts: number, limit = 50) {
     const expired = await this.prisma.leadJob.findMany({
       where: { status: "running", leaseUntil: { lt: now } },
-      orderBy: [{ leaseUntil: "asc" }, { id: "asc" }]
+      orderBy: [{ leaseUntil: "asc" }, { id: "asc" }],
+      take: Math.min(Math.max(limit, 1), 50)
     });
-    const recovered: LeadJob[] = [];
+    const recovered: Array<{ job: LeadJob; list?: LeadListDto }> = [];
     for (const job of expired) {
       const exhausted = job.attempts >= maxAttempts;
-      const result = await this.prisma.leadJob.updateMany({
-        where: {
-          workspaceId: job.workspaceId,
-          id: job.id,
-          status: "running",
-          leaseToken: job.leaseToken,
-          leaseUntil: job.leaseUntil
-        },
-        data: exhausted
-          ? {
-              status: "failed",
-              leaseToken: null,
-              leaseUntil: null,
-              finishedAt: now,
-              errorMessage: "LEAD_JOB_ATTEMPTS_EXHAUSTED"
-            }
-          : { status: "queued", leaseToken: null, leaseUntil: null }
+      const transition = await this.prisma.$transaction(async (tx) => {
+        const result = await tx.leadJob.updateMany({
+          where: {
+            workspaceId: job.workspaceId,
+            id: job.id,
+            listId: job.listId,
+            status: "running",
+            leaseToken: job.leaseToken,
+            leaseUntil: job.leaseUntil
+          },
+          data: exhausted
+            ? {
+                status: "failed",
+                leaseToken: null,
+                leaseUntil: null,
+                finishedAt: now,
+                errorMessage: "LEAD_JOB_ATTEMPTS_EXHAUSTED"
+              }
+            : { status: "queued", leaseToken: null, leaseUntil: null }
+        });
+        if (result.count !== 1) return null;
+        let list: LeadList | null = null;
+        if (exhausted) {
+          const currentList = await tx.leadList.findFirst({
+            where: { workspaceId: job.workspaceId, id: job.listId }
+          });
+          if (!currentList) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
+          const failedCount = Math.max(
+            currentList.failedCount,
+            currentList.totalCount - currentList.processedCount,
+            1
+          );
+          const totalCount = Math.max(currentList.totalCount, currentList.processedCount + failedCount);
+          await tx.leadList.updateMany({
+            where: { workspaceId: job.workspaceId, id: job.listId },
+            data: { totalCount, failedCount, completedAt: now }
+          });
+          await tx.leadJob.updateMany({
+            where: { workspaceId: job.workspaceId, id: job.id, listId: job.listId, status: "failed" },
+            data: { output: { totalCount, processedCount: currentList.processedCount, failedCount } }
+          });
+          list = await tx.leadList.findFirst({ where: { workspaceId: job.workspaceId, id: job.listId } });
+        }
+        const updatedJob = await tx.leadJob.findFirst({ where: { workspaceId: job.workspaceId, id: job.id } });
+        if (!updatedJob) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead job not found.");
+        return { job: updatedJob, list: list ? toLeadListDto(list) : undefined };
       });
-      if (result.count === 1) {
-        const updated = await this.prisma.leadJob.findFirst({ where: { workspaceId: job.workspaceId, id: job.id } });
-        if (updated) recovered.push(updated);
-      }
+      if (transition) recovered.push(transition);
     }
     return recovered;
+  }
+
+  async fencedUpsertLeads(
+    job: LeadJobFence,
+    inputs: LeadUpsertInput[],
+    now: Date,
+    leaseMs: number
+  ) {
+    if (inputs.some((entry) => entry.workspaceId !== job.workspaceId || entry.listId !== job.listId)) {
+      throw new LeadsDomainError("LEAD_INVALID_INPUT", "Lead batch must belong to the claimed job list.");
+    }
+    return this.prisma.$transaction(async (tx) => {
+      await this.fence(tx, job, now, leaseMs);
+      const results = [];
+      for (const input of inputs) {
+        const data = leadData(input);
+        results.push(await tx.lead.upsert({
+          where: {
+            workspaceId_listId_sourceDedupeKey: {
+              workspaceId: input.workspaceId,
+              listId: input.listId,
+              sourceDedupeKey: input.sourceDedupeKey
+            }
+          },
+          create: data,
+          update: {
+            sourceExternalId: data.sourceExternalId,
+            companyName: data.companyName,
+            tradeName: data.tradeName,
+            cnpj: data.cnpj,
+            cnaePrimary: data.cnaePrimary,
+            cnaeSecondary: data.cnaeSecondary,
+            category: data.category,
+            address: data.address,
+            city: data.city,
+            state: data.state,
+            postalCode: data.postalCode,
+            phones: data.phones,
+            normalizedPhone: data.normalizedPhone,
+            email: data.email,
+            website: data.website,
+            rating: data.rating,
+            reviewCount: data.reviewCount,
+            latitude: data.latitude,
+            longitude: data.longitude,
+            sourceUrl: data.sourceUrl,
+            sourceSnapshot: data.sourceSnapshot
+          }
+        }));
+      }
+      return results;
+    });
+  }
+
+  async fencedUpdateListProgress(
+    job: LeadJobFence,
+    input: LeadListProgressInput,
+    now: Date,
+    leaseMs: number
+  ) {
+    if (input.workspaceId !== job.workspaceId || input.listId !== job.listId) {
+      throw new LeadsDomainError("LEAD_INVALID_INPUT", "Progress must belong to the claimed job list.");
+    }
+    return this.prisma.$transaction(async (tx) => {
+      await this.fence(tx, job, now, leaseMs);
+      const updated = await tx.leadList.updateMany({
+        where: { workspaceId: job.workspaceId, id: job.listId },
+        data: listProgressData(input)
+      });
+      if (updated.count !== 1) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
+      const list = await tx.leadList.findFirst({ where: { workspaceId: job.workspaceId, id: job.listId } });
+      if (!list) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
+      return toLeadListDto(list);
+    });
+  }
+
+  async fencedUpsertArtifact(
+    job: LeadJobFence,
+    input: {
+      workspaceId: string;
+      listId: string;
+      jobId: string;
+      kind: string;
+      fileName: string;
+      mimeType: string;
+      content: Buffer;
+    },
+    now: Date,
+    leaseMs: number
+  ) {
+    if (input.workspaceId !== job.workspaceId || input.listId !== job.listId || input.jobId !== job.id) {
+      throw new LeadsDomainError("LEAD_INVALID_INPUT", "Artifact must belong to the claimed job.");
+    }
+    return this.prisma.$transaction(async (tx) => {
+      await this.fence(tx, job, now, leaseMs);
+      const record = await tx.leadArtifact.upsert({
+        where: { workspaceId_jobId_kind: { workspaceId: job.workspaceId, jobId: job.id, kind: input.kind } },
+        create: { ...input, content: prismaBytes(input.content), sizeBytes: input.content.byteLength },
+        update: {
+          listId: input.listId,
+          fileName: input.fileName,
+          mimeType: input.mimeType,
+          content: prismaBytes(input.content),
+          sizeBytes: input.content.byteLength
+        }
+      });
+      return toArtifactMetadata(record);
+    });
+  }
+
+  async fencedFinishJob(input: {
+    job: LeadJobFence;
+    now: Date;
+    status: Extract<LeadJobStatus, "completed" | "partial" | "failed">;
+    output: Prisma.InputJsonValue;
+    errorMessage: string | null;
+    progress: LeadListProgressInput;
+  }) {
+    if (input.progress.workspaceId !== input.job.workspaceId || input.progress.listId !== input.job.listId) {
+      throw new LeadsDomainError("LEAD_INVALID_INPUT", "Terminal progress must belong to the claimed job.");
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const finished = await tx.leadJob.updateMany({
+        where: {
+          workspaceId: input.job.workspaceId,
+          id: input.job.id,
+          listId: input.job.listId,
+          status: "running",
+          leaseToken: input.job.leaseToken,
+          leaseUntil: { gt: input.now }
+        },
+        data: {
+          status: input.status,
+          output: input.output,
+          errorMessage: input.errorMessage,
+          leaseToken: null,
+          leaseUntil: null,
+          finishedAt: input.now
+        }
+      });
+      if (finished.count !== 1) throw new LeadLeaseLostError();
+      const listUpdated = await tx.leadList.updateMany({
+        where: { workspaceId: input.job.workspaceId, id: input.job.listId },
+        data: listProgressData(input.progress)
+      });
+      if (listUpdated.count !== 1) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead list not found.");
+      const [job, list] = await Promise.all([
+        tx.leadJob.findFirst({ where: { workspaceId: input.job.workspaceId, id: input.job.id } }),
+        tx.leadList.findFirst({ where: { workspaceId: input.job.workspaceId, id: input.job.listId } })
+      ]);
+      if (!job || !list) throw new LeadsDomainError("LEAD_NOT_FOUND", "Lead terminal state not found.");
+      return { job: toLeadJobDto(job), list: toLeadListDto(list) };
+    });
   }
 
   async upsertLeads(inputs: LeadUpsertInput[]) {
@@ -593,15 +880,15 @@ export type LeadsRepositoryLike = Pick<
   | "deleteList"
   | "listLeads"
   | "getJob"
+  | "findJobByIdempotency"
   | "createListAndJob"
   | "findQueuedJobs"
   | "claimJob"
-  | "extendLease"
   | "recoverExpiredJobs"
-  | "upsertLeads"
-  | "updateListProgress"
-  | "finishJob"
-  | "upsertArtifact"
+  | "fencedUpsertLeads"
+  | "fencedUpdateListProgress"
+  | "fencedUpsertArtifact"
+  | "fencedFinishJob"
   | "getArtifact"
   | "getJobArtifact"
 >;
