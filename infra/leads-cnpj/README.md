@@ -69,7 +69,7 @@ Local development:
 CNPJ_DATABASE_URL=postgresql://prymeira_cnpj_reader:local_reader_password@127.0.0.1:5436/cnpj?options=-c%20search_path%3Dcnpj&application_name=prymeira-talk
 GOOGLE_MAPS_SCRAPER_URL=http://127.0.0.1:8080
 LEAD_GOOGLE_MAX_CONCURRENT_JOBS=1
-LEAD_GOOGLE_DEFAULT_DEPTH=5
+LEAD_GOOGLE_DEFAULT_DEPTH=12
 LEAD_WHATSAPP_BATCH_SIZE=25
 LEAD_JOB_POLL_MS=5000
 ```
@@ -80,7 +80,7 @@ Production, with the API attached to the private CNPJ Docker network:
 CNPJ_DATABASE_URL=postgresql://prymeira_cnpj_reader:production_reader_password@cnpj-postgres:5432/cnpj?sslmode=disable&options=-c%20search_path%3Dcnpj&application_name=prymeira-talk
 GOOGLE_MAPS_SCRAPER_URL=http://google-maps-scraper:8080
 LEAD_GOOGLE_MAX_CONCURRENT_JOBS=1
-LEAD_GOOGLE_DEFAULT_DEPTH=5
+LEAD_GOOGLE_DEFAULT_DEPTH=12
 LEAD_WHATSAPP_BATCH_SIZE=25
 LEAD_JOB_POLL_MS=5000
 ```

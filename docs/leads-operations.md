@@ -39,7 +39,7 @@ Exemplo local (substitua senha por segredo fora do Git):
 CNPJ_DATABASE_URL=postgresql://prymeira_cnpj_reader:<secret>@127.0.0.1:5436/cnpj?options=-c%20search_path%3Dcnpj
 GOOGLE_MAPS_SCRAPER_URL=http://127.0.0.1:8080
 LEAD_GOOGLE_MAX_CONCURRENT_JOBS=1
-LEAD_GOOGLE_DEFAULT_DEPTH=5
+LEAD_GOOGLE_DEFAULT_DEPTH=12
 LEAD_WHATSAPP_BATCH_SIZE=25
 LEAD_JOB_POLL_MS=5000
 ```
@@ -51,7 +51,7 @@ retorna `LEAD_EVOLUTION_NOT_CONNECTED` sem afetar buscas ou importações.
 
 ## Fluxo e limites
 
-- Google Maps: uma busca conservadora por vez, profundidade máxima 5, com
+- Google Maps: uma busca por vez, profundidade padrão 12 (máximo configurável 20), com
   estados `queued`, `running`, `completed`, `partial` ou `failed`. Jobs Google
   falhos podem ser tentados novamente quando marcados como recuperáveis.
 - Receita: pesquisa por cidade/UF, atividade/CNAE e outros filtros, consulta

@@ -54,7 +54,7 @@ describe("readEnv", () => {
 
     expect(env).toMatchObject({
       LEAD_GOOGLE_MAX_CONCURRENT_JOBS: 1,
-      LEAD_GOOGLE_DEFAULT_DEPTH: 5,
+      LEAD_GOOGLE_DEFAULT_DEPTH: 12,
       LEAD_WHATSAPP_BATCH_SIZE: 25
     });
     expect(env.CNPJ_DATABASE_URL).toBeUndefined();
@@ -110,7 +110,7 @@ describe("readEnv", () => {
     expect(() =>
       readEnv({
         ...baseProductionEnv,
-        LEAD_GOOGLE_DEFAULT_DEPTH: "6"
+        LEAD_GOOGLE_DEFAULT_DEPTH: "21"
       })
     ).toThrow(/LEAD_GOOGLE_DEFAULT_DEPTH/);
 
