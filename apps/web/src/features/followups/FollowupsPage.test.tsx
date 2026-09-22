@@ -213,11 +213,62 @@ describe("FollowupsPage", () => {
     expect(container.textContent).not.toContain("Ana Souza");
   });
 
-  it("cancels a review with optimistic concurrency", async () => {
+  it("invalidates an open editor when realtime brings a newer version without fetching", async () => {
+    await renderPage();
+    await act(async () => buttonByText(container, "Editar e enviar")?.click());
+    expect(container.querySelector("textarea")).not.toBeNull();
+    const callsBeforeEvent = mocks.list.mock.calls.length;
+
+    await act(async () => {
+      mocks.realtimeHandler?.({
+        type: "conversation_followup.updated",
+        workspaceId: review.workspaceId,
+        payload: {
+          ...review,
+          draftBody: "Rascunho atualizado pelo servidor.",
+          updatedAt: "2026-09-22T14:10:00.000Z"
+        }
+      });
+    });
+    await settle();
+
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("O contexto mudou");
+    expect(container.textContent).toContain("Rascunho atualizado pelo servidor.");
+    expect(mocks.list).toHaveBeenCalledTimes(callsBeforeEvent);
+  });
+
+  it("disables filter tabs while an action is pending", async () => {
+    let resolveSend!: (value: ConversationFollowupDto) => void;
+    mocks.send.mockReturnValue(new Promise((resolve) => { resolveSend = resolve; }));
+    await renderPage();
+
+    await act(async () => buttonByText(container, "Enviar")?.click());
+    const filterButtons = Array.from(container.querySelectorAll<HTMLButtonElement>(".followups-filters button"));
+    expect(filterButtons).toHaveLength(4);
+    expect(filterButtons.every((button) => button.disabled)).toBe(true);
+
+    await act(async () => resolveSend({
+      ...review,
+      status: "sent",
+      finalBody: review.draftBody ?? "",
+      sentAt: "2026-09-22T15:05:00.000Z",
+      sentByUserId: "user-1",
+      reasonCode: null,
+      updatedAt: "2026-09-22T15:05:00.000Z"
+    }));
+    await settle();
+  });
+
+  it("requires explicit confirmation before cancelling", async () => {
     mocks.cancel.mockResolvedValue(cancelled);
     await renderPage();
 
     await act(async () => buttonByText(container, "Cancelar")?.click());
+    expect(mocks.cancel).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Cancelar este acompanhamento?");
+
+    await act(async () => buttonByText(container, "Confirmar cancelamento")?.click());
     await settle();
 
     expect(mocks.cancel).toHaveBeenCalledWith(mocks.getToken, review.id, {
@@ -225,6 +276,40 @@ describe("FollowupsPage", () => {
       expectedUpdatedAt: review.updatedAt
     });
     expect(container.textContent).toContain("Acompanhamento cancelado.");
+    expect(container.textContent).not.toContain("Cancelar este acompanhamento?");
+  });
+
+  it("requires a distinct confirmation before marking no follow-up", async () => {
+    mocks.noFollowup.mockResolvedValue({ ...cancelled, reason: "no_followup" });
+    await renderPage();
+
+    await act(async () => buttonByText(container, "Não acompanhar")?.click());
+    expect(mocks.noFollowup).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Não acompanhar mais esta conversa?");
+
+    await act(async () => buttonByText(container, "Confirmar não acompanhar")?.click());
+    await settle();
+
+    expect(mocks.noFollowup).toHaveBeenCalledWith(mocks.getToken, review.id, review.updatedAt);
+    expect(container.textContent).toContain("Conversa marcada para não acompanhar.");
+  });
+
+  it("closes an open confirmation when realtime updates the same follow-up", async () => {
+    await renderPage();
+    await act(async () => buttonByText(container, "Cancelar")?.click());
+    expect(container.textContent).toContain("Cancelar este acompanhamento?");
+
+    await act(async () => {
+      mocks.realtimeHandler?.({
+        type: "conversation_followup.updated",
+        workspaceId: review.workspaceId,
+        payload: { ...review, updatedAt: "2026-09-22T14:10:00.000Z" }
+      });
+    });
+    await settle();
+
+    expect(container.textContent).not.toContain("Cancelar este acompanhamento?");
+    expect(mocks.cancel).not.toHaveBeenCalled();
   });
 
   it("removes a stale card and explains that the context changed without retrying", async () => {
@@ -240,7 +325,7 @@ describe("FollowupsPage", () => {
     expect(container.textContent).not.toContain("Ana Souza");
   });
 
-  it("reloads the active queue after relevant realtime activity", async () => {
+  it("reloads only for realtime activity belonging to a visible conversation", async () => {
     await renderPage();
     const callsBeforeEvent = mocks.list.mock.calls.length;
     expect(mocks.realtimeHandler).not.toBeNull();
@@ -249,9 +334,20 @@ describe("FollowupsPage", () => {
       mocks.realtimeHandler?.({
         type: "conversation.updated",
         workspaceId: conversation.workspaceId,
+        payload: { ...conversation, id: "irrelevant-conversation" }
+      });
+      await new Promise((resolve) => setTimeout(resolve, 320));
+    });
+    await settle();
+    expect(mocks.list).toHaveBeenCalledTimes(callsBeforeEvent);
+
+    await act(async () => {
+      mocks.realtimeHandler?.({
+        type: "conversation.updated",
+        workspaceId: conversation.workspaceId,
         payload: conversation
       });
-      await new Promise((resolve) => setTimeout(resolve, 120));
+      await new Promise((resolve) => setTimeout(resolve, 320));
     });
     await settle();
 

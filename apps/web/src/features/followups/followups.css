@@ -489,6 +489,36 @@
   gap: 7px;
 }
 
+.followup-confirmation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 15px;
+  border: 1px solid rgba(154, 62, 53, 0.22);
+  border-radius: 10px;
+  padding: 12px 13px;
+  color: #713b35;
+  background: #fbf1ee;
+}
+
+.followup-confirmation strong {
+  font-size: 12px;
+}
+
+.followup-confirmation p {
+  margin: 3px 0 0;
+  color: #765c57;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.followup-confirmation-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
 .followup-actions {
   display: flex;
   align-items: center;
@@ -534,6 +564,18 @@
   border-color: var(--followups-pine-deep);
   color: #fff;
   background: var(--followups-pine-deep);
+}
+
+.followups-button-danger {
+  border-color: #9a3e35;
+  color: #fff;
+  background: #9a3e35;
+}
+
+.followups-button-danger:hover:not(:disabled) {
+  border-color: #7f3029;
+  color: #fff;
+  background: #7f3029;
 }
 
 .followups-button-quiet {
@@ -664,6 +706,15 @@
   .followup-actions {
     flex-wrap: wrap;
     padding: 10px 15px 10px 18px;
+  }
+
+  .followup-confirmation {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .followup-confirmation-actions {
+    justify-content: flex-end;
   }
 
   .followups-button-quiet {

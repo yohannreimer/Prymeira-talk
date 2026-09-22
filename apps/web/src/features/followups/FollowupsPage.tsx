@@ -69,6 +69,17 @@ const emptyCopy: Record<FollowupListStatus, { title: string; body: string }> = {
   }
 };
 
+type FollowupEditingState = {
+  id: string;
+  body: string;
+  expectedUpdatedAt: string;
+};
+
+type FollowupConfirmation = {
+  id: string;
+  action: "cancel" | "no-followup";
+};
+
 function sortFollowups(items: ConversationFollowupDto[], filter: FollowupListStatus) {
   return [...items].sort((left, right) => {
     const leftTime = new Date(followupMoment(left)).getTime();
@@ -87,11 +98,15 @@ export function FollowupsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [cardErrors, setCardErrors] = useState<Record<string, string>>({});
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editedBody, setEditedBody] = useState("");
+  const [editing, setEditing] = useState<FollowupEditingState | null>(null);
+  const [confirmation, setConfirmation] = useState<FollowupConfirmation | null>(null);
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
   const loadSequence = useRef(0);
   const realtimeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const filterRef = useRef(filter);
+  const followupsRef = useRef<ConversationFollowupDto[]>([]);
+  const editingRef = useRef<FollowupEditingState | null>(null);
+  const confirmationRef = useRef<FollowupConfirmation | null>(null);
 
   const load = useCallback(async (showLoading = true) => {
     const sequence = ++loadSequence.current;
@@ -102,7 +117,9 @@ export function FollowupsPage() {
       const nextFollowups = await apiListFollowups(getToken, filter);
       if (sequence !== loadSequence.current) return;
 
-      setFollowups(sortFollowups(nextFollowups, filter));
+      const sorted = sortFollowups(nextFollowups, filter);
+      followupsRef.current = sorted;
+      setFollowups(sorted);
     } catch (error) {
       if (sequence !== loadSequence.current) return;
       setLoadError(error instanceof Error ? error.message : "Não foi possível carregar os follow-ups.");
@@ -132,7 +149,7 @@ export function FollowupsPage() {
     realtimeTimer.current = setTimeout(() => {
       realtimeTimer.current = null;
       void load(false);
-    }, 100);
+    }, 300);
   }, [load]);
 
   useEffect(() => () => {
@@ -141,28 +158,53 @@ export function FollowupsPage() {
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "conversation_followup.updated") {
+      const activeFilter = filterRef.current;
       setFollowups((current) => {
         const withoutCurrent = current.filter((item) => item.id !== event.payload.id);
-        if (!matchesFollowupFilter(event.payload, filter)) return withoutCurrent;
-        return sortFollowups([...withoutCurrent, event.payload], filter);
+        const next = matchesFollowupFilter(event.payload, activeFilter)
+          ? sortFollowups([...withoutCurrent, event.payload], activeFilter)
+          : withoutCurrent;
+        followupsRef.current = next;
+        return next;
       });
-      scheduleRealtimeReload();
+
+      if (
+        editingRef.current?.id === event.payload.id &&
+        editingRef.current.expectedUpdatedAt !== event.payload.updatedAt
+      ) {
+        editingRef.current = null;
+        setEditing(null);
+        setNotice("O contexto mudou. O rascunho aberto foi descartado e o card foi atualizado.");
+      }
+      if (confirmationRef.current?.id === event.payload.id) {
+        confirmationRef.current = null;
+        setConfirmation(null);
+      }
       return;
     }
     if (event.type === "message.created" || event.type === "conversation.updated") {
-      scheduleRealtimeReload();
+      const conversationId = event.type === "message.created"
+        ? event.payload.conversationId
+        : event.payload.id;
+      if (followupsRef.current.some((followup) => followup.conversationId === conversationId)) {
+        scheduleRealtimeReload();
+      }
     }
-  }, [filter, scheduleRealtimeReload]);
+  }, [scheduleRealtimeReload]);
 
   useRealtimeEvents({ token: realtimeToken, onEvent: handleRealtimeEvent });
 
   const counts = useMemo(() => ({ current: followups.length }), [followups.length]);
 
   function replaceOrRemove(updated: ConversationFollowupDto) {
+    const activeFilter = filterRef.current;
     setFollowups((current) => {
       const withoutUpdated = current.filter((item) => item.id !== updated.id);
-      if (!matchesFollowupFilter(updated, filter)) return withoutUpdated;
-      return sortFollowups([...withoutUpdated, updated], filter);
+      const next = matchesFollowupFilter(updated, activeFilter)
+        ? sortFollowups([...withoutUpdated, updated], activeFilter)
+        : withoutUpdated;
+      followupsRef.current = next;
+      return next;
     });
   }
 
@@ -172,6 +214,10 @@ export function FollowupsPage() {
     successMessage: string
   ) {
     if (busyId) return;
+    editingRef.current = null;
+    confirmationRef.current = null;
+    setEditing(null);
+    setConfirmation(null);
     setBusyId(followup.id);
     setNotice(null);
     setCardErrors((current) => ({ ...current, [followup.id]: "" }));
@@ -179,12 +225,10 @@ export function FollowupsPage() {
     try {
       const updated = await action();
       replaceOrRemove(updated);
-      setEditingId(null);
       setNotice(successMessage);
     } catch (error) {
       if (error instanceof FollowupStaleError) {
         replaceOrRemove(error.followup);
-        setEditingId(null);
         setNotice("O contexto mudou. A fila foi atualizada e nenhuma mensagem foi reenviada.");
       } else {
         setCardErrors((current) => ({
@@ -197,7 +241,11 @@ export function FollowupsPage() {
     }
   }
 
-  function sendBody(followup: ConversationFollowupDto, body: string) {
+  function sendBody(
+    followup: ConversationFollowupDto,
+    body: string,
+    expectedUpdatedAt = followup.updatedAt
+  ) {
     const trimmed = body.trim();
     if (trimmed.length < 1 || trimmed.length > 4000) {
       setCardErrors((current) => ({
@@ -210,7 +258,7 @@ export function FollowupsPage() {
       followup,
       () => apiSendFollowup(getToken, followup.id, {
         body: trimmed,
-        expectedUpdatedAt: followup.updatedAt
+        expectedUpdatedAt
       }),
       "Follow-up enviado."
     );
@@ -237,13 +285,20 @@ export function FollowupsPage() {
           {filters.map(({ key, label, shortLabel, Icon }) => (
             <button
               className={filter === key ? "is-active" : ""}
+              disabled={busyId !== null}
               key={key}
               onClick={() => {
+                if (busyId) return;
+                filterRef.current = key;
                 setFilter(key);
                 setNotice(null);
-                setEditingId(null);
+                editingRef.current = null;
+                confirmationRef.current = null;
+                setEditing(null);
+                setConfirmation(null);
               }}
               type="button"
+              aria-disabled={busyId !== null}
               aria-pressed={filter === key}
             >
               <Icon size={16} aria-hidden="true" />
@@ -286,7 +341,8 @@ export function FollowupsPage() {
               <FollowupCard
                 busy={busyId === followup.id}
                 cardError={cardErrors[followup.id]}
-                editedBody={editingId === followup.id ? editedBody : null}
+                confirmation={confirmation?.id === followup.id ? confirmation.action : null}
+                editing={editing?.id === followup.id ? editing : null}
                 followup={followup}
                 key={followup.id}
                 onCancel={() => void runAction(
@@ -297,12 +353,42 @@ export function FollowupsPage() {
                   }),
                   "Acompanhamento cancelado."
                 )}
-                onCloseEditor={() => setEditingId(null)}
-                onEdit={() => {
-                  setEditedBody(followup.draftBody ?? "");
-                  setEditingId(followup.id);
+                onAskCancel={() => {
+                  const next = { id: followup.id, action: "cancel" } as const;
+                  confirmationRef.current = next;
+                  setConfirmation(next);
                 }}
-                onEditedBodyChange={setEditedBody}
+                onAskNoFollowup={() => {
+                  const next = { id: followup.id, action: "no-followup" } as const;
+                  confirmationRef.current = next;
+                  setConfirmation(next);
+                }}
+                onCloseConfirmation={() => {
+                  confirmationRef.current = null;
+                  setConfirmation(null);
+                }}
+                onCloseEditor={() => {
+                  editingRef.current = null;
+                  setEditing(null);
+                }}
+                onEdit={() => {
+                  const next = {
+                    id: followup.id,
+                    body: followup.draftBody ?? "",
+                    expectedUpdatedAt: followup.updatedAt
+                  };
+                  confirmationRef.current = null;
+                  editingRef.current = next;
+                  setConfirmation(null);
+                  setEditing(next);
+                }}
+                onEditedBodyChange={(body) => {
+                  const current = editingRef.current;
+                  if (!current || current.id !== followup.id) return;
+                  const next = { ...current, body };
+                  editingRef.current = next;
+                  setEditing(next);
+                }}
                 onNoFollowup={() => void runAction(
                   followup,
                   () => apiMarkFollowupNoFollowup(getToken, followup.id, followup.updatedAt),
@@ -313,7 +399,7 @@ export function FollowupsPage() {
                   () => apiPostponeFollowup(getToken, followup.id, followup.updatedAt),
                   "Follow-up adiado para o próximo horário útil."
                 )}
-                onSend={(body) => sendBody(followup, body)}
+                onSend={(body, expectedUpdatedAt) => sendBody(followup, body, expectedUpdatedAt)}
               />
             ))}
           </div>
@@ -335,26 +421,34 @@ function FollowupsLoading() {
 function FollowupCard(props: {
   followup: ConversationFollowupDto;
   busy: boolean;
-  editedBody: string | null;
+  confirmation: FollowupConfirmation["action"] | null;
+  editing: FollowupEditingState | null;
   cardError?: string;
-  onSend: (body: string) => void;
+  onSend: (body: string, expectedUpdatedAt?: string) => void;
   onEdit: () => void;
   onCloseEditor: () => void;
   onEditedBodyChange: (body: string) => void;
   onPostpone: () => void;
+  onAskCancel: () => void;
+  onAskNoFollowup: () => void;
+  onCloseConfirmation: () => void;
   onCancel: () => void;
   onNoFollowup: () => void;
 }) {
   const {
     followup,
     busy,
-    editedBody,
+    confirmation,
+    editing,
     cardError,
     onSend,
     onEdit,
     onCloseEditor,
     onEditedBodyChange,
     onPostpone,
+    onAskCancel,
+    onAskNoFollowup,
+    onCloseConfirmation,
     onCancel,
     onNoFollowup
   } = props;
@@ -374,7 +468,7 @@ function FollowupCard(props: {
   const isReview = followup.status === "review";
   const isScheduled = followup.status === "scheduled";
   const defaultBody = followup.draftBody ?? "";
-  const validationError = editedBody !== null && (editedBody.trim().length < 1 || editedBody.trim().length > 4000);
+  const validationError = editing !== null && (editing.body.trim().length < 1 || editing.body.trim().length > 4000);
 
   return (
     <article className={`followup-card followup-card-${followup.status}`} aria-busy={busy}>
@@ -426,12 +520,12 @@ function FollowupCard(props: {
           <p className="followup-missing-copy">Este item não possui rascunho. Edite a mensagem antes de enviar.</p>
         ) : null}
 
-        {editedBody !== null ? (
+        {editing !== null ? (
           <form
             className="followup-editor"
             onSubmit={(event) => {
               event.preventDefault();
-              onSend(editedBody);
+              onSend(editing.body, editing.expectedUpdatedAt);
             }}
           >
             <label htmlFor={`followup-body-${followup.id}`}>Mensagem para o cliente</label>
@@ -442,11 +536,11 @@ function FollowupCard(props: {
               maxLength={4000}
               onChange={(event) => onEditedBodyChange(event.target.value)}
               rows={4}
-              value={editedBody}
+              value={editing.body}
             />
             <div className="followup-editor-meta">
               <span className={validationError ? "is-invalid" : ""}>
-                {editedBody.trim().length.toLocaleString("pt-BR")} / 4.000
+                {editing.body.trim().length.toLocaleString("pt-BR")} / 4.000
               </span>
               <div>
                 <button className="followups-button followups-button-ghost" disabled={busy} onClick={onCloseEditor} type="button">
@@ -461,9 +555,44 @@ function FollowupCard(props: {
         ) : null}
 
         {cardError ? <p className="followup-card-error" role="alert">{cardError}</p> : null}
+
+        {confirmation ? (
+          <div
+            aria-labelledby={`followup-confirmation-${followup.id}`}
+            aria-modal="false"
+            className="followup-confirmation"
+            role="alertdialog"
+          >
+            <div>
+              <strong id={`followup-confirmation-${followup.id}`}>
+                {confirmation === "cancel"
+                  ? "Cancelar este acompanhamento?"
+                  : "Não acompanhar mais esta conversa?"}
+              </strong>
+              <p>
+                {confirmation === "cancel"
+                  ? "O follow-up será encerrado e ficará no histórico de cancelados."
+                  : "A conversa deixará de receber novos follow-ups automáticos desta sequência."}
+              </p>
+            </div>
+            <div className="followup-confirmation-actions">
+              <button className="followups-button followups-button-ghost" disabled={busy} onClick={onCloseConfirmation} type="button">
+                Voltar
+              </button>
+              <button
+                className="followups-button followups-button-danger"
+                disabled={busy}
+                onClick={confirmation === "cancel" ? onCancel : onNoFollowup}
+                type="button"
+              >
+                {confirmation === "cancel" ? "Confirmar cancelamento" : "Confirmar não acompanhar"}
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
-      {(isReview || isScheduled) && editedBody === null ? (
+      {(isReview || isScheduled) && editing === null && confirmation === null ? (
         <footer className="followup-actions">
           {isReview ? (
             <>
@@ -484,11 +613,11 @@ function FollowupCard(props: {
           <button className="followups-button" disabled={busy} onClick={onPostpone} type="button">
             <CalendarClock size={14} aria-hidden="true" /> Adiar
           </button>
-          <button className="followups-button" disabled={busy} onClick={onCancel} type="button">
+          <button className="followups-button" disabled={busy} onClick={onAskCancel} type="button">
             <X size={14} aria-hidden="true" /> Cancelar
           </button>
           {isReview ? (
-            <button className="followups-button followups-button-quiet" disabled={busy} onClick={onNoFollowup} type="button">
+            <button className="followups-button followups-button-quiet" disabled={busy} onClick={onAskNoFollowup} type="button">
               <UserRoundCheck size={14} aria-hidden="true" /> Não acompanhar
             </button>
           ) : null}
