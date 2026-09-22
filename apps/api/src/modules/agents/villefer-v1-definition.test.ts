@@ -119,7 +119,7 @@ describe("villeferV1Definition", () => {
     expect(followup.timeZone).toBe("America/Sao_Paulo");
     expect(followup.businessDays).toEqual([1, 2, 3, 4, 5]);
     expect(followup.businessHours).toEqual({ start: "08:00", end: "18:00" });
-    expect(followup.steps.map((step) => step.afterBusinessMinutes)).toEqual([720, 1200, 2400]);
+    expect(followup.steps.map((step) => step.afterBusinessMinutes)).toEqual([360, 1200, 2400]);
     expect(followup.steps.every((step) => /context|bloqueio|alternativa|demanda/i.test(step.instruction))).toBe(true);
   });
 
