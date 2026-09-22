@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LeadJobDto, LeadListDto, LeadResultDto, LeadSource, SimilarCompanySearchResult } from "@prymeira-talk/shared";
 import { ArrowLeft, ChevronLeft, ChevronRight, Download, RefreshCw, SearchX, Sparkles } from "lucide-react";
 import { useTalkAuth } from "../../app/auth";
 import {
-  apiCreateLeadCampaignDraft, apiDownloadLeadErrors, apiGetLeadJob, apiGetLeadLists, apiGetLeadResults,
+  apiCreateLeadCampaignDraft, apiDeleteLeadList, apiDownloadLeadErrors, apiGetLeadJob, apiGetLeadLists, apiGetLeadResults,
   apiGetSimilarLeads, apiImportLeadContacts, apiLookupReceitaLeads, apiRetryLeadJob,
   apiSaveSimilarLeadList, apiStartGoogleLeadSearch, apiStartReceitaLeadSearch,
   apiUploadLeadCsv, apiVerifyLeadWhatsapp
@@ -35,10 +35,21 @@ function fileBase64(file: File): Promise<string> {
   });
 }
 
+function newestLists(lists: LeadListDto[]) {
+  return [...new Map(lists.map(list => [list.id, list])).values()]
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id));
+}
+
 export function LeadsPage() {
   const { getToken } = useTalkAuth();
   const [source, setSource] = useState<LeadSource>("google_maps");
   const [lists, setLists] = useState<LeadListDto[]>([]);
+  const [expandedLists, setExpandedLists] = useState(false);
+  const [hasMoreLists, setHasMoreLists] = useState(false);
+  const [loadingMoreLists, setLoadingMoreLists] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<LeadListDto | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const loadedPagesRef = useRef(1);
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
   const [items, setItems] = useState<LeadResultDto[]>([]);
   const [total, setTotal] = useState(0);
@@ -62,10 +73,40 @@ export function LeadsPage() {
   const [campaignId, setCampaignId] = useState<string | null>(null);
 
   const refreshLists = useCallback(async () => {
-    const result = await apiGetLeadLists(getToken);
+    const loaded: LeadListDto[] = [];
+    let lastPage: LeadListDto[] = [];
+    for (let page = 1; page <= loadedPagesRef.current; page += 1) {
+      lastPage = await apiGetLeadLists(getToken, page, 50);
+      loaded.push(...lastPage);
+      if (lastPage.length < 50) {
+        loadedPagesRef.current = page;
+        break;
+      }
+    }
+    const result = newestLists(loaded);
+    setHasMoreLists(lastPage.length === 50);
     setLists(result);
     return result;
   }, [getToken]);
+
+  async function loadMoreLists() {
+    if (!hasMoreLists || loadingMoreLists) return;
+    setLoadingMoreLists(true);
+    setError(null);
+    try {
+      const page = loadedPagesRef.current + 1;
+      const next = await apiGetLeadLists(getToken, page, 50);
+      if (next.length > 0) {
+        loadedPagesRef.current = page;
+        setLists(current => newestLists([...current, ...next]));
+      }
+      setHasMoreLists(next.length === 50);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível carregar mais listas.");
+    } finally {
+      setLoadingMoreLists(false);
+    }
+  }
 
   useEffect(() => {
     let live = true;
@@ -116,6 +157,44 @@ export function LeadsPage() {
     setNotice("Busca iniciada. A lista será atualizada conforme os resultados chegarem.");
   }
 
+  async function confirmDelete() {
+    if (!deleteTarget || busy) return;
+    const target = deleteTarget;
+    setBusy(true);
+    setDeleteError(null);
+    try {
+      await apiDeleteLeadList(getToken, target.id);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Não foi possível excluir a lista.");
+      setBusy(false);
+      return;
+    }
+
+    const remaining = lists.filter(list => list.id !== target.id);
+    setLists(remaining);
+    setJobs(current => { const next = { ...current }; delete next[target.id]; return next; });
+    setVerificationJobs(current => current.filter(job => job.listId !== target.id));
+    setDeleteTarget(null);
+    setNotice(`Lista “${target.name}” excluída.`);
+    setError(null);
+    if (selectedListId === target.id) {
+      setSelectedListId(remaining[0]?.id ?? null);
+      setPage(1);
+      setItems([]);
+      setTotal(0);
+      setSelected(new Set());
+      setSimilar(null);
+      setSimilarSeed(null);
+    }
+    try {
+      await refreshLists();
+    } catch {
+      setError("A lista foi excluída, mas não foi possível atualizar as demais. Atualize a página.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function startSimilar(lead: LeadResultDto) {
     if (!selectedListId) return;
     await perform(async () => { const result = await apiGetSimilarLeads(getToken, selectedListId, lead.id); setSimilar(result); setSimilarSeed(lead); setSimilarSelected(new Set()); setSimilarName(`Similares a ${lead.tradeName || lead.companyName || formatCnpj(lead.cnpj)}`); });
@@ -146,7 +225,7 @@ export function LeadsPage() {
 
   return <main className="leads-page" aria-label="Leads">
     <header className="leads-header"><div><span className="leads-eyebrow">PROSPECÇÃO</span><h1>Leads</h1><p>Encontre empresas, organize listas e prepare o próximo contato.</p></div><div className="leads-header-stat"><b>{lists.reduce((sum, list) => sum + list.totalCount, 0)}</b><span>resultados nas listas</span></div></header>
-    <div className="leads-layout"><LeadListSidebar lists={lists} selectedId={selectedListId} onSelect={chooseList} source={source} />
+    <div className="leads-layout"><LeadListSidebar lists={lists} selectedId={selectedListId} onSelect={chooseList} source={source} expanded={expandedLists} hasMore={hasMoreLists} loadingMore={loadingMoreLists} busy={busy} onToggleExpanded={() => setExpandedLists(current => !current)} onLoadMore={() => void loadMoreLists()} onRequestDelete={list => { setDeleteTarget(list); setDeleteError(null); }} />
       <div className="leads-content"><div className="leads-tabs" role="tablist" aria-label="Fonte da busca"><button role="tab" aria-selected={source === "google_maps"} type="button" onClick={() => setSource("google_maps")}>Google Maps</button><button role="tab" aria-selected={source === "receita_federal"} type="button" onClick={() => setSource("receita_federal")}>Receita Federal</button></div>
         <LeadSearchPanel source={source} busy={busy} onGoogle={value => void perform(async () => acceptSearch(await apiStartGoogleLeadSearch(getToken, { ...value, idempotencyKey: crypto.randomUUID(), maxTimeSeconds: 600 })))} onReceita={(name, filters) => void perform(async () => acceptSearch(await apiStartReceitaLeadSearch(getToken, name, filters)))} onLookup={query => void perform(async () => { setLookup(await apiLookupReceitaLeads(getToken, query)); setNotice("Consulta concluída."); })} onCsv={(file, name) => void perform(async () => { if (file.size > 5 * 1024 * 1024) throw new Error("O CSV excede 5 MiB."); const result = await apiUploadLeadCsv(getToken, { name, fileName: file.name, csvBase64: await fileBase64(file) }); setCsvResult(result); await refreshLists(); chooseList(result.listId); setJobs(current => ({ ...current, [result.listId]: { id: result.jobId, listId: result.listId, status: "queued" } as LeadJobDto })); setNotice(`${result.acceptedRows} linhas aceitas; ${result.invalidRows} inválidas; ${result.duplicateRows} duplicadas.`); })} />
         {lookup && <section className="leads-lookup" aria-label="Resultado da consulta"><div className="leads-section-heading"><span>Consulta de empresa</span><button type="button" onClick={() => setLookup(null)}>Fechar</button></div>{lookup.items.length ? lookup.items.map(item => <p key={item.cnpj}><b>{item.tradeName || item.companyName || "Empresa"}</b> · {formatCnpj(item.cnpj)}</p>) : <p>Nenhuma empresa encontrada.</p>}</section>}
@@ -161,5 +240,12 @@ export function LeadsPage() {
         {similar && <section className="leads-similar" aria-label="Empresas semelhantes"><div className="leads-section-heading"><span><Sparkles size={16} /> Similares a {similar.seed.tradeName || similar.seed.companyName || formatCnpj(similar.seed.cnpj)}</span><button type="button" onClick={() => setSimilar(null)}><ArrowLeft size={15} /> Voltar</button></div><p className="leads-muted">Pontuação considera atividade, localização, perfil e dados comerciais. Empresas sem correspondência suficiente ficam fora do resultado.</p>{similar.items.length ? <>{similar.items.map(item => <label className="leads-similar-item" key={item.cnpj}><input type="checkbox" checked={similarSelected.has(item.cnpj)} onChange={() => setSimilarSelected(current => { const next = new Set(current); next.has(item.cnpj) ? next.delete(item.cnpj) : next.add(item.cnpj); return next; })} /><span><b>{item.tradeName || item.companyName || formatCnpj(item.cnpj)}</b><small>{formatCnpj(item.cnpj)} · {[item.city, item.state].filter(Boolean).join(" / ")}</small><small>{scoreReasons(item).join(" · ") || "Sem motivos detalhados"}</small></span><strong className="leads-score">{Math.round(item.score)}</strong></label>)}<div className="leads-similar-save"><input className="text-input" aria-label="Nome da lista de similares" maxLength={160} value={similarName} onChange={e => setSimilarName(e.target.value)} /><button className="primary-button" type="button" disabled={busy || !similarSelected.size || !similarName.trim() || !similarSeed || !selectedListId} onClick={() => void perform(async () => { if (!similarSeed || !selectedListId) return; acceptSearch(await apiSaveSimilarLeadList(getToken, { listId: selectedListId, leadId: similarSeed.id, name: similarName.trim(), selectedCnpjs: [...similarSelected] })); setSimilar(null); })}>Salvar {similarSelected.size} em lista</button></div></> : <p>Nenhuma empresa elegível encontrada.</p>}</section>}
       </div></div>
     {action && <div className="leads-dialog-backdrop" role="presentation"><section className="leads-dialog" role="dialog" aria-modal="true" aria-labelledby="leads-confirm-title"><span className="leads-eyebrow">CONFIRMAÇÃO</span><h2 id="leads-confirm-title">{action === "verify" ? "Verificar WhatsApp" : action === "import" ? "Cadastrar contatos" : "Criar lote de disparo"}</h2><p>{selected.size} lead{selected.size === 1 ? "" : "s"} selecionado{selected.size === 1 ? "" : "s"}. {action === "verify" ? "A verificação será executada em segundo plano." : action === "import" ? "Os contatos válidos serão cadastrados ou associados aos existentes." : "Os contatos com telefone válido serão cadastrados ou associados. Será criado apenas um rascunho; nenhum envio começa agora."}</p>{action === "campaign" && <label>Mensagem comum<textarea className="text-input" rows={4} value={campaignMessage} onChange={e => setCampaignMessage(e.target.value)} placeholder="Escreva a mensagem que será revisada no rascunho" /></label>}<div className="leads-dialog-actions"><button type="button" className="secondary-button" onClick={() => setAction(null)}>Cancelar</button><button type="button" className="primary-button" disabled={busy || (action === "campaign" && !campaignMessage.trim())} onClick={() => void confirmAction()}>Confirmar {selected.size}</button></div></section></div>}
+    {deleteTarget && <div className="leads-dialog-backdrop" role="presentation"><section className="leads-dialog" role="dialog" aria-modal="true" aria-labelledby="leads-delete-title">
+      <span className="leads-eyebrow">EXCLUIR LISTA</span>
+      <h2 id="leads-delete-title">Excluir “{deleteTarget.name}”?</h2>
+      <p>Esta ação apaga permanentemente a lista, seus resultados, verificações de WhatsApp e jobs vinculados. Contatos já importados não serão apagados; listas com esses vínculos não podem ser excluídas.</p>
+      {deleteError && <p className="leads-delete-error" role="alert">{deleteError}</p>}
+      <div className="leads-dialog-actions"><button type="button" className="secondary-button" disabled={busy} onClick={() => setDeleteTarget(null)}>Cancelar</button><button type="button" className="leads-danger-button" disabled={busy} onClick={() => void confirmDelete()}>{busy ? "Excluindo…" : "Excluir definitivamente"}</button></div>
+    </section></div>}
   </main>;
 }
