@@ -10,7 +10,9 @@ const ids = {
   followup: "00000000-0000-4000-8000-000000000701",
   followupB: "00000000-0000-4000-8000-000000000702",
   agent: "00000000-0000-4000-8000-000000000703",
-  conversation: "00000000-0000-4000-8000-000000000704"
+  conversation: "00000000-0000-4000-8000-000000000704",
+  session: "00000000-0000-4000-8000-000000000705",
+  anchor: "00000000-0000-4000-8000-000000000706"
 };
 const initialUpdatedAt = new Date("2026-09-21T12:00:00.000Z");
 const fixedNow = new Date("2026-09-21T22:00:00.000Z");
@@ -20,10 +22,14 @@ type Followup = {
   workspaceId: string;
   conversationId: string;
   agentId: string;
+  sessionId: string;
   kind: "qualification" | "human_commercial";
   status: "scheduled" | "processing" | "review" | "sent" | "cancelled" | "failed";
   activeKey: string | null;
   stepIndex: number;
+  anchorMessageId: string;
+  anchorMessageAt: Date;
+  anchorIngestedAt: Date;
   scheduledAt: Date;
   lockedAt: Date | null;
   draftBody: string | null;
@@ -46,10 +52,14 @@ function followup(overrides: Partial<Followup> = {}): Followup {
     workspaceId: ids.workspaceA,
     conversationId: ids.conversation,
     agentId: ids.agent,
+    sessionId: ids.session,
     kind: "human_commercial",
     status: "review",
     activeKey: "active",
     stepIndex: 1,
+    anchorMessageId: ids.anchor,
+    anchorMessageAt: new Date("2026-09-21T10:00:00.000Z"),
+    anchorIngestedAt: new Date("2026-09-21T10:00:00.000Z"),
     scheduledAt: new Date("2026-09-22T12:00:00.000Z"),
     lockedAt: null,
     draftBody: "Podemos retomar a proposta?",
@@ -122,7 +132,14 @@ function createMemoryPrisma(records: Followup[]) {
         ) ?? null
       ),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-        const message = { ...data };
+        const message = {
+          status: "pending",
+          metadata: {},
+          ingestedAt: new Date(fixedNow),
+          createdAt: new Date(fixedNow),
+          updatedAt: new Date(fixedNow),
+          ...data
+        };
         messages.push(message);
         return message;
       }),
@@ -134,7 +151,49 @@ function createMemoryPrisma(records: Followup[]) {
         messages[index] = { ...messages[index], ...data };
         return messages[index];
       }),
-      findFirst: vi.fn()
+      findFirst: vi.fn(async ({ where, orderBy }: { where: Record<string, any>; orderBy?: Record<string, string> }) => {
+        const found = messages.filter((message) => {
+          if (message.workspaceId !== where.workspaceId || message.conversationId !== where.conversationId) return false;
+          if (where.direction && message.direction !== where.direction) return false;
+          if (where.id?.not && message.id === where.id.not) return false;
+          if (where.id?.notIn && where.id.notIn.includes(message.id)) return false;
+          if (where.ingestedAt?.gt) {
+            const ingestedAt = message.ingestedAt as Date | undefined;
+            if (!ingestedAt || ingestedAt.getTime() <= new Date(where.ingestedAt.gt).getTime()) return false;
+          }
+          return true;
+        });
+        if (orderBy?.ingestedAt === "desc") {
+          found.sort((left, right) =>
+            new Date(right.ingestedAt as Date).getTime() - new Date(left.ingestedAt as Date).getTime()
+          );
+        }
+        return found[0] ?? null;
+      })
+    },
+    conversation: {
+      findUnique: vi.fn().mockResolvedValue({
+        id: ids.conversation,
+        workspaceId: ids.workspaceA,
+        status: "open",
+        aiControlStatus: "agent_allowed",
+        activeAgentSessionId: ids.session
+      })
+    },
+    aiAgentSession: {
+      findFirst: vi.fn().mockResolvedValue({
+        id: ids.session,
+        workspaceId: ids.workspaceA,
+        conversationId: ids.conversation,
+        agentId: ids.agent,
+        status: "active",
+        agent: {
+          id: ids.agent,
+          workspaceId: ids.workspaceA,
+          status: "active",
+          behaviorConfig: {}
+        }
+      })
     },
     userProfile: { findFirst: vi.fn().mockResolvedValue({ id: "user_current" }) },
     records,
@@ -159,6 +218,7 @@ async function buildRouteApp(input: {
   role?: "owner" | "manager" | "agent" | "viewer";
   revalidate?: () => Promise<unknown>;
   outbound?: ReturnType<typeof vi.fn>;
+  realFollowups?: boolean;
 } = {}) {
   const db = createMemoryPrisma(input.records ?? [followup()]);
   const events: unknown[] = [];
@@ -175,7 +235,7 @@ async function buildRouteApp(input: {
   });
   await app.register(conversationFollowupsRoutes, {
     prisma: db as never,
-    followups: { revalidateActiveFollowup: revalidate } as never,
+    ...(input.realFollowups ? {} : { followups: { revalidateActiveFollowup: revalidate } as never }),
     outbound: { createPendingOutboundMessage: outbound } as never,
     now: () => new Date(fixedNow),
     realtime: { publish: (event) => events.push(event) },
@@ -277,6 +337,74 @@ describe("conversation follow-up review routes", () => {
       }));
       const followupEvent = events.find((event) => (event as { type?: string }).type === "conversation_followup.updated");
       expect(realtimeEventSchema.parse(followupEvent)).toEqual(followupEvent);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("uses the real follow-up service without treating its own reserved message as a replacement", async () => {
+    const { app, db, outbound } = await buildRouteApp({ realFollowups: true });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/followups/${ids.followup}/send`,
+        payload: { body: "Vamos continuar?", expectedUpdatedAt: expected(db.records[0]) }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(outbound).toHaveBeenCalledTimes(1);
+      expect(db.records[0]).toMatchObject({ status: "sent", activeKey: null, finalBody: "Vamos continuar?" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("still cancels with the real service when another outbound message is newer", async () => {
+    const { app, db, outbound } = await buildRouteApp({ realFollowups: true });
+    const createReservation = db.message.create.getMockImplementation()!;
+    db.message.create.mockImplementationOnce(async (args) => {
+      const reserved = await createReservation(args);
+      // Simulate a human reply racing in after the reservation and before the
+      // route's second server-side revalidation.
+      db.messages.push({
+        id: "00000000-0000-4000-8000-000000000799",
+        workspaceId: ids.workspaceA,
+        conversationId: ids.conversation,
+        direction: "outbound",
+        status: "sent",
+        metadata: { source: "human_reply" },
+        ingestedAt: new Date(fixedNow.getTime() + 1_000),
+        createdAt: new Date(fixedNow.getTime() + 1_000)
+      });
+      return reserved;
+    });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/followups/${ids.followup}/send`,
+        payload: { body: "Não deve enviar", expectedUpdatedAt: expected(db.records[0]) }
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(outbound).not.toHaveBeenCalled();
+      expect(db.records[0]).toMatchObject({ status: "cancelled", activeKey: null, reason: "outbound_replaced" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps uncertain reserved delivery irretryable with the real follow-up service", async () => {
+    const outbound = vi.fn().mockRejectedValue(new OutboundDeliveryUncertainError());
+    const { app, db } = await buildRouteApp({ realFollowups: true, outbound });
+    const request = {
+      method: "POST" as const,
+      url: `/followups/${ids.followup}/send`,
+      payload: { body: "Mensagem única", expectedUpdatedAt: expected(db.records[0]) }
+    };
+    try {
+      expect((await app.inject(request)).statusCode).toBe(502);
+      expect((await app.inject(request)).statusCode).toBe(409);
+      expect(outbound).toHaveBeenCalledTimes(1);
     } finally {
       await app.close();
     }

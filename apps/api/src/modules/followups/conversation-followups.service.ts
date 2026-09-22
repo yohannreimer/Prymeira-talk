@@ -40,6 +40,8 @@ type MessageRecord = {
   workspaceId: string;
   conversationId: string;
   direction: FollowupActivityDirection;
+  status?: string;
+  metadata?: unknown;
   createdAt: Date | string;
   ingestedAt: Date | string | null;
 };
@@ -338,16 +340,11 @@ export function createConversationFollowupsService(
       return cancelActiveFollowup(prisma, followup, "customer_replied", input.now, conversation, options.publisher);
     }
 
-    const newerCompanyMessage = await prisma.message.findFirst({
-      where: {
-        workspaceId: input.workspaceId,
-        conversationId: followup.conversationId,
-        direction: "outbound",
-        id: { not: followup.anchorMessageId },
-        ingestedAt: { gt: anchorIngestedAt }
-      },
-      orderBy: { ingestedAt: "desc" }
-    });
+    const newerCompanyMessage = await findNewerCompanyMessage(
+      prisma,
+      followup,
+      anchorIngestedAt
+    );
     if (newerCompanyMessage) {
       return cancelActiveFollowup(prisma, followup, "outbound_replaced", input.now, conversation, options.publisher);
     }
@@ -523,6 +520,41 @@ export function createConversationFollowupsService(
     recoverClaimedFollowup,
     completeAutomaticFollowup
   };
+}
+
+async function findNewerCompanyMessage(
+  prisma: Pick<ConversationFollowupsPrismaLike, "message">,
+  followup: ConversationFollowupRecord,
+  anchorIngestedAt: Date
+) {
+  const where = {
+    workspaceId: followup.workspaceId,
+    conversationId: followup.conversationId,
+    direction: "outbound" as const,
+    ingestedAt: { gt: anchorIngestedAt }
+  };
+  const newest = await prisma.message.findFirst({
+    where: { ...where, id: { not: followup.anchorMessageId } },
+    orderBy: { ingestedAt: "desc" }
+  });
+  if (!isOwnPendingDeliveryReservation(newest, followup)) return newest;
+
+  // The review route reserves a Message row before provider delivery. Ignore
+  // only that exact pending row, then look again so any other outbound still
+  // invalidates the follow-up.
+  return prisma.message.findFirst({
+    where: { ...where, id: { notIn: [followup.anchorMessageId, followup.id] } },
+    orderBy: { ingestedAt: "desc" }
+  });
+}
+
+function isOwnPendingDeliveryReservation(
+  message: MessageRecord | null,
+  followup: ConversationFollowupRecord
+) {
+  if (!message || message.id !== followup.id || message.status !== "pending") return false;
+  const metadata = asRecord(message.metadata);
+  return metadata?.source === "followup_review" && metadata.followupId === followup.id;
 }
 
 async function findPersistedCustomerInboundMessage(
