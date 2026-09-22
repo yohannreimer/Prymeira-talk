@@ -121,6 +121,22 @@ const FROM_CNPJ = `
   LEFT JOIN cnpj.naturezas_juridicas nj ON nj.codigo = em.natureza_juridica
   LEFT JOIN cnpj.dados_simples simples ON simples.cnpj_basico = e.cnpj_basico`;
 
+const SEARCH_KEY_FROM = `
+  FROM cnpj.estabelecimentos e
+  INNER JOIN cnpj.empresas em ON em.cnpj_basico = e.cnpj_basico
+  LEFT JOIN cnpj.municipios m ON m.codigo = e.municipio`;
+
+const SEARCH_DETAIL_JOINS = `
+  LEFT JOIN cnpj.estabelecimentos e
+    ON e.cnpj_basico = paged_keys.cnpj_basico
+    AND e.cnpj_ordem = paged_keys.cnpj_ordem
+    AND e.cnpj_dv = paged_keys.cnpj_dv
+  LEFT JOIN cnpj.empresas em ON em.cnpj_basico = e.cnpj_basico
+  LEFT JOIN cnpj.cnaes primary_cnae ON primary_cnae.codigo = e.cnae_fiscal_principal
+  LEFT JOIN cnpj.municipios m ON m.codigo = e.municipio
+  LEFT JOIN cnpj.naturezas_juridicas nj ON nj.codigo = em.natureza_juridica
+  LEFT JOIN cnpj.dados_simples simples ON simples.cnpj_basico = e.cnpj_basico`;
+
 const SORT_COLUMNS: Readonly<Record<string, string>> = {
   cnpj: "cnpj",
   companyName: "company_name",
@@ -302,17 +318,31 @@ export class CnpjRepository {
     const sort = SORT_COLUMNS[filters.sortBy ?? ""] ?? "company_name";
     const direction = filters.sortDirection === "DESC" ? "DESC" : "ASC";
     values.push(pageSize, (page - 1) * pageSize);
-    const rows = await this.query(`WITH filtered AS (
-      SELECT ${SELECT_FIELDS} ${FROM_CNPJ}
+    const rows = await this.query(`WITH filtered_keys AS NOT MATERIALIZED (
+      SELECT
+        e.cnpj_basico,
+        e.cnpj_ordem,
+        e.cnpj_dv,
+        e.cnpj_basico || e.cnpj_ordem || e.cnpj_dv AS cnpj,
+        em.razao_social AS company_name,
+        e.nome_fantasia AS trade_name,
+        m.descricao AS city,
+        e.data_inicio_atividade AS opened_at,
+        em.capital_social AS capital_social
+      ${SEARCH_KEY_FROM}
       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
     ), counted AS (
-      SELECT COUNT(*)::text AS total FROM filtered
-    ), paged AS (
-      SELECT * FROM filtered
-      ORDER BY ${sort} ${direction}, cnpj ASC
+      SELECT COUNT(*)::text AS total FROM filtered_keys
+    ), paged_keys AS (
+      SELECT * FROM filtered_keys
+      ORDER BY ${sort} ${direction} NULLS LAST, cnpj ASC NULLS LAST
       LIMIT $${values.length - 1} OFFSET $${values.length}
     )
-    SELECT paged.*, counted.total FROM counted LEFT JOIN paged ON true`, values);
+    SELECT ${SELECT_FIELDS}, counted.total
+    FROM counted
+    LEFT JOIN paged_keys ON true
+    ${SEARCH_DETAIL_JOINS}
+    ORDER BY paged_keys.${sort} ${direction} NULLS LAST, paged_keys.cnpj ASC NULLS LAST`, values);
     return {
       items: rows.filter((row) => typeof row.cnpj === "string" && row.cnpj.length > 0).map(toRecord),
       page,

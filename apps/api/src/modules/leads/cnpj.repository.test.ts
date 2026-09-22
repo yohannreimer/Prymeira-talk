@@ -181,7 +181,9 @@ describe("CnpjRepository", () => {
     });
 
     const call = client.calls[0];
-    expect(call?.text).toContain("ORDER BY company_name ASC, cnpj ASC");
+    expect(call?.text).toContain(
+      "ORDER BY paged_keys.company_name ASC NULLS LAST, paged_keys.cnpj ASC NULLS LAST"
+    );
     expect(call?.text).not.toContain("DROP TABLE");
     expect(call?.values.slice(-2)).toEqual([100, 100]);
   });
@@ -191,9 +193,30 @@ describe("CnpjRepository", () => {
 
     const result = await new CnpjRepository(client).searchEstablishments({ page: 999, pageSize: 25 });
 
-    expect(client.calls[0]?.text).toContain("WITH filtered AS");
-    expect(client.calls[0]?.text).toContain("LEFT JOIN paged ON true");
+    expect(client.calls[0]?.text).toContain("WITH filtered_keys AS NOT MATERIALIZED");
+    expect(client.calls[0]?.text).toContain("LEFT JOIN paged_keys ON true");
+    expect(client.calls[0]?.text).toContain(
+      "ORDER BY paged_keys.company_name ASC NULLS LAST, paged_keys.cnpj ASC NULLS LAST"
+    );
     expect(result).toMatchObject({ items: [], page: 999, pageSize: 25, total: 42 });
+  });
+
+  it("paginates narrow keys before projecting details and preserves the whitelisted final ordering", async () => {
+    const client = new FakeCnpjClient();
+
+    await new CnpjRepository(client).searchEstablishments({
+      sortBy: "capital",
+      sortDirection: "DESC"
+    });
+
+    const text = client.calls[0]?.text ?? "";
+    const pagedKeys = text.indexOf("paged_keys AS");
+    const detailCnaeJoin = text.indexOf("LEFT JOIN cnpj.cnaes primary_cnae", pagedKeys);
+    expect(text.slice(0, pagedKeys)).not.toContain("primary_cnae.descricao");
+    expect(detailCnaeJoin).toBeGreaterThan(pagedKeys);
+    expect(text).toContain(
+      "ORDER BY paged_keys.capital_social DESC NULLS LAST, paged_keys.cnpj ASC NULLS LAST"
+    );
   });
 
   it("preserves an address and phone when their optional prefixes are null", async () => {
