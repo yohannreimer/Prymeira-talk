@@ -489,7 +489,7 @@ export class LeadsRepository {
     idempotencyKey: string;
     requestId: string;
     requestFingerprint: string;
-    batches: Array<Array<{ phone: string; leadIds: string[] }>>;
+    batches: Array<Array<{ phone: string; primary: string; alternate: string | null; leadIds: string[] }>>;
   }) {
     const create = () => this.prisma.$transaction(async (tx) => {
       const existing = await tx.leadJob.findUnique({
@@ -561,7 +561,12 @@ export class LeadsRepository {
               totalBatches: input.batches.length,
               channelId: input.channelId,
               instanceName: input.instanceName,
-              numbers: batch.map((item) => item.phone),
+              numbers: batch.map((item) => item.primary),
+              lookups: batch.map((item) => ({
+                phone: item.phone,
+                primary: item.primary,
+                alternate: item.alternate
+              })),
               entries
             },
             output: { totalCount: entries.length, processedCount: 0, failedCount: 0 }

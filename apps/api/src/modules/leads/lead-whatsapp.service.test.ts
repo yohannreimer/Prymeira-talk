@@ -45,6 +45,28 @@ function setup(selected = [lead(1)]) {
 }
 
 describe("lead WhatsApp verification", () => {
+  it("queries the original full Brazilian mobile number for deduplicated leads", async () => {
+    const full = lead(1, "+55 (47) 99139-6920");
+    full.normalizedPhone = "554791396920";
+    const reduced = lead(2, "554791396920");
+    const context = setup([reduced, full]);
+
+    await context.service.createVerification({
+      workspaceId,
+      listId,
+      leadIds: [reduced.id, full.id],
+      idempotencyKey: "full-mobile-request"
+    });
+
+    const persisted = context.repository.createWhatsappVerificationJobs.mock.calls[0]![0];
+    expect(persisted.batches).toEqual([[{
+      phone: "554791396920",
+      primary: "5547991396920",
+      alternate: "554791396920",
+      leadIds: expect.arrayContaining([reduced.id, full.id])
+    }]]);
+  });
+
   it("deduplicates normalized variants, preserves lead mapping and splits more than 25 numbers", async () => {
     const selected = Array.from({ length: 27 }, (_, index) => lead(index));
     selected[1]!.phones = ["+55 (11) 9999-0000"];

@@ -159,8 +159,8 @@ describe("Leads repository workspace isolation", () => {
       workspaceId, listId, channelId: randomUUID(), instanceName: "instance-one",
       idempotencyKey: "request-1", requestId, requestFingerprint: "fingerprint",
       batches: [
-        [{ phone: "5511999990000", leadIds: [leadId] }],
-        [{ phone: "5511999990001", leadIds: [leadId] }]
+        [{ phone: "5511999990000", primary: "5511999990000", alternate: null, leadIds: [leadId] }],
+        [{ phone: "5511999990001", primary: "5511999990001", alternate: null, leadIds: [leadId] }]
       ]
     });
 
@@ -171,6 +171,10 @@ describe("Leads repository workspace isolation", () => {
     expect(createdJobs.map((record) => record.operation)).toEqual(["whatsapp_availability", "whatsapp_availability_batch"]);
     expect(createdJobs.map((record) => record.idempotencyKey)).toEqual(["request-1", `${requestId}:1`]);
     expect(createdJobs[0].input.entries[0].verificationId).toBe(createdRows[0].id);
+    expect(createdJobs[0].input.numbers).toEqual(["5511999990000"]);
+    expect(createdJobs[0].input.lookups).toEqual([{
+      phone: "5511999990000", primary: "5511999990000", alternate: null
+    }]);
     expect(result).toMatchObject({ requestId, replayed: false });
   });
 
@@ -360,7 +364,7 @@ describe("Leads repository workspace isolation", () => {
       idempotencyKey: "request-race",
       requestId: randomUUID(),
       requestFingerprint: "fingerprint",
-      batches: [[{ phone: "5511999990000", leadIds: [leadId] }]]
+      batches: [[{ phone: "5511999990000", primary: "5511999990000", alternate: null, leadIds: [leadId] }]]
     });
 
     expect(result).toMatchObject({

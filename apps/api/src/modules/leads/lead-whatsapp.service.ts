@@ -8,6 +8,7 @@ import {
 import type { CheckWhatsappNumbersAvailabilityResult, WhatsappNumberAvailability } from "../evolution/evolution.client.js";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { canonicalizePhone } from "../contacts/phone-normalization.js";
+import { whatsappPhoneCandidates, type WhatsappPhoneCandidates } from "./lead-whatsapp-numbers.js";
 import {
   LeadLeaseLostError,
   LeadsDomainError,
@@ -103,15 +104,17 @@ export function createLeadWhatsappService(options: LeadWhatsappServiceOptions) {
         request.data.listId,
         request.data.leadIds
       );
-      const byPhone = new Map<string, Set<string>>();
+      const byPhone = new Map<string, { candidates: WhatsappPhoneCandidates; leadIds: Set<string> }>();
       for (const lead of context.leads) {
         const candidates = [lead.normalizedPhone, ...jsonStrings(lead.phones)];
         for (const candidate of candidates) {
-          const phone = normalizedPhone(candidate);
-          if (!phone) continue;
-          const leadIds = byPhone.get(phone) ?? new Set<string>();
-          leadIds.add(lead.id);
-          byPhone.set(phone, leadIds);
+          if (typeof candidate !== "string") continue;
+          const lookup = whatsappPhoneCandidates(candidate);
+          if (!lookup) continue;
+          const group = byPhone.get(lookup.key) ?? { candidates: lookup, leadIds: new Set<string>() };
+          if (lookup.primary.length === 13 && group.candidates.primary.length === 12) group.candidates = lookup;
+          group.leadIds.add(lead.id);
+          byPhone.set(lookup.key, group);
         }
       }
       if (byPhone.size === 0) {
@@ -123,7 +126,12 @@ export function createLeadWhatsappService(options: LeadWhatsappServiceOptions) {
           `WhatsApp verification is limited to ${MAX_LEAD_WHATSAPP_UNIQUE_NUMBERS} unique numbers per request.`
         );
       }
-      const entries = [...byPhone].map(([phone, leadIds]) => ({ phone, leadIds: [...leadIds] }));
+      const entries = [...byPhone].map(([phone, group]) => ({
+        phone,
+        primary: group.candidates.primary,
+        alternate: group.candidates.alternate,
+        leadIds: [...group.leadIds]
+      }));
       const batches = Array.from(
         { length: Math.ceil(entries.length / MAX_LEAD_WHATSAPP_BATCH_SIZE) },
         (_, index) => entries.slice(index * MAX_LEAD_WHATSAPP_BATCH_SIZE, (index + 1) * MAX_LEAD_WHATSAPP_BATCH_SIZE)
