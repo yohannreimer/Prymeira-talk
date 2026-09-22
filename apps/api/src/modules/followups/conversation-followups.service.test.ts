@@ -344,6 +344,48 @@ describe("conversation followups", () => {
     });
   });
 
+  it("uses the approved six-hour Villefer cadence for an already imported stale agent", async () => {
+    const staleVilleferSession = {
+      ...baseSession,
+      agent: {
+        ...baseAgent,
+        behaviorConfig: {
+          packageMetadata: { key: "villefer-commercial-qualifier-v1" },
+          followup: {
+            ...followupConfig,
+            steps: [
+              { afterBusinessMinutes: 720, instruction: "Primeiro legado." },
+              { afterBusinessMinutes: 1200, instruction: "Segundo." },
+              { afterBusinessMinutes: 2400, instruction: "Terceiro." }
+            ]
+          }
+        }
+      }
+    };
+    const prisma = buildPrisma({
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseConversation,
+          activeAgentSession: staleVilleferSession
+        })
+      }
+    });
+
+    await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "agent"
+    });
+
+    expect(prisma.conversationFollowup.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        scheduledAt: new Date("2026-09-21T18:00:00.000Z")
+      })
+    });
+  });
+
   it("schedules a human commercial candidate from a human outbound message", async () => {
     const prisma = buildPrisma();
     const service = createConversationFollowupsService(prisma);

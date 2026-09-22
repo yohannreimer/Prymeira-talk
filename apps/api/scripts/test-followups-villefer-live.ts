@@ -19,6 +19,8 @@ import {
 } from "../src/modules/agents/knowledge-retrieval.js";
 import { villeferV1Package } from "../src/modules/agents/villefer-v1-package.js";
 import { resolveFollowupStepInstruction } from "../src/modules/agents/followup-step-instruction.js";
+import { resolveEffectiveFollowupConfig } from "../src/modules/agents/effective-followup-config.js";
+import { createAgentFollowupRuntime } from "../src/modules/agents/agent-followup-runtime.js";
 import { addBusinessMinutes } from "../src/modules/followups/business-time.js";
 import {
   createConversationFollowupsService,
@@ -57,8 +59,8 @@ type ScenarioReport = {
 class DisabledFakeTransport {
   readonly calls: Array<{ body: string }> = [];
 
-  async deliver(body: string): Promise<never> {
-    this.calls.push({ body });
+  async createPendingOutboundMessage(input: { body: string }): Promise<never> {
+    this.calls.push({ body: input.body });
     throw new Error("TRANSPORT_DISABLED_IN_LIVE_HARNESS");
   }
 }
@@ -79,6 +81,7 @@ async function main() {
   const transport = new DisabledFakeTransport();
   const jevModel = process.env.JEV_MODEL?.trim() || "jev-latest";
   let jevCalls = 0;
+  let generatorModelCalled = false;
   let activeCall = "";
 
   const safeFetch: typeof fetch = async (url, init) => {
@@ -113,7 +116,14 @@ async function main() {
     configuredInstruction: firstInstruction
   });
   const packageCadence = agentPackage.agent.followup.steps.map((step) => step.afterBusinessMinutes);
-  const productionCadence = villeferV1Package.agent.followup.steps.map((step) => step.afterBusinessMinutes);
+  const effectiveFollowupConfig = resolveEffectiveFollowupConfig({
+    packageMetadata: agentPackage.metadata,
+    followup: agentPackage.agent.followup
+  });
+  if (!effectiveFollowupConfig) {
+    throw new Error("A configuração efetiva de follow-up não pôde ser resolvida.");
+  }
+  const productionCadence = effectiveFollowupConfig.steps.map((step) => step.afterBusinessMinutes);
   console.log(JSON.stringify({
     kind: "followup_package_diagnostic",
     packageCadence,
@@ -199,9 +209,20 @@ async function main() {
     const assertionFailures: string[] = [];
     assertEqual(decision.route, "human_review", "rota", assertionFailures);
     assertEqual(decision.outcome, "follow_up", "decisão", assertionFailures);
-    const state = decision.route === "human_review"
-      ? finalState("review", "jev_human_review")
-      : finalState("cancelled", "jev_cancel");
+    const runtimeReview = await runHumanReviewRuntimeRehearsal({
+      agentPackage,
+      entries,
+      decision,
+      candidateDraft,
+      selectedKnowledge,
+      transport
+    });
+    const state = runtimeReview.state;
+    assertEqual(runtimeReview.resultStatus, "review", "runtime produtivo", assertionFailures);
+    assertEqual(runtimeReview.providerFactoryCalls, 1, "resolução do GPT configurado", assertionFailures);
+    assertEqual(runtimeReview.fallbackProviderCalls, 0, "provedor simulado", assertionFailures);
+    generatorModelCalled = runtimeReview.providerFactoryCalls > 0;
+    assertEqual(runtimeReview.draftBody, candidateDraft, "rascunho persistido", assertionFailures);
     assertEqual(state.status, "review", "estado final", assertionFailures);
 
     reports.push(report({
@@ -219,11 +240,11 @@ async function main() {
 
   {
     const startedCalls = jevCalls;
-    const calendar = agentPackage.agent.followup;
+    const calendar = effectiveFollowupConfig;
     const anchor = new Date("2026-09-21T12:00:00.000Z");
     const sixBusinessHoursAt = addBusinessMinutes({
       from: anchor,
-      minutes: villeferV1Package.agent.followup.steps[0]!.afterBusinessMinutes,
+      minutes: effectiveFollowupConfig.steps[0]!.afterBusinessMinutes,
       timeZone: calendar.timeZone,
       businessDays: calendar.businessDays,
       businessHours: calendar.businessHours
@@ -439,7 +460,7 @@ async function main() {
     failed: failures.length,
     transportCalls: transport.calls.length,
     externalMessagingEnabled: false,
-    generatorModelCalled: false,
+    generatorModelCalled,
     databaseUsed: false,
     jevCalls
   }));
@@ -536,15 +557,17 @@ function createLifecycleHarness(input: {
   const createdFollowups: ConversationFollowupRecord[] = [];
 
   const conversationFollowup = {
-    async findFirst() {
-      return followup;
+    async findFirst(args: unknown) {
+      const where = asRecord(asRecord(args)?.where);
+      return !where || matchesSyntheticWhere(followup, where) ? followup : null;
     },
     async findMany() {
       return [];
     },
     async updateMany(args: unknown) {
+      const where = asRecord(asRecord(args)?.where);
       const data = asRecord(asRecord(args)?.data);
-      if (!data || followup.activeKey !== "active") return { count: 0 };
+      if (!where || !data || !matchesSyntheticWhere(followup, where)) return { count: 0 };
       Object.assign(followup, data);
       return { count: 1 };
     },
@@ -607,6 +630,167 @@ function syntheticMessage(id: string, direction: "inbound" | "outbound", at: Dat
   };
 }
 
+async function runHumanReviewRuntimeRehearsal(input: {
+  agentPackage: AgentPackage;
+  entries: ConversationEntry[];
+  decision: FollowupDecision;
+  candidateDraft: string;
+  selectedKnowledge: FollowupDecisionInput["selectedKnowledge"];
+  transport: DisabledFakeTransport;
+}) {
+  const lockedAt = new Date("2026-09-21T18:00:00.000Z");
+  const followup: ConversationFollowupRecord = {
+    id: lifecycleIds.followupId,
+    workspaceId: lifecycleIds.workspaceId,
+    conversationId: lifecycleIds.conversationId,
+    agentId: lifecycleIds.agentId,
+    sessionId: lifecycleIds.sessionId,
+    kind: "human_commercial",
+    status: "processing",
+    activeKey: "active",
+    stepIndex: 1,
+    anchorMessageId: lifecycleIds.anchorMessageId,
+    anchorMessageAt: new Date("2026-09-21T12:00:00.000Z"),
+    anchorIngestedAt: new Date("2026-09-21T12:00:00.100Z"),
+    scheduledAt: lockedAt,
+    lockedAt,
+    decision: {},
+    draftBody: null,
+    reason: null
+  };
+  const behaviorConfig = {
+    ...input.agentPackage.agent.behavior,
+    packageMetadata: input.agentPackage.metadata,
+    followup: input.agentPackage.agent.followup,
+    knowledgeTaxonomy: input.agentPackage.agent.knowledgeTaxonomy
+  };
+  const agent = {
+    id: lifecycleIds.agentId,
+    workspaceId: lifecycleIds.workspaceId,
+    status: "active",
+    model: "package-model-must-be-overridden",
+    systemPrompt: input.agentPackage.agent.systemPrompt,
+    behaviorConfig
+  };
+  const session = {
+    id: lifecycleIds.sessionId,
+    workspaceId: lifecycleIds.workspaceId,
+    conversationId: lifecycleIds.conversationId,
+    agentId: lifecycleIds.agentId,
+    status: "paused_by_human",
+    agent
+  };
+  const conversation = {
+    id: lifecycleIds.conversationId,
+    workspaceId: lifecycleIds.workspaceId,
+    status: "open",
+    aiControlStatus: "human_controlled",
+    activeAgentSessionId: lifecycleIds.sessionId,
+    contactId: "synthetic-contact",
+    contact: { id: "synthetic-contact", name: "Contato sintético" },
+    channel: { id: "synthetic-channel", provider: "evolution", providerKey: "synthetic" },
+    tags: []
+  };
+  let providerFactoryCalls = 0;
+  let fallbackProviderCalls = 0;
+  const runtime = createAgentFollowupRuntime({
+    prisma: {
+      integrationConfig: {
+        async findUnique() {
+          return {
+            mode: "real",
+            settings: {
+              baseUrl: "https://synthetic-gpt.invalid/v1",
+              apiKey: "synthetic-key-never-sent",
+              chatModel: "synthetic-production-model"
+            }
+          };
+        }
+      },
+      aiAgent: { async findFirst() { return agent; } },
+      conversation: { async findUnique() { return conversation; } },
+      aiKnowledgeSource: {
+        async findMany() {
+          return input.selectedKnowledge.map((source, index) => ({
+            id: `synthetic-knowledge-${index + 1}`,
+            title: source.title,
+            content: source.content,
+            metadata: { approvalStatus: "confirmed" }
+          }));
+        }
+      },
+      message: {
+        async findMany() {
+          return input.entries.map(([label, body], index) => ({
+            id: `synthetic-runtime-message-${index + 1}`,
+            workspaceId: lifecycleIds.workspaceId,
+            conversationId: lifecycleIds.conversationId,
+            direction: label === "cliente" ? "inbound" : "outbound",
+            type: label === "nota interna" ? "internal_note" : "text",
+            body,
+            createdAt: new Date(`2026-09-21T12:${String(index).padStart(2, "0")}:00.000Z`),
+            ingestedAt: new Date(`2026-09-21T12:${String(index).padStart(2, "0")}:00.100Z`)
+          }));
+        }
+      },
+      conversationFollowup: {
+        async findFirst() { return followup; },
+        async updateMany(args: unknown) {
+          const data = asRecord(asRecord(args)?.data);
+          if (!data || followup.activeKey !== "active") return { count: 0 };
+          Object.assign(followup, data);
+          return { count: 1 };
+        }
+      }
+    } as never,
+    provider: {
+      async generate() {
+        fallbackProviderCalls += 1;
+        throw new Error("SIMULATED_FALLBACK_MUST_NOT_RUN");
+      }
+    },
+    providerFactory: () => {
+      providerFactoryCalls += 1;
+      return {
+        async generate(providerInput) {
+          if (providerInput.model !== "synthetic-production-model") {
+            throw new Error("CONFIGURED_MODEL_NOT_USED");
+          }
+          return {
+            confidence: 0.9,
+            reply: input.candidateDraft,
+            actions: [],
+            handoff: { required: false, reason: null }
+          };
+        }
+      };
+    },
+    allowFallbackProvider: false,
+    followups: {
+      async claimScheduledFollowup() { return { status: "claimed" as const, lockedAt }; },
+      async revalidateActiveFollowup() {
+        return { status: "valid" as const, context: { followup, conversation, session, agent } };
+      },
+      async completeAutomaticFollowup() { return { status: "not_active" as const }; },
+      async recoverClaimedFollowup() { return { status: "recovered" as const }; }
+    },
+    jevFollowupDecision: { async decide() { return input.decision; } },
+    outbound: input.transport as never
+  });
+
+  const result = await runtime.runFollowup({
+    workspaceId: lifecycleIds.workspaceId,
+    followupId: lifecycleIds.followupId
+  });
+  return {
+    resultStatus: result.status,
+    providerFactoryCalls,
+    fallbackProviderCalls,
+    draftBody: followup.draftBody ?? null,
+    state: stateFromFollowup(followup)
+  };
+}
+
 function finalState(
   status: SimulatedStatus,
   reason: string | null,
@@ -628,6 +812,21 @@ function stateFromFollowup(
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
+}
+
+function matchesSyntheticWhere(record: Record<string, unknown>, where: Record<string, unknown>) {
+  return Object.entries(where).every(([key, expected]) => {
+    const actual = record[key];
+    if (expected instanceof Date) {
+      return (actual instanceof Date || typeof actual === "string") &&
+        new Date(actual).getTime() === expected.getTime();
+    }
+    const condition = asRecord(expected);
+    if (condition?.in && Array.isArray(condition.in)) {
+      return condition.in.includes(actual);
+    }
+    return actual === expected;
+  });
 }
 
 function report(input: {

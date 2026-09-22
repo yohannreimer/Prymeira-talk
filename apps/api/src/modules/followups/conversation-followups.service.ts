@@ -1,5 +1,5 @@
-import { agentFollowupConfigSchema } from "@prymeira-talk/shared";
 import { addBusinessMinutes } from "./business-time.js";
+import { resolveEffectiveFollowupConfig } from "../agents/effective-followup-config.js";
 import {
   publishPersistedConversationFollowup,
   type ConversationFollowupPublisher
@@ -499,13 +499,13 @@ export function createConversationFollowupsService(
     }
 
     const sentAt = input.now ?? new Date();
-    const parsed = agentFollowupConfigSchema.safeParse(asRecord(input.agentBehaviorConfig)?.followup);
+    const followupConfig = resolveEffectiveFollowupConfig(input.agentBehaviorConfig);
     const nextStep =
-      parsed.success && input.followup.stepIndex < MAX_AUTOMATIC_FOLLOWUP_STEPS
-        ? parsed.data.steps[input.followup.stepIndex]
+      followupConfig && input.followup.stepIndex < MAX_AUTOMATIC_FOLLOWUP_STEPS
+        ? followupConfig.steps[input.followup.stepIndex]
         : undefined;
-    const nextScheduledAt = nextStep && parsed.success
-      ? calculateScheduledAt(input.followup.anchorMessageAt, nextStep, parsed.data)
+    const nextScheduledAt = nextStep && followupConfig
+      ? calculateScheduledAt(input.followup.anchorMessageAt, nextStep, followupConfig)
       : null;
 
     const result = await prisma.$transaction(async (tx) => {
@@ -767,14 +767,13 @@ async function resolveCandidate(
 }
 
 function calculateFirstScheduledAt(anchorMessageAt: Date | string, agent: AgentRecord): Date | null {
-  const behaviorConfig = asRecord(agent.behaviorConfig);
-  const parsed = agentFollowupConfigSchema.safeParse(behaviorConfig?.followup);
-  if (!parsed.success) {
+  const followupConfig = resolveEffectiveFollowupConfig(agent.behaviorConfig);
+  if (!followupConfig) {
     return null;
   }
 
-  const firstStep = parsed.data.steps[0];
-  return firstStep ? calculateScheduledAt(anchorMessageAt, firstStep, parsed.data) : null;
+  const firstStep = followupConfig.steps[0];
+  return firstStep ? calculateScheduledAt(anchorMessageAt, firstStep, followupConfig) : null;
 }
 
 function calculateScheduledAt(

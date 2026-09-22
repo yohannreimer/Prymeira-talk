@@ -167,7 +167,7 @@ describe("createJevReplyPreflight", () => {
     })).resolves.toEqual({ outcome: "handoff", reason: "commercial_policy_risk" });
   });
 
-  it("does not hand off a candidate solely because a low-confidence disposition is indecisive", async () => {
+  it("fails closed when the disposition selects handoff even with low confidence", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({
         model: "jev-1.13.0",
@@ -194,7 +194,7 @@ describe("createJevReplyPreflight", () => {
         commercialPath: "ambiguous",
         nextAction: "handoff"
       }
-    })).resolves.toEqual({ outcome: "send" });
+    })).resolves.toEqual({ outcome: "handoff", reason: "commercial_policy_risk" });
   });
 
   it("fails closed when a handoff disposition has no confidence metadata", async () => {

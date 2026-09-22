@@ -231,6 +231,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
       : createAgentFollowupRuntime({
           prisma: app.prisma as unknown as Parameters<typeof createAgentFollowupRuntime>[0]["prisma"],
           provider: createSimulatedAgentProvider(),
+          allowFallbackProvider: false,
           followups: followupService,
           jevFollowupDecision: createJevFollowupDecision({
             apiKey: env.JEV_API_KEY,

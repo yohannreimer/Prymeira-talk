@@ -508,6 +508,45 @@ describe("conversation follow-up review routes", () => {
     }
   });
 
+  it("does not reopen review when an unconfirmed delivery races with a customer reply", async () => {
+    let dbRef: ReturnType<typeof createMemoryPrisma> | undefined;
+    const outbound = vi.fn().mockImplementation(async () => {
+      dbRef!.messages.push({
+        id: "00000000-0000-4000-8000-000000000797",
+        workspaceId: ids.workspaceA,
+        conversationId: ids.conversation,
+        direction: "inbound",
+        status: "delivered",
+        metadata: {},
+        ingestedAt: new Date(fixedNow.getTime() + 1_000),
+        createdAt: new Date(fixedNow.getTime() + 1_000)
+      });
+      return { message: { id: ids.followup, status: "pending" } };
+    });
+    const { app, db } = await buildRouteApp({ realFollowups: true, outbound });
+    dbRef = db;
+    const request = {
+      method: "POST" as const,
+      url: `/followups/${ids.followup}/send`,
+      payload: { body: "Mensagem em confirmação", expectedUpdatedAt: expected(db.records[0]) }
+    };
+
+    try {
+      const first = await app.inject(request);
+      expect(first.statusCode).toBe(502);
+      expect(first.json().code).toBe("FOLLOWUP_DELIVERY_UNCERTAIN");
+      expect(db.records[0]).toMatchObject({
+        status: "failed",
+        activeKey: null,
+        reason: "manual_delivery_uncertain"
+      });
+      expect((await app.inject(request)).statusCode).toBe(409);
+      expect(outbound).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("removes the hidden reservation when delivery fails before provider acceptance", async () => {
     const outbound = vi.fn().mockRejectedValue(new Error("definitive pre-provider failure"));
     const { app, db } = await buildRouteApp({ realFollowups: true, outbound });

@@ -348,11 +348,17 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
     }
 
     if (delivery.message.status !== "sent") {
-      const restored = await restoreReviewAndRemoveReservation(prisma, request.talk.workspaceId, current.id, claimAt);
-      if (restored) await publish(request.talk.workspaceId, current.id);
+      const guarded = await guardUncertainDelivery(
+        prisma,
+        request.talk.workspaceId,
+        current.id,
+        claimAt,
+        body.data.body
+      );
+      if (guarded) await publish(request.talk.workspaceId, current.id);
       return reply.code(502).send({
-        code: "FOLLOWUP_DELIVERY_UNCONFIRMED",
-        error: "The follow-up delivery was not confirmed."
+        code: "FOLLOWUP_DELIVERY_UNCERTAIN",
+        error: "The provider may still deliver the follow-up. It will not be retried automatically."
       });
     }
 

@@ -271,17 +271,9 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
       }
 
       const { answers } = parsed.data;
-      const handoffConfidence = Math.max(
-        answers.disposition.confidence ?? 0,
-        answers.disposition.probabilities?.handoff ?? 0
-      );
-      const hasUnscoredHandoff =
-        answers.disposition.choice === "handoff" &&
-        answers.disposition.confidence === undefined &&
-        answers.disposition.probabilities?.handoff === undefined;
       if (
         answers.assertsUnsupportedCommercialFact.noul >= 0.6 ||
-        (answers.disposition.choice === "handoff" && (handoffConfidence >= 0.7 || hasUnscoredHandoff))
+        answers.disposition.choice === "handoff"
       ) {
         return { outcome: "handoff", reason: "commercial_policy_risk" };
       }

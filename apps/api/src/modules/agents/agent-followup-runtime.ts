@@ -1,4 +1,3 @@
-import { agentFollowupConfigSchema } from "@prymeira-talk/shared";
 import { blocksAutonomousAgent } from "../assistant/assistant-policy.js";
 import type { ConversationOutboundTextDelivery } from "../conversations/conversations.service.js";
 import {
@@ -25,8 +24,19 @@ import {
   type SelectedKnowledgeSource
 } from "./knowledge-retrieval.js";
 import { readKnowledgeTaxonomy } from "./knowledge-taxonomy.js";
-import { readAgentReasoningEffort, type AgentOutput, type AgentProvider } from "./provider-gateway.js";
+import {
+  createOpenAiCompatibleAgentProvider,
+  readAgentReasoningEffort,
+  type AgentOutput,
+  type AgentProvider
+} from "./provider-gateway.js";
 import { resolveFollowupStepInstruction } from "./followup-step-instruction.js";
+import { resolveEffectiveFollowupConfig } from "./effective-followup-config.js";
+import {
+  resolveOpenAiCompatibleSettings,
+  type AiProviderSettingsPrismaLike,
+  type OpenAiCompatibleSettings
+} from "./ai-provider-settings.js";
 
 type AgentFollowupAgent = {
   id: string;
@@ -70,7 +80,7 @@ type KnowledgeSource = {
   mimeType?: string | null;
 };
 
-export type AgentFollowupRuntimePrismaLike = ConversationContextBuilderPrismaLike & {
+export type AgentFollowupRuntimePrismaLike = ConversationContextBuilderPrismaLike & AiProviderSettingsPrismaLike & {
   aiAgent: {
     findFirst(args: unknown): Promise<AgentFollowupAgent | null>;
   };
@@ -128,6 +138,8 @@ export type AgentFollowupRuntimeResult =
 export function createAgentFollowupRuntime(input: {
   prisma: AgentFollowupRuntimePrismaLike;
   provider: AgentProvider;
+  providerFactory?: (settings: Extract<OpenAiCompatibleSettings, { active: true }>) => AgentProvider;
+  allowFallbackProvider?: boolean;
   followups: FollowupLifecycle;
   jevFollowupDecision: Pick<JevFollowupDecision, "decide">;
   replyPreflight?: AgentReplyPreflight;
@@ -228,12 +240,12 @@ export function createAgentFollowupRuntime(input: {
         return { status: "review", followupId: followup.id };
       }
 
-      const followupConfig = agentFollowupConfigSchema.safeParse(asRecord(agent.behaviorConfig)?.followup);
+      const followupConfig = resolveEffectiveFollowupConfig(agent.behaviorConfig);
       if (followup.stepIndex > MAX_AUTOMATIC_FOLLOWUP_STEPS) {
         await markSkipped(followup, { outcome: "skip", reason: "followup_step_limit" }, "followup_step_limit");
         return { status: "skipped", followupId: followup.id };
       }
-      const step = followupConfig.success ? followupConfig.data.steps[followup.stepIndex - 1] : undefined;
+      const step = followupConfig?.steps[followup.stepIndex - 1];
       if (!step) {
         await markSkipped(followup, { outcome: "skip", reason: "followup_step_unconfigured" }, "followup_step_unconfigured");
         return { status: "skipped", followupId: followup.id };
@@ -347,11 +359,40 @@ export function createAgentFollowupRuntime(input: {
         }
       }
 
+      let providerSettings: OpenAiCompatibleSettings;
+      try {
+        providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
+          workspaceId: runInput.workspaceId
+        });
+      } catch (error) {
+        const message = errorMessage(error);
+        await input.followups.recoverClaimedFollowup({
+          workspaceId: runInput.workspaceId,
+          followupId: followup.id,
+          claim: claimToken,
+          outcome: "retry",
+          reason: `followup_provider_settings_load_failed: ${message}`
+        });
+        return { status: "failed", followupId: followup.id, message };
+      }
+      if (!providerSettings.active && input.allowFallbackProvider === false) {
+        await markReview({
+          followup,
+          decision,
+          reason: "followup_provider_unavailable"
+        });
+        return { status: "review", followupId: followup.id };
+      }
+      const runProvider = providerSettings.active
+        ? (input.providerFactory ?? createOpenAiCompatibleAgentProvider)(providerSettings)
+        : input.provider;
+      const runModel = providerSettings.active ? providerSettings.chatModel : agent.model;
+
       let output: AgentOutput;
       try {
-        output = await input.provider.generate({
+        output = await runProvider.generate({
           reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
-          model: agent.model,
+          model: runModel,
           systemPrompt: agent.systemPrompt,
           userPrompt: buildFollowupUserPrompt(stepInstruction, decision),
           context: buildFollowupContext({
@@ -609,7 +650,7 @@ function toPreflightCurrentMessage(
   followup: ConversationFollowupRecord,
   instruction: string
 ) {
-  const latest = messages.at(-1);
+  const latest = [...messages].reverse().find((message) => message.label === "cliente");
   return {
     id: latest?.id ?? followup.anchorMessageId,
     body: latest?.body?.trim() || instruction,

@@ -15,12 +15,12 @@ import {
   type FollowupDecisionInput
 } from "../src/modules/agents/jev-followup-decision.js";
 import { resolveFollowupStepInstruction } from "../src/modules/agents/followup-step-instruction.js";
+import { resolveEffectiveFollowupConfig } from "../src/modules/agents/effective-followup-config.js";
 import {
   selectRelevantKnowledge,
   type KnowledgeRetrievalSource,
   type SelectedKnowledgeSource
 } from "../src/modules/agents/knowledge-retrieval.js";
-import { villeferV1Package } from "../src/modules/agents/villefer-v1-package.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(__dirname, "../../..");
@@ -250,6 +250,13 @@ const followupCases: FollowupLiveCase[] = [
 
 let failures = 0;
 let conservativeWarnings = 0;
+const effectiveFollowupConfig = resolveEffectiveFollowupConfig({
+  packageMetadata: agentPackage.metadata,
+  followup: agentPackage.agent.followup
+});
+if (!effectiveFollowupConfig) {
+  throw new Error("A configuração efetiva de follow-up não pôde ser resolvida.");
+}
 console.log(JSON.stringify({
   kind: "package",
   package: agentPackage.metadata.name,
@@ -260,10 +267,10 @@ console.log(JSON.stringify({
   promptCharacters: renderedPrompt.length,
   promptSentToJev: false,
   packageCadence: agentPackage.agent.followup.steps.map((step) => step.afterBusinessMinutes),
-  effectiveProductionCadence: villeferV1Package.agent.followup.steps.map((step) => step.afterBusinessMinutes),
+  effectiveProductionCadence: effectiveFollowupConfig.steps.map((step) => step.afterBusinessMinutes),
   cadenceDiagnostic:
     JSON.stringify(agentPackage.agent.followup.steps.map((step) => step.afterBusinessMinutes)) ===
-      JSON.stringify(villeferV1Package.agent.followup.steps.map((step) => step.afterBusinessMinutes))
+      JSON.stringify(effectiveFollowupConfig.steps.map((step) => step.afterBusinessMinutes))
       ? "current"
       : "package_outdated_runtime_uses_production_cadence",
   note: "O prompt é usado pelo GPT no runtime; o JEV recebe somente histórico e conhecimento selecionado."

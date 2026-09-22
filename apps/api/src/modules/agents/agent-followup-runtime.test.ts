@@ -150,6 +150,9 @@ function buildRuntime(overrides: Record<string, any> = {}) {
     message: { id: "outbound_1", status: "sent" }
   });
   const prisma = {
+    integrationConfig: {
+      findUnique: overrides.integrationConfig?.findUnique ?? vi.fn().mockResolvedValue(null)
+    },
     aiAgent: {
       findFirst: overrides.aiAgent?.findFirst ?? vi.fn().mockResolvedValue(baseAgent)
     },
@@ -196,6 +199,8 @@ function buildRuntime(overrides: Record<string, any> = {}) {
   const runtime = createAgentFollowupRuntime({
     prisma,
     provider,
+    providerFactory: overrides.providerFactory,
+    allowFallbackProvider: overrides.allowFallbackProvider,
     followups: {
       claimScheduledFollowup,
       revalidateActiveFollowup,
@@ -328,6 +333,13 @@ describe("createAgentFollowupRuntime", () => {
       }]
     }));
     expect(JSON.stringify(harness.decide.mock.calls[0]?.[0])).not.toContain("FULL STORED AGENT PROMPT");
+    expect(harness.replyPreflight.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      currentMessage: {
+        id: "customer_1",
+        body: "Preciso de chapas, mas ainda não sei a espessura.",
+        type: "text"
+      }
+    }));
     expect(harness.provider.generate).toHaveBeenCalledWith(expect.objectContaining({
       systemPrompt: baseAgent.systemPrompt,
       userPrompt: expect.stringContaining(effectiveInstruction),
@@ -356,6 +368,51 @@ describe("createAgentFollowupRuntime", () => {
       finalBody: "Você consegue me informar a espessura da chapa?",
       decision: expect.objectContaining({ ...automaticDecision })
     }));
+  });
+
+  it("uses the workspace's configured GPT provider instead of the simulated fallback", async () => {
+    const realProvider = {
+      generate: vi.fn().mockResolvedValue({
+        confidence: 0.9,
+        reply: "Você consegue confirmar a espessura?",
+        actions: [],
+        handoff: { required: false, reason: null }
+      })
+    };
+    const providerFactory = vi.fn().mockReturnValue(realProvider);
+    const harness = buildRuntime({
+      integrationConfig: {
+        findUnique: vi.fn().mockResolvedValue({
+          mode: "real",
+          settings: {
+            baseUrl: "https://gpt.example.test/v1",
+            apiKey: "test-key",
+            chatModel: "gpt-production"
+          }
+        })
+      },
+      providerFactory
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "sent" });
+
+    expect(providerFactory).toHaveBeenCalledWith(expect.objectContaining({ chatModel: "gpt-production" }));
+    expect(realProvider.generate).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-production" }));
+    expect(harness.provider.generate).not.toHaveBeenCalled();
+  });
+
+  it("moves the follow-up to review when production has no configured GPT provider", async () => {
+    const harness = buildRuntime({ allowFallbackProvider: false });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({ status: "review", followupId: ids.followup });
+
+    expect(harness.provider.generate).not.toHaveBeenCalled();
+    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "review", reason: "followup_provider_unavailable" })
+    }));
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
   });
 
   it("persists a private draft for human review without changing control or calling transport", async () => {
