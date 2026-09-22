@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export type AgentReplyPreflightInput = {
+  agentRules?: string;
   currentMessage: {
     id: string;
     body: string;
@@ -14,6 +15,7 @@ export type AgentReplyPreflightInput = {
     createdAt: string | null;
   }>;
   selectedKnowledge: Array<{
+    id?: string;
     title: string;
     content: string;
   }>;
@@ -151,7 +153,7 @@ const replyPreflightQuestions = {
   commercialPath: {
     type: "choice",
     instructions:
-      "Usando somente o histórico e o conhecimento aprovado fornecido, qual caminho comercial se aplica ao pedido atual? Não trate uma inferência como fato confirmado.",
+      "Usando somente o histórico, as regras do agente e o conhecimento aprovado fornecido, qual caminho comercial se aplica ao pedido atual? Não trate uma inferência como fato confirmado. Uma negativa explícita nas regras do agente é fonte válida para not_sold; uma família genérica não confirma toda variante.",
     criteria: {
       stock: "O conhecimento aprovado identifica o item como linha de estoque.",
       made_to_order: "O conhecimento aprovado identifica o item como sob encomenda.",
@@ -179,9 +181,9 @@ const replyPreflightQuestions = {
 const replyQualityAuditQuestions = {
   disposition: {
     type: "choice",
-    instructions: "A resposta candidata deve ser enviada, suprimida ou encaminhada para humano? Avalie `candidateReply` contra `agentPreflight`, `currentMessage` e `conversationMessages`. Uma recusa objetiva de item explicitamente classificado como not_sold no plano e sustentado pelo conhecimento aprovado segue o plano. Uma mensagem que apenas informa que um vendedor verificará disponibilidade ou especificação também segue um plano handoff e não afirma que o item está disponível. Nunca escolha suppress para uma resposta que confirma uma informação nova do cliente e solicita o próximo dado necessário de uma qualificação em aberto.",
+    instructions: "A resposta candidata deve ser enviada, suprimida ou encaminhada para humano? Avalie `candidateReply` contra `agentPreflight`, `currentMessage`, `conversationMessages`, `agentRules` e conhecimento aprovado. Uma recusa objetiva de item explicitamente classificado como not_sold no plano e sustentado por regra explícita do agente ou conhecimento aprovado segue o plano. Uma mensagem que apenas informa que um vendedor verificará disponibilidade ou especificação também segue um plano handoff e não afirma que o item está disponível. Nunca escolha suppress para uma resposta que confirma uma informação nova do cliente e solicita o próximo dado necessário de uma qualificação em aberto.",
     criteria: {
-      send: "A resposta avança a demanda, segue o plano interno e não afirma fato comercial sem fonte aprovada. Inclui uma recusa curta sustentada quando agentPreflight.commercialPath é not_sold e um aviso de encaminhamento/verificação quando nextAction é handoff. Exemplo: depois de o atendente perguntar 'Será entrega ou retirada?' e o cliente responder 'Retirada', a resposta 'Certo, retirada em Joinville. Para seguir, informe a empresa e CNPJ ou, se for pessoa física, seu nome.' deve ser send: confirma a informação nova e coleta o próximo dado, sem prometer preço, estoque ou prazo.",
+      send: "A resposta avança a demanda, segue o plano interno e não afirma fato comercial sem regra explícita do agente ou conhecimento aprovado. Inclui uma recusa curta sustentada quando agentPreflight.commercialPath é not_sold e um aviso de encaminhamento/verificação quando nextAction é handoff. Exemplo: depois de o atendente perguntar 'Será entrega ou retirada?' e o cliente responder 'Retirada', a resposta 'Certo, retirada em Joinville. Para seguir, informe a empresa e CNPJ ou, se for pessoa física, seu nome.' deve ser send: confirma a informação nova e coleta o próximo dado, sem prometer preço, estoque ou prazo.",
       suppress: "Somente quando candidateReply for uma duplicação real de resposta já enviada, ou uma confirmação social/encerramento sem pergunta, sem novo dado e sem pendência aberta. Não é suppress uma etapa que registra uma decisão do cliente e pede o próximo dado de qualificação.",
       handoff: "A resposta afirma, promete ou decide preço, estoque, prazo, frete, pagamento, especificação ou exceção sem base aprovada, ou conflita com o plano."
     }
@@ -193,7 +195,7 @@ const replyQualityAuditQuestions = {
   },
   assertsUnsupportedCommercialFact: {
     type: "noul",
-    instructions: "A resposta candidata afirma, promete ou oferece como certo um fato comercial ou equivalente técnico sem evidência explícita no conhecimento aprovado? Uma recusa que repete fielmente um item explicitamente não vendido no conhecimento aprovado é suportada. Dizer que um vendedor ainda verificará disponibilidade ou especificação não afirma disponibilidade, estoque ou especificação.",
+    instructions: "A resposta candidata afirma, promete ou oferece como certo um fato comercial ou equivalente técnico sem evidência explícita nas regras do agente ou no conhecimento aprovado? Uma recusa que repete fielmente um item explicitamente não vendido nessas fontes é suportada. Dizer que um vendedor ainda verificará disponibilidade ou especificação não afirma disponibilidade, estoque ou especificação.",
     criteria: {
       true: "Afirma ou promete estoque, preço, prazo, frete, pagamento, especificação, substituição ou equivalência técnica sem fonte aprovada.",
       false: "Não afirma, promete ou oferece fato comercial protegido sem evidência."
@@ -302,17 +304,19 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
 
 function toJevState(input: AgentReplyPreflightInput) {
   return {
+    agentRules: input.agentRules ?? null,
     currentMessage: input.currentMessage,
-    conversationMessages: input.conversationMessages.slice(-10).map((message) => ({
+    conversationMessages: input.conversationMessages.slice(-20).map((message) => ({
       id: message.id,
       label: message.label,
       type: message.type,
-      body: message.body?.slice(0, 2_000) ?? null,
+      body: message.body,
       createdAt: message.createdAt
     })),
-    approvedKnowledge: input.selectedKnowledge.slice(0, 8).map((source) => ({
-      title: source.title.slice(0, 240),
-      content: source.content.slice(0, 1_500)
+    approvedKnowledge: input.selectedKnowledge.map((source) => ({
+      id: source.id ?? null,
+      title: source.title,
+      content: source.content
     }))
   };
 }
