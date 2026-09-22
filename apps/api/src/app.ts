@@ -5,9 +5,12 @@ import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
+import { createAgentFollowupRuntime } from "./modules/agents/agent-followup-runtime.js";
 import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
+import { createJevFollowupDecision } from "./modules/agents/jev-followup-decision.js";
 import { createJevReplyPreflight } from "./modules/agents/jev-reply-preflight.js";
 import { createAgentReplyScheduler } from "./modules/agents/agent-reply-scheduler.js";
+import { createConversationFollowupScheduler } from "./modules/followups/conversation-followup-scheduler.js";
 import { createConversationFollowupsService } from "./modules/followups/conversation-followups.service.js";
 import { agentsRoutes } from "./modules/agents/agents.routes.js";
 import { agentPackageRoutes } from "./modules/agents/agent-package.routes.js";
@@ -25,10 +28,12 @@ import { boardsRoutes } from "./modules/boards/boards.routes.js";
 import { campaignsRoutes } from "./modules/campaigns/campaigns.routes.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
 import { contactsRoutes } from "./modules/contacts/contacts.routes.js";
+import { createConversationsService, type PrismaLike as ConversationsPrismaLike } from "./modules/conversations/conversations.service.js";
 import { conversationsRoutes } from "./modules/conversations/conversations.routes.js";
 import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js";
 import { crmRoutes } from "./modules/crm/crm.routes.js";
 import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
+import { resolveMetaRuntime } from "./modules/meta/meta-runtime.js";
 import { metaWebhooksRoutes } from "./modules/meta/meta.webhooks.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 import { reportsRoutes } from "./modules/reports/reports.routes.js";
@@ -150,15 +155,16 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
       : createConversationFollowupsService(
           app.prisma as unknown as Parameters<typeof createConversationFollowupsService>[0]
         );
+  const replyPreflight = env.JEV_API_KEY
+    ? createJevReplyPreflight({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
+    : undefined;
   const agentRuntime =
     options.prismaEnabled === false
       ? undefined
       : createAgentRuntime({
           prisma: app.prisma as unknown as Parameters<typeof createAgentRuntime>[0]["prisma"],
           provider: createSimulatedAgentProvider(),
-          replyPreflight: env.JEV_API_KEY
-            ? createJevReplyPreflight({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
-            : undefined,
+          replyPreflight,
           evolution: evolutionRuntime,
           chatHistory: evolutionHistorySource,
           realtime: app.realtime,
@@ -176,6 +182,60 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   if (agentReplyScheduler) {
     app.addHook("onClose", async () => {
       agentReplyScheduler.stop();
+    });
+  }
+
+  const followupRuntime =
+    options.prismaEnabled === false || !followupService || !env.JEV_API_KEY
+      ? undefined
+      : createAgentFollowupRuntime({
+          prisma: app.prisma as unknown as Parameters<typeof createAgentFollowupRuntime>[0]["prisma"],
+          provider: createSimulatedAgentProvider(),
+          followups: followupService,
+          jevFollowupDecision: createJevFollowupDecision({
+            apiKey: env.JEV_API_KEY,
+            model: env.JEV_MODEL
+          }),
+          replyPreflight,
+          outbound: {
+            async createPendingOutboundMessage(deliveryInput) {
+              const meta = await resolveMetaRuntime(app.prisma, {
+                workspaceId: deliveryInput.workspaceId
+              });
+              return createConversationsService(
+                app.prisma as unknown as ConversationsPrismaLike,
+                {
+                  evolution: evolutionRuntime,
+                  meta: {
+                    client: meta.client,
+                    phoneNumberId: meta.phoneNumberId
+                  },
+                  metaEvolution: {
+                    client: meta.evolutionClient?.sendText
+                      ? { sendText: meta.evolutionClient.sendText.bind(meta.evolutionClient) }
+                      : null
+                  }
+                }
+              ).createPendingOutboundMessage(deliveryInput);
+            }
+          }
+        });
+  const conversationFollowupScheduler = followupRuntime
+    ? createConversationFollowupScheduler({
+        prisma: app.prisma as unknown as Parameters<typeof createConversationFollowupScheduler>[0]["prisma"],
+        runtime: followupRuntime,
+        onError(error, followup) {
+          app.log.error(
+            { err: error, followupId: followup.id, workspaceId: followup.workspaceId },
+            "Conversation follow-up scheduler failed."
+          );
+        }
+      })
+    : undefined;
+  conversationFollowupScheduler?.start();
+  if (conversationFollowupScheduler) {
+    app.addHook("onClose", async () => {
+      conversationFollowupScheduler.stop();
     });
   }
 
