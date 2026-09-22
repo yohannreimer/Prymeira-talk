@@ -27,6 +27,7 @@ services:
       cnpj-postgres:
         condition: service_healthy
     environment:
+      DATABASE_URL: postgresql://cnpj-postgres:5432/cnpj
       PGHOST: cnpj-postgres
       PGPORT: "5432"
       PGDATABASE: ${CNPJ_POSTGRES_DB:?copy .env.example to .env first}

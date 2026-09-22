@@ -24,8 +24,12 @@ printf '%s' "$config" | node -e '
       PGOPTIONS: "-c search_path=cnpj"
     };
 
-    if ("DATABASE_URL" in pipeline) {
-      throw new Error("cnpj-pipeline must not assemble DATABASE_URL from a password");
+    const databaseUrl = "postgresql://cnpj-postgres:5432/cnpj";
+    if (pipeline.DATABASE_URL !== databaseUrl) {
+      throw new Error(`DATABASE_URL was ${JSON.stringify(pipeline.DATABASE_URL)}, expected ${databaseUrl}`);
+    }
+    if (pipeline.DATABASE_URL.includes(expected.PGPASSWORD)) {
+      throw new Error("cnpj-pipeline DATABASE_URL must not contain a password");
     }
     for (const [name, value] of Object.entries(expected)) {
       if (pipeline[name] !== value) {
