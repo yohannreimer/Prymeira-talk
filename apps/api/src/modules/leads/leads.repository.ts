@@ -375,10 +375,12 @@ export class LeadsRepository {
     if (fenced.count !== 1) throw new LeadLeaseLostError();
   }
 
-  async listLists(workspaceId: string, source?: LeadSource) {
+  async listLists(workspaceId: string, source?: LeadSource, page = 1, pageSize = 50) {
     const rows = await this.prisma.leadList.findMany({
       where: { workspaceId, ...(source ? { source } : {}) },
-      orderBy: [{ updatedAt: "desc" }, { id: "desc" }]
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      skip: (page - 1) * pageSize,
+      take: pageSize
     });
     return rows.map(toLeadListDto);
   }

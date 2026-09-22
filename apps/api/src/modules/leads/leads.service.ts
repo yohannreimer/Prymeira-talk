@@ -865,6 +865,18 @@ export function createLeadsService(options: LeadsServiceOptions) {
   return {
     listLists: repository.listLists.bind(repository),
     getList: repository.getList.bind(repository),
+    async lookupReceitaCompany(input: { cnpj?: string; companyName?: string; page: number; pageSize: number }) {
+      if (input.cnpj) {
+        const company = await cnpjRepository.findByCnpj(input.cnpj);
+        if (!company) throw new LeadsDomainError("LEAD_NOT_FOUND", "CNPJ not found in Receita Federal data.");
+        return { items: [company], page: 1, pageSize: 1, total: 1 };
+      }
+      return cnpjRepository.searchEstablishments({
+        companyName: input.companyName,
+        page: input.page,
+        pageSize: input.pageSize
+      });
+    },
     async updateList(input: { workspaceId: string; listId: string; name: string }) {
       const list = await repository.updateList(input.workspaceId, input.listId, { name: requiredText(input.name, "name") });
       publishList(list);
