@@ -60,6 +60,11 @@ import {
 } from "@prymeira-talk/shared";
 import { readConfigValue } from "./runtime-config";
 import type { AssistantConversationDto, AssistantChannelSettings, AssistantSendInput } from '@prymeira-talk/shared';
+import { handoffBriefDtoSchema } from '../../../../packages/shared/src/assistant';
+
+export function apiGetHandoffBrief(id: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return fetchJson(getToken, `/assistant/conversations/${id}/handoff-brief`, { signal }, data => handoffBriefDtoSchema.parse(data), 'Não foi possível carregar o próximo passo.');
+}
 
 export function apiGetAssistantConversation(id: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
   return fetchJson(getToken, `/assistant/conversations/${id}`, { signal }, data => data as AssistantConversationDto, 'Não foi possível carregar a IA de apoio.');

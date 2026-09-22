@@ -36,7 +36,7 @@ import {
 import { QuickRepliesPopover } from "./QuickRepliesPopover";
 import { useRealtimeEvents } from "./useRealtimeEvents";
 import { AssistantPanel } from './AssistantPanel';
-import { buildHandoffBrief } from './handoff-brief';
+import { useHandoffBrief } from './useHandoffBrief';
 import { ContactIdentityCard } from './ContactIdentityCard';
 import { ContactAvatar, ContactPhotoProvider } from './ContactAvatar';
 import { InboxMedia, mediaCaption } from './InboxMedia';
@@ -844,12 +844,13 @@ function InboxPageContent() {
     [visibleConversations, selectedConversationId]
   );
   const visibleMessages = messagesConversationId === selectedConversationId ? messages : [];
-  const handoffBrief = useMemo(
-    () => selectedConversation && needsHumanAttention(selectedConversation)
-      ? buildHandoffBrief(selectedConversation.handoffReason, visibleMessages)
-      : null,
-    [selectedConversation, visibleMessages]
-  );
+  const handoffEnabled = Boolean(selectedConversation && needsHumanAttention(selectedConversation));
+  const handoff = useHandoffBrief(selectedConversationId, handoffEnabled, selectedConversation?.lastMessageAt, getToken);
+  const handoffBrief = handoffEnabled ? handoff.data ?? {
+    status: handoff.error ? 'failed' as const : 'pending' as const,
+    nextAction: null, summary: null, contextKey: null, updatedAt: null,
+    error: handoff.error
+  } : null;
   useEffect(() => { assistant.refresh(); }, [selectedConversation?.lastMessageAt, selectedConversation?.aiControlStatus, assistant.refresh]);
   const originNeedsReview = draftNeedsReview(composerOrigin, assistant.data?.currentContextKey);
   function editSuggestion(suggestion: AssistantSuggestionDto, confirmed: boolean) {
@@ -1692,7 +1693,7 @@ function InboxPageContent() {
 
       <aside className={`contact-panel assistant-contact-panel${assistantOpen ? ' assistant-drawer-open' : ''}`} aria-label="Contato e IA de apoio">
         <div className="assistant-tabs"><button type="button" aria-pressed={assistantTab === 'contact'} onClick={() => setAssistantTab('contact')}>Contato</button><button type="button" aria-pressed={assistantTab === 'assistant'} onClick={() => setAssistantTab('assistant')}>IA de apoio{handoffBrief ? <span className="assistant-tab-dot is-handoff" /> : assistant.data?.status === 'ready' ? <span className="assistant-tab-dot" /> : null}</button><button ref={assistantCloseRef} className="assistant-drawer-close" aria-label="Fechar apoio" type="button" onClick={() => { setAssistantOpen(false); assistantTriggerRef.current?.focus(); }}><X size={18} /></button></div>
-        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} handoffBrief={handoffBrief} handoffMessagesLoading={isLoadingMessages || messagesConversationId !== selectedConversationId} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={sendSuggestion} onEdit={editSuggestion} /> : <>
+        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} handoffBrief={handoffBrief} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={sendSuggestion} onEdit={editSuggestion} /> : <>
         {/* Card identidade */}
         {selectedConversation ? <ContactIdentityCard key={selectedConversation.contactId}
           conversationId={selectedConversation.id}

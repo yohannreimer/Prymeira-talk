@@ -20,14 +20,13 @@ describe('assistant panel', () => {
   });
   it('shows the human handoff brief even when suggestions are disabled', () => {
     const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled data={{ ...data, settings: { mode: 'disabled', agentId: null } }} handoffBrief={{
-      customerContext: 'Material para porcas, quatro peças de aço 1045.',
-      lastReply: 'Vou consultar essas informações e já te dou um retorno.',
-      reason: 'A informação comercial precisa ser confirmada.',
-      nextStep: 'Confirme as condições e responda ao cliente.'
+      status: 'ready', nextAction: 'Verifique se trabalhamos com o material solicitado.',
+      summary: 'Ricardo pediu quatro peças de aço 1045 para porcas oxicortadas.',
+      contextKey: 'key', updatedAt: '2026-09-22T19:00:00Z', error: null
     }} />);
-    expect(html).toContain('Próxima ação');
+    expect(html).toContain('Faça agora');
     expect(html).toContain('quatro peças de aço 1045');
-    expect(html).toContain('Motivo do repasse');
+    expect(html).not.toContain('Motivo do repasse');
     expect(html).not.toContain('Apoio não ativado');
     expect(html).not.toContain('Enviar resposta');
   });

@@ -7796,6 +7796,11 @@ select:disabled {
 .handoff-brief-facts h4 { display: flex; align-items: center; gap: 6px; margin: 0 0 5px; color: #65766e; font-size: 10px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; }
 .handoff-brief-facts p { margin: 0; color: var(--color-text-primary); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .handoff-brief-footnote { margin: 0; padding: 11px 18px 13px; border-top: 1px solid var(--color-border-subtle); color: var(--color-text-secondary); font-size: 10px; line-height: 1.45; }
+.handoff-brief-summary { margin: 0 18px 16px; padding: 12px 0 0; border-top: 1px solid var(--color-border-subtle); }
+.handoff-brief-summary h4 { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: #65766e; font-size: 10px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase; }
+.handoff-brief-summary p { margin: 0; color: var(--color-text-primary); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.handoff-brief-message { margin: 0; padding: 18px; color: var(--color-text-secondary); font-size: 12px; line-height: 1.5; }
+.handoff-brief-update { color: #8b611d !important; }
 .assistant-state { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-weight: 650; margin: 26px 0 14px; }
 .assistant-state small { width: 100%; padding-left: 12px; color: var(--color-text-secondary); font-weight: 400; }
 .assistant-status-dot { margin: 0; }.assistant-status-dot.is-paused { background: var(--color-status-waiting-text); }
