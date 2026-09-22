@@ -116,6 +116,38 @@ describe("createJevFollowupDecision", () => {
     });
   });
 
+  it("canonicalizes an automatic proposal with no purpose to skip and cancel", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
+      purpose: "none",
+      route: "automatic_send"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+
+    await expect(decision.decide(baseInput)).resolves.toEqual({
+      outcome: "skip",
+      purpose: "none",
+      route: "cancel",
+      stage: "qualification",
+      risk: "none"
+    });
+  });
+
+  it("downshifts an automatic proposal with a non-qualification purpose", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
+      purpose: "proposal_checkin",
+      route: "automatic_send"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+
+    await expect(decision.decide(baseInput)).resolves.toEqual({
+      outcome: "follow_up",
+      purpose: "proposal_checkin",
+      route: "human_review",
+      stage: "qualification",
+      risk: "none"
+    });
+  });
+
   it("requires a compatible active agent session before preserving an automatic route", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       decisionResponse({ route: "automatic_send" })

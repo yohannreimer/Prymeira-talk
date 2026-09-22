@@ -209,6 +209,7 @@ export function createJevFollowupDecision(options: JevFollowupDecisionOptions): 
 function applyGuardRails(decision: FollowupDecision, input: FollowupDecisionInput): FollowupDecision {
   const isNoFollowupDecision =
     decision.outcome === "skip" ||
+    decision.purpose === "none" ||
     decision.route === "cancel" ||
     decision.route === "wait" ||
     decision.stage === "closure";
@@ -218,12 +219,13 @@ function applyGuardRails(decision: FollowupDecision, input: FollowupDecisionInpu
       ...decision,
       outcome: "skip",
       purpose: "none",
-      route: decision.route === "wait" ? "wait" : "cancel"
+      route: decision.route === "wait" && decision.purpose !== "none" ? "wait" : "cancel"
     };
   }
 
   const canAutomaticallySend =
     decision.outcome === "follow_up" &&
+    decision.purpose === "missing_qualification" &&
     input.followupKind === "qualification" &&
     input.aiControlStatus === "agent_allowed" &&
     input.hasCompatibleActiveAgentSession &&
