@@ -240,6 +240,77 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentRuntime", () => {
+  it("shares the last 20 messages and a source beyond the first 50 with both JEV calls", async () => {
+    const current = { ...baseMessage, body: "10mm" };
+    const earlier = Array.from({ length: 19 }, (_, index) => ({
+      ...baseMessage,
+      id: `history-${index + 1}`,
+      body: `Assunto anterior ${index + 1}`,
+      createdAt: new Date(now.getTime() - (21 - index) * 60_000)
+    }));
+    const messages = [
+      ...earlier,
+      { ...baseMessage, id: "product", body: "Barra para viga baldrame", createdAt: new Date(now.getTime() - 60_000) },
+      current
+    ];
+    const sources = Array.from({ length: 50 }, (_, index) => ({
+      id: `unrelated-${index}`,
+      title: `Manual sem relacao ${index}`,
+      content: "Atendimento geral sem produto citado.",
+      metadata: { category: "suporte" },
+      status: "ready"
+    }));
+    sources.push({
+      id: "approved-baldrame",
+      title: "Aplicação baldrame aprovada",
+      content: "Barra para viga baldrame deve ser verificada conforme o material e a aplicação.",
+      metadata: { category: "produto", keywords: ["viga baldrame"] },
+      status: "ready"
+    } as typeof sources[number]);
+    const prisma = buildPrisma({
+      message: { findFirst: vi.fn().mockResolvedValue(current), findMany: vi.fn().mockResolvedValue(messages) },
+      aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue(sources) }
+    });
+    const provider = buildProvider({ confidence: 0.9, reply: "Vou verificar o material.", actions: [], handoff: { required: false, reason: null } });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({ outcome: "continue", plan: { conversationStage: "new_quote", commercialPath: "ambiguous", nextAction: "handoff" } }),
+      audit: vi.fn().mockResolvedValue({ outcome: "send" })
+    };
+
+    await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(prisma.aiKnowledgeSource.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { workspaceId: ids.workspace, agentId: ids.agent, status: "ready" }
+    }));
+    expect(prisma.aiKnowledgeSource.findMany.mock.calls[0]?.[0]).not.toHaveProperty("take");
+    const preflightInput = replyPreflight.evaluate.mock.calls[0]?.[0];
+    const auditInput = replyPreflight.audit.mock.calls[0]?.[0];
+    expect(preflightInput.conversationMessages).toHaveLength(20);
+    expect(preflightInput.conversationMessages.at(-1).body).toBe("10mm");
+    expect(preflightInput.agentRules).toBe(baseAgent.systemPrompt);
+    expect(preflightInput.selectedKnowledge).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "approved-baldrame", content: expect.stringContaining("viga baldrame") })
+    ]));
+    expect(auditInput.conversationMessages).toEqual(preflightInput.conversationMessages);
+    expect(auditInput.selectedKnowledge).toEqual(preflightInput.selectedKnowledge);
+    expect(auditInput.agentRules).toBe(preflightInput.agentRules);
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: baseAgent.systemPrompt }));
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      contextSummary: expect.objectContaining({
+        jevConversationMessageCount: 20,
+        jevAgentRulesCharacters: baseAgent.systemPrompt.length,
+        jevSelectedKnowledgeCharacters: expect.any(Number),
+        jevStateCharacters: expect.any(Number)
+      })
+    }) }));
+  });
+
   it("skips generation when JEV identifies a social closure", async () => {
     const socialMessage = { ...baseMessage, body: "Obrigado!" };
     const prisma = buildPrisma({ aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([]) } });
@@ -934,8 +1005,7 @@ describe("createAgentRuntime", () => {
         agentId: ids.agent,
         status: "ready"
       },
-      orderBy: [{ createdAt: "desc" }],
-      take: 50
+      orderBy: [{ createdAt: "desc" }]
     });
     expect(provider.generate).toHaveBeenCalledWith(
       expect.objectContaining({
