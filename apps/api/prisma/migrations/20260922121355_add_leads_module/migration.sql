@@ -166,7 +166,7 @@ CREATE INDEX "lead_jobs_workspace_id_list_id_created_at_idx" ON "lead_jobs"("wor
 CREATE UNIQUE INDEX "lead_jobs_workspace_id_id_key" ON "lead_jobs"("workspace_id", "id");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "lead_jobs_workspace_id_idempotency_key_key" ON "lead_jobs"("workspace_id", "idempotency_key");
+CREATE UNIQUE INDEX "lead_jobs_workspace_id_operation_idempotency_key_key" ON "lead_jobs"("workspace_id", "operation", "idempotency_key");
 
 -- CreateIndex
 CREATE INDEX "lead_whatsapp_verifications_workspace_id_lead_id_normalized_idx" ON "lead_whatsapp_verifications"("workspace_id", "lead_id", "normalized_phone", "checked_at");

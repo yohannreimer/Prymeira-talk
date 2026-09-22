@@ -145,6 +145,13 @@ export const leadJobSchema = z.object({
 });
 export type LeadJobDto = z.infer<typeof leadJobSchema>;
 
+export const leadJobIdempotencyScopeSchema = z.object({
+  workspaceId: z.string().min(1),
+  operation: z.string().min(1),
+  idempotencyKey: z.string().min(1)
+});
+export type LeadJobIdempotencyScope = z.infer<typeof leadJobIdempotencyScopeSchema>;
+
 export const leadCsvImportResponseSchema = z.object({
   listId: z.string().min(1),
   jobId: z.string().min(1),

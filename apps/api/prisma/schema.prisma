@@ -543,7 +543,7 @@ model LeadJob {
   list LeadList @relation(fields: [workspaceId, listId], references: [workspaceId, id], onDelete: Cascade)
 
   @@unique([workspaceId, id])
-  @@unique([workspaceId, idempotencyKey])
+  @@unique([workspaceId, operation, idempotencyKey])
   @@index([workspaceId, status, leaseUntil])
   @@index([workspaceId, listId, createdAt])
   @@map("lead_jobs")

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   leadCampaignDraftResultSchema,
+  leadJobIdempotencyScopeSchema,
   leadJobStatusSchema,
   leadPaginatedResultSchema,
   leadWhatsappVerificationRequestSchema,
@@ -9,6 +10,7 @@ import {
 } from "@prymeira-talk/shared";
 import {
   canTransitionLeadJob,
+  hasLeadJobIdempotencyConflict,
   MAX_LEAD_WHATSAPP_BATCH_SIZE,
   normalizeCnpj
 } from "./leads.types.js";
@@ -59,6 +61,22 @@ describe("Leads domain contracts", () => {
     expect(canTransitionLeadJob("failed", "queued")).toBe(true);
     expect(canTransitionLeadJob("completed", "running")).toBe(false);
     expect(canTransitionLeadJob("queued", "completed")).toBe(false);
+  });
+
+  it("scopes idempotency by workspace, operation, and key", () => {
+    const receitaSearch = leadJobIdempotencyScopeSchema.parse({
+      workspaceId: "workspace-1",
+      operation: "receita_search",
+      idempotencyKey: "request-1"
+    });
+    const csvImport = leadJobIdempotencyScopeSchema.parse({
+      workspaceId: "workspace-1",
+      operation: "csv_import",
+      idempotencyKey: "request-1"
+    });
+
+    expect(hasLeadJobIdempotencyConflict(receitaSearch, csvImport)).toBe(false);
+    expect(hasLeadJobIdempotencyConflict(receitaSearch, { ...receitaSearch })).toBe(true);
   });
 
   it("parses the public result and campaign-draft contracts", () => {

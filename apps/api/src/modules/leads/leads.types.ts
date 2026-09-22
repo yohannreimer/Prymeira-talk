@@ -1,10 +1,12 @@
 import {
   MAX_LEAD_WHATSAPP_BATCH_SIZE as sharedMaxLeadWhatsappBatchSize,
+  leadJobIdempotencyScopeSchema,
   leadJobStatusSchema,
   leadSourceSchema,
   leadWhatsappStatusSchema,
   normalizedCnpjSchema,
   type LeadJobStatus,
+  type LeadJobIdempotencyScope,
   type LeadSource,
   type LeadWhatsappStatus,
   type NormalizedCnpj
@@ -24,16 +26,29 @@ export function canTransitionLeadJob(from: LeadJobStatus, to: LeadJobStatus) {
   return from === to || leadJobTransitions[from].includes(to);
 }
 
+export function hasLeadJobIdempotencyConflict(
+  first: LeadJobIdempotencyScope,
+  second: LeadJobIdempotencyScope
+) {
+  return (
+    first.workspaceId === second.workspaceId &&
+    first.operation === second.operation &&
+    first.idempotencyKey === second.idempotencyKey
+  );
+}
+
 export function normalizeCnpj(input: string): NormalizedCnpj {
   return normalizedCnpjSchema.parse(input);
 }
 
 export {
+  leadJobIdempotencyScopeSchema,
   leadJobStatusSchema,
   leadSourceSchema,
   leadWhatsappStatusSchema,
   normalizedCnpjSchema,
   type LeadJobStatus,
+  type LeadJobIdempotencyScope,
   type LeadSource,
   type LeadWhatsappStatus,
   type NormalizedCnpj
