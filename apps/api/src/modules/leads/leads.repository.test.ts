@@ -267,11 +267,15 @@ describe("Leads repository workspace isolation", () => {
   });
 
   it("atomically retries only failed WhatsApp rows in the caller workspace", async () => {
+    const olderId = randomUUID();
     const failedId = randomUUID();
     const channelId = randomUUID();
     const current = {
       ...job(), operation: "whatsapp_availability", status: "partial" as const,
-      output: { retryable: true }, input: { requestId: randomUUID(), instanceName: "old", numbers: ["5511999990000"], entries: [{ verificationId: failedId }] }
+      output: { retryable: true }, input: {
+        requestId: randomUUID(), instanceName: "old", numbers: ["5511999990000"],
+        verificationHistoryIds: [olderId, failedId], entries: [{ verificationId: failedId }]
+      }
     };
     const createdRows: any[] = [];
     const updateMany = vi.fn(async () => ({ count: 1 }));
@@ -302,6 +306,70 @@ describe("Leads repository workspace isolation", () => {
     expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ workspaceId, id: jobId, status: "partial", leaseToken: null })
     }));
+    const retryCalls = updateMany.mock.calls as unknown as Array<[{ data: { input: Record<string, unknown> } }]>;
+    const retryInput = retryCalls[0]![0].data.input;
+    expect(retryInput.verificationHistoryIds).toEqual([olderId, failedId, createdRows[0].id]);
+  });
+
+  it("replays the winning WhatsApp request after a concurrent idempotency insert", async () => {
+    const requestId = randomUUID();
+    const oldVerificationId = randomUUID();
+    const currentVerificationId = randomUUID();
+    const existing = {
+      ...job(),
+      operation: "whatsapp_availability",
+      idempotencyKey: "request-race",
+      input: {
+        requestId,
+        requestFingerprint: "fingerprint",
+        verificationHistoryIds: [oldVerificationId, currentVerificationId],
+        entries: [{ verificationId: currentVerificationId }]
+      }
+    };
+    const duplicate = new Prisma.PrismaClientKnownRequestError("duplicate request", {
+      code: "P2002",
+      clientVersion: "6.19.0"
+    });
+    const repository = new LeadsRepository({
+      $transaction: vi.fn(async () => { throw duplicate; }),
+      leadJob: {
+        findUnique: vi.fn(async () => existing),
+        findMany: vi.fn(async () => [existing])
+      },
+      leadWhatsappVerification: {
+        findMany: vi.fn(async () => [
+          {
+            id: oldVerificationId, workspaceId, leadId, normalizedPhone: "5511999990000",
+            channelId: null, status: "available", errorMessage: null, checkedAt: now,
+            createdAt: now, updatedAt: now
+          },
+          {
+            id: currentVerificationId, workspaceId, leadId, normalizedPhone: "5511999990000",
+            channelId: null, status: "unavailable", errorMessage: null, checkedAt: now,
+            createdAt: new Date(now.getTime() + 1), updatedAt: new Date(now.getTime() + 1)
+          }
+        ])
+      }
+    } as never);
+
+    const result = await repository.createWhatsappVerificationJobs({
+      workspaceId,
+      listId,
+      channelId: randomUUID(),
+      instanceName: "instance-one",
+      idempotencyKey: "request-race",
+      requestId: randomUUID(),
+      requestFingerprint: "fingerprint",
+      batches: [[{ phone: "5511999990000", leadIds: [leadId] }]]
+    });
+
+    expect(result).toMatchObject({
+      requestId,
+      replayed: true,
+      requestedCount: 1,
+      verifications: [{ leadId, normalizedPhone: "5511999990000", status: "unavailable" }]
+    });
+    expect(result.verifications).toHaveLength(1);
   });
 
   it("recovers an expired lease with workspace+id and exhausts bounded attempts", async () => {

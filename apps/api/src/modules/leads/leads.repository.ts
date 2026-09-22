@@ -257,13 +257,16 @@ function verificationIds(value: Prisma.JsonValue) {
 
 function allVerificationIds(value: Prisma.JsonValue) {
   const current = verificationIds(value);
-  const originalEntries = inputRecord(value).originalEntries;
-  if (!Array.isArray(originalEntries)) return current;
-  const original = originalEntries.flatMap((entry) => {
-    const id = inputRecord(entry).verificationId;
-    return typeof id === "string" ? [id] : [];
-  });
-  return [...new Set([...original, ...current])];
+  const history = inputRecord(value).verificationHistoryIds;
+  return Array.isArray(history)
+    ? [...new Set([...history.filter((id): id is string => typeof id === "string"), ...current])]
+    : current;
+}
+
+function latestWhatsappVerificationRows(rows: LeadWhatsappVerification[]) {
+  const latest = new Map<string, LeadWhatsappVerification>();
+  for (const row of rows) latest.set(`${row.leadId}:${row.normalizedPhone}`, row);
+  return [...latest.values()];
 }
 
 function isWhatsappAvailabilityOperation(operation: string) {
@@ -486,7 +489,7 @@ export class LeadsRepository {
     requestFingerprint: string;
     batches: Array<Array<{ phone: string; leadIds: string[] }>>;
   }) {
-    return this.prisma.$transaction(async (tx) => {
+    const create = () => this.prisma.$transaction(async (tx) => {
       const existing = await tx.leadJob.findUnique({
         where: {
           workspaceId_operation_idempotencyKey: {
@@ -514,11 +517,12 @@ export class LeadsRepository {
           where: { workspaceId: input.workspaceId, id: { in: ids } },
           orderBy: [{ createdAt: "asc" }, { id: "asc" }]
         });
+        const latestRows = latestWhatsappVerificationRows(rows);
         return {
           requestId,
           jobs: jobs.map(toLeadJobDto),
-          requestedCount: new Set(rows.map((row) => row.leadId)).size,
-          verifications: rows.map(toWhatsappVerificationResult),
+          requestedCount: new Set(latestRows.map((row) => row.leadId)).size,
+          verifications: latestRows.map(toWhatsappVerificationResult),
           replayed: true
         };
       }
@@ -570,6 +574,46 @@ export class LeadsRepository {
         replayed: false
       };
     });
+    try {
+      return await create();
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+      const existing = await this.prisma.leadJob.findUnique({
+        where: {
+          workspaceId_operation_idempotencyKey: {
+            workspaceId: input.workspaceId,
+            operation: "whatsapp_availability",
+            idempotencyKey: input.idempotencyKey
+          }
+        }
+      });
+      if (!existing) throw error;
+      if (inputRecord(existing.input).requestFingerprint !== input.requestFingerprint) {
+        throw new LeadsDomainError("LEAD_IDEMPOTENCY_CONFLICT", "Idempotency key was already used for a different lead request.");
+      }
+      const requestId = String(inputRecord(existing.input).requestId ?? "");
+      const jobs = await this.prisma.leadJob.findMany({
+        where: {
+          workspaceId: input.workspaceId,
+          operation: { in: ["whatsapp_availability", "whatsapp_availability_batch"] },
+          input: { path: ["requestId"], equals: requestId }
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+      });
+      const ids = jobs.flatMap((job) => allVerificationIds(job.input));
+      const rows = ids.length === 0 ? [] : await this.prisma.leadWhatsappVerification.findMany({
+        where: { workspaceId: input.workspaceId, id: { in: ids } },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+      });
+      const latestRows = latestWhatsappVerificationRows(rows);
+      return {
+        requestId,
+        jobs: jobs.map(toLeadJobDto),
+        requestedCount: new Set(latestRows.map((row) => row.leadId)).size,
+        verifications: latestRows.map(toWhatsappVerificationResult),
+        replayed: true
+      };
+    }
   }
 
   async fencedFinishWhatsappVerificationJob(input: {
@@ -692,7 +736,9 @@ export class LeadsRepository {
           errorMessage: null,
           input: {
             ...previous,
-            originalEntries: previous.originalEntries ?? previous.entries ?? [],
+            verificationHistoryIds: [
+              ...new Set([...allVerificationIds(current.input), ...rows.map((row) => row.id)])
+            ],
             channelId: channel.id,
             instanceName: channel.providerKey.trim(),
             numbers: [...new Set(rows.map((row) => row.normalizedPhone))],
