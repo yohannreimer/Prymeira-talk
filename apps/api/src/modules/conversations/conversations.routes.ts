@@ -20,6 +20,7 @@ import { readCurrentClerkUserId, resolveCurrentUserProfileId } from "./current-u
 
 interface ConversationsRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
+  handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>;
   evolution?: EvolutionRuntime;
   followupService?: ConversationFollowupsObserver;
   agentImprovements?: AgentImprovementObserver;
@@ -499,6 +500,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       });
     }
     await options.assistantScheduler?.message({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId, messageId: result.message.id, direction: 'outbound' });
+    options.handoffBriefService?.schedule({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId });
     app.realtime.publish({
       type: "message.created",
       workspaceId: request.talk.workspaceId,

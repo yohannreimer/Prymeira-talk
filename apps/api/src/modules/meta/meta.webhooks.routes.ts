@@ -207,7 +207,7 @@ function hasValidMetaSignature(
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-export const metaWebhooksRoutes: FastifyPluginAsync<{ assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler }> = async (app, options) => {
+export const metaWebhooksRoutes: FastifyPluginAsync<{ assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler; handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService> }> = async (app, options) => {
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {
     const rawBody = Buffer.isBuffer(body) ? body : Buffer.from(body);
@@ -464,6 +464,7 @@ export const metaWebhooksRoutes: FastifyPluginAsync<{ assistantScheduler?: impor
       }
 
       await options.assistantScheduler?.message({ workspaceId, conversationId: result.message.conversationId, messageId: result.message.id, direction: result.message.direction });
+      options.handoffBriefService?.schedule({ workspaceId, conversationId: result.message.conversationId });
       app.realtime.publish({
         type: "message.created",
         workspaceId,

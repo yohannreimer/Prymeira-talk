@@ -30,6 +30,7 @@ import { createEvolutionHistorySource } from './modules/evolution/evolution-hist
 import { prepareInboundMedia } from './modules/agents/inbound-media.js';
 import { resolveOpenAiCompatibleSettings } from './modules/agents/ai-provider-settings.js';
 import { assistantInboxRoutes } from './modules/assistant/assistant-inbox.routes.js';
+import { createHandoffBriefService } from './modules/assistant/handoff-brief-service.js';
 import { createBoardRulesService, type BoardRulesPrismaLike } from "./modules/boards/board-rules.service.js";
 import { boardsRoutes } from "./modules/boards/boards.routes.js";
 import { campaignsRoutes } from "./modules/campaigns/campaigns.routes.js";
@@ -353,10 +354,12 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
         prepareMedia: async ({ workspaceId, mediaUrl, kind }) => prepareInboundMedia({ settings: await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId }), mediaUrl, kind })
       });
   const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { prepareContext: prepareAssistantHistory, onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });
+  const handoffBriefService = options.prismaEnabled === false ? undefined : createHandoffBriefService(app.prisma);
   assistantScheduler?.start();
-  app.addHook('onClose', async () => { assistantScheduler?.stop(); });
+  app.addHook('onClose', async () => { assistantScheduler?.stop(); handoffBriefService?.stop(); });
   await app.register(evolutionRoutes, {
     assistantScheduler,
+    handoffBriefService,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,
     followupService,
     agentImprovements,
@@ -364,10 +367,11 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     agentReplyScheduler,
     evolution: evolutionRuntime
   });
-  await app.register(metaWebhooksRoutes, { assistantScheduler });
+  await app.register(metaWebhooksRoutes, { assistantScheduler, handoffBriefService });
   await app.register(conversationsRoutes, {
     evolution: evolutionRuntime,
     assistantScheduler,
+    handoffBriefService,
     followupService,
     agentImprovements
   });
@@ -398,7 +402,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     agentImprovements
   });
   await app.register(assistantRoutes);
-  await app.register(assistantInboxRoutes, { scheduler: assistantScheduler, evolution: evolutionRuntime });
+  await app.register(assistantInboxRoutes, { scheduler: assistantScheduler, handoffBriefService, evolution: evolutionRuntime });
   await app.register(crmRoutes, {
     vinculaApiUrl: env.VINCULA_CRM_API_URL
   });

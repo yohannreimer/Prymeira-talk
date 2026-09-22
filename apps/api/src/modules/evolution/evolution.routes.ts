@@ -28,6 +28,7 @@ import type { AgentImprovementObserver } from "../agents/agent-improvements.serv
 
 export interface EvolutionRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
+  handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>;
   followupService?: ConversationFollowupsObserver;
   agentImprovements?: AgentImprovementObserver;
   webhookSecret: string;
@@ -721,6 +722,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
 
       const { message, conversation } = transactionResult;
       await options.assistantScheduler?.message({ workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
+      options.handoffBriefService?.schedule({ workspaceId, conversationId: message.conversationId });
       app.realtime.publish({
         type: "message.created",
         workspaceId,

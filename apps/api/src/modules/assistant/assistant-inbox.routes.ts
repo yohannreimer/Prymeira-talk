@@ -7,6 +7,7 @@ import { loadAssistantContext } from './assistant-generation.js';
 import { readAssistantSettings } from './assistant-policy.js';
 import { createAssistantSendService } from './assistant-send.service.js';
 import type { AssistantScheduler } from './assistant-scheduler.js';
+import type { createHandoffBriefService } from './handoff-brief-service.js';
 import { createConversationsService, type PrismaLike } from '../conversations/conversations.service.js';
 import type { EvolutionRuntime } from '../evolution/evolution-runtime.js';
 import { resolveMetaRuntime } from '../meta/meta-runtime.js';
@@ -15,7 +16,7 @@ const params = z.object({ conversationId: z.string().uuid() });
 const channelParams = z.object({ channelId: z.string().uuid() });
 const object = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, Prisma.InputJsonValue> : {};
 
-export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantScheduler; evolution: EvolutionRuntime }> = async (app, options) => {
+export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantScheduler; evolution: EvolutionRuntime; handoffBriefService?: ReturnType<typeof createHandoffBriefService> }> = async (app, options) => {
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof AssistantError) return reply.code(error.statusCode).send({ code: error.code, error: error.message });
     if (error instanceof z.ZodError) return reply.code(400).send({ code: 'ASSISTANT_INVALID_REQUEST', error: 'Revise os campos informados.' });
@@ -59,6 +60,13 @@ export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantSch
     if (humanControlled) status = 'paused';
     if (status === 'ready' && history[0]?.contextKey !== context?.contextKey) status = 'stale';
     return { settings, status, humanControlled, suggestion: history[0] ?? null, history, agentName: context?.agent.name ?? null, error: state?.lastError ?? null, currentContextKey: context?.contextKey ?? null } satisfies AssistantConversationDto;
+  });
+  app.get('/assistant/conversations/:conversationId/handoff-brief', async request => {
+    const { conversationId } = params.parse(request.params);
+    const actor = await resolveAssistantActor(app.prisma, request.talk);
+    await requireAssistantConversation(app.prisma, actor, conversationId);
+    return options.handoffBriefService?.get({ workspaceId: actor.workspaceId, conversationId })
+      ?? { status: 'failed', nextAction: null, summary: null, contextKey: null, updatedAt: null, error: 'Apoio indisponível.' };
   });
   app.post('/assistant/conversations/:conversationId/suggestions', { config: { rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { conversationId } = params.parse(request.params);
