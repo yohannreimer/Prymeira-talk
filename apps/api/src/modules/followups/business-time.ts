@@ -101,6 +101,7 @@ function createBusinessCalendar(input: AddBusinessMinutesInput): BusinessCalenda
     formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
       timeZone: input.timeZone,
       year: "numeric",
+      era: "short",
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
@@ -210,17 +211,17 @@ function getTimeZoneOffset(instant: number, formatter: Intl.DateTimeFormat): num
 }
 
 function getLocalDateTime(date: Date, formatter: Intl.DateTimeFormat): LocalDateTime {
-  const values: Partial<Record<Intl.DateTimeFormatPartTypes, number>> = {};
+  const values: Partial<Record<Intl.DateTimeFormatPartTypes, string>> = {};
 
   for (const part of formatter.formatToParts(date)) {
     if (part.type !== "literal") {
-      values[part.type] = Number(part.value);
+      values[part.type] = part.value;
     }
   }
 
   const hour = requirePart(values, "hour");
   return {
-    year: requirePart(values, "year"),
+    year: toProlepticGregorianYear(values),
     month: requirePart(values, "month"),
     day: requirePart(values, "day"),
     hour: hour === 24 ? 0 : hour,
@@ -230,15 +231,32 @@ function getLocalDateTime(date: Date, formatter: Intl.DateTimeFormat): LocalDate
 }
 
 function requirePart(
-  values: Partial<Record<Intl.DateTimeFormatPartTypes, number>>,
+  values: Partial<Record<Intl.DateTimeFormatPartTypes, string>>,
   part: Intl.DateTimeFormatPartTypes
 ): number {
-  const value = values[part];
+  const value = Number(values[part]);
   if (!Number.isInteger(value)) {
     throw new RangeError(`Unable to read ${part} in the configured time zone.`);
   }
 
-  return value!;
+  return value;
+}
+
+function toProlepticGregorianYear(
+  values: Partial<Record<Intl.DateTimeFormatPartTypes, string>>
+): number {
+  const year = requirePart(values, "year");
+  const era = values.era;
+
+  if (era === "AD") {
+    return year;
+  }
+
+  if (era === "BC") {
+    return 1 - year;
+  }
+
+  throw new RangeError("Unable to read the Gregorian era in the configured time zone.");
 }
 
 function compareLocalDateTimes(left: LocalDateTime, right: LocalDateTime): number {
