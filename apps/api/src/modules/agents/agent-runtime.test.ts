@@ -306,6 +306,42 @@ describe("createAgentRuntime", () => {
     }));
   });
 
+  it("turns a high-risk JEV audit into a human handoff without a second GPT call", async () => {
+    const prisma = buildPrisma();
+    const provider = buildProvider({
+      confidence: 0.92,
+      reply: "Temos em estoque e entregamos amanhã.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({
+        outcome: "continue",
+        plan: {
+          conversationStage: "new_quote",
+          commercialPath: "made_to_order",
+          nextAction: "offer_catalog_or_seller"
+        }
+      }),
+      audit: vi.fn().mockResolvedValue({ outcome: "handoff", reason: "commercial_policy_risk" })
+    };
+
+    const result = await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result).toEqual({ status: "handoff_requested", runId: ids.run });
+    expect(provider.generate).toHaveBeenCalledOnce();
+    expect(replyPreflight.audit).toHaveBeenCalledOnce();
+    expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ body: "Vou consultar essas informações e já te dou um retorno." })
+    }));
+  });
+
   it("uses the same context-first path for live generation without forced price handoff", async () => {
     const provider = buildProvider({ confidence: 0.9, reply: "Qual quantidade você precisa?", actions: [], handoff: { required: false, reason: null } });
     const prisma = buildPrisma({

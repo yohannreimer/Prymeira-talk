@@ -149,6 +149,8 @@ Quando o ambiente tiver `JEV_API_KEY`, o runtime consulta o JEV antes de chamar 
 
 Encerramentos sociais explícitos — por exemplo, um agradecimento sem pergunta ou pendência — encerram a execução sem chamar o modelo de chat e sem enviar mensagem. Nos demais casos, o plano é fornecido ao agente como orientação interna para a próxima resposta. O JEV não é fonte de fatos comerciais: preço, estoque, prazo, mínimo e especificações continuam dependendo de conhecimento aprovado e das regras determinísticas do runtime.
 
+Quando o plano envolver caminho comercial, condições de encomenda, catálogo ou handoff, o runtime também envia a resposta candidata para uma auditoria JEV antes do envio. Uma resposta redundante é suprimida; uma resposta que conflita com o plano ou afirma fato comercial sem base é substituída por handoff humano. Falhas na API JEV não bloqueiam o atendimento: o runtime registra a indisponibilidade e mantém o caminho seguro existente.
+
 Defina também `JEV_MODEL` para trocar o modelo; o padrão é `jev-latest`. Sem `JEV_API_KEY`, o caminho de geração existente é preservado.
 
 ## Regras operacionais desta versão

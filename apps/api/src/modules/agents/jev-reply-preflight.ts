@@ -48,8 +48,19 @@ export type AgentReplyPreflightResult =
   | { outcome: "silence"; reason: "social_closure" }
   | { outcome: "continue"; plan: AgentReplyPreflightPlan };
 
+export type AgentReplyQualityAuditInput = AgentReplyPreflightInput & {
+  candidateReply: string;
+  plan: AgentReplyPreflightPlan;
+};
+
+export type AgentReplyQualityAuditResult =
+  | { outcome: "send" }
+  | { outcome: "suppress"; reason: "redundant_or_unhelpful" }
+  | { outcome: "handoff"; reason: "commercial_policy_risk" };
+
 export type AgentReplyPreflight = {
   evaluate(input: AgentReplyPreflightInput): Promise<AgentReplyPreflightResult>;
+  audit?(input: AgentReplyQualityAuditInput): Promise<AgentReplyQualityAuditResult>;
 };
 
 export type JevReplyPreflightOptions = {
@@ -105,6 +116,14 @@ const responseSchema = z.object({
   })
 });
 
+const auditResponseSchema = z.object({
+  answers: z.object({
+    disposition: choiceAnswerSchema(z.enum(["send", "suppress", "handoff"])),
+    followsPlan: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) }),
+    assertsUnsupportedCommercialFact: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) })
+  })
+});
+
 const replyPreflightQuestions = {
   shouldReply: {
     type: "noul",
@@ -156,6 +175,28 @@ const replyPreflightQuestions = {
   }
 } as const;
 
+const replyQualityAuditQuestions = {
+  disposition: {
+    type: "choice",
+    instructions: "A resposta candidata deve ser enviada, suprimida ou encaminhada para humano?",
+    criteria: {
+      send: "A resposta avança a demanda, segue o plano interno e não afirma fato comercial sem fonte aprovada.",
+      suppress: "A resposta é redundante, socialmente desnecessária ou não ajuda a conversa.",
+      handoff: "A resposta afirma, promete ou decide preço, estoque, prazo, frete, pagamento, especificação ou exceção sem base aprovada, ou conflita com o plano."
+    }
+  },
+  followsPlan: {
+    type: "noul",
+    instructions: "A resposta candidata segue o agentPreflight e responde somente à próxima ação definida?",
+    criteria: { true: "Segue a etapa, caminho comercial e próxima ação.", false: "Ignora, contradiz ou reinicia indevidamente o plano." }
+  },
+  assertsUnsupportedCommercialFact: {
+    type: "noul",
+    instructions: "A resposta candidata afirma fato comercial protegido sem evidência explícita no conhecimento aprovado?",
+    criteria: { true: "Afirma ou promete fato sem fonte aprovada.", false: "Não afirma fato protegido sem evidência." }
+  }
+} as const;
+
 export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentReplyPreflight {
   const fetchImpl = input.fetchImpl ?? globalThis.fetch;
 
@@ -197,6 +238,43 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
           nextAction: answers.nextAction.choice
         }
       };
+    },
+    async audit(auditInput) {
+      const response = await fetchImpl("https://api.typesafe.ai/v1/systemone", {
+        method: "POST",
+        signal: AbortSignal.timeout(12_000),
+        headers: {
+          Authorization: `Bearer ${input.apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          state: {
+            ...toJevState(auditInput),
+            agentPreflight: auditInput.plan,
+            candidateReply: auditInput.candidateReply.slice(0, 1_500)
+          },
+          model: input.model ?? "jev-latest",
+          questions: replyQualityAuditQuestions
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`JEV_REPLY_AUDIT_HTTP_${response.status}`);
+      }
+
+      const parsed = auditResponseSchema.safeParse(await response.json());
+      if (!parsed.success) {
+        throw new Error("JEV_REPLY_AUDIT_RESPONSE_INVALID");
+      }
+
+      const { answers } = parsed.data;
+      if (answers.disposition.choice === "handoff" || answers.assertsUnsupportedCommercialFact.noul >= 0.6) {
+        return { outcome: "handoff", reason: "commercial_policy_risk" };
+      }
+      if (answers.disposition.choice === "suppress" || answers.followsPlan.noul < 0.2) {
+        return { outcome: "suppress", reason: "redundant_or_unhelpful" };
+      }
+      return { outcome: "send" };
     }
   };
 }

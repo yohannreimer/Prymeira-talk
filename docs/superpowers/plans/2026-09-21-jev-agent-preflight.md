@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Prevent unnecessary agent replies and give the conversational model a compact, policy-aware next-reply plan before it generates a WhatsApp response.
+**Goal:** Prevent unnecessary agent replies, give the conversational model a compact policy-aware next-reply plan, and audit high-risk commercial candidates before WhatsApp delivery.
 
-**Architecture:** Add an optional TypeSafe JEV client configured by environment variables. After Talk assembles trusted history, safety state, and approved knowledge, call JEV with typed questions for reply necessity, conversation stage, commercial path, and next action. A `silence` result ends the run without calling the generative provider; every other result is injected as `agentPreflight` for the existing GPT provider. If JEV is not configured or unavailable, preserve the current path.
+**Architecture:** Add an optional TypeSafe JEV client configured by environment variables. After Talk assembles trusted history, safety state, and approved knowledge, call JEV with typed questions for reply necessity, conversation stage, commercial path, and next action. A `silence` result ends the run without calling the generative provider; every other result is injected as `agentPreflight` for the existing GPT provider. For commercial paths and policy-sensitive next actions, a second low-cost JEV decision audits the candidate and either sends it, suppresses it, or forces a human handoff. If JEV is not configured or unavailable, preserve the current path.
 
 **Tech Stack:** TypeScript, Fastify, Zod, Vitest, TypeSafe System One HTTP API.
 
@@ -91,7 +91,7 @@ Run: `pnpm test -- src/env.test.ts`
 
 Expected: PASS.
 
-### Task 3: Gate generation and pass the response plan to GPT
+### Task 3: Gate generation, pass the response plan to GPT, and audit high-risk candidates
 
 **Files:**
 - Modify: `apps/api/src/modules/agents/agent-runtime.ts`
@@ -124,7 +124,7 @@ Expected: FAIL because `replyPreflight` is unsupported.
 
 - [ ] **Step 3: Implement the fail-open gate**
 
-Call preflight only after deterministic human-control, injection, media, and document guards have cleared. On explicit `silence`, create a skipped run, store the decision in run context, and return without invoking `generate`. On continuation, add `agentPreflight` to GPT context. On transport/schema failure, store `unavailable` in context and continue to GPT.
+Call preflight only after deterministic human-control, injection, media, and document guards have cleared. On explicit `silence`, create a skipped run, store the decision in run context, and return without invoking `generate`. On continuation, add `agentPreflight` to GPT context. For commercial paths, conditions of order, catalog offers, and handoffs, audit the candidate before actions run; suppress redundant replies and turn policy-risk candidates into a normal human handoff. On transport/schema failure, store `unavailable` in context and continue to the existing safe path.
 
 Add this provider instruction:
 

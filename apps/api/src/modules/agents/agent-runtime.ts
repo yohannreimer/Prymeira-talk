@@ -924,6 +924,71 @@ export function createAgentRuntime(input: {
             }
           });
 
+        if (
+          replyPreflight?.outcome === "continue" &&
+          input.replyPreflight?.audit &&
+          providerOutput.reply &&
+          requiresReplyQualityAudit(replyPreflight.plan)
+        ) {
+          try {
+            const replyQualityAudit = await input.replyPreflight.audit({
+              currentMessage: {
+                id: message.id,
+                body: effectiveText,
+                type: message.type
+              },
+              conversationMessages: conversationContext.messages,
+              selectedKnowledge: knowledgeSelection.selected.map((source) => ({
+                title: source.title,
+                content: source.content
+              })),
+              candidateReply: providerOutput.reply,
+              plan: replyPreflight.plan
+            });
+            contextSummary = { ...contextSummary, replyQualityAudit };
+
+            if (replyQualityAudit.outcome === "suppress") {
+              await prisma.aiAgentSession.update({
+                where: {
+                  workspaceId_id: {
+                    workspaceId: runInput.workspaceId,
+                    id: session.id
+                  }
+                },
+                data: { lastRunAt: new Date() }
+              });
+              const run = await createRun({
+                workspaceId: runInput.workspaceId,
+                agentId: agent.id,
+                sessionId: session.id,
+                conversationId: conversation.id,
+                trigger: runInput.trigger,
+                input: runInputPayload,
+                contextSummary,
+                knowledgeMatches,
+                model: runModel,
+                output: providerOutput,
+                status: "skipped"
+              });
+              return { status: "skipped", runId: run.id, message: replyQualityAudit.reason };
+            }
+
+            if (replyQualityAudit.outcome === "handoff") {
+              providerOutput = {
+                ...providerOutput,
+                reply: null,
+                actions: [
+                  ...providerOutput.actions,
+                  { type: "request_handoff", reason: replyQualityAudit.reason }
+                ],
+                handoff: { required: true, reason: replyQualityAudit.reason }
+              };
+            }
+          } catch {
+            contextSummary = { ...contextSummary, replyQualityAudit: { outcome: "unavailable" } };
+          }
+        }
+
         const contextualHandoff = usesQualificationHandoff(agent.behaviorConfig);
         providerOutput = normalizeAgentHandoffOutput(providerOutput, { preserveReply: contextualHandoff });
 
@@ -1267,6 +1332,17 @@ function readConfidenceThreshold(value: JsonValue) {
 
 function readOnlyNewConversations(value: JsonValue) {
   return isRecord(value) && value.onlyNewConversations === true;
+}
+
+function requiresReplyQualityAudit(plan: {
+  commercialPath: string;
+  nextAction: string;
+}) {
+  return plan.commercialPath !== "not_applicable" || [
+    "offer_catalog_or_seller",
+    "state_made_to_order_conditions",
+    "handoff"
+  ].includes(plan.nextAction);
 }
 
 const FRESH_CONVERSATION_HANDOFF_REASON = "Conversa anterior ao WhatsApp — IA não iniciada.";

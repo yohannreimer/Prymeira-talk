@@ -101,4 +101,29 @@ describe("createJevReplyPreflight", () => {
     expect(body.questions).toHaveProperty("commercialPath");
     expect(body.questions).toHaveProperty("nextAction");
   });
+
+  it("turns a commercially unsupported candidate into a human handoff", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        model: "jev-1.13.0",
+        answers: {
+          disposition: choice("handoff"),
+          followsPlan: { type: "noul", noul: 0.1 },
+          assertsUnsupportedCommercialFact: { type: "noul", noul: 0.98 }
+        },
+        usage: { input_tokens: 120, output_tokens: 6 }
+      }))
+    );
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.audit!({
+      ...baseInput,
+      candidateReply: "Temos em estoque e entregamos amanhã.",
+      plan: {
+        conversationStage: "new_quote",
+        commercialPath: "ambiguous",
+        nextAction: "handoff"
+      }
+    })).resolves.toEqual({ outcome: "handoff", reason: "commercial_policy_risk" });
+  });
 });
