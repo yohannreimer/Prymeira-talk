@@ -112,7 +112,16 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 
 describe("conversation followups", () => {
   it("cancels the active cycle immediately when the customer replies", async () => {
+    const customerMessage = {
+      ...baseMessage,
+      id: "customer_message",
+      direction: "inbound" as const,
+      ingestedAt: new Date("2026-09-21T12:00:00.200Z")
+    };
     const prisma = buildPrisma({
+      message: {
+        findFirst: vi.fn().mockResolvedValue(customerMessage)
+      },
       conversationFollowup: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) }
     });
     const service = createConversationFollowupsService(prisma);
@@ -130,7 +139,8 @@ describe("conversation followups", () => {
       where: {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
-        activeKey: "active"
+        activeKey: "active",
+        anchorIngestedAt: { lt: customerMessage.ingestedAt }
       },
       data: expect.objectContaining({
         status: "cancelled",
@@ -138,6 +148,53 @@ describe("conversation followups", () => {
         reason: "customer_replied"
       })
     });
+  });
+
+  it("keeps a later candidate active when an older inbound webhook is delivered late", async () => {
+    const laterFollowup = activeFollowup({
+      id: "later_candidate",
+      anchorIngestedAt: new Date("2026-09-21T12:00:00.300Z")
+    });
+    const delayedCustomerMessage = {
+      ...baseMessage,
+      id: "delayed_old_customer_message",
+      direction: "inbound" as const,
+      ingestedAt: new Date("2026-09-21T12:00:00.200Z")
+    };
+    let active: ReturnType<typeof activeFollowup> | null = laterFollowup;
+    const updateMany = vi.fn().mockImplementation(async (args: any) => {
+      if (active && active.anchorIngestedAt < args.where.anchorIngestedAt.lt) {
+        active = null;
+        return { count: 1 };
+      }
+      return { count: 0 };
+    });
+    const prisma = buildPrisma({
+      message: { findFirst: vi.fn().mockResolvedValue(delayedCustomerMessage) },
+      conversationFollowup: { updateMany }
+    });
+
+    const result = await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: delayedCustomerMessage.id,
+      direction: "inbound",
+      source: "customer"
+    });
+
+    expect(result).toEqual({ status: "ignored" });
+    expect(active).toEqual(laterFollowup);
+    expect(prisma.message.findFirst).toHaveBeenCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        conversationId: ids.conversation,
+        id: delayedCustomerMessage.id,
+        direction: "inbound"
+      }
+    });
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ anchorIngestedAt: { lt: delayedCustomerMessage.ingestedAt } })
+    }));
   });
 
   it("schedules qualification from an agent outbound message", async () => {

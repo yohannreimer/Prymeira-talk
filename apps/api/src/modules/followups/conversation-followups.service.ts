@@ -135,7 +135,12 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
     input: ObserveConversationActivityInput
   ): Promise<ObserveConversationActivityResult> {
     if (input.direction === "inbound" && input.source === "customer") {
-      return cancelForCustomerReply(prisma, input);
+      const customerMessage = await findPersistedCustomerInboundMessage(prisma, input);
+      if (!customerMessage?.ingestedAt) {
+        return { status: "ignored" };
+      }
+
+      return cancelForCustomerReply(prisma, input, customerMessage.ingestedAt);
     }
 
     if (
@@ -330,6 +335,20 @@ export function createConversationFollowupsService(prisma: ConversationFollowups
   }
 
   return { observeConversationActivity, revalidateActiveFollowup };
+}
+
+async function findPersistedCustomerInboundMessage(
+  prisma: Pick<ConversationFollowupsPrismaLike, "message">,
+  input: ObserveConversationActivityInput
+): Promise<MessageRecord | null> {
+  return prisma.message.findFirst({
+    where: {
+      workspaceId: input.workspaceId,
+      conversationId: input.conversationId,
+      id: input.messageId,
+      direction: "inbound"
+    }
+  });
 }
 
 async function cancelForCustomerReply(
