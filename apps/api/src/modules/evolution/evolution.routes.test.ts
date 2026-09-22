@@ -1243,7 +1243,10 @@ describe("Evolution webhook routes", () => {
   });
 
   it("ingests a new inbound text event and publishes a workspace-consistent message", async () => {
-    const { app, prisma, publish } = await buildEvolutionApp();
+    const observeConversationActivity = vi.fn().mockResolvedValue({ status: "cancelled" });
+    const { app, prisma, publish } = await buildEvolutionApp(undefined, undefined, {
+      followupService: { observeConversationActivity }
+    });
 
     try {
       const response = await app.inject({
@@ -1255,6 +1258,13 @@ describe("Evolution webhook routes", () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ ok: true });
+      expect(observeConversationActivity).toHaveBeenCalledWith({
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        messageId: "msg_1",
+        direction: "inbound",
+        source: "customer"
+      });
       expect(prisma.contact.findFirst).toHaveBeenCalledWith({
         where: {
           workspaceId: "workspace_a",

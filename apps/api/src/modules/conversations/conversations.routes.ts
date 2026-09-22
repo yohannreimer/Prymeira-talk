@@ -14,10 +14,12 @@ import {
 } from "./conversations.service.js";
 import type { PrismaLike } from "./conversations.service.js";
 import { createInboxMediaService } from './inbox-media.js';
+import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
 
 interface ConversationsRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
   evolution?: EvolutionRuntime;
+  followupService?: ConversationFollowupsObserver;
 }
 
 export const createMessageParamsSchema = z.object({
@@ -512,6 +514,15 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       });
     }
 
+    await options.followupService?.observeConversationActivity({
+      workspaceId: request.talk.workspaceId,
+      conversationId: params.data.conversationId,
+      messageId: result.message.id,
+      direction: "outbound",
+      source: "human"
+    }).catch((error: unknown) => {
+      request.log.error({ error }, "Failed to observe human outbound follow-up.");
+    });
     await options.assistantScheduler?.message({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId, messageId: result.message.id, direction: 'outbound' });
     app.realtime.publish({
       type: "message.created",

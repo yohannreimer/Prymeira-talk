@@ -1504,10 +1504,12 @@ describe("createAgentRuntime", () => {
     const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-out-1" });
     const sendMedia = vi.fn().mockResolvedValue({ providerMessageId: "evo-media-1" });
     const realtime = { publish: vi.fn() };
+    const observeConversationActivity = vi.fn().mockResolvedValue({ status: "scheduled" });
     const runtime = createAgentRuntime({
       prisma,
       provider,
       realtime,
+      followupService: { observeConversationActivity },
       evolution: {
         mode: "real",
         client: { sendText, sendMedia }
@@ -1532,6 +1534,13 @@ describe("createAgentRuntime", () => {
         providerMessageId: "evo-out-1",
         status: "sent"
       })
+    });
+    expect(observeConversationActivity).toHaveBeenCalledWith({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: "outbound_1",
+      direction: "outbound",
+      source: "agent"
     });
     expect(realtime.publish).toHaveBeenCalledWith({
       type: "message.created",

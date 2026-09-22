@@ -1776,6 +1776,7 @@ describe("conversation routes", () => {
   it("returns outbound messages and publishes message plus conversation updates once", async () => {
     const prisma = createMockPrisma();
     const publish = vi.fn();
+    const observeConversationActivity = vi.fn().mockResolvedValue({ status: "scheduled" });
     const app = Fastify({ logger: false });
 
     app.decorate("prisma", prisma as never);
@@ -1783,7 +1784,9 @@ describe("conversation routes", () => {
     app.addHook("preHandler", async (request) => {
       request.talk = { workspaceId: "workspace_a", role: "agent" };
     });
-    await app.register(conversationsRoutes);
+    await app.register(conversationsRoutes, {
+      followupService: { observeConversationActivity }
+    });
 
     try {
       const response = await app.inject({
@@ -1794,6 +1797,13 @@ describe("conversation routes", () => {
 
       expect(response.statusCode).toBe(201);
       expect(messageSchema.parse(response.json())).toEqual(response.json());
+      expect(observeConversationActivity).toHaveBeenCalledWith({
+        workspaceId: "workspace_a",
+        conversationId: "00000000-0000-4000-8000-000000000001",
+        messageId: "msg_1",
+        direction: "outbound",
+        source: "human"
+      });
       expect(publish).toHaveBeenCalledTimes(2);
       expect(publish).toHaveBeenNthCalledWith(1, {
         type: "message.created",

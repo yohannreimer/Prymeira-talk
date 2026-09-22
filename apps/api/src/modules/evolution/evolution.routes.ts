@@ -23,9 +23,11 @@ import {
   evolutionWebhookEnvelopeSchema,
   evolutionWebhookSchema
 } from "./evolution.schemas.js";
+import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
 
 export interface EvolutionRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
+  followupService?: ConversationFollowupsObserver;
   webhookSecret: string;
   agentRuntime?: AutomationRunnerAgentRuntime & {
     prepareAudioMessage(input: {
@@ -729,6 +731,15 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
       });
 
       if (message.direction === "inbound") {
+        await options.followupService?.observeConversationActivity({
+          workspaceId,
+          conversationId: message.conversationId,
+          messageId: message.id,
+          direction: "inbound",
+          source: "customer"
+        }).catch((error: unknown) => {
+          request.log.error({ error }, "Failed to observe inbound customer follow-up.");
+        });
         if (message.type === "audio" && !await options.assistantScheduler?.isAssisted(workspaceId, message.conversationId)) {
           await options.agentRuntime?.prepareAudioMessage({
             workspaceId,

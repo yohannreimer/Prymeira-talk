@@ -41,6 +41,7 @@ import { toConversationDto, toMessageDto } from "../conversations/conversations.
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { evaluateAgentLoopGuard } from "./agent-loop-guard.js";
 import type { AgentReplyPreflight, AgentReplyPreflightResult } from "./jev-reply-preflight.js";
+import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
 
 import { blocksAutonomousAgent } from '../assistant/assistant-policy.js';
 type JsonValue = unknown;
@@ -248,6 +249,7 @@ export function createAgentRuntime(input: {
   chatHistory?: AgentRuntimeChatHistory;
   realtime?: AgentRuntimeRealtime;
   boardRules?: AgentRuntimeBoardRules;
+  followupService?: ConversationFollowupsObserver;
 }) {
   const { prisma, provider } = input;
 
@@ -1070,6 +1072,15 @@ export function createAgentRuntime(input: {
                 agentId: agent.id
               }
             }
+          });
+          await input.followupService?.observeConversationActivity({
+            workspaceId: runInput.workspaceId,
+            conversationId: conversation.id,
+            messageId: outboundMessage.id,
+            direction: "outbound",
+            source: "agent"
+          }).catch((error: unknown) => {
+            console.error("Failed to observe agent outbound follow-up.", error);
           });
           input.realtime?.publish({
             type: "message.created",

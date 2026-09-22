@@ -1,0 +1,480 @@
+import { agentFollowupConfigSchema } from "@prymeira-talk/shared";
+import { addBusinessMinutes } from "./business-time.js";
+
+type FollowupActivityDirection = "inbound" | "outbound";
+export type FollowupActivitySource = "customer" | "human" | "agent";
+type ActiveFollowupStatus = "scheduled" | "processing" | "review";
+
+type AgentRecord = {
+  id: string;
+  workspaceId: string;
+  status: string;
+  behaviorConfig: unknown;
+};
+
+type AgentSessionRecord = {
+  id: string;
+  workspaceId: string;
+  conversationId: string;
+  agentId: string;
+  status: string;
+  updatedAt?: Date | string;
+  agent?: AgentRecord | null;
+};
+
+type ConversationRecord = {
+  id: string;
+  workspaceId: string;
+  status: string;
+  aiControlStatus: string;
+  activeAgentSessionId?: string | null;
+  activeAgentSession?: AgentSessionRecord | null;
+};
+
+type MessageRecord = {
+  id: string;
+  workspaceId: string;
+  conversationId: string;
+  direction: FollowupActivityDirection;
+  createdAt: Date | string;
+};
+
+export type ConversationFollowupRecord = {
+  id: string;
+  workspaceId: string;
+  conversationId: string;
+  agentId: string;
+  sessionId: string | null;
+  kind: "qualification" | "human_commercial";
+  status: string;
+  activeKey: string | null;
+  stepIndex: number;
+  anchorMessageId: string;
+  anchorMessageAt: Date | string;
+  scheduledAt: Date | string;
+  decision: unknown;
+  reason?: string | null;
+  cancelledAt?: Date | string | null;
+};
+
+type ConversationFollowupStore = {
+  findFirst(args: unknown): Promise<ConversationFollowupRecord | null>;
+  updateMany(args: unknown): Promise<{ count: number }>;
+  create(args: unknown): Promise<ConversationFollowupRecord>;
+};
+
+type ConversationFollowupsTransaction = {
+  conversationFollowup: ConversationFollowupStore;
+};
+
+export type ConversationFollowupsPrismaLike = {
+  $transaction<T>(
+    callback: (tx: ConversationFollowupsTransaction) => Promise<T>
+  ): Promise<T>;
+  conversation: {
+    findUnique(args: unknown): Promise<ConversationRecord | null>;
+  };
+  message: {
+    findFirst(args: unknown): Promise<MessageRecord | null>;
+  };
+  aiAgentSession: {
+    findFirst(args: unknown): Promise<AgentSessionRecord | null>;
+  };
+  conversationFollowup: ConversationFollowupStore;
+};
+
+export type ObserveConversationActivityInput = {
+  workspaceId: string;
+  conversationId: string;
+  messageId: string;
+  direction: FollowupActivityDirection;
+  source: FollowupActivitySource;
+};
+
+export type ObserveConversationActivityResult = {
+  status: "scheduled" | "cancelled" | "ignored";
+  followupId?: string;
+};
+
+export type ActiveFollowupContext = {
+  followup: ConversationFollowupRecord;
+  conversation: ConversationRecord;
+  session: AgentSessionRecord;
+  agent: AgentRecord;
+};
+
+export type RevalidateActiveFollowupResult =
+  | { status: "missing" }
+  | {
+      status: "cancelled";
+      reason:
+        | "not_active"
+        | "conversation_missing"
+        | "conversation_closed"
+        | "human_controlled"
+        | "customer_replied"
+        | "outbound_replaced"
+        | "session_context_changed";
+      followup: ConversationFollowupRecord;
+      conversation?: ConversationRecord;
+    }
+  | { status: "valid"; context: ActiveFollowupContext };
+
+export type ConversationFollowupsObserver = Pick<
+  ReturnType<typeof createConversationFollowupsService>,
+  "observeConversationActivity"
+>;
+
+const ACTIVE_FOLLOWUP_STATUSES: ActiveFollowupStatus[] = ["scheduled", "processing", "review"];
+const MAX_UNIQUE_CONFLICT_RETRIES = 3;
+
+export function createConversationFollowupsService(prisma: ConversationFollowupsPrismaLike) {
+  async function observeConversationActivity(
+    input: ObserveConversationActivityInput
+  ): Promise<ObserveConversationActivityResult> {
+    if (input.direction === "inbound" && input.source === "customer") {
+      const result = await prisma.conversationFollowup.updateMany({
+        where: {
+          workspaceId: input.workspaceId,
+          conversationId: input.conversationId,
+          activeKey: "active"
+        },
+        data: {
+          status: "cancelled",
+          activeKey: null,
+          reason: "customer_replied",
+          cancelledAt: new Date()
+        }
+      });
+
+      return result.count > 0 ? { status: "cancelled" } : { status: "ignored" };
+    }
+
+    if (
+      input.direction !== "outbound" ||
+      (input.source !== "agent" && input.source !== "human")
+    ) {
+      return { status: "ignored" };
+    }
+
+    const candidate = await resolveCandidate(prisma, input);
+    if (!candidate) {
+      return { status: "ignored" };
+    }
+
+    const scheduledAt = calculateFirstScheduledAt(candidate.message.createdAt, candidate.agent);
+    if (!scheduledAt) {
+      return { status: "ignored" };
+    }
+
+    const kind = input.source === "agent" ? "qualification" : "human_commercial";
+    const reason = input.source === "agent" ? "agent_outbound" : "human_outbound";
+    const candidateData = {
+      workspaceId: input.workspaceId,
+      conversationId: input.conversationId,
+      agentId: candidate.agent.id,
+      sessionId: candidate.session.id,
+      kind,
+      status: "scheduled",
+      activeKey: "active",
+      stepIndex: 1,
+      anchorMessageId: candidate.message.id,
+      anchorMessageAt: toDate(candidate.message.createdAt),
+      scheduledAt,
+      decision: {},
+      reason
+    } as const;
+
+    for (let attempt = 0; attempt < MAX_UNIQUE_CONFLICT_RETRIES; attempt += 1) {
+      try {
+        const followup = await prisma.$transaction(async (tx) => {
+          const current = await tx.conversationFollowup.findFirst({
+            where: {
+              workspaceId: input.workspaceId,
+              conversationId: input.conversationId,
+              activeKey: "active"
+            }
+          });
+
+          if (current && toDate(current.anchorMessageAt) >= candidateData.anchorMessageAt) {
+            return current;
+          }
+
+          if (current) {
+            await tx.conversationFollowup.updateMany({
+              where: {
+                id: current.id,
+                workspaceId: input.workspaceId,
+                activeKey: "active"
+              },
+              data: {
+                status: "cancelled",
+                activeKey: null,
+                reason: "outbound_replaced",
+                cancelledAt: new Date()
+              }
+            });
+          }
+
+          return tx.conversationFollowup.create({ data: candidateData });
+        });
+
+        return { status: "scheduled", followupId: followup.id };
+      } catch (error) {
+        if (!isUniqueConstraintError(error)) {
+          throw error;
+        }
+
+        const active = await prisma.conversationFollowup.findFirst({
+          where: {
+            workspaceId: input.workspaceId,
+            conversationId: input.conversationId,
+            activeKey: "active"
+          }
+        });
+        if (active && toDate(active.anchorMessageAt) >= candidateData.anchorMessageAt) {
+          return { status: "scheduled", followupId: active.id };
+        }
+      }
+    }
+
+    return { status: "ignored" };
+  }
+
+  async function revalidateActiveFollowup(input: {
+    workspaceId: string;
+    followupId: string;
+    now?: Date;
+  }): Promise<RevalidateActiveFollowupResult> {
+    const followup = await prisma.conversationFollowup.findFirst({
+      where: { workspaceId: input.workspaceId, id: input.followupId }
+    });
+    if (!followup) {
+      return { status: "missing" };
+    }
+
+    const conversation = await prisma.conversation.findUnique({
+      where: {
+        workspaceId_id: {
+          workspaceId: input.workspaceId,
+          id: followup.conversationId
+        }
+      }
+    });
+
+    if (!isActiveFollowup(followup)) {
+      return { status: "cancelled", reason: "not_active", followup, conversation: conversation ?? undefined };
+    }
+    if (!conversation) {
+      return cancelActiveFollowup(prisma, followup, "conversation_missing", input.now);
+    }
+    if (conversation.status === "closed") {
+      return cancelActiveFollowup(prisma, followup, "conversation_closed", input.now, conversation);
+    }
+    if (conversation.aiControlStatus === "human_controlled") {
+      return cancelActiveFollowup(prisma, followup, "human_controlled", input.now, conversation);
+    }
+
+    const anchorMessageAt = toDate(followup.anchorMessageAt);
+    const newerCustomerMessage = await prisma.message.findFirst({
+      where: {
+        workspaceId: input.workspaceId,
+        conversationId: followup.conversationId,
+        direction: "inbound",
+        createdAt: { gt: anchorMessageAt }
+      },
+      orderBy: { createdAt: "desc" }
+    });
+    if (newerCustomerMessage) {
+      return cancelActiveFollowup(prisma, followup, "customer_replied", input.now, conversation);
+    }
+
+    const newerCompanyMessage = await prisma.message.findFirst({
+      where: {
+        workspaceId: input.workspaceId,
+        conversationId: followup.conversationId,
+        direction: "outbound",
+        id: { not: followup.anchorMessageId },
+        createdAt: { gt: anchorMessageAt }
+      },
+      orderBy: { createdAt: "desc" }
+    });
+    if (newerCompanyMessage) {
+      return cancelActiveFollowup(prisma, followup, "outbound_replaced", input.now, conversation);
+    }
+
+    const session = followup.sessionId
+      ? await prisma.aiAgentSession.findFirst({
+          where: { workspaceId: input.workspaceId, id: followup.sessionId },
+          include: { agent: true }
+        })
+      : null;
+    if (
+      !isCompatibleSession(session, input.workspaceId, followup.conversationId) ||
+      session.agentId !== followup.agentId ||
+      (conversation.activeAgentSessionId != null && conversation.activeAgentSessionId !== session.id)
+    ) {
+      return cancelActiveFollowup(prisma, followup, "session_context_changed", input.now, conversation);
+    }
+
+    return {
+      status: "valid",
+      context: {
+        followup,
+        conversation,
+        session,
+        agent: session.agent
+      }
+    };
+  }
+
+  return { observeConversationActivity, revalidateActiveFollowup };
+}
+
+async function resolveCandidate(
+  prisma: ConversationFollowupsPrismaLike,
+  input: ObserveConversationActivityInput
+): Promise<
+  | { conversation: ConversationRecord; message: MessageRecord; session: AgentSessionRecord; agent: AgentRecord }
+  | null
+> {
+  const [conversation, message] = await Promise.all([
+    prisma.conversation.findUnique({
+      where: {
+        workspaceId_id: {
+          workspaceId: input.workspaceId,
+          id: input.conversationId
+        }
+      },
+      include: { activeAgentSession: { include: { agent: true } } }
+    }),
+    prisma.message.findFirst({
+      where: {
+        workspaceId: input.workspaceId,
+        id: input.messageId,
+        conversationId: input.conversationId,
+        direction: "outbound"
+      }
+    })
+  ]);
+
+  if (
+    !conversation ||
+    !message ||
+    conversation.status === "closed" ||
+    conversation.aiControlStatus === "human_controlled"
+  ) {
+    return null;
+  }
+
+  const session = isCompatibleSession(
+    conversation.activeAgentSession,
+    input.workspaceId,
+    input.conversationId
+  )
+    ? conversation.activeAgentSession
+    : await prisma.aiAgentSession.findFirst({
+        where: {
+          workspaceId: input.workspaceId,
+          conversationId: input.conversationId,
+          status: "active",
+          agent: { status: "active" }
+        },
+        include: { agent: true },
+        orderBy: { updatedAt: "desc" }
+      });
+
+  if (!isCompatibleSession(session, input.workspaceId, input.conversationId)) {
+    return null;
+  }
+
+  return { conversation, message, session, agent: session.agent };
+}
+
+function calculateFirstScheduledAt(anchorMessageAt: Date | string, agent: AgentRecord): Date | null {
+  const behaviorConfig = asRecord(agent.behaviorConfig);
+  const parsed = agentFollowupConfigSchema.safeParse(behaviorConfig?.followup);
+  if (!parsed.success) {
+    return null;
+  }
+
+  const firstStep = parsed.data.steps[0];
+  if (!firstStep) {
+    return null;
+  }
+
+  try {
+    return addBusinessMinutes({
+      from: toDate(anchorMessageAt),
+      minutes: firstStep.afterBusinessMinutes,
+      timeZone: parsed.data.timeZone,
+      businessDays: parsed.data.businessDays,
+      businessHours: parsed.data.businessHours
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function cancelActiveFollowup(
+  prisma: ConversationFollowupsPrismaLike,
+  followup: ConversationFollowupRecord,
+  reason: Extract<RevalidateActiveFollowupResult, { status: "cancelled" }>["reason"],
+  now?: Date,
+  conversation?: ConversationRecord
+): Promise<Extract<RevalidateActiveFollowupResult, { status: "cancelled" }>> {
+  const cancelledAt = now ?? new Date();
+  await prisma.conversationFollowup.updateMany({
+    where: { id: followup.id, workspaceId: followup.workspaceId, activeKey: "active" },
+    data: { status: "cancelled", activeKey: null, reason, cancelledAt }
+  });
+
+  return {
+    status: "cancelled",
+    reason,
+    followup: { ...followup, status: "cancelled", activeKey: null, reason, cancelledAt },
+    conversation
+  };
+}
+
+function isCompatibleSession(
+  session: AgentSessionRecord | null | undefined,
+  workspaceId: string,
+  conversationId: string
+): session is AgentSessionRecord & { agent: AgentRecord } {
+  return Boolean(
+    session &&
+      session.workspaceId === workspaceId &&
+      session.conversationId === conversationId &&
+      session.status === "active" &&
+      session.agent?.workspaceId === workspaceId &&
+      session.agent.status === "active"
+  );
+}
+
+function isActiveFollowup(followup: ConversationFollowupRecord): boolean {
+  return followup.activeKey === "active" && ACTIVE_FOLLOWUP_STATUSES.includes(followup.status as ActiveFollowupStatus);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function toDate(value: Date | string): Date {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    throw new RangeError("Follow-up anchor message must have a valid timestamp.");
+  }
+  return date;
+}
+
+function isUniqueConstraintError(error: unknown): error is { code: string } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}

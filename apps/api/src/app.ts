@@ -8,6 +8,7 @@ import { prismaPlugin } from "./plugins/prisma.js";
 import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
 import { createJevReplyPreflight } from "./modules/agents/jev-reply-preflight.js";
 import { createAgentReplyScheduler } from "./modules/agents/agent-reply-scheduler.js";
+import { createConversationFollowupsService } from "./modules/followups/conversation-followups.service.js";
 import { agentsRoutes } from "./modules/agents/agents.routes.js";
 import { agentPackageRoutes } from "./modules/agents/agent-package.routes.js";
 import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.js";
@@ -143,6 +144,12 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           apiKey: env.EVOLUTION_API_KEY
         })
       : undefined;
+  const followupService =
+    options.prismaEnabled === false
+      ? undefined
+      : createConversationFollowupsService(
+          app.prisma as unknown as Parameters<typeof createConversationFollowupsService>[0]
+        );
   const agentRuntime =
     options.prismaEnabled === false
       ? undefined
@@ -155,7 +162,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           evolution: evolutionRuntime,
           chatHistory: evolutionHistorySource,
           realtime: app.realtime,
-          boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike)
+          boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike),
+          followupService
         });
   const agentReplyScheduler =
     options.prismaEnabled === false || !agentRuntime
@@ -182,12 +190,17 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(evolutionRoutes, {
     assistantScheduler,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,
+    followupService,
     agentRuntime,
     agentReplyScheduler,
     evolution: evolutionRuntime
   });
   await app.register(metaWebhooksRoutes, { assistantScheduler });
-  await app.register(conversationsRoutes, { evolution: evolutionRuntime, assistantScheduler });
+  await app.register(conversationsRoutes, {
+    evolution: evolutionRuntime,
+    assistantScheduler,
+    followupService
+  });
   await app.register(quickRepliesRoutes);
   await app.register(uploadsRoutes, {
     publicTalkUrl: env.PUBLIC_TALK_URL,
