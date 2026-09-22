@@ -3,6 +3,7 @@ import {
   BriefcaseBusiness,
   Headphones,
   ListChecks,
+  MapPinned,
   Radio,
   Send,
   Settings,
@@ -17,6 +18,7 @@ export type TalkModuleKey =
   | "atendimento"
   | "followups"
   | "contatos"
+  | "leads"
   | "canais"
   | "automacoes"
   | "disparos"
@@ -47,6 +49,11 @@ export const talkModules: TalkModule[] = [
     key: "contatos",
     label: "Contatos",
     Icon: Users
+  },
+  {
+    key: "leads",
+    label: "Leads",
+    Icon: MapPinned
   },
   {
     key: "canais",

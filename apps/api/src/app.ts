@@ -59,6 +59,7 @@ import { CnpjRepository } from "./modules/leads/cnpj.repository.js";
 import { LeadsRepository } from "./modules/leads/leads.repository.js";
 import { createLeadsService } from "./modules/leads/leads.service.js";
 import { createLeadsScheduler } from "./modules/leads/leads.scheduler.js";
+import { leadsRoutes } from "./modules/leads/leads.routes.js";
 import { createCityGeocoder } from "./modules/leads/city-geocoder.js";
 import { createGoogleMapsScraperClient } from "./modules/leads/google-maps-scraper.client.js";
 
@@ -204,6 +205,9 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     app.addHook("onClose", async () => {
       await leadsScheduler.stop();
     });
+  }
+  if (leadsService) {
+    await app.register(leadsRoutes, { service: leadsService, publicTalkUrl: env.PUBLIC_TALK_URL });
   }
 
   const evolutionHistorySource =

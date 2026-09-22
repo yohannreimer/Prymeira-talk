@@ -15,6 +15,30 @@ import {
   conversationSchema,
   messageSchema,
   tagSchema,
+  leadListSchema,
+  leadPaginatedResultSchema,
+  leadJobSchema,
+  leadGoogleSearchResponseSchema,
+  leadCsvImportResponseSchema,
+  leadReceitaLookupResponseSchema,
+  similarCompanySearchResultSchema,
+  leadWhatsappVerificationResponseSchema,
+  leadContactImportResultSchema,
+  leadCampaignDraftResultSchema,
+  leadComposerDraftSchema,
+  type LeadSource,
+  type LeadGoogleSearchRequest,
+  type LeadSearchFilters,
+  type LeadListDto,
+  type LeadPaginatedResultDto,
+  type LeadJobDto,
+  type LeadGoogleSearchResponse,
+  type LeadCsvImportResponseDto,
+  type SimilarCompanySearchResult,
+  type LeadWhatsappVerificationResponse,
+  type LeadContactImportResult,
+  type LeadCampaignDraftResult,
+  type LeadComposerDraft,
   type AgentAllowedTagDto,
   type AgentPackage,
   type AiAgentAllowedAction,
@@ -3432,4 +3456,71 @@ export function buildRealtimeUrl() {
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = `${url.pathname.replace(/\/$/, "")}/realtime`;
   return url.toString();
+}
+
+type TokenProvider = () => Promise<string | null>;
+const leadPath = (id: string) => encodeURIComponent(id);
+
+export function apiGetLeadLists(getToken: TokenProvider, source?: LeadSource): Promise<LeadListDto[]> {
+  return fetchJson(getToken, `/leads/lists${source ? `?source=${source}` : ""}`, {}, value => leadListSchema.array().parse(value), "Não foi possível carregar listas.");
+}
+
+export function apiGetLeadResults(getToken: TokenProvider, listId: string, page = 1): Promise<LeadPaginatedResultDto> {
+  return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/results?page=${page}`, {}, value => leadPaginatedResultSchema.parse(value), "Não foi possível carregar resultados.");
+}
+
+export function apiGetLeadJob(getToken: TokenProvider, jobId: string): Promise<LeadJobDto> {
+  return fetchJson(getToken, `/leads/jobs/${leadPath(jobId)}`, {}, value => leadJobSchema.parse(value), "Não foi possível acompanhar a busca.");
+}
+
+export function apiStartGoogleLeadSearch(getToken: TokenProvider, body: LeadGoogleSearchRequest): Promise<LeadGoogleSearchResponse> {
+  return fetchJson(getToken, "/leads/google/search", { method: "POST", body: JSON.stringify(body) }, value => leadGoogleSearchResponseSchema.parse(value), "Não foi possível iniciar a busca.");
+}
+
+export function apiStartReceitaLeadSearch(getToken: TokenProvider, name: string, filters: LeadSearchFilters): Promise<LeadGoogleSearchResponse> {
+  return fetchJson(getToken, "/leads/receita/search", { method: "POST", body: JSON.stringify({ name, filters, idempotencyKey: crypto.randomUUID() }) }, value => leadGoogleSearchResponseSchema.parse(value), "Não foi possível iniciar a busca.");
+}
+
+export function apiLookupReceitaLeads(getToken: TokenProvider, query: { cnpj?: string; companyName?: string }, page = 1) {
+  const params = new URLSearchParams({ ...query, page: String(page) });
+  return fetchJson(getToken, `/leads/receita/lookup?${params}`, {}, value => leadReceitaLookupResponseSchema.parse(value), "Não foi possível consultar a empresa.");
+}
+
+export function apiUploadLeadCsv(getToken: TokenProvider, body: { name: string; fileName: string; csvBase64: string }): Promise<LeadCsvImportResponseDto> {
+  return fetchJson(getToken, "/leads/receita/csv", { method: "POST", body: JSON.stringify({ ...body, idempotencyKey: crypto.randomUUID() }) }, value => leadCsvImportResponseSchema.parse(value), "Não foi possível importar o CSV.");
+}
+
+export async function apiDownloadLeadErrors(getToken: TokenProvider, jobId: string): Promise<Blob> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/leads/jobs/${leadPath(jobId)}/errors.csv`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error((await readApiErrorPayload(response, "Não foi possível baixar erros.")).message);
+  return response.blob();
+}
+
+export function apiGetSimilarLeads(getToken: TokenProvider, listId: string, leadId: string): Promise<SimilarCompanySearchResult> {
+  return fetchJson(getToken, `/leads/similar?listId=${leadPath(listId)}&leadId=${leadPath(leadId)}`, {}, value => similarCompanySearchResultSchema.parse(value), "Não foi possível encontrar empresas semelhantes.");
+}
+
+export function apiSaveSimilarLeadList(getToken: TokenProvider, body: { listId: string; leadId: string; name: string; selectedCnpjs: string[] }): Promise<LeadGoogleSearchResponse> {
+  return fetchJson(getToken, "/leads/similar/jobs", { method: "POST", body: JSON.stringify({ ...body, idempotencyKey: crypto.randomUUID() }) }, value => leadGoogleSearchResponseSchema.parse(value), "Não foi possível salvar a lista.");
+}
+
+export function apiRetryLeadJob(getToken: TokenProvider, jobId: string): Promise<LeadJobDto> {
+  return fetchJson(getToken, `/leads/jobs/${leadPath(jobId)}/retry`, { method: "POST" }, value => leadJobSchema.parse((value as { job: unknown }).job), "Não foi possível repetir a operação.");
+}
+
+export function apiVerifyLeadWhatsapp(getToken: TokenProvider, listId: string, leadIds: string[]): Promise<LeadWhatsappVerificationResponse> {
+  return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/whatsapp-verifications`, { method: "POST", body: JSON.stringify({ listId, leadIds, idempotencyKey: crypto.randomUUID() }) }, value => leadWhatsappVerificationResponseSchema.parse(value), "Não foi possível verificar WhatsApp.");
+}
+
+export function apiImportLeadContacts(getToken: TokenProvider, listId: string, selectedLeadIds: string[]): Promise<LeadContactImportResult> {
+  return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/contacts/import`, { method: "POST", body: JSON.stringify({ selectedLeadIds }) }, value => leadContactImportResultSchema.parse(value), "Não foi possível cadastrar contatos.");
+}
+
+export function apiCreateLeadCampaignDraft(getToken: TokenProvider, listId: string, selectedLeadIds: string[], messageBody: string): Promise<LeadCampaignDraftResult> {
+  return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/campaign-drafts`, { method: "POST", body: JSON.stringify({ selectedLeadIds, messageBody }) }, value => leadCampaignDraftResultSchema.parse(value), "Não foi possível criar o rascunho.");
+}
+
+export function apiGetLeadComposerDraft(getToken: TokenProvider, conversationId: string): Promise<LeadComposerDraft | null> {
+  return fetchJson(getToken, `/leads/conversations/${leadPath(conversationId)}/composer-draft`, {}, value => leadComposerDraftSchema.nullable().parse(value), "Não foi possível carregar o rascunho do lead.");
 }

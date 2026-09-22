@@ -87,6 +87,59 @@ export const leadGoogleSearchRequestSchema = z.object({
 });
 export type LeadGoogleSearchRequest = z.infer<typeof leadGoogleSearchRequestSchema>;
 
+export const leadReceitaSearchRequestSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  filters: leadSearchFiltersSchema,
+  idempotencyKey: z.string().trim().min(1).max(200),
+  maxResults: z.number().int().positive().max(5000).default(5000)
+});
+
+export const leadReceitaLookupQuerySchema = z.object({
+  cnpj: normalizedCnpjSchema.optional(),
+  companyName: z.string().trim().min(1).max(200).optional(),
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(25)
+}).refine((value) => Boolean(value.cnpj) !== Boolean(value.companyName), {
+  message: "Provide either cnpj or companyName."
+});
+
+export const leadReceitaLookupResponseSchema = z.object({
+  items: z.array(z.object({
+    cnpj: normalizedCnpjSchema,
+    companyName: z.string().nullable(),
+    tradeName: z.string().nullable()
+  }).passthrough()),
+  page: z.number().int().positive(),
+  pageSize: z.number().int().positive(),
+  total: z.number().int().nonnegative()
+});
+
+export const leadCsvUploadRequestSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  fileName: z.string().trim().min(1).max(180),
+  csvBase64: z.string().min(1),
+  idempotencyKey: z.string().trim().min(1).max(200)
+});
+
+export const leadSimilarQuerySchema = z.object({
+  seedCnpj: normalizedCnpjSchema.optional(),
+  listId: uuidSchema.optional(),
+  leadId: uuidSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25)
+}).refine((value) => Boolean(value.seedCnpj) !== Boolean(value.listId && value.leadId) &&
+  Boolean(value.listId) === Boolean(value.leadId), { message: "Provide either seedCnpj or listId and leadId." });
+
+export const leadSimilarSaveRequestSchema = z.object({
+  seedCnpj: normalizedCnpjSchema.optional(),
+  listId: uuidSchema.optional(),
+  leadId: uuidSchema.optional(),
+  name: z.string().trim().min(1).max(160),
+  selectedCnpjs: z.array(normalizedCnpjSchema).min(1).max(100)
+    .refine((values) => new Set(values).size === values.length, "selectedCnpjs must be unique."),
+  idempotencyKey: z.string().trim().min(1).max(200)
+}).refine((value) => Boolean(value.seedCnpj) !== Boolean(value.listId && value.leadId) &&
+  Boolean(value.listId) === Boolean(value.leadId), { message: "Provide either seedCnpj or listId and leadId." });
+
 export const leadListSchema = z.object({
   id: uuidSchema,
   workspaceId: z.string().min(1),
@@ -299,6 +352,12 @@ export const leadWhatsappVerificationResponseSchema = z.object({
   verifications: z.array(leadWhatsappVerificationResultSchema)
 });
 export type LeadWhatsappVerificationResponse = z.infer<typeof leadWhatsappVerificationResponseSchema>;
+
+export const leadWhatsappRetryResponseSchema = z.object({
+  job: leadJobSchema,
+  verifications: z.array(leadWhatsappVerificationResultSchema)
+});
+export type LeadWhatsappRetryResponse = z.infer<typeof leadWhatsappRetryResponseSchema>;
 
 export const leadContactSourceTagSummarySchema = z.object({
   name: z.string().min(1),

@@ -12,6 +12,7 @@ import {
   apiGetConversationMessages,
   apiGetConversations,
   apiGetCurrentTalkUser,
+  apiGetLeadComposerDraft,
   apiGetTags,
   apiGetQuickReplies,
   apiMarkConversationRead,
@@ -40,6 +41,7 @@ import { ContactAvatar, ContactPhotoProvider } from './ContactAvatar';
 import { InboxMedia, mediaCaption } from './InboxMedia';
 import { RichDraft, type RichDraftHandle } from './RichDraft';
 import { VoiceRecorder } from './VoiceRecorder';
+import { mergeLeadComposerDraft, takeLeadDraftRequest } from './lead-composer';
 import { WhatsappText } from './whatsapp-text';
 import { useAssistantConversation } from './useAssistantConversation';
 import { canCopySuggestion, draftNeedsReview, suggestionOrigin, type ComposerSuggestionOrigin } from './assistant-composer-state';
@@ -434,6 +436,17 @@ function InboxPageContent() {
   }, [getToken]);
   const assistant = useAssistantConversation(selectedConversationId, getToken);
   useEffect(() => { setComposerOrigin(null); setDraft(''); setAssistantOpen(false); }, [selectedConversationId]);
+  useEffect(() => {
+    if (!selectedConversationId) return;
+    const cleanUrl = takeLeadDraftRequest(window.location.href, selectedConversationId);
+    if (!cleanUrl) return;
+    window.history.replaceState(window.history.state, "", cleanUrl);
+    let active = true;
+    void apiGetLeadComposerDraft(getToken, selectedConversationId)
+      .then(result => { if (active) setDraft(current => mergeLeadComposerDraft(current, result?.body)); })
+      .catch(err => { if (active) setMessageError(err instanceof Error ? err.message : "Não foi possível carregar o rascunho."); });
+    return () => { active = false; };
+  }, [getToken, selectedConversationId]);
   useEffect(() => {
     if (!assistantOpen) return;
     assistantCloseRef.current?.focus();

@@ -6,6 +6,31 @@ afterEach(() => {
   vi.resetModules();
 });
 
+describe("Leads API helpers", () => {
+  it("parses the retry envelope and sends the authenticated job request", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const id = "00000000-0000-4000-8000-000000000001";
+    const job = { id, workspaceId: "workspace", listId: id, operation: "google_maps_search", status: "queued", attempts: 2, leaseUntil: null, startedAt: null, finishedAt: null, errorMessage: null, createdAt: "2026-09-22T00:00:00.000Z", updatedAt: "2026-09-22T00:00:00.000Z" };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ job, list: {} }), { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+    const { apiRetryLeadJob } = await import("./api");
+    await expect(apiRetryLeadJob(async () => null, id)).resolves.toEqual(job);
+    expect(fetchMock).toHaveBeenCalledWith(`http://localhost:3002/leads/jobs/${id}/retry`, expect.objectContaining({ method: "POST", headers: expect.objectContaining({ Authorization: "Bearer local-dev-bypass" }) }));
+  });
+
+  it("downloads CSV errors with auth rather than following an unauthenticated link", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const id = "00000000-0000-4000-8000-000000000001";
+    const fetchMock = vi.fn().mockResolvedValue(new Response("cnpj,error\n1,invalid", { status: 200, headers: { "content-type": "text/csv" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+    const { apiDownloadLeadErrors } = await import("./api");
+    await expect(apiDownloadLeadErrors(async () => null, id)).resolves.toBeInstanceOf(Blob);
+    expect(fetchMock).toHaveBeenCalledWith(`http://localhost:3002/leads/jobs/${id}/errors.csv`, expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer local-dev-bypass" }) }));
+  });
+});
+
 describe("buildRealtimeUrl", () => {
   it("preserves the API base path without putting bearer tokens in the URL", async () => {
     vi.stubEnv("VITE_API_URL", "https://talk.prymeiradigital.com.br/api");
