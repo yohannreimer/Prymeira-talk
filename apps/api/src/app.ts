@@ -5,6 +5,7 @@ import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
+import { cnpjDatabasePlugin } from "./plugins/cnpj-database.js";
 import { createAgentFollowupRuntime } from "./modules/agents/agent-followup-runtime.js";
 import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
 import { createJevFollowupDecision } from "./modules/agents/jev-followup-decision.js";
@@ -54,6 +55,12 @@ import { tagsRoutes } from "./modules/tags/tags.routes.js";
 import { teamRoutes } from "./modules/team/team.routes.js";
 import { quickRepliesRoutes } from "./modules/quick-replies/quick-replies.routes.js";
 import { uploadsRoutes } from "./modules/uploads/uploads.routes.js";
+import { CnpjRepository } from "./modules/leads/cnpj.repository.js";
+import { LeadsRepository } from "./modules/leads/leads.repository.js";
+import { createLeadsService } from "./modules/leads/leads.service.js";
+import { createLeadsScheduler } from "./modules/leads/leads.scheduler.js";
+import { createCityGeocoder } from "./modules/leads/city-geocoder.js";
+import { createGoogleMapsScraperClient } from "./modules/leads/google-maps-scraper.client.js";
 
 export interface CreateAppOptions {
   authEnabled?: boolean;
@@ -111,6 +118,10 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     await app.register(prismaPlugin, { databaseUrl: env.DATABASE_URL });
   }
 
+  if (env.CNPJ_DATABASE_URL) {
+    await app.register(cnpjDatabasePlugin, { databaseUrl: env.CNPJ_DATABASE_URL });
+  }
+
   if (options.authEnabled !== false) {
     await app.register(authContextPlugin, {
       accountApiUrl: env.PRYMEIRA_ACCOUNT_API_URL,
@@ -155,6 +166,46 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     apiKey: env.EVOLUTION_API_KEY,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET
   });
+
+  const leadsRepository = options.prismaEnabled === false
+    ? undefined
+    : new LeadsRepository(app.prisma);
+  const leadsService = leadsRepository
+    ? createLeadsService({
+        repository: leadsRepository,
+        cnpjRepository: new CnpjRepository(app.cnpj),
+        googleMapsClient: env.GOOGLE_MAPS_SCRAPER_URL
+          ? createGoogleMapsScraperClient({
+              baseUrl: env.GOOGLE_MAPS_SCRAPER_URL,
+              depth: env.LEAD_GOOGLE_DEFAULT_DEPTH
+            })
+          : undefined,
+        cityGeocoder: createCityGeocoder(),
+        evolutionClient: evolutionRuntime.client?.checkWhatsappNumbersAvailability
+          ? {
+              checkWhatsappNumbersAvailability: evolutionRuntime.client.checkWhatsappNumbersAvailability.bind(evolutionRuntime.client)
+            }
+          : null,
+        googlePollIntervalMs: env.LEAD_JOB_POLL_MS,
+        realtime: app.realtime
+      })
+    : undefined;
+  const leadsScheduler = leadsRepository && leadsService
+    ? createLeadsScheduler({
+        repository: leadsRepository,
+        service: leadsService,
+        pollIntervalMs: env.LEAD_JOB_POLL_MS,
+        maxGoogleConcurrentJobs: env.LEAD_GOOGLE_MAX_CONCURRENT_JOBS,
+        onError: (error) => app.log.error({ err: error }, "Leads scheduler failed; jobs remain persisted.")
+      })
+    : undefined;
+  leadsScheduler?.start();
+  if (leadsScheduler) {
+    app.addHook("onClose", async () => {
+      await leadsScheduler.stop();
+    });
+  }
+
   const evolutionHistorySource =
     evolutionRuntime.mode === "real" && env.EVOLUTION_API_BASE_URL && env.EVOLUTION_API_KEY
       ? createEvolutionHistorySource({

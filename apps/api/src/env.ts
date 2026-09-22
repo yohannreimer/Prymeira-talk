@@ -10,6 +10,26 @@ const optionalUrl = z.preprocess(
   z.string().url().optional()
 );
 
+function optionalUrlWithProtocols(protocols: readonly string[]) {
+  return z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z
+      .string()
+      .url()
+      .refine(
+        (value) => {
+          try {
+            return protocols.includes(new URL(value).protocol);
+          } catch {
+            return false;
+          }
+        },
+        { message: `URL protocol must be one of: ${protocols.join(", ")}` }
+      )
+      .optional()
+  );
+}
+
 export const envSchema = z
   .object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -37,7 +57,13 @@ export const envSchema = z
     JEV_API_KEY: optionalNonEmptyString,
     JEV_MODEL: z.string().min(1).default("jev-latest"),
     TALK_UPLOAD_DIR: z.string().min(1).default("storage/uploads"),
-    VINCULA_CRM_API_URL: optionalUrl
+    VINCULA_CRM_API_URL: optionalUrl,
+    CNPJ_DATABASE_URL: optionalUrlWithProtocols(["postgres:", "postgresql:"]),
+    GOOGLE_MAPS_SCRAPER_URL: optionalUrlWithProtocols(["http:", "https:"]),
+    LEAD_GOOGLE_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(1),
+    LEAD_GOOGLE_DEFAULT_DEPTH: z.coerce.number().int().positive().max(5).default(5),
+    LEAD_WHATSAPP_BATCH_SIZE: z.coerce.number().int().positive().max(25).default(25),
+    LEAD_JOB_POLL_MS: z.coerce.number().int().min(1_000).max(60_000).optional()
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === "production" && env.PRYMEIRA_LOCAL_AUTH_BYPASS) {

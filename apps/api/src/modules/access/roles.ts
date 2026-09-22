@@ -6,6 +6,7 @@ export type Permission =
   | "conversation.assign"
   | "tag.manage"
   | "automation.manage"
+  | "lead.manage"
   | "campaign.manage"
   | "crm.manage"
   | "workspace.manage";
@@ -17,6 +18,7 @@ const permissionsByRole: Record<UserRole, Set<Permission>> = {
     "conversation.assign",
     "tag.manage",
     "automation.manage",
+    "lead.manage",
     "campaign.manage",
     "crm.manage",
     "workspace.manage"
@@ -27,10 +29,11 @@ const permissionsByRole: Record<UserRole, Set<Permission>> = {
     "conversation.assign",
     "tag.manage",
     "automation.manage",
+    "lead.manage",
     "campaign.manage",
     "crm.manage"
   ]),
-  agent: new Set(["conversation.read", "conversation.reply"])
+  agent: new Set(["conversation.read", "conversation.reply", "lead.manage"])
 };
 
 export function canPerform(role: UserRole, permission: Permission) {

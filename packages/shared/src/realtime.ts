@@ -9,6 +9,7 @@ import {
   messageSchema,
   messageStatusSchema
 } from "./domain.js";
+import { leadJobSchema, leadListSchema } from "./leads.js";
 
 const messageCreatedEventSchema = z.object({
   type: z.literal("message.created"),
@@ -121,6 +122,18 @@ const conversationFollowupUpdatedEventSchema = z.object({
   payload: conversationFollowupSchema
 });
 
+const leadListUpdatedEventSchema = z.object({
+  type: z.literal("lead_list.updated"),
+  workspaceId: z.string().min(1),
+  payload: leadListSchema
+});
+
+const leadJobUpdatedEventSchema = z.object({
+  type: z.literal("lead_job.updated"),
+  workspaceId: z.string().min(1),
+  payload: leadJobSchema
+});
+
 export const realtimeEventSchema = z
   .discriminatedUnion("type", [
     messageCreatedEventSchema,
@@ -134,7 +147,9 @@ export const realtimeEventSchema = z
     channelQrUpdatedEventSchema,
     automationRunCreatedEventSchema,
     campaignUpdatedEventSchema,
-    conversationFollowupUpdatedEventSchema
+    conversationFollowupUpdatedEventSchema,
+    leadListUpdatedEventSchema,
+    leadJobUpdatedEventSchema
   ])
   .superRefine((event, context) => {
     const payload =

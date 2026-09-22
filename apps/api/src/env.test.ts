@@ -48,4 +48,89 @@ describe("readEnv", () => {
       JEV_MODEL: "jev-1.13"
     });
   });
+
+  it("loads the conservative Leads defaults without source services", () => {
+    const env = readEnv(baseProductionEnv);
+
+    expect(env).toMatchObject({
+      LEAD_GOOGLE_MAX_CONCURRENT_JOBS: 1,
+      LEAD_GOOGLE_DEFAULT_DEPTH: 5,
+      LEAD_WHATSAPP_BATCH_SIZE: 25
+    });
+    expect(env.CNPJ_DATABASE_URL).toBeUndefined();
+    expect(env.GOOGLE_MAPS_SCRAPER_URL).toBeUndefined();
+    expect(env.LEAD_JOB_POLL_MS).toBeUndefined();
+  });
+
+  it("validates optional Leads source URLs and execution limits", () => {
+    expect(readEnv({
+      ...baseProductionEnv,
+      CNPJ_DATABASE_URL: "postgresql://reader:password@cnpj.internal/cnpj",
+      GOOGLE_MAPS_SCRAPER_URL: "https://scraper.internal"
+    })).toMatchObject({
+      CNPJ_DATABASE_URL: "postgresql://reader:password@cnpj.internal/cnpj",
+      GOOGLE_MAPS_SCRAPER_URL: "https://scraper.internal"
+    });
+
+    expect(() =>
+      readEnv({
+        ...baseProductionEnv,
+        CNPJ_DATABASE_URL: "not-a-database-url"
+      })
+    ).toThrow(/CNPJ_DATABASE_URL/);
+
+    expect(() =>
+      readEnv({
+        ...baseProductionEnv,
+        CNPJ_DATABASE_URL: "mysql://reader:password@cnpj.internal/cnpj"
+      })
+    ).toThrow(/CNPJ_DATABASE_URL/);
+
+    expect(() =>
+      readEnv({
+        ...baseProductionEnv,
+        GOOGLE_MAPS_SCRAPER_URL: "not-a-url"
+      })
+    ).toThrow(/GOOGLE_MAPS_SCRAPER_URL/);
+
+    expect(() =>
+      readEnv({
+        ...baseProductionEnv,
+        GOOGLE_MAPS_SCRAPER_URL: "ftp://scraper.internal"
+      })
+    ).toThrow(/GOOGLE_MAPS_SCRAPER_URL/);
+
+    expect(() =>
+      readEnv({
+        ...baseProductionEnv,
+        LEAD_GOOGLE_MAX_CONCURRENT_JOBS: "0"
+      })
+    ).toThrow(/LEAD_GOOGLE_MAX_CONCURRENT_JOBS/);
+
+    expect(() =>
+      readEnv({
+        ...baseProductionEnv,
+        LEAD_GOOGLE_DEFAULT_DEPTH: "6"
+      })
+    ).toThrow(/LEAD_GOOGLE_DEFAULT_DEPTH/);
+
+    expect(() =>
+      readEnv({
+        ...baseProductionEnv,
+        LEAD_WHATSAPP_BATCH_SIZE: "26"
+      })
+    ).toThrow(/LEAD_WHATSAPP_BATCH_SIZE/);
+
+    expect(() =>
+      readEnv({
+        ...baseProductionEnv,
+        LEAD_JOB_POLL_MS: "0"
+      })
+    ).toThrow(/LEAD_JOB_POLL_MS/);
+
+    expect(() => readEnv({ ...baseProductionEnv, LEAD_JOB_POLL_MS: "999" }))
+      .toThrow(/LEAD_JOB_POLL_MS/);
+    expect(() => readEnv({ ...baseProductionEnv, LEAD_JOB_POLL_MS: "60001" }))
+      .toThrow(/LEAD_JOB_POLL_MS/);
+  });
 });

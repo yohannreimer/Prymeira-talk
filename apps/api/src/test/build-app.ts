@@ -27,6 +27,9 @@ export async function buildApp(
       EVOLUTION_WEBHOOK_SECRET: "test_secret",
       JEV_MODEL: "jev-latest",
       TALK_UPLOAD_DIR: "tmp/test-uploads",
+      LEAD_GOOGLE_MAX_CONCURRENT_JOBS: 1,
+      LEAD_GOOGLE_DEFAULT_DEPTH: 5,
+      LEAD_WHATSAPP_BATCH_SIZE: 25,
       ...overrides
     },
     { authEnabled: false, logger: false, prismaEnabled: false, ...options }

@@ -1,0 +1,72 @@
+name: prymeira-leads-cnpj
+
+services:
+  cnpj-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${CNPJ_POSTGRES_DB:?copy .env.example to .env first}
+      POSTGRES_USER: ${CNPJ_POSTGRES_USER:?copy .env.example to .env first}
+      POSTGRES_PASSWORD: ${CNPJ_POSTGRES_PASSWORD:?copy .env.example to .env first}
+    ports:
+      - "127.0.0.1:${CNPJ_POSTGRES_PORT:-5436}:5432"
+    volumes:
+      - cnpj-postgres-data:/var/lib/postgresql/data
+      - ./init-cnpj-schema.sql:/docker-entrypoint-initdb.d/01-cnpj-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - cnpj-private
+
+  cnpj-pipeline:
+    build:
+      context: ./cnpj-data-pipeline
+    depends_on:
+      cnpj-postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cnpj-postgres:5432/cnpj
+      PGHOST: cnpj-postgres
+      PGPORT: "5432"
+      PGDATABASE: ${CNPJ_POSTGRES_DB:?copy .env.example to .env first}
+      PGUSER: ${CNPJ_POSTGRES_USER:?copy .env.example to .env first}
+      PGPASSWORD: ${CNPJ_POSTGRES_PASSWORD:?copy .env.example to .env first}
+      PGOPTIONS: "-c search_path=cnpj"
+      TEMP_DIR: /app/temp
+      KEEP_DOWNLOADED_FILES: "true"
+      DOWNLOAD_WORKERS: ${CNPJ_DOWNLOAD_WORKERS:-1}
+      PROCESS_WORKERS: ${CNPJ_PROCESS_WORKERS:-1}
+      LOADING_STRATEGY: ${CNPJ_LOADING_STRATEGY:-upsert}
+    volumes:
+      - type: bind
+        source: ${CNPJ_RAW_DATA_DIR:-./data}
+        target: /app/temp
+    networks:
+      - cnpj-private
+      - cnpj-egress
+
+  google-maps-scraper:
+    image: gosom/google-maps-scraper:v1.15.0@sha256:8f5dc7f8fe57832faf1e93c5224d7451f0193154cf8d128e1f40b0773770ebd1
+    profiles: ["google-maps-scraper"]
+    command: ["-web", "-data-folder", "/gmapsdata"]
+    ports:
+      - "127.0.0.1:${GOOGLE_MAPS_SCRAPER_PORT:-8080}:8080"
+    volumes:
+      - google-maps-scraper-data:/gmapsdata
+      - google-maps-scraper-cache:/opt
+    networks:
+      - cnpj-private
+      - cnpj-egress
+
+volumes:
+  cnpj-postgres-data:
+  google-maps-scraper-data:
+  google-maps-scraper-cache:
+
+networks:
+  cnpj-private:
+    name: prymeira-leads-cnpj-private
+    internal: true
+  cnpj-egress:

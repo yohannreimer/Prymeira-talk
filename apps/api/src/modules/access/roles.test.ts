@@ -13,4 +13,12 @@ describe("role permissions", () => {
   it("allows owners to manage workspace settings", () => {
     expect(canPerform("owner", "workspace.manage")).toBe(true);
   });
+
+  it.each(["owner", "manager", "agent"] as const)("allows %s to manage leads", (role) => {
+    expect(canPerform(role, "lead.manage")).toBe(true);
+  });
+
+  it("keeps campaign management unavailable to agents", () => {
+    expect(canPerform("agent", "campaign.manage")).toBe(false);
+  });
 });
