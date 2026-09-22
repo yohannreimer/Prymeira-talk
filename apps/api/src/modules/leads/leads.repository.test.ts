@@ -361,6 +361,10 @@ describe("Leads repository workspace isolation", () => {
       where: { workspaceId, id: { in: [verificationId] }, status: "checking" },
       data: { status: "failed", errorMessage: "LEAD_JOB_ATTEMPTS_EXHAUSTED", checkedAt: now }
     });
+    expect(jobUpdateMany).toHaveBeenCalledWith({
+      where: { workspaceId, id: jobId, status: "failed", leaseToken: null },
+      data: { output: { retryable: true } }
+    });
     expect(listUpdateMany).not.toHaveBeenCalled();
   });
 

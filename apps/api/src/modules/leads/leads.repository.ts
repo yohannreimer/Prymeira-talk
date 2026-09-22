@@ -981,6 +981,10 @@ export class LeadsRepository {
                 data: { status: "failed", errorMessage: "LEAD_JOB_ATTEMPTS_EXHAUSTED", checkedAt: now }
               });
             }
+            await tx.leadJob.updateMany({
+              where: { workspaceId: job.workspaceId, id: job.id, status: "failed", leaseToken: null },
+              data: { output: { ...requestJsonRecord(job.output), retryable: true } }
+            });
           } else {
             const currentList = await tx.leadList.findFirst({
               where: { workspaceId: job.workspaceId, id: job.listId }
