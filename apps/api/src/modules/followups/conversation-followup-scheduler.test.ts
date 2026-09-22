@@ -16,6 +16,22 @@ function buildPrisma(followups: Array<{ id: string; workspaceId: string }> = [])
 }
 
 describe("createConversationFollowupScheduler", () => {
+  it("reconciles stale processing leases before polling and never dispatches them", async () => {
+    const prisma = buildPrisma([]);
+    const reconcileStaleProcessingFollowups = vi.fn().mockResolvedValue({ reconciled: 2 });
+    const runFollowup = vi.fn();
+    const scheduler = createConversationFollowupScheduler({
+      prisma,
+      runtime: { runFollowup },
+      reconciler: { reconcileStaleProcessingFollowups }
+    });
+    const now = new Date("2026-09-22T12:00:00.000Z");
+
+    await expect(scheduler.processDueFollowups({ now })).resolves.toEqual([]);
+    expect(reconcileStaleProcessingFollowups).toHaveBeenCalledWith({ now });
+    expect(runFollowup).not.toHaveBeenCalled();
+  });
+
   it("selects due scheduled follow-ups in a bounded, stable order and runs each one", async () => {
     const first = { id: ids.first, workspaceId: ids.workspace };
     const second = { id: ids.second, workspaceId: ids.workspace };

@@ -24,7 +24,7 @@ type Followup = {
   agentId: string;
   sessionId: string;
   kind: "qualification" | "human_commercial";
-  status: "scheduled" | "processing" | "review" | "sent" | "cancelled" | "failed";
+  status: "scheduled" | "processing" | "review" | "sent" | "cancelled" | "failed" | "skipped" | "expired";
   activeKey: string | null;
   stepIndex: number;
   anchorMessageId: string;
@@ -150,6 +150,13 @@ function createMemoryPrisma(records: Followup[]) {
         if (index < 0) throw new Error("reserved message missing");
         messages[index] = { ...messages[index], ...data };
         return messages[index];
+      }),
+      deleteMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const before = messages.length;
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          if (matches(messages[index], where)) messages.splice(index, 1);
+        }
+        return { count: before - messages.length };
       }),
       findFirst: vi.fn(async ({ where, orderBy }: { where: Record<string, any>; orderBy?: Record<string, string> }) => {
         const found = messages.filter((message) => {
@@ -293,6 +300,25 @@ describe("conversation follow-up review routes", () => {
     }
   });
 
+  it("lists all terminal failures in the cancelled tab with a bounded query", async () => {
+    const { app, db } = await buildRouteApp({ records: [
+      followup({ id: ids.followup, status: "failed", activeKey: null, reason: "private_provider_failure" }),
+      followup({ id: ids.followupB, status: "skipped", activeKey: null, reason: "private_decision" })
+    ] });
+    try {
+      const response = await app.inject("/followups?status=cancelled");
+      expect(response.statusCode).toBe(200);
+      expect(response.json().map((item: { status: string }) => item.status)).toEqual(["failed", "skipped"]);
+      expect(response.body).not.toContain("private_provider_failure");
+      expect(db.conversationFollowup.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { workspaceId: ids.workspaceA, status: { in: ["cancelled", "failed", "skipped", "expired"] } },
+        take: 100
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
   it("rejects a role without conversation.reply before loading or changing a follow-up", async () => {
     const { app, db } = await buildRouteApp({ role: "viewer" });
     try {
@@ -405,6 +431,23 @@ describe("conversation follow-up review routes", () => {
       expect((await app.inject(request)).statusCode).toBe(502);
       expect((await app.inject(request)).statusCode).toBe(409);
       expect(outbound).toHaveBeenCalledTimes(1);
+      expect(db.messages).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("removes the hidden reservation when delivery fails before provider acceptance", async () => {
+    const outbound = vi.fn().mockRejectedValue(new Error("definitive pre-provider failure"));
+    const { app, db } = await buildRouteApp({ realFollowups: true, outbound });
+    try {
+      const response = await app.inject({
+        method: "POST", url: `/followups/${ids.followup}/send`,
+        payload: { body: "Pode tentar de novo", expectedUpdatedAt: expected(db.records[0]) }
+      });
+      expect(response.statusCode).toBe(502);
+      expect(db.records[0]).toMatchObject({ status: "review", activeKey: "active" });
+      expect(db.messages).toHaveLength(0);
     } finally {
       await app.close();
     }

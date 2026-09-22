@@ -35,6 +35,7 @@ import {
   type PrismaLike as ConversationsPrismaLike
 } from "./modules/conversations/conversations.service.js";
 import { conversationsRoutes } from "./modules/conversations/conversations.routes.js";
+import { createRealtimeOutboundDelivery } from "./modules/conversations/realtime-outbound-delivery.js";
 import { conversationFollowupsRoutes } from "./modules/followups/conversation-followups.routes.js";
 import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js";
 import { crmRoutes } from "./modules/crm/crm.routes.js";
@@ -195,7 +196,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
 
   // Both automatic and human-reviewed follow-ups must use the same provider
   // resolution and durable outbound-message path as a normal Talk reply.
-  const followupOutbound: ConversationOutboundTextDelivery | undefined =
+  const rawFollowupOutbound: ConversationOutboundTextDelivery | undefined =
     options.prismaEnabled === false
       ? undefined
       : {
@@ -220,6 +221,9 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
             ).createPendingOutboundMessage(deliveryInput);
           }
         };
+  const followupOutbound = rawFollowupOutbound
+    ? createRealtimeOutboundDelivery({ delivery: rawFollowupOutbound, realtime: app.realtime })
+    : undefined;
 
   const followupRuntime =
     options.prismaEnabled === false || !followupService || !followupOutbound || !env.JEV_API_KEY
@@ -236,10 +240,11 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           outbound: followupOutbound,
           publisher: followupPublisher
         });
-  const conversationFollowupScheduler = followupRuntime
+  const conversationFollowupScheduler = followupService
     ? createConversationFollowupScheduler({
         prisma: app.prisma as unknown as Parameters<typeof createConversationFollowupScheduler>[0]["prisma"],
         runtime: followupRuntime,
+        reconciler: followupService,
         onError(error, followup) {
           app.log.error(
             {

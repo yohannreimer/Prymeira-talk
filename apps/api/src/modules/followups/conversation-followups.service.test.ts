@@ -84,6 +84,7 @@ function claimedFollowup(overrides: Record<string, unknown> = {}) {
 function buildPrisma(overrides: Record<string, any> = {}) {
   const conversationFollowup = {
     findFirst: overrides.conversationFollowup?.findFirst ?? vi.fn().mockResolvedValue(null),
+    findMany: overrides.conversationFollowup?.findMany ?? vi.fn().mockResolvedValue([]),
     updateMany: overrides.conversationFollowup?.updateMany ?? vi.fn().mockResolvedValue({ count: 0 }),
     create:
       overrides.conversationFollowup?.create ??
@@ -116,6 +117,55 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("conversation followups", () => {
+  it("does not cancel an in-flight processing item when customer activity is observed", async () => {
+    const prisma = buildPrisma({
+      message: { findFirst: vi.fn().mockResolvedValue({ ...baseMessage, direction: "inbound" }) },
+      conversationFollowup: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 })
+      }
+    });
+
+    await expect(createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "inbound",
+      source: "customer"
+    })).resolves.toEqual({ status: "ignored" });
+
+    expect(prisma.conversationFollowup.findFirst).not.toHaveBeenCalled();
+    expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ status: { in: ["scheduled", "review"] } })
+    }));
+  });
+
+  it("terminalizes stale manual and automatic processing leases without retry", async () => {
+    const staleManual = claimedFollowup({ id: "manual", kind: "human_commercial", lockedAt: new Date("2026-09-22T10:00:00.000Z") });
+    const staleAutomatic = claimedFollowup({ id: "automatic", kind: "qualification", lockedAt: new Date("2026-09-22T10:01:00.000Z") });
+    const persisted = new Map([
+      ["manual", { ...staleManual, status: "failed", activeKey: null, reason: "processing_lease_expired", createdAt: anchorAt, updatedAt: claimLockedAt }],
+      ["automatic", { ...staleAutomatic, status: "failed", activeKey: null, reason: "processing_lease_expired", createdAt: anchorAt, updatedAt: claimLockedAt }]
+    ]);
+    const prisma = buildPrisma({
+      conversationFollowup: {
+        findMany: vi.fn().mockResolvedValue([staleManual, staleAutomatic]),
+        findFirst: vi.fn().mockImplementation(async (args: any) => persisted.get(args.where.id) ?? null),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 })
+      }
+    });
+    const publishUpdated = vi.fn();
+
+    await expect(createConversationFollowupsService(prisma, { publisher: { publishUpdated } })
+      .reconcileStaleProcessingFollowups({ now: new Date("2026-09-22T12:00:00.000Z") }))
+      .resolves.toEqual({ reconciled: 2 });
+
+    expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledTimes(2);
+    expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { status: "failed", activeKey: null, lockedAt: null, reason: "processing_lease_expired" }
+    }));
+    expect(publishUpdated).toHaveBeenCalledTimes(2);
+  });
   it("publishes the persisted state after a customer-reply cancellation", async () => {
     const cancelled = activeFollowup({
       status: "cancelled",
@@ -203,6 +253,7 @@ describe("conversation followups", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         activeKey: "active",
+        status: { in: ["scheduled", "review"] },
         anchorIngestedAt: { lt: customerMessage.ingestedAt }
       },
       data: expect.objectContaining({
@@ -492,6 +543,7 @@ describe("conversation followups", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         activeKey: "active",
+        status: { in: ["scheduled", "review"] },
         anchorIngestedAt: { lt: newerCustomerMessage.ingestedAt }
       },
       data: expect.objectContaining({
@@ -642,6 +694,7 @@ describe("conversation followups", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         activeKey: "active",
+        status: { in: ["scheduled", "review"] },
         anchorIngestedAt: { lt: newerCustomerMessage.ingestedAt }
       },
       data: expect.objectContaining({ reason: "customer_replied", activeKey: null })
@@ -693,6 +746,7 @@ describe("conversation followups", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         activeKey: "active",
+        status: { in: ["scheduled", "review"] },
         anchorIngestedAt: { lt: newerCustomerMessage.ingestedAt }
       },
       data: expect.objectContaining({ reason: "customer_replied", activeKey: null })
@@ -971,6 +1025,38 @@ describe("conversation followups", () => {
 });
 
 describe("completeAutomaticFollowup", () => {
+  it("marks the in-flight step sent but does not schedule another after a concurrent customer reply", async () => {
+    const create = vi.fn();
+    const findFirst = vi.fn().mockResolvedValue({
+      ...baseMessage,
+      id: "concurrent_customer_reply",
+      direction: "inbound",
+      ingestedAt: new Date("2026-09-21T12:06:00.000Z")
+    });
+    const prisma = buildPrisma({
+      message: { findFirst },
+      conversationFollowup: { updateMany: vi.fn().mockResolvedValue({ count: 1 }), create }
+    });
+
+    await expect(createConversationFollowupsService(prisma).completeAutomaticFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      followup: claimedFollowup(),
+      claim: { lockedAt: claimLockedAt },
+      agentBehaviorConfig: { followup: { ...followupConfig, steps: [
+        { afterBusinessMinutes: 60, instruction: "Primeiro." },
+        { afterBusinessMinutes: 120, instruction: "Segundo." }
+      ] } },
+      finalBody: "Mensagem já despachada.",
+      decision: { route: "automatic_send" }
+    })).resolves.toEqual({ status: "sent" });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "sent", activeKey: null })
+    }));
+  });
+
   it("marks the delivered step sent and schedules exactly its next configured step on the original anchor", async () => {
     const configWithThreeSteps = {
       ...followupConfig,

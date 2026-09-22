@@ -1,9 +1,12 @@
 import { COMPLETE_HISTORY_CHARACTER_LIMIT, COMPLETE_HISTORY_MESSAGE_LIMIT } from "./conversation-reasoning-policy.js";
+import { visibleConversationMessageWhere, withoutInternalFollowupReservations } from "../conversations/internal-message.js";
 
 type ConversationMessageRecord = {
   id: string;
   direction?: string | null;
   type?: string | null;
+  status?: string | null;
+  metadata?: unknown;
   body?: string | null;
   createdAt?: Date | string | null;
 };
@@ -41,20 +44,21 @@ export async function buildConversationContext(
   }
 ): Promise<ConversationContext> {
   const messages = await prisma.message.findMany({
-    where: {
+    where: visibleConversationMessageWhere({
       workspaceId: input.workspaceId,
       conversationId: input.conversationId
-    },
+    }),
     orderBy: [{ createdAt: "desc" }],
     take: input.complete ? COMPLETE_HISTORY_MESSAGE_LIMIT + 1 : input.limit ?? DEFAULT_MESSAGE_LIMIT
   });
 
-  if (input.complete && (messages.length > COMPLETE_HISTORY_MESSAGE_LIMIT
-    || messages.reduce((total, message) => total + (message.body?.length ?? 0), 0) > COMPLETE_HISTORY_CHARACTER_LIMIT)) {
+  const visibleMessages = withoutInternalFollowupReservations(messages);
+  if (input.complete && (visibleMessages.length > COMPLETE_HISTORY_MESSAGE_LIMIT
+    || visibleMessages.reduce((total, message) => total + (message.body?.length ?? 0), 0) > COMPLETE_HISTORY_CHARACTER_LIMIT)) {
     throw new Error("CONVERSATION_CONTEXT_LIMIT: histórico excede o limite de leitura completa; revisão humana necessária.");
   }
 
-  const normalizedMessages = messages
+  const normalizedMessages = visibleMessages
     .map(normalizeConversationMessage)
     .filter((message) => input.includeInternalNotes || message.type !== "internal_note")
     .sort(compareMessagesChronologically);

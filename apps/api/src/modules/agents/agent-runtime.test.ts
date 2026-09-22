@@ -922,7 +922,8 @@ describe("createAgentRuntime", () => {
     expect(prisma.message.findMany).toHaveBeenCalledWith({
       where: {
         workspaceId: ids.workspace,
-        conversationId: ids.conversation
+        conversationId: ids.conversation,
+        NOT: { status: "pending", metadata: { path: ["source"], equals: "followup_review" } }
       },
       orderBy: [{ createdAt: "desc" }],
       take: 80

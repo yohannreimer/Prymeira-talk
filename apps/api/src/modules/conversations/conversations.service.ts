@@ -8,7 +8,9 @@ import type {
   MessageDto
 } from "@prymeira-talk/shared";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
-import type { MetaClient } from "../meta/meta.client.js";
+import { EvolutionClientError } from "../evolution/evolution.client.js";
+import { MetaClientError, type MetaClient } from "../meta/meta.client.js";
+import { visibleConversationMessageWhere, withoutInternalFollowupReservations } from "./internal-message.js";
 
 type DateLike = Date | string;
 
@@ -69,6 +71,14 @@ export class OutboundDeliveryUncertainError extends Error {
     super("The outbound provider may have accepted the message, so this delivery cannot be retried safely.");
     this.name = "OutboundDeliveryUncertainError";
   }
+}
+
+function isDefinitiveProviderRejection(error: unknown) {
+  if (!(error instanceof EvolutionClientError || error instanceof MetaClientError)) return false;
+  // 408/409/425/429 can represent a request whose delivery outcome is not
+  // safely inferable from status alone. Other 4xx responses reject the send
+  // before acceptance and may safely return the review item for correction.
+  return error.statusCode >= 400 && error.statusCode < 500 && ![408, 409, 425, 429].includes(error.statusCode);
 }
 
 export interface ConversationRecord {
@@ -736,7 +746,9 @@ export function createConversationsService(
         try {
           return await operation();
         } catch (error) {
-          if (input.reservedMessageId) throw new OutboundDeliveryUncertainError();
+          if (input.reservedMessageId && !isDefinitiveProviderRejection(error)) {
+            throw new OutboundDeliveryUncertainError();
+          }
           throw error;
         }
       };
@@ -1313,15 +1325,15 @@ export function createConversationsService(
       }
 
       const messages = await prisma.message.findMany({
-        where: {
+        where: visibleConversationMessageWhere({
           workspaceId: input.workspaceId,
           conversationId: input.conversationId
-        },
+        }),
         orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
         take: 100
       });
 
-      return [...messages].reverse().map(toMessageDto);
+      return withoutInternalFollowupReservations([...messages]).reverse().map(toMessageDto);
     }
   };
 }

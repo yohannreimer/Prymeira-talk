@@ -258,6 +258,32 @@ describe("createAgentFollowupRuntime", () => {
     expect(harness.createPendingOutboundMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("finishes the in-flight item sent without a next step when inbound arrives during provider dispatch", async () => {
+    let releaseProvider!: () => void;
+    const providerPaused = new Promise<void>((resolve) => { releaseProvider = resolve; });
+    let customerReplied = false;
+    let currentStatus = "processing";
+    const createPendingOutboundMessage = vi.fn().mockImplementation(async () => {
+      await providerPaused;
+      return { message: { id: "outbound_1", status: "sent" } };
+    });
+    const completeAutomaticFollowup = vi.fn().mockImplementation(async () => {
+      currentStatus = "sent";
+      return customerReplied ? { status: "sent" } : { status: "scheduled", followupId: "next" };
+    });
+    const harness = buildRuntime({ createPendingOutboundMessage, completeAutomaticFollowup });
+
+    const running = harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup });
+    await vi.waitFor(() => expect(createPendingOutboundMessage).toHaveBeenCalledTimes(1));
+    customerReplied = true;
+    releaseProvider();
+
+    await expect(running).resolves.toEqual({ status: "sent", followupId: ids.followup });
+    expect(currentStatus).toBe("sent");
+    expect(createPendingOutboundMessage).toHaveBeenCalledTimes(1);
+    expect(completeAutomaticFollowup).toHaveBeenCalledTimes(1);
+  });
+
   it("recovers the exact claim when unexpected post-claim work throws", async () => {
     const failure = new Error("AI agent lookup failed");
     const aiAgentFindFirst = vi.fn().mockRejectedValue(failure);

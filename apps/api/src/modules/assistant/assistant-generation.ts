@@ -9,6 +9,7 @@ import { selectRelevantKnowledge } from '../agents/knowledge-retrieval.js';
 import { readKnowledgeTaxonomy } from '../agents/knowledge-taxonomy.js';
 import { evaluateAgentSafety } from '../agents/agent-safety-policy.js';
 import { usesContextFirst, resolveConversationSafetyOutput, conversationReasoningContext, COMPLETE_HISTORY_MESSAGE_LIMIT } from '../agents/conversation-reasoning-policy.js';
+import { visibleConversationMessageWhere, withoutInternalFollowupReservations } from '../conversations/internal-message.js';
 
 export const assistantHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -23,9 +24,10 @@ export async function loadAssistantContext(db: AssistantDb, workspaceId: string,
   const knowledge = await db.aiKnowledgeSource.findMany({ where: { workspaceId, agentId: agent.id, status: 'ready' }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: 50 });
   const complete = usesContextFirst(agent.behaviorConfig);
   const limit = complete ? COMPLETE_HISTORY_MESSAGE_LIMIT : 80;
-  const fetched = await db.message.findMany({ where: { workspaceId, conversationId, type: { notIn: ['internal_note', 'system'] } }, orderBy: complete ? [{ createdAt: 'desc' }, { id: 'desc' }] : [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }], take: limit + 1 });
-  if (complete && fetched.length > limit) throw new AssistantError('ASSISTANT_CONTEXT_LIMIT', 'O histórico excede o limite de leitura completa. Revise a conversa manualmente.', 422);
-  const messages = fetched.slice(0, limit).reverse();
+  const fetched = await db.message.findMany({ where: visibleConversationMessageWhere({ workspaceId, conversationId, type: { notIn: ['internal_note', 'system'] as never } }), orderBy: complete ? [{ createdAt: 'desc' }, { id: 'desc' }] : [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }], take: limit + 1 });
+  const visible = withoutInternalFollowupReservations(fetched);
+  if (complete && visible.length > limit) throw new AssistantError('ASSISTANT_CONTEXT_LIMIT', 'O histórico excede o limite de leitura completa. Revise a conversa manualmente.', 422);
+  const messages = visible.slice(0, limit).reverse();
   const agentHash = assistantHash({ agent, knowledge, settings });
   // Exclude extraction caches and delivery receipts: neither changes what was said.
   const contextKey = assistantHash({ agentHash, control: conversation.aiControlStatus, controlAt: conversation.aiControlUpdatedAt, assignedUserId: conversation.assignedUserId,

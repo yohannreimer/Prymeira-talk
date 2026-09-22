@@ -785,6 +785,28 @@ describe("conversations service", () => {
     expect(prisma.message.update).not.toHaveBeenCalled();
   });
 
+  it("distinguishes definitive provider 4xx rejection from ambiguous 5xx", async () => {
+    const conversation = {
+      id: "conv_1", workspaceId: "workspace_a", channelId: "channel_1", contactId: "contact_1",
+      status: "open" as const, assignedUserId: null, departmentId: null, lastMessageAt: null,
+      lastMessagePreview: null, unreadCount: 0, priority: "normal" as const,
+      channel: { provider: "evolution", providerKey: "instance_1" }, contact: { phone: "5547999990000" }, tags: []
+    };
+    const invoke = (statusCode: number) => {
+      const prisma = createMockPrisma({ findUnique: vi.fn().mockResolvedValue(conversation) });
+      const service = createConversationsService(prisma, {
+        evolution: { mode: "real", client: { sendText: vi.fn().mockRejectedValue(new EvolutionClientError(statusCode, {})) } } as never
+      });
+      return service.createPendingOutboundMessage({
+        reservedMessageId: "00000000-0000-4000-8000-000000000701",
+        workspaceId: "workspace_a", conversationId: "conv_1", body: "Oi", sentByUserId: "user_1"
+      });
+    };
+
+    await expect(invoke(400)).rejects.toBeInstanceOf(EvolutionClientError);
+    await expect(invoke(500)).rejects.toBeInstanceOf(OutboundDeliveryUncertainError);
+  });
+
   it("sends Meta Cloud text when the customer service window is open", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-20T12:00:00.000Z"));
@@ -1311,12 +1333,28 @@ describe("conversations service", () => {
     expect(prisma.message.findMany).toHaveBeenCalledWith({
       where: {
         workspaceId: "workspace_a",
-        conversationId: "conv_1"
+        conversationId: "conv_1",
+        NOT: { status: "pending", metadata: { path: ["source"], equals: "followup_review" } }
       },
       orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
       take: 100
     });
     expect(messageSchema.array().parse(messages)).toEqual(messages);
+  });
+
+  it("does not expose an internal pending follow-up reservation in Talk history", async () => {
+    const visible = {
+      id: "visible", workspaceId: "workspace_a", conversationId: "conv_1", providerMessageId: null,
+      direction: "inbound" as const, type: "text" as const, body: "Oi", mediaUrl: null,
+      status: "delivered" as const, sentByUserId: null, metadata: {}, createdAt: new Date()
+    };
+    const reservation = {
+      ...visible, id: "reservation", direction: "outbound" as const, status: "pending" as const,
+      metadata: { source: "followup_review", followupId: "followup_1" }, body: "rascunho"
+    };
+    const prisma = createMockPrisma({ findMessages: vi.fn().mockResolvedValue([reservation, visible]) });
+    const messages = await createConversationsService(prisma).listMessages({ workspaceId: "workspace_a", conversationId: "conv_1" });
+    expect(messages.map((message) => message.id)).toEqual(["visible"]);
   });
 
   it("rejects message listing for missing conversations", async () => {

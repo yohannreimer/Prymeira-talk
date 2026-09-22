@@ -1,9 +1,5 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
-import {
-  conversationSchema,
-  messageSchema,
-  type RealtimeEvent
-} from "@prymeira-talk/shared";
+import type { RealtimeEvent } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { canPerform, type Permission } from "../access/roles.js";
 import { resolveCurrentUserProfileId } from "../conversations/current-user.js";
@@ -82,6 +78,7 @@ type ManualSendTransaction = {
     findUnique(args: unknown): Promise<ReservedMessageRecord | null>;
     create(args: unknown): Promise<ReservedMessageRecord>;
     update(args: unknown): Promise<ReservedMessageRecord>;
+    deleteMany(args: unknown): Promise<{ count: number }>;
   };
 };
 
@@ -223,9 +220,15 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
     }
 
     const records = await prisma.conversationFollowup.findMany({
-      where: { workspaceId: request.talk.workspaceId, status: query.data.status },
+      where: {
+        workspaceId: request.talk.workspaceId,
+        status: query.data.status === "cancelled"
+          ? { in: ["cancelled", "failed", "skipped", "expired"] }
+          : query.data.status
+      },
       select: followupSelect,
-      orderBy: [{ scheduledAt: "asc" }, { createdAt: "asc" }]
+      orderBy: [{ scheduledAt: "asc" }, { createdAt: "asc" }],
+      take: 100
     });
     return records.map(toConversationFollowupDto);
   });
@@ -319,7 +322,7 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
           error: "The provider may have accepted the follow-up. It will not be retried automatically."
         });
       }
-      const restored = await restoreReview(prisma, request.talk.workspaceId, current.id, claimAt);
+      const restored = await restoreReviewAndRemoveReservation(prisma, request.talk.workspaceId, current.id, claimAt);
       if (restored) await publish(request.talk.workspaceId, current.id);
       return reply.code(502).send({
         code: "FOLLOWUP_DELIVERY_FAILED",
@@ -328,7 +331,7 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
     }
 
     if (delivery.message.status !== "sent") {
-      const restored = await restoreReview(prisma, request.talk.workspaceId, current.id, claimAt);
+      const restored = await restoreReviewAndRemoveReservation(prisma, request.talk.workspaceId, current.id, claimAt);
       if (restored) await publish(request.talk.workspaceId, current.id);
       return reply.code(502).send({
         code: "FOLLOWUP_DELIVERY_UNCONFIRMED",
@@ -397,7 +400,6 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
       return reply.code(500).send({ code: "FOLLOWUP_WRITE_FAILED", error: "Follow-up state was not persisted." });
     }
     await publisher.publishUpdated(result);
-    publishOutboundRealtime(realtime, delivery);
     return toConversationFollowupDto(result);
   });
 
@@ -591,17 +593,32 @@ async function guardUncertainDelivery(
   return result.count === 1;
 }
 
-async function restoreReview(
+async function restoreReviewAndRemoveReservation(
   prisma: ConversationFollowupsRoutesPrismaLike,
   workspaceId: string,
   id: string,
   lockedAt: Date
 ) {
-  const result = await prisma.conversationFollowup.updateMany({
-    where: { workspaceId, id, status: "processing", activeKey: "active", lockedAt },
-    data: { status: "review", lockedAt: null, reason: "manual_send_failed" }
+  return prisma.$transaction(async (tx) => {
+    const result = await tx.conversationFollowup.updateMany({
+      where: { workspaceId, id, status: "processing", activeKey: "active", lockedAt },
+      data: { status: "review", lockedAt: null, reason: "manual_send_failed" }
+    });
+    if (result.count !== 1) return false;
+    const reservation = await tx.message.findUnique({
+      where: { workspaceId_id: { workspaceId, id } }
+    });
+    const metadata = asRecord(reservation?.metadata);
+    if (
+      reservation?.status === "pending" &&
+      reservation.direction === "outbound" &&
+      metadata?.source === "followup_review" &&
+      metadata.followupId === id
+    ) {
+      await tx.message.deleteMany({ where: { workspaceId, id, status: "pending" } });
+    }
+    return true;
   });
-  return result.count === 1;
 }
 
 async function respondConditionalMutation(input: {
@@ -624,20 +641,6 @@ async function respondConditionalMutation(input: {
   }
   await input.publisher.publishUpdated(current);
   return toConversationFollowupDto(current);
-}
-
-function publishOutboundRealtime(
-  realtime: RealtimePublisher,
-  delivery: Awaited<ReturnType<ConversationOutboundTextDelivery["createPendingOutboundMessage"]>>
-) {
-  const message = messageSchema.safeParse(delivery.message);
-  if (message.success) {
-    realtime.publish({ type: "message.created", workspaceId: message.data.workspaceId, payload: message.data });
-  }
-  const conversation = conversationSchema.safeParse(delivery.conversation);
-  if (conversation.success) {
-    realtime.publish({ type: "conversation.updated", workspaceId: conversation.data.workspaceId, payload: conversation.data });
-  }
 }
 
 function nextBusinessWindow(from: Date) {

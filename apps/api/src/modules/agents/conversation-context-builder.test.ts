@@ -7,6 +7,18 @@ const ids = {
 };
 
 describe("buildConversationContext", () => {
+  it("excludes internal pending follow-up reservations from agent context", async () => {
+    const prisma = { message: { findMany: vi.fn().mockResolvedValue([
+      { id: "reservation", direction: "outbound", type: "text", body: "rascunho", status: "pending", metadata: { source: "followup_review", followupId: "f1" }, createdAt: new Date() },
+      { id: "customer", direction: "inbound", type: "text", body: "Olá", status: "delivered", metadata: {}, createdAt: new Date() }
+    ]) } };
+    const result = await buildConversationContext(prisma, { workspaceId: ids.workspace, conversationId: ids.conversation });
+    expect(result.messages.map((message) => message.id)).toEqual(["customer"]);
+    expect(prisma.message.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ NOT: expect.any(Object) })
+    }));
+  });
+
   it("loads stored history beyond 80 messages when complete context is requested", async () => {
     const messages = Array.from({ length: 120 }, (_, i) => ({ id: `m${i}`, direction: "inbound", type: "text", body: i === 0 ? "Retirada em Joinville" : "continuação", createdAt: new Date(1000 * i) }));
     const prisma = { message: { findMany: vi.fn().mockResolvedValue(messages) } };
@@ -53,7 +65,8 @@ describe("buildConversationContext", () => {
     expect(prisma.message.findMany).toHaveBeenCalledWith({
       where: {
         workspaceId: ids.workspace,
-        conversationId: ids.conversation
+        conversationId: ids.conversation,
+        NOT: { status: "pending", metadata: { path: ["source"], equals: "followup_review" } }
       },
       orderBy: [{ createdAt: "desc" }],
       take: 80

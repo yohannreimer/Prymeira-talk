@@ -16,6 +16,10 @@ export interface ConversationFollowupSchedulerRuntime {
   }): Promise<{ status: string }>;
 }
 
+export interface ConversationFollowupReconciler {
+  reconcileStaleProcessingFollowups(input: { now: Date }): Promise<{ reconciled: number }>;
+}
+
 export const DEFAULT_CONVERSATION_FOLLOWUP_POLL_INTERVAL_MS = 5_000;
 export const DEFAULT_CONVERSATION_FOLLOWUP_BATCH_SIZE = 20;
 
@@ -27,7 +31,8 @@ export const DEFAULT_CONVERSATION_FOLLOWUP_BATCH_SIZE = 20;
  */
 export function createConversationFollowupScheduler(input: {
   prisma: ConversationFollowupSchedulerPrismaLike;
-  runtime: ConversationFollowupSchedulerRuntime;
+  runtime?: ConversationFollowupSchedulerRuntime;
+  reconciler?: ConversationFollowupReconciler;
   pollIntervalMs?: number;
   batchSize?: number;
   onError?: (error: unknown, followup?: DueConversationFollowup) => void;
@@ -53,6 +58,8 @@ export function createConversationFollowupScheduler(input: {
   async function executePoll(processInput: { now?: Date } = {}) {
     const now = processInput.now ?? new Date();
     try {
+      await input.reconciler?.reconcileStaleProcessingFollowups({ now });
+      if (!input.runtime) return [];
       const followups = await input.prisma.conversationFollowup.findMany({
         where: {
           status: "scheduled",

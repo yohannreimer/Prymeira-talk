@@ -75,12 +75,14 @@ export type ConversationFollowupRecord = {
 
 type ConversationFollowupStore = {
   findFirst(args: unknown): Promise<ConversationFollowupRecord | null>;
+  findMany?(args: unknown): Promise<ConversationFollowupRecord[]>;
   updateMany(args: unknown): Promise<{ count: number }>;
   create(args: unknown): Promise<ConversationFollowupRecord>;
 };
 
 type ConversationFollowupsTransaction = {
   conversationFollowup: ConversationFollowupStore;
+  message: ConversationFollowupsPrismaLike["message"];
 };
 
 export type ConversationFollowupsPrismaLike = {
@@ -155,6 +157,7 @@ export type ClaimedFollowupRecoveryResult =
   | { status: "not_active" };
 
 export const MAX_AUTOMATIC_FOLLOWUP_STEPS = 3;
+export const DEFAULT_FOLLOWUP_PROCESSING_LEASE_MS = 10 * 60 * 1_000;
 
 const ACTIVE_FOLLOWUP_STATUSES: ActiveFollowupStatus[] = ["scheduled", "processing", "review"];
 const MAX_UNIQUE_CONFLICT_RETRIES = 3;
@@ -432,6 +435,48 @@ export function createConversationFollowupsService(
     return { status: "recovered" };
   }
 
+  async function reconcileStaleProcessingFollowups(input: {
+    now?: Date;
+    leaseMs?: number;
+    batchSize?: number;
+  } = {}) {
+    const now = input.now ?? new Date();
+    const staleBefore = new Date(now.getTime() - (input.leaseMs ?? DEFAULT_FOLLOWUP_PROCESSING_LEASE_MS));
+    if (!prisma.conversationFollowup.findMany) return { reconciled: 0 };
+    const stale = await prisma.conversationFollowup.findMany({
+      where: {
+        status: "processing",
+        activeKey: "active",
+        lockedAt: { lte: staleBefore }
+      },
+      orderBy: [{ lockedAt: "asc" }, { createdAt: "asc" }],
+      take: input.batchSize ?? 100
+    });
+    let reconciled = 0;
+    for (const followup of stale) {
+      const updated = await prisma.conversationFollowup.updateMany({
+        where: {
+          workspaceId: followup.workspaceId,
+          id: followup.id,
+          status: "processing",
+          activeKey: "active",
+          lockedAt: followup.lockedAt
+        },
+        data: {
+          status: "failed",
+          activeKey: null,
+          lockedAt: null,
+          reason: "processing_lease_expired"
+        }
+      });
+      if (updated.count === 1) {
+        reconciled += 1;
+        await publish(followup.workspaceId, followup.id);
+      }
+    }
+    return { reconciled };
+  }
+
   async function completeAutomaticFollowup(input: {
     workspaceId: string;
     followupId: string;
@@ -486,6 +531,16 @@ export function createConversationFollowupsService(
       if (!nextScheduledAt) {
         return { status: "sent" } as const;
       }
+      const customerReplied = await tx.message.findFirst({
+        where: {
+          workspaceId: input.workspaceId,
+          conversationId: input.followup.conversationId,
+          direction: "inbound",
+          ingestedAt: { gt: toDate(input.followup.anchorIngestedAt) }
+        },
+        orderBy: { ingestedAt: "desc" }
+      });
+      if (customerReplied) return { status: "sent" } as const;
       const next = await tx.conversationFollowup.create({
         data: {
           workspaceId: input.workspaceId,
@@ -518,6 +573,7 @@ export function createConversationFollowupsService(
     revalidateActiveFollowup,
     claimScheduledFollowup,
     recoverClaimedFollowup,
+    reconcileStaleProcessingFollowups,
     completeAutomaticFollowup
   };
 }
@@ -581,6 +637,7 @@ async function cancelForCustomerReply(
     workspaceId: input.workspaceId,
     conversationId: input.conversationId,
     activeKey: "active",
+    status: { in: ["scheduled", "review"] },
     ...(customerMessageIngestedAt
       ? { anchorIngestedAt: { lt: toDate(customerMessageIngestedAt) } }
       : {})

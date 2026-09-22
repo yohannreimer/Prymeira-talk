@@ -28,6 +28,7 @@ import {
   HANDOFF_ACKNOWLEDGEMENT
 } from "./agent-safety-policy.js";
 import { readKnowledgeTaxonomy } from "./knowledge-taxonomy.js";
+import { visibleConversationMessageWhere } from "../conversations/internal-message.js";
 import {
   createOpenAiCompatibleAgentProvider,
   readAgentReasoningEffort,
@@ -648,11 +649,11 @@ export function createAgentRuntime(input: {
         }
 
         const recentMessages = await prisma.message.findMany({
-          where: {
+          where: visibleConversationMessageWhere({
             workspaceId: runInput.workspaceId,
             conversationId: conversation.id,
             createdAt: { gte: new Date(Date.now() - 2 * 60 * 1_000) }
-          },
+          }),
           orderBy: [{ createdAt: "desc" }],
           take: 30
         }) as MessageRecord[];
