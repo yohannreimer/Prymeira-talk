@@ -101,6 +101,43 @@ describe("createJevFollowupDecision", () => {
     }));
   });
 
+  it("treats human control as a review constraint rather than a blanket cancellation", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
+      purpose: "proposal_checkin",
+      route: "human_review",
+      stage: "post_proposal",
+      risk: "human_owned"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+
+    await decision.decide({
+      ...baseInput,
+      followupKind: "human_commercial",
+      aiControlStatus: "human_controlled",
+      hasCompatibleActiveAgentSession: false
+    });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body));
+    expect(body.questions.outcome.criteria.follow_up).toContain("revisão humana");
+    expect(body.questions.outcome.criteria.skip).not.toContain("há controle humano");
+    expect(body.questions.route.criteria.human_review).toContain("controle humano");
+  });
+
+  it("does not classify asking for an explicitly missing technical field as commercial risk", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      decisionResponse({ route: "automatic_send" })
+    );
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+
+    await decision.decide(baseInput);
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body));
+    expect(body.questions.risk.criteria.none).toContain("dado técnico explicitamente pendente");
+    expect(body.questions.risk.criteria.commercial).toContain("afirmar");
+  });
+
   it("allows automatic send only for an active agent-controlled qualification follow-up with no risk", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       decisionResponse({ route: "automatic_send" })

@@ -19,6 +19,7 @@ import {
   type KnowledgeRetrievalSource,
   type SelectedKnowledgeSource
 } from "../src/modules/agents/knowledge-retrieval.js";
+import { villeferV1Package } from "../src/modules/agents/villefer-v1-package.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(__dirname, "../../..");
@@ -195,6 +196,8 @@ const firstFollowupInstruction = agentPackage.agent.followup.steps[0]?.instructi
 if (!firstFollowupInstruction) {
   throw new Error("O pacote não contém a primeira instrução de follow-up.");
 }
+const qualificationFollowupInstruction =
+  "Retome somente a qualificação técnica pendente: peça a medida e a espessura que faltam, sem inferir disponibilidade nem qualquer condição comercial.";
 
 const followupCases: FollowupLiveCase[] = [
   {
@@ -206,7 +209,7 @@ const followupCases: FollowupLiveCase[] = [
     input: {
       followupKind: "qualification",
       step: 1,
-      instruction: firstFollowupInstruction,
+      instruction: qualificationFollowupInstruction,
       aiControlStatus: "agent_allowed",
       hasCompatibleActiveAgentSession: true
     },
@@ -252,6 +255,13 @@ console.log(JSON.stringify({
   behavioralKnowledgeSources: agentPackage.knowledge.filter((source) => source.approvalStatus === "behavioral").length,
   promptCharacters: renderedPrompt.length,
   promptSentToJev: false,
+  packageCadence: agentPackage.agent.followup.steps.map((step) => step.afterBusinessMinutes),
+  effectiveProductionCadence: villeferV1Package.agent.followup.steps.map((step) => step.afterBusinessMinutes),
+  cadenceDiagnostic:
+    JSON.stringify(agentPackage.agent.followup.steps.map((step) => step.afterBusinessMinutes)) ===
+      JSON.stringify(villeferV1Package.agent.followup.steps.map((step) => step.afterBusinessMinutes))
+      ? "current"
+      : "package_outdated_runtime_uses_production_cadence",
   note: "O prompt é usado pelo GPT no runtime; o JEV recebe somente histórico e conhecimento selecionado."
 }));
 

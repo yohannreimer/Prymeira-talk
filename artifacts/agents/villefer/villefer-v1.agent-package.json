@@ -46,7 +46,7 @@
       "closeAfterBusinessMinutes": 4200,
       "steps": [
         {
-          "afterBusinessMinutes": 720,
+          "afterBusinessMinutes": 360,
           "instruction": "Use o contexto do pedido para confirmar o recebimento da proposta e perguntar qual é o principal bloqueio ou dúvida, sem pressionar por fechamento."
         },
         {
@@ -593,7 +593,7 @@
       "approvedAt": "2026-09-05T12:00:00.000Z",
       "approvedBy": "Responsável pelo projeto Prymeira Talk",
       "category": "objections_and_followup",
-      "content": "O atendimento e os follow-ups automáticos devem ocorrer de segunda a sexta, das 8h às 18h, no horário de São Paulo. Depois de proposta confirmada e sem resposta: primeira tentativa após 12 horas úteis, segunda ao completar dois dias úteis e terceira ao completar quatro dias úteis. Parar imediatamente quando cliente ou vendedor responder ou quando houver takeover humano.",
+      "content": "O atendimento e os follow-ups automáticos devem ocorrer de segunda a sexta, das 8h às 18h, no horário de São Paulo. Depois de proposta confirmada e sem resposta: primeira tentativa após seis horas úteis, segunda ao completar dois dias úteis e terceira ao completar quatro dias úteis. Parar imediatamente quando cliente ou vendedor responder ou quando houver takeover humano.",
       "key": "approved_followup_calendar",
       "source": "Escopo operacional aprovado no projeto Prymeira Talk",
       "title": "Horário e cadência aprovados",

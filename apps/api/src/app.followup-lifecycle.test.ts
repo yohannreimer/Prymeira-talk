@@ -46,16 +46,20 @@ describe("conversation follow-up scheduler lifecycle", () => {
     expect(schedulerMock.stop).toHaveBeenCalledTimes(1);
   });
 
-  it("does not create an automatic delivery scheduler when JEV is unavailable", async () => {
+  it("starts a reconciliation-only scheduler when JEV is unavailable", async () => {
     const app = await buildApp({}, { prismaEnabled: true });
 
     try {
-      expect(createConversationFollowupSchedulerMock).not.toHaveBeenCalled();
-      expect(schedulerMock.start).not.toHaveBeenCalled();
+      expect(createConversationFollowupSchedulerMock).toHaveBeenCalledOnce();
+      expect(createConversationFollowupSchedulerMock).toHaveBeenCalledWith(expect.objectContaining({
+        runtime: undefined,
+        reconciler: expect.any(Object)
+      }));
+      expect(schedulerMock.start).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }
 
-    expect(schedulerMock.stop).not.toHaveBeenCalled();
+    expect(schedulerMock.stop).toHaveBeenCalledOnce();
   });
 });
