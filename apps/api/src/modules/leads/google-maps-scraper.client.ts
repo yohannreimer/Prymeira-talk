@@ -164,14 +164,14 @@ export function createGoogleMapsScraperClient(options: GoogleMapsScraperClientOp
   return {
     async health() {
       const payload = await json("/api/v1/jobs");
-      if (!Array.isArray(payload)) throw invalidResponse("Google Maps scraper health response is invalid.");
+      if (payload !== null && !Array.isArray(payload)) throw invalidResponse("Google Maps scraper health response is invalid.");
       return { ok: true as const };
     },
 
     async findJobByName(name: string): Promise<GoogleMapsScraperJob | null> {
       const payload = await json("/api/v1/jobs");
-      if (!Array.isArray(payload)) throw invalidResponse("Google Maps scraper job list is invalid.");
-      const matching = payload.filter((entry) => {
+      if (payload !== null && !Array.isArray(payload)) throw invalidResponse("Google Maps scraper job list is invalid.");
+      const matching = (payload ?? []).filter((entry) => {
         const parsed = remoteJobSchema.safeParse(entry);
         return parsed.success && parsed.data.Name === name;
       });

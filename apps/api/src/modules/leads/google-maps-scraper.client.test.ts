@@ -13,6 +13,15 @@ function response(body: unknown, init: ResponseInit = {}) {
 }
 
 describe("GoogleMapsScraperClient", () => {
+  it("accepts the upstream null response for an empty job list", async () => {
+    const fetch = vi.fn(async () => response(null));
+    const client = createGoogleMapsScraperClient({ baseUrl: "http://scraper.internal:8080", fetch });
+
+    await expect(client.health()).resolves.toEqual({ ok: true });
+    await expect(client.findJobByName("prymeira-new-job")).resolves.toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("uses only the private REST endpoints and sends the conservative exact body", async () => {
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
