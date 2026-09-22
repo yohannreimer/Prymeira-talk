@@ -24,11 +24,16 @@ CREATE INDEX IF NOT EXISTS idx_prymeira_similarity_municipio_active
   ON cnpj.estabelecimentos (municipio, cnpj_basico, cnpj_ordem, cnpj_dv)
   WHERE situacao_cadastral = '02';
 
-CREATE INDEX IF NOT EXISTS idx_prymeira_similarity_porte_cnpj
+CREATE INDEX IF NOT EXISTS idx_empresas_porte_cnpj
   ON cnpj.empresas (porte, cnpj_basico);
 
-CREATE INDEX IF NOT EXISTS idx_prymeira_similarity_legal_nature_cnpj
+CREATE INDEX IF NOT EXISTS idx_empresas_legal_nature_cnpj
   ON cnpj.empresas (natureza_juridica, cnpj_basico);
+
+-- Replacements are created first. Remove superseded names from the brief
+-- pre-release index shape without ever leaving a query path uncovered.
+DROP INDEX IF EXISTS cnpj.idx_estabelecimentos_cnae_secondary_array_gin;
+DROP INDEX IF EXISTS cnpj.idx_estabelecimentos_cnae_primary_group;
 
 ANALYZE cnpj.estabelecimentos;
 ANALYZE cnpj.empresas;

@@ -34,6 +34,8 @@ for primary CNAE, group prefix, UF and municipality, and company profile
 indexes for porte and legal nature. The application query uses the
 GIN-compatible array-overlap operator (`&&`), keeps municipality and UF in
 separate buckets, and limits every bucket before unioning keys.
+The SQL creates replacement access paths before removing superseded pre-release
+index names, so rerunning a refresh does not retain duplicate large indexes.
 
 Downloaded raw files are retained in `CNPJ_RAW_DATA_DIR` (default `./data`) for
 resumable downloads and are Git-ignored. Set it to an external disk when
