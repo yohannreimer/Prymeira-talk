@@ -89,6 +89,33 @@ function sortFollowups(items: ConversationFollowupDto[], filter: FollowupListSta
       : rightTime - leftTime;
   });
 }
+
+function mergeRealtimeFollowups(
+  items: ConversationFollowupDto[],
+  filter: FollowupListStatus,
+  realtimeFollowups: Map<string, ConversationFollowupDto>
+) {
+  const merged = new Map(items.map((item) => [item.id, item]));
+
+  for (const realtimeFollowup of realtimeFollowups.values()) {
+    const listedFollowup = merged.get(realtimeFollowup.id);
+    if (
+      listedFollowup &&
+      new Date(listedFollowup.updatedAt).getTime() > new Date(realtimeFollowup.updatedAt).getTime()
+    ) {
+      continue;
+    }
+
+    if (matchesFollowupFilter(realtimeFollowup, filter)) {
+      merged.set(realtimeFollowup.id, realtimeFollowup);
+    } else {
+      merged.delete(realtimeFollowup.id);
+    }
+  }
+
+  return sortFollowups([...merged.values()], filter);
+}
+
 export function FollowupsPage() {
   const { getToken } = useTalkAuth();
   const [filter, setFilter] = useState<FollowupListStatus>("review");
@@ -102,7 +129,9 @@ export function FollowupsPage() {
   const [confirmation, setConfirmation] = useState<FollowupConfirmation | null>(null);
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
   const loadSequence = useRef(0);
+  const loadInFlightRef = useRef(0);
   const realtimeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const realtimeFollowupsRef = useRef(new Map<string, ConversationFollowupDto>());
   const filterRef = useRef(filter);
   const followupsRef = useRef<ConversationFollowupDto[]>([]);
   const editingRef = useRef<FollowupEditingState | null>(null);
@@ -110,6 +139,7 @@ export function FollowupsPage() {
 
   const load = useCallback(async (showLoading = true) => {
     const sequence = ++loadSequence.current;
+    loadInFlightRef.current += 1;
     if (showLoading) setIsLoading(true);
     setLoadError(null);
 
@@ -117,13 +147,14 @@ export function FollowupsPage() {
       const nextFollowups = await apiListFollowups(getToken, filter);
       if (sequence !== loadSequence.current) return;
 
-      const sorted = sortFollowups(nextFollowups, filter);
+      const sorted = mergeRealtimeFollowups(nextFollowups, filter, realtimeFollowupsRef.current);
       followupsRef.current = sorted;
       setFollowups(sorted);
     } catch (error) {
       if (sequence !== loadSequence.current) return;
       setLoadError(error instanceof Error ? error.message : "Não foi possível carregar os follow-ups.");
     } finally {
+      loadInFlightRef.current = Math.max(0, loadInFlightRef.current - 1);
       if (sequence === loadSequence.current) setIsLoading(false);
     }
   }, [filter, getToken]);
@@ -144,12 +175,12 @@ export function FollowupsPage() {
     };
   }, [getToken]);
 
-  const scheduleRealtimeReload = useCallback(() => {
+  const scheduleRealtimeReload = useCallback((delay = 300) => {
     if (realtimeTimer.current) clearTimeout(realtimeTimer.current);
     realtimeTimer.current = setTimeout(() => {
       realtimeTimer.current = null;
       void load(false);
-    }, 300);
+    }, delay);
   }, [load]);
 
   useEffect(() => () => {
@@ -158,8 +189,9 @@ export function FollowupsPage() {
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "conversation_followup.updated") {
+      const hadLoadInFlight = loadInFlightRef.current > 0;
       loadSequence.current += 1;
-      setIsLoading(false);
+      realtimeFollowupsRef.current.set(event.payload.id, event.payload);
       const activeFilter = filterRef.current;
       setFollowups((current) => {
         const withoutCurrent = current.filter((item) => item.id !== event.payload.id);
@@ -182,6 +214,7 @@ export function FollowupsPage() {
         confirmationRef.current = null;
         setConfirmation(null);
       }
+      if (hadLoadInFlight) scheduleRealtimeReload(25);
       return;
     }
     if (event.type === "message.created" || event.type === "conversation.updated") {
@@ -457,17 +490,23 @@ function FollowupCard(props: {
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
   const cancelTriggerRef = useRef<HTMLButtonElement>(null);
   const noFollowupTriggerRef = useRef<HTMLButtonElement>(null);
-  const restoreFocusRef = useRef<FollowupConfirmation["action"] | null>(null);
+  const previousConfirmationRef = useRef<FollowupConfirmation["action"] | null>(null);
+  const skipFocusRestoreRef = useRef(false);
 
   useEffect(() => {
     if (confirmation) {
+      previousConfirmationRef.current = confirmation;
       confirmButtonRef.current?.focus();
       return;
     }
 
-    const trigger = restoreFocusRef.current;
+    const trigger = previousConfirmationRef.current;
     if (!trigger) return;
-    restoreFocusRef.current = null;
+    previousConfirmationRef.current = null;
+    if (skipFocusRestoreRef.current) {
+      skipFocusRestoreRef.current = false;
+      return;
+    }
     (trigger === "cancel" ? cancelTriggerRef : noFollowupTriggerRef).current?.focus();
   }, [confirmation]);
 
@@ -599,10 +638,7 @@ function FollowupCard(props: {
               <button
                 className="followups-button followups-button-ghost"
                 disabled={busy}
-                onClick={() => {
-                  restoreFocusRef.current = confirmation;
-                  onCloseConfirmation();
-                }}
+                onClick={onCloseConfirmation}
                 type="button"
               >
                 Voltar
@@ -610,7 +646,11 @@ function FollowupCard(props: {
               <button
                 className="followups-button followups-button-danger"
                 disabled={busy}
-                onClick={confirmation === "cancel" ? onCancel : onNoFollowup}
+                onClick={() => {
+                  skipFocusRestoreRef.current = true;
+                  if (confirmation === "cancel") onCancel();
+                  else onNoFollowup();
+                }}
                 ref={confirmButtonRef}
                 type="button"
               >

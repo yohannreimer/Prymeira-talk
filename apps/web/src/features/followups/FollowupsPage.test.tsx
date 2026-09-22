@@ -238,9 +238,24 @@ describe("FollowupsPage", () => {
     expect(mocks.list).toHaveBeenCalledTimes(callsBeforeEvent);
   });
 
-  it("keeps a newer realtime DTO when an older GET resolves afterward", async () => {
+  it("replaces an interrupted initial GET with a complete list while preserving newer realtime data", async () => {
     let resolveInitialLoad!: (value: ConversationFollowupDto[]) => void;
-    mocks.list.mockReturnValueOnce(new Promise((resolve) => { resolveInitialLoad = resolve; }));
+    let resolveReload!: (value: ConversationFollowupDto[]) => void;
+    const otherReview: ConversationFollowupDto = {
+      ...review,
+      id: "followup-3",
+      conversationId: "conversation-3",
+      draftBody: "Oi, Bruno! Posso ajudar na análise?",
+      contact: { name: "Bruno Lima", phone: "+55 47 98888-3030" },
+      anchorMessage: {
+        ...review.anchorMessage,
+        id: "message-anchor-3",
+        body: "Vou analisar e retorno amanhã."
+      }
+    };
+    mocks.list
+      .mockReturnValueOnce(new Promise((resolve) => { resolveInitialLoad = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveReload = resolve; }));
     await renderPage();
     expect(mocks.list).toHaveBeenCalledTimes(1);
 
@@ -254,16 +269,22 @@ describe("FollowupsPage", () => {
           updatedAt: "2026-09-22T14:10:00.000Z"
         }
       });
+      await new Promise((resolve) => setTimeout(resolve, 40));
     });
-    await settle();
-    expect(container.textContent).toContain("Rascunho realtime mais novo.");
-    expect(container.textContent).not.toContain("Organizando acompanhamentos");
+    expect(mocks.list).toHaveBeenCalledTimes(2);
 
     await act(async () => resolveInitialLoad([review]));
+    await settle();
+    expect(container.textContent).toContain("Organizando acompanhamentos");
+    expect(container.textContent).not.toContain(review.draftBody);
+
+    await act(async () => resolveReload([review, otherReview]));
     await settle();
 
     expect(container.textContent).toContain("Rascunho realtime mais novo.");
     expect(container.textContent).not.toContain(review.draftBody);
+    expect(container.textContent).toContain("Bruno Lima");
+    expect(container.textContent).not.toContain("Organizando acompanhamentos");
   });
 
   it("disables filter tabs while an action is pending", async () => {
@@ -342,7 +363,7 @@ describe("FollowupsPage", () => {
     expect(document.activeElement).toBe(buttonByText(container, "Não acompanhar"));
   });
 
-  it("closes an open confirmation when realtime updates the same follow-up", async () => {
+  it("closes an open confirmation on realtime and restores focus to its trigger", async () => {
     await renderPage();
     await act(async () => buttonByText(container, "Cancelar")?.click());
     expect(container.textContent).toContain("Cancelar este acompanhamento?");
@@ -357,7 +378,24 @@ describe("FollowupsPage", () => {
     await settle();
 
     expect(container.textContent).not.toContain("Cancelar este acompanhamento?");
+    expect(document.activeElement).toBe(buttonByText(container, "Cancelar"));
     expect(mocks.cancel).not.toHaveBeenCalled();
+
+    await act(async () => buttonByText(container, "Não acompanhar")?.click());
+    expect(container.textContent).toContain("Não acompanhar mais esta conversa?");
+
+    await act(async () => {
+      mocks.realtimeHandler?.({
+        type: "conversation_followup.updated",
+        workspaceId: review.workspaceId,
+        payload: { ...review, updatedAt: "2026-09-22T14:20:00.000Z" }
+      });
+    });
+    await settle();
+
+    expect(container.textContent).not.toContain("Não acompanhar mais esta conversa?");
+    expect(document.activeElement).toBe(buttonByText(container, "Não acompanhar"));
+    expect(mocks.noFollowup).not.toHaveBeenCalled();
   });
 
   it("removes a stale card and explains that the context changed without retrying", async () => {
