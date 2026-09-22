@@ -184,6 +184,22 @@ describe("CnpjRepository", () => {
     expect(call?.values).toEqual(["12345678ABCD90", "12345678", 100]);
   });
 
+  it("optionally narrows active similarity candidates by principal CNAE and UF without scoring", async () => {
+    const client = new FakeCnpjClient();
+
+    await new CnpjRepository(client).findSimilarCandidates({
+      cnaePrimary: "6201500",
+      state: "sp"
+    });
+
+    const call = client.calls[0];
+    expect(call?.text).toContain("e.situacao_cadastral = '02'");
+    expect(call?.text).toContain("e.cnae_fiscal_principal = $1");
+    expect(call?.text).toContain("e.uf = $2");
+    expect(call?.values).toEqual(["6201500", "SP", 25]);
+    expect(call?.text).not.toContain("score");
+  });
+
   it("fails closed with a stable typed error when the source is missing or unhealthy", async () => {
     await expect(new CnpjRepository().findByCnpj("12.345.678/ABCD-90")).rejects.toMatchObject({
       code: "LEAD_SOURCE_UNAVAILABLE"

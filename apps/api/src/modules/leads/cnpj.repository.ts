@@ -44,6 +44,8 @@ export interface CnpjSimilarCandidatesInput {
   seedCnpj?: string;
   /** Exclude every branch sharing the seed's eight-character company root. */
   excludeSeedRoot?: boolean;
+  cnaePrimary?: string;
+  state?: string;
   limit?: number;
 }
 
@@ -217,6 +219,14 @@ export class CnpjRepository {
         values.push(seedCnpj.slice(0, 8));
         where.push(`e.cnpj_basico <> $${values.length}`);
       }
+    }
+    if (input.cnaePrimary?.trim()) {
+      values.push(input.cnaePrimary.trim());
+      where.push(`e.cnae_fiscal_principal = $${values.length}`);
+    }
+    if (input.state?.trim()) {
+      values.push(input.state.trim().toUpperCase());
+      where.push(`e.uf = $${values.length}`);
     }
     const limit = boundedInteger(input.limit, 25, MAX_SIMILAR_CANDIDATES);
     values.push(limit);
