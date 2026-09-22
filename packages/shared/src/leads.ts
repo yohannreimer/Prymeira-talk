@@ -187,9 +187,11 @@ export const leadWhatsappVerificationRequestSchema = z.object({
     .array(uuidSchema)
     .min(1)
     .max(MAX_LEAD_WHATSAPP_BATCH_SIZE)
-    .refine((leadIds) => new Set(leadIds).size === leadIds.length, {
-      message: "leadIds must not contain duplicates."
-    })
+    .refine(
+      (leadIds) =>
+        new Set(leadIds.map((leadId) => leadId.toLowerCase())).size === leadIds.length,
+      { message: "leadIds must not contain duplicates." }
+    )
 });
 export type LeadWhatsappVerificationRequest = z.infer<typeof leadWhatsappVerificationRequestSchema>;
 

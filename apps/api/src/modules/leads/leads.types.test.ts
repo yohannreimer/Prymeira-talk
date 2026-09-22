@@ -69,6 +69,13 @@ describe("Leads domain contracts", () => {
         leadIds: [testUuid(101), testUuid(101)]
       })
     ).toThrow();
+
+    expect(() =>
+      leadWhatsappVerificationRequestSchema.parse({
+        listId: testUuid(1),
+        leadIds: [testUuid(101), testUuid(101).toUpperCase()]
+      })
+    ).toThrow();
   });
 
   it("accepts only valid persisted job statuses and transitions", () => {
