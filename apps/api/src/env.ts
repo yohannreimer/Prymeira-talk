@@ -61,7 +61,7 @@ export const envSchema = z
     CNPJ_DATABASE_URL: optionalUrlWithProtocols(["postgres:", "postgresql:"]),
     GOOGLE_MAPS_SCRAPER_URL: optionalUrlWithProtocols(["http:", "https:"]),
     LEAD_GOOGLE_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(1),
-    LEAD_GOOGLE_DEFAULT_DEPTH: z.coerce.number().int().positive().max(5).default(5),
+    LEAD_GOOGLE_DEFAULT_DEPTH: z.coerce.number().int().positive().max(20).default(12),
     LEAD_WHATSAPP_BATCH_SIZE: z.coerce.number().int().positive().max(25).default(25),
     LEAD_JOB_POLL_MS: z.coerce.number().int().min(1_000).max(60_000).optional()
   })
