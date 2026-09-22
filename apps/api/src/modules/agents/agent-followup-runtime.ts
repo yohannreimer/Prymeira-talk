@@ -252,7 +252,15 @@ export function createAgentFollowupRuntime(input: {
           });
           return { status: "review", followupId: followup.id };
         }
-        return { status: "failed", followupId: followup.id, message: errorMessage(error) };
+        const message = errorMessage(error);
+        await input.followups.recoverClaimedFollowup({
+          workspaceId: runInput.workspaceId,
+          followupId: followup.id,
+          claim: claimToken,
+          outcome: "retry",
+          reason: `followup_context_or_knowledge_load_failed: ${message}`
+        });
+        return { status: "failed", followupId: followup.id, message };
       }
 
       let decision: FollowupDecision;

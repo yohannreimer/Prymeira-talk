@@ -531,6 +531,46 @@ describe("createAgentFollowupRuntime", () => {
     expect(harness.createPendingOutboundMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("releases the exact claim for retry when context or knowledge loading fails", async () => {
+    const contextFailure = buildRuntime({
+      message: {
+        findMany: vi.fn().mockRejectedValue(new Error("context unavailable"))
+      }
+    });
+
+    await expect(contextFailure.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({ status: "failed", followupId: ids.followup, message: "context unavailable" });
+    expect(contextFailure.recoverClaimedFollowup).toHaveBeenCalledWith({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: now },
+      outcome: "retry",
+      reason: "followup_context_or_knowledge_load_failed: context unavailable"
+    });
+    expect(contextFailure.decide).not.toHaveBeenCalled();
+    expect(contextFailure.provider.generate).not.toHaveBeenCalled();
+    expect(contextFailure.createPendingOutboundMessage).not.toHaveBeenCalled();
+
+    const knowledgeFailure = buildRuntime({
+      aiKnowledgeSource: {
+        findMany: vi.fn().mockRejectedValue(new Error("knowledge unavailable"))
+      }
+    });
+
+    await expect(knowledgeFailure.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({ status: "failed", followupId: ids.followup, message: "knowledge unavailable" });
+    expect(knowledgeFailure.recoverClaimedFollowup).toHaveBeenCalledWith({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: now },
+      outcome: "retry",
+      reason: "followup_context_or_knowledge_load_failed: knowledge unavailable"
+    });
+    expect(knowledgeFailure.decide).not.toHaveBeenCalled();
+    expect(knowledgeFailure.provider.generate).not.toHaveBeenCalled();
+    expect(knowledgeFailure.createPendingOutboundMessage).not.toHaveBeenCalled();
+  });
+
   it("moves an oversized complete context to review before JEV, provider, or transport", async () => {
     const harness = buildRuntime({
       message: {
@@ -550,6 +590,7 @@ describe("createAgentFollowupRuntime", () => {
     expect(harness.decide).not.toHaveBeenCalled();
     expect(harness.provider.generate).not.toHaveBeenCalled();
     expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(harness.recoverClaimedFollowup).not.toHaveBeenCalled();
     expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith({
       where: { workspaceId: ids.workspace, id: ids.followup, activeKey: "active" },
       data: expect.objectContaining({ status: "review", reason: "conversation_context_limit" })
