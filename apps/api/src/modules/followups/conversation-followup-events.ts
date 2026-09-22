@@ -1,6 +1,9 @@
 import {
+  conversationFollowupPurposeSchema,
+  conversationFollowupReasonCodeSchema,
   conversationFollowupSchema,
   type ConversationFollowupDto,
+  type MessageType,
   type RealtimeEvent
 } from "@prymeira-talk/shared";
 
@@ -26,6 +29,19 @@ export type ConversationFollowupPublicRecord = {
   cancelledAt?: DateLike | null;
   createdAt?: DateLike;
   updatedAt?: DateLike;
+  conversation?: {
+    contact?: { name?: string | null; phone?: string | null; [privateField: string]: unknown } | null;
+    channel?: { displayName?: string | null; [privateField: string]: unknown } | null;
+    [privateField: string]: unknown;
+  } | null;
+  anchorMessage?: {
+    id?: string | null;
+    body?: string | null;
+    type?: MessageType | null;
+    createdAt?: DateLike | null;
+    [privateField: string]: unknown;
+  } | null;
+  decision?: unknown;
   [privateField: string]: unknown;
 };
 
@@ -88,7 +104,17 @@ export const conversationFollowupPublicSelect = {
   cancelledByUserId: true,
   cancelledAt: true,
   createdAt: true,
-  updatedAt: true
+  updatedAt: true,
+  decision: true,
+  conversation: {
+    select: {
+      contact: { select: { name: true, phone: true } },
+      channel: { select: { displayName: true } }
+    }
+  },
+  anchorMessage: {
+    select: { id: true, body: true, type: true, createdAt: true }
+  }
 } as const;
 
 export function toConversationFollowupDto(
@@ -105,6 +131,21 @@ export function toConversationFollowupDto(
     stepIndex: record.stepIndex,
     scheduledAt: toIso(record.scheduledAt),
     draftBody: record.draftBody ?? null,
+    contact: {
+      name: record.conversation?.contact?.name ?? null,
+      phone: record.conversation?.contact?.phone ?? null
+    },
+    channel: {
+      displayName: record.conversation?.channel?.displayName ?? null
+    },
+    anchorMessage: {
+      id: record.anchorMessage?.id ?? null,
+      body: record.anchorMessage?.body ?? null,
+      type: record.anchorMessage?.type ?? null,
+      createdAt: record.anchorMessage?.createdAt ? toIso(record.anchorMessage.createdAt) : null
+    },
+    purpose: safePurpose(record.decision),
+    reasonCode: isActiveStatus(record.status) ? safeActiveReason(record.reason) : null,
     createdAt: toIso(createdAt),
     updatedAt: toIso(updatedAt)
   };
@@ -139,6 +180,23 @@ export function toConversationFollowupDto(
     default:
       return conversationFollowupSchema.parse({ ...base, status: "scheduled" });
   }
+}
+
+function safePurpose(decision: unknown) {
+  if (!decision || typeof decision !== "object" || Array.isArray(decision)) return null;
+  const parsed = conversationFollowupPurposeSchema.safeParse(
+    (decision as Record<string, unknown>).purpose
+  );
+  return parsed.success ? parsed.data : null;
+}
+
+function safeActiveReason(reason: string | null | undefined) {
+  const parsed = conversationFollowupReasonCodeSchema.safeParse(reason);
+  return parsed.success ? parsed.data : null;
+}
+
+function isActiveStatus(status: string) {
+  return status === "scheduled" || status === "processing" || status === "review";
 }
 
 function safeReason(

@@ -45,6 +45,16 @@ type Followup = {
   // Deliberately sensitive fields that must never cross the route boundary.
   decision?: unknown;
   providerLog?: unknown;
+  conversation?: {
+    contact: { name: string | null; phone: string };
+    channel: { displayName: string | null };
+  };
+  anchorMessage?: {
+    id: string;
+    body: string | null;
+    type: "text";
+    createdAt: Date;
+  };
 };
 
 function followup(overrides: Partial<Followup> = {}): Followup {
@@ -65,15 +75,25 @@ function followup(overrides: Partial<Followup> = {}): Followup {
     lockedAt: null,
     draftBody: "Podemos retomar a proposta?",
     finalBody: null,
-    reason: null,
+    reason: "jev_human_review",
     sentByUserId: null,
     sentAt: null,
     cancelledByUserId: null,
     cancelledAt: null,
     createdAt: new Date("2026-09-21T10:00:00.000Z"),
     updatedAt: initialUpdatedAt,
-    decision: { prompt: "system prompt must stay private" },
+    decision: { purpose: "proposal_checkin", prompt: "system prompt must stay private" },
     providerLog: { authorization: "provider secret must stay private" },
+    conversation: {
+      contact: { name: "Ana Souza", phone: "+5547999991010" },
+      channel: { displayName: "Villefer Geral" }
+    },
+    anchorMessage: {
+      id: ids.anchor,
+      body: "Vou avaliar a proposta.",
+      type: "text",
+      createdAt: new Date("2026-09-21T10:00:00.000Z")
+    },
     ...overrides
   };
 }
@@ -271,10 +291,26 @@ describe("conversation follow-up review routes", () => {
       const response = await app.inject("/followups?status=review");
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual([
-        expect.objectContaining({ id: ids.followup, workspaceId: ids.workspaceA, draftBody: "Podemos retomar a proposta?" })
+        expect.objectContaining({
+          id: ids.followup,
+          workspaceId: ids.workspaceA,
+          draftBody: "Podemos retomar a proposta?",
+          contact: { name: "Ana Souza", phone: "+5547999991010" },
+          channel: { displayName: "Villefer Geral" },
+          anchorMessage: {
+            id: ids.anchor,
+            body: "Vou avaliar a proposta.",
+            type: "text",
+            createdAt: "2026-09-21T10:00:00.000Z"
+          },
+          purpose: "proposal_checkin",
+          reasonCode: "jev_human_review"
+        })
       ]);
       expect(response.body).not.toContain("system prompt must stay private");
       expect(response.body).not.toContain("provider secret must stay private");
+      expect(response.json()[0]).not.toHaveProperty("decision");
+      expect(response.json()[0]).not.toHaveProperty("providerLog");
 
       const crossWorkspaceAction = await app.inject({
         method: "POST",

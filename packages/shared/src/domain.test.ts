@@ -9,6 +9,7 @@ import {
   contactBoardSchema,
   contactBoardStageSchema,
   contactSchema,
+  conversationFollowupSchema,
   conversationSchema,
   integrationModeSchema,
   messageSchema,
@@ -91,6 +92,40 @@ describe("domain schemas", () => {
     expect(parsed.channelProvider).toBe("meta_cloud");
     expect(parsed.customerServiceWindowExpiresAt).toBe("2026-05-21T12:00:00.000Z");
     expect(parsed.metaServiceWindowOpen).toBe(true);
+  });
+
+  it("validates the sanitized persisted context of a conversation follow-up", () => {
+    const parsed = conversationFollowupSchema.parse({
+      id: "followup_1",
+      workspaceId: "workspace_1",
+      conversationId: "conv_1",
+      agentId: "agent_1",
+      kind: "human_commercial",
+      status: "review",
+      stepIndex: 1,
+      scheduledAt: "2026-09-22T12:00:00.000Z",
+      draftBody: "Podemos continuar?",
+      contact: { name: "Ana Souza", phone: "+5547999991010" },
+      channel: { displayName: "Villefer Geral" },
+      anchorMessage: {
+        id: "message_1",
+        body: "Vou avaliar a proposta.",
+        type: "text",
+        createdAt: "2026-09-21T09:55:00.000Z"
+      },
+      purpose: "proposal_checkin",
+      reasonCode: "jev_human_review",
+      createdAt: "2026-09-21T10:00:00.000Z",
+      updatedAt: "2026-09-21T12:00:00.000Z"
+    });
+
+    expect(parsed.purpose).toBe("proposal_checkin");
+    expect(parsed.anchorMessage.body).toBe("Vou avaliar a proposta.");
+    expect(() => conversationFollowupSchema.parse({
+      ...parsed,
+      purpose: "provider_secret",
+      reasonCode: "provider_error: raw body"
+    })).toThrow();
   });
 
   it("accepts AI control fields on conversations", () => {

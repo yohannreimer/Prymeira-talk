@@ -1,4 +1,4 @@
-import type { ConversationDto, ConversationFollowupDto, RealtimeEvent } from "@prymeira-talk/shared";
+import type { ConversationFollowupDto, MessageType, RealtimeEvent } from "@prymeira-talk/shared";
 import {
   CalendarClock,
   Check,
@@ -17,7 +17,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiCancelFollowup,
-  apiGetConversations,
   apiListFollowups,
   apiMarkFollowupNoFollowup,
   apiPostponeFollowup,
@@ -70,11 +69,6 @@ const emptyCopy: Record<FollowupListStatus, { title: string; body: string }> = {
   }
 };
 
-type ConversationSummary = Pick<
-  ConversationDto,
-  "id" | "contactName" | "contactPhone" | "lastMessagePreview" | "channelName"
->;
-
 function sortFollowups(items: ConversationFollowupDto[], filter: FollowupListStatus) {
   return [...items].sort((left, right) => {
     const leftTime = new Date(followupMoment(left)).getTime();
@@ -88,7 +82,6 @@ export function FollowupsPage() {
   const { getToken } = useTalkAuth();
   const [filter, setFilter] = useState<FollowupListStatus>("review");
   const [followups, setFollowups] = useState<ConversationFollowupDto[]>([]);
-  const [conversations, setConversations] = useState<Map<string, ConversationSummary>>(() => new Map());
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -106,14 +99,10 @@ export function FollowupsPage() {
     setLoadError(null);
 
     try {
-      const [nextFollowups, nextConversations] = await Promise.all([
-        apiListFollowups(getToken, filter),
-        apiGetConversations(getToken, { status: "all" }).catch(() => [] as ConversationDto[])
-      ]);
+      const nextFollowups = await apiListFollowups(getToken, filter);
       if (sequence !== loadSequence.current) return;
 
       setFollowups(sortFollowups(nextFollowups, filter));
-      setConversations(new Map(nextConversations.map((conversation) => [conversation.id, conversation])));
     } catch (error) {
       if (sequence !== loadSequence.current) return;
       setLoadError(error instanceof Error ? error.message : "Não foi possível carregar os follow-ups.");
@@ -269,7 +258,7 @@ export function FollowupsPage() {
         {notice ? <p className="followups-notice"><Check size={15} aria-hidden="true" />{notice}</p> : null}
       </div>
 
-      <main className="followups-content">
+      <div className="followups-content">
         {isLoading ? <FollowupsLoading /> : null}
 
         {!isLoading && loadError ? (
@@ -297,7 +286,6 @@ export function FollowupsPage() {
               <FollowupCard
                 busy={busyId === followup.id}
                 cardError={cardErrors[followup.id]}
-                conversation={conversations.get(followup.conversationId)}
                 editedBody={editingId === followup.id ? editedBody : null}
                 followup={followup}
                 key={followup.id}
@@ -330,7 +318,7 @@ export function FollowupsPage() {
             ))}
           </div>
         ) : null}
-      </main>
+      </div>
     </section>
   );
 }
@@ -346,7 +334,6 @@ function FollowupsLoading() {
 
 function FollowupCard(props: {
   followup: ConversationFollowupDto;
-  conversation?: ConversationSummary;
   busy: boolean;
   editedBody: string | null;
   cardError?: string;
@@ -360,7 +347,6 @@ function FollowupCard(props: {
 }) {
   const {
     followup,
-    conversation,
     busy,
     editedBody,
     cardError,
@@ -372,10 +358,11 @@ function FollowupCard(props: {
     onCancel,
     onNoFollowup
   } = props;
-  const contactName = conversation?.contactName?.trim() || `Conversa ${followup.conversationId.slice(0, 8)}`;
-  const contactDetail = conversation?.contactPhone || conversation?.channelName || `ID ${followup.conversationId}`;
-  const messagePreview = conversation?.lastMessagePreview?.trim() || "Última mensagem não disponível nesta listagem.";
-  const reason = "reason" in followup ? followupReasonLabel(followup.reason) : null;
+  const contactName = followup.contact.name?.trim() || `Conversa ${followup.conversationId.slice(0, 8)}`;
+  const contactDetail = [followup.contact.phone, followup.channel.displayName].filter(Boolean).join(" · ") || `ID ${followup.conversationId}`;
+  const messagePreview = followup.anchorMessage.body?.trim() || anchorTypeLabel(followup.anchorMessage.type);
+  const terminalReason = "reason" in followup ? followup.reason : null;
+  const reason = followupReasonLabel(terminalReason ?? followup.reasonCode);
   const text = followup.status === "sent" ? followup.finalBody : followup.draftBody;
   const datePrefix = followup.status === "sent"
     ? "Enviado"
@@ -408,8 +395,11 @@ function FollowupCard(props: {
         </header>
 
         <div className="followup-context-grid">
-          <div className="followup-preview">
-            <span>Última conversa</span>
+          <div className="followup-preview" title={followup.anchorMessage.id ?? undefined}>
+            <span>
+              Mensagem âncora
+              {followup.anchorMessage.createdAt ? ` · ${formatFollowupDate(followup.anchorMessage.createdAt)}` : ""}
+            </span>
             <p>{messagePreview}</p>
           </div>
           <dl className="followup-facts">
@@ -501,4 +491,16 @@ function FollowupCard(props: {
       ) : null}
     </article>
   );
+}
+
+function anchorTypeLabel(type: MessageType | null) {
+  const labels: Partial<Record<MessageType, string>> = {
+    audio: "Mensagem de áudio",
+    image: "Imagem enviada",
+    file: "Arquivo enviado",
+    template: "Mensagem de modelo",
+    system: "Evento do atendimento",
+    internal_note: "Nota interna"
+  };
+  return type ? labels[type] ?? "Mensagem de texto" : "Mensagem âncora indisponível.";
 }

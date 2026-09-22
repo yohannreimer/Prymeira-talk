@@ -24,13 +24,20 @@ const reasonLabels: Record<string, string> = {
   other: "Cancelado pela equipe.",
   no_followup: "Marcado para não acompanhar novamente.",
   manual_postponed: "Adiado pela equipe.",
-  manual_send_failed: "O envio não foi concluído. Revise antes de tentar novamente.",
   manual_delivery_uncertain: "O provedor pode ter recebido a mensagem; o reenvio foi bloqueado por segurança.",
   delivery_completion_failed: "A entrega foi confirmada, mas houve falha ao concluir o registro.",
-  history_requires_review: "O histórico precisa de revisão humana.",
   max_steps_reached: "A sequência de três acompanhamentos foi concluída.",
   followup_not_needed: "O contexto não pede um novo contato.",
-  jev_skip: "A análise indicou que não é necessário acompanhar agora."
+  jev_skip: "A análise indicou que não é necessário acompanhar agora.",
+  jev_human_review: "A análise indicou revisão humana antes do contato.",
+  automatic_delivery_not_allowed: "Este acompanhamento exige confirmação humana antes do envio.",
+  history_requires_review: "O histórico precisa de revisão humana antes de continuar.",
+  conversation_context_limit: "O histórico precisa de revisão humana antes de continuar.",
+  manual_send_failed: "O envio não foi concluído. Revise a mensagem antes de tentar novamente.",
+  jev_followup_decision_unavailable: "A análise do acompanhamento está temporariamente indisponível.",
+  reply_preflight_unavailable: "A validação da resposta está temporariamente indisponível.",
+  reply_audit_unavailable: "A auditoria da resposta está temporariamente indisponível.",
+  outbound_delivery_unconfirmed: "A entrega da mensagem ainda não foi confirmada."
 };
 
 export function followupKindLabel(kind: ConversationFollowupKind) {
@@ -51,19 +58,19 @@ export function followupStatusLabel(status: ConversationFollowupStatus) {
 }
 
 export function followupPurposeLabel(followup: ConversationFollowupDto) {
-  if (followup.kind === "human_commercial") {
-    return followup.stepIndex <= 0
-      ? "Retomar proposta ou negociação"
-      : "Confirmar continuidade comercial";
-  }
+  const labels = {
+    missing_qualification: "Completar dados da qualificação",
+    proposal_checkin: "Retomar proposta enviada",
+    objection_help: "Ajudar com uma objeção",
+    confirm_active: "Confirmar se o atendimento continua ativo"
+  } as const;
 
-  if (followup.stepIndex <= 0) return "Retomar dados da qualificação";
-  if (followup.stepIndex === 1) return "Confirmar se o atendimento continua ativo";
-  return "Última tentativa de qualificação";
+  if (!followup.purpose || followup.purpose === "none") return "Continuidade da conversa";
+  return labels[followup.purpose];
 }
 
 export function followupStepLabel(stepIndex: number) {
-  return `Etapa ${Math.max(0, stepIndex) + 1} de 3`;
+  return `Etapa ${Math.min(3, Math.max(1, stepIndex))} de 3`;
 }
 
 export function followupReasonLabel(reason: string | null | undefined) {

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getToken: vi.fn(async () => "token"),
   list: vi.fn(),
-  conversations: vi.fn(),
+  getConversations: vi.fn(),
   send: vi.fn(),
   postpone: vi.fn(),
   cancel: vi.fn(),
@@ -24,7 +24,7 @@ vi.mock("../../app/api", async (importOriginal) => {
   return {
     ...original,
     apiListFollowups: mocks.list,
-    apiGetConversations: mocks.conversations,
+    apiGetConversations: mocks.getConversations,
     apiSendFollowup: mocks.send,
     apiPostponeFollowup: mocks.postpone,
     apiCancelFollowup: mocks.cancel,
@@ -48,9 +48,19 @@ const review: ConversationFollowupDto = {
   agentId: "agent-1",
   kind: "human_commercial",
   status: "review",
-  stepIndex: 0,
+  stepIndex: 1,
   scheduledAt: "2026-09-22T15:00:00.000Z",
   draftBody: "Oi, Ana! Conseguiu avaliar a proposta?",
+  contact: { name: "Ana Souza", phone: "+55 47 99999-1010" },
+  channel: { displayName: "Villefer Geral" },
+  anchorMessage: {
+    id: "message-anchor-1",
+    body: "Vou verificar a proposta e retorno.",
+    type: "text",
+    createdAt: "2026-09-22T11:55:00.000Z"
+  },
+  purpose: "proposal_checkin",
+  reasonCode: "jev_human_review",
   createdAt: "2026-09-22T12:00:00.000Z",
   updatedAt: "2026-09-22T14:00:00.000Z"
 };
@@ -61,6 +71,8 @@ const scheduled: ConversationFollowupDto = {
   status: "scheduled",
   kind: "qualification",
   draftBody: null,
+  purpose: "missing_qualification",
+  reasonCode: null,
   updatedAt: "2026-09-22T14:30:00.000Z"
 };
 
@@ -70,6 +82,7 @@ const cancelled: ConversationFollowupDto = {
   reason: "customer_replied",
   cancelledAt: "2026-09-22T14:45:00.000Z",
   cancelledByUserId: null,
+  reasonCode: null,
   updatedAt: "2026-09-22T14:45:00.000Z"
 };
 
@@ -85,7 +98,7 @@ const conversation: ConversationDto = {
   assignedUserId: null,
   departmentId: null,
   lastMessageAt: "2026-09-22T12:00:00.000Z",
-  lastMessagePreview: "Vou verificar a proposta e retorno.",
+  lastMessagePreview: "Mensagem atual que não é a âncora",
   unreadCount: 0,
   priority: "normal"
 };
@@ -117,7 +130,7 @@ describe("FollowupsPage", () => {
       if (status === "scheduled") return [scheduled];
       return [];
     });
-    mocks.conversations.mockReset().mockResolvedValue([conversation]);
+    mocks.getConversations.mockReset().mockResolvedValue([conversation]);
     mocks.send.mockReset();
     mocks.postpone.mockReset();
     mocks.cancel.mockReset();
@@ -141,6 +154,12 @@ describe("FollowupsPage", () => {
 
     expect(mocks.list).toHaveBeenCalledWith(mocks.getToken, "review");
     expect(container.textContent).toContain("Ana Souza");
+    expect(container.textContent).toContain("Villefer Geral");
+    expect(container.textContent).toContain("Vou verificar a proposta e retorno.");
+    expect(container.textContent).toContain("Retomar proposta enviada");
+    expect(container.textContent).toContain("A análise indicou revisão humana");
+    expect(container.textContent).toContain("Etapa 1 de 3");
+    expect(mocks.getConversations).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Para revisar");
     expect(buttonByText(container, "Para revisar")?.getAttribute("aria-pressed")).toBe("true");
 
@@ -148,7 +167,7 @@ describe("FollowupsPage", () => {
     await settle();
 
     expect(mocks.list).toHaveBeenCalledWith(mocks.getToken, "scheduled");
-    expect(container.textContent).toContain("Retomar dados da qualificação");
+    expect(container.textContent).toContain("Completar dados da qualificação");
     expect(buttonByText(container, "Agendados")?.getAttribute("aria-pressed")).toBe("true");
   });
 
@@ -227,6 +246,9 @@ describe("FollowupsPage", () => {
     await settle();
 
     expect(mocks.list.mock.calls.length).toBeGreaterThan(callsBeforeEvent);
+    expect(mocks.getConversations).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Vou verificar a proposta e retorno.");
+    expect(container.textContent).not.toContain("Mensagem atual que não é a âncora");
   });
 
   it("registers Follow-ups immediately after Atendimento", () => {

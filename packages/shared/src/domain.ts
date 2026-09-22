@@ -322,6 +322,29 @@ export const conversationFollowupStatusSchema = z.enum([
 ]);
 export type ConversationFollowupStatus = z.infer<typeof conversationFollowupStatusSchema>;
 
+export const conversationFollowupPurposeSchema = z.enum([
+  "missing_qualification",
+  "proposal_checkin",
+  "objection_help",
+  "confirm_active",
+  "none"
+]);
+export type ConversationFollowupPurpose = z.infer<typeof conversationFollowupPurposeSchema>;
+
+export const conversationFollowupReasonCodeSchema = z.enum([
+  "jev_human_review",
+  "automatic_delivery_not_allowed",
+  "history_requires_review",
+  "conversation_context_limit",
+  "manual_postponed",
+  "manual_send_failed",
+  "jev_followup_decision_unavailable",
+  "reply_preflight_unavailable",
+  "reply_audit_unavailable",
+  "outbound_delivery_unconfirmed"
+]);
+export type ConversationFollowupReasonCode = z.infer<typeof conversationFollowupReasonCodeSchema>;
+
 const conversationFollowupBaseSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
@@ -331,6 +354,21 @@ const conversationFollowupBaseSchema = z.object({
   stepIndex: z.number().int().min(0),
   scheduledAt: z.string().datetime(),
   draftBody: z.string().nullable(),
+  contact: z.object({
+    name: z.string().nullable(),
+    phone: z.string().nullable()
+  }),
+  channel: z.object({
+    displayName: z.string().nullable()
+  }),
+  anchorMessage: z.object({
+    id: z.string().nullable(),
+    body: z.string().nullable(),
+    type: messageTypeSchema.nullable(),
+    createdAt: z.string().datetime().nullable()
+  }),
+  purpose: conversationFollowupPurposeSchema.nullable(),
+  reasonCode: conversationFollowupReasonCodeSchema.nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });
