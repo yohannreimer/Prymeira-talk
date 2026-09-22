@@ -5889,6 +5889,37 @@ select:disabled {
   flex-shrink: 0;
 }
 
+.conversation-control-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--color-surface-card);
+  border-radius: var(--radius-full);
+  color: #fff;
+  box-shadow: 0 2px 5px rgba(22, 51, 40, 0.22);
+}
+
+.conversation-control-badge.is-attention {
+  background: #dc2626;
+}
+
+.conversation-control-badge.is-human {
+  background: #1769aa;
+}
+
+.conversation-control-badge.is-agent {
+  background: #6941c6;
+}
+
+.conversation-card.needs-human-attention .conversation-control-badge {
+  border-color: #fff1f2;
+}
+
 .conversation-avatar {
   display: flex;
   width: 40px;

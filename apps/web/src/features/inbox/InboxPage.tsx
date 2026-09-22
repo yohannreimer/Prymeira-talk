@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ConversationDto, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bot, CheckCircle2, History, MessageSquare, Plus, RotateCcw, StickyNote, UserCheck, X } from "lucide-react";
+import { Bot, CheckCircle2, History, MessageSquare, Plus, RotateCcw, StickyNote, TriangleAlert, UserCheck, UserRound, X } from "lucide-react";
 import type { ChangeEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -28,6 +28,7 @@ import {
   contactDisplayName,
   filterConversationsByChannel,
   filterConversationsByQueue,
+  getConversationControlBadge,
   type ConversationQueueFilter,
   getChannelFilterOptions
 } from "./conversation-display";
@@ -1320,10 +1321,15 @@ function InboxPageContent() {
               conversationNeedsHuman &&
               conversation.id !== selectedConversationId &&
               !acknowledgedHandoffIds.has(conversation.id);
+            const controlBadge = getConversationControlBadge(conversation, showHumanAttention);
+            const conversationAriaLabel = [
+              `Abrir conversa com ${contactDisplayName(conversation)}`,
+              controlBadge?.label
+            ].filter(Boolean).join(". ");
 
             return (
             <button
-              aria-label={`Abrir conversa com ${contactDisplayName(conversation)}`}
+              aria-label={conversationAriaLabel}
               className={[
                 "conversation-card",
                 conversation.id === selectedConversationId ? "is-selected" : "",
@@ -1340,6 +1346,17 @@ function InboxPageContent() {
             >
               <div className="conv-avatar-wrap">
                 <ContactAvatar conversationId={conversation.id} name={conversation.contactName} className="conversation-avatar" />
+                {controlBadge ? (
+                  <span
+                    aria-hidden="true"
+                    className={`conversation-control-badge is-${controlBadge.kind}`}
+                    title={controlBadge.label}
+                  >
+                    {controlBadge.kind === "attention" ? <TriangleAlert size={12} /> : null}
+                    {controlBadge.kind === "human" ? <UserRound size={12} /> : null}
+                    {controlBadge.kind === "agent" ? <Bot size={12} /> : null}
+                  </span>
+                ) : null}
               </div>
               <span className="conversation-content">
                 <span className="conversation-row">

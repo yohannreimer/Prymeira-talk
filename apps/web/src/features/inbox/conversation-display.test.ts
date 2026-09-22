@@ -4,7 +4,8 @@ import {
   contactDisplayName,
   filterConversationsByChannel,
   filterConversationsByQueue,
-  getChannelFilterOptions
+  getChannelFilterOptions,
+  getConversationControlBadge
 } from "./conversation-display";
 
 function conversationFixture(overrides: Partial<ConversationDto> = {}): ConversationDto {
@@ -30,6 +31,42 @@ function conversationFixture(overrides: Partial<ConversationDto> = {}): Conversa
 }
 
 describe("conversation display helpers", () => {
+  describe("getConversationControlBadge", () => {
+    it("prioritizes an unseen human handoff over the persisted human state", () => {
+      expect(getConversationControlBadge(
+        conversationFixture({ aiControlStatus: "human_controlled", activeAgentSessionStatus: "handoff_requested" }),
+        true
+      )).toEqual({ kind: "attention", label: "Ação humana necessária" });
+    });
+
+    it("shows a human badge once the handoff is acknowledged", () => {
+      expect(getConversationControlBadge(
+        conversationFixture({ aiControlStatus: "human_controlled", activeAgentSessionStatus: "handoff_requested" }),
+        false
+      )).toEqual({ kind: "human", label: "Humano está atendendo" });
+    });
+
+    it("shows an AI badge only for an active agent session", () => {
+      expect(getConversationControlBadge(
+        conversationFixture({
+          aiControlStatus: "agent_allowed",
+          activeAgentSessionStatus: "active",
+          activeAgentName: "Secretaria IA"
+        }),
+        false
+      )).toEqual({ kind: "agent", label: "IA está atendendo" });
+
+      expect(getConversationControlBadge(
+        conversationFixture({
+          aiControlStatus: "agent_allowed",
+          activeAgentSessionStatus: "paused_by_human",
+          activeAgentName: "Secretaria IA"
+        }),
+        false
+      )).toBeNull();
+    });
+  });
+
   describe("contactDisplayName", () => {
     it("uses the saved contact name first", () => {
       expect(contactDisplayName(conversationFixture({ contactName: "Ana Silva", contactPhone: "+5511999999999" }))).toBe(

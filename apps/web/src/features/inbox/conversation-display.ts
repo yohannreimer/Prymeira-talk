@@ -7,6 +7,28 @@ export type ChannelFilterOption = {
 
 export type ConversationQueueFilter = "mine" | "active" | "closed" | "all";
 
+export type ConversationControlBadge =
+  | { kind: "attention"; label: "Ação humana necessária" }
+  | { kind: "human"; label: "Humano está atendendo" }
+  | { kind: "agent"; label: "IA está atendendo" };
+
+export function getConversationControlBadge(
+  conversation: Pick<ConversationDto, "aiControlStatus" | "activeAgentSessionStatus" | "activeAgentName">,
+  showHumanAttention: boolean
+): ConversationControlBadge | null {
+  if (showHumanAttention) return { kind: "attention", label: "Ação humana necessária" };
+  if (conversation.aiControlStatus === "human_controlled") return { kind: "human", label: "Humano está atendendo" };
+  if (
+    conversation.aiControlStatus === "agent_allowed" &&
+    conversation.activeAgentSessionStatus === "active" &&
+    Boolean(conversation.activeAgentName)
+  ) {
+    return { kind: "agent", label: "IA está atendendo" };
+  }
+
+  return null;
+}
+
 export function contactDisplayName(conversation: ConversationDto) {
   return conversation.contactName ?? conversation.contactPhone ?? `Contato ${conversation.contactId.slice(0, 8)}`;
 }
