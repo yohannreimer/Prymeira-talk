@@ -180,6 +180,7 @@ export function createAgentFollowupRuntime(input: {
         return { status: "skipped", followupId: runInput.followupId };
       }
       const claimToken = { lockedAt: claim.lockedAt };
+      let deliveryConfirmed = false;
 
       try {
       const initial = await input.followups.revalidateActiveFollowup(runInput);
@@ -457,6 +458,7 @@ export function createAgentFollowupRuntime(input: {
           message: "Outbound delivery was not confirmed."
         };
       }
+      deliveryConfirmed = true;
 
       const completion = await input.followups.completeAutomaticFollowup({
         workspaceId: runInput.workspaceId,
@@ -480,8 +482,10 @@ export function createAgentFollowupRuntime(input: {
             workspaceId: runInput.workspaceId,
             followupId: runInput.followupId,
             claim: claimToken,
-            outcome: "retry",
-            reason: `followup_runtime_unexpected: ${message}`
+            outcome: deliveryConfirmed ? "failed" : "retry",
+            reason: deliveryConfirmed
+              ? `followup_completion_failed_after_delivery: ${message}`
+              : `followup_runtime_unexpected: ${message}`
           });
         } catch {
           // A recovery write can fail only when the backing store is unavailable.

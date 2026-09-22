@@ -484,6 +484,30 @@ describe("createAgentFollowupRuntime", () => {
     });
   });
 
+  it("terminally recovers a confirmed delivery when completion persistence fails", async () => {
+    const completionFailure = buildRuntime({
+      completeAutomaticFollowup: vi.fn().mockRejectedValue(new Error("completion unavailable"))
+    });
+
+    await expect(completionFailure.runtime.runFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup
+    })).resolves.toEqual({
+      status: "failed",
+      followupId: ids.followup,
+      message: "completion unavailable"
+    });
+
+    expect(completionFailure.createPendingOutboundMessage).toHaveBeenCalledTimes(1);
+    expect(completionFailure.recoverClaimedFollowup).toHaveBeenCalledWith({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: now },
+      outcome: "failed",
+      reason: "followup_completion_failed_after_delivery: completion unavailable"
+    });
+  });
+
   it("does nothing external when stale before generation or after candidate generation", async () => {
     const staleBefore = buildRuntime({
       revalidateActiveFollowup: vi.fn().mockResolvedValue({

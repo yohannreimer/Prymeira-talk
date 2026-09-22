@@ -1193,4 +1193,33 @@ describe("recoverClaimedFollowup", () => {
       }
     });
   });
+
+  it("terminally closes the matching claim after a confirmed delivery cannot be completed", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = buildPrisma({ conversationFollowup: { updateMany } });
+
+    await expect(createConversationFollowupsService(prisma).recoverClaimedFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: claimLockedAt },
+      outcome: "failed",
+      reason: "followup_completion_failed_after_delivery: completion unavailable"
+    })).resolves.toEqual({ status: "recovered" });
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        id: ids.followup,
+        activeKey: "active",
+        status: "processing",
+        lockedAt: claimLockedAt
+      },
+      data: {
+        status: "failed",
+        activeKey: null,
+        lockedAt: null,
+        reason: "followup_completion_failed_after_delivery: completion unavailable"
+      }
+    });
+  });
 });
