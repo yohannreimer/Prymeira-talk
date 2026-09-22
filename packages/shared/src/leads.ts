@@ -3,6 +3,8 @@ import { z } from "zod";
 const cnpjSeparatorPattern = /[.\-/\s]/g;
 const normalizedCnpjPattern = /^[0-9A-Z]{12}[0-9]{2}$/;
 
+export const uuidSchema = z.string().uuid();
+
 export const leadSourceSchema = z.enum(["google_maps", "receita_federal"]);
 export type LeadSource = z.infer<typeof leadSourceSchema>;
 
@@ -76,7 +78,7 @@ export const leadSearchFiltersSchema = z
 export type LeadSearchFilters = z.infer<typeof leadSearchFiltersSchema>;
 
 export const leadListSchema = z.object({
-  id: z.string().min(1),
+  id: uuidSchema,
   workspaceId: z.string().min(1),
   name: z.string().min(1),
   source: leadSourceSchema,
@@ -92,9 +94,9 @@ export const leadListSchema = z.object({
 export type LeadListDto = z.infer<typeof leadListSchema>;
 
 export const leadResultSchema = z.object({
-  id: z.string().min(1),
+  id: uuidSchema,
   workspaceId: z.string().min(1),
-  listId: z.string().min(1),
+  listId: uuidSchema,
   source: leadSourceSchema,
   companyName: z.string().nullable(),
   tradeName: z.string().nullable(),
@@ -130,9 +132,9 @@ export const leadPaginatedResultSchema = z.object({
 export type LeadPaginatedResultDto = z.infer<typeof leadPaginatedResultSchema>;
 
 export const leadJobSchema = z.object({
-  id: z.string().min(1),
+  id: uuidSchema,
   workspaceId: z.string().min(1),
-  listId: z.string().min(1),
+  listId: uuidSchema,
   operation: z.string().min(1),
   status: leadJobStatusSchema,
   attempts: z.number().int().nonnegative(),
@@ -153,8 +155,8 @@ export const leadJobIdempotencyScopeSchema = z.object({
 export type LeadJobIdempotencyScope = z.infer<typeof leadJobIdempotencyScopeSchema>;
 
 export const leadCsvImportResponseSchema = z.object({
-  listId: z.string().min(1),
-  jobId: z.string().min(1),
+  listId: uuidSchema,
+  jobId: uuidSchema,
   acceptedRows: z.number().int().nonnegative(),
   duplicateRows: z.number().int().nonnegative(),
   invalidRows: z.number().int().nonnegative(),
@@ -180,13 +182,19 @@ export type SimilarCompanyScoreExplanation = z.infer<typeof similarCompanyScoreE
 export const MAX_LEAD_WHATSAPP_BATCH_SIZE = 25;
 
 export const leadWhatsappVerificationRequestSchema = z.object({
-  listId: z.string().min(1),
-  leadIds: z.array(z.string().min(1)).min(1).max(MAX_LEAD_WHATSAPP_BATCH_SIZE)
+  listId: uuidSchema,
+  leadIds: z
+    .array(uuidSchema)
+    .min(1)
+    .max(MAX_LEAD_WHATSAPP_BATCH_SIZE)
+    .refine((leadIds) => new Set(leadIds).size === leadIds.length, {
+      message: "leadIds must not contain duplicates."
+    })
 });
 export type LeadWhatsappVerificationRequest = z.infer<typeof leadWhatsappVerificationRequestSchema>;
 
 export const leadWhatsappVerificationResultSchema = z.object({
-  leadId: z.string().min(1),
+  leadId: uuidSchema,
   normalizedPhone: z.string().min(1),
   status: leadWhatsappStatusSchema,
   checkedAt: z.string().datetime().nullable(),
@@ -202,8 +210,8 @@ export const leadWhatsappVerificationResponseSchema = z.object({
 export type LeadWhatsappVerificationResponse = z.infer<typeof leadWhatsappVerificationResponseSchema>;
 
 export const leadContactImportItemSchema = z.object({
-  leadId: z.string().min(1),
-  contactId: z.string().min(1),
+  leadId: uuidSchema,
+  contactId: uuidSchema,
   status: z.enum(["created", "reconciled", "skipped"])
 });
 export type LeadContactImportItem = z.infer<typeof leadContactImportItemSchema>;
@@ -219,7 +227,7 @@ export const leadContactImportResultSchema = z.object({
 export type LeadContactImportResult = z.infer<typeof leadContactImportResultSchema>;
 
 export const leadCampaignDraftResultSchema = z.object({
-  campaignId: z.string().min(1),
+  campaignId: uuidSchema,
   status: z.literal("draft"),
   contactCount: z.number().int().positive()
 });

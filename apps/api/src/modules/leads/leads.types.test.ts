@@ -15,6 +15,9 @@ import {
   normalizeCnpj
 } from "./leads.types.js";
 
+const testUuid = (value: number) =>
+  `00000000-0000-4000-8000-${value.toString().padStart(12, "0")}`;
+
 describe("Leads domain contracts", () => {
   it("normalizes alphanumeric CNPJ values as text", () => {
     expect(normalizeCnpj("12.345.678/ABCD-90")).toBe("12345678ABCD90");
@@ -33,19 +36,37 @@ describe("Leads domain contracts", () => {
   });
 
   it("enforces the WhatsApp verification batch boundary", () => {
-    const leadIds = Array.from({ length: MAX_LEAD_WHATSAPP_BATCH_SIZE }, (_, index) => `lead-${index}`);
+    const leadIds = Array.from({ length: MAX_LEAD_WHATSAPP_BATCH_SIZE }, (_, index) =>
+      testUuid(index + 100)
+    );
 
     expect(
       leadWhatsappVerificationRequestSchema.parse({
-        listId: "list-1",
+        listId: testUuid(1),
         leadIds
       }).leadIds
     ).toHaveLength(MAX_LEAD_WHATSAPP_BATCH_SIZE);
 
     expect(() =>
       leadWhatsappVerificationRequestSchema.parse({
-        listId: "list-1",
-        leadIds: [...leadIds, "lead-overflow"]
+        listId: testUuid(1),
+        leadIds: [...leadIds, testUuid(126)]
+      })
+    ).toThrow();
+  });
+
+  it("rejects invalid and duplicate WhatsApp verification request IDs", () => {
+    expect(() =>
+      leadWhatsappVerificationRequestSchema.parse({
+        listId: "not-a-uuid",
+        leadIds: [testUuid(101)]
+      })
+    ).toThrow();
+
+    expect(() =>
+      leadWhatsappVerificationRequestSchema.parse({
+        listId: testUuid(1),
+        leadIds: [testUuid(101), testUuid(101)]
       })
     ).toThrow();
   });
@@ -83,9 +104,9 @@ describe("Leads domain contracts", () => {
     const page = leadPaginatedResultSchema.parse({
       items: [
         {
-          id: "lead-1",
+          id: testUuid(2),
           workspaceId: "workspace-1",
-          listId: "list-1",
+          listId: testUuid(1),
           source: "receita_federal",
           companyName: "Empresa Exemplo",
           tradeName: null,
@@ -119,11 +140,11 @@ describe("Leads domain contracts", () => {
     expect(page.items[0]?.cnpj).toBe("12345678ABCD90");
     expect(
       leadCampaignDraftResultSchema.parse({
-        campaignId: "campaign-1",
+        campaignId: testUuid(3),
         status: "draft",
         contactCount: 1
       })
-    ).toEqual({ campaignId: "campaign-1", status: "draft", contactCount: 1 });
+    ).toEqual({ campaignId: testUuid(3), status: "draft", contactCount: 1 });
   });
 
   it("requires lead realtime payloads to remain in the event workspace", () => {
@@ -132,9 +153,9 @@ describe("Leads domain contracts", () => {
         type: "lead_job.updated",
         workspaceId: "workspace-1",
         payload: {
-          id: "job-1",
+          id: testUuid(4),
           workspaceId: "workspace-1",
-          listId: "list-1",
+          listId: testUuid(1),
           operation: "receita_search",
           status: "running",
           attempts: 1,
@@ -153,7 +174,7 @@ describe("Leads domain contracts", () => {
         type: "lead_list.updated",
         workspaceId: "workspace-1",
         payload: {
-          id: "list-1",
+          id: testUuid(1),
           workspaceId: "workspace-2",
           name: "Lista",
           source: "google_maps",

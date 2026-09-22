@@ -474,6 +474,7 @@ model LeadList {
   provenances LeadContactProvenance[]
 
   @@unique([workspaceId, id])
+  @@unique([workspaceId, id, source])
   @@index([workspaceId, source, createdAt])
   @@index([workspaceId, updatedAt])
   @@map("lead_lists")
@@ -509,11 +510,12 @@ model Lead {
   createdAt        DateTime   @default(now()) @map("created_at")
   updatedAt        DateTime   @updatedAt @map("updated_at")
 
-  list                  LeadList                   @relation(fields: [workspaceId, listId], references: [workspaceId, id], onDelete: Cascade)
+  list                  LeadList                   @relation(fields: [workspaceId, listId, source], references: [workspaceId, id, source], onDelete: Cascade)
   whatsappVerifications LeadWhatsappVerification[]
-  contactProvenance     LeadContactProvenance?
+  contactProvenances    LeadContactProvenance[]
 
   @@unique([workspaceId, id])
+  @@unique([workspaceId, id, listId, source])
   @@unique([workspaceId, listId, sourceDedupeKey])
   @@index([workspaceId, listId, createdAt])
   @@index([workspaceId, cnpj])
@@ -583,11 +585,10 @@ model LeadContactProvenance {
   quickReplySnapshot Json               @default("{}") @map("quick_reply_snapshot")
   importedAt         DateTime           @default(now()) @map("imported_at")
   createdAt          DateTime           @default(now()) @map("created_at")
-  updatedAt          DateTime           @updatedAt @map("updated_at")
 
-  contact Contact  @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
-  lead    Lead     @relation(fields: [workspaceId, leadId], references: [workspaceId, id], onDelete: Cascade)
-  list    LeadList @relation(fields: [workspaceId, listId], references: [workspaceId, id], onDelete: Cascade)
+  contact Contact  @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Restrict)
+  lead    Lead     @relation(fields: [workspaceId, leadId, listId, source], references: [workspaceId, id, listId, source], onDelete: Restrict)
+  list    LeadList @relation(fields: [workspaceId, listId, source], references: [workspaceId, id, source], onDelete: Restrict)
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, leadId])

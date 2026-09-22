@@ -69,6 +69,10 @@ CREATE TABLE "leads" (
     CONSTRAINT "leads_pkey" PRIMARY KEY ("id")
 );
 
+-- CNPJ remains textual and may be alphanumeric in its first twelve positions.
+ALTER TABLE "leads" ADD CONSTRAINT "leads_cnpj_format_check"
+    CHECK ("cnpj" IS NULL OR "cnpj" ~ '^[0-9A-Z]{12}[0-9]{2}$');
+
 -- CreateTable
 CREATE TABLE "lead_jobs" (
     "id" UUID NOT NULL,
@@ -121,7 +125,6 @@ CREATE TABLE "lead_contact_provenances" (
     "quick_reply_snapshot" JSONB NOT NULL DEFAULT '{}',
     "imported_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updated_at" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "lead_contact_provenances_pkey" PRIMARY KEY ("id")
 );
@@ -139,6 +142,9 @@ CREATE INDEX "lead_lists_workspace_id_updated_at_idx" ON "lead_lists"("workspace
 CREATE UNIQUE INDEX "lead_lists_workspace_id_id_key" ON "lead_lists"("workspace_id", "id");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "lead_lists_workspace_id_id_source_key" ON "lead_lists"("workspace_id", "id", "source");
+
+-- CreateIndex
 CREATE INDEX "leads_workspace_id_list_id_created_at_idx" ON "leads"("workspace_id", "list_id", "created_at");
 
 -- CreateIndex
@@ -152,6 +158,9 @@ CREATE INDEX "leads_workspace_id_source_external_id_idx" ON "leads"("workspace_i
 
 -- CreateIndex
 CREATE UNIQUE INDEX "leads_workspace_id_id_key" ON "leads"("workspace_id", "id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "leads_workspace_id_id_list_id_source_key" ON "leads"("workspace_id", "id", "list_id", "source");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "leads_workspace_id_list_id_source_dedupe_key_key" ON "leads"("workspace_id", "list_id", "source_dedupe_key");
@@ -196,7 +205,7 @@ ALTER TABLE "contact_tags" ADD CONSTRAINT "contact_tags_workspace_id_contact_id_
 ALTER TABLE "contact_tags" ADD CONSTRAINT "contact_tags_workspace_id_tag_id_fkey" FOREIGN KEY ("workspace_id", "tag_id") REFERENCES "tags"("workspace_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "leads" ADD CONSTRAINT "leads_workspace_id_list_id_fkey" FOREIGN KEY ("workspace_id", "list_id") REFERENCES "lead_lists"("workspace_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "leads" ADD CONSTRAINT "leads_workspace_id_list_id_source_fkey" FOREIGN KEY ("workspace_id", "list_id", "source") REFERENCES "lead_lists"("workspace_id", "id", "source") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "lead_jobs" ADD CONSTRAINT "lead_jobs_workspace_id_list_id_fkey" FOREIGN KEY ("workspace_id", "list_id") REFERENCES "lead_lists"("workspace_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -208,10 +217,10 @@ ALTER TABLE "lead_whatsapp_verifications" ADD CONSTRAINT "lead_whatsapp_verifica
 ALTER TABLE "lead_whatsapp_verifications" ADD CONSTRAINT "lead_whatsapp_verifications_workspace_id_channel_id_fkey" FOREIGN KEY ("workspace_id", "channel_id") REFERENCES "channels"("workspace_id", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "lead_contact_provenances" ADD CONSTRAINT "lead_contact_provenances_workspace_id_contact_id_fkey" FOREIGN KEY ("workspace_id", "contact_id") REFERENCES "contacts"("workspace_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "lead_contact_provenances" ADD CONSTRAINT "lead_contact_provenances_workspace_id_contact_id_fkey" FOREIGN KEY ("workspace_id", "contact_id") REFERENCES "contacts"("workspace_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "lead_contact_provenances" ADD CONSTRAINT "lead_contact_provenances_workspace_id_lead_id_fkey" FOREIGN KEY ("workspace_id", "lead_id") REFERENCES "leads"("workspace_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "lead_contact_provenances" ADD CONSTRAINT "lead_contact_provenances_workspace_id_lead_id_list_id_sour_fkey" FOREIGN KEY ("workspace_id", "lead_id", "list_id", "source") REFERENCES "leads"("workspace_id", "id", "list_id", "source") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "lead_contact_provenances" ADD CONSTRAINT "lead_contact_provenances_workspace_id_list_id_fkey" FOREIGN KEY ("workspace_id", "list_id") REFERENCES "lead_lists"("workspace_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "lead_contact_provenances" ADD CONSTRAINT "lead_contact_provenances_workspace_id_list_id_source_fkey" FOREIGN KEY ("workspace_id", "list_id", "source") REFERENCES "lead_lists"("workspace_id", "id", "source") ON DELETE RESTRICT ON UPDATE CASCADE;
