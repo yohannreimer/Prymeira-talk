@@ -29,9 +29,11 @@ After each monthly load, the script applies
 schema already indexes establishment status, UF, municipality and primary
 CNAE. The supplemental file adds only the access paths used by Talk's bounded
 similar-company buckets: a GIN array-expression index for comma-delimited
-secondary CNAEs, a primary-CNAE group-prefix index, and company profile indexes
-for porte and legal nature. The application query uses the GIN-compatible
-array-overlap operator (`&&`) and limits every bucket before unioning keys.
+secondary CNAEs, active partial indexes that cover the deterministic CNPJ order
+for primary CNAE, group prefix, UF and municipality, and company profile
+indexes for porte and legal nature. The application query uses the
+GIN-compatible array-overlap operator (`&&`), keeps municipality and UF in
+separate buckets, and limits every bucket before unioning keys.
 
 Downloaded raw files are retained in `CNPJ_RAW_DATA_DIR` (default `./data`) for
 resumable downloads and are Git-ignored. Set it to an external disk when

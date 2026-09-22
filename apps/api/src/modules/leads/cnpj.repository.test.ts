@@ -341,26 +341,32 @@ describe("CnpjRepository", () => {
     const call = client.calls[0];
     expect(call?.text).toContain("e.situacao_cadastral = '02'");
     expect(call?.text).not.toContain("eligible AS MATERIALIZED");
-    expect(call?.text).toContain("e.cnae_fiscal_principal = ANY($1::text[])");
-    expect(call?.text).toContain("string_to_array(e.cnae_fiscal_secundaria, ',') && $1::text[]");
-    expect(call?.text).toContain("left(e.cnae_fiscal_principal, 3) = ANY($3::text[])");
+    expect(call?.text).toContain("e.cnae_fiscal_principal = $1");
+    expect(call?.text).toContain("e.cnae_fiscal_principal = ANY($2::text[])");
+    expect(call?.text).toContain("string_to_array(e.cnae_fiscal_secundaria, ',') && $3::text[]");
+    expect(call?.text).toContain("left(e.cnae_fiscal_principal, 3) = ANY($4::text[])");
     expect(call?.text).toContain("UNION ALL");
     expect(call?.text).toContain("MIN(coarse_relevance)");
     expect(call?.text).toContain("ORDER BY coarse_relevance ASC, cnpj_basico ASC");
     expect(call?.text).not.toContain("company_name ASC");
+    expect(call?.text).not.toContain("ORDER BY CASE WHEN");
     expect(call?.values).toEqual([
-      ["6201500", "6311900"],
       "6201500",
+      ["6311900"],
+      ["6201500", "6311900"],
       ["620", "631"],
       "São Paulo",
       "SP",
       25
     ]);
     const candidateSql = (call?.text ?? "").split("), paged_keys AS")[0] ?? "";
+    expect(candidateSql).toContain("LIMIT 250)");
+    expect(candidateSql).toContain("LIMIT 50)");
     expect(candidateSql).toContain("LIMIT 300)");
     expect(candidateSql).toContain("LIMIT 200)");
-    expect(candidateSql).toContain("LIMIT 100)");
-    expect(candidateSql.indexOf("LIMIT 300)")).toBeLessThan(candidateSql.indexOf("UNION ALL"));
+    expect(candidateSql).toContain("LIMIT 60)");
+    expect(candidateSql).toContain("LIMIT 40)");
+    expect(candidateSql.indexOf("LIMIT 250)")).toBeLessThan(candidateSql.indexOf("UNION ALL"));
     expect(call?.text).not.toContain("score");
   });
 

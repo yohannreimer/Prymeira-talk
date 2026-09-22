@@ -5,10 +5,12 @@ const MAX_PAGE_SIZE = 100;
 const MAX_PAGE = 10_000;
 const MAX_SIMILAR_CANDIDATES = 1_000;
 const SIMILAR_BUCKET_LIMITS = {
-  exactPrimary: 300,
+  exactPrimary: 250,
+  reciprocalPrimary: 50,
   exactSecondary: 300,
   cnaeGroup: 200,
-  location: 100,
+  municipality: 60,
+  state: 40,
   profile: 100
 } as const;
 const MAX_EXACT_BATCH_SIZE = 100;
@@ -308,27 +310,33 @@ export class CnpjRepository {
       sharedWhere.push(`e.cnpj_basico <> $${values.length}`);
     }
 
-    const seedCnaes = [...new Set([
-      input.cnaePrimary,
-      ...(input.cnaeSecondary ?? [])
-    ].map((value) => value?.trim()).filter((value): value is string => Boolean(value)))].slice(0, 50);
+    const seedPrimary = input.cnaePrimary?.trim() || null;
+    const seedSecondary = [...new Set((input.cnaeSecondary ?? [])
+      .map((value) => value.trim())
+      .filter((value) => value && value !== seedPrimary))].slice(0, 49);
+    const seedCnaes = [...(seedPrimary ? [seedPrimary] : []), ...seedSecondary];
     const seedPrefixes = [...new Set(seedCnaes.map((value) => value.replace(/[^0-9A-Za-z]/g, "").slice(0, 3)).filter((value) => value.length === 3))];
-    const buckets: Array<{ rank: number; condition: string; limit: number; orderPrefix?: string }> = [];
+    const buckets: Array<{ rank: number; condition: string; limit: number }> = [];
     if (seedCnaes.length > 0) {
+      if (seedPrimary) {
+        values.push(seedPrimary);
+        buckets.push({
+          rank: 0,
+          condition: `e.cnae_fiscal_principal = $${values.length}`,
+          limit: SIMILAR_BUCKET_LIMITS.exactPrimary
+        });
+      }
+      if (seedSecondary.length > 0) {
+        values.push(seedSecondary);
+        buckets.push({
+          rank: 1,
+          condition: `e.cnae_fiscal_principal = ANY($${values.length}::text[])`,
+          limit: seedPrimary ? SIMILAR_BUCKET_LIMITS.reciprocalPrimary :
+            SIMILAR_BUCKET_LIMITS.exactPrimary + SIMILAR_BUCKET_LIMITS.reciprocalPrimary
+        });
+      }
       values.push(seedCnaes);
       const cnaes = `$${values.length}::text[]`;
-      const primaryCnae = input.cnaePrimary?.trim();
-      let primaryOrder: string | undefined;
-      if (primaryCnae) {
-        values.push(primaryCnae);
-        primaryOrder = `CASE WHEN e.cnae_fiscal_principal = $${values.length} THEN 0 ELSE 1 END,`;
-      }
-      buckets.push({
-        rank: 0,
-        condition: `e.cnae_fiscal_principal = ANY(${cnaes})`,
-        limit: SIMILAR_BUCKET_LIMITS.exactPrimary,
-        ...(primaryOrder ? { orderPrefix: primaryOrder } : {})
-      });
       buckets.push({
         rank: 1,
         condition: `string_to_array(e.cnae_fiscal_secundaria, ',') && ${cnaes}`,
@@ -352,19 +360,25 @@ export class CnpjRepository {
       const city = `$${values.length}`;
       cityExpression = `${accentFold("m.descricao")} = ${accentFold(city)}`;
     }
+    let statePlaceholder: string | undefined;
     if (state) {
       values.push(state);
+      statePlaceholder = `$${values.length}`;
+    }
+    if (cityExpression) {
       buckets.push({
         rank: 3,
-        condition: `e.uf = $${values.length}`,
-        limit: SIMILAR_BUCKET_LIMITS.location,
-        ...(cityExpression ? { orderPrefix: `CASE WHEN ${cityExpression} THEN 0 ELSE 1 END,` } : {})
+        condition: statePlaceholder
+          ? `(${cityExpression} AND e.uf = ${statePlaceholder})`
+          : cityExpression,
+        limit: SIMILAR_BUCKET_LIMITS.municipality
       });
-    } else if (cityExpression) {
+    }
+    if (statePlaceholder) {
       buckets.push({
-        rank: 3,
-        condition: cityExpression,
-        limit: SIMILAR_BUCKET_LIMITS.location
+        rank: 4,
+        condition: `e.uf = ${statePlaceholder}`,
+        limit: SIMILAR_BUCKET_LIMITS.state
       });
     }
     const profileConditions: string[] = [];
@@ -378,7 +392,7 @@ export class CnpjRepository {
     }
     if (profileConditions.length > 0) {
       buckets.push({
-        rank: 4,
+        rank: 5,
         condition: `(${profileConditions.join(" AND ")})`,
         limit: SIMILAR_BUCKET_LIMITS.profile
       });
@@ -387,11 +401,11 @@ export class CnpjRepository {
     const limit = boundedInteger(input.limit, 25, MAX_SIMILAR_CANDIDATES);
     values.push(limit);
     const bucketSql = buckets.length > 0
-      ? buckets.map(({ rank, condition, limit: bucketLimit, orderPrefix = "" }) => `(SELECT
+      ? buckets.map(({ rank, condition, limit: bucketLimit }) => `(SELECT
           e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv, ${rank} AS coarse_relevance
         ${SEARCH_KEY_FROM}
         WHERE ${sharedWhere.join(" AND ")} AND ${condition}
-        ORDER BY ${orderPrefix} e.cnpj_basico ASC, e.cnpj_ordem ASC, e.cnpj_dv ASC
+        ORDER BY e.cnpj_basico ASC, e.cnpj_ordem ASC, e.cnpj_dv ASC
         LIMIT ${bucketLimit})`).join("\n        UNION ALL\n        ")
       : `(SELECT e.cnpj_basico, e.cnpj_ordem, e.cnpj_dv, 9 AS coarse_relevance
         ${SEARCH_KEY_FROM}
