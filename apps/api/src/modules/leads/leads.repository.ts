@@ -19,6 +19,7 @@ import type {
 } from "@prymeira-talk/shared";
 import { canTransitionLeadJob } from "./leads.types.js";
 import { canonicalizePhone } from "../contacts/phone-normalization.js";
+import { aggregateLeadWhatsappStatus } from "./lead-whatsapp-status.js";
 
 type DateLike = Date | string;
 
@@ -199,6 +200,10 @@ export function toLeadResultDto(
   record: Lead,
   whatsappVerifications: LeadResultDto["whatsappVerifications"] = []
 ): LeadResultDto {
+  const phones = new Set([record.normalizedPhone, ...strings(record.phones)]
+    .filter((phone): phone is string => Boolean(phone))
+    .map(canonicalizePhone)
+    .filter((phone) => /^\d{8,15}$/.test(phone)));
   return {
     id: record.id,
     workspaceId: record.workspaceId,
@@ -223,7 +228,7 @@ export function toLeadResultDto(
     latitude: record.latitude,
     longitude: record.longitude,
     sourceUrl: record.sourceUrl,
-    whatsappStatus: whatsappVerifications[0]?.status ?? "unverified",
+    whatsappStatus: aggregateLeadWhatsappStatus(phones.size, whatsappVerifications.map((item) => item.status)),
     whatsappVerifications,
     createdAt: toIso(record.createdAt),
     updatedAt: toIso(record.updatedAt)

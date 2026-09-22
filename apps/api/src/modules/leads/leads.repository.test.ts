@@ -117,7 +117,7 @@ describe("Leads repository workspace isolation", () => {
       lead: { findMany: vi.fn(async () => [lead]), count: vi.fn(async () => 1) },
       leadWhatsappVerification: { findMany: vi.fn(async () => [
         { id: randomUUID(), workspaceId, leadId, normalizedPhone: lead.normalizedPhone, channelId: null, status: "available", errorMessage: null, checkedAt: now, createdAt: new Date(now.getTime() + 2), updatedAt: now },
-        { id: randomUUID(), workspaceId, leadId, normalizedPhone: "5511888880000", channelId: null, status: "unavailable", errorMessage: null, checkedAt: now, createdAt: new Date(now.getTime() + 1), updatedAt: now },
+        { id: randomUUID(), workspaceId, leadId, normalizedPhone: "5511888880000", channelId: null, status: "unavailable", errorMessage: null, checkedAt: now, createdAt: new Date(now.getTime() + 3), updatedAt: now },
         { id: randomUUID(), workspaceId, leadId, normalizedPhone: lead.normalizedPhone, channelId: null, status: "unavailable", errorMessage: null, checkedAt: now, createdAt: now, updatedAt: now }
       ]) },
       $transaction: vi.fn(async (operations: unknown[]) => Promise.all(operations))
@@ -126,8 +126,8 @@ describe("Leads repository workspace isolation", () => {
     const result = await repository.listLeads({ workspaceId, listId, page: 1, pageSize: 25 });
     expect(result.items[0]?.whatsappStatus).toBe("available");
     expect(result.items[0]?.whatsappVerifications).toEqual([
-      expect.objectContaining({ normalizedPhone: "551199990000", status: "available" }),
-      expect.objectContaining({ normalizedPhone: "5511888880000", status: "unavailable" })
+      expect.objectContaining({ normalizedPhone: "5511888880000", status: "unavailable" }),
+      expect.objectContaining({ normalizedPhone: "551199990000", status: "available" })
     ]);
   });
 
