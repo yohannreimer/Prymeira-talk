@@ -50,6 +50,7 @@ class ReadOnlyPoolQueryClient implements CnpjQueryClient {
     assertReadOnlyQuery(text);
     const client = await this.pool.connect();
     let transactionStarted = false;
+    let released = false;
     try {
       // A session role alone is not sufficient: pin each repository statement to a read-only tx.
       await client.query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY");
@@ -64,12 +65,14 @@ class ReadOnlyPoolQueryClient implements CnpjQueryClient {
         try {
           await client.query("ROLLBACK");
         } catch {
-          // Preserve the original error; callers must never receive connection details either way.
+          // The failed rollback may have left session state behind; do not return this client to the pool.
+          client.release(error instanceof Error ? error : new Error("CNPJ query failed."));
+          released = true;
         }
       }
       throw error;
     } finally {
-      client.release();
+      if (!released) client.release();
     }
   }
 }

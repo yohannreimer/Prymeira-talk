@@ -6,6 +6,8 @@ const MAX_PAGE = 10_000;
 const MAX_SIMILAR_CANDIDATES = 100;
 const ACCENTED_LOWERCASE = "áàâãäåæçéèêëíìîïñóòôõöøœúùûüýÿ";
 const ASCII_EQUIVALENTS = "aaaaaaaceeeeiiiinooooooouuuuyy";
+const PHONE_1 = "CASE WHEN NULLIF(btrim(e.telefone_1), '') IS NULL THEN NULL ELSE concat_ws('', NULLIF(btrim(e.ddd_1), ''), NULLIF(btrim(e.telefone_1), '')) END";
+const PHONE_2 = "CASE WHEN NULLIF(btrim(e.telefone_2), '') IS NULL THEN NULL ELSE concat_ws('', NULLIF(btrim(e.ddd_2), ''), NULLIF(btrim(e.telefone_2), '')) END";
 
 export class LeadSourceUnavailableError extends Error {
   readonly code = "LEAD_SOURCE_UNAVAILABLE" as const;
@@ -96,17 +98,17 @@ const SELECT_FIELDS = `
   em.capital_social AS capital_social,
   e.identificador_matriz_filial AS establishment_type,
   e.situacao_cadastral AS status,
-  e.data_inicio_atividade AS opened_at,
+  e.data_inicio_atividade::text AS opened_at,
   e.cnae_fiscal_principal AS cnae_primary,
   primary_cnae.descricao AS cnae_primary_description,
   COALESCE(string_to_array(NULLIF(e.cnae_fiscal_secundaria, ''), ','), ARRAY[]::text[]) AS cnae_secondary,
-  concat_ws(', ', NULLIF(e.tipo_logradouro || ' ' || e.logradouro, ''), NULLIF(e.numero, ''), NULLIF(e.complemento, '')) AS address,
+  NULLIF(btrim(concat_ws(', ', NULLIF(btrim(concat_ws(' ', NULLIF(btrim(e.tipo_logradouro), ''), NULLIF(btrim(e.logradouro), ''))), ''), NULLIF(btrim(e.numero), ''), NULLIF(btrim(e.complemento), ''))), '') AS address,
   e.bairro AS neighborhood,
   e.cep AS postal_code,
   m.descricao AS city,
   e.uf AS state,
-  NULLIF(e.ddd_1 || e.telefone_1, '') AS phone_1,
-  NULLIF(e.ddd_2 || e.telefone_2, '') AS phone_2,
+  ${PHONE_1} AS phone_1,
+  ${PHONE_2} AS phone_2,
   e.correio_eletronico AS email,
   CASE WHEN simples.opcao_pelo_simples = 'S' THEN true WHEN simples.opcao_pelo_simples IS NULL THEN NULL ELSE false END AS simples,
   CASE WHEN simples.opcao_pelo_mei = 'S' THEN true WHEN simples.opcao_pelo_mei IS NULL THEN NULL ELSE false END AS mei`;
@@ -134,6 +136,10 @@ function escapeLike(value: string) {
 
 function accentFold(expression: string) {
   return `translate(lower(${expression}), '${ACCENTED_LOWERCASE}', '${ASCII_EQUIVALENTS}')`;
+}
+
+function splitCnpj(cnpj: string) {
+  return [cnpj.slice(0, 8), cnpj.slice(8, 12), cnpj.slice(12, 14)] as const;
 }
 
 function boundedInteger(value: unknown, fallback: number, max: number) {
@@ -190,9 +196,13 @@ export class CnpjRepository {
   constructor(private readonly client?: CnpjQueryClient | null) {}
 
   async findByCnpj(cnpj: string): Promise<CnpjCompanyRecord | null> {
-    const normalizedCnpj = normalizeCnpj(cnpj);
+    const [cnpjBasico, cnpjOrdem, cnpjDv] = splitCnpj(normalizeCnpj(cnpj));
     const rows = await this.query(`SELECT ${SELECT_FIELDS} ${FROM_CNPJ}
-      WHERE e.cnpj_basico || e.cnpj_ordem || e.cnpj_dv = $1`, [normalizedCnpj]);
+      WHERE e.cnpj_basico = $1 AND e.cnpj_ordem = $2 AND e.cnpj_dv = $3`, [
+      cnpjBasico,
+      cnpjOrdem,
+      cnpjDv
+    ]);
     return rows[0] ? toRecord(rows[0]) : null;
   }
 
@@ -212,11 +222,11 @@ export class CnpjRepository {
     const values: unknown[] = [];
     const where: string[] = ["e.situacao_cadastral = '02'"];
     if (input.seedCnpj) {
-      const seedCnpj = normalizeCnpj(input.seedCnpj);
-      values.push(seedCnpj);
-      where.push(`e.cnpj_basico || e.cnpj_ordem || e.cnpj_dv <> $${values.length}`);
+      const [cnpjBasico, cnpjOrdem, cnpjDv] = splitCnpj(normalizeCnpj(input.seedCnpj));
+      values.push(cnpjBasico, cnpjOrdem, cnpjDv);
+      where.push(`NOT (e.cnpj_basico = $${values.length - 2} AND e.cnpj_ordem = $${values.length - 1} AND e.cnpj_dv = $${values.length})`);
       if (input.excludeSeedRoot) {
-        values.push(seedCnpj.slice(0, 8));
+        values.push(cnpjBasico);
         where.push(`e.cnpj_basico <> $${values.length}`);
       }
     }
@@ -253,7 +263,10 @@ export class CnpjRepository {
       }
     };
 
-    if (filters.cnpj?.trim()) where.push(`e.cnpj_basico || e.cnpj_ordem || e.cnpj_dv = ${bind(normalizeCnpj(filters.cnpj))}`);
+    if (filters.cnpj?.trim()) {
+      const [cnpjBasico, cnpjOrdem, cnpjDv] = splitCnpj(normalizeCnpj(filters.cnpj));
+      where.push(`e.cnpj_basico = ${bind(cnpjBasico)} AND e.cnpj_ordem = ${bind(cnpjOrdem)} AND e.cnpj_dv = ${bind(cnpjDv)}`);
+    }
     like("em.razao_social", filters.companyName, true);
     like("e.nome_fantasia", filters.tradeName, true);
     like("m.descricao", filters.city, true);
@@ -269,13 +282,13 @@ export class CnpjRepository {
     if (typeof filters.capitalMax === "number" && Number.isFinite(filters.capitalMax)) where.push(`em.capital_social <= ${bind(filters.capitalMax)}`);
     if (filters.phone?.trim()) {
       const placeholder = bind(`%${escapeLike(filters.phone.trim())}%`);
-      where.push(`(LOWER(e.ddd_1 || e.telefone_1) LIKE LOWER(${placeholder}) ESCAPE '\\' OR LOWER(e.ddd_2 || e.telefone_2) LIKE LOWER(${placeholder}) ESCAPE '\\')`);
+      where.push(`(LOWER(${PHONE_1}) LIKE LOWER(${placeholder}) ESCAPE '\\' OR LOWER(${PHONE_2}) LIKE LOWER(${placeholder}) ESCAPE '\\')`);
     }
     like("e.correio_eletronico", filters.email);
     if (filters.hasPhone === true) {
-      where.push("(NULLIF(e.ddd_1 || e.telefone_1, '') IS NOT NULL OR NULLIF(e.ddd_2 || e.telefone_2, '') IS NOT NULL)");
+      where.push("(NULLIF(btrim(e.telefone_1), '') IS NOT NULL OR NULLIF(btrim(e.telefone_2), '') IS NOT NULL)");
     } else if (filters.hasPhone === false) {
-      where.push("(NULLIF(e.ddd_1 || e.telefone_1, '') IS NULL AND NULLIF(e.ddd_2 || e.telefone_2, '') IS NULL)");
+      where.push("(NULLIF(btrim(e.telefone_1), '') IS NULL AND NULLIF(btrim(e.telefone_2), '') IS NULL)");
     }
     if (filters.hasEmail === true) {
       where.push("NULLIF(btrim(e.correio_eletronico), '') IS NOT NULL");
@@ -289,12 +302,19 @@ export class CnpjRepository {
     const sort = SORT_COLUMNS[filters.sortBy ?? ""] ?? "company_name";
     const direction = filters.sortDirection === "DESC" ? "DESC" : "ASC";
     values.push(pageSize, (page - 1) * pageSize);
-    const rows = await this.query(`SELECT ${SELECT_FIELDS}, COUNT(*) OVER() AS total ${FROM_CNPJ}
+    const rows = await this.query(`WITH filtered AS (
+      SELECT ${SELECT_FIELDS} ${FROM_CNPJ}
       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    ), counted AS (
+      SELECT COUNT(*)::text AS total FROM filtered
+    ), paged AS (
+      SELECT * FROM filtered
       ORDER BY ${sort} ${direction}, cnpj ASC
-      LIMIT $${values.length - 1} OFFSET $${values.length}`, values);
+      LIMIT $${values.length - 1} OFFSET $${values.length}
+    )
+    SELECT paged.*, counted.total FROM counted LEFT JOIN paged ON true`, values);
     return {
-      items: rows.map(toRecord),
+      items: rows.filter((row) => typeof row.cnpj === "string" && row.cnpj.length > 0).map(toRecord),
       page,
       pageSize,
       total: rows[0] ? Number(rows[0].total ?? 0) || 0 : 0

@@ -24,15 +24,33 @@ class FakeCnpjClient implements CnpjQueryClient {
 }
 
 describe("CnpjRepository", () => {
-  it("normalizes an alphanumeric CNPJ and uses a placeholder for the lookup", async () => {
-    const client = new FakeCnpjClient([{ cnpj: "12345678ABCD90" }]);
+  it("normalizes an alphanumeric CNPJ into indexable text segments for the lookup", async () => {
+    const client = new FakeCnpjClient([
+      { cnpj: "12345678ABCD90", cnpj_basico: "12345678", opened_at: "2024-02-03" }
+    ]);
     const repository = new CnpjRepository(client);
 
-    await repository.findByCnpj("12.345.678/abcd-90");
+    const result = await repository.findByCnpj("12.345.678/abcd-90");
 
     expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.values).toContain("12345678ABCD90");
-    expect(client.calls[0]?.text).toContain("e.cnpj_basico || e.cnpj_ordem || e.cnpj_dv = $1");
+    expect(client.calls[0]?.values).toEqual(["12345678", "ABCD", "90"]);
+    expect(client.calls[0]?.text).toContain(
+      "e.cnpj_basico = $1 AND e.cnpj_ordem = $2 AND e.cnpj_dv = $3"
+    );
+    expect(client.calls[0]?.text).toContain("e.data_inicio_atividade::text AS opened_at");
+    expect(result?.cnpj).toBe("12345678ABCD90");
+    expect(result?.openedAt).toBe("2024-02-03");
+  });
+
+  it("splits an exact CNPJ search filter into the composite primary-key columns", async () => {
+    const client = new FakeCnpjClient();
+
+    await new CnpjRepository(client).searchEstablishments({ cnpj: "12.345.678/ABCD-90" });
+
+    expect(client.calls[0]?.text).toContain(
+      "e.cnpj_basico = $1 AND e.cnpj_ordem = $2 AND e.cnpj_dv = $3"
+    );
+    expect(client.calls[0]?.values.slice(0, 3)).toEqual(["12345678", "ABCD", "90"]);
   });
 
   it("binds malicious search text and escapes LIKE wildcards", async () => {
@@ -57,10 +75,12 @@ describe("CnpjRepository", () => {
 
     const call = client.calls[0];
     expect(call?.text).toContain(
-      "(LOWER(e.ddd_1 || e.telefone_1) LIKE LOWER($1) ESCAPE '\\' OR LOWER(e.ddd_2 || e.telefone_2) LIKE LOWER($1) ESCAPE '\\')"
+      "(LOWER(CASE WHEN NULLIF(btrim(e.telefone_1), '') IS NULL THEN NULL ELSE concat_ws('', NULLIF(btrim(e.ddd_1), ''), NULLIF(btrim(e.telefone_1), '')) END) LIKE LOWER($1) ESCAPE '\\' OR LOWER(CASE WHEN NULLIF(btrim(e.telefone_2), '') IS NULL THEN NULL ELSE concat_ws('', NULLIF(btrim(e.ddd_2), ''), NULLIF(btrim(e.telefone_2), '')) END) LIKE LOWER($1) ESCAPE '\\')"
     );
     expect(call?.values[0]).toBe("%11\\%\\_\\\\%");
     expect(call?.text).not.toContain(needle);
+    expect(call?.text).toContain("CASE WHEN NULLIF(btrim(e.telefone_1), '') IS NULL THEN NULL");
+    expect(call?.text).toContain("concat_ws('', NULLIF(btrim(e.ddd_1), ''), NULLIF(btrim(e.telefone_1), ''))");
   });
 
   it("uses static accent folding and placeholders for company, trade name, and city search", async () => {
@@ -125,7 +145,7 @@ describe("CnpjRepository", () => {
     expect(text).toContain("e.data_inicio_atividade >=");
     expect(text).toContain("em.capital_social >=");
     expect(text).toContain("e.situacao_cadastral = '02'");
-    expect(text).toContain("e.ddd_1 || e.telefone_1");
+    expect(text).toContain("NULLIF(btrim(e.ddd_1), '')");
     expect(text).toContain("e.correio_eletronico");
 
     const inactiveClient = new FakeCnpjClient();
@@ -137,14 +157,14 @@ describe("CnpjRepository", () => {
     const presentClient = new FakeCnpjClient();
     await new CnpjRepository(presentClient).searchEstablishments({ hasPhone: true, hasEmail: true });
     expect(presentClient.calls[0]?.text).toContain(
-      "(NULLIF(e.ddd_1 || e.telefone_1, '') IS NOT NULL OR NULLIF(e.ddd_2 || e.telefone_2, '') IS NOT NULL)"
+      "(NULLIF(btrim(e.telefone_1), '') IS NOT NULL OR NULLIF(btrim(e.telefone_2), '') IS NOT NULL)"
     );
     expect(presentClient.calls[0]?.text).toContain("NULLIF(btrim(e.correio_eletronico), '') IS NOT NULL");
 
     const absentClient = new FakeCnpjClient();
     await new CnpjRepository(absentClient).searchEstablishments({ hasPhone: false, hasEmail: false });
     expect(absentClient.calls[0]?.text).toContain(
-      "(NULLIF(e.ddd_1 || e.telefone_1, '') IS NULL AND NULLIF(e.ddd_2 || e.telefone_2, '') IS NULL)"
+      "(NULLIF(btrim(e.telefone_1), '') IS NULL AND NULLIF(btrim(e.telefone_2), '') IS NULL)"
     );
     expect(absentClient.calls[0]?.text).toContain("NULLIF(btrim(e.correio_eletronico), '') IS NULL");
   });
@@ -166,6 +186,34 @@ describe("CnpjRepository", () => {
     expect(call?.values.slice(-2)).toEqual([100, 100]);
   });
 
+  it("keeps the total when the requested page is empty and filters the count sentinel from items", async () => {
+    const client = new FakeCnpjClient([{ cnpj: null, total: "42" }]);
+
+    const result = await new CnpjRepository(client).searchEstablishments({ page: 999, pageSize: 25 });
+
+    expect(client.calls[0]?.text).toContain("WITH filtered AS");
+    expect(client.calls[0]?.text).toContain("LEFT JOIN paged ON true");
+    expect(result).toMatchObject({ items: [], page: 999, pageSize: 25, total: 42 });
+  });
+
+  it("preserves an address and phone when their optional prefixes are null", async () => {
+    const client = new FakeCnpjClient([
+      {
+        cnpj: "12345678ABCD90",
+        cnpj_basico: "12345678",
+        address: "Rua Exemplo, 10",
+        phone_1: "99999999"
+      }
+    ]);
+
+    const result = await new CnpjRepository(client).findByCnpj("12.345.678/ABCD-90");
+
+    expect(client.calls[0]?.text).toContain("NULLIF(btrim(concat_ws(', '");
+    expect(client.calls[0]?.text).toContain("NULLIF(btrim(e.logradouro), '')");
+    expect(result?.address).toBe("Rua Exemplo, 10");
+    expect(result?.phone1).toBe("99999999");
+  });
+
   it("excludes both the seed full CNPJ and root from bounded similarity candidates without scoring", async () => {
     const client = new FakeCnpjClient();
     const repository = new CnpjRepository(client);
@@ -177,11 +225,11 @@ describe("CnpjRepository", () => {
     });
 
     const call = client.calls[0];
-    expect(call?.text).toContain("e.cnpj_basico || e.cnpj_ordem || e.cnpj_dv <> $1");
-    expect(call?.text).toContain("e.cnpj_basico <> $2");
+    expect(call?.text).toContain("NOT (e.cnpj_basico = $1 AND e.cnpj_ordem = $2 AND e.cnpj_dv = $3)");
+    expect(call?.text).toContain("e.cnpj_basico <> $4");
     expect(call?.text).toContain("e.situacao_cadastral = '02'");
     expect(call?.text).not.toContain("score");
-    expect(call?.values).toEqual(["12345678ABCD90", "12345678", 100]);
+    expect(call?.values).toEqual(["12345678", "ABCD", "90", "12345678", 100]);
   });
 
   it("optionally narrows active similarity candidates by principal CNAE and UF without scoring", async () => {
@@ -264,6 +312,33 @@ describe("CNPJ database plugin", () => {
       "CNPJ query was rejected."
     );
     expect(pool.connect).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("discards a client if rollback fails while preserving the original query error", async () => {
+    const queryError = new Error("query failed");
+    const client = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockRejectedValueOnce(queryError)
+        .mockRejectedValueOnce(new Error("rollback failed")),
+      release: vi.fn()
+    };
+    const pool = {
+      connect: vi.fn(async () => client),
+      end: vi.fn(async () => undefined)
+    };
+    const app = Fastify();
+    await app.register(cnpjDatabasePlugin, {
+      databaseUrl: "postgresql://not-a-real-database/test",
+      pool: pool as never
+    });
+
+    await expect(app.cnpj?.query("SELECT 1")).rejects.toBe(queryError);
+    expect(client.release).toHaveBeenCalledWith(queryError);
+    expect(client.release).toHaveBeenCalledTimes(1);
     await app.close();
   });
 });
