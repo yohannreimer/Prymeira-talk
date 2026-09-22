@@ -306,3 +306,62 @@ export const messageSchema = z.object({
   createdAt: z.string().datetime()
 });
 export type MessageDto = z.infer<typeof messageSchema>;
+
+export const conversationFollowupKindSchema = z.enum(["qualification", "human_commercial"]);
+export type ConversationFollowupKind = z.infer<typeof conversationFollowupKindSchema>;
+
+export const conversationFollowupStatusSchema = z.enum([
+  "scheduled",
+  "processing",
+  "review",
+  "sent",
+  "cancelled",
+  "skipped",
+  "expired",
+  "failed"
+]);
+export type ConversationFollowupStatus = z.infer<typeof conversationFollowupStatusSchema>;
+
+const conversationFollowupBaseSchema = z.object({
+  id: z.string().min(1),
+  workspaceId: z.string().min(1),
+  conversationId: z.string().min(1),
+  agentId: z.string().min(1),
+  kind: conversationFollowupKindSchema,
+  stepIndex: z.number().int().min(0),
+  scheduledAt: z.string().datetime(),
+  draftBody: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+
+export const conversationFollowupSchema = z.discriminatedUnion("status", [
+  conversationFollowupBaseSchema.extend({ status: z.literal("scheduled") }),
+  conversationFollowupBaseSchema.extend({ status: z.literal("processing") }),
+  conversationFollowupBaseSchema.extend({ status: z.literal("review") }),
+  conversationFollowupBaseSchema.extend({
+    status: z.literal("sent"),
+    finalBody: z.string(),
+    sentAt: z.string().datetime(),
+    sentByUserId: z.string().min(1).nullable()
+  }),
+  conversationFollowupBaseSchema.extend({
+    status: z.literal("cancelled"),
+    reason: z.string().min(1),
+    cancelledAt: z.string().datetime(),
+    cancelledByUserId: z.string().min(1).nullable()
+  }),
+  conversationFollowupBaseSchema.extend({
+    status: z.literal("skipped"),
+    reason: z.string().min(1)
+  }),
+  conversationFollowupBaseSchema.extend({
+    status: z.literal("expired"),
+    reason: z.string().min(1)
+  }),
+  conversationFollowupBaseSchema.extend({
+    status: z.literal("failed"),
+    reason: z.string().min(1)
+  })
+]);
+export type ConversationFollowupDto = z.infer<typeof conversationFollowupSchema>;

@@ -28,8 +28,13 @@ import { boardsRoutes } from "./modules/boards/boards.routes.js";
 import { campaignsRoutes } from "./modules/campaigns/campaigns.routes.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
 import { contactsRoutes } from "./modules/contacts/contacts.routes.js";
-import { createConversationsService, type PrismaLike as ConversationsPrismaLike } from "./modules/conversations/conversations.service.js";
+import {
+  createConversationsService,
+  type ConversationOutboundTextDelivery,
+  type PrismaLike as ConversationsPrismaLike
+} from "./modules/conversations/conversations.service.js";
 import { conversationsRoutes } from "./modules/conversations/conversations.routes.js";
+import { conversationFollowupsRoutes } from "./modules/followups/conversation-followups.routes.js";
 import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js";
 import { crmRoutes } from "./modules/crm/crm.routes.js";
 import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
@@ -185,8 +190,36 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     });
   }
 
+  // Both automatic and human-reviewed follow-ups must use the same provider
+  // resolution and durable outbound-message path as a normal Talk reply.
+  const followupOutbound: ConversationOutboundTextDelivery | undefined =
+    options.prismaEnabled === false
+      ? undefined
+      : {
+          async createPendingOutboundMessage(deliveryInput) {
+            const meta = await resolveMetaRuntime(app.prisma, {
+              workspaceId: deliveryInput.workspaceId
+            });
+            return createConversationsService(
+              app.prisma as unknown as ConversationsPrismaLike,
+              {
+                evolution: evolutionRuntime,
+                meta: {
+                  client: meta.client,
+                  phoneNumberId: meta.phoneNumberId
+                },
+                metaEvolution: {
+                  client: meta.evolutionClient?.sendText
+                    ? { sendText: meta.evolutionClient.sendText.bind(meta.evolutionClient) }
+                    : null
+                }
+              }
+            ).createPendingOutboundMessage(deliveryInput);
+          }
+        };
+
   const followupRuntime =
-    options.prismaEnabled === false || !followupService || !env.JEV_API_KEY
+    options.prismaEnabled === false || !followupService || !followupOutbound || !env.JEV_API_KEY
       ? undefined
       : createAgentFollowupRuntime({
           prisma: app.prisma as unknown as Parameters<typeof createAgentFollowupRuntime>[0]["prisma"],
@@ -197,28 +230,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
             model: env.JEV_MODEL
           }),
           replyPreflight,
-          outbound: {
-            async createPendingOutboundMessage(deliveryInput) {
-              const meta = await resolveMetaRuntime(app.prisma, {
-                workspaceId: deliveryInput.workspaceId
-              });
-              return createConversationsService(
-                app.prisma as unknown as ConversationsPrismaLike,
-                {
-                  evolution: evolutionRuntime,
-                  meta: {
-                    client: meta.client,
-                    phoneNumberId: meta.phoneNumberId
-                  },
-                  metaEvolution: {
-                    client: meta.evolutionClient?.sendText
-                      ? { sendText: meta.evolutionClient.sendText.bind(meta.evolutionClient) }
-                      : null
-                  }
-                }
-              ).createPendingOutboundMessage(deliveryInput);
-            }
-          }
+          outbound: followupOutbound
         });
   const conversationFollowupScheduler = followupRuntime
     ? createConversationFollowupScheduler({
@@ -270,6 +282,12 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     assistantScheduler,
     followupService
   });
+  if (followupService && followupOutbound) {
+    await app.register(conversationFollowupsRoutes, {
+      followups: followupService,
+      outbound: followupOutbound
+    });
+  }
   await app.register(quickRepliesRoutes);
   await app.register(uploadsRoutes, {
     publicTalkUrl: env.PUBLIC_TALK_URL,

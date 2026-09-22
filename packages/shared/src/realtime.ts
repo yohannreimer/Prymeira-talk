@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   channelSchema,
+  conversationFollowupSchema,
   contactBoardMembershipSchema,
   contactSchema,
   conversationSchema,
@@ -114,6 +115,12 @@ const campaignUpdatedEventSchema = z.object({
   payload: campaignSchema
 });
 
+const conversationFollowupUpdatedEventSchema = z.object({
+  type: z.literal("conversation_followup.updated"),
+  workspaceId: z.string().min(1),
+  payload: conversationFollowupSchema
+});
+
 export const realtimeEventSchema = z
   .discriminatedUnion("type", [
     messageCreatedEventSchema,
@@ -126,7 +133,8 @@ export const realtimeEventSchema = z
     channelDeletedEventSchema,
     channelQrUpdatedEventSchema,
     automationRunCreatedEventSchema,
-    campaignUpdatedEventSchema
+    campaignUpdatedEventSchema,
+    conversationFollowupUpdatedEventSchema
   ])
   .superRefine((event, context) => {
     const payload =

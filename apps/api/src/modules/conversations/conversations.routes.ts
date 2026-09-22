@@ -15,6 +15,7 @@ import {
 import type { PrismaLike } from "./conversations.service.js";
 import { createInboxMediaService } from './inbox-media.js';
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
+import { readCurrentClerkUserId, resolveCurrentUserProfileId } from "./current-user.js";
 
 interface ConversationsRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
@@ -106,46 +107,6 @@ function requireConversationResetOwner(
   return false;
 }
 
-function readCurrentClerkUserId(authorizationHeader: string | undefined) {
-  const token = authorizationHeader?.startsWith("Bearer ")
-    ? authorizationHeader.slice("Bearer ".length)
-    : null;
-  const payload = token?.split(".")[1];
-
-  if (!payload) return null;
-
-  try {
-    const normalizedPayload = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = JSON.parse(Buffer.from(normalizedPayload, "base64").toString("utf8")) as {
-      sub?: unknown;
-    };
-
-    return typeof decoded.sub === "string" ? decoded.sub : null;
-  } catch {
-    return null;
-  }
-}
-
-async function resolveCurrentUserProfileId(input: {
-  prisma: PrismaLike;
-  workspaceId: string;
-  authorizationHeader: string | undefined;
-}) {
-  const currentClerkUserId = readCurrentClerkUserId(input.authorizationHeader);
-
-  if (!currentClerkUserId) return null;
-
-  const user = await input.prisma.userProfile.findFirst({
-    where: {
-      workspaceId: input.workspaceId,
-      clerkUserId: currentClerkUserId
-    },
-    select: { id: true }
-  });
-
-  return user?.id ?? null;
-}
-
 export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions> = async (
   app,
   options
@@ -200,6 +161,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       ? await resolveCurrentUserProfileId({
           prisma: app.prisma as unknown as PrismaLike,
           workspaceId: request.talk.workspaceId,
+          clerkUserId: request.talk.clerkUserId,
           authorizationHeader: request.headers.authorization
       })
       : null;
@@ -316,6 +278,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     const actorUserId = await resolveCurrentUserProfileId({
       prisma: app.prisma as unknown as PrismaLike,
       workspaceId: request.talk.workspaceId,
+      clerkUserId: request.talk.clerkUserId,
       authorizationHeader: request.headers.authorization
     });
     const result = await service.resetConversation({
@@ -355,6 +318,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       const actorUserId = await resolveCurrentUserProfileId({
         prisma: app.prisma as unknown as PrismaLike,
         workspaceId: request.talk.workspaceId,
+        clerkUserId: request.talk.clerkUserId,
         authorizationHeader: request.headers.authorization
       });
       const conversation = await service.updateAiControl({

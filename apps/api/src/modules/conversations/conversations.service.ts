@@ -373,9 +373,12 @@ export type ConversationOutboundTextDelivery = {
     workspaceId: string;
     conversationId: string;
     body: string;
-    sentByUserId: null;
+    sentByUserId: string | null;
     metadata?: Record<string, unknown>;
-  }): Promise<{ message: Pick<MessageDto, "id" | "status"> }>;
+  }): Promise<{
+    message: Pick<MessageDto, "id" | "status"> & Partial<MessageDto>;
+    conversation?: ConversationDto;
+  }>;
 };
 
 function toIsoString(value: DateLike): string;
