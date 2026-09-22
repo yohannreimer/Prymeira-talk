@@ -8,3 +8,4 @@ dist/
 coverage/
 .turbo/
 .next/
+/infra/leads-cnpj/data/

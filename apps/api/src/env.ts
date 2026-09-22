@@ -37,7 +37,13 @@ export const envSchema = z
     JEV_API_KEY: optionalNonEmptyString,
     JEV_MODEL: z.string().min(1).default("jev-latest"),
     TALK_UPLOAD_DIR: z.string().min(1).default("storage/uploads"),
-    VINCULA_CRM_API_URL: optionalUrl
+    VINCULA_CRM_API_URL: optionalUrl,
+    CNPJ_DATABASE_URL: optionalUrl,
+    GOOGLE_MAPS_SCRAPER_URL: optionalUrl,
+    LEAD_GOOGLE_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(1),
+    LEAD_GOOGLE_DEFAULT_DEPTH: z.coerce.number().int().positive().default(5),
+    LEAD_WHATSAPP_BATCH_SIZE: z.coerce.number().int().positive().max(25).default(25),
+    LEAD_JOB_POLL_MS: z.coerce.number().int().positive().optional()
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === "production" && env.PRYMEIRA_LOCAL_AUTH_BYPASS) {
