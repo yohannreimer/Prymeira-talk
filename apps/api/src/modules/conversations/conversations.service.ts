@@ -28,7 +28,8 @@ type ConversationActionErrorCode =
   | "CURRENT_USER_REQUIRED"
   | "CURRENT_USER_NOT_FOUND"
   | "DEPARTMENT_NOT_FOUND"
-  | "BOARD_STAGE_NOT_FOUND";
+  | "BOARD_STAGE_NOT_FOUND"
+  | "HANDOFF_ACTION_NOT_AVAILABLE";
 
 export class ConversationActionError extends Error {
   statusCode = 409 as const;
@@ -115,6 +116,7 @@ export interface ConversationRecord {
   activeAgentSession?: {
     status: NonNullable<ConversationDto["activeAgentSessionStatus"]>;
     handoffReason?: string | null;
+    handoffActionCompletedAt?: DateLike | null;
     agent?: {
       name: string;
     } | null;
@@ -133,6 +135,7 @@ const conversationDtoInclude = {
     select: {
       status: true,
       handoffReason: true,
+      handoffActionCompletedAt: true,
       agent: { select: { name: true } }
     }
   },
@@ -450,7 +453,10 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
     aiControlStatus: record.aiControlStatus ?? "agent_allowed",
     activeAgentName: record.activeAgentSession?.agent?.name ?? null,
     activeAgentSessionStatus: record.activeAgentSession?.status ?? null,
-    handoffReason: record.activeAgentSession?.handoffReason ?? null
+    handoffReason: record.activeAgentSession?.handoffReason ?? null,
+    handoffActionCompletedAt: record.activeAgentSession?.handoffActionCompletedAt
+      ? toIsoString(record.activeAgentSession.handoffActionCompletedAt)
+      : null
   };
 }
 
@@ -595,6 +601,7 @@ export function createConversationsService(
           select: {
             status: true,
             handoffReason: true,
+            handoffActionCompletedAt: true,
             agent: { select: { name: true } }
           }
         },
@@ -970,6 +977,43 @@ export function createConversationsService(
         });
       })) as ConversationRecord;
 
+      return toConversationDto(updatedConversation);
+    },
+
+    async updateHandoffAction(input: {
+      workspaceId: string;
+      conversationId: string;
+      completed?: boolean;
+    }): Promise<ConversationDto> {
+      const updatedConversation = (await prisma.$transaction(async (tx) => {
+        const current = await tx.conversation.findUnique({
+          where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+          include: conversationDtoInclude
+        });
+        assertConversationRecord(current);
+        if (
+          !current.activeAgentSessionId ||
+          !current.activeAgentSession?.handoffReason ||
+          !["handoff_requested", "paused_by_human"].includes(current.activeAgentSession.status)
+        ) {
+          throw new ConversationActionError(
+            "HANDOFF_ACTION_NOT_AVAILABLE",
+            "Não há uma próxima ação humana para concluir nesta conversa."
+          );
+        }
+
+        if (input.completed !== undefined) {
+          await tx.aiAgentSession.update({
+            where: { workspaceId_id: { workspaceId: input.workspaceId, id: current.activeAgentSessionId } },
+            data: { handoffActionCompletedAt: input.completed ? new Date() : null }
+          });
+        }
+        return tx.conversation.findUnique({
+          where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+          include: conversationDtoInclude
+        });
+      })) as ConversationRecord | null;
+      assertConversationRecord(updatedConversation);
       return toConversationDto(updatedConversation);
     },
 

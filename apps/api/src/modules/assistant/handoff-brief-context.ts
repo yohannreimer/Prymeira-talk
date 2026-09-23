@@ -36,7 +36,7 @@ export async function loadHandoffBriefContext(db: Db, workspaceId: string, conve
     include: { activeAgentSession: true }
   });
   const session = conversation?.activeAgentSession;
-  if (!conversation || !session || !session.handoffReason ||
+  if (!conversation || !session || !session.handoffReason || session.handoffActionCompletedAt ||
       !["handoff_requested", "paused_by_human"].includes(session.status) ||
       (session.status === "paused_by_human" && conversation.aiControlStatus !== "human_controlled")) {
     return null;

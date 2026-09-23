@@ -95,12 +95,27 @@ export function aiControlActionLabel(conversation: Pick<ConversationDto, "aiCont
 }
 
 export function needsHumanAttention(
-  conversation: Pick<ConversationDto, "aiControlStatus" | "activeAgentSessionStatus" | "handoffReason">
+  conversation: Pick<ConversationDto, "aiControlStatus" | "activeAgentSessionStatus" | "handoffReason" | "handoffActionCompletedAt">
 ) {
+  if (conversation.handoffActionCompletedAt) return false;
   return (
     conversation.activeAgentSessionStatus === "handoff_requested" ||
     (conversation.aiControlStatus === "human_controlled" && Boolean(conversation.handoffReason))
   );
+}
+
+function handoffAnalysisFeedback(analysis: ConversationActionResultDto["improvementAnalysis"]): string {
+  if (analysis?.created) return "A resposta gerou um aprimoramento pendente de revisão em Agentes.";
+  switch (analysis?.reason) {
+    case "already_observed": return "Essa resposta já foi analisada. Confira os aprimoramentos em Agentes.";
+    case "analysis_failed": return "A próxima ação foi concluída, mas a análise falhou. Tente analisar novamente.";
+    case "analysis_unavailable":
+    case "detector_unavailable": return "A próxima ação foi concluída, mas a análise está indisponível.";
+    case "no_human_reply_since_handoff": return "Ação concluída. Ainda não há resposta humana depois do repasse.";
+    case "no_handoff_run": return "Ação concluída. Não foi possível localizar o repasse original para analisar a resposta.";
+    case "no_customer_request": return "Ação concluída. Falta o pedido do cliente no histórico para propor um aprimoramento.";
+    default: return "Ação concluída. A resposta não gerou um aprimoramento reutilizável.";
+  }
 }
 
 export function filterConversationsNeedingHuman(conversations: ConversationDto[], onlyHuman: boolean) {
@@ -422,6 +437,7 @@ function InboxPageContent() {
   const [currentRole, setCurrentRole] = useState<"owner" | "manager" | "agent">("agent");
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
   const [crmStatus, setCrmStatus] = useState<string | null>(null);
+  const [handoffFeedback, setHandoffFeedback] = useState<string | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showQuickReplies, setShowQuickReplies] = useState(false);
   const [quickReplies, setQuickReplies] = useState<QuickReplyDto[]>([]);
@@ -1156,6 +1172,11 @@ function InboxPageContent() {
     try {
       const result = await apiRunConversationAction(targetConversationId, body, getFreshToken);
       applyActionResult(result, targetConversationId);
+      if (body.action === "complete_handoff_action") setOnlyHumanAttention(false);
+      if (["complete_handoff_action", "reanalyze_handoff_reply"].includes(body.action) && selectedConversationIdRef.current === targetConversationId) {
+        setHandoffFeedback(handoffAnalysisFeedback(result.improvementAnalysis));
+      }
+      if (body.action === "reopen_handoff_action") setHandoffFeedback(null);
       return result;
     } catch (actionError) {
       if (selectedConversationIdRef.current === targetConversationId) {
@@ -1166,6 +1187,8 @@ function InboxPageContent() {
       setIsRunningAction(false);
     }
   }
+
+  useEffect(() => { setHandoffFeedback(null); }, [selectedConversationId]);
 
   async function resetSelectedConversation() {
     if (!selectedConversationId || !canResetConversation(currentRole)) return;
@@ -1693,7 +1716,7 @@ function InboxPageContent() {
 
       <aside className={`contact-panel assistant-contact-panel${assistantOpen ? ' assistant-drawer-open' : ''}`} aria-label="Contato e IA de apoio">
         <div className="assistant-tabs"><button type="button" aria-pressed={assistantTab === 'contact'} onClick={() => setAssistantTab('contact')}>Contato</button><button type="button" aria-pressed={assistantTab === 'assistant'} onClick={() => setAssistantTab('assistant')}>IA de apoio{handoffBrief ? <span className="assistant-tab-dot is-handoff" /> : assistant.data?.status === 'ready' ? <span className="assistant-tab-dot" /> : null}</button><button ref={assistantCloseRef} className="assistant-drawer-close" aria-label="Fechar apoio" type="button" onClick={() => { setAssistantOpen(false); assistantTriggerRef.current?.focus(); }}><X size={18} /></button></div>
-        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} handoffBrief={handoffBrief} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={sendSuggestion} onEdit={editSuggestion} /> : <>
+        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} handoffBrief={handoffBrief} handoffCompleted={Boolean(selectedConversation?.handoffActionCompletedAt)} handoffFeedback={handoffFeedback} handoffBusy={isRunningAction} onCompleteHandoff={() => { void runAction({ action: 'complete_handoff_action' }); }} onReopenHandoff={() => { void runAction({ action: 'reopen_handoff_action' }); }} onReanalyzeHandoff={() => { void runAction({ action: 'reanalyze_handoff_reply' }); }} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={sendSuggestion} onEdit={editSuggestion} /> : <>
         {/* Card identidade */}
         {selectedConversation ? <ContactIdentityCard key={selectedConversation.contactId}
           conversationId={selectedConversation.id}

@@ -680,6 +680,7 @@ export function createAgentRuntime(input: {
             data: {
               status: "handoff_requested",
               handoffReason: "possible_automation_loop",
+              handoffActionCompletedAt: null,
               lastRunAt: new Date()
             }
           });
@@ -1184,6 +1185,7 @@ export function createAgentRuntime(input: {
           data: {
             status: handoffReason ? "handoff_requested" : "active",
             handoffReason,
+            handoffActionCompletedAt: null,
             lastRunAt: new Date(),
             messageCount: { increment: 1 }
           }

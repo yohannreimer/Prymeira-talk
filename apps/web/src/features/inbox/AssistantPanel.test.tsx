@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { AssistantConversationDto } from '@prymeira-talk/shared';
 import { AssistantPanel } from './AssistantPanel';
 const data: AssistantConversationDto = { settings: { mode: 'automatic', agentId: 'a' }, status: 'ready', humanControlled: false, suggestion: { id: 's', conversationId: 'c', agentId: 'a', revision: 1, contextKey: 'k', body: 'Qual a cidade de entrega?', instruction: null, createdAt: '2026-09-06T12:00:00Z', warnings: [], actorName: null, finalBody: null, messageId: null, sendStatus: null }, history: [], agentName: 'Pré-atendimento', error: null, currentContextKey: 'k' };
-const props = { data, error: null, humanControlled: false, draftExists: false, sending: false, onGenerate: vi.fn(), onSend: vi.fn(), onEdit: vi.fn() };
+const props = { data, error: null, humanControlled: false, draftExists: false, sending: false, handoffCompleted: false, handoffFeedback: null, handoffBusy: false, onCompleteHandoff: vi.fn(), onReopenHandoff: vi.fn(), onReanalyzeHandoff: vi.fn(), onGenerate: vi.fn(), onSend: vi.fn(), onEdit: vi.fn() };
 describe('assistant panel', () => {
   it('shows a private draft with explicit send and edit controls', () => {
     const html = renderToStaticMarkup(<AssistantPanel {...props} />);
@@ -29,6 +29,13 @@ describe('assistant panel', () => {
     expect(html).not.toContain('Motivo do repasse');
     expect(html).not.toContain('Apoio não ativado');
     expect(html).not.toContain('Enviar resposta');
+  });
+  it('shows a completed handoff with human control and recovery actions', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled handoffCompleted handoffFeedback="A resposta gerou um aprimoramento pendente." />);
+    expect(html).toContain('Próxima ação concluída');
+    expect(html).toContain('Analisar resposta humana');
+    expect(html).toContain('Reabrir próxima ação');
+    expect(html).toContain('aprimoramento pendente');
   });
   it('escapes customer/provider text and shows media warnings', () => {
     const html = renderToStaticMarkup(<AssistantPanel {...props} data={{ ...data, suggestion: { ...data.suggestion!, body: '<script>unsafe()</script>', warnings: ['PDF não lido.'] } }} />);

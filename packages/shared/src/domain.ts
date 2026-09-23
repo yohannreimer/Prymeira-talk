@@ -191,7 +191,8 @@ export const conversationSchema = z.object({
   aiControlStatus: aiControlStatusSchema.optional(),
   activeAgentName: z.string().nullable().optional(),
   activeAgentSessionStatus: aiAgentSessionStatusSchema.nullable().optional(),
-  handoffReason: z.string().nullable().optional()
+  handoffReason: z.string().nullable().optional(),
+  handoffActionCompletedAt: z.string().datetime().nullable().optional()
 });
 export type ConversationDto = z.infer<typeof conversationSchema>;
 

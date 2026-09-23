@@ -196,12 +196,16 @@ export type ConversationActionBody =
   | { action: "create_crm_note" }
   | { action: "assume_ai_control" }
   | { action: "release_ai_control" }
+  | { action: "complete_handoff_action" }
+  | { action: "reopen_handoff_action" }
+  | { action: "reanalyze_handoff_reply" }
   | { action: "close_conversation" };
 
 export interface ConversationActionResultDto {
   conversation: ConversationDto;
   context: ContactContextDto;
   aiSuggestion?: string;
+  improvementAnalysis?: { created: boolean; reason?: string } | null;
   crmAction?: {
     id: string;
     status: string;
@@ -762,14 +766,17 @@ function parseConversationActionResult(data: unknown): ConversationActionResultD
     context?: unknown;
     aiSuggestion?: unknown;
     crmAction?: unknown;
+    improvementAnalysis?: unknown;
   };
   const crmAction = payload.crmAction as ConversationActionResultDto["crmAction"] | undefined;
+  const improvementAnalysis = payload.improvementAnalysis as ConversationActionResultDto["improvementAnalysis"];
 
   return {
     conversation: conversationSchema.parse(payload.conversation),
     context: parseContactContext(payload.context),
     ...(typeof payload.aiSuggestion === "string" ? { aiSuggestion: payload.aiSuggestion } : {}),
-    ...(crmAction ? { crmAction } : {})
+    ...(crmAction ? { crmAction } : {}),
+    ...(improvementAnalysis ? { improvementAnalysis } : {})
   };
 }
 

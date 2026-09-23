@@ -84,6 +84,13 @@ describe("loadHandoffBriefContext", () => {
     expect(noHandoff.db.aiAgent.findFirst).not.toHaveBeenCalled();
   });
 
+  it("does not rebuild a brief after the human completed the next action", async () => {
+    const { db, session } = fixture();
+    if (session) Object.assign(session, { handoffActionCompletedAt: now });
+    await expect(loadHandoffBriefContext(db as never, workspaceId, conversationId)).resolves.toBeNull();
+    expect(db.aiAgentRun.findFirst).not.toHaveBeenCalled();
+  });
+
   it("changes the context key when a newer correction changes the requested measure", async () => {
     const { db, messages } = fixture();
     const before = await loadHandoffBriefContext(db as never, workspaceId, conversationId);

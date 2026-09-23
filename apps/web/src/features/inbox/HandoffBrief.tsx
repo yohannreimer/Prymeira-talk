@@ -1,7 +1,7 @@
-import { ArrowRight, ClipboardList, ShieldAlert } from "lucide-react";
+import { ArrowRight, Check, ClipboardList, ShieldAlert } from "lucide-react";
 import type { HandoffBriefDto } from "../../../../../packages/shared/src/assistant";
 
-export function HandoffBrief({ brief }: { brief: HandoffBriefDto }) {
+export function HandoffBrief({ brief, busy, onComplete }: { brief: HandoffBriefDto; busy: boolean; onComplete: () => void }) {
   const hasContent = Boolean(brief.nextAction && brief.summary);
   return (
     <section className="handoff-brief" aria-label="Apoio para ação humana" aria-live="polite">
@@ -22,6 +22,10 @@ export function HandoffBrief({ brief }: { brief: HandoffBriefDto }) {
       </> : brief.status === "failed" ? <p className="handoff-brief-message" role="alert">{brief.error ?? "Apoio indisponível. Confira a conversa."}</p>
         : <p className="handoff-brief-message" role="status">Preparando próximo passo…</p>}
       {brief.status === "stale" && hasContent ? <p className="handoff-brief-footnote">Resumo anterior; confira as novas mensagens antes de agir.</p> : null}
+      <div className="handoff-brief-actions">
+        <button className="assistant-primary" type="button" disabled={busy} onClick={onComplete}><Check size={15} aria-hidden="true" /> {busy ? "Concluindo…" : "Marcar como concluído"}</button>
+        <p>Remove da lista Próxima ação. O atendimento continua com o humano.</p>
+      </div>
     </section>
   );
 }

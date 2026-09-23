@@ -69,6 +69,10 @@ describe("AI control helpers", () => {
         handoffReason: null
       })
     ).toBe(false);
+    expect(needsHumanAttention({
+      aiControlStatus: "human_controlled", activeAgentSessionStatus: "handoff_requested",
+      handoffReason: "Confirmar pedido", handoffActionCompletedAt: "2026-09-23T12:00:00.000Z"
+    })).toBe(false);
   });
 });
 
@@ -102,12 +106,16 @@ describe("human attention view", () => {
       aiControlStatus: "agent_allowed",
       activeAgentSessionStatus: "active"
     });
+    const completed = conversation("completed", {
+      activeAgentSessionStatus: "handoff_requested", aiControlStatus: "human_controlled",
+      handoffReason: "Confirmar pedido", handoffActionCompletedAt: "2026-09-23T12:00:00.000Z"
+    });
     const closed = conversation("closed", {
       status: "closed",
       aiControlStatus: "human_controlled",
       handoffReason: "Pedido encerrado"
     });
-    const all = [handoff, human, agent, closed];
+    const all = [handoff, human, agent, completed, closed];
 
     expect(filterConversationsNeedingHuman(all, false)).toBe(all);
     expect(filterConversationsNeedingHuman(all, true).map(({ id }) => id)).toEqual(["handoff", "human"]);

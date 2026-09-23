@@ -23,6 +23,7 @@ type AgentRecord = {
 type HandoffSessionRecord = {
   id: string;
   agentId: string;
+  lastRunAt?: DateLike | null;
 };
 
 type ConversationRecord = { activeAgentSessionId: string | null };
@@ -79,6 +80,9 @@ export interface AgentImprovementsPrismaLike {
   aiAgentSession: {
     findFirst(args: unknown): Promise<HandoffSessionRecord | null>;
   };
+  aiAgentRun: {
+    findFirst(args: unknown): Promise<{ createdAt: DateLike } | null>;
+  };
   message: {
     findFirst(args: unknown): Promise<MessageRecord | null>;
     findMany(args: unknown): Promise<MessageRecord[]>;
@@ -97,6 +101,10 @@ export interface AgentImprovementObserver {
     workspaceId: string;
     conversationId: string;
     messageId: string;
+  }): Promise<{ created: boolean; reason?: string }>;
+  observeLatestHumanReplyAfterHandoff(input: {
+    workspaceId: string;
+    conversationId: string;
   }): Promise<{ created: boolean; reason?: string }>;
 }
 
@@ -319,6 +327,10 @@ function isAiAgentMessage(message: MessageRecord) {
   );
 }
 
+function isExplicitCatalogRefusal(reply: string): boolean {
+  return /\b(?:n[aã]o\s+(?:trabalhamos|vendemos|comercializamos|fornecemos)|(?:trabalhamos|vendemos|comercializamos|fornecemos)\s+n[aã]o)\b/i.test(reply);
+}
+
 function recentCustomerRequest(messages: MessageRecord[]): string | null {
   const inbound = messages.filter((message) => message.direction === "inbound" && message.body?.trim()).slice(-6);
   const latest = inbound.at(-1);
@@ -428,10 +440,6 @@ export function createAgentImprovementsService(
       conversationId: string;
       messageId: string;
     }): Promise<{ created: boolean; reason?: string }> {
-      if (!options.detector) {
-        return { created: false, reason: "detector_unavailable" };
-      }
-
       const [existing, humanReply, conversation] = await Promise.all([
         prisma.aiAgentImprovement.findFirst({
           where: { workspaceId: input.workspaceId, sourceMessageId: input.messageId }
@@ -494,19 +502,29 @@ export function createAgentImprovementsService(
         return { created: false, reason: "no_customer_request" };
       }
 
-      const assessment = await options.detector.assess({
-        customerMessage,
-        humanReply: humanReply.body,
-        conversationMessages: chronological.map((message) => ({
-          label: messageLabel(message),
-          body: message.body,
-          createdAt: toIso(message.createdAt)
-        }))
-      });
-
-      if (assessment.outcome === "ignore") {
-        return { created: false, reason: assessment.reason };
+      const directRefusal = isExplicitCatalogRefusal(humanReply.body);
+      if (!options.detector && !directRefusal) return { created: false, reason: "detector_unavailable" };
+      let detected: AgentImprovementAssessment;
+      try {
+        detected = options.detector ? await options.detector.assess({
+          customerMessage,
+          humanReply: humanReply.body,
+          conversationMessages: chronological.map((message) => ({
+            label: messageLabel(message),
+            body: message.body,
+            createdAt: toIso(message.createdAt)
+          }))
+        }) : { outcome: "ignore", reason: "detector_unavailable" };
+      } catch (error) {
+        if (!directRefusal) throw error;
+        detected = { outcome: "ignore", reason: "detector_failed" };
       }
+      // A direct refusal is still only a proposal. Reviewers must define its
+      // exact catalog scope before it can become agent knowledge.
+      const assessment = detected.outcome === "ignore" && directRefusal
+        ? { outcome: "suggest" as const, kind: "not_sold" as const, confidence: 0.8 }
+        : detected;
+      if (assessment.outcome === "ignore") return { created: false, reason: assessment.reason };
 
       const proposal = buildProposal({
         kind: assessment.kind,
@@ -514,30 +532,79 @@ export function createAgentImprovementsService(
         humanReply: humanReply.body,
         assessment
       });
-      await prisma.aiAgentImprovement.create({
-        data: {
-          workspaceId: input.workspaceId,
-          agentId: session.agentId,
-          conversationId: input.conversationId,
-          sourceMessageId: input.messageId,
-          status: "pending",
-          kind: assessment.kind,
-          title: proposal.title,
-          content: proposal.content,
-          rationale: proposal.rationale,
-          sourceCustomerMessage: customerMessage,
-          sourceHumanReply: humanReply.body,
-          detector: {
-            provider: "jev",
-            confidence: assessment.confidence,
-            kind: assessment.kind
-          },
-          clarificationAnswers: {},
-          clarificationNormalization: {}
+      try {
+        await prisma.aiAgentImprovement.create({
+          data: {
+            workspaceId: input.workspaceId,
+            agentId: session.agentId,
+            conversationId: input.conversationId,
+            sourceMessageId: input.messageId,
+            status: "pending",
+            kind: assessment.kind,
+            title: proposal.title,
+            content: proposal.content,
+            rationale: proposal.rationale,
+            sourceCustomerMessage: customerMessage,
+            sourceHumanReply: humanReply.body,
+            detector: {
+              provider: detected.outcome === "ignore" ? "explicit_human_refusal" : "jev",
+              confidence: assessment.confidence,
+              kind: assessment.kind
+            },
+            clarificationAnswers: {},
+            clarificationNormalization: {}
+          }
+        });
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "P2002") {
+          return { created: false, reason: "already_observed" };
         }
-      });
+        throw error;
+      }
 
       return { created: true };
+    },
+
+    async observeLatestHumanReplyAfterHandoff(input: {
+      workspaceId: string;
+      conversationId: string;
+    }): Promise<{ created: boolean; reason?: string }> {
+      const conversation = await prisma.conversation.findFirst({
+        where: { workspaceId: input.workspaceId, id: input.conversationId },
+        select: { activeAgentSessionId: true }
+      });
+      if (!conversation?.activeAgentSessionId) return { created: false, reason: "no_agent_handoff" };
+      const session = await prisma.aiAgentSession.findFirst({
+        where: {
+          workspaceId: input.workspaceId,
+          id: conversation.activeAgentSessionId,
+          conversationId: input.conversationId,
+          status: { in: ["handoff_requested", "paused_by_human"] },
+          handoffReason: { not: null }
+        }
+      });
+      if (!session) return { created: false, reason: "no_agent_handoff" };
+      const run = await prisma.aiAgentRun.findFirst({
+        where: { workspaceId: input.workspaceId, sessionId: session.id, status: "handoff_requested" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { createdAt: true }
+      });
+      const since = run?.createdAt ?? session.lastRunAt;
+      if (!since) return { created: false, reason: "no_handoff_run" };
+      const replies = await prisma.message.findMany({
+        where: {
+          workspaceId: input.workspaceId,
+          conversationId: input.conversationId,
+          direction: "outbound",
+          type: "text",
+          createdAt: { gt: new Date(since) }
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 20
+      });
+      const latest = replies.find((message) => message.body?.trim() && !isAiAgentMessage(message));
+      if (!latest) return { created: false, reason: "no_human_reply_since_handoff" };
+      return this.observeHumanReply({ ...input, messageId: latest.id });
     },
 
     async listImprovements(input: {

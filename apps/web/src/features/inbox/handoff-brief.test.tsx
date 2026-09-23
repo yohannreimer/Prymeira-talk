@@ -11,7 +11,7 @@ const ready: HandoffBriefDto = {
 
 describe("private seller brief", () => {
   it("shows a concrete action and concise summary without repeated transcript blocks", () => {
-    const html = renderToStaticMarkup(<HandoffBrief brief={ready} />);
+    const html = renderToStaticMarkup(<HandoffBrief brief={ready} busy={false} onComplete={() => undefined} />);
     expect(html).toContain("Faça agora");
     expect(html).toContain("Resumo");
     expect(html).toContain("Verifique se trabalhamos");
@@ -20,10 +20,11 @@ describe("private seller brief", () => {
     expect(html).not.toContain("O que já foi dito");
     expect(html).not.toContain("Motivo do repasse");
     expect(html).not.toContain("Enviar resposta");
+    expect(html).toContain("Marcar como concluído");
   });
   it("shows honest pending, stale and failure states", () => {
-    expect(renderToStaticMarkup(<HandoffBrief brief={{ ...ready, status: "pending", nextAction: null, summary: null }} />)).toContain("Preparando próximo passo");
-    expect(renderToStaticMarkup(<HandoffBrief brief={{ ...ready, status: "stale" }} />)).toContain("Atualizando");
-    expect(renderToStaticMarkup(<HandoffBrief brief={{ ...ready, status: "failed", nextAction: null, summary: null, error: "Indisponível" }} />)).toContain("Indisponível");
+    expect(renderToStaticMarkup(<HandoffBrief brief={{ ...ready, status: "pending", nextAction: null, summary: null }} busy={false} onComplete={() => undefined} />)).toContain("Preparando próximo passo");
+    expect(renderToStaticMarkup(<HandoffBrief brief={{ ...ready, status: "stale" }} busy={false} onComplete={() => undefined} />)).toContain("Atualizando");
+    expect(renderToStaticMarkup(<HandoffBrief brief={{ ...ready, status: "failed", nextAction: null, summary: null, error: "Indisponível" }} busy={false} onComplete={() => undefined} />)).toContain("Indisponível");
   });
 });

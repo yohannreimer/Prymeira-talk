@@ -92,6 +92,9 @@ const conversationActionBodySchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("release_ai_control")
   }),
+  z.object({ action: z.literal("complete_handoff_action") }),
+  z.object({ action: z.literal("reopen_handoff_action") }),
+  z.object({ action: z.literal("reanalyze_handoff_reply") }),
   z.object({
     action: z.literal("close_conversation")
   })
@@ -358,6 +361,45 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       });
 
       return result;
+    }
+
+    if (body.data.action === "complete_handoff_action" || body.data.action === "reopen_handoff_action" || body.data.action === "reanalyze_handoff_reply") {
+      const action = body.data.action;
+      const conversation = await service.updateHandoffAction({
+        workspaceId: request.talk.workspaceId,
+        conversationId: params.data.conversationId,
+        completed: action === "reanalyze_handoff_reply" ? undefined : action === "complete_handoff_action"
+      }).catch((error: unknown) => {
+        if (error instanceof ConversationNotFoundError) return null;
+        if (error instanceof ConversationActionError) return error;
+        throw error;
+      });
+      if (!conversation) return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
+      if (conversation instanceof ConversationActionError) {
+        return reply.code(conversation.statusCode).send({ code: conversation.code, error: conversation.message });
+      }
+      const context = await service.getContactContext({
+        workspaceId: request.talk.workspaceId,
+        conversationId: params.data.conversationId
+      });
+      let improvementAnalysis: { created: boolean; reason?: string } | null = null;
+      if (action !== "reopen_handoff_action") {
+        try {
+          improvementAnalysis = await options.agentImprovements?.observeLatestHumanReplyAfterHandoff({
+            workspaceId: request.talk.workspaceId,
+            conversationId: params.data.conversationId
+          }) ?? { created: false, reason: "analysis_unavailable" };
+        } catch (error) {
+          request.log.error({ error, conversationId: params.data.conversationId }, "Failed to analyze human handoff reply");
+          improvementAnalysis = { created: false, reason: "analysis_failed" };
+        }
+      }
+      app.realtime.publish({
+        type: "conversation.updated",
+        workspaceId: request.talk.workspaceId,
+        payload: conversation
+      });
+      return { conversation, context, improvementAnalysis };
     }
 
     const result = await service.runConversationAction({

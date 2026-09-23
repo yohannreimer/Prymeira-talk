@@ -1067,6 +1067,7 @@ model AiAgentSession {
   messageCount   Int                  @default(0) @map("message_count")
   lastRunAt      DateTime?            @map("last_run_at")
   handoffReason  String?              @map("handoff_reason")
+  handoffActionCompletedAt DateTime?  @map("handoff_action_completed_at")
   metadata       Json                 @default("{}")
   createdAt      DateTime             @default(now()) @map("created_at")
   updatedAt      DateTime             @updatedAt @map("updated_at")

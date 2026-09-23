@@ -17,7 +17,7 @@ const humanReplyId = "00000000-0000-4000-8000-000000000301";
 const now = new Date("2026-09-22T14:00:00.000Z");
 
 const agent = { id: agentId, workspaceId };
-const handoffSession = { id: "session-1", agentId };
+const handoffSession = { id: "session-1", agentId, lastRunAt: new Date("2026-09-22T13:58:00.000Z") };
 const customerMessage = {
   id: "00000000-0000-4000-8000-000000000302",
   direction: "inbound" as const,
@@ -66,6 +66,7 @@ type MockPrisma = {
   conversation: { findFirst: ReturnType<typeof vi.fn> };
   aiAgent: { findFirst: ReturnType<typeof vi.fn> };
   aiAgentSession: { findFirst: ReturnType<typeof vi.fn> };
+  aiAgentRun: { findFirst: ReturnType<typeof vi.fn> };
   message: { findFirst: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
   aiAgentImprovement: {
     findFirst: ReturnType<typeof vi.fn>;
@@ -82,6 +83,7 @@ function buildPrisma(): MockPrisma & AgentImprovementsPrismaLike {
     conversation: { findFirst: vi.fn().mockResolvedValue({ activeAgentSessionId: handoffSession.id }) },
     aiAgent: { findFirst: vi.fn().mockResolvedValue(agent) },
     aiAgentSession: { findFirst: vi.fn().mockResolvedValue(handoffSession) },
+    aiAgentRun: { findFirst: vi.fn().mockResolvedValue({ createdAt: handoffSession.lastRunAt }) },
     message: {
       findFirst: vi.fn().mockResolvedValue(humanReply),
       findMany: vi.fn().mockResolvedValue([humanReply, customerMessage])
@@ -177,6 +179,7 @@ describe("createAgentImprovementsService", () => {
 
   it("does not create a suggestion for a response that JEV cannot classify as reusable", async () => {
     const prisma = buildPrisma();
+    prisma.message.findFirst.mockResolvedValue({ ...humanReply, body: "Vou consultar e retorno." });
     const service = createAgentImprovementsService(prisma, {
       detector: detector({ outcome: "ignore", reason: "not_a_durable_human_resolution" })
     });
@@ -187,6 +190,49 @@ describe("createAgentImprovementsService", () => {
     });
     expect(prisma.aiAgentImprovement.create).not.toHaveBeenCalled();
     expect(prisma.aiKnowledgeSource.create).not.toHaveBeenCalled();
+  });
+
+  it("recovers an old João-style reply when the reviewer completes the handoff", async () => {
+    const prisma = buildPrisma();
+    const reply = { ...humanReply, body: "Construção civil não trabalhamos" };
+    prisma.message.findMany.mockImplementation(async (args: { where?: { direction?: string } }) =>
+      args.where?.direction === "outbound" ? [reply] : [reply, customerMessage]
+    );
+    prisma.message.findFirst.mockResolvedValue(reply);
+    const service = createAgentImprovementsService(prisma, {
+      detector: detector({ outcome: "ignore", reason: "not_a_durable_human_resolution" })
+    });
+
+    await expect(service.observeLatestHumanReplyAfterHandoff({ workspaceId, conversationId })).resolves.toEqual({ created: true });
+    expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        sourceMessageId: reply.id,
+        status: "pending",
+        kind: "not_sold",
+        detector: expect.objectContaining({ provider: "explicit_human_refusal" })
+      })
+    }));
+  });
+
+  it("still proposes a direct refusal for review when the detector fails", async () => {
+    const prisma = buildPrisma();
+    const service = createAgentImprovementsService(prisma, {
+      detector: { assess: vi.fn().mockRejectedValue(new Error("JEV unavailable")) }
+    });
+    await expect(service.observeHumanReply({ workspaceId, conversationId, messageId: humanReplyId })).resolves.toEqual({ created: true });
+    expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "pending", detector: expect.objectContaining({ provider: "explicit_human_refusal" }) })
+    }));
+  });
+
+  it("does not claim an improvement when there is no human reply after handoff", async () => {
+    const prisma = buildPrisma();
+    prisma.message.findMany.mockResolvedValue([]);
+    const service = createAgentImprovementsService(prisma);
+    await expect(service.observeLatestHumanReplyAfterHandoff({ workspaceId, conversationId })).resolves.toEqual({
+      created: false, reason: "no_human_reply_since_handoff"
+    });
+    expect(prisma.aiAgentImprovement.create).not.toHaveBeenCalled();
   });
 
   it("never treats an automatic agent message as a human resolution", async () => {

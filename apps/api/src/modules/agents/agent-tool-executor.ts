@@ -475,7 +475,8 @@ async function requestHandoff(
         },
         data: {
           status: "handoff_requested",
-          handoffReason
+          handoffReason,
+          handoffActionCompletedAt: null
         }
       });
     }
