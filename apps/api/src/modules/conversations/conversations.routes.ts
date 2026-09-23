@@ -365,10 +365,17 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
 
     if (body.data.action === "complete_handoff_action" || body.data.action === "reopen_handoff_action" || body.data.action === "reanalyze_handoff_reply") {
       const action = body.data.action;
+      const actorUserId = action === "complete_handoff_action" ? await resolveCurrentUserProfileId({
+        prisma: app.prisma as unknown as PrismaLike,
+        workspaceId: request.talk.workspaceId,
+        clerkUserId: request.talk.clerkUserId,
+        authorizationHeader: request.headers.authorization
+      }) : null;
       const conversation = await service.updateHandoffAction({
         workspaceId: request.talk.workspaceId,
         conversationId: params.data.conversationId,
-        completed: action === "reanalyze_handoff_reply" ? undefined : action === "complete_handoff_action"
+        completed: action === "reanalyze_handoff_reply" ? undefined : action === "complete_handoff_action",
+        actorUserId
       }).catch((error: unknown) => {
         if (error instanceof ConversationNotFoundError) return null;
         if (error instanceof ConversationActionError) return error;
@@ -377,6 +384,9 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       if (!conversation) return reply.code(404).send({ code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
       if (conversation instanceof ConversationActionError) {
         return reply.code(conversation.statusCode).send({ code: conversation.code, error: conversation.message });
+      }
+      if (action === "complete_handoff_action") {
+        await options.assistantScheduler?.control(request.talk.workspaceId, params.data.conversationId, true);
       }
       const context = await service.getContactContext({
         workspaceId: request.talk.workspaceId,

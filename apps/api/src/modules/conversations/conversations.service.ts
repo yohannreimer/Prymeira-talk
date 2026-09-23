@@ -984,6 +984,7 @@ export function createConversationsService(
       workspaceId: string;
       conversationId: string;
       completed?: boolean;
+      actorUserId?: string | null;
     }): Promise<ConversationDto> {
       const updatedConversation = (await prisma.$transaction(async (tx) => {
         const current = await tx.conversation.findUnique({
@@ -1006,6 +1007,16 @@ export function createConversationsService(
           await tx.aiAgentSession.update({
             where: { workspaceId_id: { workspaceId: input.workspaceId, id: current.activeAgentSessionId } },
             data: { handoffActionCompletedAt: input.completed ? new Date() : null }
+          });
+        }
+        if (input.completed && current.aiControlStatus !== "human_controlled") {
+          await tx.conversation.update({
+            where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+            data: {
+              aiControlStatus: "human_controlled",
+              aiControlUpdatedAt: new Date(),
+              aiControlUpdatedById: input.actorUserId ?? null
+            }
           });
         }
         return tx.conversation.findUnique({

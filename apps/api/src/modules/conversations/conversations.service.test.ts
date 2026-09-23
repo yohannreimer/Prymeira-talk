@@ -692,11 +692,12 @@ describe("conversations service", () => {
 
   it("completes and reopens a handoff without releasing control to the agent", async () => {
     let completedAt: Date | null = null;
+    let aiControlStatus: "agent_allowed" | "human_controlled" = "agent_allowed";
     const handoffConversation = () => ({
       id: "conv_1", workspaceId: "workspace_a", channelId: "channel_1", contactId: "contact_1",
       status: "open" as const, assignedUserId: null, departmentId: null,
       lastMessageAt: new Date("2026-05-20T12:00:00.000Z"), lastMessagePreview: "Construção civil não trabalhamos",
-      unreadCount: 0, priority: "normal" as const, aiControlStatus: "human_controlled" as const,
+      unreadCount: 0, priority: "normal" as const, aiControlStatus,
       activeAgentSessionId: "session_1",
       activeAgentSession: { status: "handoff_requested" as const, handoffReason: "Confirmar catálogo", handoffActionCompletedAt: completedAt, agent: { name: "JEV" } },
       channel: { displayName: "WhatsApp", phoneNumber: null, provider: "evolution" },
@@ -709,6 +710,10 @@ describe("conversations service", () => {
       completedAt = args.data.handoffActionCompletedAt as Date | null;
       return {} as never;
     });
+    prisma.conversation.update.mockImplementation(async () => {
+      aiControlStatus = "human_controlled";
+      return handoffConversation() as never;
+    });
     const service = createConversationsService(prisma);
 
     const completed = await service.updateHandoffAction({ workspaceId: "workspace_a", conversationId: "conv_1", completed: true });
@@ -719,7 +724,10 @@ describe("conversations service", () => {
     const reopened = await service.updateHandoffAction({ workspaceId: "workspace_a", conversationId: "conv_1", completed: false });
     expect(reopened.handoffActionCompletedAt).toBeNull();
     expect(reopened.aiControlStatus).toBe("human_controlled");
-    expect(prisma.conversation.update).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+    }));
+    expect(prisma.conversation.update).toHaveBeenCalledTimes(1);
   });
 
   it("preflights outbound messages with the workspace conversation composite key", async () => {
@@ -1965,12 +1973,14 @@ describe("conversation routes", () => {
       return {} as never;
     });
     const publish = vi.fn();
+    const control = vi.fn().mockResolvedValue(undefined);
     const observeLatestHumanReplyAfterHandoff = vi.fn().mockResolvedValue({ created: true });
     const app = Fastify({ logger: false });
     app.decorate("prisma", prisma as never);
     app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
     app.addHook("preHandler", async (request) => { request.talk = { workspaceId: "workspace_a", role: "agent" }; });
     await app.register(conversationsRoutes, {
+      assistantScheduler: { control } as never,
       agentImprovements: { observeHumanReply: vi.fn(), observeLatestHumanReplyAfterHandoff }
     });
     try {
@@ -1987,6 +1997,7 @@ describe("conversation routes", () => {
         workspaceId: "workspace_a", conversationId: "00000000-0000-4000-8000-000000000001"
       });
       expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.updated" }));
+      expect(control).toHaveBeenCalledWith("workspace_a", "00000000-0000-4000-8000-000000000001", true);
     } finally {
       await app.close();
     }
