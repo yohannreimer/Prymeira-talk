@@ -918,6 +918,10 @@ export function createAgentRuntime(input: {
           safety.outcome !== "await_approval" &&
           isDocumentDependentQuestion(effectiveText, taxonomy) &&
           knowledgeSelection.selected.length === 0;
+        const approvedCatalogSelection =
+          !safetyOutput && !documentRequiresHuman && allowedActions.includes("send_attachment")
+            ? selectRequestedCatalog(effectiveText, approvedAttachments)
+            : null;
         let replyPreflight: AgentReplyPreflightResult | undefined;
 
         if (input.replyPreflight && !mediaFallback && (!safetyOutput || canReviewApprovedRefusal) && !documentRequiresHuman) {
@@ -951,7 +955,7 @@ export function createAgentRuntime(input: {
           contextSummary = { ...contextSummary, approvedNotSoldGuardOverride: safety.protectedFact };
         }
 
-        if (replyPreflight?.outcome === "silence") {
+        if (replyPreflight?.outcome === "silence" && !approvedCatalogSelection) {
           await prisma.aiAgentSession.update({
             where: {
               workspaceId_id: {
@@ -994,6 +998,18 @@ export function createAgentRuntime(input: {
           providerOutput = safetyOutput;
         } else if (documentRequiresHuman) {
           providerOutput = createDocumentRequiredHandoffOutput();
+        } else if (approvedCatalogSelection) {
+          providerOutput = {
+            confidence: 1,
+            reply: "Claro, segue o catálogo da Villefer.",
+            actions: [{
+              type: "send_attachment",
+              attachmentUrl: approvedCatalogSelection.url,
+              caption: "Catálogo Villefer"
+            }],
+            handoff: { required: false, reason: null }
+          };
+          contextSummary = { ...contextSummary, catalogSelection: "approved_attachment" };
         } else {
           providerOutput = await runProvider.generate({
             reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
@@ -1012,6 +1028,7 @@ export function createAgentRuntime(input: {
 
         if (
           replyPreflight?.outcome === "continue" &&
+          !approvedCatalogSelection &&
           input.replyPreflight?.audit &&
           providerOutput.reply &&
           requiresReplyQualityAudit(replyPreflight.plan)
@@ -1633,6 +1650,22 @@ function toApprovedAttachment(source: KnowledgeSourceRecord): ApprovedAttachment
       mimeType: source.mimeType?.trim() || null
     }
   ];
+}
+
+function selectRequestedCatalog(message: string, attachments: ApprovedAttachment[]) {
+  const request = message.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().trim();
+  if (!request || request.length > 120 || !/\bcatalogo\b/.test(request)) return null;
+  if (/\b(?:nao|nem|sem|dispenso)\b.{0,30}\bcatalogo\b|\bcatalogo\b.{0,20}\b(?:nao|dispenso)\b/.test(request)) return null;
+  if (/\b(?:preco|valor|estoque|prazo|frete|desconto|orcamento)\b/.test(request)) return null;
+  const explicitChoice = /\b(?:pode ser|pode mandar|pode enviar|manda|mande|mandar|envia|envie|enviar|receber|quero|queria|gostaria|prefiro|sim|tem)\b.{0,45}\bcatalogo\b/.test(request) ||
+    /^catalogo[.!?]*$/.test(request);
+  if (!explicitChoice) return null;
+  return attachments.find((attachment) =>
+    /\bcatalogo\b/.test(`${attachment.title} ${attachment.fileName ?? ""}`
+      .normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase()) &&
+    attachment.url.startsWith("https://") &&
+    (attachment.mimeType === "application/pdf" || attachment.fileName?.toLowerCase().endsWith(".pdf"))
+  ) ?? null;
 }
 
 function toPendingAttachment(result: AgentToolExecutionResult): PendingAttachment[] {

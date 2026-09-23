@@ -124,6 +124,33 @@ describe("prepareInboundMedia", () => {
     expect(body.max_tokens).toBeUndefined();
   });
 
+  it("keeps a useful object description when incidental photo text is unreadable", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
+      complete: false, pages: [{ page: 1, text: "Caixa retangular preta sobre um pedestal; a frente mostra ENCOMENDAS. Outros textos pequenos: [ilegível]." }]
+    }) } }] })));
+    const text = await extractInboundVisualText({ settings, mode: "image", images: ["data:image/jpeg;base64,aW1hZ2U="], fetchImpl });
+    expect(text).toContain("Caixa retangular preta");
+    expect(text).toContain("Descrição visual parcial");
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).messages[0].content).toContain("objeto principal");
+  });
+
+  it("passes an image description to the agent as processed media", async () => {
+    const visionExtract = vi.fn().mockResolvedValue("Descrição visual parcial; confirme detalhes ilegíveis. Caixa retangular preta sobre pedestal com ENCOMENDAS na frente.");
+    const result = await prepareInboundMedia({
+      attachment: { fileName: "caixa.jpg", mimeType: "image/jpeg", base64Content: Buffer.from("imagem").toString("base64") },
+      settings, visionExtract
+    });
+    expect(result).toMatchObject({ status: "processed", kind: "image", extractedText: expect.stringContaining("Caixa retangular preta") });
+    expect(visionExtract).toHaveBeenCalledWith(expect.objectContaining({ mode: "image" }));
+  });
+
+  it("still hands off when a photo has no useful visual description", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
+      complete: false, pages: [{ page: 1, text: "[ilegível]" }]
+    }) } }] })));
+    await expect(extractInboundVisualText({ settings, mode: "image", images: ["data:image/jpeg;base64,aW1hZ2U="], fetchImpl })).rejects.toMatchObject({ code: "MEDIA_UNREADABLE" });
+  });
+
   it.each([
     { complete: false, pages: [{ page: 1, text: "ilegível" }] },
     { complete: true, pages: [{ page: 2, text: "page mismatch" }] },

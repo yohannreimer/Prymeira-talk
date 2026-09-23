@@ -1946,6 +1946,62 @@ it("continues after a material answer without requiring a document for its own p
     );
   });
 
+  it("sends the approved catalog when the customer accepts the catalog offer", async () => {
+    const current = { ...baseMessage, body: "Pode ser ó catálogo" };
+    const prisma = buildPrisma({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, allowedActions: ["send_message", "send_attachment", "request_handoff"] }) },
+      message: {
+        findFirst: vi.fn().mockResolvedValue(current),
+        findMany: vi.fn().mockResolvedValue([
+          { ...baseMessage, id: "previous_customer", body: "Perfil U galvanizado sob encomenda", createdAt: new Date(now.getTime() - 120_000) },
+          { ...baseMessage, id: "previous_offer", direction: "outbound", body: "Prefere ver o catálogo com os itens ou falar com um vendedor?", createdAt: new Date(now.getTime() - 60_000) },
+          current
+        ]),
+        count: vi.fn().mockResolvedValue(2),
+        update: vi.fn(), create: vi.fn().mockResolvedValue({ id: "outbound_1", workspaceId: ids.workspace, conversationId: ids.conversation })
+      },
+      aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([{
+        id: "approved_catalog", title: "Catálogo Villefer em PDF — envio aprovado",
+        content: "Arquivo aprovado para envio quando o cliente escolher ver o catálogo.",
+        fileUrl: "https://villefer.com.br/site/uploads/2024/07/catalogo-villefer.pdf",
+        fileName: "catalogo-villefer.pdf", mimeType: "application/pdf", status: "ready"
+      }]) }
+    });
+    const provider = buildProvider({ confidence: 0.9, reply: "Confirme se quer catálogo ou vendedor.", actions: [{ type: "request_handoff", reason: "unclear" }], handoff: { required: true, reason: "unclear" } });
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-out-1" });
+    const sendMedia = vi.fn().mockResolvedValue({ providerMessageId: "evo-media-1" });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({ outcome: "continue", plan: { conversationStage: "qualification", commercialPath: "made_to_order", nextAction: "handoff" } }),
+      audit: vi.fn().mockResolvedValue({ outcome: "handoff", reason: "plan_mismatch" })
+    };
+    const result = await createAgentRuntime({ prisma, provider, replyPreflight, evolution: { mode: "real", client: { sendText, sendMedia } } }).runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation"
+    });
+    expect(result.status).toBe("completed");
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(replyPreflight.audit).not.toHaveBeenCalled();
+    expect(sendMedia).toHaveBeenCalledWith(expect.objectContaining({
+      media: "https://villefer.com.br/site/uploads/2024/07/catalogo-villefer.pdf",
+      mediatype: "document", mimetype: "application/pdf"
+    }));
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      contextSummary: expect.objectContaining({ catalogSelection: "approved_attachment" })
+    }) }));
+  });
+
+  it("does not treat a refusal of the catalog as consent to send it", async () => {
+    const current = { ...baseMessage, body: "Não quero catálogo, prefiro vendedor" };
+    const prisma = buildPrisma({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, allowedActions: ["send_message", "send_attachment", "request_handoff"] }) },
+      message: { findFirst: vi.fn().mockResolvedValue(current), findMany: vi.fn().mockResolvedValue([current]), count: vi.fn().mockResolvedValue(0), update: vi.fn(), create: vi.fn() },
+      aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([{ id: "catalog", title: "Catálogo Villefer", content: "Catálogo aprovado.", fileUrl: "https://villefer.com.br/site/uploads/2024/07/catalogo-villefer.pdf", fileName: "catalogo-villefer.pdf", mimeType: "application/pdf", status: "ready" }]) }
+    });
+    const provider = buildProvider({ confidence: 0.9, reply: "Vou chamar um vendedor.", actions: [{ type: "request_handoff", reason: "seller_requested" }], handoff: { required: true, reason: "seller_requested" } });
+    const sendMedia = vi.fn();
+    await createAgentRuntime({ prisma, provider, evolution: { mode: "real", client: { sendText: vi.fn(), sendMedia } } }).runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+    expect(sendMedia).not.toHaveBeenCalled();
+  });
+
   it("does not send attachments that are not approved in knowledge", async () => {
     const prisma = buildPrisma({
       aiAgent: {
