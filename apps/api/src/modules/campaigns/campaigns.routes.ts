@@ -6,12 +6,16 @@ import type { PrismaLike } from "./campaigns.service.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { resolveMetaRuntime } from "../meta/meta-runtime.js";
 import { previewCampaignAudience } from "./campaign-audience-preview.js";
+import { CampaignActivationError, createCampaignActivationService } from "./campaign-activation.service.js";
+import { CampaignControlError, createCampaignControlsService } from "./campaign-controls.service.js";
+import { nextCampaignInstant, DEFAULT_CAMPAIGN_CADENCE } from "./campaign-cadence.js";
 
 const uuidParamSchema = z.string().uuid();
 
 const campaignParamsSchema = z.object({
   campaignId: uuidParamSchema
 });
+const campaignRecipientParamsSchema = campaignParamsSchema.extend({ recipientId: uuidParamSchema });
 
 const audienceSchema = z
   .discriminatedUnion("type", [
@@ -49,13 +53,11 @@ const createCampaignBodySchema = z.object({
   templates: z.array(z.string().trim().min(1).max(2000)).min(1).max(6).optional(),
   fallbackName: z.string().trim().min(1).max(80).optional(),
   cadence: cadenceSchema.optional(),
-  scheduledAt: z.string().datetime().nullable().optional()
+  scheduledAt: z.string().datetime().nullable().optional(),
+  timeZone: z.string().min(1).max(100).optional()
 });
 
 const updateCampaignBodySchema = createCampaignBodySchema
-  .extend({
-    status: z.enum(["draft", "scheduled", "sending", "completed", "failed"]).optional()
-  })
   .partial()
   .refine((body) => Object.keys(body).length > 0, "At least one campaign field is required.");
 
@@ -118,8 +120,10 @@ function handleCampaignsError(reply: FastifyReply, error: unknown) {
                 ? 409
                 : error.code === "CAMPAIGN_TEMPLATE_NOT_FOUND"
                   ? 404
-                  : error.code === "CAMPAIGN_TEMPLATE_COMPONENT_INVALID"
+              : error.code === "CAMPAIGN_TEMPLATE_COMPONENT_INVALID"
                     ? 400
+                    : error.code === "CAMPAIGN_NOT_DRAFT"
+                      ? 409
               : 404;
 
     return reply.code(statusCode).send({ code: error.code, error: error.message });
@@ -158,6 +162,41 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
   const service = createCampaignsService(app.prisma as unknown as PrismaLike, {
     evolution: options.evolution
   });
+  const activation = createCampaignActivationService(app.prisma);
+  const controls = createCampaignControlsService(app.prisma);
+
+  async function verifiedPreview(workspaceId: string, campaignId: string, channelId: string,
+    schedule?: { startMode: "now" | "scheduled"; scheduledAt?: string | null; timeZone: string }) {
+    if (options.evolution?.mode !== "real" || !options.evolution.client?.checkWhatsappNumbersAvailability) {
+      throw new CampaignsServiceError("CAMPAIGN_EVOLUTION_NOT_CONFIGURED",
+        "A verificação de WhatsApp não está disponível agora.");
+    }
+    const channel = await app.prisma.channel.findFirst({
+      where: { id: channelId, workspaceId, provider: "evolution", status: "connected" },
+      select: { providerKey: true }
+    });
+    if (!channel) throw new CampaignsServiceError("CAMPAIGN_CHANNEL_NOT_FOUND",
+      "Canal Evolution conectado não encontrado.");
+    const campaign = await service.getCampaign({ workspaceId, campaignId });
+    const contacts = await service.resolveAudience({ workspaceId, campaignId });
+    const preview = await previewCampaignAudience({ campaign, channelId, contacts,
+      verify: async (numbers) => (await options.evolution!.client!.checkWhatsappNumbersAvailability!({
+        instanceName: channel.providerKey, numbers
+      })).numbers });
+    if (!schedule) return preview;
+    const start = schedule.startMode === "scheduled" ? new Date(schedule.scheduledAt ?? "") : new Date();
+    if (!Number.isFinite(start.getTime())) throw new CampaignsServiceError("CAMPAIGN_AUDIENCE_INVALID",
+      "Escolha uma data e hora válidas.");
+    let effectiveStartAt: string;
+    try {
+      effectiveStartAt = nextCampaignInstant(start, 0, schedule.timeZone,
+        { ...DEFAULT_CAMPAIGN_CADENCE, ...campaign.cadence }).toISOString();
+    } catch {
+      throw new CampaignsServiceError("CAMPAIGN_AUDIENCE_INVALID",
+        "O fuso ou a janela de envio não é válido.");
+    }
+    return { ...preview, effectiveStartAt };
+  }
 
   app.get("/campaigns", async (request) =>
     service.listCampaigns({ workspaceId: request.talk.workspaceId })
@@ -243,32 +282,113 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
   app.post("/campaigns/:campaignId/preview-audience", async (request, reply) => {
     if (!requireCampaignManage(request.talk.role, reply)) return reply;
     const params = campaignParamsSchema.safeParse(request.params);
-    const body = z.object({ channelId: uuidParamSchema }).safeParse(request.body);
+    const body = z.object({ channelId: uuidParamSchema,
+      startMode: z.enum(["now", "scheduled"]).optional(),
+      scheduledAt: z.string().datetime().nullable().optional(),
+      timeZone: z.string().min(1).max(100).optional()
+    }).safeParse(request.body);
     if (!params.success || !body.success) {
       return reply.code(400).send({ error: "Escolha um canal de envio válido." });
     }
-    if (options.evolution?.mode !== "real" || !options.evolution.client?.checkWhatsappNumbersAvailability) {
-      return reply.code(409).send({ code: "CAMPAIGN_VERIFICATION_UNAVAILABLE",
-        error: "A verificação de WhatsApp não está disponível agora." });
-    }
-    const channel = await app.prisma.channel.findFirst({
-      where: { id: body.data.channelId, workspaceId: request.talk.workspaceId,
-        provider: "evolution", status: "connected" },
-      select: { providerKey: true }
-    });
-    if (!channel) return reply.code(404).send({ code: "CAMPAIGN_CHANNEL_NOT_FOUND",
-      error: "Canal Evolution conectado não encontrado." });
     try {
-      const campaign = await service.getCampaign({ workspaceId: request.talk.workspaceId,
-        campaignId: params.data.campaignId });
-      const contacts = await service.resolveAudience({ workspaceId: request.talk.workspaceId,
-        campaignId: params.data.campaignId });
-      return await previewCampaignAudience({ campaign, channelId: body.data.channelId, contacts,
-        verify: async (numbers) => (await options.evolution!.client!.checkWhatsappNumbersAvailability!({
-          instanceName: channel.providerKey, numbers
-        })).numbers });
+      return await verifiedPreview(request.talk.workspaceId, params.data.campaignId,
+        body.data.channelId, body.data.startMode && body.data.timeZone ? {
+          startMode: body.data.startMode, scheduledAt: body.data.scheduledAt,
+          timeZone: body.data.timeZone
+        } : undefined);
     } catch (error) {
       return handleCampaignsError(reply, error);
+    }
+  });
+
+  app.post("/campaigns/:campaignId/activate", async (request, reply) => {
+    if (!requireCampaignManage(request.talk.role, reply)) return reply;
+    const params = campaignParamsSchema.safeParse(request.params);
+    const body = z.object({
+      idempotencyKey: uuidParamSchema, channelId: uuidParamSchema,
+      startMode: z.enum(["now", "scheduled"]),
+      scheduledAt: z.string().datetime().nullable(),
+      timeZone: z.string().min(1).max(100),
+      confirmation: z.literal(true),
+      expectedAudienceHash: z.string().regex(/^[a-f0-9]{64}$/)
+    }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({
+      error: "Revise os destinatários, a mensagem e o horário antes de confirmar." });
+    try {
+      const previous = await app.prisma.campaign.findFirst({ where: {
+        id: params.data.campaignId, workspaceId: request.talk.workspaceId,
+        activationKey: body.data.idempotencyKey
+      }, select: { id: true, status: true, scheduledAt: true } });
+      if (previous) return { campaignId: previous.id, status: previous.status,
+        recipientsQueued: await app.prisma.campaignRecipient.count({ where: {
+          workspaceId: request.talk.workspaceId, campaignId: previous.id,
+          status: { not: "queued_simulated" } } }),
+        scheduledAt: previous.scheduledAt?.toISOString() ?? null };
+      const preview = await verifiedPreview(request.talk.workspaceId, params.data.campaignId,
+        body.data.channelId);
+      const activated = await activation.activate({ ...body.data, preview,
+        campaignId: params.data.campaignId,
+        workspaceId: request.talk.workspaceId,
+        actorId: request.talk.clerkUserId ?? request.talk.workspaceId });
+      return { campaignId: activated.id, status: activated.status,
+        recipientsQueued: preview.eligible.length, scheduledAt: activated.scheduledAt?.toISOString() ?? null };
+    } catch (error) {
+      if (error instanceof CampaignActivationError) return reply.code(
+        error.code === "CAMPAIGN_NOT_FOUND" ? 404 : 409).send({ code: error.code,
+          error: error.message });
+      return handleCampaignsError(reply, error);
+    }
+  });
+
+  app.get("/campaigns/:campaignId/progress", async (request, reply) => {
+    const params = campaignParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: "Campanha inválida." });
+    try {
+      return await controls.progress(request.talk.workspaceId, params.data.campaignId);
+    } catch (error) {
+      if (error instanceof CampaignControlError) return reply.code(404).send({
+        code: error.code, error: error.message });
+      throw error;
+    }
+  });
+
+  for (const [path, action] of [
+    ["pause", controls.pause.bind(controls)],
+    ["resume", controls.resume.bind(controls)],
+    ["cancel-remaining", controls.cancelRemaining.bind(controls)]
+  ] as const) {
+    app.post(`/campaigns/:campaignId/${path}`, async (request, reply) => {
+      if (!requireCampaignManage(request.talk.role, reply)) return reply;
+      const params = campaignParamsSchema.safeParse(request.params);
+      if (!params.success) return reply.code(400).send({ error: "Campanha inválida." });
+      try {
+        return await action(request.talk.workspaceId, params.data.campaignId);
+      } catch (error) {
+        if (error instanceof CampaignControlError) return reply.code(
+          error.code === "CAMPAIGN_NOT_FOUND" ? 404 : 409).send({
+            code: error.code, error: error.message });
+        throw error;
+      }
+    });
+  }
+
+  app.post("/campaigns/:campaignId/recipients/:recipientId/resolve-uncertain", async (request, reply) => {
+    if (!requireCampaignManage(request.talk.role, reply)) return reply;
+    const params = campaignRecipientParamsSchema.safeParse(request.params);
+    const body = z.object({ outcome: z.enum(["sent", "not_sent"]),
+      confirmation: z.literal(true) }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({
+      error: "Confirme o resultado depois de verificar a conversa no WhatsApp." });
+    try {
+      return await controls.resolveUncertain({ workspaceId: request.talk.workspaceId,
+        campaignId: params.data.campaignId, recipientId: params.data.recipientId,
+        actorId: request.talk.clerkUserId ?? request.talk.workspaceId,
+        outcome: body.data.outcome });
+    } catch (error) {
+      if (error instanceof CampaignControlError) return reply.code(
+        error.code === "CAMPAIGN_NOT_FOUND" ? 404 : 409).send({
+          code: error.code, error: error.message });
+      throw error;
     }
   });
 
@@ -317,27 +437,8 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
       return reply.code(400).send({ error: "Invalid campaign request." });
     }
 
-    try {
-      const result = await service.sendReal({
-        workspaceId: request.talk.workspaceId,
-        campaignId: params.data.campaignId,
-        channelIds: body.data?.channelIds
-      });
-      const campaign = await service.getCampaign({
-        workspaceId: request.talk.workspaceId,
-        campaignId: params.data.campaignId
-      });
-
-      app.realtime.publish({
-        type: "campaign.updated",
-        workspaceId: request.talk.workspaceId,
-        payload: campaign
-      });
-
-      return result;
-    } catch (error) {
-      return handleCampaignsError(reply, error);
-    }
+    return reply.code(409).send({ code: "CAMPAIGN_REVIEW_REQUIRED",
+      error: "Revise os destinatários e a mensagem antes de ativar o envio." });
   });
 
   app.post("/campaigns/:campaignId/send-meta-template", async (request, reply) => {

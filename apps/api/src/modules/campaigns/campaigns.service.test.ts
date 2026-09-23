@@ -1405,7 +1405,7 @@ describe("campaigns service", () => {
     expect(prisma.contactBoardMembership.findMany).not.toHaveBeenCalled();
   });
 
-  it("derives scheduled status when updating a campaign schedule without explicit status", async () => {
+  it("keeps a saved future schedule as a draft until explicit activation", async () => {
     const prisma = createMockPrisma();
     const service = createCampaignsService(prisma);
 
@@ -1421,13 +1421,13 @@ describe("campaigns service", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           scheduledAt: new Date("2026-05-22T12:00:00.000Z"),
-          status: "scheduled"
+          status: "draft"
         })
       })
     );
   });
 
-  it("keeps completed campaign status when editing an empty schedule without explicit status", async () => {
+  it("rejects edits to a completed campaign", async () => {
     const prisma = createMockPrisma({
       campaign: {
         findMany: vi.fn(),
@@ -1438,26 +1438,18 @@ describe("campaigns service", () => {
     });
     const service = createCampaignsService(prisma);
 
-    await service.updateCampaign({
+    await expect(service.updateCampaign({
       workspaceId: "workspace_a",
       campaignId,
       data: {
         name: "Reativação editada",
         scheduledAt: null
       }
-    });
-
-    expect(prisma.campaign.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          scheduledAt: null,
-          status: "completed"
-        })
-      })
-    );
+    })).rejects.toMatchObject({ code: "CAMPAIGN_NOT_DRAFT" });
+    expect(prisma.campaign.update).not.toHaveBeenCalled();
   });
 
-  it("returns scheduled campaigns to draft when clearing schedule without explicit status", async () => {
+  it("rejects direct edits to an already scheduled campaign", async () => {
     const prisma = createMockPrisma({
       campaign: {
         findMany: vi.fn(),
@@ -1468,26 +1460,27 @@ describe("campaigns service", () => {
     });
     const service = createCampaignsService(prisma);
 
-    await service.updateCampaign({
+    await expect(service.updateCampaign({
       workspaceId: "workspace_a",
       campaignId,
       data: {
         scheduledAt: null
       }
-    });
-
-    expect(prisma.campaign.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          scheduledAt: null,
-          status: "draft"
-        })
-      })
-    );
+    })).rejects.toMatchObject({ code: "CAMPAIGN_NOT_DRAFT" });
+    expect(prisma.campaign.update).not.toHaveBeenCalled();
   });
 });
 
 describe("campaigns routes", () => {
+  it("rejects the legacy real-send shortcut without contacting Evolution", async () => {
+    const { app } = await buildCampaignsApp();
+    try {
+      const response = await app.inject({ method: "POST",
+        url: `/campaigns/${campaignId}/send-real`, payload: {} });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ code: "CAMPAIGN_REVIEW_REQUIRED" });
+    } finally { await app.close(); }
+  });
   it("sends a simulated campaign from POST /campaigns/:campaignId/send-simulated", async () => {
     const prisma = createMockPrisma({
       campaign: {

@@ -34,6 +34,7 @@ import { createHandoffBriefService } from './modules/assistant/handoff-brief-ser
 import { createBoardRulesService, type BoardRulesPrismaLike } from "./modules/boards/board-rules.service.js";
 import { boardsRoutes } from "./modules/boards/boards.routes.js";
 import { campaignsRoutes } from "./modules/campaigns/campaigns.routes.js";
+import { createCampaignWorker } from "./modules/campaigns/campaign-worker.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
 import { contactsRoutes } from "./modules/contacts/contacts.routes.js";
 import {
@@ -392,6 +393,14 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(channelsRoutes, { evolution: evolutionRuntime });
   await app.register(automationsRoutes, { agentRuntime, evolution: evolutionRuntime });
   await app.register(campaignsRoutes, { evolution: evolutionRuntime });
+  if (options.prismaEnabled !== false && evolutionRuntime.mode === "real" &&
+      evolutionRuntime.client?.checkWhatsappNumbersAvailability) {
+    const campaignWorker = createCampaignWorker({ prisma: app.prisma,
+      evolution: evolutionRuntime.client,
+      onError: (error) => app.log.error({ err: error }, "Campaign worker failed; queue remains persisted.") });
+    campaignWorker.start();
+    app.addHook("onClose", async () => { await campaignWorker.stop(); });
+  }
   await app.register(reportsRoutes);
   await app.register(teamRoutes);
   await app.register(tagsRoutes);

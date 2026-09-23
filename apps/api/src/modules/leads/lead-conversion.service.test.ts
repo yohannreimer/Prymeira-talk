@@ -452,6 +452,8 @@ describe("lead conversion", () => {
     const result = await service.createCampaignDraftFromLeads({
       workspaceId: "workspace-a",
       selectedLeadIds: [ids.lead1, ids.lead2],
+      originalSelectedLeadIds: [ids.lead1, ids.lead2],
+      listId: ids.list1,
       name: "Prospecção setembro"
     });
 
@@ -460,7 +462,10 @@ describe("lead conversion", () => {
       data: expect.objectContaining({
         status: "draft",
         messageBody: "Corpo comum",
-        audience: expect.objectContaining({ type: "imported", rows: [expect.objectContaining({ phone: "551199990000" })] })
+        audience: expect.objectContaining({ type: "imported", origin: "leads",
+          selectedCount: 2, listId: ids.list1,
+          exclusions: { notImported: 0, duplicateOrInvalidPhone: 1 },
+          rows: [expect.objectContaining({ phone: "551199990000" })] })
       })
     }));
     expect((tx as Record<string, unknown>).campaignRecipient).toBeUndefined();

@@ -105,6 +105,7 @@ const campaignSchema = z.object({
   audience: z.unknown(),
   messageBody: z.string().min(1),
   scheduledAt: z.string().datetime().nullable(),
+  timeZone: z.string().optional(),
   mode: integrationModeSchema,
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()

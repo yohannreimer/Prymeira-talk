@@ -34,4 +34,31 @@ describe("campaign audience preview", () => {
     expect(result.excluded[0]?.reason).toBe("duplicate");
     expect(result.audienceHash).toMatch(/^[a-f0-9]{64}$/);
   });
+
+  it("checks the alternate Brazilian form before excluding a phone", async () => {
+    const checked: string[][] = [];
+    const result = await previewCampaignAudience({
+      campaign: { id: "campaign-2", updatedAt: "2026-09-22T12:00:00Z",
+        audience: {}, messageBody: "Olá" }, channelId: "channel-1",
+      contacts: [{ audienceKey: "a", contactId: null, name: null,
+        phone: "5547999999999", fields: {} }],
+      verify: async (numbers) => { checked.push(numbers); return numbers.map((phone) => ({
+        phone, available: phone.length === 12
+      })); }
+    });
+    expect(checked).toHaveLength(2);
+    expect(result.eligible).toHaveLength(1);
+    expect(result.excluded).toHaveLength(0);
+  });
+
+  it("counts the current board audience without calling it an old imported selection", async () => {
+    const result = await previewCampaignAudience({
+      campaign: { id: "campaign-board", updatedAt: "2026-09-22T12:00:00Z",
+        audience: { type: "board" }, messageBody: "Olá" }, channelId: "channel-1",
+      contacts: [{ audienceKey: "a", contactId: "contact-a", name: null,
+        phone: "5547999999999", fields: {} }],
+      verify: async (numbers) => numbers.map((phone) => ({ phone, available: true }))
+    });
+    expect(result.selectedCount).toBe(1);
+  });
 });

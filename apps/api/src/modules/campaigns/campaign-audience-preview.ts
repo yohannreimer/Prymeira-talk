@@ -34,6 +34,7 @@ export type AudiencePreview = {
   checkedAt: string;
   audienceHash: string;
   revision: string;
+  unresolvedVariables: string[];
 };
 
 export async function previewCampaignAudience(input: {
@@ -64,29 +65,38 @@ export async function previewCampaignAudience(input: {
   }
 
   const entries = [...grouped.values()];
-  let availability: Availability[] = [];
-  let verificationFailed = false;
-  try {
-    // Evolution checks the current phone each time; old lead-verification snapshots are not authority.
-    for (let index = 0; index < entries.length; index += 100) {
-      const batch = entries.slice(index, index + 100);
-      availability.push(...await input.verify(batch.map(({ candidate }) => candidate!.primary)));
+  const byPhone = new Map<string, Availability>();
+  const failedKeys = new Set<string>();
+  const record = (results: Availability[]) => {
+    for (const item of results) {
+      const candidate = whatsappPhoneCandidates(item.phone);
+      if (!candidate) continue;
+      const previous = byPhone.get(candidate.key);
+      if (!previous?.available || item.available) byPhone.set(candidate.key, item);
     }
-  } catch {
-    verificationFailed = true;
+  };
+  // Evolution checks the current phone each time; old lead-verification snapshots are not authority.
+  for (let index = 0; index < entries.length; index += 100) {
+    const batch = entries.slice(index, index + 100);
+    try { record(await input.verify(batch.map(({ candidate }) => candidate!.primary))); }
+    catch { batch.forEach(({ candidate }) => failedKeys.add(candidate!.key)); }
   }
-  const byPhone = new Map(availability.flatMap((item) => {
-    const candidate = whatsappPhoneCandidates(item.phone);
-    return candidate ? [[candidate.key, item] as const] : [];
-  }));
+  const alternates = entries.filter(({ candidate }) => candidate!.alternate &&
+    !byPhone.get(candidate!.key)?.available && !failedKeys.has(candidate!.key));
+  for (let index = 0; index < alternates.length; index += 100) {
+    const batch = alternates.slice(index, index + 100);
+    try { record(await input.verify(batch.map(({ candidate }) => candidate!.alternate!))); }
+    catch { batch.forEach(({ candidate }) => failedKeys.add(candidate!.key)); }
+  }
   const eligible: AudiencePreview["eligible"] = [];
+  const unresolvedVariables = new Set<string>();
   const templates = Array.isArray(input.campaign.templates)
     ? input.campaign.templates.filter((value): value is string => typeof value === "string" && !!value.trim())
     : [];
   const fallback = input.campaign.fallbackName?.trim() || "cliente";
   for (const [index, { candidate, contact }] of entries.entries()) {
     const found = byPhone.get(candidate!.key);
-    const reason = verificationFailed ? "verification_error" : !found ? "verification_error" :
+    const reason = failedKeys.has(candidate!.key) || !found ? "verification_error" :
       classifyRecipient({ phone: contact.phone, verification: {
         phone: found.phone, status: found.available ? "available" : "unavailable"
       } });
@@ -98,16 +108,21 @@ export async function previewCampaignAudience(input: {
     const name = contact.name?.trim() || fallback;
     const values: Record<string, string> = { ...contact.fields, name, nome: name,
       phone: contact.phone, telefone: contact.phone };
+    for (const match of template.matchAll(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g)) {
+      if (!values[match[1]!]?.trim()) unresolvedVariables.add(match[1]!);
+    }
     const message = template.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g,
       (_, key: string) => values[key] ?? "");
     eligible.push({ ...contact, normalizedPhone: candidate!.primary, message });
   }
 
   const audience = input.campaign.audience;
+  const isBoard = typeof audience === "object" && audience !== null &&
+    "type" in audience && (audience as { type?: unknown }).type === "board";
   const storedCount = typeof audience === "object" && audience !== null &&
     "selectedCount" in audience ? (audience as { selectedCount?: unknown }).selectedCount : null;
   const selectedCount = typeof storedCount === "number" && Number.isInteger(storedCount) &&
-    storedCount >= input.contacts.length ? storedCount : null;
+    storedCount >= input.contacts.length ? storedCount : isBoard ? input.contacts.length : null;
   const revision = new Date(input.campaign.updatedAt).toISOString();
   const audienceHash = createHash("sha256").update(JSON.stringify({
     campaignId: input.campaign.id,
@@ -116,5 +131,5 @@ export async function previewCampaignAudience(input: {
     eligible: eligible.map((item) => [item.normalizedPhone, item.message]).sort((a, b) => a[0]!.localeCompare(b[0]!))
   })).digest("hex");
   return { selectedCount, eligible, excluded, checkedAt: (input.now?.() ?? new Date()).toISOString(),
-    audienceHash, revision };
+    audienceHash, revision, unresolvedVariables: [...unresolvedVariables].sort() };
 }

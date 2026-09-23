@@ -21,6 +21,8 @@ interface CampaignRecord {
   fallbackName?: string;
   cadence?: Prisma.JsonValue;
   scheduledAt: DateLike | null;
+  timeZone?: string;
+  activationKey?: string | null;
   mode: IntegrationMode;
   createdAt: DateLike;
   updatedAt: DateLike;
@@ -149,6 +151,7 @@ export interface CampaignDto {
   fallbackName: string;
   cadence: CampaignCadenceDto;
   scheduledAt: string | null;
+  timeZone: string;
   mode: IntegrationMode;
   createdAt: string;
   updatedAt: string;
@@ -222,7 +225,8 @@ export class CampaignsServiceError extends Error {
       | "CAMPAIGN_EVOLUTION_NOT_CONFIGURED"
       | "CAMPAIGN_META_NOT_CONFIGURED"
       | "CAMPAIGN_TEMPLATE_NOT_FOUND"
-      | "CAMPAIGN_TEMPLATE_COMPONENT_INVALID",
+      | "CAMPAIGN_TEMPLATE_COMPONENT_INVALID"
+      | "CAMPAIGN_NOT_DRAFT",
     message: string
   ) {
     super(message);
@@ -386,6 +390,7 @@ function toCampaignDto(record: CampaignRecord): CampaignDto {
     fallbackName: normalizeFallbackName(record.fallbackName),
     cadence: normalizeCadence(record.cadence),
     scheduledAt: toNullableIsoString(record.scheduledAt),
+    timeZone: record.timeZone ?? "America/Sao_Paulo",
     mode: record.mode,
     createdAt: toIsoString(record.createdAt),
     updatedAt: toIsoString(record.updatedAt)
@@ -748,11 +753,7 @@ function deriveStatusFromSchedule(input: {
     return input.explicitStatus;
   }
 
-  if (input.scheduledAt) {
-    return input.currentStatus === "draft" ? "scheduled" : input.currentStatus;
-  }
-
-  return input.currentStatus === "scheduled" ? "draft" : input.currentStatus;
+  return input.currentStatus;
 }
 
 // Select only columns that exist in the current DB (templates/fallbackName/cadence are schema-only)
@@ -767,6 +768,8 @@ const campaignSelect = {
   fallbackName: true,
   cadence: true,
   scheduledAt: true,
+  timeZone: true,
+  activationKey: true,
   mode: true,
   createdAt: true,
   updatedAt: true,
@@ -922,19 +925,21 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       fallbackName?: string;
       cadence?: CampaignCadenceDto;
       scheduledAt?: string | null;
+      timeZone?: string;
     }): Promise<CampaignDto> {
       const campaign = await prisma.campaign.create({
         select: campaignSelect,
         data: {
           workspaceId: input.workspaceId,
           name: input.name.trim(),
-          status: input.scheduledAt ? "scheduled" : "draft",
+          status: "draft",
           audience: input.audience,
           messageBody: input.messageBody.trim(),
           templates: input.templates ?? [input.messageBody.trim()],
           fallbackName: input.fallbackName?.trim() || "cliente",
           cadence: input.cadence ? cadenceToJson(input.cadence) : cadenceToJson(normalizeCadence({})),
           scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : null,
+          timeZone: input.timeZone ?? "America/Sao_Paulo",
           mode: "simulated"
         }
       });
@@ -954,9 +959,13 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
         fallbackName: string;
         cadence: CampaignCadenceDto;
         scheduledAt: string | null;
+        timeZone: string;
       }>;
     }): Promise<CampaignDto> {
       const currentCampaign = await findCampaignForWorkspace(input);
+      if (currentCampaign.status !== "draft") {
+        throw new CampaignsServiceError("CAMPAIGN_NOT_DRAFT", "Uma campanha ativa não pode ser editada.");
+      }
 
       const campaign = await prisma.campaign.update({
         select: campaignSelect,
@@ -983,7 +992,8 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
               ? undefined
               : input.data.scheduledAt
                 ? new Date(input.data.scheduledAt)
-                : null
+                : null,
+          timeZone: input.data.timeZone
         })
       });
 
@@ -1011,6 +1021,10 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       campaignId: string;
     }): Promise<CampaignSendResultDto> {
       const campaign = await findCampaignForWorkspace(input);
+      if (campaign.status !== "draft") {
+        throw new CampaignsServiceError("CAMPAIGN_NOT_DRAFT",
+          "Só rascunhos podem ser simulados.");
+      }
       const plans = await buildRecipientPlans(campaign);
 
       for (const plan of plans) {
@@ -1304,6 +1318,10 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       }
 
       const campaign = await findCampaignForWorkspace(input);
+      if (campaign.activationKey) {
+        throw new CampaignsServiceError("CAMPAIGN_NOT_DRAFT",
+          "Uma campanha com fila ativa não pode usar outro modo de envio.");
+      }
       const plans = await buildRecipientPlans(campaign);
       const fallbackName = normalizeFallbackName(campaign.fallbackName);
       const components: MetaTemplateComponent[] | undefined = template
