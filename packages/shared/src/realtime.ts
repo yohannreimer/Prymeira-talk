@@ -101,7 +101,7 @@ const campaignSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
   name: z.string().min(1),
-  status: z.enum(["draft", "scheduled", "sending", "completed", "failed"]),
+  status: z.enum(["draft", "scheduled", "sending", "paused", "completed", "failed", "canceled", "needs_attention"]),
   audience: z.unknown(),
   messageBody: z.string().min(1),
   scheduledAt: z.string().datetime().nullable(),

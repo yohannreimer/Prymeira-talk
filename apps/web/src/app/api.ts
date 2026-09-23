@@ -267,7 +267,7 @@ export interface AutomationAssetUploadResultDto {
   url: string;
 }
 
-export type CampaignStatus = "draft" | "scheduled" | "sending" | "completed" | "failed";
+export type CampaignStatus = "draft" | "scheduled" | "sending" | "paused" | "completed" | "failed" | "canceled" | "needs_attention";
 
 export interface CampaignAudienceDto {
   type: "board" | "imported";

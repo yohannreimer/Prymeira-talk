@@ -7,7 +7,7 @@ import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import type { MetaTemplateComponent } from "../meta/meta.client.js";
 
 type DateLike = Date | string;
-type CampaignStatus = "draft" | "scheduled" | "sending" | "completed" | "failed";
+type CampaignStatus = "draft" | "scheduled" | "sending" | "paused" | "completed" | "failed" | "canceled" | "needs_attention";
 type IntegrationMode = "simulated" | "real";
 
 interface CampaignRecord {

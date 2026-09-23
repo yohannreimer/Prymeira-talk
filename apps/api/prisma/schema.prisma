@@ -74,8 +74,11 @@ enum CampaignStatus {
   draft
   scheduled
   sending
+  paused
   completed
   failed
+  canceled
+  needs_attention
 }
 
 enum LeadSource {
@@ -817,6 +820,12 @@ model Campaign {
   fallbackName String         @default("cliente") @map("fallback_name")
   cadence     Json            @default("{}")
   scheduledAt DateTime?       @map("scheduled_at")
+  activationKey String?       @map("activation_key")
+  confirmedBy String?         @map("confirmed_by")
+  confirmedAt DateTime?       @map("confirmed_at")
+  channelId   String?         @map("channel_id") @db.Uuid
+  startMode   String?         @map("start_mode")
+  timeZone    String          @default("America/Sao_Paulo") @map("time_zone")
   mode        IntegrationMode @default(simulated)
   createdAt   DateTime        @default(now()) @map("created_at")
   updatedAt   DateTime        @updatedAt @map("updated_at")
@@ -824,6 +833,7 @@ model Campaign {
   recipients CampaignRecipient[]
 
   @@unique([workspaceId, id])
+  @@unique([workspaceId, activationKey])
   @@index([workspaceId, status])
   @@map("campaigns")
 }
@@ -842,6 +852,14 @@ model CampaignRecipient {
   sentAt      DateTime? @map("sent_at")
   attempts    Int      @default(0)
   errorMessage String? @map("error_message")
+  phoneSnapshot String? @map("phone_snapshot")
+  channelId String? @map("channel_id") @db.Uuid
+  sequenceNumber Int? @map("sequence_number")
+  gapSeconds Int? @map("gap_seconds")
+  pauseSeconds Int? @map("pause_seconds")
+  leaseToken String? @map("lease_token") @db.Uuid
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  verifiedAt DateTime? @map("verified_at")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
@@ -851,8 +869,22 @@ model CampaignRecipient {
   @@unique([workspaceId, id])
   @@unique([workspaceId, campaignId, contactId])
   @@unique([workspaceId, campaignId, audienceKey])
+  @@unique([workspaceId, campaignId, sequenceNumber])
   @@index([workspaceId, campaignId, status])
+  @@index([status, scheduledAt])
+  @@index([workspaceId, channelId, status])
   @@map("campaign_recipients")
+}
+
+model CampaignChannelThrottle {
+  workspaceId        String    @map("workspace_id")
+  channelId          String    @map("channel_id") @db.Uuid
+  nextAvailableAt    DateTime? @map("next_available_at")
+  attemptsSincePause Int       @default(0) @map("attempts_since_pause")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  @@id([workspaceId, channelId])
+  @@map("campaign_channel_throttles")
 }
 
 model AiAgent {

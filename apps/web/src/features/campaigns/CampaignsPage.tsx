@@ -129,8 +129,11 @@ function statusLabel(status: CampaignDto["status"]) {
     draft: "Rascunho",
     scheduled: "Agendada",
     sending: "Enviando",
+    paused: "Pausada",
     completed: "Concluida",
-    failed: "Falhou"
+    failed: "Falhou",
+    canceled: "Cancelada",
+    needs_attention: "Precisa de atenção"
   };
 
   return labels[status];
