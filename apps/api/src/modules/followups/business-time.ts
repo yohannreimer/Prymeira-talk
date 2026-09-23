@@ -60,6 +60,38 @@ export function addBusinessMinutes(input: AddBusinessMinutesInput): Date {
   return current;
 }
 
+export function nextBusinessStart(input: Omit<AddBusinessMinutesInput, "minutes">): Date {
+  return nextBusinessInstant(input.from, createBusinessCalendar({ ...input, minutes: 1 }));
+}
+
+export function addBusinessSeconds(
+  input: Omit<AddBusinessMinutesInput, "minutes"> & { seconds: number }
+): Date {
+  if (!Number.isSafeInteger(input.seconds) || input.seconds <= 0 ||
+      !Number.isSafeInteger(input.seconds * 1000)) {
+    throw new RangeError("seconds must be a positive whole number.");
+  }
+  const calendar = createBusinessCalendar({ ...input, minutes: Math.ceil(input.seconds / 60) });
+  let remainingMilliseconds = input.seconds * 1000;
+  let current = nextBusinessInstant(input.from, calendar);
+
+  while (remainingMilliseconds > 0) {
+    const localDate = getLocalDateTime(current, calendar.formatter);
+    const closing = localDateTimeToInstant(localDate, calendar.businessHours.end, calendar);
+    const availableMilliseconds = closing.getTime() - current.getTime();
+    if (availableMilliseconds <= 0) {
+      current = nextBusinessInstant(closing, calendar);
+      continue;
+    }
+    if (remainingMilliseconds <= availableMilliseconds) {
+      return new Date(current.getTime() + remainingMilliseconds);
+    }
+    remainingMilliseconds -= availableMilliseconds;
+    current = nextBusinessInstant(closing, calendar);
+  }
+  return current;
+}
+
 function createBusinessCalendar(input: AddBusinessMinutesInput): BusinessCalendar {
   if (!(input.from instanceof Date) || !Number.isFinite(input.from.getTime())) {
     throw new RangeError("from must be a valid Date.");
