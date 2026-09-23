@@ -62,7 +62,7 @@ function provenanceRecord(overrides: Record<string, unknown> = {}) {
 
 function createPrisma(overrides: Record<string, any> = {}) {
   const tx: Record<string, any> = {
-    $queryRaw: vi.fn().mockResolvedValue([{ pg_advisory_xact_lock: null }]),
+    $queryRaw: vi.fn().mockResolvedValue([{ locked: false }]),
     lead: {
       findMany: vi.fn().mockResolvedValue([lead])
     },
@@ -167,6 +167,7 @@ describe("lead conversion", () => {
       }
     });
     expect(tx.$queryRaw).toHaveBeenCalledBefore(tx.quickReply.findFirst);
+    expect(tx.$queryRaw.mock.calls[0]?.[0].join("?")).toContain("IS NULL AS locked");
     expect(tx.contact.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { workspaceId_phone: { workspaceId: "workspace-a", phone: "551133334444" } },
       update: {},
