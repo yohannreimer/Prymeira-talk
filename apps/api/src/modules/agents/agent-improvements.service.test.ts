@@ -203,7 +203,10 @@ describe("createAgentImprovementsService", () => {
       detector: detector({ outcome: "ignore", reason: "not_a_durable_human_resolution" })
     });
 
-    await expect(service.observeLatestHumanReplyAfterHandoff({ workspaceId, conversationId })).resolves.toEqual({ created: true });
+    await expect(service.observeLatestHumanReplyAfterHandoff({ workspaceId, conversationId })).resolves.toEqual({
+      created: true,
+      reason: "not_a_durable_human_resolution_explicit_refusal_fallback"
+    });
     expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         sourceMessageId: reply.id,
@@ -219,7 +222,10 @@ describe("createAgentImprovementsService", () => {
     const service = createAgentImprovementsService(prisma, {
       detector: { assess: vi.fn().mockRejectedValue(new Error("JEV unavailable")) }
     });
-    await expect(service.observeHumanReply({ workspaceId, conversationId, messageId: humanReplyId })).resolves.toEqual({ created: true });
+    await expect(service.observeHumanReply({ workspaceId, conversationId, messageId: humanReplyId })).resolves.toEqual({
+      created: true,
+      reason: "detector_failed_explicit_refusal_fallback"
+    });
     expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: "pending", detector: expect.objectContaining({ provider: "explicit_human_refusal" }) })
     }));

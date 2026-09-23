@@ -562,7 +562,9 @@ export function createAgentImprovementsService(
         throw error;
       }
 
-      return { created: true };
+      return detected.outcome === "ignore"
+        ? { created: true, reason: `${detected.reason}_explicit_refusal_fallback` }
+        : { created: true };
     },
 
     async observeLatestHumanReplyAfterHandoff(input: {

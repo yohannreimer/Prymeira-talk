@@ -399,8 +399,16 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
             workspaceId: request.talk.workspaceId,
             conversationId: params.data.conversationId
           }) ?? { created: false, reason: "analysis_unavailable" };
+          request.log.info({
+            event: "agent_improvement_observation",
+            source: action,
+            workspaceId: request.talk.workspaceId,
+            conversationId: params.data.conversationId,
+            outcome: improvementAnalysis.created ? "created" : "skipped",
+            reason: improvementAnalysis.reason ?? null
+          }, "Agent improvement observation completed.");
         } catch (error) {
-          request.log.error({ error, conversationId: params.data.conversationId }, "Failed to analyze human handoff reply");
+          request.log.error({ error, event: "agent_improvement_observation_failed", source: action, workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId }, "Failed to analyze human handoff reply");
           improvementAnalysis = { created: false, reason: "analysis_failed" };
         }
       }
@@ -547,8 +555,18 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
         workspaceId: request.talk.workspaceId,
         conversationId: params.data.conversationId,
         messageId: result.message.id
+      }).then((analysis) => {
+        request.log.info({
+          event: "agent_improvement_observation",
+          source: "talk_outbound",
+          workspaceId: request.talk.workspaceId,
+          conversationId: params.data.conversationId,
+          messageId: result.message.id,
+          outcome: analysis.created ? "created" : "skipped",
+          reason: analysis.reason ?? null
+        }, "Agent improvement observation completed.");
       }).catch((error: unknown) => {
-        request.log.error({ error }, "Failed to prepare agent improvement suggestion.");
+        request.log.error({ error, event: "agent_improvement_observation_failed", source: "talk_outbound", workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId, messageId: result.message.id }, "Failed to prepare agent improvement suggestion.");
       });
     }
     await options.assistantScheduler?.message({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId, messageId: result.message.id, direction: 'outbound' });

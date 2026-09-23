@@ -41,6 +41,14 @@ curl --fail --silent --show-error https://talk.prymeiradigital.com.br/api/ready
 
 No simulador, teste uma pergunta comum, uma pergunta de preço sem evidência, uma solicitação explícita de atendente e uma resposta potencialmente longa. Confirme modelo, handoff, chunks selecionados e contagem de caracteres.
 
+## Logs e diagnóstico de aprimoramentos
+
+No Portainer, abra **Containers**, selecione o contêiner em execução de `prymeira_talk_api` e abra **Logs**. A tela de logs do serviço Swarm pode não carregar; a do contêiner permite buscar e baixar as linhas. Defina **Lines** e o período **Fetch** conforme o horário do caso.
+
+Busque por `agent_improvement_observation`. Cada resposta humana analisada registra `source`, `conversationId`, `messageId`, `outcome` (`created` ou `skipped`) e `reason`. Uma falha técnica usa o evento `agent_improvement_observation_failed`. O texto da conversa e a chave do Jev não são incluídos nesses eventos. O motivo `not_a_durable_human_resolution_explicit_refusal_fallback` indica que o Jev descartou uma recusa explícita, mas o sistema criou uma sugestão para revisão. `detector_failed_explicit_refusal_fallback` indica falha técnica do detector seguida da mesma recuperação.
+
+O `docker-compose.prod.yml` configura `json-file` com rotação de até 10 arquivos de 20 MB por contêiner. Isso limita uso de disco e mantém logs recentes consultáveis no Portainer; não é arquivo permanente. A rotação e a remoção do contêiner antigo podem apagar logs históricos. Para retenção entre implantações, configure um coletor central antes de depender desses registros como histórico. Ao aplicar a configuração, preserve os parâmetros e imagens da stack que estão efetivamente em produção; o arquivo do repositório não deve substituir a configuração ativa sem essa conferência.
+
 ## Retenção e rollback
 
 Liste primeiro as imagens do Prymeira Talk e identifique por digest quais estão ligadas a contêineres ou serviços. Exclua apenas imagens dangling ou comprovadamente não utilizadas cujos repositórios sejam `prymeira-talk-api` ou `prymeira-talk-web`. Preserve a imagem ativa e exatamente uma anterior de cada serviço.

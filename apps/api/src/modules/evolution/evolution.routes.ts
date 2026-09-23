@@ -773,8 +773,18 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           workspaceId,
           conversationId: message.conversationId,
           messageId: message.id
+        }).then((analysis) => {
+          request.log.info({
+            event: "agent_improvement_observation",
+            source: "evolution_outbound",
+            workspaceId,
+            conversationId: message.conversationId,
+            messageId: message.id,
+            outcome: analysis.created ? "created" : "skipped",
+            reason: analysis.reason ?? null
+          }, "Agent improvement observation completed.");
         }).catch((error: unknown) => {
-          request.log.error({ error }, "Failed to prepare agent improvement suggestion.");
+          request.log.error({ error, event: "agent_improvement_observation_failed", source: "evolution_outbound", workspaceId, conversationId: message.conversationId, messageId: message.id }, "Failed to prepare agent improvement suggestion.");
         });
       }
 

@@ -1,6 +1,11 @@
 services:
   prymeira_talk_postgres:
     image: postgres:16-alpine
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-prymeira_talk}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -33,6 +38,11 @@ services:
 
   prymeira_talk_api:
     image: ghcr.io/${GHCR_OWNER:-yohannreimer}/prymeira-talk-api:${IMAGE_TAG:-latest}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
     environment:
       NODE_ENV: production
       API_HOST: 0.0.0.0
@@ -81,6 +91,11 @@ services:
 
   prymeira_talk_web:
     image: ghcr.io/${GHCR_OWNER:-yohannreimer}/prymeira-talk-web:${IMAGE_TAG:-latest}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
     environment:
       VITE_API_URL: https://talk.prymeiradigital.com.br/api
       VITE_LOCAL_AUTH_BYPASS: "false"
