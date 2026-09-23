@@ -202,6 +202,22 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
     service.listCampaigns({ workspaceId: request.talk.workspaceId })
   );
 
+  app.delete("/campaigns/:campaignId", async (request, reply) => {
+    if (!requireCampaignManage(request.talk.role, reply)) return reply;
+    const params = campaignParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: "Invalid campaign request." });
+
+    try {
+      await service.deleteDraft({
+        workspaceId: request.talk.workspaceId,
+        campaignId: params.data.campaignId
+      });
+      return reply.code(204).send();
+    } catch (error) {
+      return handleCampaignsError(reply, error);
+    }
+  });
+
   app.post("/campaigns", async (request, reply) => {
     if (!requireCampaignManage(request.talk.role, reply)) {
       return reply;

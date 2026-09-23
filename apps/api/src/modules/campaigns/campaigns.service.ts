@@ -65,6 +65,7 @@ type CampaignFindManyArgs = Parameters<PrismaClient["campaign"]["findMany"]>[0];
 type CampaignFindFirstArgs = Parameters<PrismaClient["campaign"]["findFirst"]>[0];
 type CampaignCreateArgs = Parameters<PrismaClient["campaign"]["create"]>[0];
 type CampaignUpdateArgs = Parameters<PrismaClient["campaign"]["update"]>[0];
+type CampaignDeleteManyArgs = Parameters<PrismaClient["campaign"]["deleteMany"]>[0];
 type RecipientFindManyArgs = Parameters<PrismaClient["campaignRecipient"]["findMany"]>[0];
 type RecipientUpsertArgs = Parameters<PrismaClient["campaignRecipient"]["upsert"]>[0];
 type BoardFindFirstArgs = Parameters<PrismaClient["contactBoard"]["findFirst"]>[0];
@@ -109,6 +110,7 @@ export interface PrismaLike {
     findFirst(args: CampaignFindFirstArgs): Promise<CampaignRecord | null>;
     create(args: CampaignCreateArgs): Promise<CampaignRecord>;
     update(args: CampaignUpdateArgs): Promise<CampaignRecord>;
+    deleteMany(args: CampaignDeleteManyArgs): Promise<{ count: number }>;
   };
   campaignRecipient: {
     findMany(args: RecipientFindManyArgs): Promise<CampaignRecipientRecord[]>;
@@ -914,6 +916,22 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       });
 
       return campaigns.map(toCampaignDto);
+    },
+
+    async deleteDraft(input: { workspaceId: string; campaignId: string }): Promise<void> {
+      const deleted = await prisma.campaign.deleteMany({
+        where: { workspaceId: input.workspaceId, id: input.campaignId, status: "draft" }
+      });
+      if (deleted.count > 0) return;
+
+      const campaign = await prisma.campaign.findFirst({
+        where: { workspaceId: input.workspaceId, id: input.campaignId },
+        select: campaignSelect
+      });
+      if (!campaign) {
+        throw new CampaignsServiceError("CAMPAIGN_NOT_FOUND", "Disparo não encontrado.");
+      }
+      throw new CampaignsServiceError("CAMPAIGN_NOT_DRAFT", "Só é possível excluir rascunhos.");
     },
 
     async createCampaign(input: {

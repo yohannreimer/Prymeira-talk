@@ -1,11 +1,12 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto } from "@prymeira-talk/shared";
-import { CalendarClock, Gauge, Play, Plus, RefreshCw, Save, Send, Upload, X, Zap } from "lucide-react";
+import { CalendarClock, Gauge, Play, Plus, RefreshCw, Save, Send, Trash2, Upload, X, Zap } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { readSheet } from "read-excel-file/browser";
 import { GuidedCampaignEditor } from "./GuidedCampaignEditor";
 import {
   apiCreateCampaign,
+  apiDeleteCampaignDraft,
   apiGetBoards,
   apiGetChannels,
   apiGetCampaignRecipients,
@@ -424,6 +425,7 @@ export function CampaignsPage() {
   const [metaTemplatesLoaded, setMetaTemplatesLoaded] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [deletingCampaignId, setDeletingCampaignId] = useState<string | null>(null);
   const [isRecipientsLoading, setIsRecipientsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -551,6 +553,24 @@ export function CampaignsPage() {
   const scheduledCount = campaigns.filter((campaign) => campaign.status === "scheduled").length;
   const completedCount = campaigns.filter((campaign) => campaign.status === "completed").length;
   const sendingCount = campaigns.filter((campaign) => campaign.status === "sending").length;
+
+  async function deleteDraft(campaign: CampaignDto) {
+    if (campaign.status !== "draft" || deletingCampaignId) return;
+    if (!window.confirm(`Excluir o rascunho "${campaign.name}"? Esta ação não pode ser desfeita.`)) return;
+
+    setDeletingCampaignId(campaign.id);
+    setError(null);
+    try {
+      await apiDeleteCampaignDraft(getToken, campaign.id);
+      setCampaigns((current) => current.filter((item) => item.id !== campaign.id));
+      if (selectedCampaignId === campaign.id) setSelectedCampaignId(null);
+      setNotice("Rascunho excluído.");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Não foi possível excluir o rascunho.");
+    } finally {
+      setDeletingCampaignId(null);
+    }
+  }
 
   useEffect(() => {
     if (!notice) return;
@@ -978,6 +998,7 @@ export function CampaignsPage() {
         </div>
 
         {error ? <p className="error-note campaign-inline-note">{error}</p> : null}
+        {notice ? <p className="success-note campaign-inline-note" role="status">{notice}</p> : null}
 
         <div className="campaign-hub-grid">
           <button className="campaign-create-card" type="button" onClick={createDraft}>
@@ -997,22 +1018,28 @@ export function CampaignsPage() {
             </div>
           ) : (
             campaigns.map((campaign) => (
-              <button
-                className="campaign-hub-card"
-                key={campaign.id}
-                onClick={() => openCampaign(campaign)}
-                type="button"
-              >
-                <span className={`status-badge status-badge--${
-                  campaign.status === "completed" ? "open" :
-                  campaign.status === "scheduled" || campaign.status === "sending" ? "waiting" : "closed"
-                }`}>
-                  {statusLabel(campaign.status)}
-                </span>
-                <strong>{campaign.name}</strong>
-                <span>{campaign.audience.type === "imported" ? "Lista importada" : "Board do CRM"}</span>
-                <small>{formatDateTime(campaign.scheduledAt)}</small>
-              </button>
+              <div className="campaign-hub-card" key={campaign.id}>
+                <button className="campaign-hub-open" onClick={() => openCampaign(campaign)} type="button">
+                  <span className={`status-badge status-badge--${
+                    campaign.status === "completed" ? "open" :
+                    campaign.status === "scheduled" || campaign.status === "sending" ? "waiting" : "closed"
+                  }`}>
+                    {statusLabel(campaign.status)}
+                  </span>
+                  <strong>{campaign.name}</strong>
+                  <span>{campaign.audience.type === "imported" ? "Lista importada" : "Board do CRM"}</span>
+                  <small>{formatDateTime(campaign.scheduledAt)}</small>
+                </button>
+                {campaign.status === "draft" ? (
+                  <button className="campaign-hub-delete" type="button"
+                    aria-label={`Excluir rascunho ${campaign.name}`}
+                    title="Excluir rascunho"
+                    disabled={deletingCampaignId !== null}
+                    onClick={() => void deleteDraft(campaign)}>
+                    <Trash2 size={17} aria-hidden="true" />
+                  </button>
+                ) : null}
+              </div>
             ))
           )}
         </div>

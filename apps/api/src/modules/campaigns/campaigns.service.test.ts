@@ -11,6 +11,7 @@ type MockPrisma = {
     findFirst: any;
     create: any;
     update: any;
+    deleteMany?: any;
   };
   campaignRecipient: {
     findMany: any;
@@ -125,7 +126,8 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
       findMany: overrides.campaign?.findMany ?? vi.fn().mockResolvedValue([baseCampaign]),
       findFirst: overrides.campaign?.findFirst ?? vi.fn().mockResolvedValue(baseCampaign),
       create: overrides.campaign?.create ?? vi.fn().mockResolvedValue(baseCampaign),
-      update: overrides.campaign?.update ?? vi.fn().mockResolvedValue(baseCampaign)
+      update: overrides.campaign?.update ?? vi.fn().mockResolvedValue(baseCampaign),
+      deleteMany: overrides.campaign?.deleteMany ?? vi.fn().mockResolvedValue({ count: 1 })
     },
     campaignRecipient: {
       findMany:
@@ -1472,6 +1474,52 @@ describe("campaigns service", () => {
 });
 
 describe("campaigns routes", () => {
+  it("excludes a draft only from the current workspace", async () => {
+    const { app, prisma } = await buildCampaignsApp();
+    try {
+      const response = await app.inject({ method: "DELETE", url: `/campaigns/${campaignId}` });
+      expect(response.statusCode).toBe(204);
+      expect(prisma.campaign.deleteMany).toHaveBeenCalledWith({
+        where: { workspaceId: "workspace_a", id: campaignId, status: "draft" }
+      });
+    } finally { await app.close(); }
+  });
+
+  it("does not delete a campaign that has already started", async () => {
+    const prisma = createMockPrisma({ campaign: {
+      findMany: vi.fn(), findFirst: vi.fn().mockResolvedValue({ ...baseCampaign, status: "sending" }),
+      create: vi.fn(), update: vi.fn(), deleteMany: vi.fn().mockResolvedValue({ count: 0 })
+    } });
+    const { app } = await buildCampaignsApp({ prisma });
+    try {
+      const response = await app.inject({ method: "DELETE", url: `/campaigns/${campaignId}` });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ code: "CAMPAIGN_NOT_DRAFT" });
+    } finally { await app.close(); }
+  });
+
+  it("does not reveal campaigns belonging to another workspace", async () => {
+    const prisma = createMockPrisma({ campaign: {
+      findMany: vi.fn(), findFirst: vi.fn().mockResolvedValue(null), create: vi.fn(), update: vi.fn(),
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 })
+    } });
+    const { app } = await buildCampaignsApp({ prisma });
+    try {
+      const response = await app.inject({ method: "DELETE", url: `/campaigns/${campaignId}` });
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({ code: "CAMPAIGN_NOT_FOUND" });
+    } finally { await app.close(); }
+  });
+
+  it("requires campaign management permission to delete", async () => {
+    const { app, prisma } = await buildCampaignsApp({ role: "agent" });
+    try {
+      const response = await app.inject({ method: "DELETE", url: `/campaigns/${campaignId}` });
+      expect(response.statusCode).toBe(403);
+      expect(prisma.campaign.deleteMany).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
   it("rejects the legacy real-send shortcut without contacting Evolution", async () => {
     const { app } = await buildCampaignsApp();
     try {

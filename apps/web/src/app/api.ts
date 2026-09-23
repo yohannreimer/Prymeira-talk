@@ -2495,6 +2495,22 @@ export async function apiGetCampaigns(
   return Array.isArray(data) ? data.map(parseCampaign) : [];
 }
 
+export async function apiDeleteCampaignDraft(
+  getToken: () => Promise<string | null>,
+  campaignId: string
+): Promise<void> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/campaigns/${campaignId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    throw new Error(response.status === 409
+      ? "Este disparo não é mais um rascunho e não pode ser excluído."
+      : "Não foi possível excluir o rascunho. Tente novamente.");
+  }
+}
+
 export async function apiCreateCampaign(
   getToken: () => Promise<string | null>,
   body: {
