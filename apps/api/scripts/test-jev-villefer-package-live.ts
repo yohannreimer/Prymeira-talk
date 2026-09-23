@@ -61,10 +61,12 @@ let activeJevCall = "";
 const jevFetch: typeof fetch = async (url, init) => {
   const response = await fetch(url, init);
   if (debugJev) {
+    const wire = activeJevCall.startsWith("audit:") ? await response.clone().json().catch(() => null) : null;
     console.error(JSON.stringify({
       kind: "jev_wire_debug",
       call: activeJevCall,
-      status: response.status
+      status: response.status,
+      answers: wire?.answers ?? null
     }));
   }
   if (!response.ok) {
@@ -121,14 +123,14 @@ const cases: LiveCase[] = [
     }
   },
   {
-    name: "barra chata de linha de estoque não confirma saldo",
+    name: "barra chata de linha de estoque sem material ou comprimento pede dado ausente sem confirmar saldo",
     body: "Preciso de 10 barras chatas de 1/4 x 1 polegada. Vocês têm para retirada?",
     history: [["cliente", "Preciso de 10 barras chatas de 1/4 x 1 polegada. Vocês têm para retirada?"]],
     expected: {
       outcome: "continue",
       conversationStage: "new_quote",
       commercialPath: "stock",
-      nextAction: "answer_current_request",
+      nextAction: "ask_missing_technical",
       requiredKnowledge: ["approved_positive_catalog_v1", "approved_supply_and_registration_20260914"]
     }
   },
@@ -140,6 +142,7 @@ const cases: LiveCase[] = [
       outcome: "continue",
       conversationStage: "new_quote",
       commercialPath: "made_to_order",
+      nextAction: "offer_catalog_or_seller",
       requiredKnowledge: ["approved_positive_catalog_v1", "approved_supply_and_registration_20260914"]
     }
   },
@@ -432,7 +435,7 @@ for (const testCase of followupCases) {
 if (!client.audit) throw new Error("A auditoria JEV não foi configurada.");
 
 const originalBarCase = evaluatedCases.get("barra chata fora da faixa e material pendente fica sob consulta");
-const stockBarCase = evaluatedCases.get("barra chata de linha de estoque não confirma saldo");
+const stockBarCase = evaluatedCases.get("barra chata de linha de estoque sem material ou comprimento pede dado ausente sem confirmar saldo");
 const inoxCase = evaluatedCases.get("tubo inox recebe caminho de encomenda e mínimo correto");
 const squareBarCase = evaluatedCases.get("barra maciça quadrada é recusada como não vendida");
 if (!originalBarCase || !stockBarCase || !inoxCase || !squareBarCase) {
@@ -455,16 +458,16 @@ const audits = [
     expected: "handoff"
   },
   {
-    name: "aceita condição de encomenda respaldada para inox",
+    name: "aceita mínimo e escolha de catálogo ou vendedor para inox novo",
     input: inoxCase.input,
-    plan: planOf(inoxCase.result, { commercialPath: "made_to_order", nextAction: "state_made_to_order_conditions" }),
-    candidateReply: "Tubos de inox são sob encomenda e o pedido mínimo é de 300 kg. Essas condições atendem sua necessidade?",
+    plan: planOf(inoxCase.result, { commercialPath: "made_to_order", nextAction: "offer_catalog_or_seller" }),
+    candidateReply: "Tubos de inox são sob encomenda e o pedido mínimo é de 300 kg. Prefere ver o catálogo com os itens ou falar com um vendedor?",
     expected: "send"
   },
   {
     name: "bloqueia prazo e pagamento inventados para encomenda",
     input: inoxCase.input,
-    plan: planOf(inoxCase.result, { commercialPath: "made_to_order", nextAction: "state_made_to_order_conditions" }),
+    plan: planOf(inoxCase.result, { commercialPath: "made_to_order", nextAction: "offer_catalog_or_seller" }),
     candidateReply: "Conseguimos entregar amanhã e pode pagar faturado em 30 dias.",
     expected: "handoff"
   },

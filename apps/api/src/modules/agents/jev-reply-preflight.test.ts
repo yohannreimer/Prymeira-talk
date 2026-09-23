@@ -76,7 +76,9 @@ describe("createJevReplyPreflight", () => {
     expect(payload.questions.commercialPath.criteria.ambiguous).toContain("medida fora da faixa aprovada");
     expect(payload.questions.commercialPath.criteria.not_sold).toContain("negativa explícita aplicável");
     expect(payload.questions.nextAction.criteria.answer_current_request).toContain("recusa objetiva de item explicitamente não vendido");
+    expect(payload.questions.nextAction.criteria.answer_current_request).toContain("não substitui handoff quando a variante está fora da faixa aprovada");
     expect(payload.questions.nextAction.criteria.handoff).toContain("variante fora da faixa ou especificação não confirmada");
+    expect(payload.questions.nextAction.instructions).toContain("Se a variante está fora da faixa aprovada");
     expect(payload.questions.nextAction.criteria.handoff).toContain("não para repetir uma negativa aprovada");
   });
 
@@ -133,6 +135,24 @@ describe("createJevReplyPreflight", () => {
     const body = JSON.parse(String(init?.body));
     expect(body.questions.disposition.instructions).toContain("not_sold");
     expect(body.questions.assertsUnsupportedCommercialFact.instructions).toContain("explicitamente não vendido");
+  });
+
+  it("distinguishes sending a safe handoff notice from blocking the candidate reply", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
+      disposition: "send",
+      followsPlan: 1,
+      assertsUnsupportedCommercialFact: 0
+    }));
+    await createJevReplyPreflight({ apiKey: "jev-test", fetchImpl }).audit!({
+      ...baseInput,
+      candidateReply: "Vou encaminhar ao vendedor para verificar a disponibilidade e a especificação dessa barra.",
+      plan: { conversationStage: "new_quote", commercialPath: "ambiguous", nextAction: "handoff" }
+    });
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.questions.disposition.instructions).toContain("handoff nesta auditoria significa bloquear a candidateReply");
+    expect(body.questions.disposition.criteria.send).toContain("nextAction=handoff");
+    expect(body.questions.disposition.criteria.handoff).toContain("não escolha handoff apenas porque o texto comunica um encaminhamento");
   });
 
   it("passes agent product rules to preflight and audit as commercial evidence", async () => {
