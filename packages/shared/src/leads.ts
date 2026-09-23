@@ -423,6 +423,7 @@ export const leadCampaignDraftRequestSchema = z
       .refine((ids) => new Set(ids.map((id) => id.toLowerCase())).size === ids.length, {
         message: "selectedLeadIds must not contain duplicates."
       }),
+    originalSelectedLeadIds: z.array(uuidSchema).min(1).max(5000).optional(),
     name: z.string().trim().min(1).max(160).optional(),
     messageBody: z.string().trim().min(1).max(2000).optional(),
     quickReplyId: uuidSchema.optional()

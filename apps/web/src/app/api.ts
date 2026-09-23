@@ -3533,8 +3533,8 @@ export function apiImportLeadContacts(getToken: TokenProvider, listId: string, s
   return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/contacts/import`, { method: "POST", body: JSON.stringify({ selectedLeadIds }) }, value => leadContactImportResultSchema.parse(value), "Não foi possível cadastrar contatos.");
 }
 
-export function apiCreateLeadCampaignDraft(getToken: TokenProvider, listId: string, selectedLeadIds: string[], messageBody: string): Promise<LeadCampaignDraftResult> {
-  return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/campaign-drafts`, { method: "POST", body: JSON.stringify({ selectedLeadIds, messageBody }) }, value => leadCampaignDraftResultSchema.parse(value), "Não foi possível criar o rascunho.");
+export function apiCreateLeadCampaignDraft(getToken: TokenProvider, listId: string, selectedLeadIds: string[], messageBody: string, originalSelectedLeadIds?: string[]): Promise<LeadCampaignDraftResult> {
+  return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/campaign-drafts`, { method: "POST", body: JSON.stringify({ selectedLeadIds, messageBody, originalSelectedLeadIds }) }, value => leadCampaignDraftResultSchema.parse(value), "Não foi possível criar o rascunho.");
 }
 
 export function apiGetLeadComposerDraft(getToken: TokenProvider, conversationId: string): Promise<LeadComposerDraft | null> {

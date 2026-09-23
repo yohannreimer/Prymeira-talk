@@ -5,6 +5,7 @@ import { CampaignsServiceError, createCampaignsService } from "./campaigns.servi
 import type { PrismaLike } from "./campaigns.service.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { resolveMetaRuntime } from "../meta/meta-runtime.js";
+import { previewCampaignAudience } from "./campaign-audience-preview.js";
 
 const uuidParamSchema = z.string().uuid();
 
@@ -234,6 +235,38 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
         workspaceId: request.talk.workspaceId,
         campaignId: params.data.campaignId
       });
+    } catch (error) {
+      return handleCampaignsError(reply, error);
+    }
+  });
+
+  app.post("/campaigns/:campaignId/preview-audience", async (request, reply) => {
+    if (!requireCampaignManage(request.talk.role, reply)) return reply;
+    const params = campaignParamsSchema.safeParse(request.params);
+    const body = z.object({ channelId: uuidParamSchema }).safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Escolha um canal de envio válido." });
+    }
+    if (options.evolution?.mode !== "real" || !options.evolution.client?.checkWhatsappNumbersAvailability) {
+      return reply.code(409).send({ code: "CAMPAIGN_VERIFICATION_UNAVAILABLE",
+        error: "A verificação de WhatsApp não está disponível agora." });
+    }
+    const channel = await app.prisma.channel.findFirst({
+      where: { id: body.data.channelId, workspaceId: request.talk.workspaceId,
+        provider: "evolution", status: "connected" },
+      select: { providerKey: true }
+    });
+    if (!channel) return reply.code(404).send({ code: "CAMPAIGN_CHANNEL_NOT_FOUND",
+      error: "Canal Evolution conectado não encontrado." });
+    try {
+      const campaign = await service.getCampaign({ workspaceId: request.talk.workspaceId,
+        campaignId: params.data.campaignId });
+      const contacts = await service.resolveAudience({ workspaceId: request.talk.workspaceId,
+        campaignId: params.data.campaignId });
+      return await previewCampaignAudience({ campaign, channelId: body.data.channelId, contacts,
+        verify: async (numbers) => (await options.evolution!.client!.checkWhatsappNumbersAvailability!({
+          instanceName: channel.providerKey, numbers
+        })).numbers });
     } catch (error) {
       return handleCampaignsError(reply, error);
     }

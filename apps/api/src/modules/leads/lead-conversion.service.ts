@@ -468,11 +468,18 @@ export function createLeadConversionService(
     async createCampaignDraftFromLeads(input: {
       workspaceId: string;
       selectedLeadIds: string[];
+      originalSelectedLeadIds?: string[];
+      listId?: string;
       name?: string;
       messageBody?: string;
       quickReplyId?: string;
     }): Promise<LeadCampaignDraftResult> {
       const selectedLeadIds = uniqueSelection(input.selectedLeadIds);
+      const originalSelectedLeadIds = input.originalSelectedLeadIds
+        ? uniqueSelection(input.originalSelectedLeadIds) : null;
+      if (originalSelectedLeadIds && selectedLeadIds.some((id) => !originalSelectedLeadIds.includes(id))) {
+        throw new LeadConversionError("LEAD_SELECTION_INVALID", "Imported leads must belong to the original selection.");
+      }
       if (input.messageBody && input.quickReplyId) {
         throw new LeadConversionError(
           "LEAD_SELECTION_INVALID",
@@ -543,7 +550,18 @@ export function createLeadConversionService(
             workspaceId: input.workspaceId,
             name: input.name?.trim() || `Prospecção — Leads ${now().toLocaleDateString("pt-BR")}`,
             status: "draft",
-            audience: { type: "imported", rows },
+            audience: {
+              type: "imported", rows,
+              ...(originalSelectedLeadIds ? {
+                origin: "leads",
+                listId: input.listId,
+                selectedCount: originalSelectedLeadIds.length,
+                exclusions: {
+                  notImported: originalSelectedLeadIds.length - selectedLeadIds.length,
+                  duplicateOrInvalidPhone: selectedLeadIds.length - rows.length
+                }
+              } : {})
+            },
             messageBody,
             templates: [messageBody],
             fallbackName: "cliente",

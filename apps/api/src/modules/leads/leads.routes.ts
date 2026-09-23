@@ -253,8 +253,11 @@ export const leadsRoutes: FastifyPluginAsync<LeadsRoutesOptions> = async (app, o
     const { listId } = selectionParamsSchema.parse(request.params);
     const body = leadCampaignDraftRequestSchema.parse(request.body);
     await assertSelection(request.talk.workspaceId, listId, body.selectedLeadIds);
+    if (body.originalSelectedLeadIds) {
+      await assertSelection(request.talk.workspaceId, listId, body.originalSelectedLeadIds);
+    }
     return reply.code(201).send(leadCampaignDraftResultSchema.parse(await conversion.createCampaignDraftFromLeads({
-      ...body, workspaceId: request.talk.workspaceId
+      ...body, listId, workspaceId: request.talk.workspaceId
     })));
   });
 

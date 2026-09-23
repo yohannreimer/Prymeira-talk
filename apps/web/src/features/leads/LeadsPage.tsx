@@ -215,7 +215,7 @@ export function LeadsPage() {
         const imported = await apiImportLeadContacts(getToken, selectedListId, selectedIds);
         const eligibleIds = imported.contacts.filter(contact => contact.contactId && contact.provenanceId).map(contact => contact.leadId);
         if (!eligibleIds.length) throw new Error("Nenhum lead selecionado tem telefone válido para criar o rascunho.");
-        const result = await apiCreateLeadCampaignDraft(getToken, selectedListId, eligibleIds, campaignMessage.trim());
+        const result = await apiCreateLeadCampaignDraft(getToken, selectedListId, eligibleIds, campaignMessage.trim(), selectedIds);
         setNotice(`Rascunho criado para ${result.contactCount} contato${result.contactCount === 1 ? "" : "s"}. Nenhum disparo foi enviado.`);
         setCampaignId(result.campaignId); setNextLink("disparos");
       }
