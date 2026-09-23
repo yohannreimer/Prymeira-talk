@@ -21,15 +21,17 @@ import {
   type KnowledgeRetrievalSource,
   type SelectedKnowledgeSource
 } from "../src/modules/agents/knowledge-retrieval.js";
+import { buildAgentDecisionContext } from "../src/modules/agents/agent-decision-context.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(__dirname, "../../..");
 config({ path: resolve(repositoryRoot, ".env") });
 
 const packagePath = resolvePackagePath();
+const dryRun = process.argv.includes("--dry-run");
 
 const apiKey = process.env.JEV_API_KEY?.trim();
-if (!apiKey) {
+if (!apiKey && !dryRun) {
   throw new Error("Defina JEV_API_KEY no .env antes de executar este teste.");
 }
 
@@ -59,10 +61,12 @@ let activeJevCall = "";
 const jevFetch: typeof fetch = async (url, init) => {
   const response = await fetch(url, init);
   if (debugJev) {
+    const wire = activeJevCall.startsWith("audit:") ? await response.clone().json().catch(() => null) : null;
     console.error(JSON.stringify({
       kind: "jev_wire_debug",
       call: activeJevCall,
-      status: response.status
+      status: response.status,
+      answers: wire?.answers ?? null
     }));
   }
   if (!response.ok) {
@@ -72,8 +76,8 @@ const jevFetch: typeof fetch = async (url, init) => {
 };
 
 const jevModel = process.env.JEV_MODEL?.trim() || "jev-latest";
-const client = createJevReplyPreflight({ apiKey, model: jevModel, fetchImpl: jevFetch });
-const followupClient = createJevFollowupDecision({ apiKey, model: jevModel, fetchImpl: jevFetch });
+const client = createJevReplyPreflight({ apiKey: apiKey ?? "dry-run", model: jevModel, fetchImpl: jevFetch });
+const followupClient = createJevFollowupDecision({ apiKey: apiKey ?? "dry-run", model: jevModel, fetchImpl: jevFetch });
 
 type ConversationEntry = ["cliente" | "atendente" | "nota interna", string];
 type PreflightExpectation = {
@@ -119,14 +123,14 @@ const cases: LiveCase[] = [
     }
   },
   {
-    name: "barra chata de linha de estoque não confirma saldo",
+    name: "barra chata de linha de estoque sem material ou comprimento pede dado ausente sem confirmar saldo",
     body: "Preciso de 10 barras chatas de 1/4 x 1 polegada. Vocês têm para retirada?",
     history: [["cliente", "Preciso de 10 barras chatas de 1/4 x 1 polegada. Vocês têm para retirada?"]],
     expected: {
       outcome: "continue",
       conversationStage: "new_quote",
       commercialPath: "stock",
-      nextAction: "answer_current_request",
+      nextAction: "ask_missing_technical",
       requiredKnowledge: ["approved_positive_catalog_v1", "approved_supply_and_registration_20260914"]
     }
   },
@@ -138,6 +142,7 @@ const cases: LiveCase[] = [
       outcome: "continue",
       conversationStage: "new_quote",
       commercialPath: "made_to_order",
+      nextAction: "offer_catalog_or_seller",
       requiredKnowledge: ["approved_positive_catalog_v1", "approved_supply_and_registration_20260914"]
     }
   },
@@ -160,6 +165,39 @@ const cases: LiveCase[] = [
       outcome: "continue",
       conversationStage: "new_quote",
       nextAction: "ask_missing_technical",
+      requiredKnowledge: ["approved_positive_catalog_v1"]
+    }
+  },
+  {
+    name: "Ricardo — pedido de material oxicortado",
+    body: "Material para porcas oxicortado, diâmetro externo 220 mm, interno 125 mm, comprimento 160 mm, 4 peças de aço 1045.",
+    history: [
+      ["cliente", "Poderia me ajudar com uma cotação?"],
+      ["atendente", "Qual produto precisa cotar? Informe material, medidas, especificação e quantidade."],
+      ["cliente", "Material para porcas oxicortado, diâmetro externo 220 mm, interno 125 mm, comprimento 160 mm, 4 peças de aço 1045."]
+    ],
+    expected: {
+      outcome: "continue",
+      conversationStage: "qualification",
+      commercialPath: "not_sold",
+      nextAction: "answer_current_request",
+      requiredKnowledge: ["approved_positive_catalog_v1"]
+    }
+  },
+  {
+    name: "João — barra para viga baldrame em mensagens fragmentadas",
+    body: "10mm",
+    history: [
+      ["cliente", "Quanto está uma barra de 10 mm x 12 m?"],
+      ["atendente", "É vergalhão para construção ou barra lisa redonda industrial?"],
+      ["cliente", "Barra para viga baldrame"],
+      ["cliente", "10mm"]
+    ],
+    expected: {
+      outcome: "continue",
+      conversationStage: "qualification",
+      commercialPath: "not_sold",
+      nextAction: "answer_current_request",
       requiredKnowledge: ["approved_positive_catalog_v1"]
     }
   },
@@ -192,6 +230,38 @@ const cases: LiveCase[] = [
     }
   }
 ];
+
+if (dryRun) {
+  for (const testCase of cases) {
+    const input = buildInput(testCase.body, testCase.history);
+    const decisionContext = buildAgentDecisionContext({
+      messages: input.conversationMessages.map((message) => ({
+        ...message,
+        direction: message.label === "cliente" ? "inbound" : message.label === "atendente" ? "outbound" : null
+      })),
+      currentMessageId: input.currentMessage.id,
+      effectiveText: testCase.body
+    });
+    const selection = selectRelevantKnowledge({
+      latestMessage: decisionContext.activeCustomerRequest,
+      conversationHistory: decisionContext.formattedHistory,
+      instruction: null,
+      taxonomy: agentPackage.agent.knowledgeTaxonomy,
+      sources
+    });
+    console.log(JSON.stringify({
+      kind: "local_context_replay",
+      name: testCase.name,
+      promptCharacters: renderedPrompt.length,
+      recentMessages: decisionContext.messages.length,
+      activeCustomerRequest: decisionContext.activeCustomerRequest,
+      selectedKnowledgeIds: selection.selected.map((source) => source.id),
+      selectedKnowledgeCharacters: selection.selected.reduce((total, source) => total + source.content.length, 0),
+      jevCalled: false
+    }));
+  }
+  process.exit(0);
+}
 
 const firstFollowupInstruction = agentPackage.agent.followup.steps[0]?.instruction;
 if (!firstFollowupInstruction) {
@@ -265,7 +335,7 @@ console.log(JSON.stringify({
   confirmedKnowledgeSources: agentPackage.knowledge.filter((source) => source.approvalStatus === "confirmed").length,
   behavioralKnowledgeSources: agentPackage.knowledge.filter((source) => source.approvalStatus === "behavioral").length,
   promptCharacters: renderedPrompt.length,
-  promptSentToJev: false,
+  promptSentToJev: true,
   packageCadence: agentPackage.agent.followup.steps.map((step) => step.afterBusinessMinutes),
   effectiveProductionCadence: effectiveFollowupConfig.steps.map((step) => step.afterBusinessMinutes),
   cadenceDiagnostic:
@@ -273,20 +343,29 @@ console.log(JSON.stringify({
       JSON.stringify(effectiveFollowupConfig.steps.map((step) => step.afterBusinessMinutes))
       ? "current"
       : "package_outdated_runtime_uses_production_cadence",
-  note: "O prompt é usado pelo GPT no runtime; o JEV recebe somente histórico e conhecimento selecionado."
+  note: "O JEV de respostas recebe o prompt integral, até 20 mensagens recentes completas e conhecimento aprovado selecionado."
 }));
 
 const evaluatedCases = new Map<string, { input: AgentReplyPreflightInput; result: AgentReplyPreflightResult }>();
 for (const testCase of cases) {
   const input = buildInput(testCase.body, testCase.history);
+  const decisionContext = buildAgentDecisionContext({
+    messages: input.conversationMessages.map((message) => ({
+      ...message,
+      direction: message.label === "cliente" ? "inbound" : message.label === "atendente" ? "outbound" : null
+    })),
+    currentMessageId: input.currentMessage.id,
+    effectiveText: testCase.body
+  });
+  input.conversationMessages = decisionContext.messages;
   const selection = selectRelevantKnowledge({
-    latestMessage: testCase.body,
-    conversationHistory: formatHistory(testCase.history),
+    latestMessage: decisionContext.activeCustomerRequest,
+    conversationHistory: decisionContext.formattedHistory,
     instruction: null,
     taxonomy: agentPackage.agent.knowledgeTaxonomy,
     sources
   });
-  input.selectedKnowledge = selection.selected.map((source) => ({ title: source.title, content: source.content }));
+  input.selectedKnowledge = selection.selected.map((source) => ({ id: source.id, title: source.title, content: source.content }));
 
   const selectedKnowledge = selection.selected.map(describeSelectedKnowledge);
   const selectedIds = new Set(selection.selected.map((source) => source.id));
@@ -356,7 +435,7 @@ for (const testCase of followupCases) {
 if (!client.audit) throw new Error("A auditoria JEV não foi configurada.");
 
 const originalBarCase = evaluatedCases.get("barra chata fora da faixa e material pendente fica sob consulta");
-const stockBarCase = evaluatedCases.get("barra chata de linha de estoque não confirma saldo");
+const stockBarCase = evaluatedCases.get("barra chata de linha de estoque sem material ou comprimento pede dado ausente sem confirmar saldo");
 const inoxCase = evaluatedCases.get("tubo inox recebe caminho de encomenda e mínimo correto");
 const squareBarCase = evaluatedCases.get("barra maciça quadrada é recusada como não vendida");
 if (!originalBarCase || !stockBarCase || !inoxCase || !squareBarCase) {
@@ -379,16 +458,16 @@ const audits = [
     expected: "handoff"
   },
   {
-    name: "aceita condição de encomenda respaldada para inox",
+    name: "aceita mínimo e escolha de catálogo ou vendedor para inox novo",
     input: inoxCase.input,
-    plan: planOf(inoxCase.result, { commercialPath: "made_to_order", nextAction: "state_made_to_order_conditions" }),
-    candidateReply: "Tubos de inox são sob encomenda e o pedido mínimo é de 300 kg. Essas condições atendem sua necessidade?",
+    plan: planOf(inoxCase.result, { commercialPath: "made_to_order", nextAction: "offer_catalog_or_seller" }),
+    candidateReply: "Tubos de inox são sob encomenda e o pedido mínimo é de 300 kg. Prefere ver o catálogo com os itens ou falar com um vendedor?",
     expected: "send"
   },
   {
     name: "bloqueia prazo e pagamento inventados para encomenda",
     input: inoxCase.input,
-    plan: planOf(inoxCase.result, { commercialPath: "made_to_order", nextAction: "state_made_to_order_conditions" }),
+    plan: planOf(inoxCase.result, { commercialPath: "made_to_order", nextAction: "offer_catalog_or_seller" }),
     candidateReply: "Conseguimos entregar amanhã e pode pagar faturado em 30 dias.",
     expected: "handoff"
   },
@@ -447,7 +526,8 @@ console.log("JEV Villefer package check aprovado com fail-closed. Nenhuma mensag
 
 function buildInput(body: string, entries: ConversationEntry[]): AgentReplyPreflightInput {
   return {
-    currentMessage: { id: "current", body, type: "text" },
+    agentRules: renderedPrompt,
+    currentMessage: { id: `message-${entries.length}`, body, type: "text" },
     conversationMessages: history(entries),
     selectedKnowledge: []
   };
@@ -525,7 +605,7 @@ function renderTemplate(value: string, values: Record<string, string>) {
 }
 
 function resolvePackagePath() {
-  const cliPath = process.argv.slice(2).find((argument) => argument !== "--")?.trim();
+  const cliPath = process.argv.slice(2).find((argument) => argument !== "--" && argument !== "--dry-run")?.trim();
   const configuredPath = cliPath || process.env.VILLEFER_AGENT_PACKAGE_PATH?.trim();
   return resolve(configuredPath || resolve(repositoryRoot, "artifacts/agents/villefer/villefer-v1.agent-package.json"));
 }

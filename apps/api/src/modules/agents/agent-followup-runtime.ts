@@ -270,8 +270,7 @@ export function createAgentFollowupRuntime(input: {
               agentId: agent.id,
               status: "ready"
             },
-            orderBy: [{ createdAt: "desc" }],
-            take: 50
+            orderBy: [{ createdAt: "desc" }]
           })
         ]);
         conversationContext = context;
@@ -301,6 +300,15 @@ export function createAgentFollowupRuntime(input: {
         });
         return { status: "failed", followupId: followup.id, message };
       }
+
+      const jevMessages = conversationContext.messages
+        .filter((entry) => entry.label === "cliente" || entry.label === "atendente")
+        .slice(-20);
+      const jevReplyKnowledge = selectedKnowledge.map((source) => ({
+        id: source.id,
+        title: source.title,
+        content: source.content
+      }));
 
       let decision: FollowupDecision;
       try {
@@ -340,9 +348,10 @@ export function createAgentFollowupRuntime(input: {
       if (input.replyPreflight) {
         try {
           const preflight = await input.replyPreflight.evaluate({
+            agentRules: agent.systemPrompt,
             currentMessage: toPreflightCurrentMessage(conversationContext.messages, followup, stepInstruction),
-            conversationMessages: conversationContext.messages,
-            selectedKnowledge: selectedKnowledge.map(toJevKnowledge)
+            conversationMessages: jevMessages,
+            selectedKnowledge: jevReplyKnowledge
           });
           if (preflight.outcome === "silence") {
             await markSkipped(followup, { ...decision, preflight }, "preflight_social_closure");
@@ -431,9 +440,10 @@ export function createAgentFollowupRuntime(input: {
       if (input.replyPreflight?.audit && preflightPlan) {
         try {
           const audit = await input.replyPreflight.audit({
+            agentRules: agent.systemPrompt,
             currentMessage: toPreflightCurrentMessage(conversationContext.messages, followup, stepInstruction),
-            conversationMessages: conversationContext.messages,
-            selectedKnowledge: selectedKnowledge.map(toJevKnowledge),
+            conversationMessages: jevMessages,
+            selectedKnowledge: jevReplyKnowledge,
             candidateReply: candidate,
             plan: preflightPlan
           });
@@ -659,7 +669,8 @@ function toPreflightCurrentMessage(
 }
 
 function isConfirmedKnowledge(source: KnowledgeSource) {
-  return asRecord(source.metadata)?.approvalStatus === "confirmed";
+  const metadata = asRecord(source.metadata);
+  return metadata?.approvalStatus === "confirmed" || metadata?.source === "approved_agent_improvement";
 }
 
 function toRetrievalSource(source: KnowledgeSource): KnowledgeRetrievalSource {

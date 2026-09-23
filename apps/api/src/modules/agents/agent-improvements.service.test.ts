@@ -8,6 +8,7 @@ import type {
   AgentImprovementDetector,
   AgentImprovementNormalizer
 } from "./jev-agent-improvement.js";
+import { selectRelevantKnowledge } from "./knowledge-retrieval.js";
 
 const workspaceId = "workspace_a";
 const agentId = "00000000-0000-4000-8000-000000000101";
@@ -62,6 +63,7 @@ const pendingImprovement = {
 };
 
 type MockPrisma = {
+  conversation: { findFirst: ReturnType<typeof vi.fn> };
   aiAgent: { findFirst: ReturnType<typeof vi.fn> };
   aiAgentSession: { findFirst: ReturnType<typeof vi.fn> };
   message: { findFirst: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
@@ -77,6 +79,7 @@ type MockPrisma = {
 
 function buildPrisma(): MockPrisma & AgentImprovementsPrismaLike {
   const prisma = {
+    conversation: { findFirst: vi.fn().mockResolvedValue({ activeAgentSessionId: handoffSession.id }) },
     aiAgent: { findFirst: vi.fn().mockResolvedValue(agent) },
     aiAgentSession: { findFirst: vi.fn().mockResolvedValue(handoffSession) },
     message: {
@@ -120,6 +123,27 @@ function normalizer(result: Awaited<ReturnType<AgentImprovementNormalizer["norma
 }
 
 describe("createAgentImprovementsService", () => {
+  it("learns from a paused handoff and preserves the complete multi-message request", async () => {
+    const prisma = buildPrisma();
+    const request = { ...customerMessage, id: "00000000-0000-4000-8000-000000000310", body: "Quanto está uma barra de 10 mm e 12 m?", createdAt: new Date("2026-09-22T13:54:00.000Z") };
+    const clarification = { ...customerMessage, id: "00000000-0000-4000-8000-000000000311", body: "Barra para viga baldrame. 10 mm.", createdAt: new Date("2026-09-22T13:56:00.000Z") };
+    prisma.message.findMany.mockResolvedValue([humanReply, clarification, request]);
+    const improvementDetector = detector({ outcome: "suggest", kind: "not_sold", confidence: 0.96 });
+    const service = createAgentImprovementsService(prisma, { detector: improvementDetector });
+
+    await expect(service.observeHumanReply({ workspaceId, conversationId, messageId: humanReplyId })).resolves.toEqual({ created: true });
+    expect(prisma.aiAgentSession.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: handoffSession.id, status: { in: ["handoff_requested", "paused_by_human"] } })
+    }));
+    expect(improvementDetector.assess).toHaveBeenCalledWith(expect.objectContaining({
+      customerMessage: expect.stringContaining("Quanto está uma barra de 10 mm e 12 m?")
+    }));
+    expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        sourceCustomerMessage: expect.stringContaining("Barra para viga baldrame. 10 mm.")
+      })
+    }));
+  });
   it("creates a pending, carefully scoped proposal only after a human resolution following handoff", async () => {
     const prisma = buildPrisma();
     const improvementDetector = detector({ outcome: "suggest", kind: "not_sold", confidence: 0.96 });
@@ -228,6 +252,29 @@ describe("createAgentImprovementsService", () => {
     }));
     expect(approved.status).toBe("accepted");
     expect(approved.acceptedKnowledgeSourceId).toBe("source-1");
+  });
+
+  it("makes an approved João-style resolution retrievable on the next matching inquiry", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue({
+      ...pendingImprovement,
+      title: "Barra para viga baldrame — não fornecemos",
+      content: "Pedido do cliente: barra de 10 mm e 12 m para viga baldrame.\nDecisão confirmada pelo time: não fornecemos vergalhão para construção civil."
+    });
+    const service = createAgentImprovementsService(prisma);
+
+    await service.approveImprovement({ workspaceId, agentId, improvementId: pendingImprovement.id });
+    const created = prisma.aiKnowledgeSource.create.mock.calls[0]![0].data;
+    const selection = selectRelevantKnowledge({
+      latestMessage: "Vocês fornecem barra de 10 mm para viga baldrame?",
+      conversationHistory: "",
+      instruction: null,
+      sources: [{ id: "source-1", title: created.title, content: created.content, metadata: created.metadata }]
+    });
+
+    expect(selection.selected).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "source-1", content: expect.stringContaining("não fornecemos vergalhão") })
+    ]));
   });
 
   it("requires the team to complete the clarification before it can approve a rule", async () => {

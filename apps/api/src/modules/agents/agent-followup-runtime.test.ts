@@ -229,6 +229,51 @@ function buildRuntime(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentFollowupRuntime", () => {
+  it("gives follow-up reply validation the full prompt, 20 messages, and a late approved improvement", async () => {
+    const fullPrompt = `${"A".repeat(4_100)}\nNão fornecemos oxicorte.`;
+    const messages = Array.from({ length: 21 }, (_, index) => ({
+      id: `message-${index + 1}`,
+      direction: index % 2 === 0 ? "inbound" : "outbound",
+      type: "text",
+      body: index === 19 ? "B".repeat(2_100) : `Mensagem ${index + 1}`,
+      createdAt: new Date(now.getTime() - (21 - index) * 60_000)
+    }));
+    const sources: Array<{ id: string; title: string; content: string; metadata: Record<string, string> }> = Array.from({ length: 50 }, (_, index) => ({
+      id: `irrelevant-${index}`,
+      title: `Assunto alheio ${index}`,
+      content: "Material sem relação com a pergunta atual.",
+      metadata: { approvalStatus: "behavioral" }
+    }));
+    sources.push({
+      id: "approved-improvement",
+      title: "Espessura necessária",
+      content: "Peça a espessura da chapa antes de cotar.",
+      metadata: { source: "approved_agent_improvement" }
+    });
+    const harness = buildRuntime({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, systemPrompt: fullPrompt }) },
+      aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue(sources) },
+      message: { findMany: vi.fn().mockResolvedValue(messages) }
+    });
+
+    await harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup });
+
+    expect(harness.prisma.aiKnowledgeSource.findMany.mock.calls[0]?.[0]).not.toHaveProperty("take");
+    const preflightInput = harness.replyPreflight.evaluate.mock.calls[0]?.[0];
+    const auditInput = harness.audit.mock.calls[0]?.[0];
+    expect(preflightInput.agentRules).toBe(fullPrompt);
+    expect(preflightInput.conversationMessages).toHaveLength(20);
+    expect(preflightInput.conversationMessages[0]?.id).toBe("message-2");
+    expect(preflightInput.conversationMessages.find((item: { id: string }) => item.id === "message-20")?.body).toHaveLength(2_100);
+    expect(preflightInput.selectedKnowledge).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "approved-improvement", content: "Peça a espessura da chapa antes de cotar." })
+    ]));
+    expect(auditInput.agentRules).toBe(fullPrompt);
+    expect(auditInput.conversationMessages).toEqual(preflightInput.conversationMessages);
+    expect(auditInput.selectedKnowledge).toEqual(preflightInput.selectedKnowledge);
+    expect(JSON.stringify(harness.decide.mock.calls[0]?.[0])).not.toContain(fullPrompt);
+  });
+
   it("never executes a review record automatically", async () => {
     const revalidateActiveFollowup = vi.fn();
     const harness = buildRuntime({

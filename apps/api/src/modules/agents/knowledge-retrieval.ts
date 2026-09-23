@@ -108,8 +108,13 @@ export function selectRelevantKnowledge(input: {
   const selected: SelectedKnowledgeSource[] = [];
   const sourceIds = new Set<string>();
   let selectedCharacters = 0;
+  const preferCurrentRequest = retrievalQuery.primaryTokens.size >= 2 &&
+    rankedChunks.some((candidate) => candidate.primaryMatch);
 
   for (const candidate of rankedChunks) {
+    if (preferCurrentRequest && !candidate.primaryMatch) {
+      continue;
+    }
     if (selected.length >= MAX_SELECTED_CHUNKS) {
       break;
     }
@@ -127,7 +132,7 @@ export function selectRelevantKnowledge(input: {
       continue;
     }
 
-    const { sourceIndex: _sourceIndex, ...selectedCandidate } = candidate;
+    const { sourceIndex: _sourceIndex, primaryMatch: _primaryMatch, ...selectedCandidate } = candidate;
     selected.push(selectedCandidate);
     sourceIds.add(candidate.id);
     selectedCharacters += candidate.content.length;
@@ -157,6 +162,7 @@ export function isDocumentDependentQuestion(
 
 type ScoredKnowledgeSource = SelectedKnowledgeSource & {
   sourceIndex: number;
+  primaryMatch: boolean;
 };
 
 type RetrievalQuery = {
@@ -225,6 +231,13 @@ function scoreChunk(
     return null;
   }
 
+  const primaryMatch = Boolean(
+    (category && query.primaryCategories.has(category)) ||
+    primaryKeywordMatches.length > 0 ||
+    hasTitleMatch(title, query.primaryTokens, query.primaryCategories, query.taxonomy) ||
+    primaryOverlapCount >= 2
+  );
+
   return {
     id: source.id,
     title: source.title,
@@ -237,6 +250,7 @@ function scoreChunk(
     start: chunk.start,
     end: chunk.end,
     sourceIndex,
+    primaryMatch,
     fileUrl: source.fileUrl?.trim() || null,
     fileName: source.fileName?.trim() || null,
     mimeType: source.mimeType?.trim() || null

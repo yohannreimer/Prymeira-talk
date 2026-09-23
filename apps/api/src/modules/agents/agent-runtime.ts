@@ -15,6 +15,7 @@ import {
   type ConversationContext,
   type ConversationContextBuilderPrismaLike
 } from "./conversation-context-builder.js";
+import { buildAgentDecisionContext } from "./agent-decision-context.js";
 import {
   isDocumentDependentQuestion,
   selectRelevantKnowledge,
@@ -778,8 +779,7 @@ export function createAgentRuntime(input: {
               agentId: agent.id,
               status: "ready"
             },
-            orderBy: [{ createdAt: "desc" }],
-            take: 50
+            orderBy: [{ createdAt: "desc" }]
           }),
           buildConversationContext(prisma, {
             workspaceId: runInput.workspaceId,
@@ -793,13 +793,23 @@ export function createAgentRuntime(input: {
         const approvedAttachments = knowledge.flatMap(toApprovedAttachment);
         const approvedAttachmentUrls = new Set(approvedAttachments.map((attachment) => attachment.url));
         const taxonomy = readKnowledgeTaxonomy(agent.behaviorConfig);
+        const decisionContext = buildAgentDecisionContext({
+          messages: conversationContext.messages,
+          currentMessageId: message.id,
+          effectiveText
+        });
         const knowledgeSelection = selectRelevantKnowledge({
-          latestMessage: effectiveText,
-          conversationHistory: conversationContext.formattedHistory,
+          latestMessage: decisionContext.activeCustomerRequest,
+          conversationHistory: decisionContext.formattedHistory,
           instruction: runInput.instruction,
           taxonomy,
           sources: knowledge.map(toRetrievalSource)
         });
+        const jevKnowledge = knowledgeSelection.selected.map((source) => ({
+          id: source.id,
+          title: source.title,
+          content: source.content
+        }));
         const context = buildContext(
           conversation,
           message,
@@ -829,7 +839,22 @@ export function createAgentRuntime(input: {
             0
           ),
           attachmentCount: approvedAttachments.length,
-          conversationMessageCount: conversationContext.messages.length
+          conversationMessageCount: conversationContext.messages.length,
+          jevConversationMessageCount: decisionContext.messages.length,
+          jevAgentRulesCharacters: agent.systemPrompt.length,
+          jevSelectedKnowledgeCharacters: jevKnowledge.reduce((sum, source) => sum + source.content.length, 0),
+          jevStateCharacters: JSON.stringify({
+            agentRules: agent.systemPrompt,
+            currentMessage: { id: message.id, body: effectiveText, type: message.type },
+            conversationMessages: decisionContext.messages.map((entry) => ({
+              id: entry.id,
+              label: entry.label,
+              type: entry.type,
+              body: entry.body,
+              createdAt: entry.createdAt
+            })),
+            approvedKnowledge: jevKnowledge
+          }).length
           ,...(mediaMetadata ? { media: mediaMetadata } : {})
           ,...(mediaProcessingError ? { mediaProcessingError } : {})
         };
@@ -869,16 +894,14 @@ export function createAgentRuntime(input: {
         if (input.replyPreflight && !mediaFallback && !safetyOutput && !documentRequiresHuman) {
           try {
             replyPreflight = await input.replyPreflight.evaluate({
+              agentRules: agent.systemPrompt,
               currentMessage: {
                 id: message.id,
                 body: effectiveText,
                 type: message.type
               },
-              conversationMessages: conversationContext.messages,
-              selectedKnowledge: knowledgeSelection.selected.map((source) => ({
-                title: source.title,
-                content: source.content
-              }))
+              conversationMessages: decisionContext.messages,
+              selectedKnowledge: jevKnowledge
             });
             contextSummary = { ...contextSummary, replyPreflight };
           } catch {
@@ -949,16 +972,14 @@ export function createAgentRuntime(input: {
         ) {
           try {
             const replyQualityAudit = await input.replyPreflight.audit({
+              agentRules: agent.systemPrompt,
               currentMessage: {
                 id: message.id,
                 body: effectiveText,
                 type: message.type
               },
-              conversationMessages: conversationContext.messages,
-              selectedKnowledge: knowledgeSelection.selected.map((source) => ({
-                title: source.title,
-                content: source.content
-              })),
+              conversationMessages: decisionContext.messages,
+              selectedKnowledge: jevKnowledge,
               candidateReply: providerOutput.reply,
               plan: replyPreflight.plan
             });

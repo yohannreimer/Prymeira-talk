@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export type AgentReplyPreflightInput = {
+  agentRules?: string;
   currentMessage: {
     id: string;
     body: string;
@@ -14,6 +15,7 @@ export type AgentReplyPreflightInput = {
     createdAt: string | null;
   }>;
   selectedKnowledge: Array<{
+    id?: string;
     title: string;
     content: string;
   }>;
@@ -139,8 +141,8 @@ const replyPreflightQuestions = {
     type: "choice",
     instructions: "Qual é a etapa dominante da conversa?",
     criteria: {
-      new_quote: "Novo pedido de cotação ainda não tratado.",
-      qualification: "Coleta ou confirmação de dados para uma cotação em andamento.",
+      new_quote: "Novo pedido de cotação ainda não tratado; não é resposta à qualificação anterior do agente sobre o mesmo pedido.",
+      qualification: "Coleta ou confirmação de dados para uma cotação em andamento, inclusive resposta do cliente à pergunta de qualificação feita pelo agente sobre o mesmo pedido.",
       seller_owned: "Um vendedor humano já está tratando cotação, negociação, entrega ou exceção.",
       post_proposal: "Proposta enviada, ajuste de proposta ou acompanhamento posterior.",
       closure: "Assunto concluído, despedida, agradecimento ou recusa sem demanda aberta.",
@@ -151,25 +153,25 @@ const replyPreflightQuestions = {
   commercialPath: {
     type: "choice",
     instructions:
-      "Usando somente o histórico e o conhecimento aprovado fornecido, qual caminho comercial se aplica ao pedido atual? Não trate uma inferência como fato confirmado.",
+      "Usando somente o histórico, as regras do agente e o conhecimento aprovado fornecido, qual caminho comercial se aplica ao pedido atual? Não trate uma inferência como fato confirmado. Uma negativa explícita nas regras do agente é fonte válida para not_sold; uma família genérica não confirma toda variante.",
     criteria: {
-      stock: "O conhecimento aprovado identifica o item como linha de estoque.",
+      stock: "O conhecimento aprovado identifica a família como linha de estoque e a variante solicitada não contradiz medidas, material ou norma aprovados. Linha de estoque não confirma saldo nem disponibilidade da variante.",
       made_to_order: "O conhecimento aprovado identifica o item como sob encomenda.",
-      not_sold: "O conhecimento aprovado identifica o item ou serviço como não vendido.",
-      ambiguous: "Há pedido comercial, mas item ou disponibilidade não pode ser classificado com segurança.",
+      not_sold: "Há negativa explícita aplicável ao item ou serviço descrito pelo cliente nas regras do agente ou no conhecimento aprovado; não inferir exclusão apenas por ausência no catálogo.",
+      ambiguous: "Há pedido comercial, mas a variante tem medida fora da faixa aprovada, material ou norma não confirmados, ou outra especificação que impede classificar o fornecimento com segurança. Uma família genérica de estoque não resolve a divergência da variante.",
       not_applicable: "Não há decisão comercial aplicável nesta mensagem."
     }
   },
   nextAction: {
     type: "choice",
     instructions:
-      "Qual único próximo movimento evita repetir a conversa e respeita o histórico? Não invente fatos comerciais nem reinicie uma negociação humana.",
+      "Qual único próximo movimento evita repetir a conversa e respeita o histórico? Se a variante está fora da faixa aprovada ou o cliente pediu material/norma não confirmados, escolha handoff para consulta ao vendedor, mesmo que a resposta ao cliente diga que a consulta será feita; não escolha answer_current_request para encerrar essa pendência. Se há negativa explícita aplicável, escolha answer_current_request para recusa curta, sem handoff apenas para repetir a regra. Não invente fatos comerciais nem reinicie uma negociação humana.",
     criteria: {
-      answer_current_request: "Responder diretamente uma pergunta atual com informação aprovada.",
+      answer_current_request: "Responder diretamente com informação aprovada, inclusive recusa objetiva de item explicitamente não vendido. Não confirmar fornecimento, disponibilidade ou equivalência de variante sem evidência; uma resposta de que será consultada não substitui handoff quando a variante está fora da faixa aprovada ou a especificação solicitada não foi confirmada.",
       ask_missing_technical: "Pedir somente os dados técnicos realmente ausentes de uma cotação em andamento.",
       offer_catalog_or_seller: "Para novo item sob encomenda, oferecer catálogo aprovado ou vendedor antes de checklist técnico adicional.",
       state_made_to_order_conditions: "Informar condições de encomenda ainda não apresentadas e perguntar se atendem.",
-      handoff: "Encaminhar para humano por decisão, exceção, risco ou incerteza relevante.",
+      handoff: "Encaminhar para humano quando o cliente pedir vendedor ou quando variante fora da faixa ou especificação não confirmada exigir consulta comercial; não para repetir uma negativa aprovada e aplicável ao pedido.",
       wait_for_customer: "O cliente precisa responder uma pendência já apresentada; não criar nova pergunta.",
       silence: "Não enviar resposta para encerramento social sem pendência."
     }
@@ -179,11 +181,11 @@ const replyPreflightQuestions = {
 const replyQualityAuditQuestions = {
   disposition: {
     type: "choice",
-    instructions: "A resposta candidata deve ser enviada, suprimida ou encaminhada para humano? Avalie `candidateReply` contra `agentPreflight`, `currentMessage` e `conversationMessages`. Uma recusa objetiva de item explicitamente classificado como not_sold no plano e sustentado pelo conhecimento aprovado segue o plano. Uma mensagem que apenas informa que um vendedor verificará disponibilidade ou especificação também segue um plano handoff e não afirma que o item está disponível. Nunca escolha suppress para uma resposta que confirma uma informação nova do cliente e solicita o próximo dado necessário de uma qualificação em aberto.",
+    instructions: "Decida se a candidateReply deve ser enviada, suprimida ou bloqueada para revisão humana. Atenção: handoff nesta auditoria significa bloquear a candidateReply; é diferente de agentPreflight.nextAction=handoff, que pode exigir enviar ao cliente um aviso seguro de encaminhamento. Avalie `candidateReply` contra `agentPreflight`, `currentMessage`, `conversationMessages`, `agentRules` e conhecimento aprovado. Uma recusa objetiva de item explicitamente classificado como not_sold no plano e sustentado por regra explícita do agente ou conhecimento aprovado segue o plano. Uma mensagem que apenas informa que um vendedor verificará disponibilidade ou especificação segue um plano handoff e não afirma que o item está disponível. Nunca escolha suppress para uma resposta que confirma uma informação nova do cliente e solicita o próximo dado necessário de uma qualificação em aberto.",
     criteria: {
-      send: "A resposta avança a demanda, segue o plano interno e não afirma fato comercial sem fonte aprovada. Inclui uma recusa curta sustentada quando agentPreflight.commercialPath é not_sold e um aviso de encaminhamento/verificação quando nextAction é handoff. Exemplo: depois de o atendente perguntar 'Será entrega ou retirada?' e o cliente responder 'Retirada', a resposta 'Certo, retirada em Joinville. Para seguir, informe a empresa e CNPJ ou, se for pessoa física, seu nome.' deve ser send: confirma a informação nova e coleta o próximo dado, sem prometer preço, estoque ou prazo.",
+      send: "A resposta avança a demanda, segue o plano interno e não afirma fato comercial sem regra explícita do agente ou conhecimento aprovado. Inclui uma recusa curta sustentada quando agentPreflight.commercialPath é not_sold. Mesmo com agentPreflight.nextAction=handoff, escolha send para um aviso como 'Vou encaminhar ao vendedor para verificar a disponibilidade e a especificação', desde que não afirme disponibilidade, equivalência ou outra condição não verificada. Exemplo: depois de o atendente perguntar 'Será entrega ou retirada?' e o cliente responder 'Retirada', a resposta 'Certo, retirada em Joinville. Para seguir, informe a empresa e CNPJ ou, se for pessoa física, seu nome.' deve ser send: confirma a informação nova e coleta o próximo dado, sem prometer preço, estoque ou prazo.",
       suppress: "Somente quando candidateReply for uma duplicação real de resposta já enviada, ou uma confirmação social/encerramento sem pergunta, sem novo dado e sem pendência aberta. Não é suppress uma etapa que registra uma decisão do cliente e pede o próximo dado de qualificação.",
-      handoff: "A resposta afirma, promete ou decide preço, estoque, prazo, frete, pagamento, especificação ou exceção sem base aprovada, ou conflita com o plano."
+      handoff: "Bloqueie a candidateReply para revisão humana se ela afirma, promete ou decide preço, estoque, prazo, frete, pagamento, especificação ou exceção sem base aprovada, ou conflita com o plano; não escolha handoff apenas porque o texto comunica um encaminhamento ao vendedor para verificar algo ainda não confirmado."
     }
   },
   followsPlan: {
@@ -193,7 +195,7 @@ const replyQualityAuditQuestions = {
   },
   assertsUnsupportedCommercialFact: {
     type: "noul",
-    instructions: "A resposta candidata afirma, promete ou oferece como certo um fato comercial ou equivalente técnico sem evidência explícita no conhecimento aprovado? Uma recusa que repete fielmente um item explicitamente não vendido no conhecimento aprovado é suportada. Dizer que um vendedor ainda verificará disponibilidade ou especificação não afirma disponibilidade, estoque ou especificação.",
+    instructions: "A resposta candidata afirma, promete ou oferece como certo um fato comercial ou equivalente técnico sem evidência explícita nas regras do agente ou no conhecimento aprovado? Uma recusa que repete fielmente um item explicitamente não vendido nessas fontes é suportada. Dizer que um vendedor ainda verificará disponibilidade ou especificação não afirma disponibilidade, estoque ou especificação.",
     criteria: {
       true: "Afirma ou promete estoque, preço, prazo, frete, pagamento, especificação, substituição ou equivalência técnica sem fonte aprovada.",
       false: "Não afirma, promete ou oferece fato comercial protegido sem evidência."
@@ -302,17 +304,19 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
 
 function toJevState(input: AgentReplyPreflightInput) {
   return {
+    agentRules: input.agentRules ?? null,
     currentMessage: input.currentMessage,
-    conversationMessages: input.conversationMessages.slice(-10).map((message) => ({
+    conversationMessages: input.conversationMessages.slice(-20).map((message) => ({
       id: message.id,
       label: message.label,
       type: message.type,
-      body: message.body?.slice(0, 2_000) ?? null,
+      body: message.body,
       createdAt: message.createdAt
     })),
-    approvedKnowledge: input.selectedKnowledge.slice(0, 8).map((source) => ({
-      title: source.title.slice(0, 240),
-      content: source.content.slice(0, 1_500)
+    approvedKnowledge: input.selectedKnowledge.map((source) => ({
+      id: source.id ?? null,
+      title: source.title,
+      content: source.content
     }))
   };
 }
