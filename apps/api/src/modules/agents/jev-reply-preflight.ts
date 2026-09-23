@@ -141,8 +141,8 @@ const replyPreflightQuestions = {
     type: "choice",
     instructions: "Qual é a etapa dominante da conversa?",
     criteria: {
-      new_quote: "Novo pedido de cotação ainda não tratado.",
-      qualification: "Coleta ou confirmação de dados para uma cotação em andamento.",
+      new_quote: "Novo pedido de cotação ainda não tratado; não é resposta à qualificação anterior do agente sobre o mesmo pedido.",
+      qualification: "Coleta ou confirmação de dados para uma cotação em andamento, inclusive resposta do cliente à pergunta de qualificação feita pelo agente sobre o mesmo pedido.",
       seller_owned: "Um vendedor humano já está tratando cotação, negociação, entrega ou exceção.",
       post_proposal: "Proposta enviada, ajuste de proposta ou acompanhamento posterior.",
       closure: "Assunto concluído, despedida, agradecimento ou recusa sem demanda aberta.",
@@ -155,10 +155,10 @@ const replyPreflightQuestions = {
     instructions:
       "Usando somente o histórico, as regras do agente e o conhecimento aprovado fornecido, qual caminho comercial se aplica ao pedido atual? Não trate uma inferência como fato confirmado. Uma negativa explícita nas regras do agente é fonte válida para not_sold; uma família genérica não confirma toda variante.",
     criteria: {
-      stock: "O conhecimento aprovado identifica o item como linha de estoque.",
+      stock: "O conhecimento aprovado identifica a família como linha de estoque e a variante solicitada não contradiz medidas, material ou norma aprovados. Linha de estoque não confirma saldo nem disponibilidade da variante.",
       made_to_order: "O conhecimento aprovado identifica o item como sob encomenda.",
-      not_sold: "O conhecimento aprovado identifica o item ou serviço como não vendido.",
-      ambiguous: "Há pedido comercial, mas item ou disponibilidade não pode ser classificado com segurança.",
+      not_sold: "Há negativa explícita aplicável ao item ou serviço descrito pelo cliente nas regras do agente ou no conhecimento aprovado; não inferir exclusão apenas por ausência no catálogo.",
+      ambiguous: "Há pedido comercial, mas a variante tem medida fora da faixa aprovada, material ou norma não confirmados, ou outra especificação que impede classificar o fornecimento com segurança. Uma família genérica de estoque não resolve a divergência da variante.",
       not_applicable: "Não há decisão comercial aplicável nesta mensagem."
     }
   },
@@ -167,11 +167,11 @@ const replyPreflightQuestions = {
     instructions:
       "Qual único próximo movimento evita repetir a conversa e respeita o histórico? Não invente fatos comerciais nem reinicie uma negociação humana.",
     criteria: {
-      answer_current_request: "Responder diretamente uma pergunta atual com informação aprovada.",
+      answer_current_request: "Responder diretamente com informação aprovada, inclusive recusa objetiva de item explicitamente não vendido. Não confirmar fornecimento, disponibilidade ou equivalência de variante sem evidência.",
       ask_missing_technical: "Pedir somente os dados técnicos realmente ausentes de uma cotação em andamento.",
       offer_catalog_or_seller: "Para novo item sob encomenda, oferecer catálogo aprovado ou vendedor antes de checklist técnico adicional.",
       state_made_to_order_conditions: "Informar condições de encomenda ainda não apresentadas e perguntar se atendem.",
-      handoff: "Encaminhar para humano por decisão, exceção, risco ou incerteza relevante.",
+      handoff: "Encaminhar para humano quando o cliente pedir vendedor ou quando variante fora da faixa ou especificação não confirmada exigir consulta comercial; não para repetir uma negativa aprovada e aplicável ao pedido.",
       wait_for_customer: "O cliente precisa responder uma pendência já apresentada; não criar nova pergunta.",
       silence: "Não enviar resposta para encerramento social sem pendência."
     }
