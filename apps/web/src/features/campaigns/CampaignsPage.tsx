@@ -3,6 +3,7 @@ import type { ChannelDto } from "@prymeira-talk/shared";
 import { CalendarClock, Gauge, Play, Plus, RefreshCw, Save, Send, Upload, X, Zap } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { readSheet } from "read-excel-file/browser";
+import { GuidedCampaignEditor } from "./GuidedCampaignEditor";
 import {
   apiCreateCampaign,
   apiGetBoards,
@@ -31,6 +32,7 @@ type CampaignViewMode = "hub" | "editor";
 type MetaConnectionMode = "direct" | "evolution_official";
 type CampaignSendMode = "evolution" | "meta_cloud";
 type MetaVariableMode = "field" | "fixed";
+const isGuidedEvolution = (mode: CampaignSendMode): boolean => mode === "evolution";
 
 interface ImportedAudienceRow {
   name?: string;
@@ -607,6 +609,7 @@ export function CampaignsPage() {
   }, [getToken, selectedCampaignId]);
 
   function openCampaign(campaign: CampaignDto) {
+    setSendMode(campaign.messageBody.startsWith("Template Meta ") ? "meta_cloud" : "evolution");
     setSelectedCampaignId(campaign.id);
     setForm(toFormState(campaign));
     setAudiencePreview([]);
@@ -616,6 +619,7 @@ export function CampaignsPage() {
   }
 
   function createDraft() {
+    setSendMode("evolution");
     setSelectedCampaignId(null);
     setRecipients([]);
     setAudiencePreview([]);
@@ -1014,6 +1018,22 @@ export function CampaignsPage() {
         </div>
       </section>
     );
+  }
+
+  if (isGuidedEvolution(sendMode)) {
+    return <GuidedCampaignEditor
+      campaign={selectedCampaign}
+      boards={boards}
+      channels={evolutionChannels}
+      getToken={getToken}
+      parseFile={parseAudienceFile}
+      onSaved={(campaign) => {
+        setCampaigns((current) => mergeCampaign(current, campaign));
+        setSelectedCampaignId(campaign.id);
+      }}
+      onBack={() => setViewMode("hub")}
+      onMeta={() => setSendMode("meta_cloud")}
+    />;
   }
 
   return (

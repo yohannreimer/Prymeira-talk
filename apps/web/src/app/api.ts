@@ -271,6 +271,10 @@ export type CampaignStatus = "draft" | "scheduled" | "sending" | "paused" | "com
 
 export interface CampaignAudienceDto {
   type: "board" | "imported";
+  origin?: "leads";
+  listId?: string;
+  selectedCount?: number;
+  exclusions?: { notImported?: number; duplicateOrInvalidPhone?: number };
   boardId?: string;
   stageId?: string;
   rows?: Array<{
@@ -301,6 +305,7 @@ export interface CampaignDto {
   fallbackName: string;
   cadence: CampaignCadenceDto;
   scheduledAt: string | null;
+  timeZone?: string;
   mode: "simulated" | "real";
   createdAt: string;
   updatedAt: string;
@@ -332,6 +337,29 @@ export interface CampaignRecipientDto {
   updatedAt: string;
   contactName: string | null;
   contactPhone: string | null;
+}
+
+export interface CampaignAudiencePreviewDto {
+  selectedCount: number | null;
+  eligible: Array<CampaignAudienceContactDto & { normalizedPhone: string; message: string }>;
+  excluded: Array<CampaignAudienceContactDto & { reason: "missing_phone" | "no_whatsapp" |
+    "unverified" | "verification_error" | "duplicate" }>;
+  checkedAt: string;
+  audienceHash: string;
+  revision: string;
+  unresolvedVariables: string[];
+  effectiveStartAt?: string;
+}
+
+export interface CampaignProgressDto {
+  status: CampaignStatus;
+  total: number;
+  sent: number;
+  pending: number;
+  skipped: number;
+  failed: number;
+  uncertain: number;
+  nextScheduledAt: string | null;
 }
 
 export interface CampaignSendResultDto {
@@ -811,11 +839,21 @@ function parseCampaignAudience(data: unknown): CampaignAudienceDto {
     boardId?: unknown;
     stageId?: unknown;
     rows?: unknown;
+    origin?: unknown;
+    listId?: unknown;
+    selectedCount?: unknown;
+    exclusions?: unknown;
   };
 
   if (payload.type === "imported") {
     return {
       type: "imported",
+      ...(payload.origin === "leads" ? { origin: "leads" as const } : {}),
+      ...(typeof payload.listId === "string" ? { listId: payload.listId } : {}),
+      ...(typeof payload.selectedCount === "number" ? { selectedCount: payload.selectedCount } : {}),
+      ...(payload.exclusions && typeof payload.exclusions === "object" ? {
+        exclusions: payload.exclusions as CampaignAudienceDto["exclusions"]
+      } : {}),
       rows: Array.isArray(payload.rows)
         ? payload.rows.map((row) => {
             const importedRow = row as { name?: unknown; phone?: unknown; fields?: unknown };
@@ -872,6 +910,7 @@ function parseCampaign(data: unknown): CampaignDto {
     fallbackName: typeof payload.fallbackName === "string" ? payload.fallbackName : "cliente",
     cadence: parseCampaignCadence(payload.cadence),
     scheduledAt: payload.scheduledAt,
+    timeZone: payload.timeZone ?? "America/Sao_Paulo",
     mode: payload.mode === "real" ? "real" : "simulated",
     createdAt: payload.createdAt,
     updatedAt: payload.updatedAt
@@ -2466,6 +2505,7 @@ export async function apiCreateCampaign(
     fallbackName?: string;
     cadence?: CampaignCadenceDto;
     scheduledAt?: string | null;
+    timeZone?: string;
   }
 ): Promise<CampaignDto> {
   const token = await getRequiredToken(getToken);
@@ -2499,6 +2539,7 @@ export async function apiUpdateCampaign(
     fallbackName: string;
     cadence: CampaignCadenceDto;
     scheduledAt: string | null;
+    timeZone: string;
   }>
 ): Promise<CampaignDto> {
   const token = await getRequiredToken(getToken);
@@ -2539,6 +2580,51 @@ export async function apiResolveCampaignAudience(
 
   const data = await response.json();
   return Array.isArray(data) ? data.map(parseCampaignAudienceContact) : [];
+}
+
+async function campaignAction<T>(getToken: TokenProvider, campaignId: string,
+  action: string, body?: unknown): Promise<T> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/campaigns/${campaignId}/${action}`, {
+    method: action === "progress" ? "GET" : "POST",
+    headers: { Authorization: `Bearer ${token}`,
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response,
+    "Não foi possível atualizar a campanha."));
+  return response.json() as Promise<T>;
+}
+
+export function apiPreviewCampaignAudience(getToken: TokenProvider, campaignId: string,
+  channelId: string, schedule?: { startMode: "now" | "scheduled"; scheduledAt: string | null;
+    timeZone: string }): Promise<CampaignAudiencePreviewDto> {
+  return campaignAction(getToken, campaignId, "preview-audience", { channelId, ...schedule });
+}
+
+export function apiActivateCampaign(getToken: TokenProvider, campaignId: string, body: {
+  idempotencyKey: string; channelId: string; startMode: "now" | "scheduled";
+  scheduledAt: string | null; timeZone: string; confirmation: true;
+  expectedAudienceHash: string;
+}): Promise<{ campaignId: string; status: CampaignStatus; recipientsQueued: number;
+  scheduledAt: string | null }> {
+  return campaignAction(getToken, campaignId, "activate", body);
+}
+
+export function apiGetCampaignProgress(getToken: TokenProvider, campaignId: string): Promise<CampaignProgressDto> {
+  return campaignAction(getToken, campaignId, "progress");
+}
+
+export function apiControlCampaign(getToken: TokenProvider, campaignId: string,
+  action: "pause" | "resume" | "cancel-remaining"): Promise<CampaignProgressDto> {
+  return campaignAction(getToken, campaignId, action);
+}
+
+export function apiResolveUncertainCampaignRecipient(getToken: TokenProvider,
+  campaignId: string, recipientId: string,
+  outcome: "sent" | "not_sent"): Promise<CampaignProgressDto> {
+  return campaignAction(getToken, campaignId,
+    `recipients/${recipientId}/resolve-uncertain`, { outcome, confirmation: true });
 }
 
 export async function apiSendCampaignSimulated(
