@@ -604,7 +604,7 @@ describe("createAgentRuntime", () => {
     expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "failed", errorCode: "MEDIA_UNAVAILABLE" }) }) }) });
   });
 
-  it("uses the exact image fallback once when media cannot be resolved", async () => {
+  it("hands an unreadable image to a human without messaging the customer", async () => {
     const imageMessage = {
       ...baseMessage,
       type: "image",
@@ -614,15 +614,21 @@ describe("createAgentRuntime", () => {
     const prisma = buildPrisma();
     vi.mocked(prisma.message.findFirst).mockResolvedValue(imageMessage);
     vi.mocked(prisma.message.findMany).mockResolvedValue([imageMessage]);
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
+      ...baseAgent,
+      allowedActions: ["send_message"]
+    });
     const provider = buildProvider({
       confidence: 0.9,
       reply: "Não deveria ser chamada.",
       actions: [],
       handoff: { required: false, reason: null }
     });
+    const warn = vi.fn();
     const runtime = createAgentRuntime({
       prisma,
       provider,
+      logger: { warn },
       mediaResolver: vi.fn().mockRejectedValue(Object.assign(new Error("missing"), {
         code: "MEDIA_UNAVAILABLE"
       }))
@@ -636,14 +642,91 @@ describe("createAgentRuntime", () => {
       trigger: "automation"
     });
 
-    expect(result.status).toBe("completed");
+    expect(result.status).toBe("handoff_requested");
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({
+      event: "agent_image_processing_failed",
+      messageId: ids.message,
+      errorCode: "MEDIA_UNAVAILABLE"
+    }), expect.any(String));
     expect(provider.generate).not.toHaveBeenCalled();
-    expect(prisma.message.create).toHaveBeenCalledWith({
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.message.update).toHaveBeenCalledWith({
+      where: { id: ids.message },
       data: expect.objectContaining({
-        type: "text",
-        body: "Não consegui analisar essa imagem. Pode reenviar com mais nitidez ou mandar a lista em texto?"
+        body: expect.stringContaining("Atendimento humano necessário."),
+        metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "failed" }) })
       })
     });
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+    }));
+    expect(prisma.aiAgentSession.update).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: "handoff_requested",
+        handoffReason: "Não foi possível ler automaticamente a imagem enviada pelo cliente. Verifique o anexo e responda o pedido."
+      })
+    }));
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        status: "handoff_requested",
+        contextSummary: expect.objectContaining({ mediaProcessingError: "MEDIA_UNAVAILABLE" }),
+        output: expect.objectContaining({ reply: null, handoff: expect.objectContaining({ required: true }) }),
+        actions: expect.arrayContaining([expect.objectContaining({ type: "request_handoff", status: "completed" })])
+      })
+    });
+  });
+
+  it("keeps a qualification agent silent when visual extraction cannot read the image", async () => {
+    const imageMessage = {
+      ...baseMessage,
+      type: "image",
+      body: "Imagem recebida",
+      mediaUrl: "data:image/jpeg;base64,aW1hZ2Vt"
+    };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(imageMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([imageMessage]);
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
+      ...baseAgent,
+      behaviorConfig: { qualification: { fields: [{ key: "pedido" }] } }
+    });
+    const mediaPreparer = vi.fn().mockResolvedValue({
+      kind: "image",
+      status: "failed",
+      errorCode: "MEDIA_UNREADABLE",
+      fallback: "Pode reenviar a imagem?"
+    });
+    const sendText = vi.fn();
+    const provider = buildProvider({ confidence: 1, reply: "Não deveria ser chamada.", actions: [], handoff: { required: false, reason: null } });
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      mediaPreparer,
+      evolution: { mode: "real", client: { sendText } }
+    });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result.status).toBe("handoff_requested");
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.message.update).toHaveBeenCalledWith({
+      where: { id: ids.message },
+      data: expect.objectContaining({
+        body: expect.not.stringContaining("reenviar"),
+        metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ errorCode: "MEDIA_UNREADABLE" }) })
+      })
+    });
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+    }));
   });
 
   it("prepares an inbound audio message immediately", async () => {

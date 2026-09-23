@@ -256,6 +256,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           evolution: evolutionRuntime,
           chatHistory: evolutionHistorySource,
           realtime: app.realtime,
+          logger: app.log,
           boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike),
           followupService
         });

@@ -47,6 +47,8 @@ No Portainer, abra **Containers**, selecione o contêiner em execução de `prym
 
 Busque por `agent_improvement_observation`. Cada resposta humana analisada registra `source`, `conversationId`, `messageId`, `outcome` (`created` ou `skipped`) e `reason`. Uma falha técnica usa o evento `agent_improvement_observation_failed`. O texto da conversa e a chave do Jev não são incluídos nesses eventos. O motivo `not_a_durable_human_resolution_explicit_refusal_fallback` indica que o Jev descartou uma recusa explícita, mas o sistema criou uma sugestão para revisão. `detector_failed_explicit_refusal_fallback` indica falha técnica do detector seguida da mesma recuperação.
 
+Busque por `agent_image_processing_failed` para localizar uma imagem que a IA não conseguiu ler. O registro contém apenas IDs e o código estável do erro; o fluxo solicita repasse interno, sem mensagem automática ao cliente.
+
 O `docker-compose.prod.yml` configura `json-file` com rotação de até 10 arquivos de 20 MB por contêiner. Isso limita uso de disco e mantém logs recentes consultáveis no Portainer; não é arquivo permanente. A rotação e a remoção do contêiner antigo podem apagar logs históricos. Para retenção entre implantações, configure um coletor central antes de depender desses registros como histórico. Ao aplicar a configuração, preserve os parâmetros e imagens da stack que estão efetivamente em produção; o arquivo do repositório não deve substituir a configuração ativa sem essa conferência.
 
 ## Retenção e rollback

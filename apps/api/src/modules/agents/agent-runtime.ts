@@ -215,7 +215,7 @@ type AgentRuntimeBoardRules = {
 };
 
 export const IMAGE_PROCESSING_FALLBACK =
-  "Não consegui analisar essa imagem. Pode reenviar com mais nitidez ou mandar a lista em texto?";
+  "Não foi possível ler automaticamente esta imagem. Atendimento humano necessário.";
 export const AUDIO_PROCESSING_FALLBACK =
   "Não consegui entender esse áudio. Pode reenviar ou escrever a mensagem?";
 export const AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK =
@@ -252,6 +252,7 @@ export function createAgentRuntime(input: {
   realtime?: AgentRuntimeRealtime;
   boardRules?: AgentRuntimeBoardRules;
   followupService?: ConversationFollowupsObserver;
+  logger?: { warn(fields: Record<string, unknown>, message: string): void };
 }) {
   const { prisma, provider } = input;
 
@@ -736,6 +737,7 @@ export function createAgentRuntime(input: {
         let mediaFallback: string | null = null;
         let mediaProcessingError: string | null = null;
         let mediaMetadata: Record<string, unknown> | null = null;
+        let unreadableImageRequiresHandoff = false;
 
         if (message.type === "image" || message.type === "file") {
           const metadata = isRecord(message.metadata) ? message.metadata : {};
@@ -748,17 +750,30 @@ export function createAgentRuntime(input: {
                 settings: providerSettings,
                 mediaResolver
               });
-          mediaMetadata = { ...media };
+          const handledMedia = message.type === "image" && media.status === "failed"
+            ? { ...media, fallback: IMAGE_PROCESSING_FALLBACK }
+            : media;
+          mediaMetadata = { ...handledMedia };
           if (media.status === "failed") {
-            mediaFallback = media.fallback ?? "Pode reenviar o arquivo?";
+            mediaFallback = handledMedia.fallback ?? "Pode reenviar o arquivo?";
             mediaProcessingError = media.errorCode ?? "MEDIA_EXTRACTION_FAILED";
+            unreadableImageRequiresHandoff = message.type === "image";
+            if (unreadableImageRequiresHandoff) {
+              input.logger?.warn({
+                event: "agent_image_processing_failed",
+                workspaceId: runInput.workspaceId,
+                conversationId: conversation.id,
+                messageId: message.id,
+                errorCode: mediaProcessingError
+              }, "Image could not be read; requesting human handoff.");
+            }
           } else {
             effectiveText = stored?.status === "processed" ? effectiveText : formatProcessedMediaMessage(effectiveText, media);
           }
           if (stored?.status !== "processed") {
             const updated = await prisma.message.update({
               where: { id: message.id },
-              data: { body: media.status === "processed" ? effectiveText : formatProcessedMediaMessage(effectiveText, media), metadata: { ...metadata, inboundMedia: media } }
+              data: { body: media.status === "processed" ? effectiveText : formatProcessedMediaMessage(effectiveText, handledMedia), metadata: { ...metadata, inboundMedia: handledMedia } }
             });
             input.realtime?.publish({ type: "message.created", workspaceId: message.workspaceId, payload: toMessageDto(updated) });
           }
@@ -940,18 +955,21 @@ export function createAgentRuntime(input: {
           : provider;
         runModel = providerSettings.active ? providerSettings.chatModel : agent.model;
 
-        providerOutput = mediaFallback
-          ? {
-              confidence: 1,
-              reply: mediaFallback,
-              actions: [],
-              handoff: { required: false, reason: null }
-            }
-          : safetyOutput
-          ? safetyOutput
-          : documentRequiresHuman
-            ? createDocumentRequiredHandoffOutput()
-          : await runProvider.generate({
+        if (unreadableImageRequiresHandoff) {
+          providerOutput = createUnreadableImageHandoffOutput();
+        } else if (mediaFallback) {
+          providerOutput = {
+            confidence: 1,
+            reply: mediaFallback,
+            actions: [],
+            handoff: { required: false, reason: null }
+          };
+        } else if (safetyOutput) {
+          providerOutput = safetyOutput;
+        } else if (documentRequiresHuman) {
+          providerOutput = createDocumentRequiredHandoffOutput();
+        } else {
+          providerOutput = await runProvider.generate({
             reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
             model: runModel,
             systemPrompt: agent.systemPrompt,
@@ -964,6 +982,7 @@ export function createAgentRuntime(input: {
                 : {})
             }
           });
+        }
 
         if (
           replyPreflight?.outcome === "continue" &&
@@ -1029,7 +1048,10 @@ export function createAgentRuntime(input: {
         }
 
         const contextualHandoff = usesQualificationHandoff(agent.behaviorConfig);
-        providerOutput = normalizeAgentHandoffOutput(providerOutput, { preserveReply: contextualHandoff });
+        // A failed image is an internal handoff: normalization would synthesize a customer reply.
+        providerOutput = unreadableImageRequiresHandoff
+          ? providerOutput
+          : normalizeAgentHandoffOutput(providerOutput, { preserveReply: contextualHandoff });
 
         const replyPolicy = providerOutput.reply
           ? enforceWhatsAppReply(providerOutput.reply)
@@ -1047,18 +1069,22 @@ export function createAgentRuntime(input: {
         const confidenceThreshold = readConfidenceThreshold(agent.handoffConfig);
         const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
         const status: AgentRunStatus = handoffReason ? "handoff_requested" : "completed";
-        const outboundReply = handoffReason
-          ? contextualHandoff && providerOutput.handoff.required && providerOutput.confidence >= confidenceThreshold
-            ? providerOutput.reply ?? HANDOFF_ACKNOWLEDGEMENT
-            : HANDOFF_ACKNOWLEDGEMENT
-          : providerOutput.reply;
+        const outboundReply = unreadableImageRequiresHandoff
+          ? null
+          : handoffReason
+            ? contextualHandoff && providerOutput.handoff.required && providerOutput.confidence >= confidenceThreshold
+              ? providerOutput.reply ?? HANDOFF_ACKNOWLEDGEMENT
+              : HANDOFF_ACKNOWLEDGEMENT
+            : providerOutput.reply;
 
         const beforeActions = await prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: conversation.id } }, include: { channel: true } });
         if (!beforeActions || beforeActions.aiControlStatus === 'human_controlled' || blocksAutonomousAgent(beforeActions.channel?.encryptedConfig)) return { status: 'skipped', message: 'Human review is required.' };
         actionResults = await executeAgentActions(prisma as AgentToolExecutorPrismaLike, {
           workspaceId: runInput.workspaceId,
           conversationId: conversation.id,
-          allowedActions,
+          allowedActions: unreadableImageRequiresHandoff
+            ? Array.from(new Set<AiAgentAllowedAction>([...allowedActions, "request_handoff"]))
+            : allowedActions,
           allowedTags,
           actions: providerOutput.actions
         });
@@ -1532,6 +1558,17 @@ function createDocumentRequiredHandoffOutput(): AgentOutput {
       required: true,
       reason
     }
+  };
+}
+
+function createUnreadableImageHandoffOutput(): AgentOutput {
+  const reason = "Não foi possível ler automaticamente a imagem enviada pelo cliente. Verifique o anexo e responda o pedido.";
+
+  return {
+    confidence: 1,
+    reply: null,
+    actions: [{ type: "request_handoff", reason }],
+    handoff: { required: true, reason }
   };
 }
 
