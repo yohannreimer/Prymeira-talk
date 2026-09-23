@@ -890,7 +890,7 @@ export function createAgentRuntime(input: {
           ((entry.type === "image" || entry.type === "file") && /\[(Texto do PDF|Leitura da imagem) — conteúdo enviado pelo cliente\]/.test(entry.body ?? ""))
           || (entry.type === "audio" && Boolean(entry.body?.trim()) && !isPendingAudioBody(entry.body) && entry.body !== AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK)
         );
-        const safety = evaluateAgentSafety({
+        let safety = evaluateAgentSafety({
           message: effectiveText,
           conversationHistory: conversationContext.formattedHistory,
           // Do not declare an attachment missing if a media message is present in history.
@@ -898,7 +898,20 @@ export function createAgentRuntime(input: {
           attachmentAvailable,
           selectedKnowledge: knowledgeSelection.selected
         });
-        const safetyOutput = resolveConversationSafetyOutput(safety, agent.behaviorConfig);
+        let safetyOutput = resolveConversationSafetyOutput(safety, agent.behaviorConfig);
+        const approvedNotSoldSourceIds = new Set(knowledge.flatMap((source) => {
+          const metadata = isRecord(source.metadata) ? source.metadata : null;
+          return metadata?.source === "approved_agent_improvement" && metadata.kind === "not_sold"
+            ? [source.id]
+            : [];
+        }));
+        const canReviewApprovedRefusal = Boolean(
+          input.replyPreflight?.audit &&
+          safetyOutput &&
+          safety.handoffRequired &&
+          (safety.protectedFact === "price" || safety.protectedFact === "stock") &&
+          knowledgeSelection.selected.some((source) => approvedNotSoldSourceIds.has(source.id))
+        );
         const documentRequiresHuman =
           !usesContextFirst(agent.behaviorConfig) &&
           !attachmentAvailable &&
@@ -907,7 +920,7 @@ export function createAgentRuntime(input: {
           knowledgeSelection.selected.length === 0;
         let replyPreflight: AgentReplyPreflightResult | undefined;
 
-        if (input.replyPreflight && !mediaFallback && !safetyOutput && !documentRequiresHuman) {
+        if (input.replyPreflight && !mediaFallback && (!safetyOutput || canReviewApprovedRefusal) && !documentRequiresHuman) {
           try {
             replyPreflight = await input.replyPreflight.evaluate({
               agentRules: agent.systemPrompt,
@@ -923,6 +936,19 @@ export function createAgentRuntime(input: {
           } catch {
             contextSummary = { ...contextSummary, replyPreflight: { outcome: "unavailable" } };
           }
+        }
+
+        let approvedRefusalBypass = false;
+        if (
+          canReviewApprovedRefusal &&
+          replyPreflight?.outcome === "continue" &&
+          replyPreflight.plan.commercialPath === "not_sold" &&
+          replyPreflight.plan.nextAction === "answer_current_request"
+        ) {
+          approvedRefusalBypass = true;
+          safety = { ...safety, outcome: "continue", handoffRequired: false, reason: null };
+          safetyOutput = null;
+          contextSummary = { ...contextSummary, approvedNotSoldGuardOverride: safety.protectedFact };
         }
 
         if (replyPreflight?.outcome === "silence") {
@@ -1044,6 +1070,15 @@ export function createAgentRuntime(input: {
             }
           } catch {
             contextSummary = { ...contextSummary, replyQualityAudit: { outcome: "unavailable" } };
+            if (approvedRefusalBypass) {
+              const reason = "A validação da recusa aprovada pelo JEV falhou. Revisão humana necessária.";
+              providerOutput = {
+                ...providerOutput,
+                reply: null,
+                actions: [...providerOutput.actions, { type: "request_handoff", reason }],
+                handoff: { required: true, reason }
+              };
+            }
           }
         }
 

@@ -31,6 +31,7 @@ export type AgentImprovementNormalizationInput = {
   humanReply: string;
   proposedContent: string;
   clarificationAnswers: Record<string, string>;
+  clarificationQuestions?: Record<string, string>;
 };
 
 export type AgentImprovementNormalization = {
@@ -122,7 +123,7 @@ const normalizationQuestions = {
   scope: {
     type: "choice",
     instructions:
-      "Interprete as respostas dadas pelo time, no contexto do pedido e da decisão humana. Qual é o alcance exato que pode ser usado pelo agente? Escolha ambiguous se as respostas não permitirem uma regra comercial clara.",
+      "Interprete cada resposta junto da pergunta correspondente, no contexto do pedido e da decisão humana. Uma confirmação afirmativa de que a decisão vale para todas as variações do item solicitado não autoriza ampliar a recusa para toda a construção civil. Qual é o alcance exato que pode ser usado pelo agente? Escolha ambiguous se as respostas não permitirem uma regra comercial clara.",
     criteria: {
       requested_item_only: "A decisão é limitada exatamente ao item solicitado, sem incluir suas medidas, acabamentos ou variações.",
       requested_item_variations: "A decisão vale para as variações do mesmo item solicitado, como medidas, espessuras, acabamentos ou furações explicitamente abrangidos.",
@@ -134,10 +135,10 @@ const normalizationQuestions = {
   understandsAnswers: {
     type: "noul",
     instructions:
-      "As respostas internas do time são suficientes, específicas e coerentes com o pedido e a decisão original para registrar uma regra? Não presuma informação ausente.",
+      "As respostas internas do time, lidas com as perguntas correspondentes, são suficientes e coerentes com o pedido e a decisão original? O texto proposto respeita exatamente esse escopo, sem acrescentar recusa, disponibilidade ou exceção não confirmada? Uma confirmação curta como 'exato' responde afirmativamente à pergunta anterior; limite a regra ao que essa pergunta diz. Não presuma informação ausente.",
     criteria: {
-      true: "As respostas delimitam o escopo e as exceções de modo claro.",
-      false: "Há contradição, linguagem vaga, medida/especificação sem referência clara ou falta de escopo."
+      true: "As respostas delimitam o escopo e as exceções de modo claro, e o texto proposto permanece dentro desse limite.",
+      false: "Há contradição, linguagem vaga, medida/especificação sem referência clara, falta de escopo ou regra proposta mais ampla que a decisão confirmada."
     }
   },
   requiresHandoffOutsideScope: {
@@ -150,6 +151,24 @@ const normalizationQuestions = {
     }
   }
 } as const;
+
+function contextualizeClarificationAnswers(state: AgentImprovementNormalizationInput) {
+  const answers = { ...state.clarificationAnswers };
+  if (
+    state.kind === "not_sold" &&
+    /^(?:sim|isso mesmo|exato|exatamente|correto)[\s.!?]*$/i.test(answers.scope?.trim() ?? "")
+  ) {
+    answers.scope =
+      "Sim, a decisão vale para todas as medidas, espessuras, acabamentos e furações do item solicitado.";
+  }
+
+  return Object.fromEntries(
+    Object.entries(answers).map(([questionId, answer]) => [
+      questionId.slice(0, 80),
+      answer.slice(0, 800)
+    ])
+  );
+}
 
 export function createJevAgentImprovementDetector(
   input: JevAgentImprovementDetectorOptions
@@ -226,10 +245,11 @@ export function createJevAgentImprovementNormalizer(
             customerMessage: state.customerMessage.slice(0, 2_500),
             humanReply: state.humanReply.slice(0, 2_500),
             proposedContent: state.proposedContent.slice(0, 4_000),
-            clarificationAnswers: Object.fromEntries(
-              Object.entries(state.clarificationAnswers).map(([questionId, answer]) => [
+            clarificationAnswers: contextualizeClarificationAnswers(state),
+            clarificationQuestions: Object.fromEntries(
+              Object.entries(state.clarificationQuestions ?? {}).map(([questionId, question]) => [
                 questionId.slice(0, 80),
-                answer.slice(0, 800)
+                question.slice(0, 800)
               ])
             )
           },

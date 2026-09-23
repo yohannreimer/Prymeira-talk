@@ -8,6 +8,7 @@ import type {
   AgentImprovementDetector,
   AgentImprovementNormalizer
 } from "./jev-agent-improvement.js";
+import type { AgentImprovementRuleWriter } from "./openai-agent-improvement.js";
 import { selectRelevantKnowledge } from "./knowledge-retrieval.js";
 
 const workspaceId = "workspace_a";
@@ -408,7 +409,10 @@ describe("createAgentImprovementsService", () => {
     expect(improvementNormalizer.normalize).toHaveBeenCalledWith(expect.objectContaining({
       customerMessage: customerMessage.body,
       humanReply: humanReply.body,
-      clarificationAnswers: pendingImprovement.clarificationAnswers
+      clarificationAnswers: pendingImprovement.clarificationAnswers,
+      clarificationQuestions: expect.objectContaining({
+        scope: expect.stringContaining("todas as medidas")
+      })
     }));
     expect(updated.clarification.normalization).toEqual({
       scope: "material_or_finish_family",
@@ -418,6 +422,76 @@ describe("createAgentImprovementsService", () => {
     expect(updated.content).toContain("Modo de aplicação interpretado pelo JEV:");
     expect(updated.content).toContain("família de material ou acabamento");
     expect(updated.content).toContain("Fora desse escopo, encaminhe para o comercial");
+  });
+
+  it("asks OpenAI to draft the proposal before JEV validation and keeps approval manual", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue({
+      ...pendingImprovement,
+      clarificationNormalization: {}
+    });
+    const ruleWriter = {
+      write: vi.fn().mockResolvedValue({
+        title: "Barras para viga baldrame não comercializadas",
+        content: "Não comercializamos barras para viga baldrame nas variações confirmadas pelo time. Para outro item, encaminhe ao comercial. Não informe preço."
+      })
+    } satisfies AgentImprovementRuleWriter;
+    const improvementNormalizer = normalizer({
+      outcome: "ready",
+      normalization: {
+        scope: "requested_item_variations",
+        confidence: 0.95,
+        requiresHandoffOutsideScope: true
+      }
+    });
+    const service = createAgentImprovementsService(prisma, {
+      writer: ruleWriter,
+      normalizer: improvementNormalizer
+    });
+
+    const updated = await service.normalizeImprovement({ workspaceId, agentId, improvementId: pendingImprovement.id });
+
+    expect(ruleWriter.write).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId,
+      clarificationQuestions: expect.objectContaining({ scope: expect.stringContaining("todas as medidas") })
+    }));
+    expect(improvementNormalizer.normalize).toHaveBeenCalledWith(expect.objectContaining({
+      proposedContent: expect.stringContaining("barras para viga baldrame")
+    }));
+    expect(updated.title).toBe("Barras para viga baldrame não comercializadas");
+    expect(updated.content).toContain("Não comercializamos barras para viga baldrame");
+    expect(updated.status).toBe("pending");
+    expect(prisma.aiKnowledgeSource.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps an improvement pending when the OpenAI draft fails", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue({ ...pendingImprovement, clarificationNormalization: {} });
+    const ruleWriter = {
+      write: vi.fn().mockRejectedValue(new Error("OPENAI_AGENT_IMPROVEMENT_HTTP_429"))
+    } satisfies AgentImprovementRuleWriter;
+    const improvementNormalizer = normalizer({ outcome: "needs_clarification", reason: "unused" });
+    const service = createAgentImprovementsService(prisma, { writer: ruleWriter, normalizer: improvementNormalizer });
+
+    await expect(service.normalizeImprovement({ workspaceId, agentId, improvementId: pendingImprovement.id }))
+      .rejects.toMatchObject({
+        code: "IMPROVEMENT_WRITER_FAILED",
+        message: expect.stringContaining("Tente novamente")
+      });
+    expect(improvementNormalizer.normalize).not.toHaveBeenCalled();
+    expect(prisma.aiAgentImprovement.update).not.toHaveBeenCalled();
+  });
+
+  it("does not claim an OpenAI draft was made when the workspace has no provider", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue({ ...pendingImprovement, clarificationNormalization: {} });
+    const ruleWriter = { write: vi.fn().mockResolvedValue(null) } satisfies AgentImprovementRuleWriter;
+    const improvementNormalizer = normalizer({ outcome: "needs_clarification", reason: "unused" });
+    const service = createAgentImprovementsService(prisma, { writer: ruleWriter, normalizer: improvementNormalizer });
+
+    await expect(service.normalizeImprovement({ workspaceId, agentId, improvementId: pendingImprovement.id }))
+      .rejects.toMatchObject({ code: "IMPROVEMENT_WRITER_UNAVAILABLE" });
+    expect(improvementNormalizer.normalize).not.toHaveBeenCalled();
   });
 
   it("does not save a rule when JEV cannot delimit the scope safely", async () => {
@@ -435,7 +509,8 @@ describe("createAgentImprovementsService", () => {
       agentId,
       improvementId: pendingImprovement.id
     })).rejects.toMatchObject({
-      code: "IMPROVEMENT_NORMALIZATION_AMBIGUOUS"
+      code: "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
+      message: expect.stringContaining("Diga explicitamente")
     } satisfies Partial<AgentImprovementsServiceError>);
     expect(prisma.aiAgentImprovement.update).not.toHaveBeenCalled();
   });

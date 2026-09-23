@@ -424,6 +424,113 @@ describe("createAgentRuntime", () => {
     expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({ context: expect.objectContaining({ conversationReasoning: "context_first_v1" }) }));
     expect(prisma.message.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 2001 }));
   });
+
+  it.each([
+    "Quanto custa a barra para viga baldrame de 10mm?",
+    "Tem em estoque a barra para viga baldrame de 10mm?"
+  ])("lets JEV apply an approved not-sold rule before a generic price or stock guard: %s", async (request) => {
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, body: request });
+    vi.mocked(prisma.message.findMany).mockResolvedValue([{ ...baseMessage, body: request }]);
+    vi.mocked(prisma.aiKnowledgeSource.findMany).mockResolvedValue([{
+        id: "approved_baldrame",
+        title: "Barras para viga baldrame não comercializadas",
+        content: "Não comercializamos barras para viga baldrame de 10mm nem outras variações confirmadas. Para outros itens, encaminhe ao comercial.",
+        metadata: { source: "approved_agent_improvement", kind: "not_sold", keywords: ["barra para viga baldrame"] },
+        status: "ready"
+      }]);
+    const provider = buildProvider({
+      confidence: 0.95,
+      reply: "Não trabalhamos com barras para viga baldrame.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({
+        outcome: "continue",
+        plan: { conversationStage: "new_quote", commercialPath: "not_sold", nextAction: "answer_current_request" }
+      }),
+      audit: vi.fn().mockResolvedValue({ outcome: "send" })
+    };
+
+    const result = await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation,
+      messageId: ids.message, trigger: "automation"
+    });
+
+    expect(result.status).toBe("completed");
+    expect(replyPreflight.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      selectedKnowledge: expect.arrayContaining([expect.objectContaining({ id: "approved_baldrame" })])
+    }));
+    expect(provider.generate).toHaveBeenCalledOnce();
+    expect(replyPreflight.audit).toHaveBeenCalledOnce();
+    expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ body: "Não trabalhamos com barras para viga baldrame." })
+    }));
+  });
+
+  it("keeps price handoff when JEV does not confirm an approved refusal", async () => {
+    const request = "Quanto custa a barra para viga baldrame de 10mm?";
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, body: request });
+    vi.mocked(prisma.message.findMany).mockResolvedValue([{ ...baseMessage, body: request }]);
+    vi.mocked(prisma.aiKnowledgeSource.findMany).mockResolvedValue([{
+        id: "approved_baldrame",
+        title: "Barras para viga baldrame não comercializadas",
+        content: "Não comercializamos barras para viga baldrame de 10mm.",
+        metadata: { source: "approved_agent_improvement", kind: "not_sold", keywords: ["barra para viga baldrame"] },
+        status: "ready"
+      }]);
+    const provider = buildProvider({ reply: "Não trabalhamos.", confidence: 0.9, actions: [], handoff: { required: false, reason: null } });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({
+        outcome: "continue",
+        plan: { conversationStage: "new_quote", commercialPath: "ambiguous", nextAction: "handoff" }
+      }),
+      audit: vi.fn().mockResolvedValue({ outcome: "send" })
+    };
+
+    const result = await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation,
+      messageId: ids.message, trigger: "automation"
+    });
+
+    expect(result.status).toBe("handoff_requested");
+    expect(provider.generate).not.toHaveBeenCalled();
+  });
+
+  it("hands off if the final JEV audit fails after an approved refusal bypass", async () => {
+    const request = "Quanto custa a barra para viga baldrame de 10mm?";
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, body: request });
+    vi.mocked(prisma.message.findMany).mockResolvedValue([{ ...baseMessage, body: request }]);
+    vi.mocked(prisma.aiKnowledgeSource.findMany).mockResolvedValue([{
+      id: "approved_baldrame",
+      title: "Barras para viga baldrame não comercializadas",
+      content: "Não comercializamos barras para viga baldrame de 10mm.",
+      metadata: { source: "approved_agent_improvement", kind: "not_sold", keywords: ["barra para viga baldrame"] },
+      status: "ready"
+    }]);
+    const provider = buildProvider({ reply: "Não trabalhamos com barras para viga baldrame.", confidence: 0.95, actions: [], handoff: { required: false, reason: null } });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({
+        outcome: "continue",
+        plan: { conversationStage: "new_quote", commercialPath: "not_sold", nextAction: "answer_current_request" }
+      }),
+      audit: vi.fn().mockRejectedValue(new Error("JEV unavailable"))
+    };
+
+    const result = await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation,
+      messageId: ids.message, trigger: "automation"
+    });
+
+    expect(result.status).toBe("handoff_requested");
+    expect(replyPreflight.audit).toHaveBeenCalledOnce();
+    expect(prisma.message.create).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ body: "Não trabalhamos com barras para viga baldrame." })
+    }));
+  });
   it('never activates or sends an autonomous agent in an assisted channel', async () => {
     const prisma = buildPrisma({ conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: { ...baseConversation.channel, encryptedConfig: { assistant: { mode: 'automatic', agentId: ids.agent } } } }) } });
     const provider = buildProvider({ reply: 'Do not send', confidence: 1, actions: [], handoff: { required: false, reason: null } });

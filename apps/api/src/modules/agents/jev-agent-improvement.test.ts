@@ -88,6 +88,46 @@ describe("createJevAgentImprovementDetector", () => {
 });
 
 describe("createJevAgentImprovementNormalizer", () => {
+  it("expands João's short confirmation using the question before asking JEV", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        answers: {
+          scope: choice("requested_item_variations", 0.96),
+          understandsAnswers: { type: "noul", noul: 0.95 },
+          requiresHandoffOutsideScope: { type: "noul", noul: 0.99 }
+        }
+      }))
+    );
+    const normalizer = createJevAgentImprovementNormalizer({ apiKey: "jev-test", fetchImpl });
+
+    await expect(normalizer.normalize({
+      kind: "not_sold",
+      customerMessage: "Quanto tá uma barra de 10mm 12m? Barra pra viga baldrame. 10mm.",
+      humanReply: "Construção civil não trabalhamos.",
+      proposedContent: "Não comercializamos a barra para viga baldrame solicitada.",
+      clarificationAnswers: { scope: "exato", exceptions: "nenhuma" },
+      clarificationQuestions: {
+        scope: "A decisão de não trabalhar vale para todas as medidas, espessuras, acabamentos e furações do item solicitado?",
+        exceptions: "Quais medidas, acabamentos ou produtos parecidos vocês ainda comercializam?"
+      }
+    })).resolves.toEqual({
+      outcome: "ready",
+      normalization: {
+        scope: "requested_item_variations",
+        confidence: 0.95,
+        requiresHandoffOutsideScope: true
+      }
+    });
+
+    const [, request] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(request?.body));
+    expect(body.state.clarificationAnswers.scope).toBe(
+      "Sim, a decisão vale para todas as medidas, espessuras, acabamentos e furações do item solicitado."
+    );
+    expect(body.state.clarificationAnswers.exceptions).toBe("nenhuma");
+    expect(body.state.clarificationQuestions.scope).toContain("todas as medidas");
+  });
+
   it("normalizes natural-language team answers into a bounded rule scope", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({

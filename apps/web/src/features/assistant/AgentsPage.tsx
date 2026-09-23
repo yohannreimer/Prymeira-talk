@@ -726,12 +726,12 @@ export function AgentsPage() {
         ...current,
         [updated.id]: updated.clarification.answers
       }));
-      setNotice("O JEV interpretou o escopo e atualizou a regra proposta para sua revisão.");
+      setNotice("A regra foi preparada e teve o escopo validado pelo JEV. Revise o texto antes de aprovar.");
     } catch (normalizationError) {
       setError(
         normalizationError instanceof Error
           ? normalizationError.message
-          : "Não foi possível interpretar o escopo com o JEV."
+          : "Não foi possível preparar a regra para revisão."
       );
     } finally {
       setImprovementActionId(null);
@@ -1687,8 +1687,8 @@ export function AgentsPage() {
                                     {clarificationComplete
                                       ? clarificationSaved
                                         ? normalization
-                                          ? "Escopo interpretado pelo JEV. Revise a regra e inclua quando estiver correta."
-                                          : "Escopo salvo. Agora peça para o JEV interpretar a regra antes de incluir."
+                                          ? "Regra preparada e escopo validado. Revise o texto e inclua quando estiver correto."
+                                          : "Escopo salvo. Prepare a proposta para revisão antes de incluir."
                                         : "Respostas prontas. Salve o escopo para atualizar a regra proposta."
                                       : "Responda as duas perguntas para liberar a aprovação."}
                                   </p>
@@ -1708,7 +1708,7 @@ export function AgentsPage() {
                                     disabled={isWorking || !clarificationComplete || !clarificationSaved}
                                   >
                                     <Sparkles size={15} />
-                                    {isWorking ? "Interpretando" : "Interpretar com JEV"}
+                                    {isWorking ? "Preparando" : "Preparar regra com IA"}
                                   </button>
                                 </div>
                               </section>

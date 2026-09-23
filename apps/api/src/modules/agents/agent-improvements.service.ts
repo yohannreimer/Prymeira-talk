@@ -9,6 +9,7 @@ import type {
   AgentImprovementKind,
   AgentImprovementNormalizer
 } from "./jev-agent-improvement.js";
+import type { AgentImprovementRuleWriter } from "./openai-agent-improvement.js";
 
 type DateLike = Date | string;
 type ImprovementStatus = AiAgentImprovementDto["status"];
@@ -117,8 +118,12 @@ export class AgentImprovementsServiceError extends Error {
       | "IMPROVEMENT_CLARIFICATION_REQUIRED"
       | "IMPROVEMENT_NORMALIZATION_REQUIRED"
       | "IMPROVEMENT_NORMALIZER_UNAVAILABLE"
-      | "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
-    message: string
+      | "IMPROVEMENT_NORMALIZATION_AMBIGUOUS"
+      | "IMPROVEMENT_WRITER_UNAVAILABLE"
+      | "IMPROVEMENT_WRITER_FAILED"
+      | "IMPROVEMENT_JEV_FAILED",
+    message: string,
+    public readonly cause?: unknown
   ) {
     super(message);
     this.name = "AgentImprovementsServiceError";
@@ -392,7 +397,11 @@ function buildProposal(input: {
 
 export function createAgentImprovementsService(
   prisma: AgentImprovementsPrismaLike,
-  options: { detector?: AgentImprovementDetector; normalizer?: AgentImprovementNormalizer } = {}
+  options: {
+    detector?: AgentImprovementDetector;
+    normalizer?: AgentImprovementNormalizer;
+    writer?: AgentImprovementRuleWriter;
+  } = {}
 ) {
   async function ensureAgent(input: { workspaceId: string; agentId: string }) {
     const agent = await prisma.aiAgent.findFirst({
@@ -703,23 +712,62 @@ export function createAgentImprovementsService(
       }
 
       const answers = toStringRecord(improvement.clarificationAnswers);
-      const result = await options.normalizer.normalize({
-        kind: improvement.kind,
-        customerMessage: improvement.sourceCustomerMessage,
-        humanReply: improvement.sourceHumanReply,
-        proposedContent: improvement.content,
-        clarificationAnswers: answers
-      });
+      const questions = Object.fromEntries(
+        clarificationQuestions(improvement.kind).map(({ id, question }) => [id, question])
+      );
+      let draft: Awaited<ReturnType<AgentImprovementRuleWriter["write"]>> | undefined;
+      try {
+        draft = await options.writer?.write({
+          workspaceId: input.workspaceId,
+          kind: improvement.kind,
+          customerMessage: improvement.sourceCustomerMessage,
+          humanReply: improvement.sourceHumanReply,
+          proposedContent: improvement.content,
+          clarificationAnswers: answers,
+          clarificationQuestions: questions
+        });
+      } catch (cause) {
+        throw new AgentImprovementsServiceError(
+          "IMPROVEMENT_WRITER_FAILED",
+          "Não foi possível redigir a regra agora. Tente novamente em instantes.",
+          cause
+        );
+      }
+      if (options.writer && !draft) {
+        throw new AgentImprovementsServiceError(
+          "IMPROVEMENT_WRITER_UNAVAILABLE",
+          "Configure o provedor de IA em Ajustes para redigir a regra antes da aprovação."
+        );
+      }
+      let result: Awaited<ReturnType<AgentImprovementNormalizer["normalize"]>>;
+      try {
+        result = await options.normalizer.normalize({
+          kind: improvement.kind,
+          customerMessage: improvement.sourceCustomerMessage,
+          humanReply: improvement.sourceHumanReply,
+          proposedContent: draft?.content ?? improvement.content,
+          clarificationAnswers: answers,
+          clarificationQuestions: questions
+        });
+      } catch (cause) {
+        throw new AgentImprovementsServiceError(
+          "IMPROVEMENT_JEV_FAILED",
+          "O JEV não respondeu agora. Tente preparar a regra novamente em instantes.",
+          cause
+        );
+      }
       if (result.outcome === "needs_clarification") {
         throw new AgentImprovementsServiceError(
           "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
-          "O JEV não conseguiu delimitar esta regra com segurança. Revise as respostas de escopo."
+          improvement.kind === "not_sold"
+            ? "O JEV ainda não conseguiu delimitar a regra. Diga explicitamente se a recusa vale para todas as variações do item solicitado ou só para a especificação pedida; informe as exceções ou escreva ‘Nenhuma’. Salve e tente interpretar novamente."
+            : "O JEV não conseguiu delimitar esta regra com segurança. Detalhe as respostas de escopo, salve e tente interpretar novamente."
         );
       }
 
       const content = addClarificationToContent({
         kind: improvement.kind,
-        content: improvement.content,
+        content: draft?.content ?? improvement.content,
         answers,
         normalization: result.normalization
       });
@@ -731,6 +779,7 @@ export function createAgentImprovementsService(
           }
         },
         data: {
+          ...(draft ? { title: draft.title } : {}),
           content,
           clarificationNormalization: result.normalization
         }
@@ -759,7 +808,7 @@ export function createAgentImprovementsService(
       if (!normalization || normalization.confidence < 0.8) {
         throw new AgentImprovementsServiceError(
           "IMPROVEMENT_NORMALIZATION_REQUIRED",
-          "Gere a regra inteligente com o JEV antes de incluir este aprimoramento na base."
+          "Prepare a proposta e valide o escopo antes de incluir este aprimoramento na base."
         );
       }
       const title = input.title?.trim() || improvement.title;

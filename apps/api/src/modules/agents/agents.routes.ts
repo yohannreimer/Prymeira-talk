@@ -171,8 +171,10 @@ function handleAgentImprovementsError(reply: FastifyReply, error: unknown) {
     const statusCode =
       error.code === "AGENT_NOT_FOUND" || error.code === "IMPROVEMENT_NOT_FOUND"
         ? 404
-        : error.code === "IMPROVEMENT_NORMALIZER_UNAVAILABLE"
+        : error.code === "IMPROVEMENT_NORMALIZER_UNAVAILABLE" || error.code === "IMPROVEMENT_WRITER_UNAVAILABLE"
           ? 503
+          : error.code === "IMPROVEMENT_WRITER_FAILED" || error.code === "IMPROVEMENT_JEV_FAILED"
+            ? 502
           : [
               "IMPROVEMENT_CLARIFICATION_REQUIRED",
               "IMPROVEMENT_NORMALIZATION_REQUIRED",
@@ -368,6 +370,15 @@ export const agentsRoutes: FastifyPluginAsync<AgentsRoutesOptions> = async (app,
         improvementId: params.data.improvementId
       });
     } catch (error) {
+      if (error instanceof AgentImprovementsServiceError) {
+        request.log.warn({
+          event: "agent_improvement_normalization_failed",
+          improvementId: params.data.improvementId,
+          agentId: params.data.agentId,
+          code: error.code,
+          cause: error.cause instanceof Error ? error.cause.message : undefined
+        }, "Agent improvement could not be prepared");
+      }
       return handleAgentImprovementsError(reply, error);
     }
   });

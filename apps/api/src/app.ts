@@ -15,6 +15,7 @@ import {
   createJevAgentImprovementNormalizer
 } from "./modules/agents/jev-agent-improvement.js";
 import { createAgentImprovementsService } from "./modules/agents/agent-improvements.service.js";
+import { createOpenAiAgentImprovementRuleWriter } from "./modules/agents/openai-agent-improvement.js";
 import { createAgentReplyScheduler } from "./modules/agents/agent-reply-scheduler.js";
 import { createConversationFollowupScheduler } from "./modules/followups/conversation-followup-scheduler.js";
 import { createConversationFollowupsService } from "./modules/followups/conversation-followups.service.js";
@@ -242,6 +243,9 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
               normalizer: createJevAgentImprovementNormalizer({
                 apiKey: env.JEV_API_KEY,
                 model: env.JEV_MODEL
+              }),
+              writer: createOpenAiAgentImprovementRuleWriter({
+                prisma: app.prisma
               })
             }
           : undefined

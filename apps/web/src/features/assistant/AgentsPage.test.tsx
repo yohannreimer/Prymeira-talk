@@ -412,7 +412,7 @@ describe("AgentsPage", () => {
     expect(page.apiGetAgentImprovementsMock).toHaveBeenCalled();
     expect(hasText(page.tree, "Complete o escopo antes de incluir")).toBe(true);
     expect(hasText(page.tree, "A decisão vale para todas as medidas?")).toBe(true);
-    expect(hasText(page.tree, "Interpretar com JEV")).toBe(true);
+    expect(hasText(page.tree, "Preparar regra com IA")).toBe(true);
     const approveButton = findButtonByName(page.tree, "Aprovar e incluir") as ReactElement<{
       disabled: boolean;
     }> | null;
