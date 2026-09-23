@@ -3,6 +3,7 @@ import type { RealtimeEvent } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { canPerform, type Permission } from "../access/roles.js";
 import { resolveCurrentUserProfileId } from "../conversations/current-user.js";
+import { pauseAgentOnHumanOutbound } from "../conversations/pause-agent-on-human-outbound.js";
 import {
   OutboundDeliveryUncertainError,
   type ConversationOutboundTextDelivery
@@ -300,6 +301,12 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
       }
       return stale(reply, latest);
     }
+
+    await prisma.$transaction((tx) => pauseAgentOnHumanOutbound(tx as unknown as Parameters<typeof pauseAgentOnHumanOutbound>[0], {
+      workspaceId: request.talk.workspaceId,
+      conversationId: current.conversationId,
+      actorUserId
+    }));
 
     let delivery: Awaited<ReturnType<ConversationOutboundTextDelivery["createPendingOutboundMessage"]>>;
     try {

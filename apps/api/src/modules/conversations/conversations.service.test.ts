@@ -21,6 +21,7 @@ type MockPrisma = {
     findMany: ReturnType<typeof vi.fn<PrismaLike["conversation"]["findMany"]>>;
     findUnique: ReturnType<typeof vi.fn<PrismaLike["conversation"]["findUnique"]>>;
     update: ReturnType<typeof vi.fn<PrismaLike["conversation"]["update"]>>;
+    updateMany: ReturnType<typeof vi.fn>;
   };
   message: {
     update: ReturnType<typeof vi.fn<NonNullable<PrismaLike["message"]["update"]>>>;
@@ -65,9 +66,11 @@ type MockPrisma = {
   };
   aiAgentSession: {
     update: ReturnType<typeof vi.fn<PrismaLike["aiAgentSession"]["update"]>>;
+    updateMany: ReturnType<typeof vi.fn>;
     deleteMany: ReturnType<typeof vi.fn<PrismaLike["aiAgentSession"]["deleteMany"]>>;
   };
   aiAgentPendingReply: {
+    updateMany: ReturnType<typeof vi.fn>;
     deleteMany: ReturnType<typeof vi.fn<PrismaLike["aiAgentPendingReply"]["deleteMany"]>>;
   };
   aiAgentRun: {
@@ -136,7 +139,8 @@ function createMockPrisma(overrides: {
           department: null,
           assignedUser: null,
           tags: []
-        })
+        }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 })
     },
     message: {
       update: vi.fn<NonNullable<PrismaLike["message"]["update"]>>().mockResolvedValue({
@@ -312,9 +316,11 @@ function createMockPrisma(overrides: {
     },
     aiAgentSession: {
       update: vi.fn<PrismaLike["aiAgentSession"]["update"]>().mockResolvedValue({}),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       deleteMany: vi.fn<PrismaLike["aiAgentSession"]["deleteMany"]>().mockResolvedValue({ count: 1 })
     },
     aiAgentPendingReply: {
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       deleteMany: vi.fn<PrismaLike["aiAgentPendingReply"]["deleteMany"]>().mockResolvedValue({ count: 1 })
     },
     aiAgentRun: {
@@ -2030,6 +2036,8 @@ describe("conversation routes", () => {
   it("returns outbound messages and publishes message plus conversation updates once", async () => {
     const prisma = createMockPrisma();
     const publish = vi.fn();
+    const control = vi.fn().mockResolvedValue(undefined);
+    const assistantMessage = vi.fn().mockResolvedValue(undefined);
     const observeConversationActivity = vi.fn().mockResolvedValue({ status: "scheduled" });
     const app = Fastify({ logger: false });
 
@@ -2039,7 +2047,8 @@ describe("conversation routes", () => {
       request.talk = { workspaceId: "workspace_a", role: "agent" };
     });
     await app.register(conversationsRoutes, {
-      followupService: { observeConversationActivity }
+      followupService: { observeConversationActivity },
+      assistantScheduler: { control, message: assistantMessage } as never
     });
 
     try {
@@ -2050,6 +2059,14 @@ describe("conversation routes", () => {
       });
 
       expect(response.statusCode).toBe(201);
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+      }));
+      expect(prisma.aiAgentPendingReply.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ status: "cancelled" })
+      }));
+      expect(control).toHaveBeenCalledWith("workspace_a", "00000000-0000-4000-8000-000000000001", true);
+      expect(assistantMessage).not.toHaveBeenCalled();
       expect(messageSchema.parse(response.json())).toEqual(response.json());
       expect(observeConversationActivity).toHaveBeenCalledWith({
         workspaceId: "workspace_a",

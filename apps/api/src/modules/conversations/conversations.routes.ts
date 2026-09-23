@@ -17,6 +17,7 @@ import { createInboxMediaService } from './inbox-media.js';
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
 import type { AgentImprovementObserver } from "../agents/agent-improvements.service.js";
 import { readCurrentClerkUserId, resolveCurrentUserProfileId } from "./current-user.js";
+import { pauseAgentOnHumanOutbound } from "./pause-agent-on-human-outbound.js";
 
 interface ConversationsRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
@@ -495,6 +496,20 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       }
     });
 
+    // Take control before the provider send: an agent run may be in progress.
+    const humanTookControl = await app.prisma.$transaction((tx) =>
+      pauseAgentOnHumanOutbound(tx, {
+        workspaceId: request.talk.workspaceId,
+        conversationId: params.data.conversationId
+      })
+    );
+    if (humanTookControl) {
+      request.log.info({ event: "human_outbound_paused_agent", workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId }, "Talk outbound message paused the agent.");
+      await options.assistantScheduler?.control(request.talk.workspaceId, params.data.conversationId, true).catch((error: unknown) => {
+        request.log.error({ error, workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId }, "Failed to pause assistant suggestions after Talk outbound message.");
+      });
+    }
+
     const result = await writeService.createPendingOutboundMessage({
       workspaceId: request.talk.workspaceId,
       conversationId: params.data.conversationId,
@@ -569,7 +584,9 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
         request.log.error({ error, event: "agent_improvement_observation_failed", source: "talk_outbound", workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId, messageId: result.message.id }, "Failed to prepare agent improvement suggestion.");
       });
     }
-    await options.assistantScheduler?.message({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId, messageId: result.message.id, direction: 'outbound' });
+    if (!humanTookControl) {
+      await options.assistantScheduler?.message({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId, messageId: result.message.id, direction: 'outbound' });
+    }
     options.handoffBriefService?.schedule({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId });
     app.realtime.publish({
       type: "message.created",

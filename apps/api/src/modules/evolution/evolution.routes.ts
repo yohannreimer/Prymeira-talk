@@ -15,6 +15,7 @@ import {
   normalizePhoneForStorage
 } from "../contacts/phone-normalization.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
+import { pauseAgentOnHumanOutbound } from "../conversations/pause-agent-on-human-outbound.js";
 import { applyInboundDepartmentRouting, supportsDepartmentRouting } from "../team/team-routing.service.js";
 import {
   evolutionConnectionUpdateSchema,
@@ -644,6 +645,13 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           }
         });
 
+        const humanTookControl = payload.data.key.fromMe
+          ? await pauseAgentOnHumanOutbound(tx, {
+              workspaceId,
+              conversationId: conversation.id
+            })
+          : false;
+
         if (!payload.data.key.fromMe) {
           if (channel.provider === "meta_cloud") {
             const customerServiceWindowExpiresAt = new Date(receivedAt.getTime() + 24 * 60 * 60 * 1000);
@@ -713,15 +721,23 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         }
 
         await options.assistantScheduler?.persistInbound(tx, { workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
-        return { kind: "created" as const, message, conversation: updatedConversation };
+        return { kind: "created" as const, message, conversation: updatedConversation, humanTookControl };
       });
 
       if (transactionResult.kind === "channel_not_found") {
         return reply.code(404).send({ ok: false, error: "channel_not_found" });
       }
 
-      const { message, conversation } = transactionResult;
-      await options.assistantScheduler?.message({ workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
+      const { message, conversation, humanTookControl } = transactionResult;
+      if (humanTookControl) {
+        request.log.info({ event: "human_outbound_paused_agent", workspaceId, conversationId: message.conversationId, messageId: message.id }, "Human outbound message paused the agent.");
+        await options.assistantScheduler?.control(workspaceId, message.conversationId, true).catch((error: unknown) => {
+          request.log.error({ error, workspaceId, conversationId: message.conversationId }, "Failed to pause assistant suggestions after human outbound message.");
+        });
+      }
+      if (!humanTookControl) {
+        await options.assistantScheduler?.message({ workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
+      }
       options.handoffBriefService?.schedule({ workspaceId, conversationId: message.conversationId });
       app.realtime.publish({
         type: "message.created",

@@ -206,9 +206,11 @@ function createMemoryPrisma(records: Followup[]) {
         status: "open",
         aiControlStatus: "agent_allowed",
         activeAgentSessionId: ids.session
-      })
+      }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 })
     },
     aiAgentSession: {
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       findFirst: vi.fn().mockResolvedValue({
         id: ids.session,
         workspaceId: ids.workspaceA,
@@ -223,6 +225,7 @@ function createMemoryPrisma(records: Followup[]) {
         }
       })
     },
+    aiAgentPendingReply: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     userProfile: { findFirst: vi.fn().mockResolvedValue({ id: "user_current" }) },
     records,
     messages,
@@ -388,6 +391,13 @@ describe("conversation follow-up review routes", () => {
         payload: { body: "Oi, consigo te ajudar com mais alguma informação?", expectedUpdatedAt: expected(db.records[0]) }
       });
       expect(response.statusCode).toBe(200);
+      expect(db.conversation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+      }));
+      expect(db.aiAgentPendingReply.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ status: "cancelled" })
+      }));
+      expect(db.conversation.updateMany.mock.invocationCallOrder[0]).toBeLessThan(outbound.mock.invocationCallOrder[0]);
       expect(outbound).toHaveBeenCalledWith(expect.objectContaining({
         workspaceId: ids.workspaceA,
         conversationId: ids.conversation,

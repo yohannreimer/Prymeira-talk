@@ -29,6 +29,8 @@ function createMockPrisma(overrides: {
     update?: ReturnType<typeof vi.fn>;
     updateMany?: ReturnType<typeof vi.fn>;
   };
+  aiAgentSession?: { updateMany?: ReturnType<typeof vi.fn> };
+  aiAgentPendingReply?: { updateMany?: ReturnType<typeof vi.fn> };
   message?: {
     findUnique?: ReturnType<typeof vi.fn>;
     count?: ReturnType<typeof vi.fn>;
@@ -123,6 +125,9 @@ function createMockPrisma(overrides: {
           lastMessagePreview: "Oi",
           unreadCount: 1,
           priority: "normal",
+          aiControlStatus: "agent_allowed",
+          aiControlUpdatedAt: null,
+          activeAgentSessionId: "session_1",
           channel: { displayName: "Client One", phoneNumber: null },
           contact: { name: null, phone: "551199999999" },
           department: null,
@@ -266,7 +271,9 @@ function createMockPrisma(overrides: {
     },
     contactNote: {
       create: overrides.contactNote?.create ?? vi.fn().mockResolvedValue({})
-    }
+    },
+    aiAgentSession: { updateMany: overrides.aiAgentSession?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 }) },
+    aiAgentPendingReply: { updateMany: overrides.aiAgentPendingReply?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 }) }
   };
 
   return {
@@ -788,6 +795,75 @@ describe("Evolution webhook routes", () => {
       expect(prisma.conversation.update).not.toHaveBeenCalled();
       expect(prisma.conversation.updateMany).not.toHaveBeenCalled();
       expect(publish).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("pauses the agent and cancels its queued reply when a human sends through another app", async () => {
+    const prisma = createMockPrisma({});
+    const control = vi.fn().mockResolvedValue(undefined);
+    const assistantMessage = vi.fn().mockResolvedValue(undefined);
+    const { app, publish } = await buildEvolutionApp(prisma, undefined, {
+      assistantScheduler: { control, message: assistantMessage, persistInbound: vi.fn().mockResolvedValue(undefined) } as never
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          ...validWebhookBody,
+          data: {
+            ...validWebhookBody.data,
+            key: { ...validWebhookBody.data.key, id: "external_human_1", fromMe: true },
+            message: { conversation: "Vou mandar a quantidade" }
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true });
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ workspaceId: "workspace_a", id: "conv_1" }),
+        data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+      }));
+      expect(prisma.aiAgentSession.updateMany).toHaveBeenCalledWith({
+        where: { workspaceId: "workspace_a", id: "session_1", status: "active" },
+        data: { status: "paused_by_human" }
+      });
+      expect(prisma.aiAgentPendingReply.updateMany).toHaveBeenCalledWith({
+        where: { workspaceId: "workspace_a", conversationId: "conv_1", status: { in: ["pending", "processing"] } },
+        data: { status: "cancelled", lockedAt: null, lastError: "human_outbound" }
+      });
+      expect(control).toHaveBeenCalledWith("workspace_a", "conv_1", true);
+      expect(assistantMessage).not.toHaveBeenCalled();
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.updated" }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not pause the agent when an already recorded system send returns through the webhook", async () => {
+    const prisma = createMockPrisma({
+      message: { create: vi.fn().mockRejectedValue({ code: "P2002", meta: { target: ["workspace_id", "provider_message_id"] } }) }
+    });
+    const { app } = await buildEvolutionApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          ...validWebhookBody,
+          data: { ...validWebhookBody.data, key: { ...validWebhookBody.data.key, fromMe: true } }
+        }
+      });
+      expect(response.json()).toEqual({ ok: true, duplicate: true });
+      expect(prisma.aiAgentSession.updateMany).not.toHaveBeenCalled();
+      expect(prisma.aiAgentPendingReply.updateMany).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
