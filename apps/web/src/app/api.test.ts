@@ -60,6 +60,21 @@ describe("readApiErrorMessage", () => {
   });
 });
 
+describe("apiGetContactPhoto", () => {
+  it("distinguishes a missing photo from a temporary API failure", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+    const { apiGetContactPhoto } = await import("./api");
+    await expect(apiGetContactPhoto("conversation-1", async () => null)).resolves.toBeNull();
+    await expect(apiGetContactPhoto("conversation-1", async () => null)).rejects.toThrow("foto do contato");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("apiDeleteChannel", () => {
   it("sends DELETE to the channel endpoint", async () => {
     vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");

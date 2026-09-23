@@ -56,12 +56,20 @@ describe('inbox media without AI or sending', () => {
     expect((await service.media('w', 'c', 'm')).mimeType).toBe('image/png');
     expect(convert).not.toHaveBeenCalled();
   });
-  it('uses the conversation channel for profile photos and caches unavailable photos', async () => {
-    const { service, profile } = setup();
-    profile.mockResolvedValue(null);
-    expect(await service.photo('w', 'c')).toBeNull();
-    expect(await service.photo('w', 'c')).toBeNull();
-    expect(profile).toHaveBeenCalledExactlyOnceWith({ instanceName: 'instance', number: '5511999999999' });
+  it('uses the conversation channel for profile photos and retries unavailable photos after one minute', async () => {
+    const { service, profile, resolve } = setup();
+    vi.useFakeTimers();
+    try {
+      resolve.mockResolvedValue({ bytes: Buffer.from('jpg'), mimeType: 'image/jpeg', source: 'remote' });
+      profile.mockResolvedValueOnce(null).mockResolvedValueOnce('https://pps.whatsapp.net/photo.jpg');
+      expect(await service.photo('w', 'c')).toBeNull();
+      expect(await service.photo('w', 'c')).toBeNull();
+      expect(profile).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect((await service.photo('w', 'c'))?.mimeType).toBe('image/jpeg');
+      expect(profile).toHaveBeenCalledTimes(2);
+      expect(profile).toHaveBeenCalledWith({ instanceName: 'instance', number: '5511999999999' });
+    } finally { vi.useRealTimers(); }
   });
   it('does not fetch avatars from non-Evolution channels', async () => {
     const { service, prisma, profile } = setup();

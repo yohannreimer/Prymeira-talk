@@ -1365,7 +1365,8 @@ export async function apiGetContactPhoto(conversationId: string, getToken: () =>
   const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/contact-photo`, {
     headers: { Authorization: `Bearer ${token}` }, signal
   });
-  if (!response.ok || response.status === 204) return null;
+  if (response.status === 204) return null;
+  if (!response.ok) throw new Error('Não foi possível carregar a foto do contato.');
   return response.blob();
 }
 

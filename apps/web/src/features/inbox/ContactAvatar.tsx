@@ -2,34 +2,18 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { UserRound } from 'lucide-react';
 import { apiGetContactPhoto } from '../../app/api';
 import { mediaDataUrl } from './media-data-url';
+import { createContactPhotoLoader } from './contact-photo-loader';
 
 type PhotoLoader = (id: string) => Promise<string | null>;
 const PhotoContext = createContext<PhotoLoader | null>(null);
 export function ContactPhotoProvider({ getToken, children }: { getToken: () => Promise<string | null>; children: ReactNode }) {
   const tokenRef = useRef(getToken); tokenRef.current = getToken;
-  const [loader] = useState(() => {
-    const cache = new Map<string, Promise<string | null>>();
-    let abort = new AbortController();
-    let chain = Promise.resolve();
-    return {
-      start() { if (abort.signal.aborted) abort = new AbortController(); },
-      clear() { abort.abort(); cache.clear(); },
-      load(id: string) {
-        if (cache.has(id)) return cache.get(id)!;
-        const signal = abort.signal;
-        // Serial provider lookup avoids a burst when opening a long contact list.
-        const task = chain.then(async () => {
-          if (signal.aborted) return null;
-          try {
-            const blob = await apiGetContactPhoto(id, () => tokenRef.current(), signal);
-            if (!blob || signal.aborted) return null;
-            const url = await mediaDataUrl(blob); return signal.aborted ? null : url;
-          } catch { return null; }
-        });
-        chain = task.then(() => {}); cache.set(id, task); return task;
-      }
-    };
-  });
+  const [loader] = useState(() => createContactPhotoLoader(async (id, signal) => {
+    const blob = await apiGetContactPhoto(id, () => tokenRef.current(), signal);
+    if (!blob || signal.aborted) return null;
+    const url = await mediaDataUrl(blob);
+    return signal.aborted ? null : url;
+  }));
   useEffect(() => { loader.start(); return () => loader.clear(); }, [loader]);
   return <PhotoContext.Provider value={loader.load}>{children}</PhotoContext.Provider>;
 }
@@ -46,13 +30,23 @@ export function ContactAvatar({ conversationId, name, className }: { conversatio
     setUrl(null);
     if (!load || !conversationId || !ref.current) return;
     let active = true;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = () => {
+      void load(conversationId).then(photo => {
+        if (!active) return;
+        setUrl(photo);
+        if (!photo) retryTimer = setTimeout(attempt, 5 * 60_000);
+      }).catch(() => {
+        if (active) retryTimer = setTimeout(attempt, 30_000);
+      });
+    };
     const observer = new IntersectionObserver(entries => {
       if (!entries.some(entry => entry.isIntersecting)) return;
       observer.disconnect();
-      void load(conversationId).then(photo => { if (active) setUrl(photo); });
+      attempt();
     });
     observer.observe(ref.current);
-    return () => { active = false; observer.disconnect(); };
+    return () => { active = false; observer.disconnect(); if (retryTimer) clearTimeout(retryTimer); };
   }, [load, conversationId]);
   return <span ref={ref} className={`${className} talk-contact-photo`} aria-hidden="true">
     {url ? <img src={url} alt="" onError={() => setUrl(null)} /> : contactInitials(name) || <UserRound size={18} />}

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createBoardRulesService } from "../boards/board-rules.service.js";
 import type { BoardRulesPrismaLike } from "../boards/board-rules.service.js";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
+import { AgentMediaError } from "../agents/agent-media-resolver.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { MetaClientError } from "../meta/meta.client.js";
 import { resolveMetaRuntime } from "../meta/meta-runtime.js";
@@ -151,7 +152,16 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       const photo = await mediaService.photo(request.talk.workspaceId, params.data.conversationId);
       return photo ? reply.type(photo.mimeType).send(photo.bytes) : reply.code(204).send();
     } catch (error) {
-      return reply.code(error instanceof Error && error.message === 'NOT_FOUND' ? 404 : 204).send();
+      if (error instanceof Error && error.message === 'NOT_FOUND') return reply.code(404).send();
+      request.log.warn({
+        event: 'contact_photo_fetch_failed',
+        workspaceId: request.talk.workspaceId,
+        conversationId: params.data.conversationId,
+        reason: error instanceof AgentMediaError ? error.code
+          : error instanceof EvolutionClientError ? `EVOLUTION_HTTP_${error.statusCode}`
+          : error instanceof Error ? error.name : 'unknown'
+      }, 'Failed to fetch contact photo');
+      return reply.code(503).send({ error: 'Não foi possível carregar a foto do contato.' });
     }
   });
   const service = createConversationsService(app.prisma as unknown as PrismaLike, {

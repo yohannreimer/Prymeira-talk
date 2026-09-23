@@ -38,7 +38,7 @@ export function createInboxMediaService(options: {
         const value = await work();
         const previous = cache.get(key);
         if (previous) { cacheBytes -= previous.value?.bytes.length ?? 0; cache.delete(key); }
-        cache.set(key, { value, expires: Date.now() + 15 * 60_000 });
+        cache.set(key, { value, expires: Date.now() + (value ? 15 * 60_000 : 60_000) });
         cacheBytes += value?.bytes.length ?? 0;
         while (cacheBytes > 64 * 1024 * 1024 || cache.size > 256) {
           const oldest = cache.keys().next().value!;
