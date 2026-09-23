@@ -59,6 +59,27 @@ function auditResponse(input: {
 }
 
 describe("createJevReplyPreflight", () => {
+  it("distinguishes unsupported variants, approved refusals and ongoing qualification in JEV criteria", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      shouldReply: { type: "noul", noul: 0.98 },
+      conversationStage: choice("qualification"),
+      commercialPath: choice("ambiguous"),
+      nextAction: choice("handoff")
+    } })));
+
+    await createJevReplyPreflight({ apiKey: "jev-test", fetchImpl }).evaluate(baseInput);
+
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(payload.questions.conversationStage.criteria.qualification).toContain("resposta do cliente à pergunta de qualificação");
+    expect(payload.questions.conversationStage.criteria.new_quote).toContain("não é resposta à qualificação anterior");
+    expect(payload.questions.commercialPath.criteria.stock).toContain("variante solicitada não contradiz medidas, material ou norma aprovados");
+    expect(payload.questions.commercialPath.criteria.ambiguous).toContain("medida fora da faixa aprovada");
+    expect(payload.questions.commercialPath.criteria.not_sold).toContain("negativa explícita aplicável");
+    expect(payload.questions.nextAction.criteria.answer_current_request).toContain("recusa objetiva de item explicitamente não vendido");
+    expect(payload.questions.nextAction.criteria.handoff).toContain("variante fora da faixa ou especificação não confirmada");
+    expect(payload.questions.nextAction.criteria.handoff).toContain("não para repetir uma negativa aprovada");
+  });
+
   it("sends the full prompt, latest 20 complete messages, and selected evidence", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
       shouldReply: { type: "noul", noul: 0.98 },

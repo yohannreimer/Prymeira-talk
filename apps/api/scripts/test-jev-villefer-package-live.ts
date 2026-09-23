@@ -173,7 +173,13 @@ const cases: LiveCase[] = [
       ["atendente", "Qual produto precisa cotar? Informe material, medidas, especificação e quantidade."],
       ["cliente", "Material para porcas oxicortado, diâmetro externo 220 mm, interno 125 mm, comprimento 160 mm, 4 peças de aço 1045."]
     ],
-    expected: { outcome: "continue", requiredKnowledge: [] }
+    expected: {
+      outcome: "continue",
+      conversationStage: "qualification",
+      commercialPath: "not_sold",
+      nextAction: "answer_current_request",
+      requiredKnowledge: ["approved_positive_catalog_v1"]
+    }
   },
   {
     name: "João — barra para viga baldrame em mensagens fragmentadas",
@@ -184,7 +190,13 @@ const cases: LiveCase[] = [
       ["cliente", "Barra para viga baldrame"],
       ["cliente", "10mm"]
     ],
-    expected: { outcome: "continue", requiredKnowledge: [] }
+    expected: {
+      outcome: "continue",
+      conversationStage: "qualification",
+      commercialPath: "not_sold",
+      nextAction: "answer_current_request",
+      requiredKnowledge: ["approved_positive_catalog_v1"]
+    }
   },
   {
     name: "pedido explícito de vendedor não reinicia qualificação",
