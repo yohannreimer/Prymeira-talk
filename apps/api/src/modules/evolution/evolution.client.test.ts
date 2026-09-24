@@ -78,6 +78,21 @@ function createJsonResponse(body: unknown, status = 200) {
 }
 
 describe("Evolution client", () => {
+  it("uses only a matching cached contact photo when the live lookup has no photo", async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(createJsonResponse({ profilePictureUrl: null }))
+      .mockResolvedValueOnce(createJsonResponse([
+        { remoteJid: "5511888888888@s.whatsapp.net", profilePicUrl: "https://example.com/wrong.jpg" },
+        { remoteJid: "5511999999999@s.whatsapp.net", profilePicUrl: "https://example.com/photo.jpg" }
+      ]));
+    const client = createEvolutionClient({ baseUrl: "https://evolution.invalid", apiKey: "key", fetch: fetchMock });
+    expect(await client.fetchProfilePicture?.({ instanceName: "vendas-5", number: "5511999999999" }))
+      .toBe("https://example.com/photo.jpg");
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      where: { remoteJid: "5511999999999@s.whatsapp.net" }
+    });
+  });
+
   it("creates an instance with QR and webhook config", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       createJsonResponse({

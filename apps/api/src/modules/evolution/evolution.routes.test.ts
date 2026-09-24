@@ -995,6 +995,58 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it("recognizes stickers without a URL and inside temporary message wrappers", async () => {
+    const prisma = createMockPrisma();
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      for (const [id, message] of [
+        ["sticker_direct_path", { stickerMessage: { directPath: "/v/t62.15575-24/asset", mediaKey: "key" } }],
+        ["sticker_ephemeral", { ephemeralMessage: { message: { stickerMessage: { directPath: "/v/t62.15575-24/asset" } } } }],
+        ["sticker_type_only", undefined]
+      ] as const) {
+        const response = await app.inject({
+          method: "POST",
+          url: "/webhooks/evolution/workspace_a",
+          headers: { "x-prymeira-talk-secret": "top_secret" },
+          payload: { ...validWebhookBody, data: { ...validWebhookBody.data, key: { ...validWebhookBody.data.key, id }, message, messageType: id === "sticker_type_only" ? "stickerMessage" : undefined } }
+        });
+        expect(response.statusCode).toBe(200);
+        expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+          providerMessageId: id, type: "image", body: "Figurinha recebida", mediaUrl: null
+        }) });
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("shows WhatsApp reactions without scheduling an assistant reply", async () => {
+    const prisma = createMockPrisma();
+    const persistInbound = vi.fn().mockResolvedValue(undefined);
+    const assistantMessage = vi.fn().mockResolvedValue(undefined);
+    const agentReply = vi.fn().mockResolvedValue({ scheduled: true });
+    const { app } = await buildEvolutionApp(prisma, undefined, {
+      assistantScheduler: { persistInbound, message: assistantMessage } as never,
+      agentReplyScheduler: { scheduleActiveSessionForMessage: agentReply }
+    });
+    try {
+      const response = await app.inject({ method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, id: "reaction_1" },
+          messageType: "reactionMessage", message: { reactionMessage: { text: "👍" } }
+        } }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+        providerMessageId: "reaction_1", type: "system", body: "Reagiu com 👍"
+      }) });
+      expect(persistInbound).not.toHaveBeenCalled();
+      expect(assistantMessage).not.toHaveBeenCalled();
+      expect(agentReply).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
   it("prepares inbound audio before automations and reply scheduling", async () => {
     const messageCreate = vi.fn().mockImplementation(async (args) => ({
       id: "msg_1",

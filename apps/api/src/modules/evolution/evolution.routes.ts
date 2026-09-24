@@ -186,7 +186,19 @@ function readMessageBase64(message: unknown, messageKey: string) {
   );
 }
 
+function unwrapMessage(message: unknown) {
+  let current = message;
+  for (let depth = 0; depth < 6; depth++) {
+    const wrapper = ["ephemeralMessage", "viewOnceMessage", "viewOnceMessageV2", "documentWithCaptionMessage"]
+      .find((key) => hasRecordPath(current, [key, "message"]));
+    if (!wrapper) break;
+    current = (current as Record<string, Record<string, unknown>>)[wrapper].message;
+  }
+  return current;
+}
+
 function attachmentPresentation(message: unknown) {
+  message = unwrapMessage(message);
   const fileName = readStringPath(message, ['documentMessage', 'fileName']);
   const caption = readFirstStringPath(message, [['documentMessage', 'caption'], ['imageMessage', 'caption'], ['videoMessage', 'caption']]);
   const raw = message && typeof message === 'object' ? (message as Record<string, unknown>).audioMessage : null;
@@ -197,12 +209,13 @@ function attachmentPresentation(message: unknown) {
   };
 }
 
-export function extractMessageContent(message: unknown): {
+export function extractMessageContent(message: unknown, messageType?: unknown): {
   type: MessageDto["type"];
   body: string | null;
   mediaUrl: string | null;
   preview: string | null;
 } {
+  message = unwrapMessage(message);
   const text = readFirstStringPath(message, [
     ["conversation"],
     ["extendedTextMessage", "text"]
@@ -215,6 +228,12 @@ export function extractMessageContent(message: unknown): {
       mediaUrl: null,
       preview: text
     };
+  }
+
+  if (hasRecordPath(message, ["reactionMessage"]) || messageType === "reactionMessage") {
+    const emoji = readStringPath(message, ["reactionMessage", "text"]);
+    const body = emoji ? `Reagiu com ${emoji}` : "Removeu uma reação";
+    return { type: "system", body, mediaUrl: null, preview: body };
   }
 
   const imageMimetype = readStringPath(message, ["imageMessage", "mimetype"]);
@@ -240,7 +259,7 @@ export function extractMessageContent(message: unknown): {
   }
 
   const stickerMimetype = readStringPath(message, ["stickerMessage", "mimetype"]);
-  const stickerDataUrl = normalizeBase64MediaUrl(readMessageBase64(message, "stickerMessage"), stickerMimetype);
+  const stickerDataUrl = normalizeBase64MediaUrl(readMessageBase64(message, "stickerMessage"), stickerMimetype ?? "image/webp");
   const stickerUrl =
     stickerDataUrl ??
     normalizeMediaUrl(
@@ -249,7 +268,7 @@ export function extractMessageContent(message: unknown): {
         ["stickerMessage", "mediaUrl"]
       ])
     );
-  if (stickerMimetype || stickerUrl) {
+  if (hasRecordPath(message, ["stickerMessage"]) || messageType === "stickerMessage") {
     return {
       type: "image",
       body: "Figurinha recebida",
@@ -549,7 +568,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
     const payload = body.data;
     const phone = extractPhone(payload.data.key.remoteJid);
     const pushName = payload.data.key.fromMe ? null : extractPushName(request.body);
-    const messageContent = extractMessageContent(payload.data.message);
+    const messageContent = extractMessageContent(payload.data.message, payload.data.messageType);
     const receivedAt =
       typeof payload.data.messageTimestamp === "number"
         ? new Date(payload.data.messageTimestamp * 1000)
@@ -720,7 +739,9 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           throw new Error("Conversation disappeared during Evolution webhook ingestion.");
         }
 
-        await options.assistantScheduler?.persistInbound(tx, { workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
+        if (messageContent.type !== "system") {
+          await options.assistantScheduler?.persistInbound(tx, { workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
+        }
         return { kind: "created" as const, message, conversation: updatedConversation, humanTookControl };
       });
 
@@ -735,7 +756,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           request.log.error({ error, workspaceId, conversationId: message.conversationId }, "Failed to pause assistant suggestions after human outbound message.");
         });
       }
-      if (!humanTookControl) {
+      if (!humanTookControl && messageContent.type !== "system") {
         await options.assistantScheduler?.message({ workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
       }
       options.handoffBriefService?.schedule({ workspaceId, conversationId: message.conversationId });
@@ -750,7 +771,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         payload: toConversationDto(conversation)
       });
 
-      if (message.direction === "inbound") {
+      if (message.direction === "inbound" && messageContent.type !== "system") {
         await options.followupService?.observeConversationActivity({
           workspaceId,
           conversationId: message.conversationId,
@@ -784,7 +805,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         }).catch((error: unknown) => {
           request.log.error({ error }, "Failed to schedule agent reply.");
         });
-      } else if (options.agentImprovements) {
+      } else if (message.direction === "outbound" && messageContent.type !== "system" && options.agentImprovements) {
         void options.agentImprovements.observeHumanReply({
           workspaceId,
           conversationId: message.conversationId,

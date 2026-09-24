@@ -45,14 +45,14 @@ export function createAssistantHistoryImporter(db: PrismaClient, source: Evoluti
     const known = new Set(existing.map(m => m.providerMessageId));
     const missing = records.filter(r => !known.has(r.key.id));
     if (live.length + missing.length > 2000) throw new AssistantError('ASSISTANT_HISTORY_LIMIT', 'O histórico excede 2.000 mensagens. Revise o período antes de importar.');
-    if (input.dryRun) return { ...zero, imported: records.length, missing: missing.length, from: from.toISOString(), to: to.toISOString(), media: missing.filter(r => ['image','audio','file'].includes(extractMessageContent(unwrap(r.message)).type)).length };
+    if (input.dryRun) return { ...zero, imported: records.length, missing: missing.length, from: from.toISOString(), to: to.toISOString(), media: missing.filter(r => ['image','audio','file'].includes(extractMessageContent(unwrap(r.message), r.messageType).type)).length };
     const batchId = randomUUID();
     let unreadMedia = 0;
     let mediaBytes = 0;
     const startedAt = Date.now();
     const rows: Prisma.MessageCreateManyInput[] = [];
     for (const item of missing) {
-      const content = extractMessageContent(unwrap(item.message));
+      const content = extractMessageContent(unwrap(item.message), item.messageType);
       const id = randomUUID();
       const date = new Date(item.messageTimestamp * 1000);
       const provenance: Record<string, unknown> = { source: 'evolution', batchId, from: from.toISOString(), to: to.toISOString(), originalType: item.messageType ?? Object.keys(item.message)[0] ?? 'unknown' };

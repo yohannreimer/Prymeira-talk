@@ -495,10 +495,28 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       };
     },
     async fetchProfilePicture(input) {
-      const data = await post(`/chat/fetchProfilePictureUrl/${encodeURIComponent(input.instanceName)}`, { number: input.number }, 8000);
-      const url = getString(data, 'profilePictureUrl');
-      if (!url) return null;
-      try { return new URL(url).protocol === 'https:' ? url : null; } catch { return null; }
+      const httpsUrl = (value: unknown) => {
+        if (typeof value !== 'string') return null;
+        try { return new URL(value).protocol === 'https:' ? value : null; } catch { return null; }
+      };
+      let liveError: unknown;
+      try {
+        const data = await post(`/chat/fetchProfilePictureUrl/${encodeURIComponent(input.instanceName)}`, { number: input.number }, 8000);
+        const url = httpsUrl(getString(data, 'profilePictureUrl'));
+        if (url) return url;
+      } catch (error) { liveError = error; }
+
+      // Evolution retains contact photos from the last sync, even when a live lookup is unavailable.
+      const remoteJid = `${input.number.replace(/\D/g, '')}@s.whatsapp.net`;
+      try {
+        const data = await post(`/chat/findContacts/${encodeURIComponent(input.instanceName)}`, { where: { remoteJid } }, 8000);
+        const contacts = Array.isArray(data) ? data : isRecord(data) && Array.isArray(data.contacts) ? data.contacts : [];
+        const contact = contacts.find((item) => isRecord(item) && item.remoteJid === remoteJid);
+        return isRecord(contact) ? httpsUrl(contact.profilePicUrl) : null;
+      } catch {
+        if (liveError) throw liveError;
+        return null;
+      }
     },
     async fetchMedia(input) {
       const data = await post(`/chat/getBase64FromMediaMessage/${encodeURIComponent(input.instanceName)}`, { message: { key: { id: input.id } }, convertToMp4: false }, 15000);
