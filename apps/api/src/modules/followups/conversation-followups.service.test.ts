@@ -455,6 +455,36 @@ describe("conversation followups", () => {
     });
   });
 
+  it("schedules a human follow-up after the agent requested handoff", async () => {
+    const handoffSession = { ...baseSession, status: "handoff_requested" };
+    const prisma = buildPrisma({
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseConversation,
+          aiControlStatus: "human_controlled",
+          activeAgentSession: handoffSession
+        })
+      },
+      message: { findFirst: vi.fn().mockImplementation(async (args: any) =>
+        args.where.direction === "inbound" ? null : { ...baseMessage, body: "Como ficou?" }
+      ) },
+      aiAgentSession: { findFirst: vi.fn().mockResolvedValue(null) }
+    });
+
+    const result = await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "human"
+    });
+
+    expect(result).toEqual({ status: "scheduled", followupId: ids.followup });
+    expect(prisma.conversationFollowup.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ kind: "human_commercial", sessionId: ids.session })
+    });
+  });
+
   it("blocks qualification scheduling during the actual human takeover state", async () => {
     const pausedSession = { ...baseSession, status: "paused_by_human" };
     const prisma = buildPrisma({

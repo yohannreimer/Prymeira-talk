@@ -777,7 +777,7 @@ async function resolveCandidate(
           conversationId: input.conversationId,
           status:
             kind === "human_commercial"
-              ? { in: ["active", "paused_by_human"] }
+              ? { in: ["active", "paused_by_human", "handoff_requested"] }
               : "active",
           agent: { status: "active" }
         },
@@ -872,7 +872,7 @@ function isCompatibleSession(
       session.workspaceId === workspaceId &&
       session.conversationId === conversationId &&
       (session.status === "active" ||
-        (kind === "human_commercial" && session.status === "paused_by_human")) &&
+        (kind === "human_commercial" && (session.status === "paused_by_human" || session.status === "handoff_requested"))) &&
       session.agent?.workspaceId === workspaceId &&
       session.agent.status === "active"
   );
