@@ -6,6 +6,8 @@ import {
   type NormalizedConversationMessage
 } from "./conversation-context-builder.js";
 import { MAX_AUTOMATIC_FOLLOWUP_STEPS } from "../followups/conversation-followups.service.js";
+import { resolveFollowupPlan } from "../followups/channel-followup-plan.js";
+import { nextBusinessStart } from "../followups/business-time.js";
 import {
   publishPersistedConversationFollowup,
   type ConversationFollowupPublisher,
@@ -31,7 +33,6 @@ import {
   type AgentProvider
 } from "./provider-gateway.js";
 import { resolveFollowupStepInstruction } from "./followup-step-instruction.js";
-import { resolveEffectiveFollowupConfig } from "./effective-followup-config.js";
 import {
   resolveOpenAiCompatibleSettings,
   type AiProviderSettingsPrismaLike,
@@ -66,6 +67,7 @@ type FollowupConversation = {
     provider?: string | null;
     providerKey?: string | null;
     encryptedConfig?: unknown;
+    followupConfig?: unknown;
   } | null;
   tags?: Array<{ tag?: { name?: string | null } | null }>;
 };
@@ -109,6 +111,8 @@ type FollowupLifecycle = {
     agentBehaviorConfig: unknown;
     finalBody: string;
     decision: unknown;
+    sentMessageId?: string;
+    sentMessageAt?: Date | string;
   }): Promise<CompleteAutomaticFollowupResult>;
   claimScheduledFollowup(input: {
     workspaceId: string;
@@ -120,6 +124,7 @@ type FollowupLifecycle = {
     claim: { lockedAt: Date };
     outcome: "retry" | "failed";
     reason: string;
+    scheduledAt?: Date;
   }): Promise<{ status: "recovered" } | { status: "not_active" }>;
 };
 
@@ -128,6 +133,7 @@ export type AgentFollowupRuntimeResult =
   | { status: "cancelled"; followupId: string; reason: string }
   | { status: "skipped"; followupId: string }
   | { status: "review"; followupId: string }
+  | { status: "deferred"; followupId: string }
   | { status: "sent"; followupId: string; nextFollowupId?: string }
   | { status: "failed"; followupId: string; message: string };
 
@@ -145,6 +151,7 @@ export function createAgentFollowupRuntime(input: {
   replyPreflight?: AgentReplyPreflight;
   outbound: ConversationOutboundTextDelivery;
   publisher?: ConversationFollowupPublisher;
+  now?: () => Date;
 }) {
   const { prisma } = input;
 
@@ -240,8 +247,8 @@ export function createAgentFollowupRuntime(input: {
         return { status: "review", followupId: followup.id };
       }
 
-      const followupConfig = resolveEffectiveFollowupConfig(agent.behaviorConfig);
-      if (followup.stepIndex > MAX_AUTOMATIC_FOLLOWUP_STEPS) {
+      const followupConfig = resolveFollowupPlan(agent.behaviorConfig, conversation.channel?.followupConfig);
+      if (followup.stepIndex > MAX_AUTOMATIC_FOLLOWUP_STEPS || followup.stepIndex > (followupConfig?.steps.length ?? 0)) {
         await markSkipped(followup, { outcome: "skip", reason: "followup_step_limit" }, "followup_step_limit");
         return { status: "skipped", followupId: followup.id };
       }
@@ -319,7 +326,8 @@ export function createAgentFollowupRuntime(input: {
           step: followup.stepIndex,
           instruction: stepInstruction,
           aiControlStatus: conversation.aiControlStatus === "agent_allowed" ? "agent_allowed" : "human_controlled",
-          hasCompatibleActiveAgentSession: true
+          hasCompatibleActiveAgentSession: true,
+          allowHumanAutomatic: followupConfig?.humanCommercialDelivery === "automatic"
         });
       } catch (error) {
         await markReview({
@@ -339,7 +347,7 @@ export function createAgentFollowupRuntime(input: {
         return { status: "skipped", followupId: followup.id };
       }
 
-      if (decision.route === "automatic_send" && !isAutomaticallyEligible(decision, followup, conversation)) {
+      if (decision.route === "automatic_send" && !isAutomaticallyEligible(decision, followup, conversation, followupConfig?.humanCommercialDelivery)) {
         await markReview({ followup, decision, reason: "automatic_delivery_not_allowed" });
         return { status: "review", followupId: followup.id };
       }
@@ -485,7 +493,7 @@ export function createAgentFollowupRuntime(input: {
       }
 
       const currentConversation = await loadConversation(prisma, runInput.workspaceId, beforeDelivery.context.followup.conversationId);
-      if (!currentConversation || !isAutomaticallyEligible(decision, beforeDelivery.context.followup, currentConversation)) {
+      if (!currentConversation || !isAutomaticallyEligible(decision, beforeDelivery.context.followup, currentConversation, followupConfig?.humanCommercialDelivery)) {
         await markReview({
           followup: beforeDelivery.context.followup,
           decision,
@@ -493,6 +501,25 @@ export function createAgentFollowupRuntime(input: {
           draftBody: candidate
         });
         return { status: "review", followupId: beforeDelivery.context.followup.id };
+      }
+
+      const attemptedAt = (input.now ?? (() => new Date()))();
+      const permittedAt = nextBusinessStart({
+        from: attemptedAt,
+        timeZone: followupConfig!.timeZone,
+        businessDays: followupConfig!.businessDays,
+        businessHours: followupConfig!.businessHours
+      });
+      if (permittedAt > attemptedAt) {
+        await input.followups.recoverClaimedFollowup({
+          workspaceId: runInput.workspaceId,
+          followupId: beforeDelivery.context.followup.id,
+          claim: claimToken,
+          outcome: "retry",
+          reason: "outside_business_hours",
+          scheduledAt: permittedAt
+        });
+        return { status: "deferred", followupId: beforeDelivery.context.followup.id };
       }
 
       let delivery;
@@ -543,7 +570,9 @@ export function createAgentFollowupRuntime(input: {
         claim: claimToken,
         agentBehaviorConfig: agent.behaviorConfig,
         finalBody: candidate,
-        decision
+        decision,
+        sentMessageId: delivery.message.id,
+        sentMessageAt: delivery.message.createdAt
       });
       if (completion.status === "not_active") {
         return { status: "skipped", followupId: beforeDelivery.context.followup.id };
@@ -586,17 +615,25 @@ async function loadConversation(
 function isAutomaticallyEligible(
   decision: FollowupDecision,
   followup: ConversationFollowupRecord,
-  conversation: FollowupConversation
+  conversation: FollowupConversation,
+  humanCommercialDelivery: "review" | "automatic" | undefined
 ) {
-  return (
+  const qualificationEligible =
     followup.kind === "qualification" &&
-    decision.outcome === "follow_up" &&
-    decision.route === "automatic_send" &&
     decision.purpose === "missing_qualification" &&
     decision.stage === "qualification" &&
+    conversation.aiControlStatus === "agent_allowed";
+  const commercialEligible =
+    followup.kind === "human_commercial" &&
+    humanCommercialDelivery === "automatic" &&
+    ["proposal_checkin", "objection_help", "confirm_active"].includes(decision.purpose) &&
+    ["post_proposal", "seller_owned"].includes(decision.stage);
+  return (
+    (qualificationEligible || commercialEligible) &&
+    decision.outcome === "follow_up" &&
+    decision.route === "automatic_send" &&
     decision.risk === "none" &&
     conversation.status !== "closed" &&
-    conversation.aiControlStatus === "agent_allowed" &&
     !blocksAutonomousAgent(conversation.channel?.encryptedConfig)
   );
 }

@@ -1,5 +1,6 @@
 import {
   agentPackageSchema,
+  channelFollowupConfigSchema,
   aiAgentSchema,
   aiAgentImprovementSchema,
   aiKnowledgeSourceSchema,
@@ -46,6 +47,7 @@ import {
   type AiAgentImprovementDto,
   type AiKnowledgeSourceDto,
   type ChannelDto,
+  type ChannelFollowupConfig,
   type ChannelOperationResultDto,
   type ChannelQrResultDto,
   type ChannelTestInboundResultDto,
@@ -1475,6 +1477,27 @@ export async function apiGetConversations(
 }
 
 export type FollowupListStatus = "review" | "scheduled" | "sent" | "cancelled";
+
+export async function apiGetChannelFollowupConfig(
+  getToken: () => Promise<string | null>, channelId: string
+): Promise<{ config: ChannelFollowupConfig; customized: boolean }> {
+  return fetchJson(getToken, `/followups/config/${encodeURIComponent(channelId)}`, {}, (data) => {
+    const response = data as { config: unknown; customized: unknown };
+    return { config: channelFollowupConfigSchema.parse(response.config), customized: response.customized === true };
+  }, "Não foi possível carregar a configuração de follow-up.");
+}
+
+export async function apiSetChannelFollowupConfig(
+  getToken: () => Promise<string | null>, channelId: string, config: ChannelFollowupConfig
+): Promise<{ config: ChannelFollowupConfig; customized: boolean }> {
+  return fetchJson(getToken, `/followups/config/${encodeURIComponent(channelId)}`, {
+    method: "PUT",
+    body: JSON.stringify(channelFollowupConfigSchema.parse(config))
+  }, (data) => {
+    const response = data as { config: unknown; customized: unknown };
+    return { config: channelFollowupConfigSchema.parse(response.config), customized: response.customized === true };
+  }, "Não foi possível salvar a configuração de follow-up.");
+}
 
 export type FollowupCancelReason =
   | "manual_cancelled"

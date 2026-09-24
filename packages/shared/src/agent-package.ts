@@ -54,6 +54,27 @@ export const agentFollowupConfigSchema = z.object({
   closeAfterBusinessMinutes: z.number().int().min(0)
 });
 
+export const channelFollowupConfigSchema = z.object({
+  timeZone: z.string().trim().min(1).max(80),
+  businessDays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+  businessHours: z.object({
+    start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+  }),
+  steps: z.array(z.object({ afterMinutes: z.number().int().min(1).max(43_200) })).min(1).max(10),
+  humanCommercialDelivery: z.enum(["review", "automatic"])
+}).superRefine((value, context) => {
+  if (new Set(value.businessDays).size !== value.businessDays.length) {
+    context.addIssue({ code: "custom", message: "Duplicate business day." });
+  }
+  if (value.businessHours.start >= value.businessHours.end) {
+    context.addIssue({ code: "custom", message: "Business opening must precede closing." });
+  }
+  try { new Intl.DateTimeFormat("en-US", { timeZone: value.timeZone }); }
+  catch { context.addIssue({ code: "custom", message: "Invalid time zone." }); }
+});
+export type ChannelFollowupConfig = z.infer<typeof channelFollowupConfigSchema>;
+
 export const agentPackageKnowledgeSourceSchema = z.object({
   key: agentPackageSlugSchema,
   type: z.enum(["faq", "text", "file"]),

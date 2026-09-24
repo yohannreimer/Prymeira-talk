@@ -9,6 +9,7 @@ import {
   LoaderCircle,
   MessageCircleReply,
   RefreshCw,
+  Settings2,
   Send,
   UserRoundCheck,
   X,
@@ -37,6 +38,7 @@ import {
   matchesFollowupFilter
 } from "./followup-display";
 import "./followups.css";
+import { FollowupSettings } from "./FollowupSettings";
 
 const filters: Array<{
   key: FollowupListStatus;
@@ -119,6 +121,7 @@ function mergeRealtimeFollowups(
 export function FollowupsPage() {
   const { getToken } = useTalkAuth();
   const [filter, setFilter] = useState<FollowupListStatus>("review");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [followups, setFollowups] = useState<ConversationFollowupDto[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -309,21 +312,22 @@ export function FollowupsPage() {
               <h1 id="followups-title">Follow-ups</h1>
               <p>Retome conversas no momento certo, com contexto e controle humano.</p>
             </div>
-            <div className="followups-quiet-count" aria-label={`${counts.current} itens no filtro atual`}>
+            {!settingsOpen ? <div className="followups-quiet-count" aria-label={`${counts.current} itens no filtro atual`}>
               <strong>{counts.current}</strong>
               <span>{counts.current === 1 ? "item" : "itens"}</span>
-            </div>
+            </div> : null}
           </div>
         </div>
 
         <nav className="followups-filters" aria-label="Filtros de follow-up">
           {filters.map(({ key, label, shortLabel, Icon }) => (
             <button
-              className={filter === key ? "is-active" : ""}
+              className={!settingsOpen && filter === key ? "is-active" : ""}
               disabled={busyId !== null}
               key={key}
               onClick={() => {
                 if (busyId) return;
+                setSettingsOpen(false);
                 filterRef.current = key;
                 setFilter(key);
                 setNotice(null);
@@ -341,6 +345,10 @@ export function FollowupsPage() {
               <span className="followups-filter-short">{shortLabel}</span>
             </button>
           ))}
+          <button className={settingsOpen ? "is-active" : ""} type="button" aria-pressed={settingsOpen}
+            disabled={busyId !== null} aria-disabled={busyId !== null} onClick={() => setSettingsOpen(true)}>
+            <Settings2 size={16} aria-hidden="true" /> Configuração
+          </button>
         </nav>
       </header>
 
@@ -349,6 +357,7 @@ export function FollowupsPage() {
       </div>
 
       <div className="followups-content">
+        {settingsOpen ? <FollowupSettings getToken={getToken} /> : <>
         {isLoading ? <FollowupsLoading /> : null}
 
         {!isLoading && loadError ? (
@@ -439,6 +448,7 @@ export function FollowupsPage() {
             ))}
           </div>
         ) : null}
+        </>}
       </div>
     </section>
   );

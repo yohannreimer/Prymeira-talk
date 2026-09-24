@@ -1,5 +1,4 @@
-import { addBusinessMinutes } from "./business-time.js";
-import { resolveEffectiveFollowupConfig } from "../agents/effective-followup-config.js";
+import { calculateFollowupDueAt, resolveFollowupPlan } from "./channel-followup-plan.js";
 import {
   publishPersistedConversationFollowup,
   type ConversationFollowupPublisher
@@ -29,6 +28,7 @@ type AgentSessionRecord = {
 type ConversationRecord = {
   id: string;
   workspaceId: string;
+  channelId?: string;
   status: string;
   aiControlStatus: string;
   activeAgentSessionId?: string | null;
@@ -92,6 +92,9 @@ export type ConversationFollowupsPrismaLike = {
   ): Promise<T>;
   conversation: {
     findUnique(args: unknown): Promise<ConversationRecord | null>;
+  };
+  channel?: {
+    findUnique(args: unknown): Promise<{ followupConfig?: unknown } | null>;
   };
   message: {
     findFirst(args: unknown): Promise<MessageRecord | null>;
@@ -157,7 +160,7 @@ export type ClaimedFollowupRecoveryResult =
   | { status: "recovered" }
   | { status: "not_active" };
 
-export const MAX_AUTOMATIC_FOLLOWUP_STEPS = 3;
+export const MAX_AUTOMATIC_FOLLOWUP_STEPS = 10;
 export const DEFAULT_FOLLOWUP_PROCESSING_LEASE_MS = 10 * 60 * 1_000;
 
 const ACTIVE_FOLLOWUP_STATUSES: ActiveFollowupStatus[] = ["scheduled", "processing", "review"];
@@ -200,6 +203,10 @@ export function createConversationFollowupsService(
       return { status: "ignored" };
     }
 
+    if (isManagedFollowupDelivery(candidate.message)) {
+      return { status: "ignored" };
+    }
+
     if (input.source === "human" && await isCourtesyClosure(prisma, input, candidate.message)) {
       return cancelForCustomerReply(prisma, input, candidate.message.ingestedAt, options.publisher, "outbound_replaced");
     }
@@ -213,7 +220,7 @@ export function createConversationFollowupsService(
       return cancelForCustomerReply(prisma, input, newerCustomerMessage.ingestedAt, options.publisher);
     }
 
-    const scheduledAt = calculateFirstScheduledAt(candidate.message.createdAt, candidate.agent);
+    const scheduledAt = await calculateFirstScheduledAt(prisma, candidate.message.createdAt, candidate.conversation, candidate.agent);
     if (!scheduledAt) {
       return { status: "ignored" };
     }
@@ -414,6 +421,7 @@ export function createConversationFollowupsService(
     claim: { lockedAt: Date };
     outcome: "retry" | "failed";
     reason: string;
+    scheduledAt?: Date;
   }): Promise<ClaimedFollowupRecoveryResult> {
     const recovery = await prisma.conversationFollowup.updateMany({
       where: {
@@ -427,7 +435,8 @@ export function createConversationFollowupsService(
         ? {
             status: "scheduled",
             lockedAt: null,
-            reason: input.reason
+            reason: input.reason,
+            ...(input.scheduledAt ? { scheduledAt: input.scheduledAt } : {})
           }
         : {
             status: "failed",
@@ -491,6 +500,8 @@ export function createConversationFollowupsService(
     agentBehaviorConfig: unknown;
     finalBody: string;
     decision: unknown;
+    sentMessageId?: string;
+    sentMessageAt?: Date | string;
     now?: Date;
   }): Promise<CompleteAutomaticFollowupResult> {
     if (
@@ -504,13 +515,16 @@ export function createConversationFollowupsService(
     }
 
     const sentAt = input.now ?? new Date();
-    const followupConfig = resolveEffectiveFollowupConfig(input.agentBehaviorConfig);
+    const conversation = await prisma.conversation.findUnique({
+      where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.followup.conversationId } }
+    });
+    const followupConfig = await loadPlan(prisma, input.workspaceId, conversation?.channelId, input.agentBehaviorConfig);
     const nextStep =
-      followupConfig && input.followup.stepIndex < MAX_AUTOMATIC_FOLLOWUP_STEPS
+      followupConfig && input.followup.stepIndex < Math.min(MAX_AUTOMATIC_FOLLOWUP_STEPS, followupConfig.steps.length)
         ? followupConfig.steps[input.followup.stepIndex]
         : undefined;
     const nextScheduledAt = nextStep && followupConfig
-      ? calculateScheduledAt(input.followup.anchorMessageAt, nextStep, followupConfig)
+      ? calculateNextScheduledAt(input.followup, sentAt, nextStep.afterMinutes, followupConfig)
       : null;
 
     const result = await prisma.$transaction(async (tx) => {
@@ -557,9 +571,9 @@ export function createConversationFollowupsService(
           status: "scheduled",
           activeKey: "active",
           stepIndex: input.followup.stepIndex + 1,
-          anchorMessageId: input.followup.anchorMessageId,
-          anchorMessageAt: toDate(input.followup.anchorMessageAt),
-          anchorIngestedAt: toDate(input.followup.anchorIngestedAt),
+          anchorMessageId: input.sentMessageId ?? input.followup.anchorMessageId,
+          anchorMessageAt: input.sentMessageAt ? toDate(input.sentMessageAt) : sentAt,
+          anchorIngestedAt: sentAt,
           scheduledAt: nextScheduledAt,
           decision: {},
           reason: "agent_followup_step"
@@ -574,13 +588,74 @@ export function createConversationFollowupsService(
     return result;
   }
 
+  async function scheduleNextAfterManualSend(input: {
+    workspaceId: string;
+    followup: ConversationFollowupRecord;
+    sentAt: Date;
+  }): Promise<string | null> {
+    const conversation = await prisma.conversation.findUnique({
+      where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.followup.conversationId } }
+    });
+    if (!conversation || conversation.status === "closed") return null;
+    const session = input.followup.sessionId
+      ? await prisma.aiAgentSession.findFirst({
+          where: { workspaceId: input.workspaceId, id: input.followup.sessionId },
+          include: { agent: true }
+        })
+      : null;
+    if (!session?.agent || !isCompatibleSession(session, input.workspaceId, input.followup.conversationId, input.followup.kind)) return null;
+    const plan = await loadPlan(prisma, input.workspaceId, conversation.channelId, session.agent.behaviorConfig);
+    const nextStep = plan?.steps[input.followup.stepIndex];
+    if (!plan || !nextStep || input.followup.stepIndex >= MAX_AUTOMATIC_FOLLOWUP_STEPS) return null;
+    const scheduledAt = calculateNextScheduledAt(input.followup, input.sentAt, nextStep.afterMinutes, plan);
+    if (!scheduledAt) return null;
+
+    const next = await prisma.$transaction(async (tx) => {
+      const customerReplied = await tx.message.findFirst({
+        where: {
+          workspaceId: input.workspaceId,
+          conversationId: input.followup.conversationId,
+          direction: "inbound",
+          ingestedAt: { gt: toDate(input.followup.anchorIngestedAt) }
+        },
+        orderBy: { ingestedAt: "desc" }
+      });
+      if (customerReplied) return null;
+      const active = await tx.conversationFollowup.findFirst({
+        where: { workspaceId: input.workspaceId, conversationId: input.followup.conversationId, activeKey: "active" }
+      });
+      if (active) return null;
+      return tx.conversationFollowup.create({
+        data: {
+          workspaceId: input.workspaceId,
+          conversationId: input.followup.conversationId,
+          agentId: input.followup.agentId,
+          sessionId: input.followup.sessionId,
+          kind: input.followup.kind,
+          status: "scheduled",
+          activeKey: "active",
+          stepIndex: input.followup.stepIndex + 1,
+          anchorMessageId: input.followup.id,
+          anchorMessageAt: input.sentAt,
+          anchorIngestedAt: input.sentAt,
+          scheduledAt,
+          decision: {},
+          reason: "manual_followup_step"
+        }
+      });
+    });
+    if (next) await publish(input.workspaceId, next.id);
+    return next?.id ?? null;
+  }
+
   return {
     observeConversationActivity,
     revalidateActiveFollowup,
     claimScheduledFollowup,
     recoverClaimedFollowup,
     reconcileStaleProcessingFollowups,
-    completeAutomaticFollowup
+    completeAutomaticFollowup,
+    scheduleNextAfterManualSend
   };
 }
 
@@ -617,6 +692,12 @@ function isOwnPendingDeliveryReservation(
   if (!message || message.id !== followup.id || message.status !== "pending") return false;
   const metadata = asRecord(message.metadata);
   return metadata?.source === "followup_review" && metadata.followupId === followup.id;
+}
+
+function isManagedFollowupDelivery(message: MessageRecord) {
+  const metadata = asRecord(message.metadata);
+  return typeof metadata?.followupId === "string" &&
+    (metadata.source === "followup_review" || metadata.source === "ai_agent");
 }
 
 async function findPersistedCustomerInboundMessage(
@@ -792,33 +873,45 @@ async function resolveCandidate(
   return { conversation, message, session, agent: session.agent };
 }
 
-function calculateFirstScheduledAt(anchorMessageAt: Date | string, agent: AgentRecord): Date | null {
-  const followupConfig = resolveEffectiveFollowupConfig(agent.behaviorConfig);
+async function loadPlan(
+  prisma: ConversationFollowupsPrismaLike,
+  workspaceId: string,
+  channelId: string | undefined,
+  agentBehaviorConfig: unknown
+) {
+  const channel = channelId && prisma.channel
+    ? await prisma.channel.findUnique({ where: { workspaceId_id: { workspaceId, id: channelId } } })
+    : null;
+  return resolveFollowupPlan(agentBehaviorConfig, channel?.followupConfig);
+}
+
+async function calculateFirstScheduledAt(
+  prisma: ConversationFollowupsPrismaLike,
+  anchorMessageAt: Date | string,
+  conversation: ConversationRecord,
+  agent: AgentRecord
+): Promise<Date | null> {
+  const followupConfig = await loadPlan(prisma, conversation.workspaceId, conversation.channelId, agent.behaviorConfig);
   if (!followupConfig) {
     return null;
   }
 
   const firstStep = followupConfig.steps[0];
-  return firstStep ? calculateScheduledAt(anchorMessageAt, firstStep, followupConfig) : null;
+  return firstStep ? calculateFollowupDueAt(toDate(anchorMessageAt), firstStep.afterMinutes, followupConfig) : null;
 }
 
-function calculateScheduledAt(
-  anchorMessageAt: Date | string,
-  step: { afterBusinessMinutes: number },
-  config: {
-    timeZone: string;
-    businessDays: number[];
-    businessHours: { start: string; end: string };
-  }
+function calculateNextScheduledAt(
+  followup: ConversationFollowupRecord,
+  sentAt: Date,
+  nextMinutes: number,
+  plan: NonNullable<ReturnType<typeof resolveFollowupPlan>>
 ): Date | null {
   try {
-    return addBusinessMinutes({
-      from: toDate(anchorMessageAt),
-      minutes: step.afterBusinessMinutes,
-      timeZone: config.timeZone,
-      businessDays: config.businessDays,
-      businessHours: config.businessHours
-    });
+    const previousMinutes = plan.steps[followup.stepIndex - 1]?.afterMinutes ?? 0;
+    const delay = plan.mode === "business_cumulative"
+      ? Math.max(1, nextMinutes - previousMinutes)
+      : nextMinutes;
+    return calculateFollowupDueAt(sentAt, delay, plan);
   } catch {
     return null;
   }

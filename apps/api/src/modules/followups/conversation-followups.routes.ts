@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
-import type { RealtimeEvent } from "@prymeira-talk/shared";
+import { channelFollowupConfigSchema, type RealtimeEvent } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { canPerform, type Permission } from "../access/roles.js";
 import { resolveCurrentUserProfileId } from "../conversations/current-user.js";
@@ -10,10 +10,12 @@ import {
 } from "../conversations/conversations.service.js";
 import {
   createConversationFollowupsService,
+  type ConversationFollowupRecord,
   type ConversationFollowupsPrismaLike,
   type RevalidateActiveFollowupResult
 } from "./conversation-followups.service.js";
-import { addBusinessMinutes } from "./business-time.js";
+import { addBusinessMinutes, nextBusinessStart } from "./business-time.js";
+import { DEFAULT_CHANNEL_FOLLOWUP_CONFIG } from "./channel-followup-plan.js";
 import {
   conversationFollowupPublicSelect,
   createConversationFollowupRealtimePublisher,
@@ -87,6 +89,10 @@ export type ConversationFollowupsRoutesPrismaLike = Omit<
   ConversationFollowupsPrismaLike,
   "conversationFollowup" | "$transaction"
 > & {
+  channel?: {
+    findUnique(args: unknown): Promise<{ followupConfig?: unknown } | null>;
+    update(args: unknown): Promise<{ followupConfig?: unknown }>;
+  };
   conversationFollowup: FollowupStore;
   message: ConversationFollowupsPrismaLike["message"] & ManualSendTransaction["message"];
   userProfile: {
@@ -102,6 +108,11 @@ type FollowupLifecycle = {
     now?: Date;
     claim?: { lockedAt: Date };
   }): Promise<RevalidateActiveFollowupResult>;
+  scheduleNextAfterManualSend?(input: {
+    workspaceId: string;
+    followup: ConversationFollowupRecord;
+    sentAt: Date;
+  }): Promise<string | null>;
 };
 
 type RealtimePublisher = {
@@ -214,6 +225,18 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
     });
   }
 
+  async function loadChannelCalendar(workspaceId: string, conversationId: string) {
+    const conversation = await prisma.conversation.findUnique({
+      where: { workspaceId_id: { workspaceId, id: conversationId } }
+    });
+    if (!conversation?.channelId || !prisma.channel) return null;
+    const channel = await prisma.channel.findUnique({
+      where: { workspaceId_id: { workspaceId, id: conversation.channelId } }
+    });
+    const parsed = channelFollowupConfigSchema.safeParse(channel?.followupConfig);
+    return parsed.success ? parsed.data : null;
+  }
+
   app.get("/followups", async (request, reply) => {
     if (!requirePermission(request.talk.role, "conversation.read", reply)) return reply;
     const query = listQuerySchema.safeParse(request.query);
@@ -235,6 +258,41 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
       take: 100
     });
     return records.map(toConversationFollowupDto);
+  });
+
+  app.get("/followups/config/:channelId", async (request, reply) => {
+    if (!requirePermission(request.talk.role, "conversation.read", reply)) return reply;
+    const params = z.object({ channelId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ code: "FOLLOWUP_INVALID_CHANNEL" });
+    if (!prisma.channel) return reply.code(503).send({ code: "FOLLOWUP_CONFIG_UNAVAILABLE" });
+    const channel = await prisma.channel.findUnique({
+      where: { workspaceId_id: { workspaceId: request.talk.workspaceId, id: params.data.channelId } }
+    });
+    if (!channel) return reply.code(404).send({ code: "FOLLOWUP_CHANNEL_NOT_FOUND" });
+    const configured = channelFollowupConfigSchema.safeParse(channel.followupConfig);
+    return {
+      config: configured.success ? configured.data : DEFAULT_CHANNEL_FOLLOWUP_CONFIG,
+      customized: configured.success
+    };
+  });
+
+  app.put("/followups/config/:channelId", async (request, reply) => {
+    if (!requirePermission(request.talk.role, "automation.manage", reply)) return reply;
+    const params = z.object({ channelId: z.string().uuid() }).safeParse(request.params);
+    const body = channelFollowupConfigSchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ code: "FOLLOWUP_INVALID_CONFIG", error: "Confira horários, dias e etapas." });
+    }
+    if (!prisma.channel) return reply.code(503).send({ code: "FOLLOWUP_CONFIG_UNAVAILABLE" });
+    const channel = await prisma.channel.findUnique({
+      where: { workspaceId_id: { workspaceId: request.talk.workspaceId, id: params.data.channelId } }
+    });
+    if (!channel) return reply.code(404).send({ code: "FOLLOWUP_CHANNEL_NOT_FOUND" });
+    await prisma.channel.update({
+      where: { workspaceId_id: { workspaceId: request.talk.workspaceId, id: params.data.channelId } },
+      data: { followupConfig: body.data }
+    });
+    return { config: body.data, customized: true };
   });
 
   app.post("/followups/:id/send", async (request, reply) => {
@@ -259,6 +317,24 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
     if (!current) return reply;
     if (current.status !== "review" || current.activeKey !== "active") {
       return stale(reply, current);
+    }
+
+    const channelCalendar = await loadChannelCalendar(request.talk.workspaceId, current.conversationId);
+    if (channelCalendar) {
+      const requestedAt = now();
+      const permittedAt = nextBusinessStart({
+        from: requestedAt,
+        timeZone: channelCalendar.timeZone,
+        businessDays: channelCalendar.businessDays,
+        businessHours: channelCalendar.businessHours
+      });
+      if (permittedAt > requestedAt) {
+        return reply.code(409).send({
+          code: "FOLLOWUP_OUTSIDE_BUSINESS_HOURS",
+          error: "Este número envia follow-ups apenas no horário de atendimento.",
+          nextAllowedAt: permittedAt.toISOString()
+        });
+      }
     }
 
     const claimAt = now();
@@ -430,6 +506,15 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
       return reply.code(500).send({ code: "FOLLOWUP_WRITE_FAILED", error: "Follow-up state was not persisted." });
     }
     await publisher.publishUpdated(result);
+    try {
+      await followups.scheduleNextAfterManualSend?.({
+        workspaceId: request.talk.workspaceId,
+        followup: current as ConversationFollowupRecord,
+        sentAt
+      });
+    } catch (error) {
+      app.log.error({ error, followupId: current.id }, "Could not schedule the next manual follow-up");
+    }
     return toConversationFollowupDto(result);
   });
 
@@ -445,7 +530,7 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
     if (!current) return reply;
     if (!isManuallyActionable(current)) return stale(reply, current);
 
-    const scheduledAt = nextBusinessWindow(now());
+    const scheduledAt = nextBusinessWindow(now(), await loadChannelCalendar(request.talk.workspaceId, current.conversationId));
     const updated = await prisma.conversationFollowup.updateMany({
       where: manualActiveWhere(request.talk.workspaceId, current.id, expectedUpdatedAt),
       data: { status: "scheduled", scheduledAt, lockedAt: null, reason: "manual_postponed" }
@@ -687,13 +772,13 @@ async function respondConditionalMutation(input: {
   return toConversationFollowupDto(current);
 }
 
-function nextBusinessWindow(from: Date) {
+function nextBusinessWindow(from: Date, calendar: { timeZone: string; businessDays: number[]; businessHours: { start: string; end: string } } | null = null) {
   return addBusinessMinutes({
     from,
     minutes: POSTPONE_BUSINESS_MINUTES,
-    timeZone: "America/Sao_Paulo",
-    businessDays: [1, 2, 3, 4, 5],
-    businessHours: { start: "08:00", end: "18:00" }
+    timeZone: calendar?.timeZone ?? "America/Sao_Paulo",
+    businessDays: calendar?.businessDays ?? [1, 2, 3, 4, 5],
+    businessHours: calendar?.businessHours ?? { start: "08:00", end: "18:00" }
   });
 }
 

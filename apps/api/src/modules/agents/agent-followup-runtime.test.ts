@@ -210,7 +210,8 @@ function buildRuntime(overrides: Record<string, any> = {}) {
     jevFollowupDecision: { decide },
     replyPreflight,
     outbound: { createPendingOutboundMessage },
-    publisher: overrides.publisher
+    publisher: overrides.publisher,
+    now: overrides.now ?? (() => now)
   });
 
   return {
@@ -229,6 +230,22 @@ function buildRuntime(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentFollowupRuntime", () => {
+  it("defers an overdue automatic send when processing reaches the channel after closing", async () => {
+    const recoverClaimedFollowup = vi.fn().mockResolvedValue({ status: "recovered" });
+    const harness = buildRuntime({
+      now: () => new Date("2026-09-22T23:00:00.000Z"),
+      recoverClaimedFollowup
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({ status: "deferred", followupId: ids.followup });
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(recoverClaimedFollowup).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: "retry",
+      reason: "outside_business_hours",
+      scheduledAt: new Date("2026-09-23T11:00:00.000Z")
+    }));
+  });
   it("gives follow-up reply validation the full prompt, 20 messages, and a late approved improvement", async () => {
     const fullPrompt = `${"A".repeat(4_100)}\nNão fornecemos oxicorte.`;
     const messages = Array.from({ length: 21 }, (_, index) => ({
@@ -687,12 +704,12 @@ describe("createAgentFollowupRuntime", () => {
     expect(staleAfter.completeAutomaticFollowup).not.toHaveBeenCalled();
   });
 
-  it("does not automatically generate or send a fourth configured step", async () => {
+  it("runs a fourth configured step within the configurable limit", async () => {
     const configWithFourSteps = {
       ...followupConfig,
       steps: [
         ...followupConfig.steps,
-        { afterBusinessMinutes: 240, instruction: "Quarto passo proibido." }
+        { afterBusinessMinutes: 240, instruction: "Quarto passo." }
       ]
     };
     const fourthStep = validContext({ stepIndex: 4 });
@@ -707,15 +724,10 @@ describe("createAgentFollowupRuntime", () => {
     });
 
     await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
-      .resolves.toEqual({ status: "skipped", followupId: ids.followup });
+      .resolves.toEqual({ status: "sent", followupId: ids.followup, nextFollowupId: "next_followup" });
 
-    expect(harness.decide).not.toHaveBeenCalled();
-    expect(harness.provider.generate).not.toHaveBeenCalled();
-    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
-    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith({
-      where: { workspaceId: ids.workspace, id: ids.followup, activeKey: "active" },
-      data: expect.objectContaining({ reason: "followup_step_limit" })
-    });
+    expect(harness.decide).toHaveBeenCalledOnce();
+    expect(harness.createPendingOutboundMessage).toHaveBeenCalledOnce();
   });
 
   it("does not report sent when the completion claim lost its active follow-up", async () => {

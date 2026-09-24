@@ -4,6 +4,7 @@ import { realtimeEventSchema } from "@prymeira-talk/shared";
 import { OutboundDeliveryUncertainError } from "../conversations/conversations.service.js";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { conversationFollowupsRoutes } from "./conversation-followups.routes.js";
+import { DEFAULT_CHANNEL_FOLLOWUP_CONFIG } from "./channel-followup-plan.js";
 
 const ids = {
   workspaceA: "workspace_a",
@@ -13,7 +14,8 @@ const ids = {
   agent: "00000000-0000-4000-8000-000000000703",
   conversation: "00000000-0000-4000-8000-000000000704",
   session: "00000000-0000-4000-8000-000000000705",
-  anchor: "00000000-0000-4000-8000-000000000706"
+  anchor: "00000000-0000-4000-8000-000000000706",
+  channel: "00000000-0000-4000-8000-000000000707"
 };
 const initialUpdatedAt = new Date("2026-09-21T12:00:00.000Z");
 const fixedNow = new Date("2026-09-21T22:00:00.000Z");
@@ -116,6 +118,7 @@ function matches(value: unknown, where: Record<string, unknown>): boolean {
 
 function createMemoryPrisma(records: Followup[]) {
   const messages: Array<Record<string, unknown>> = [];
+  const channel = { id: ids.channel, workspaceId: ids.workspaceA, followupConfig: {} as unknown };
   let sequence = initialUpdatedAt.getTime();
   const touch = (record: Followup) => {
     sequence += 1_000;
@@ -145,6 +148,15 @@ function createMemoryPrisma(records: Followup[]) {
     create: vi.fn()
   };
   const db = {
+    channel: {
+      findUnique: vi.fn(async ({ where }: { where: { workspaceId_id: { workspaceId: string; id: string } } }) =>
+        where.workspaceId_id.workspaceId === channel.workspaceId && where.workspaceId_id.id === channel.id ? channel : null
+      ),
+      update: vi.fn(async ({ data }: { data: { followupConfig: unknown } }) => {
+        channel.followupConfig = data.followupConfig;
+        return channel;
+      })
+    },
     conversationFollowup: store,
     message: {
       findUnique: vi.fn(async ({ where }: { where: { workspaceId_id: { workspaceId: string; id: string } } }) =>
@@ -228,6 +240,7 @@ function createMemoryPrisma(records: Followup[]) {
     aiAgentPendingReply: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     userProfile: { findFirst: vi.fn().mockResolvedValue({ id: "user_current" }) },
     records,
+    channelRecord: channel,
     messages,
     $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => {
       const recordSnapshot = records.map((record) => ({ ...record }));
@@ -282,6 +295,61 @@ function expected(record: Followup) {
 
 describe("conversation follow-up review routes", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("keeps each number's cadence editable only by managers", async () => {
+    const owner = await buildRouteApp();
+    const agent = await buildRouteApp({ role: "agent" });
+    try {
+      const initial = await owner.app.inject(`/followups/config/${ids.channel}`);
+      expect(initial.statusCode).toBe(200);
+      expect(initial.json()).toMatchObject({ customized: false, config: DEFAULT_CHANNEL_FOLLOWUP_CONFIG });
+
+      const config = { ...DEFAULT_CHANNEL_FOLLOWUP_CONFIG, steps: [
+        { afterMinutes: 20 }, { afterMinutes: 40 }, { afterMinutes: 60 }, { afterMinutes: 360 }
+      ] };
+      const saved = await owner.app.inject({ method: "PUT", url: `/followups/config/${ids.channel}`, payload: config });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).toMatchObject({ customized: true, config });
+      expect(owner.db.channelRecord.followupConfig).toEqual(config);
+
+      const forbidden = await agent.app.inject({ method: "PUT", url: `/followups/config/${ids.channel}`, payload: config });
+      expect(forbidden.statusCode).toBe(403);
+      const invalid = await owner.app.inject({ method: "PUT", url: `/followups/config/${ids.channel}`, payload: { ...config, steps: [] } });
+      expect(invalid.statusCode).toBe(400);
+    } finally {
+      await owner.app.close();
+      await agent.app.close();
+    }
+  });
+
+  it("keeps a reviewed draft unsent when the number is outside its service hours", async () => {
+    const { app, db, outbound } = await buildRouteApp();
+    db.channelRecord.followupConfig = DEFAULT_CHANNEL_FOLLOWUP_CONFIG;
+    db.conversation.findUnique.mockResolvedValue({
+      id: ids.conversation,
+      workspaceId: ids.workspaceA,
+      channelId: ids.channel,
+      status: "open",
+      aiControlStatus: "human_controlled",
+      activeAgentSessionId: ids.session
+    });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/followups/${ids.followup}/send`,
+        payload: { body: "Posso retomar?", expectedUpdatedAt: expected(db.records[0]) }
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({
+        code: "FOLLOWUP_OUTSIDE_BUSINESS_HOURS",
+        nextAllowedAt: "2026-09-22T11:00:00.000Z"
+      });
+      expect(outbound).not.toHaveBeenCalled();
+      expect(db.records[0]?.status).toBe("review");
+    } finally {
+      await app.close();
+    }
+  });
 
   it("lists only the talk workspace and emits a safe review DTO", async () => {
     const { app, db } = await buildRouteApp({

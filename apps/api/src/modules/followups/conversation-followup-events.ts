@@ -18,6 +18,9 @@ export type ConversationFollowupPublicRecord = {
   status: string;
   activeKey?: string | null;
   stepIndex: number;
+  anchorMessageId?: string;
+  anchorMessageAt?: DateLike;
+  anchorIngestedAt?: DateLike;
   scheduledAt: DateLike;
   lockedAt?: DateLike | null;
   draftBody?: string | null;
@@ -94,6 +97,9 @@ export const conversationFollowupPublicSelect = {
   status: true,
   activeKey: true,
   stepIndex: true,
+  anchorMessageId: true,
+  anchorMessageAt: true,
+  anchorIngestedAt: true,
   scheduledAt: true,
   lockedAt: true,
   draftBody: true,

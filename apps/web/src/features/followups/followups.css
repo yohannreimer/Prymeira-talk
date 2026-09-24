@@ -16,6 +16,44 @@
     linear-gradient(180deg, #f8faf7 0%, #edf2ed 100%);
 }
 
+.followups-settings {
+  width: min(100%, 900px);
+  margin: 0 auto;
+  padding: 24px;
+  border: 1px solid #d8e5df;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(25, 60, 47, 0.06);
+}
+.followups-settings h2 { margin: 0 0 8px; font-size: 22px; }
+.followups-settings h3 { margin: 24px 0 12px; font-size: 16px; }
+.followups-settings-heading p, .followups-settings-caption { color: #63776f; line-height: 1.5; }
+.followups-settings-field { display: grid; gap: 8px; margin: 18px 0; font-weight: 650; }
+.followups-settings input, .followups-settings select {
+  min-height: 40px;
+  border: 1px solid #cadbd3;
+  border-radius: 8px;
+  padding: 7px 10px;
+  background: white;
+  color: #20342d;
+  font: inherit;
+}
+.followups-settings-steps { display: grid; gap: 8px; }
+.followups-settings-step { display: grid; grid-template-columns: minmax(105px, 1fr) 110px 120px auto; align-items: center; gap: 10px; }
+.followups-settings-step button, .followups-settings form > button[type="button"] {
+  min-height: 38px; border: 1px solid #cadbd3; border-radius: 8px; padding: 0 12px; background: white; color: #24564a; cursor: pointer;
+}
+.followups-settings-days, .followups-settings-hours { display: flex; flex-wrap: wrap; gap: 14px; }
+.followups-settings-days label { display: inline-flex; align-items: center; gap: 5px; }
+.followups-settings-hours label { display: grid; gap: 5px; }
+.followups-settings form > button[type="submit"] { margin-top: 16px; }
+.followups-settings-message { margin-top: 16px; color: #24564a; }
+@media (max-width: 650px) {
+  .followups-settings { padding: 16px; }
+  .followups-settings-step { grid-template-columns: 1fr 1fr; }
+  .followups-settings-step strong { grid-column: 1 / -1; }
+}
+
 .followups-header {
   position: relative;
   z-index: 1;

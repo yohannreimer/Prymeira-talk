@@ -128,6 +128,28 @@ describe("createJevFollowupDecision", () => {
     expect(body.questions.route.criteria.human_review).toContain("controle humano");
   });
 
+  it("allows a neutral seller follow-up only when the number opts into automatic sending", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => decisionResponse({
+      purpose: "confirm_active",
+      route: "automatic_send",
+      stage: "seller_owned",
+      risk: "none"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+    const input = {
+      ...baseInput,
+      followupKind: "human_commercial" as const,
+      aiControlStatus: "human_controlled" as const
+    };
+
+    await expect(decision.decide(input)).resolves.toMatchObject({ route: "human_review" });
+    await expect(decision.decide({ ...input, allowHumanAutomatic: true })).resolves.toMatchObject({
+      outcome: "follow_up",
+      route: "automatic_send",
+      risk: "none"
+    });
+  });
+
   it("does not classify asking for an explicitly missing technical field as commercial risk", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       decisionResponse({ route: "automatic_send" })

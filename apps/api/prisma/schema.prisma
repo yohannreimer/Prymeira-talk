@@ -228,6 +228,7 @@ model Channel {
   displayName     String?         @map("display_name")
   status          ChannelStatus   @default(disconnected)
   encryptedConfig Json            @default("{}") @map("encrypted_config")
+  followupConfig  Json            @default("{}") @map("followup_config")
   createdAt       DateTime        @default(now()) @map("created_at")
   updatedAt       DateTime        @updatedAt @map("updated_at")
 
