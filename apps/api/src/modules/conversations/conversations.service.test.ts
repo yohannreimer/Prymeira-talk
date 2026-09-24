@@ -1980,13 +1980,14 @@ describe("conversation routes", () => {
     });
     const publish = vi.fn();
     const control = vi.fn().mockResolvedValue(undefined);
+    const handoffCompleted = vi.fn().mockResolvedValue(undefined);
     const observeLatestHumanReplyAfterHandoff = vi.fn().mockResolvedValue({ created: true });
     const app = Fastify({ logger: false });
     app.decorate("prisma", prisma as never);
     app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
     app.addHook("preHandler", async (request) => { request.talk = { workspaceId: "workspace_a", role: "agent" }; });
     await app.register(conversationsRoutes, {
-      assistantScheduler: { control } as never,
+      assistantScheduler: { control, handoffCompleted } as never,
       agentImprovements: { observeHumanReply: vi.fn(), observeLatestHumanReplyAfterHandoff }
     });
     try {
@@ -2003,7 +2004,7 @@ describe("conversation routes", () => {
         workspaceId: "workspace_a", conversationId: "00000000-0000-4000-8000-000000000001"
       });
       expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.updated" }));
-      expect(control).toHaveBeenCalledWith("workspace_a", "00000000-0000-4000-8000-000000000001", true);
+      expect(handoffCompleted).toHaveBeenCalledWith("workspace_a", "00000000-0000-4000-8000-000000000001");
     } finally {
       await app.close();
     }

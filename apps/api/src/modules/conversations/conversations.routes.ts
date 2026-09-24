@@ -397,6 +397,8 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
         return reply.code(conversation.statusCode).send({ code: conversation.code, error: conversation.message });
       }
       if (action === "complete_handoff_action") {
+        await options.assistantScheduler?.handoffCompleted(request.talk.workspaceId, params.data.conversationId);
+      } else if (action === "reopen_handoff_action") {
         await options.assistantScheduler?.control(request.talk.workspaceId, params.data.conversationId, true);
       }
       const context = await service.getContactContext({

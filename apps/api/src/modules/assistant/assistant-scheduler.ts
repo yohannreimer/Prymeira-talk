@@ -34,7 +34,7 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
           const result = await generate(context, state.instruction);
           const published = await repository.publish(state, token, { ...result, actorUserId: state.requestedById, instruction: state.instruction }, async tx => {
             const current = await loadContext(tx, state.workspaceId, state.conversationId);
-            return current.conversation.aiControlStatus === 'agent_allowed' && current.contextKey === context.contextKey;
+            return (current.conversation.aiControlStatus === 'agent_allowed' || current.humanSupport) && current.contextKey === context.contextKey;
           });
           if (!published) await repository.fail(state, token, 'A conversa mudou. Solicite uma nova sugestão.');
         } catch (error) {
@@ -58,13 +58,16 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
       if (input.direction === 'inbound') await repository.schedule({ ...input, trigger: 'inbound' });
       else await repository.invalidate(input.workspaceId, input.conversationId);
     },
-    async control(workspaceId: string, conversationId: string, human: boolean) {
-      await repository.invalidate(workspaceId, conversationId, human ? 'paused' : 'stale');
-      // Reset the last input marker on release so an unanswered input can resume.
-      if (!human) {
-        await prisma.assistantConversationState.updateMany({ where: { workspaceId, conversationId }, data: { lastMessageId: null } });
-        await repository.schedule({ workspaceId, conversationId, trigger: 'inbound' });
-      }
+    async control(workspaceId: string, conversationId: string, _human: boolean) {
+      await repository.invalidate(workspaceId, conversationId);
+      // Either control change may leave a customer message unanswered.
+      await prisma.assistantConversationState.updateMany({ where: { workspaceId, conversationId }, data: { lastMessageId: null } });
+      await repository.schedule({ workspaceId, conversationId, trigger: 'inbound' });
+    },
+    async handoffCompleted(workspaceId: string, conversationId: string) {
+      await repository.invalidate(workspaceId, conversationId);
+      await prisma.assistantConversationState.updateMany({ where: { workspaceId, conversationId }, data: { lastMessageId: null } });
+      await repository.schedule({ workspaceId, conversationId, trigger: 'inbound' });
     },
     start() { if (!timer) { timer = setInterval(() => void tick(), 1000); timer.unref(); } },
     stop() { if (timer) clearInterval(timer); timer = undefined; }

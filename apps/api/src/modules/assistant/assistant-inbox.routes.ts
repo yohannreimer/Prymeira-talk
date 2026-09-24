@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { assistantChannelSettingsSchema, assistantInstructionSchema, assistantSendSchema, assistantDraftStatusSchema, type AssistantConversationDto } from '@prymeira-talk/shared';
 import { AssistantError, requireAssistantConversation, requireAssistantManager, resolveAssistantActor } from './assistant-access.js';
 import { loadAssistantContext } from './assistant-generation.js';
-import { readAssistantSettings } from './assistant-policy.js';
+import { readAssistantSettings, resolveConversationAssistant } from './assistant-policy.js';
 import { createAssistantSendService } from './assistant-send.service.js';
 import type { AssistantScheduler } from './assistant-scheduler.js';
 import type { createHandoffBriefService } from './handoff-brief-service.js';
@@ -47,7 +47,7 @@ export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantSch
     const { conversationId } = params.parse(request.params);
     const actor = await resolveAssistantActor(app.prisma, request.talk);
     const conversation = await requireAssistantConversation(app.prisma, actor, conversationId);
-    const settings = readAssistantSettings(conversation.channel.encryptedConfig);
+    const {settings,humanSupport}=resolveConversationAssistant(conversation);
     const [state, revisions] = await Promise.all([
       app.prisma.assistantConversationState.findUnique({ where: { workspaceId_conversationId: { workspaceId: actor.workspaceId, conversationId } } }),
       app.prisma.assistantSuggestion.findMany({ where: { workspaceId: actor.workspaceId, conversationId }, orderBy: { revision: 'desc' }, take: 20, include: { actor: { select: { displayName: true } }, send: { include: { actor: { select: { displayName: true } }, message: { select: { status: true } } } } } })
@@ -57,9 +57,9 @@ export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantSch
     const history = revisions.map(s => ({ id: s.id, conversationId, agentId: s.agentId, revision: s.revision, contextKey: s.contextKey, body: s.body, instruction: s.instruction, createdAt: s.createdAt.toISOString(), warnings: Array.isArray(s.warnings) ? s.warnings.filter((w): w is string => typeof w === 'string') : [], actorName: s.send?.actor.displayName ?? s.actor?.displayName ?? null, finalBody: s.send?.finalBody ?? null, messageId: s.send?.messageId ?? null, sendStatus: s.send?.status === 'uncertain' ? 'uncertain' : s.send?.message?.status ?? s.send?.status ?? null }));
     const humanControlled = conversation.aiControlStatus === 'human_controlled';
     let status = assistantDraftStatusSchema.catch('stale').parse(state?.status ?? 'stale');
-    if (humanControlled) status = 'paused';
+    if (humanControlled && !humanSupport) status = 'paused';
     if (status === 'ready' && history[0]?.contextKey !== context?.contextKey) status = 'stale';
-    return { settings, status, humanControlled, suggestion: history[0] ?? null, history, agentName: context?.agent.name ?? null, error: state?.lastError ?? null, currentContextKey: context?.contextKey ?? null } satisfies AssistantConversationDto;
+    return { settings, status, humanControlled, humanSupport, suggestion: history[0] ?? null, history, agentName: context?.agent.name ?? null, error: state?.lastError ?? null, currentContextKey: context?.contextKey ?? null } satisfies AssistantConversationDto;
   });
   app.get('/assistant/conversations/:conversationId/handoff-brief', async request => {
     const { conversationId } = params.parse(request.params);
@@ -73,7 +73,7 @@ export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantSch
     const body = assistantInstructionSchema.parse(request.body ?? {});
     const actor = await resolveAssistantActor(app.prisma, request.talk);
     await requireAssistantConversation(app.prisma, actor, conversationId);
-    if (!options.scheduler || !await options.scheduler.repository.schedule({ workspaceId: actor.workspaceId, conversationId, trigger: 'manual', actorUserId: actor.userId, instruction: body.instruction })) throw new AssistantError('ASSISTANT_UNAVAILABLE', 'Libere o controle humano e configure a IA de apoio para gerar uma sugestão.');
+    if (!options.scheduler || !await options.scheduler.repository.schedule({ workspaceId: actor.workspaceId, conversationId, trigger: 'manual', actorUserId: actor.userId, instruction: body.instruction })) throw new AssistantError('ASSISTANT_UNAVAILABLE', 'Associe um agente a esta conversa para gerar uma sugestão.');
     return reply.code(202).send({ status: 'pending' });
   });
   app.post('/assistant/conversations/:conversationId/send', async request => {

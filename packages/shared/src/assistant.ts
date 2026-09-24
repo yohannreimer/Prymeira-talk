@@ -23,7 +23,7 @@ export type AssistantSuggestionDto={
 };
 export type AssistantConversationDto={
   currentContextKey:string|null;
-  settings:AssistantChannelSettings;status:AssistantDraftStatus;humanControlled:boolean;
+  settings:AssistantChannelSettings;status:AssistantDraftStatus;humanControlled:boolean;humanSupport:boolean;
   suggestion:AssistantSuggestionDto|null;history:AssistantSuggestionDto[];
   agentName:string|null;error:string|null;
 };

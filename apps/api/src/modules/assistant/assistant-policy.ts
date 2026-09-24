@@ -11,8 +11,22 @@ export function blocksAutonomousAgent(config:unknown):boolean{
   // An enabled but incomplete setting must never fall back to autonomous sending.
   return mode!==undefined&&mode!=='disabled';
 }
-export function canGenerateSuggestion(input:{mode:AssistantMode;control:string;trigger:'inbound'|'manual'}):boolean{
-  return input.control==='agent_allowed'&&input.mode!=='disabled'&&(input.mode==='automatic'||input.trigger==='manual');
+export function resolveConversationAssistant(input:{
+  aiControlStatus:string;
+  channel:{encryptedConfig:unknown};
+  activeAgentSession?:{agentId:string}|null;
+}){
+  const configured=readAssistantSettings(input.channel.encryptedConfig);
+  const session=input.activeAgentSession;
+  const humanSupport=input.aiControlStatus==='human_controlled'&&Boolean(configured.mode!=='disabled'||session?.agentId);
+  const settings=humanSupport&&configured.mode==='disabled'&&session?.agentId
+    ? {mode:'automatic' as const,agentId:session.agentId}
+    : configured;
+  return {settings,humanSupport};
+}
+export function canGenerateSuggestion(input:{mode:AssistantMode;control:string;trigger:'inbound'|'manual';humanSupport?:boolean}):boolean{
+  const allowedControl=input.control==='agent_allowed'||(input.control==='human_controlled'&&input.humanSupport===true);
+  return allowedControl&&input.mode!=='disabled'&&(input.mode==='automatic'||input.trigger==='manual');
 }
 export function nextSuggestionAt(firstPendingMs:number,lastInboundMs:number):number{
   return Math.min(lastInboundMs+5000,firstPendingMs+10000);

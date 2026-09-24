@@ -22,7 +22,7 @@ export function createAssistantSendService(prisma: PrismaClient, transport: (inp
         if (state?.status !== 'ready' || state.revision !== suggestion.revision) throw new AssistantError('ASSISTANT_STALE', 'A sugestão está sendo atualizada. Aguarde a nova revisão.');
       }
       const context = await loadAssistantContext(tx, actor.workspaceId, conversationId);
-      if (context.conversation.aiControlStatus === 'human_controlled' && !input.edited) throw new AssistantError('ASSISTANT_PAUSED', 'O humano está no controle. Use o campo de mensagem para enviar manualmente.');
+      if (context.conversation.aiControlStatus === 'human_controlled' && !context.humanSupport && !input.edited) throw new AssistantError('ASSISTANT_PAUSED', 'A IA de apoio não está disponível nesta conversa.');
       if (context.contextKey !== input.reviewedContextKey || (!input.edited && suggestion.contextKey !== context.contextKey)) throw new AssistantError('ASSISTANT_STALE', 'A conversa mudou. Revise o texto antes de enviar.');
       const message = await tx.message.create({ data: { workspaceId: actor.workspaceId, conversationId, direction: 'outbound', type: 'text', body: input.body, status: 'pending', sentByUserId: actor.userId, metadata: { source: 'assistant_review', suggestionId: suggestion.id, requestKey: input.requestKey } } });
       await pauseAgentOnHumanOutbound(tx, {

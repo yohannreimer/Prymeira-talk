@@ -98,6 +98,27 @@ describe('private read-only generation', () => {
     await expect(run({ ...context, conversation: { ...context.conversation, aiControlStatus: 'human_controlled' } })).rejects.toThrow();
     expect(generate).not.toHaveBeenCalled();
   });
+  it('generates a private draft under human control when an agent is available', async () => {
+    const { run, generate } = setup();
+    const result = await run({ ...context, conversation: { ...context.conversation, aiControlStatus: 'human_controlled' }, humanSupport: true });
+    expect(result.body).toBe(output.reply);
+    expect(generate).toHaveBeenCalledOnce();
+    expect(generate.mock.calls[0][0].context.allowedActions).toEqual([]);
+  });
+  it('loads the active agent as support after an autonomous handoff', async () => {
+    const { db } = setup();
+    const agentId='00000000-0000-4000-8000-000000000101';
+    Object.assign(db, {
+      conversation:{findFirst:vi.fn().mockResolvedValue({...context.conversation,aiControlStatus:'human_controlled',activeAgentSessionId:'session',activeAgentSession:{agentId},channel:{encryptedConfig:{}}})},
+      aiAgent:{findFirst:vi.fn().mockResolvedValue({...context.agent,id:agentId})},
+      aiKnowledgeSource:{findMany:vi.fn().mockResolvedValue([])},
+      message:{findMany:vi.fn().mockResolvedValue(context.messages)}
+    });
+    const loaded=await loadAssistantContext(db,'w','c');
+    expect(loaded.humanSupport).toBe(true);
+    expect(loaded.settings).toEqual({mode:'automatic',agentId});
+    expect(db.aiAgent.findFirst).toHaveBeenCalledWith({where:{workspaceId:'w',id:agentId}});
+  });
   it('does not hide provider failure behind a canned reply', async () => {
     const { run, generate } = setup(); generate.mockRejectedValue(new Error('timeout'));
     await expect(run(context)).rejects.toThrow('timeout');

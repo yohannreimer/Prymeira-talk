@@ -1,19 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import type { AssistantConversationState, Prisma, PrismaClient } from '@prisma/client';
 import { lockAssistantConversation } from './assistant-access.js';
-import { canGenerateSuggestion, nextSuggestionAt, readAssistantSettings } from './assistant-policy.js';
+import { canGenerateSuggestion, nextSuggestionAt, resolveConversationAssistant } from './assistant-policy.js';
 
 export function createAssistantRepository(prisma: PrismaClient) {
   return {
     async schedule(input: { workspaceId: string; conversationId: string; trigger: 'manual' | 'inbound'; messageId?: string; actorUserId?: string; instruction?: string }, transaction?: Prisma.TransactionClient) {
       const perform = async (tx: Prisma.TransactionClient) => {
         await lockAssistantConversation(tx, input.workspaceId, input.conversationId);
-        const conversation = await tx.conversation.findFirst({ where: { workspaceId: input.workspaceId, id: input.conversationId }, include: { channel: true } });
+        const conversation = await tx.conversation.findFirst({ where: { workspaceId: input.workspaceId, id: input.conversationId }, include: { channel: true, activeAgentSession: true } });
         if (!conversation) return false;
-        const settings = readAssistantSettings(conversation.channel.encryptedConfig);
+        const {settings,humanSupport}=resolveConversationAssistant(conversation);
         const where = { workspaceId_conversationId: { workspaceId: input.workspaceId, conversationId: input.conversationId } };
         const state = await tx.assistantConversationState.findUnique({ where });
-        if (!canGenerateSuggestion({ mode: settings.mode, control: conversation.aiControlStatus, trigger: input.trigger })) return false;
+        if (!canGenerateSuggestion({ mode: settings.mode, control: conversation.aiControlStatus, trigger: input.trigger, humanSupport })) return false;
         const latest = await tx.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, type: { notIn: ['internal_note', 'system'] } }, orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }] });
         // A release never replays an already answered conversation. Duplicate hooks are harmless.
         if (!latest || (input.trigger === 'inbound' && (latest.direction !== 'inbound' || state?.lastMessageId === latest.id))) return false;

@@ -3,7 +3,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import type { EvolutionHistorySource } from '../evolution/evolution-history.js';
 import { extractMessageContent } from '../evolution/evolution.routes.js';
 import { AssistantError, lockAssistantConversation } from './assistant-access.js';
-import { readAssistantSettings } from './assistant-policy.js';
+import { resolveConversationAssistant } from './assistant-policy.js';
 import type { InboundMediaResult } from '../agents/inbound-media.js';
 
 const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -24,9 +24,10 @@ function unwrap(input: Record<string, unknown>) {
 /** Imports context only. No sender, scheduler, webhook dispatcher or conversation mutation dependency. */
 export function createAssistantHistoryImporter(db: PrismaClient, source: EvolutionHistorySource, options: { prepareMedia?: HistoryMediaPreparer } = {}) {
   return async (workspaceId: string, conversationId: string, input: { force?: boolean; dryRun?: boolean } = {}) => {
-    const conversation = await db.conversation.findFirst({ where: { workspaceId, id: conversationId }, include: { channel: true } });
+    const conversation = await db.conversation.findFirst({ where: { workspaceId, id: conversationId }, include: { channel: true, activeAgentSession: true } });
     if (!conversation || conversation.channel.provider !== 'evolution' || !conversation.channel.providerKey) return zero;
-    if (conversation.aiControlStatus !== 'agent_allowed' || readAssistantSettings(conversation.channel.encryptedConfig).mode === 'disabled') return zero;
+    const {settings,humanSupport}=resolveConversationAssistant(conversation);
+    if ((conversation.aiControlStatus !== 'agent_allowed' && !humanSupport) || settings.mode === 'disabled') return zero;
     if (!input.force && object(object(conversation.channel.encryptedConfig).assistantHistory).days !== 30) return zero;
     const live = await db.message.findMany({ where: { workspaceId, conversationId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: 5001 });
     const anchor = live.find(m => m.providerMessageId && object(object(m.metadata).historyImport).source !== 'evolution');

@@ -21,7 +21,7 @@ export function AssistantPanel({ data, error, humanControlled, draftExists, send
   const [replace, setReplace] = useState(false);
   const busy = useRef(false);
   const suggestion = data?.suggestion;
-  const paused = humanControlled || data?.humanControlled;
+  const paused = (humanControlled || data?.humanControlled) && !data?.humanSupport;
   const generating = requesting || data?.status === 'generating' || data?.status === 'pending';
   const ready = data?.status === 'ready' && !paused && !generating;
   async function generate(text?: string) {
@@ -39,8 +39,9 @@ export function AssistantPanel({ data, error, humanControlled, draftExists, send
   }
   return <div className="assistant-panel">
     <div className="assistant-private"><LockKeyhole size={14} aria-hidden="true" /> Só você e sua equipe veem este apoio</div>
-    {!handoffBrief && (error || localError) ? <p className="assistant-alert" role="alert">{localError ?? error}</p> : null}
-    {handoffCompleted ? <section className="handoff-completed" role="status"><h3><Check size={18} aria-hidden="true" /> Próxima ação concluída</h3><p>Esta conversa saiu da lista Próxima ação. O humano continua no controle do atendimento.</p>{handoffFeedback ? <p className="handoff-completed-feedback">{handoffFeedback}</p> : null}<div className="handoff-completed-actions"><button type="button" disabled={handoffBusy} onClick={onReopenHandoff}>Reabrir próxima ação</button><button type="button" disabled={handoffBusy} onClick={onReanalyzeHandoff}>Analisar resposta humana</button></div></section> : handoffBrief ? <HandoffBrief brief={handoffBrief} busy={handoffBusy} onComplete={onCompleteHandoff} /> : !data ? <div className="assistant-empty">{error ? 'Tente abrir novamente o apoio.' : 'Selecione uma conversa para acompanhar as sugestões.'}</div> : data.settings.mode === 'disabled' ? <div className="assistant-empty"><MessageSquareText size={24} /><h3>Apoio não ativado</h3><p>Um gestor pode escolher o agente e ativar as sugestões em Canais.</p></div> : <>
+    {(error || localError) ? <p className="assistant-alert" role="alert">{localError ?? error}</p> : null}
+    {handoffCompleted ? <section className="handoff-completed" role="status"><h3><Check size={18} aria-hidden="true" /> Próxima ação concluída</h3><p>Esta conversa saiu da lista Próxima ação. O humano continua no controle do atendimento.</p>{handoffFeedback ? <p className="handoff-completed-feedback">{handoffFeedback}</p> : null}<div className="handoff-completed-actions"><button type="button" disabled={handoffBusy} onClick={onReopenHandoff}>Reabrir próxima ação</button><button type="button" disabled={handoffBusy} onClick={onReanalyzeHandoff}>Analisar resposta humana</button></div></section> : handoffBrief ? <HandoffBrief brief={handoffBrief} busy={handoffBusy} onComplete={onCompleteHandoff} /> : null}
+    {!data ? !handoffBrief && !handoffCompleted ? <div className="assistant-empty">{error ? 'Tente abrir novamente o apoio.' : 'Selecione uma conversa para acompanhar as sugestões.'}</div> : null : data.settings.mode === 'disabled' ? !handoffBrief && !handoffCompleted ? <div className="assistant-empty"><MessageSquareText size={24} /><h3>Apoio não ativado</h3><p>Um gestor pode escolher o agente e ativar as sugestões em Canais.</p></div> : null : <>
       <div className="assistant-state" role="status"><span className={`assistant-status-dot${paused ? ' is-paused' : ''}`} />{paused ? 'Humano no controle' : generating ? 'Preparando sugestão…' : ready ? 'Pronta para revisão' : data.status === 'sent' ? 'Envio registrado' : data.status === 'failed' ? 'Não foi possível gerar' : 'Aguardando revisão'}<small>{data.agentName}</small></div>
       {paused ? <div className="assistant-empty"><UserRound size={24} /><h3>O atendimento está com você</h3><p>A IA não gera sugestões enquanto o humano está no controle. Você pode continuar pelo campo de mensagem.</p></div> : null}
       {!paused && suggestion ? <section className={`assistant-reply${!ready ? ' is-outdated' : ''}`} aria-label="Resposta sugerida"><span className="assistant-eyebrow">Sugestão de resposta</span><p>{suggestion.body}</p>

@@ -35,9 +35,12 @@ describe('context-only history import',()=>{
     const s=setup();await s.run('w','c');await s.run('w','c');
     expect(s.source.load).toHaveBeenCalledOnce();expect(s.messages).toHaveLength(2);
   });
-  it('does not import for disabled opt-in, another provider or human control',async()=>{
-    const s=setup();s.conversation.aiControlStatus='human_controlled';expect((await s.run('w','c')).inserted).toBe(0);expect(s.source.load).not.toHaveBeenCalled();
-    s.conversation.aiControlStatus='agent_allowed';s.conversation.channel.encryptedConfig.assistantHistory.days=0;await s.run('w','c');expect(s.source.load).not.toHaveBeenCalled();
+  it('can import opted-in history for private support during human control',async()=>{
+    const s=setup();s.conversation.aiControlStatus='human_controlled';
+    expect((await s.run('w','c')).inserted).toBe(1);
+  });
+  it('does not import without opt-in',async()=>{
+    const s=setup();s.conversation.channel.encryptedConfig.assistantHistory.days=0;await s.run('w','c');expect(s.source.load).not.toHaveBeenCalled();
   });
   it('rejects cross-conversation provider ID collisions before writing',async()=>{
     const s=setup();s.messages.push({id:'other',conversationId:'other',providerMessageId:'old',createdAt:date,metadata:{historyImport:{source:'evolution'}}});

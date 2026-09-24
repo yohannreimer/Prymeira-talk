@@ -14,7 +14,7 @@ export async function resolveAssistantActor(db: AssistantDb, auth: { workspaceId
 }
 
 export async function requireAssistantConversation(db: AssistantDb, actor: AssistantActor, conversationId: string) {
-  const conversation = await db.conversation.findFirst({ where: { workspaceId: actor.workspaceId, id: conversationId }, include: { channel: true } });
+  const conversation = await db.conversation.findFirst({ where: { workspaceId: actor.workspaceId, id: conversationId }, include: { channel: true, activeAgentSession: true } });
   if (!conversation) throw new AssistantError('CONVERSATION_NOT_FOUND', 'Conversa não encontrada.', 404);
   if (actor.role === 'agent' && conversation.assignedUserId !== actor.userId) throw new AssistantError('ASSISTANT_FORBIDDEN', 'A IA de apoio está disponível nas conversas atribuídas a você.', 403);
   return conversation;

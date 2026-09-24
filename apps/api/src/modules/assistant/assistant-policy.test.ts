@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canGenerateSuggestion, nextSuggestionAt, readAssistantSettings, blocksAutonomousAgent } from './assistant-policy.js';
+import { canGenerateSuggestion, nextSuggestionAt, readAssistantSettings, blocksAutonomousAgent, resolveConversationAssistant } from './assistant-policy.js';
 
 describe('assistant policy', () => {
   it.each(['automatic','on_demand'] as const)('human control blocks %s', mode => {
@@ -7,6 +7,18 @@ describe('assistant policy', () => {
     expect(canGenerateSuggestion({mode,control:'human_controlled',trigger:'inbound'})).toBe(false);
   });
   it('fails closed for unknown control state',()=>expect(canGenerateSuggestion({mode:'automatic',control:'unknown',trigger:'inbound'})).toBe(false));
+  it('generates private suggestions for a supported human-controlled conversation',()=>{
+    expect(canGenerateSuggestion({mode:'automatic',control:'human_controlled',trigger:'inbound',humanSupport:true})).toBe(true);
+    expect(canGenerateSuggestion({mode:'on_demand',control:'human_controlled',trigger:'manual',humanSupport:true})).toBe(true);
+    expect(canGenerateSuggestion({mode:'on_demand',control:'human_controlled',trigger:'inbound',humanSupport:true})).toBe(false);
+  });
+  it('uses the active agent for human support when channel support is disabled',()=>{
+    const agentId='00000000-0000-4000-8000-000000000101';
+    const input={aiControlStatus:'human_controlled',channel:{encryptedConfig:{}},activeAgentSession:{agentId}};
+    expect(resolveConversationAssistant(input)).toEqual({settings:{mode:'automatic',agentId},humanSupport:true});
+    expect(resolveConversationAssistant({...input,activeAgentSession:null})).toEqual({settings:{mode:'disabled',agentId:null},humanSupport:false});
+    expect(resolveConversationAssistant({...input,aiControlStatus:'agent_allowed'})).toEqual({settings:{mode:'disabled',agentId:null},humanSupport:false});
+  });
   it('generates inbound only in automatic mode',()=>{
     expect(canGenerateSuggestion({mode:'automatic',control:'agent_allowed',trigger:'inbound'})).toBe(true);
     expect(canGenerateSuggestion({mode:'on_demand',control:'agent_allowed',trigger:'inbound'})).toBe(false);
