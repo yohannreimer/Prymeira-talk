@@ -407,6 +407,27 @@ describe("conversation followups", () => {
     });
   });
 
+  it("does not schedule a follow-up for a courtesy reply after the customer thanks the seller", async () => {
+    const prisma = buildPrisma({
+      message: {
+        findFirst: vi.fn().mockImplementation(async (args: any) => {
+          if (args.where.direction === "outbound") return { ...baseMessage, body: "Imagina!" };
+          if (args.where.ingestedAt?.lte) return { ...baseMessage, direction: "inbound", body: "Mas obrigada pela indicação!" };
+          return null;
+        })
+      }
+    });
+    const result = await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "human"
+    });
+    expect(result.status).toBe("ignored");
+    expect(prisma.conversationFollowup.create).not.toHaveBeenCalled();
+  });
+
   it("schedules a human commercial candidate while a human controls the conversation", async () => {
     const pausedSession = { ...baseSession, status: "paused_by_human" };
     const prisma = buildPrisma({

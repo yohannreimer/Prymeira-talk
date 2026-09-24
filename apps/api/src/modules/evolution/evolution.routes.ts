@@ -805,8 +805,17 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         }).catch((error: unknown) => {
           request.log.error({ error }, "Failed to schedule agent reply.");
         });
-      } else if (message.direction === "outbound" && messageContent.type !== "system" && options.agentImprovements) {
-        void options.agentImprovements.observeHumanReply({
+      } else if (message.direction === "outbound" && messageContent.type !== "system") {
+        await options.followupService?.observeConversationActivity({
+          workspaceId,
+          conversationId: message.conversationId,
+          messageId: message.id,
+          direction: "outbound",
+          source: "human"
+        }).catch((error: unknown) => {
+          request.log.error({ error }, "Failed to observe external human outbound follow-up.");
+        });
+        if (options.agentImprovements) void options.agentImprovements.observeHumanReply({
           workspaceId,
           conversationId: message.conversationId,
           messageId: message.id

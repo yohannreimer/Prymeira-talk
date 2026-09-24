@@ -40,6 +40,7 @@ type MessageRecord = {
   workspaceId: string;
   conversationId: string;
   direction: FollowupActivityDirection;
+  body?: string | null;
   status?: string;
   metadata?: unknown;
   createdAt: Date | string;
@@ -197,6 +198,10 @@ export function createConversationFollowupsService(
     const candidate = await resolveCandidate(prisma, input, kind);
     if (!candidate || !candidate.message.ingestedAt) {
       return { status: "ignored" };
+    }
+
+    if (input.source === "human" && await isCourtesyClosure(prisma, input, candidate.message)) {
+      return cancelForCustomerReply(prisma, input, candidate.message.ingestedAt, options.publisher, "outbound_replaced");
     }
 
     const newerCustomerMessage = await findNewerCustomerReply(
@@ -632,7 +637,8 @@ async function cancelForCustomerReply(
   prisma: Pick<ConversationFollowupsPrismaLike, "conversationFollowup">,
   input: Pick<ObserveConversationActivityInput, "workspaceId" | "conversationId">,
   customerMessageIngestedAt?: Date | string | null,
-  publisher?: ConversationFollowupPublisher
+  publisher?: ConversationFollowupPublisher,
+  reason: "customer_replied" | "outbound_replaced" = "customer_replied"
 ): Promise<ObserveConversationActivityResult> {
   const where = {
     workspaceId: input.workspaceId,
@@ -650,7 +656,7 @@ async function cancelForCustomerReply(
     data: {
       status: "cancelled",
       activeKey: null,
-      reason: "customer_replied",
+      reason,
       cancelledAt: new Date()
     }
   });
@@ -665,6 +671,26 @@ async function cancelForCustomerReply(
     });
   }
   return { status: "cancelled" };
+}
+
+async function isCourtesyClosure(
+  prisma: Pick<ConversationFollowupsPrismaLike, "message">,
+  input: Pick<ObserveConversationActivityInput, "workspaceId" | "conversationId">,
+  sellerMessage: MessageRecord
+): Promise<boolean> {
+  const sellerText = sellerMessage.body?.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
+  if (!sellerText || !/^(imagina|de nada|por nada|disponha|as ordens|obrigado|obrigada)$/.test(sellerText) || !sellerMessage.ingestedAt) return false;
+  const previousCustomer = await prisma.message.findFirst({
+    where: {
+      workspaceId: input.workspaceId,
+      conversationId: input.conversationId,
+      direction: "inbound",
+      ingestedAt: { lte: toDate(sellerMessage.ingestedAt) }
+    },
+    orderBy: { ingestedAt: "desc" }
+  });
+  const customerText = previousCustomer?.body?.toLowerCase() ?? "";
+  return !customerText.includes("?") && /\b(obrigad[oa]|agradec|valeu)\b/u.test(customerText);
 }
 
 async function findNewerCustomerReply(

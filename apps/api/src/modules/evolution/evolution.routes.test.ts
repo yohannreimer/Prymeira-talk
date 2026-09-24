@@ -801,11 +801,18 @@ describe("Evolution webhook routes", () => {
   });
 
   it("pauses the agent and cancels its queued reply when a human sends through another app", async () => {
-    const prisma = createMockPrisma({});
+    const prisma = createMockPrisma({ message: { create: vi.fn().mockImplementation(async (args) => ({
+      id: "msg_1", workspaceId: "workspace_a", conversationId: "conv_1",
+      providerMessageId: args.data.providerMessageId, direction: args.data.direction,
+      type: args.data.type, body: args.data.body, mediaUrl: args.data.mediaUrl,
+      status: args.data.status, createdAt: args.data.createdAt
+    })) } });
     const control = vi.fn().mockResolvedValue(undefined);
     const assistantMessage = vi.fn().mockResolvedValue(undefined);
+    const observeConversationActivity = vi.fn().mockResolvedValue({ status: "scheduled" });
     const { app, publish } = await buildEvolutionApp(prisma, undefined, {
-      assistantScheduler: { control, message: assistantMessage, persistInbound: vi.fn().mockResolvedValue(undefined) } as never
+      assistantScheduler: { control, message: assistantMessage, persistInbound: vi.fn().mockResolvedValue(undefined) } as never,
+      followupService: { observeConversationActivity }
     });
 
     try {
@@ -839,6 +846,13 @@ describe("Evolution webhook routes", () => {
       });
       expect(control).toHaveBeenCalledWith("workspace_a", "conv_1", true);
       expect(assistantMessage).not.toHaveBeenCalled();
+      expect(observeConversationActivity).toHaveBeenCalledWith({
+        workspaceId: "workspace_a",
+        conversationId: "conv_1",
+        messageId: "msg_1",
+        direction: "outbound",
+        source: "human"
+      });
       expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.updated" }));
     } finally {
       await app.close();
