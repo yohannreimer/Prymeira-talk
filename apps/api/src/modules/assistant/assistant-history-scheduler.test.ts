@@ -25,7 +25,8 @@ describe('human support scheduling',()=>{
     await scheduler.handoffCompleted('w','c');
     await scheduler.message({workspaceId:'w',conversationId:'c',messageId:'next-customer-message',direction:'inbound'});
     expect(schedule).toHaveBeenNthCalledWith(1,{workspaceId:'w',conversationId:'c',trigger:'inbound'});
-    expect(schedule).toHaveBeenNthCalledWith(2,{workspaceId:'w',conversationId:'c',messageId:'next-customer-message',direction:'inbound',trigger:'inbound'});
+    expect(schedule).toHaveBeenNthCalledWith(2,{workspaceId:'w',conversationId:'c',trigger:'continuation'});
+    expect(schedule).toHaveBeenNthCalledWith(3,{workspaceId:'w',conversationId:'c',messageId:'next-customer-message',direction:'inbound',trigger:'inbound'});
   });
   it('reschedules a pending customer question when a human takes control',async()=>{
     const invalidate=vi.fn().mockResolvedValue(undefined);
@@ -36,6 +37,25 @@ describe('human support scheduling',()=>{
     expect(invalidate).toHaveBeenCalledWith('w','c');
     expect(updateMany).toHaveBeenCalledWith({where:{workspaceId:'w',conversationId:'c'},data:{lastMessageId:null}});
     expect(schedule).toHaveBeenCalledWith({workspaceId:'w',conversationId:'c',trigger:'inbound'});
+    expect(schedule).toHaveBeenCalledWith({workspaceId:'w',conversationId:'c',trigger:'continuation'});
+  });
+  it('refreshes private guidance after the seller speaks without sending for them',async()=>{
+    const invalidate=vi.fn().mockResolvedValue(undefined);
+    const schedule=vi.fn().mockResolvedValue(true);
+    const scheduler=createAssistantScheduler({} as any,{repository:{invalidate,schedule} as any});
+    await scheduler.message({workspaceId:'w',conversationId:'c',messageId:'seller-message',direction:'outbound'});
+    expect(invalidate).toHaveBeenCalledWith('w','c');
+    expect(schedule).toHaveBeenCalledWith({workspaceId:'w',conversationId:'c',trigger:'continuation'});
+  });
+  it('generates private continuation guidance after a completed action and seller reply',async()=>{
+    const state={workspaceId:'w',conversationId:'c',requestedById:null,instruction:null};
+    const repository={due:vi.fn(async()=>[state]),claim:vi.fn(async()=> 'lease'),fail:vi.fn(),publish:vi.fn(async()=>true),releaseLease:vi.fn()};
+    const context={conversation:{aiControlStatus:'human_controlled'},humanSupport:true,messages:[{direction:'inbound'},{direction:'outbound'}],contextKey:'same'};
+    const generate=vi.fn(async()=>({body:'Orientação privada'}));
+    const scheduler=createAssistantScheduler({} as any,{repository:repository as any,loadContext:vi.fn(async()=>context) as any,generate:generate as any});
+    await scheduler.tick();
+    expect(generate).toHaveBeenCalledOnce();
+    expect(repository.fail).not.toHaveBeenCalled();
   });
   it('publishes a reviewed draft while the human stays in control',async()=>{
     const state={workspaceId:'w',conversationId:'c',requestedById:null,instruction:null};

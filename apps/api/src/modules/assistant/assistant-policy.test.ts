@@ -9,8 +9,11 @@ describe('assistant policy', () => {
   it('fails closed for unknown control state',()=>expect(canGenerateSuggestion({mode:'automatic',control:'unknown',trigger:'inbound'})).toBe(false));
   it('generates private suggestions for a supported human-controlled conversation',()=>{
     expect(canGenerateSuggestion({mode:'automatic',control:'human_controlled',trigger:'inbound',humanSupport:true})).toBe(true);
+    expect(canGenerateSuggestion({mode:'automatic',control:'human_controlled',trigger:'continuation',humanSupport:true})).toBe(true);
+    expect(canGenerateSuggestion({mode:'automatic',control:'human_controlled',trigger:'continuation'})).toBe(false);
     expect(canGenerateSuggestion({mode:'on_demand',control:'human_controlled',trigger:'manual',humanSupport:true})).toBe(true);
     expect(canGenerateSuggestion({mode:'on_demand',control:'human_controlled',trigger:'inbound',humanSupport:true})).toBe(false);
+    expect(canGenerateSuggestion({mode:'on_demand',control:'human_controlled',trigger:'continuation',humanSupport:true})).toBe(false);
   });
   it('uses the active agent for human support when channel support is disabled',()=>{
     const agentId='00000000-0000-4000-8000-000000000101';

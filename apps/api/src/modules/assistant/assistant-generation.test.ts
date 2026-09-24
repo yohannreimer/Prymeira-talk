@@ -105,6 +105,16 @@ describe('private read-only generation', () => {
     expect(generate).toHaveBeenCalledOnce();
     expect(generate.mock.calls[0][0].context.allowedActions).toEqual([]);
   });
+  it('offers seller guidance after their last reply without treating it as a new customer request', async () => {
+    const { run, generate } = setup();
+    const sellerMessage = { ...context.messages[0], id: 'seller', direction: 'outbound' as const, body: 'Temos apenas em aço carbono natural.' };
+    await run({ ...context, conversation: { ...context.conversation, aiControlStatus: 'human_controlled' }, humanSupport: true, messages: [context.messages[0], sellerMessage] });
+    const input = generate.mock.calls[0][0];
+    expect(input.context.sellerContinuation).toBe(true);
+    expect(input.context.messageBody).toBe(sellerMessage.body);
+    expect(input.systemPrompt).toContain('não repita sua mensagem');
+    expect(input.userPrompt).not.toBe(context.messages[0].body);
+  });
   it('loads the active agent as support after an autonomous handoff', async () => {
     const { db } = setup();
     const agentId='00000000-0000-4000-8000-000000000101';

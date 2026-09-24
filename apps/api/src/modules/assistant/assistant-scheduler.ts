@@ -27,7 +27,7 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
         try {
           await dependencies.prepareContext?.(state.workspaceId, state.conversationId);
           const context = await loadContext(prisma, state.workspaceId, state.conversationId);
-          if (!state.requestedById && context.messages.at(-1)?.direction !== 'inbound') {
+          if (!state.requestedById && context.messages.at(-1)?.direction !== 'inbound' && !(context.humanSupport && context.messages.at(-1)?.direction === 'outbound')) {
             await repository.fail(state, token, 'O cliente já recebeu uma resposta. Aguarde uma nova mensagem.');
             return;
           }
@@ -56,18 +56,23 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
     },
     async message(input: { workspaceId: string; conversationId: string; messageId: string; direction: string }) {
       if (input.direction === 'inbound') await repository.schedule({ ...input, trigger: 'inbound' });
-      else await repository.invalidate(input.workspaceId, input.conversationId);
+      else {
+        await repository.invalidate(input.workspaceId, input.conversationId);
+        await repository.schedule({ workspaceId: input.workspaceId, conversationId: input.conversationId, trigger: 'continuation' });
+      }
     },
     async control(workspaceId: string, conversationId: string, _human: boolean) {
       await repository.invalidate(workspaceId, conversationId);
       // Either control change may leave a customer message unanswered.
       await prisma.assistantConversationState.updateMany({ where: { workspaceId, conversationId }, data: { lastMessageId: null } });
       await repository.schedule({ workspaceId, conversationId, trigger: 'inbound' });
+      await repository.schedule({ workspaceId, conversationId, trigger: 'continuation' });
     },
     async handoffCompleted(workspaceId: string, conversationId: string) {
       await repository.invalidate(workspaceId, conversationId);
       await prisma.assistantConversationState.updateMany({ where: { workspaceId, conversationId }, data: { lastMessageId: null } });
       await repository.schedule({ workspaceId, conversationId, trigger: 'inbound' });
+      await repository.schedule({ workspaceId, conversationId, trigger: 'continuation' });
     },
     start() { if (!timer) { timer = setInterval(() => void tick(), 1000); timer.unref(); } },
     stop() { if (timer) clearInterval(timer); timer = undefined; }

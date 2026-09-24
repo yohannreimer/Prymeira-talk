@@ -54,10 +54,13 @@ export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantSch
     ]);
     let context: Awaited<ReturnType<typeof loadAssistantContext>> | null = null;
     if (settings.mode !== 'disabled') context = await loadAssistantContext(app.prisma, actor.workspaceId, conversationId);
+    const continuationScheduled = context?.humanSupport && context.messages.at(-1)?.direction === 'outbound' && (!state || state.status === 'stale')
+      ? await options.scheduler?.repository.schedule({ workspaceId: actor.workspaceId, conversationId, trigger: 'continuation' }) : false;
     const history = revisions.map(s => ({ id: s.id, conversationId, agentId: s.agentId, revision: s.revision, contextKey: s.contextKey, body: s.body, instruction: s.instruction, createdAt: s.createdAt.toISOString(), warnings: Array.isArray(s.warnings) ? s.warnings.filter((w): w is string => typeof w === 'string') : [], actorName: s.send?.actor.displayName ?? s.actor?.displayName ?? null, finalBody: s.send?.finalBody ?? null, messageId: s.send?.messageId ?? null, sendStatus: s.send?.status === 'uncertain' ? 'uncertain' : s.send?.message?.status ?? s.send?.status ?? null }));
     const humanControlled = conversation.aiControlStatus === 'human_controlled';
     const awaitingCustomer = Boolean(context && context.messages.at(-1)?.direction !== 'inbound');
     let status = assistantDraftStatusSchema.catch('stale').parse(state?.status ?? 'stale');
+    if (continuationScheduled) status = 'pending';
     if (humanControlled && !humanSupport) status = 'paused';
     if (status === 'ready' && history[0]?.contextKey !== context?.contextKey) status = 'stale';
     return { settings, status, humanControlled, humanSupport, awaitingCustomer, suggestion: history[0] ?? null, history, agentName: context?.agent.name ?? null, error: state?.lastError ?? null, currentContextKey: context?.contextKey ?? null } satisfies AssistantConversationDto;

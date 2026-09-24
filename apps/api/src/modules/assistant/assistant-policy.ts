@@ -25,7 +25,7 @@ export function resolveConversationAssistant(input:{
     : configured;
   return {settings,humanSupport};
 }
-export function canGenerateSuggestion(input:{mode:AssistantMode;control:string;trigger:'inbound'|'manual';humanSupport?:boolean}):boolean{
+export function canGenerateSuggestion(input:{mode:AssistantMode;control:string;trigger:'inbound'|'manual'|'continuation';humanSupport?:boolean}):boolean{
   const allowedControl=input.control==='agent_allowed'||(input.control==='human_controlled'&&input.humanSupport===true);
   return allowedControl&&input.mode!=='disabled'&&(input.mode==='automatic'||input.trigger==='manual');
 }

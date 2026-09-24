@@ -5,7 +5,7 @@ import { canGenerateSuggestion, nextSuggestionAt, resolveConversationAssistant }
 
 export function createAssistantRepository(prisma: PrismaClient) {
   return {
-    async schedule(input: { workspaceId: string; conversationId: string; trigger: 'manual' | 'inbound'; messageId?: string; actorUserId?: string; instruction?: string }, transaction?: Prisma.TransactionClient) {
+    async schedule(input: { workspaceId: string; conversationId: string; trigger: 'manual' | 'inbound' | 'continuation'; messageId?: string; actorUserId?: string; instruction?: string }, transaction?: Prisma.TransactionClient) {
       const perform = async (tx: Prisma.TransactionClient) => {
         await lockAssistantConversation(tx, input.workspaceId, input.conversationId);
         const conversation = await tx.conversation.findFirst({ where: { workspaceId: input.workspaceId, id: input.conversationId }, include: { channel: true, activeAgentSession: true } });
@@ -17,6 +17,7 @@ export function createAssistantRepository(prisma: PrismaClient) {
         const latest = await tx.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, type: { notIn: ['internal_note', 'system'] } }, orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }] });
         // A release never replays an already answered conversation. Duplicate hooks are harmless.
         if (!latest || (input.trigger === 'inbound' && (latest.direction !== 'inbound' || state?.lastMessageId === latest.id))) return false;
+        if (input.trigger === 'continuation' && (latest.direction !== 'outbound' || !humanSupport || (state?.lastMessageId === latest.id && state.status !== 'stale'))) return false;
         const now = new Date();
         const firstPendingAt = state?.status === 'pending' ? state.firstPendingAt : now;
         const data = {

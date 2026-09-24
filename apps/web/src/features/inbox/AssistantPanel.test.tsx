@@ -54,13 +54,19 @@ describe('assistant panel', () => {
     expect(html).toContain('Sugestão de resposta');
     expect(html).toContain('Enviar resposta');
   });
-  it('waits for a new customer message after a completed action without showing an old failure or reply', () => {
-    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled data={{ ...data, humanControlled: true, humanSupport: true, awaitingCustomer: true, status: 'failed', error: 'Aguarde uma mensagem do cliente.' }} handoffCompleted />);
-    expect(html).toContain('Aguardando nova mensagem do cliente');
+  it('offers continuation guidance after the seller speaks without a premature send button', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled data={{ ...data, humanControlled: true, humanSupport: true, awaitingCustomer: true }} handoffCompleted />);
+    expect(html).toContain('Orientação para o vendedor');
+    expect(html).toContain('Qual a cidade de entrega?');
+    expect(html).not.toContain('Enviar resposta');
     expect(html).not.toContain('Próxima ação concluída');
-    expect(html).not.toContain('Não foi possível gerar');
+  });
+  it('shows a generation error without repeating an old reply after a completed action', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled data={{ ...data, humanControlled: true, humanSupport: true, awaitingCustomer: true, status: 'failed', error: 'Aguarde uma mensagem do cliente.' }} handoffCompleted />);
+    expect(html).toContain('Não foi possível gerar');
+    expect(html).not.toContain('Próxima ação concluída');
     expect(html).not.toContain('Sugestão de resposta');
-    expect(html).not.toContain('Gerar sugestão');
+    expect(html).toContain('Gerar sugestão');
   });
   it('escapes customer/provider text and shows media warnings', () => {
     const html = renderToStaticMarkup(<AssistantPanel {...props} data={{ ...data, suggestion: { ...data.suggestion!, body: '<script>unsafe()</script>', warnings: ['PDF não lido.'] } }} />);
