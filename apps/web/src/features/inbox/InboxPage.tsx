@@ -867,7 +867,7 @@ function InboxPageContent() {
     nextAction: null, summary: null, contextKey: null, updatedAt: null,
     error: handoff.error
   } : null;
-  useEffect(() => { assistant.refresh(); }, [selectedConversation?.lastMessageAt, selectedConversation?.aiControlStatus, assistant.refresh]);
+  useEffect(() => { assistant.refresh(); }, [selectedConversation?.lastMessageAt, selectedConversation?.aiControlStatus, selectedConversation?.handoffActionCompletedAt, assistant.refresh]);
   const originNeedsReview = draftNeedsReview(composerOrigin, assistant.data?.currentContextKey);
   function editSuggestion(suggestion: AssistantSuggestionDto, confirmed: boolean) {
     if (suggestion.conversationId !== selectedConversationId || !canCopySuggestion(draft, confirmed)) return;

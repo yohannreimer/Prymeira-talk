@@ -34,7 +34,7 @@ export function createAssistantRepository(prisma: PrismaClient) {
       return transaction ? perform(transaction) : prisma.$transaction(perform);
     },
     async invalidate(workspaceId: string, conversationId: string, status = 'stale') {
-      await prisma.assistantConversationState.updateMany({ where: { workspaceId, conversationId }, data: { status, revision: { increment: 1 }, scheduledAt: null } });
+      await prisma.assistantConversationState.updateMany({ where: { workspaceId, conversationId }, data: { status, revision: { increment: 1 }, scheduledAt: null, lastError: null } });
     },
     async due(now = new Date()) {
       // Recover abandoned workers, but never retry more than twice.

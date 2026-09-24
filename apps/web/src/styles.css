@@ -7963,6 +7963,9 @@ select:disabled {
 .handoff-completed p { margin: 0 0 12px; color: var(--color-text-secondary); line-height: 1.5; }
 .handoff-completed .handoff-completed-feedback { color: var(--color-text-primary); }
 .handoff-completed-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.handoff-archive { margin-top: 18px; }
+.handoff-archive .handoff-completed-feedback { margin: 12px 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.5; }
+.handoff-archive .handoff-completed-actions { margin-top: 12px; }
 .assistant-state { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-weight: 650; margin: 26px 0 14px; }
 .assistant-state small { width: 100%; padding-left: 12px; color: var(--color-text-secondary); font-weight: 400; }
 .assistant-status-dot { margin: 0; }.assistant-status-dot.is-paused { background: var(--color-status-waiting-text); }

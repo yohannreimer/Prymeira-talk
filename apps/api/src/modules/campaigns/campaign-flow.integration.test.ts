@@ -14,7 +14,7 @@ const safe = url ? (() => {
 })() : false;
 
 describe.skipIf(!safe)("campaign queue with disposable PostgreSQL", () => {
-  const prisma = new PrismaClient({ datasources: { db: { url } } });
+  let prisma: PrismaClient;
   const workspaceId = `campaign-test-${randomUUID()}`;
   const channelId = randomUUID();
   let campaignId = "";
@@ -26,6 +26,7 @@ describe.skipIf(!safe)("campaign queue with disposable PostgreSQL", () => {
   }));
 
   beforeAll(async () => {
+    prisma = new PrismaClient({ datasources: { db: { url: url! } } });
     await prisma.channel.create({ data: { id: channelId, workspaceId, provider: "evolution",
       providerKey: `test-${channelId}`, status: "connected" } });
     const campaign = await prisma.campaign.create({ data: { workspaceId, name: "Teste isolado",

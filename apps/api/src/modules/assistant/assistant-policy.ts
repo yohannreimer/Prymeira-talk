@@ -14,11 +14,12 @@ export function blocksAutonomousAgent(config:unknown):boolean{
 export function resolveConversationAssistant(input:{
   aiControlStatus:string;
   channel:{encryptedConfig:unknown};
-  activeAgentSession?:{agentId:string}|null;
+  activeAgentSession?:{agentId:string;handoffReason?:string|null;handoffActionCompletedAt?:Date|null}|null;
 }){
   const configured=readAssistantSettings(input.channel.encryptedConfig);
   const session=input.activeAgentSession;
-  const humanSupport=input.aiControlStatus==='human_controlled'&&Boolean(configured.mode!=='disabled'||session?.agentId);
+  const handoffPending=Boolean(session?.handoffReason&&!session.handoffActionCompletedAt);
+  const humanSupport=input.aiControlStatus==='human_controlled'&&!handoffPending&&Boolean(configured.mode!=='disabled'||session?.agentId);
   const settings=humanSupport&&configured.mode==='disabled'&&session?.agentId
     ? {mode:'automatic' as const,agentId:session.agentId}
     : configured;

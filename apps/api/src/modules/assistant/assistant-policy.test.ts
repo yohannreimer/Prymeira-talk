@@ -19,6 +19,12 @@ describe('assistant policy', () => {
     expect(resolveConversationAssistant({...input,activeAgentSession:null})).toEqual({settings:{mode:'disabled',agentId:null},humanSupport:false});
     expect(resolveConversationAssistant({...input,aiControlStatus:'agent_allowed'})).toEqual({settings:{mode:'disabled',agentId:null},humanSupport:false});
   });
+  it('resumes human support only after the pending handoff action is completed',()=>{
+    const agentId='00000000-0000-4000-8000-000000000101';
+    const input={aiControlStatus:'human_controlled',channel:{encryptedConfig:{}},activeAgentSession:{agentId,handoffReason:'Needs seller action',handoffActionCompletedAt:null as Date|null}};
+    expect(resolveConversationAssistant(input).humanSupport).toBe(false);
+    expect(resolveConversationAssistant({...input,activeAgentSession:{...input.activeAgentSession,handoffActionCompletedAt:new Date()}}).humanSupport).toBe(true);
+  });
   it('generates inbound only in automatic mode',()=>{
     expect(canGenerateSuggestion({mode:'automatic',control:'agent_allowed',trigger:'inbound'})).toBe(true);
     expect(canGenerateSuggestion({mode:'on_demand',control:'agent_allowed',trigger:'inbound'})).toBe(false);

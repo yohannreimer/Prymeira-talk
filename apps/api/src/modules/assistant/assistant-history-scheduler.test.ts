@@ -17,6 +17,16 @@ describe('history before suggestions',()=>{
   it('never generates with a silently missing history',async()=>{const s=setup();s.prepareContext.mockRejectedValue(new AssistantError('ASSISTANT_HISTORY_UNAVAILABLE','Histórico indisponível'));await s.scheduler.tick();expect(s.generate).not.toHaveBeenCalled();expect(s.repository.fail).toHaveBeenCalledWith(expect.anything(),'lease','Histórico indisponível');});
 });
 describe('human support scheduling',()=>{
+  it('keeps automatic suggestions active after the next action is completed',async()=>{
+    const invalidate=vi.fn().mockResolvedValue(undefined);
+    const schedule=vi.fn().mockResolvedValue(true);
+    const updateMany=vi.fn().mockResolvedValue({count:1});
+    const scheduler=createAssistantScheduler({assistantConversationState:{updateMany}} as any,{repository:{invalidate,schedule} as any});
+    await scheduler.handoffCompleted('w','c');
+    await scheduler.message({workspaceId:'w',conversationId:'c',messageId:'next-customer-message',direction:'inbound'});
+    expect(schedule).toHaveBeenNthCalledWith(1,{workspaceId:'w',conversationId:'c',trigger:'inbound'});
+    expect(schedule).toHaveBeenNthCalledWith(2,{workspaceId:'w',conversationId:'c',messageId:'next-customer-message',direction:'inbound',trigger:'inbound'});
+  });
   it('reschedules a pending customer question when a human takes control',async()=>{
     const invalidate=vi.fn().mockResolvedValue(undefined);
     const schedule=vi.fn().mockResolvedValue(true);
