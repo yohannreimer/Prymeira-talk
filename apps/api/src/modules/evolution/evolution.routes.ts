@@ -230,6 +230,15 @@ export function extractMessageContent(message: unknown, messageType?: unknown): 
     };
   }
 
+  if (hasRecordPath(message, ["templateMessage"]) || messageType === "templateMessage") {
+    const title = readStringPath(message, ["templateMessage", "hydratedTemplate", "hydratedTitleText"])?.trim();
+    const content = readStringPath(message, ["templateMessage", "hydratedTemplate", "hydratedContentText"])?.trim();
+    const body = [title, content].filter(Boolean).join("\n");
+    return body
+      ? { type: "template", body, mediaUrl: null, preview: body }
+      : { type: "system", body: "Template recebido sem texto", mediaUrl: null, preview: "Template recebido sem texto" };
+  }
+
   if (hasRecordPath(message, ["reactionMessage"]) || messageType === "reactionMessage") {
     const emoji = readStringPath(message, ["reactionMessage", "text"]);
     const body = emoji ? `Reagiu com ${emoji}` : "Removeu uma reação";
@@ -328,10 +337,10 @@ export function extractMessageContent(message: unknown, messageType?: unknown): 
   }
 
   return {
-    type: "text",
-    body: null,
+    type: "system",
+    body: "Mensagem não reconhecida",
     mediaUrl: null,
-    preview: "Mensagem recebida"
+    preview: "Mensagem não reconhecida"
   };
 }
 
@@ -569,6 +578,16 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
     const phone = extractPhone(payload.data.key.remoteJid);
     const pushName = payload.data.key.fromMe ? null : extractPushName(request.body);
     const messageContent = extractMessageContent(payload.data.message, payload.data.messageType);
+    if (messageContent.body === "Template recebido sem texto" || messageContent.body === "Mensagem não reconhecida") {
+      const message = unwrapMessage(payload.data.message);
+      request.log.warn({
+        event: "evolution_message_without_readable_content",
+        workspaceId,
+        providerMessageId: payload.data.key.id,
+        providerMessageType: payload.data.messageType,
+        messageKeys: message && typeof message === "object" && !Array.isArray(message) ? Object.keys(message) : []
+      }, "Evolution message has no readable content.");
+    }
     const receivedAt =
       typeof payload.data.messageTimestamp === "number"
         ? new Date(payload.data.messageTimestamp * 1000)

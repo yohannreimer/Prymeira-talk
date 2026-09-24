@@ -1034,6 +1034,66 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it("reads the text of an incoming WhatsApp template", async () => {
+    const prisma = createMockPrisma();
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, id: "template_with_text" },
+          messageType: "templateMessage",
+          message: { templateMessage: { hydratedTemplate: {
+            hydratedTitleText: "Pedido de orçamento",
+            hydratedContentText: "Preciso de chapa galvanizada."
+          } } }
+        } }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+        providerMessageId: "template_with_text",
+        type: "template",
+        body: "Pedido de orçamento\nPreciso de chapa galvanizada."
+      }) });
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ lastMessagePreview: "Pedido de orçamento\nPreciso de chapa galvanizada." })
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does not schedule the agent for a template or unknown event without readable content", async () => {
+    const prisma = createMockPrisma();
+    const persistInbound = vi.fn();
+    const agentReply = vi.fn();
+    const { app } = await buildEvolutionApp(prisma, undefined, {
+      assistantScheduler: { persistInbound } as never,
+      agentReplyScheduler: { scheduleActiveSessionForMessage: agentReply }
+    });
+    try {
+      for (const [id, message, messageType] of [
+        ["empty_template", { templateMessage: { hydratedTemplate: {} } }, "templateMessage"],
+        ["unknown_event", { protocolMessage: {} }, "protocolMessage"]
+      ] as const) {
+        const response = await app.inject({ method: "POST", url: "/webhooks/evolution/workspace_a",
+          headers: { "x-prymeira-talk-secret": "top_secret" },
+          payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+            key: { ...validWebhookBody.data.key, id }, message, messageType
+          } }
+        });
+        expect(response.statusCode).toBe(200);
+        expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+          providerMessageId: id, type: "system"
+        }) });
+      }
+      expect(persistInbound).not.toHaveBeenCalled();
+      expect(agentReply).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("shows WhatsApp reactions without scheduling an assistant reply", async () => {
     const prisma = createMockPrisma();
     const persistInbound = vi.fn().mockResolvedValue(undefined);
