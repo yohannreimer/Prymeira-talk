@@ -119,6 +119,7 @@ export class AgentImprovementsServiceError extends Error {
       | "IMPROVEMENT_NORMALIZATION_REQUIRED"
       | "IMPROVEMENT_NORMALIZER_UNAVAILABLE"
       | "IMPROVEMENT_NORMALIZATION_AMBIGUOUS"
+      | "IMPROVEMENT_DRAFT_INCONSISTENT"
       | "IMPROVEMENT_WRITER_UNAVAILABLE"
       | "IMPROVEMENT_WRITER_FAILED"
       | "IMPROVEMENT_JEV_FAILED",
@@ -365,7 +366,7 @@ function buildProposal(input: {
       title: "Produto não comercializado — revisar",
       content: [
         ...base,
-        "Quando uma consulta futura corresponder claramente ao mesmo item ou variação, informe de forma objetiva que não trabalhamos com esse produto. Não generalize para materiais parecidos; se houver diferença de medida, acabamento, furação ou equivalência, faça handoff para o comercial."
+        "O escopo desta decisão ainda precisa ser confirmado pelo time. Depois da revisão, aplique a recusa somente às variações confirmadas e encaminhe consultas fora desse escopo ao comercial."
       ].join("\n"),
       rationale:
         "O humano confirmou que o item solicitado não é comercializado. A revisão define o limite exato dessa orientação antes de ela entrar na base."
@@ -393,6 +394,16 @@ function buildProposal(input: {
     rationale:
       "A resposta humana parece trazer uma orientação reutilizável. Revise o texto e o escopo antes de torná-la conhecimento do agente."
   };
+}
+
+function contentForRuleWriter(improvement: ImprovementRecord): string {
+  if (improvement.kind !== "not_sold") return improvement.content;
+  // Pending proposals created before scope review included this conflicting instruction.
+  // Do not let it override an explicit answer that includes all item variations.
+  return improvement.content.replace(
+    "Quando uma consulta futura corresponder claramente ao mesmo item ou variação, informe de forma objetiva que não trabalhamos com esse produto. Não generalize para materiais parecidos; se houver diferença de medida, acabamento, furação ou equivalência, faça handoff para o comercial.",
+    "Use a decisão humana e as respostas de escopo para definir as variações abrangidas. Encaminhe somente consultas fora do escopo confirmado ao comercial."
+  );
 }
 
 export function createAgentImprovementsService(
@@ -722,7 +733,7 @@ export function createAgentImprovementsService(
           kind: improvement.kind,
           customerMessage: improvement.sourceCustomerMessage,
           humanReply: improvement.sourceHumanReply,
-          proposedContent: improvement.content,
+          proposedContent: contentForRuleWriter(improvement),
           clarificationAnswers: answers,
           clarificationQuestions: questions
         });
@@ -758,10 +769,12 @@ export function createAgentImprovementsService(
       }
       if (result.outcome === "needs_clarification") {
         throw new AgentImprovementsServiceError(
-          "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
-          improvement.kind === "not_sold"
-            ? "O JEV ainda não conseguiu delimitar a regra. Diga explicitamente se a recusa vale para todas as variações do item solicitado ou só para a especificação pedida; informe as exceções ou escreva ‘Nenhuma’. Salve e tente interpretar novamente."
-            : "O JEV não conseguiu delimitar esta regra com segurança. Detalhe as respostas de escopo, salve e tente interpretar novamente."
+          result.reason === "draft_inconsistent" ? "IMPROVEMENT_DRAFT_INCONSISTENT" : "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
+          result.reason === "draft_inconsistent"
+            ? "O texto proposto não respeitou o escopo confirmado. Tente preparar a regra novamente; suas respostas já estão salvas."
+            : improvement.kind === "not_sold"
+              ? "O JEV ainda não conseguiu delimitar a regra. Diga explicitamente se a recusa vale para todas as variações do item solicitado ou só para a especificação pedida; informe as exceções ou escreva ‘Nenhuma’. Salve e tente interpretar novamente."
+              : "O JEV não conseguiu delimitar esta regra com segurança. Detalhe as respostas de escopo, salve e tente interpretar novamente."
         );
       }
 

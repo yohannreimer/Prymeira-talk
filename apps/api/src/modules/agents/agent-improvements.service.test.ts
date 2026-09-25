@@ -172,7 +172,7 @@ describe("createAgentImprovementsService", () => {
         clarificationNormalization: {},
         sourceCustomerMessage: customerMessage.body,
         sourceHumanReply: humanReply.body,
-        content: expect.stringContaining("Não generalize para materiais parecidos")
+        content: expect.stringContaining("escopo desta decisão ainda precisa ser confirmado")
       })
     }));
     expect(prisma.aiKnowledgeSource.create).not.toHaveBeenCalled();
@@ -482,6 +482,37 @@ describe("createAgentImprovementsService", () => {
     expect(prisma.aiAgentImprovement.update).not.toHaveBeenCalled();
   });
 
+  it("does not feed an old contradictory scope hint to the writer for telhas", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue({
+      ...pendingImprovement,
+      sourceCustomerMessage: "Vocês têm telha?",
+      sourceHumanReply: "Telhas não fornecemos.",
+      content: "Pedido do cliente: Vocês têm telha?\n\nQuando uma consulta futura corresponder claramente ao mesmo item ou variação, informe de forma objetiva que não trabalhamos com esse produto. Não generalize para materiais parecidos; se houver diferença de medida, acabamento, furação ou equivalência, faça handoff para o comercial.",
+      clarificationAnswers: { scope: "sim, para todas as variacoes de telha", exceptions: "nenhuma" },
+      clarificationNormalization: {}
+    });
+    const ruleWriter = {
+      write: vi.fn().mockResolvedValue({
+        title: "Telhas não comercializadas",
+        content: "Não fornecemos telhas em nenhuma variação de medida, espessura, acabamento ou furação. Para itens que não sejam telhas, consulte o comercial antes de responder. Não informe disponibilidade não confirmada."
+      })
+    } satisfies AgentImprovementRuleWriter;
+    const service = createAgentImprovementsService(prisma, {
+      writer: ruleWriter,
+      normalizer: normalizer({
+        outcome: "ready",
+        normalization: { scope: "requested_item_variations", confidence: 0.95, requiresHandoffOutsideScope: true }
+      })
+    });
+
+    await service.normalizeImprovement({ workspaceId, agentId, improvementId: pendingImprovement.id });
+
+    expect(ruleWriter.write).toHaveBeenCalledWith(expect.objectContaining({
+      proposedContent: expect.not.stringContaining("se houver diferença de medida")
+    }));
+  });
+
   it("does not claim an OpenAI draft was made when the workspace has no provider", async () => {
     const prisma = buildPrisma();
     prisma.aiAgentImprovement.findFirst.mockResolvedValue({ ...pendingImprovement, clarificationNormalization: {} });
@@ -512,6 +543,21 @@ describe("createAgentImprovementsService", () => {
       code: "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
       message: expect.stringContaining("Diga explicitamente")
     } satisfies Partial<AgentImprovementsServiceError>);
+    expect(prisma.aiAgentImprovement.update).not.toHaveBeenCalled();
+  });
+
+  it("reports a draft conflict without asking the reviewer to repeat clear answers", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue({ ...pendingImprovement, clarificationNormalization: {} });
+    const service = createAgentImprovementsService(prisma, {
+      normalizer: normalizer({ outcome: "needs_clarification", reason: "draft_inconsistent" })
+    });
+
+    await expect(service.normalizeImprovement({ workspaceId, agentId, improvementId: pendingImprovement.id }))
+      .rejects.toMatchObject({
+        code: "IMPROVEMENT_DRAFT_INCONSISTENT",
+        message: expect.stringContaining("suas respostas já estão salvas")
+      });
     expect(prisma.aiAgentImprovement.update).not.toHaveBeenCalled();
   });
 

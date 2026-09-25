@@ -93,7 +93,8 @@ describe("createJevAgentImprovementNormalizer", () => {
       new Response(JSON.stringify({
         answers: {
           scope: choice("requested_item_variations", 0.96),
-          understandsAnswers: { type: "noul", noul: 0.95 },
+          answersAreClear: { type: "noul", noul: 0.95 },
+          proposalMatchesAnswers: { type: "noul", noul: 0.98 },
           requiresHandoffOutsideScope: { type: "noul", noul: 0.99 }
         }
       }))
@@ -133,7 +134,8 @@ describe("createJevAgentImprovementNormalizer", () => {
       new Response(JSON.stringify({
         answers: {
           scope: choice("material_or_finish_family", 0.97),
-          understandsAnswers: { type: "noul", noul: 0.94 },
+          answersAreClear: { type: "noul", noul: 0.94 },
+          proposalMatchesAnswers: { type: "noul", noul: 0.96 },
           requiresHandoffOutsideScope: { type: "noul", noul: 0.98 }
         }
       }))
@@ -170,7 +172,8 @@ describe("createJevAgentImprovementNormalizer", () => {
       new Response(JSON.stringify({
         answers: {
           scope: choice("ambiguous", 0.98),
-          understandsAnswers: { type: "noul", noul: 0.99 },
+          answersAreClear: { type: "noul", noul: 0.99 },
+          proposalMatchesAnswers: { type: "noul", noul: 0.99 },
           requiresHandoffOutsideScope: { type: "noul", noul: 1 }
         }
       }))
@@ -186,12 +189,44 @@ describe("createJevAgentImprovementNormalizer", () => {
     })).resolves.toEqual({ outcome: "needs_clarification", reason: "normalization_ambiguous" });
   });
 
+  it("distinguishes a clear telha scope from an inconsistent proposed rule", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        answers: {
+          scope: choice("requested_item_variations", 0.96),
+          answersAreClear: { type: "noul", noul: 0.97 },
+          proposalMatchesAnswers: { type: "noul", noul: 0.13 },
+          requiresHandoffOutsideScope: { type: "noul", noul: 0.99 }
+        }
+      }))
+    );
+    const normalizer = createJevAgentImprovementNormalizer({ apiKey: "jev-test", fetchImpl });
+
+    await expect(normalizer.normalize({
+      kind: "not_sold",
+      customerMessage: "Vocês têm telha?",
+      humanReply: "Telhas não fornecemos.",
+      proposedContent: "Se houver diferença de medida, acabamento ou furação, faça handoff.",
+      clarificationAnswers: { scope: "sim, para todas as variações de telha", exceptions: "nenhuma" },
+      clarificationQuestions: {
+        scope: "A decisão vale para todas as medidas, espessuras, acabamentos e furações do item solicitado?",
+        exceptions: "Quais produtos parecidos vocês ainda comercializam?"
+      }
+    })).resolves.toEqual({ outcome: "needs_clarification", reason: "draft_inconsistent" });
+
+    const [, request] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(request?.body));
+    expect(body.questions.scope.instructions).toContain("Ignore o texto proposto");
+    expect(body.questions.proposalMatchesAnswers.instructions).toContain("exige repasse para variações");
+  });
+
   it("rejects a normalization response that does not carry a JEV confidence", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({
         answers: {
           scope: { type: "choice", choice: "requested_item_variations" },
-          understandsAnswers: { type: "noul", noul: 0.99 },
+          answersAreClear: { type: "noul", noul: 0.99 },
+          proposalMatchesAnswers: { type: "noul", noul: 0.99 },
           requiresHandoffOutsideScope: { type: "noul", noul: 1 }
         }
       }))

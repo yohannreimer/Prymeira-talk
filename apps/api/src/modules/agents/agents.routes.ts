@@ -178,7 +178,8 @@ function handleAgentImprovementsError(reply: FastifyReply, error: unknown) {
           : [
               "IMPROVEMENT_CLARIFICATION_REQUIRED",
               "IMPROVEMENT_NORMALIZATION_REQUIRED",
-              "IMPROVEMENT_NORMALIZATION_AMBIGUOUS"
+              "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
+              "IMPROVEMENT_DRAFT_INCONSISTENT"
             ].includes(error.code)
           ? 400
           : 409;
