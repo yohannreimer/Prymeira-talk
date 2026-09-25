@@ -415,6 +415,34 @@ describe("conversations service", () => {
     );
   });
 
+  it("pages older conversations within the selected channel", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+
+    await service.listConversations({
+      workspaceId: "workspace_a",
+      status: "active",
+      channelId: "channel_a",
+      cursor: "older_conversation"
+    });
+
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        workspaceId: "workspace_a",
+        status: { in: ["open", "pending"] },
+        channelId: "channel_a"
+      },
+      cursor: { id: "older_conversation" },
+      skip: 1,
+      take: 50,
+      orderBy: [
+        { lastMessageAt: "desc" },
+        { createdAt: "desc" },
+        { id: "desc" }
+      ]
+    }));
+  });
+
   it("creates outbound pending messages inside the caller workspace", async () => {
     const prisma = createMockPrisma({
       create: vi.fn<PrismaLike["message"]["create"]>().mockResolvedValue({
@@ -1962,6 +1990,30 @@ describe("conversations service", () => {
 });
 
 describe("conversation routes", () => {
+  it("forwards channel and cursor filters to the paginated conversation query", async () => {
+    const prisma = createMockPrisma();
+    const app = Fastify({ logger: false });
+    app.decorate("prisma", prisma as never);
+    app.addHook("preHandler", async (request) => { request.talk = { workspaceId: "workspace_a", role: "agent" }; });
+    await app.register(conversationsRoutes);
+    try {
+      const channelId = "00000000-0000-4000-8000-000000000001";
+      const cursor = "00000000-0000-4000-8000-000000000002";
+      const response = await app.inject({
+        method: "GET",
+        url: `/conversations?status=active&channelId=${channelId}&cursor=${cursor}`
+      });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ workspaceId: "workspace_a", channelId }),
+        cursor: { id: cursor },
+        skip: 1
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
   it("completes a handoff, reports the improvement analysis and publishes the cleared queue state", async () => {
     let completedAt: Date | null = null;
     const prisma = createMockPrisma({

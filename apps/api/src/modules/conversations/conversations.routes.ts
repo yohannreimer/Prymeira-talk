@@ -34,7 +34,9 @@ export const createMessageParamsSchema = z.object({
 
 const listConversationsQuerySchema = z.object({
   status: z.enum(["active", "closed", "all"]).optional(),
-  assignee: z.enum(["me"]).optional()
+  assignee: z.enum(["me"]).optional(),
+  channelId: z.string().uuid().optional(),
+  cursor: z.string().uuid().optional()
 });
 
 const createMessageBodySchema = z
@@ -190,7 +192,9 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     return service.listConversations({
       workspaceId: request.talk.workspaceId,
       status: query.data.status,
-      assignedUserId: query.data.assignee === "me" ? assignedUserId : null
+      assignedUserId: query.data.assignee === "me" ? assignedUserId : null,
+      channelId: query.data.channelId,
+      cursor: query.data.cursor
     });
   });
 

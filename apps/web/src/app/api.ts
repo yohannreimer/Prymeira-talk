@@ -1450,6 +1450,8 @@ export async function apiGetConversations(
   filters: Partial<{
     status: "active" | "closed" | "all";
     assignee: "me";
+    channelId: string;
+    cursor: string;
   }> = {}
 ): Promise<ConversationDto[]> {
   const token = await getRequiredToken(getToken);
@@ -1460,6 +1462,12 @@ export async function apiGetConversations(
   }
   if (filters.assignee) {
     url.searchParams.set("assignee", filters.assignee);
+  }
+  if (filters.channelId) {
+    url.searchParams.set("channelId", filters.channelId);
+  }
+  if (filters.cursor) {
+    url.searchParams.set("cursor", filters.cursor);
   }
 
   const response = await fetch(url, {

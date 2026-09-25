@@ -1,5 +1,5 @@
 import { useTalkAuth } from "../../app/auth";
-import type { ConversationDto, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
+import type { ChannelDto, ConversationDto, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
 import { Bot, CheckCircle2, History, MessageSquare, Plus, RotateCcw, StickyNote, TriangleAlert, UserCheck, UserRound, X } from "lucide-react";
 import type { ChangeEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -11,6 +11,7 @@ import {
   apiGetConversationContext,
   apiGetConversationMessages,
   apiGetConversations,
+  apiGetChannels,
   apiGetCurrentTalkUser,
   apiGetLeadComposerDraft,
   apiGetTags,
@@ -57,6 +58,8 @@ function formatTime(value: string | null) {
     minute: "2-digit"
   }).format(new Date(value));
 }
+
+const CONVERSATION_PAGE_SIZE = 50;
 
 function readConversationIdFromUrl() {
   if (typeof window === "undefined") return null;
@@ -165,6 +168,11 @@ export function upsertConversation(list: ConversationDto[], conversation: Conver
   const next = [...list];
   next[index] = conversation;
   return sortConversationsByRecency(next);
+}
+
+export function mergeConversationPage(current: ConversationDto[], page: ConversationDto[]) {
+  const seen = new Set(current.map((conversation) => conversation.id));
+  return [...current, ...page.filter((conversation) => !seen.has(conversation.id))];
 }
 
 export function insertComposerText(value: string, selectionStart: number, selectionEnd: number, text: string) {
@@ -406,6 +414,10 @@ function InboxPageContent() {
   const { getToken } = useTalkAuth();
   const [token, setToken] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationDto[]>([]);
+  const [channels, setChannels] = useState<ChannelDto[]>([]);
+  const [hasMoreConversations, setHasMoreConversations] = useState(false);
+  const [isLoadingMoreConversations, setIsLoadingMoreConversations] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageDto[]>([]);
   const [messagesConversationId, setMessagesConversationId] = useState<string | null>(null);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
@@ -447,6 +459,9 @@ function InboxPageContent() {
   const selectedConversationIdRef = useRef<string | null>(null);
   const selectedQueueFilterRef = useRef<ConversationQueueFilter>("active");
   const conversationsRef = useRef<ConversationDto[]>([]);
+  const conversationCursorRef = useRef<string | null>(null);
+  const conversationListGenerationRef = useRef(0);
+  const loadingMoreConversationsRef = useRef(false);
   const messageThreadRef = useRef<HTMLDivElement | null>(null);
   const pendingThreadScrollRef = useRef<ScrollBehavior | null>(null);
   const userReadingHistoryRef = useRef(false);
@@ -495,6 +510,14 @@ function InboxPageContent() {
     return () => {
       isMounted = false;
     };
+  }, [getToken]);
+
+  useEffect(() => {
+    let isMounted = true;
+    void apiGetChannels(getToken)
+      .then((nextChannels) => { if (isMounted) setChannels(nextChannels); })
+      .catch(() => undefined);
+    return () => { isMounted = false; };
   }, [getToken]);
 
   function isMessageThreadNearBottom() {
@@ -587,6 +610,13 @@ function InboxPageContent() {
 
   useEffect(() => {
     let isMounted = true;
+    const generation = ++conversationListGenerationRef.current;
+    conversationCursorRef.current = null;
+    loadingMoreConversationsRef.current = false;
+    setConversations([]);
+    setHasMoreConversations(false);
+    setIsLoadingMoreConversations(false);
+    setLoadMoreError(null);
 
     async function loadConversations() {
       setIsLoading(true);
@@ -595,12 +625,17 @@ function InboxPageContent() {
       try {
         const nextConversations = await apiGetConversations(getFreshToken, {
           status: selectedQueueFilter === "mine" ? "active" : selectedQueueFilter,
-          ...(selectedQueueFilter === "mine" ? { assignee: "me" as const } : {})
+          ...(selectedQueueFilter === "mine" ? { assignee: "me" as const } : {}),
+          ...(selectedChannelFilter !== "all" ? { channelId: selectedChannelFilter } : {})
         });
 
-        if (!isMounted) return;
+        if (!isMounted || generation !== conversationListGenerationRef.current) return;
 
         setConversations(nextConversations);
+        conversationCursorRef.current = nextConversations.length === CONVERSATION_PAGE_SIZE
+          ? nextConversations.at(-1)!.id
+          : null;
+        setHasMoreConversations(Boolean(conversationCursorRef.current));
         const requestedConversationId = readConversationIdFromUrl();
         setSelectedConversationId((current) =>
           current ??
@@ -610,10 +645,10 @@ function InboxPageContent() {
             : nextConversations[0]?.id ?? null)
         );
       } catch (loadError) {
-        if (!isMounted) return;
+        if (!isMounted || generation !== conversationListGenerationRef.current) return;
         setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar conversas.");
       } finally {
-        if (isMounted) {
+        if (isMounted && generation === conversationListGenerationRef.current) {
           setIsLoading(false);
         }
       }
@@ -624,7 +659,38 @@ function InboxPageContent() {
     return () => {
       isMounted = false;
     };
-  }, [conversationReloadKey, getFreshToken, selectedQueueFilter]);
+  }, [conversationReloadKey, getFreshToken, selectedQueueFilter, selectedChannelFilter]);
+
+  const loadMoreConversations = useCallback(async () => {
+    const cursor = conversationCursorRef.current;
+    if (!cursor || loadingMoreConversationsRef.current) return;
+    const generation = conversationListGenerationRef.current;
+    loadingMoreConversationsRef.current = true;
+    setIsLoadingMoreConversations(true);
+    setLoadMoreError(null);
+
+    try {
+      const page = await apiGetConversations(getFreshToken, {
+        status: selectedQueueFilter === "mine" ? "active" : selectedQueueFilter,
+        ...(selectedQueueFilter === "mine" ? { assignee: "me" as const } : {}),
+        ...(selectedChannelFilter !== "all" ? { channelId: selectedChannelFilter } : {}),
+        cursor
+      });
+      if (generation !== conversationListGenerationRef.current) return;
+      setConversations((current) => mergeConversationPage(current, page));
+      conversationCursorRef.current = page.length === CONVERSATION_PAGE_SIZE ? page.at(-1)!.id : null;
+      setHasMoreConversations(Boolean(conversationCursorRef.current));
+    } catch (loadError) {
+      if (generation === conversationListGenerationRef.current) {
+        setLoadMoreError(loadError instanceof Error ? loadError.message : "Não foi possível carregar mais conversas.");
+      }
+    } finally {
+      if (generation === conversationListGenerationRef.current) {
+        loadingMoreConversationsRef.current = false;
+        setIsLoadingMoreConversations(false);
+      }
+    }
+  }, [getFreshToken, selectedQueueFilter, selectedChannelFilter]);
 
   useEffect(() => {
     let isMounted = true;
@@ -820,8 +886,8 @@ function InboxPageContent() {
     [conversations, selectedQueueFilter]
   );
   const channelFilterOptions = useMemo(
-    () => getChannelFilterOptions(queueFilteredConversations),
-    [queueFilteredConversations]
+    () => getChannelFilterOptions(queueFilteredConversations, channels),
+    [queueFilteredConversations, channels]
   );
   const channelFilteredConversations = useMemo(
     () => filterConversationsByChannel(queueFilteredConversations, selectedChannelFilter),
@@ -839,11 +905,12 @@ function InboxPageContent() {
   useEffect(() => {
     if (
       selectedChannelFilter !== "all" &&
-      !channelFilterOptions.some((option) => option.id === selectedChannelFilter)
+      channels.length > 0 &&
+      !channels.some((channel) => channel.id === selectedChannelFilter)
     ) {
       setSelectedChannelFilter("all");
     }
-  }, [channelFilterOptions, selectedChannelFilter]);
+  }, [channels, selectedChannelFilter]);
 
   useEffect(() => {
     setSelectedConversationId((current) => {
@@ -1316,15 +1383,15 @@ function InboxPageContent() {
 
         <div className="queue-summary" aria-label="Resumo da fila">
           <div>
-            <span>{openCount}</span>
+            <span>{openCount}{hasMoreConversations && selectedQueueFilter !== "closed" ? "+" : ""}</span>
             <p>Abertas</p>
           </div>
           <div>
-            <span>{unreadCount}</span>
+            <span>{unreadCount}{hasMoreConversations && selectedQueueFilter !== "closed" ? "+" : ""}</span>
             <p>Novas</p>
           </div>
           <div>
-            <span>{closedCount}</span>
+            <span>{closedCount}{hasMoreConversations && ["closed", "all"].includes(selectedQueueFilter) ? "+" : ""}</span>
             <p>Finalizadas</p>
           </div>
         </div>
@@ -1401,8 +1468,13 @@ function InboxPageContent() {
         {isLoading ? <p className="list-note">Carregando conversas...</p> : null}
         {error ? <p className="error-note">{error}</p> : null}
 
-        <div className="conversation-items">
-          {!isLoading && visibleConversations.length === 0 ? (
+        <div className="conversation-items" onScroll={(event) => {
+          const list = event.currentTarget;
+          if (list.scrollHeight - list.scrollTop - list.clientHeight < 160) {
+            void loadMoreConversations();
+          }
+        }}>
+          {!isLoading && !hasMoreConversations && visibleConversations.length === 0 ? (
             <p className="list-note">
               {onlyHumanAttention
                 ? "Nenhuma conversa aguardando ação humana neste canal."
@@ -1486,6 +1558,17 @@ function InboxPageContent() {
             </button>
             );
           })}
+          {loadMoreError ? <p className="error-note">{loadMoreError}</p> : null}
+          {hasMoreConversations ? (
+            <button
+              className="conversation-load-more"
+              disabled={isLoadingMoreConversations}
+              onClick={() => void loadMoreConversations()}
+              type="button"
+            >
+              {isLoadingMoreConversations ? "Carregando conversas..." : "Carregar conversas anteriores"}
+            </button>
+          ) : null}
         </div>
       </section>
 

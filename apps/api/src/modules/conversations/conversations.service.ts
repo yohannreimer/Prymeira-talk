@@ -561,28 +561,33 @@ export function createConversationsService(
     workspaceId: string;
     status?: ConversationListStatus;
     assignedUserId?: string | null;
+    channelId?: string;
   }) {
     const assigneeWhere = input.assignedUserId ? { assignedUserId: input.assignedUserId } : {};
+    const channelWhere = input.channelId ? { channelId: input.channelId } : {};
 
     if (input.status === "closed") {
       return {
         workspaceId: input.workspaceId,
         status: "closed" as const,
-        ...assigneeWhere
+        ...assigneeWhere,
+        ...channelWhere
       };
     }
 
     if (input.status === "all") {
       return {
         workspaceId: input.workspaceId,
-        ...assigneeWhere
+        ...assigneeWhere,
+        ...channelWhere
       };
     }
 
     return {
       workspaceId: input.workspaceId,
       status: { in: activeConversationStatuses },
-      ...assigneeWhere
+      ...assigneeWhere,
+      ...channelWhere
     };
   }
 
@@ -697,11 +702,14 @@ export function createConversationsService(
       workspaceId: string;
       status?: ConversationListStatus;
       assignedUserId?: string | null;
+      channelId?: string;
+      cursor?: string;
     }): Promise<ConversationDto[]> {
       const conversations = await prisma.conversation.findMany({
         where: conversationListWhere(input),
         include: conversationDtoInclude,
-        orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
+        orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+        ...(input.cursor ? { cursor: { id: input.cursor }, skip: 1 } : {}),
         take: 50
       });
 

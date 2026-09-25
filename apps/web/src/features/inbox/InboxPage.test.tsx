@@ -18,6 +18,7 @@ import {
   needsHumanAttention,
   outboundStatusLabel,
   sortConversationsByRecency,
+  mergeConversationPage,
   upsertConversation
 } from "./InboxPage";
 import { quickReplyMatchesQuery, quickReplyMutationErrorMessage } from "./QuickRepliesPopover";
@@ -119,6 +120,27 @@ describe("human attention view", () => {
 
     expect(filterConversationsNeedingHuman(all, false)).toBe(all);
     expect(filterConversationsNeedingHuman(all, true).map(({ id }) => id)).toEqual(["handoff", "human"]);
+  });
+});
+
+describe("conversation pagination", () => {
+  it("appends older pages without replacing a newer realtime conversation", () => {
+    const recent = {
+      id: "recent",
+      workspaceId: "workspace-1",
+      channelId: "channel-1",
+      contactId: "contact-1",
+      status: "open" as const,
+      assignedUserId: null,
+      departmentId: null,
+      lastMessageAt: "2026-09-25T13:00:00.000Z",
+      lastMessagePreview: "nova mensagem",
+      unreadCount: 0,
+      priority: "normal" as const
+    };
+    const older = { ...recent, id: "older", contactId: "contact-2", lastMessageAt: "2026-09-24T13:00:00.000Z" };
+
+    expect(mergeConversationPage([recent], [{ ...recent, lastMessagePreview: "antiga" }, older])).toEqual([recent, older]);
   });
 });
 
