@@ -61,7 +61,17 @@ const baseConversation = {
   activeAgentSessionId: ids.session,
   contactId: "contact_1",
   contact: { id: "contact_1", name: "Ana", phone: "5511999999999" },
-  channel: { provider: "evolution", providerKey: "instance_1" },
+  channel: {
+    provider: "evolution",
+    providerKey: "instance_1",
+    followupConfig: {
+      timeZone: "America/Sao_Paulo",
+      businessDays: [1, 2, 3, 4, 5],
+      businessHours: { start: "08:00", end: "18:00" },
+      steps: [{ afterMinutes: 60 }, { afterMinutes: 120 }, { afterMinutes: 180 }],
+      humanCommercialDelivery: "automatic"
+    }
+  },
   tags: []
 };
 
@@ -230,6 +240,37 @@ function buildRuntime(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentFollowupRuntime", () => {
+  it("drafts a qualification follow-up for review when the number has no automatic-send opt-in", async () => {
+    const conversation = { ...baseConversation, channel: { provider: "evolution", providerKey: "instance_1" } };
+    const harness = buildRuntime({ conversation: { findUnique: vi.fn().mockResolvedValue(conversation) } });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "review" });
+    expect(harness.decide).toHaveBeenCalledWith(expect.objectContaining({ allowAutomaticSend: false }));
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "review", draftBody: expect.any(String) })
+    }));
+  });
+
+  it("keeps the draft for review if automatic sending is disabled while it is being generated", async () => {
+    const channelWithoutOptIn = { provider: "evolution", providerKey: "instance_1" };
+    const harness = buildRuntime({
+      conversation: {
+        findUnique: vi.fn()
+          .mockResolvedValueOnce(baseConversation)
+          .mockResolvedValueOnce({ ...baseConversation, channel: channelWithoutOptIn })
+      }
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "review" });
+    expect(harness.decide).toHaveBeenCalledWith(expect.objectContaining({ allowAutomaticSend: true }));
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "review", draftBody: expect.any(String) })
+    }));
+  });
   it("defers an overdue automatic send when processing reaches the channel after closing", async () => {
     const recoverClaimedFollowup = vi.fn().mockResolvedValue({ status: "recovered" });
     const harness = buildRuntime({
@@ -745,8 +786,18 @@ describe("createAgentFollowupRuntime", () => {
       ]
     };
     const fourthStep = validContext({ stepIndex: 4 });
+    const channelWithFourSteps = {
+      ...baseConversation.channel,
+      followupConfig: {
+        ...baseConversation.channel.followupConfig,
+        steps: [...baseConversation.channel.followupConfig.steps, { afterMinutes: 240 }]
+      }
+    };
     const harness = buildRuntime({
       revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context: fourthStep }),
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: channelWithFourSteps })
+      },
       aiAgent: {
         findFirst: vi.fn().mockResolvedValue({
           ...baseAgent,
@@ -907,7 +958,7 @@ describe("createAgentFollowupRuntime", () => {
     expect(harness.decide).toHaveBeenCalledWith(expect.objectContaining({
       hasCompatibleActiveAgentSession: false,
       hasConfiguredHumanAgent: true,
-      allowHumanAutomatic: true
+      allowAutomaticSend: true
     }));
     expect(harness.provider.generate).toHaveBeenCalledOnce();
     expect(harness.createPendingOutboundMessage).toHaveBeenCalledOnce();

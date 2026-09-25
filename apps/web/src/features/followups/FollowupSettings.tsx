@@ -153,14 +153,14 @@ export function FollowupSettings({ getToken }: { getToken: () => Promise<string 
         <label>A partir de <input type="time" value={config.businessHours.start} disabled={!manager || saving} onChange={(event) => setConfig((current) => current ? { ...current, businessHours: { ...current.businessHours, start: event.target.value } } : current)} /></label>
         <label>Até <input type="time" value={config.businessHours.end} disabled={!manager || saving} onChange={(event) => setConfig((current) => current ? { ...current, businessHours: { ...current.businessHours, end: event.target.value } } : current)} /></label>
       </div>
-      <h3>Conversas sob controle do vendedor</h3>
-      <label className="followups-settings-field">Como executar
+      <h3>Envio dos follow-ups deste número</h3>
+      <label className="followups-settings-field">Modo de envio
         <select value={config.humanCommercialDelivery} disabled={!manager || saving} onChange={(event) => setConfig((current) => current ? { ...current, humanCommercialDelivery: event.target.value as ChannelFollowupConfig["humanCommercialDelivery"] } : current)}>
-          <option value="review">Criar rascunho para o vendedor aprovar</option>
+          <option value="review">Criar rascunho para aprovação antes de enviar</option>
           <option value="automatic">Permitir envio automático quando a análise considerar seguro</option>
         </select>
       </label>
-      <p className="followups-settings-caption">Uma resposta do cliente interrompe a sequência. Recusas e conversas encerradas não recebem novos lembretes. A análise pode pedir revisão mesmo com envio automático liberado.</p>
+      <p className="followups-settings-caption">O modo de envio vale para todos os follow-ups deste número, inclusive os de qualificação da IA. Sem autorização de envio automático, cada mensagem fica para revisão. Uma resposta do cliente interrompe a sequência. Recusas e conversas encerradas não recebem novos lembretes. A análise pode pedir revisão mesmo com envio automático liberado.</p>
       {manager ? <button className="followups-button followups-button-primary" type="submit" disabled={saving || config.businessDays.length === 0}>{saving ? "Salvando…" : "Salvar configuração"}</button> : <p>Somente gestores podem alterar esta configuração.</p>}
     </form> : null}
     {message ? <p role="status" className="followups-settings-message">{message}</p> : null}

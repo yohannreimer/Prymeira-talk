@@ -328,7 +328,7 @@ export function createAgentFollowupRuntime(input: {
           aiControlStatus: conversation.aiControlStatus === "agent_allowed" ? "agent_allowed" : "human_controlled",
           hasCompatibleActiveAgentSession: Boolean(initial.context.session),
           hasConfiguredHumanAgent: followup.kind === "human_commercial" && !initial.context.session,
-          allowHumanAutomatic: followupConfig?.humanCommercialDelivery === "automatic"
+          allowAutomaticSend: followupConfig?.humanCommercialDelivery === "automatic"
         });
       } catch (error) {
         await markReview({
@@ -348,10 +348,9 @@ export function createAgentFollowupRuntime(input: {
         return { status: "skipped", followupId: followup.id };
       }
 
-      if (decision.route === "automatic_send" && !isAutomaticallyEligible(decision, followup, conversation, followupConfig?.humanCommercialDelivery)) {
-        await markReview({ followup, decision, reason: "automatic_delivery_not_allowed" });
-        return { status: "review", followupId: followup.id };
-      }
+      const automaticDeliveryBlocked = decision.route === "automatic_send" &&
+        !isAutomaticallyEligible(decision, followup, conversation, followupConfig?.humanCommercialDelivery);
+      if (automaticDeliveryBlocked) decision = { ...decision, route: "human_review" };
 
       let preflightPlan: AgentReplyPreflightPlan | undefined;
       if (input.replyPreflight) {
@@ -483,7 +482,7 @@ export function createAgentFollowupRuntime(input: {
       }
 
       if (decision.route === "human_review") {
-        await markReview({ followup, decision, reason: "jev_human_review", draftBody: candidate });
+        await markReview({ followup, decision, reason: automaticDeliveryBlocked ? "automatic_delivery_not_allowed" : "jev_human_review", draftBody: candidate });
         return { status: "review", followupId: followup.id };
       }
 
@@ -496,7 +495,11 @@ export function createAgentFollowupRuntime(input: {
       }
 
       const currentConversation = await loadConversation(prisma, runInput.workspaceId, beforeDelivery.context.followup.conversationId);
-      if (!currentConversation || !isAutomaticallyEligible(decision, beforeDelivery.context.followup, currentConversation, followupConfig?.humanCommercialDelivery)) {
+      const currentFollowupConfig = currentConversation
+        ? resolveFollowupPlan(agent.behaviorConfig, currentConversation.channel?.followupConfig)
+        : null;
+      if (!currentConversation || !currentFollowupConfig ||
+        !isAutomaticallyEligible(decision, beforeDelivery.context.followup, currentConversation, currentFollowupConfig.humanCommercialDelivery)) {
         await markReview({
           followup: beforeDelivery.context.followup,
           decision,
@@ -509,9 +512,9 @@ export function createAgentFollowupRuntime(input: {
       const attemptedAt = (input.now ?? (() => new Date()))();
       const permittedAt = nextBusinessStart({
         from: attemptedAt,
-        timeZone: followupConfig!.timeZone,
-        businessDays: followupConfig!.businessDays,
-        businessHours: followupConfig!.businessHours
+        timeZone: currentFollowupConfig.timeZone,
+        businessDays: currentFollowupConfig.businessDays,
+        businessHours: currentFollowupConfig.businessHours
       });
       if (permittedAt > attemptedAt) {
         await input.followups.recoverClaimedFollowup({
@@ -619,7 +622,7 @@ function isAutomaticallyEligible(
   decision: FollowupDecision,
   followup: ConversationFollowupRecord,
   conversation: FollowupConversation,
-  humanCommercialDelivery: "review" | "automatic" | undefined
+  automaticDelivery: "review" | "automatic" | undefined
 ) {
   const qualificationEligible =
     followup.kind === "qualification" &&
@@ -628,10 +631,10 @@ function isAutomaticallyEligible(
     conversation.aiControlStatus === "agent_allowed";
   const commercialEligible =
     followup.kind === "human_commercial" &&
-    humanCommercialDelivery === "automatic" &&
     ["proposal_checkin", "objection_help", "confirm_active"].includes(decision.purpose) &&
     ["post_proposal", "seller_owned"].includes(decision.stage);
   return (
+    automaticDelivery === "automatic" &&
     (qualificationEligible || commercialEligible) &&
     decision.outcome === "follow_up" &&
     decision.route === "automatic_send" &&

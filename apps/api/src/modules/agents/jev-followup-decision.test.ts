@@ -125,7 +125,7 @@ describe("createJevFollowupDecision", () => {
     const body = JSON.parse(String(init?.body));
     expect(body.questions.outcome.criteria.follow_up).toContain("revisão humana");
     expect(body.questions.outcome.criteria.skip).not.toContain("há controle humano");
-    expect(body.questions.route.criteria.human_review).toContain("controle humano");
+    expect(body.questions.route.criteria.human_review).toContain("não autorizou envio automático");
   });
 
   it("allows a neutral seller follow-up only when the number opts into automatic sending", async () => {
@@ -143,7 +143,7 @@ describe("createJevFollowupDecision", () => {
     };
 
     await expect(decision.decide(input)).resolves.toMatchObject({ route: "human_review" });
-    await expect(decision.decide({ ...input, allowHumanAutomatic: true })).resolves.toMatchObject({
+    await expect(decision.decide({ ...input, allowAutomaticSend: true })).resolves.toMatchObject({
       outcome: "follow_up",
       route: "automatic_send",
       risk: "none"
@@ -161,7 +161,7 @@ describe("createJevFollowupDecision", () => {
       aiControlStatus: "human_controlled",
       hasCompatibleActiveAgentSession: false,
       hasConfiguredHumanAgent: true,
-      allowHumanAutomatic: true
+      allowAutomaticSend: true
     })).resolves.toMatchObject({ route: "automatic_send" });
     const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
     expect(request.state.hasConfiguredHumanAgent).toBe(true);
@@ -187,13 +187,24 @@ describe("createJevFollowupDecision", () => {
     );
     const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
 
-    await expect(decision.decide(baseInput)).resolves.toEqual({
+    await expect(decision.decide({ ...baseInput, allowAutomaticSend: true })).resolves.toEqual({
       outcome: "follow_up",
       purpose: "missing_qualification",
       route: "automatic_send",
       stage: "qualification",
       risk: "none"
     });
+  });
+
+  it("requires channel opt-in before a qualification follow-up can be sent automatically", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({ route: "automatic_send" }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+
+    await expect(decision.decide(baseInput)).resolves.toMatchObject({
+      outcome: "follow_up", purpose: "missing_qualification", route: "human_review"
+    });
+    const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(request.state.allowAutomaticSend).toBe(false);
   });
 
   it("keeps a catalog review pending after the customer requested and received the PDF", async () => {
@@ -209,7 +220,7 @@ describe("createJevFollowupDecision", () => {
       { id: "catalog", label: "atendente" as const, body: "Catálogo Villefer", type: "file", createdAt: "2026-09-24T17:32:52Z" }
     ];
 
-    await expect(decision.decide({ ...baseInput, conversationMessages })).resolves.toMatchObject({
+    await expect(decision.decide({ ...baseInput, conversationMessages, allowAutomaticSend: true })).resolves.toMatchObject({
       outcome: "follow_up", purpose: "confirm_active", route: "automatic_send"
     });
     const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
