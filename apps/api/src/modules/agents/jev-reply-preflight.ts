@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export type AgentReplyPreflightInput = {
   agentRules?: string;
+  followupPurpose?: "missing_qualification" | "proposal_checkin" | "objection_help" | "confirm_active";
   currentMessage: {
     id: string;
     body: string;
@@ -43,6 +44,7 @@ export type AgentReplyPreflightPlan = {
     | "state_made_to_order_conditions"
     | "handoff"
     | "wait_for_customer"
+    | "followup_checkin"
     | "silence";
 };
 
@@ -94,6 +96,7 @@ const nextActionSchema = z.enum([
   "state_made_to_order_conditions",
   "handoff",
   "wait_for_customer",
+  "followup_checkin",
   "silence"
 ]);
 
@@ -173,6 +176,7 @@ const replyPreflightQuestions = {
       state_made_to_order_conditions: "Informar condições de encomenda ainda não apresentadas e perguntar se atendem.",
       handoff: "Encaminhar para humano quando o cliente pedir vendedor ou quando variante fora da faixa ou especificação não confirmada exigir consulta comercial; não para repetir uma negativa aprovada e aplicável ao pedido.",
       wait_for_customer: "O cliente precisa responder uma pendência já apresentada; não criar nova pergunta.",
+      followup_checkin: "Retomar brevemente uma avaliação ou decisão pendente do cliente após uma explicação, catálogo solicitado e entregue ou proposta confirmada, sem repetir o conteúdo nem inventar condição comercial.",
       silence: "Não enviar resposta para encerramento social sem pendência."
     }
   }
@@ -216,6 +220,19 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
 
   return {
     async evaluate(state) {
+      const questions = state.followupPurpose
+        ? {
+            ...replyPreflightQuestions,
+            shouldReply: {
+              ...replyPreflightQuestions.shouldReply,
+              instructions: "Este é um follow-up agendado após silêncio do cliente, não uma resposta imediata à última mensagem dele. Leia o histórico inteiro. Ainda há avaliação, decisão ou dado do cliente pendente? Catálogo que o cliente pediu e recebeu pode exigir avaliação posterior sem proposta enviada. Responda não se houve resposta posterior, recusa, despedida, resolução ou ação pendente da empresa.",
+              criteria: {
+                true: "Há próximo passo concreto do cliente ainda pendente após o último atendimento da empresa.",
+                false: "O cliente respondeu, recusou, encerrou, a demanda foi resolvida ou a próxima ação pertence à empresa."
+              }
+            }
+          }
+        : replyPreflightQuestions;
       const response = await fetchImpl("https://api.typesafe.ai/v1/systemone", {
         method: "POST",
         signal: AbortSignal.timeout(12_000),
@@ -226,7 +243,7 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
         body: JSON.stringify({
           state: toJevState(state),
           model: input.model ?? "jev-latest",
-          questions: replyPreflightQuestions
+          questions
         })
       });
 
@@ -254,6 +271,15 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
       };
     },
     async audit(auditInput) {
+      const questions = auditInput.followupPurpose
+        ? {
+            ...replyQualityAuditQuestions,
+            disposition: {
+              ...replyQualityAuditQuestions.disposition,
+              instructions: `${replyQualityAuditQuestions.disposition.instructions} Este envio é um follow-up após o intervalo configurado. Uma pergunta breve sobre a avaliação de catálogo solicitado e entregue não é duplicação só por retomar o tema; suprima se o cliente respondeu, recusou, encerrou ou se a mensagem repete o conteúdo já enviado.`
+            }
+          }
+        : replyQualityAuditQuestions;
       const response = await fetchImpl("https://api.typesafe.ai/v1/systemone", {
         method: "POST",
         signal: AbortSignal.timeout(12_000),
@@ -268,7 +294,7 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
             candidateReply: auditInput.candidateReply.slice(0, 1_500)
           },
           model: input.model ?? "jev-latest",
-          questions: replyQualityAuditQuestions
+          questions
         })
       });
 
@@ -305,6 +331,7 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
 function toJevState(input: AgentReplyPreflightInput) {
   return {
     agentRules: input.agentRules ?? null,
+    followupPurpose: input.followupPurpose ?? null,
     currentMessage: input.currentMessage,
     conversationMessages: input.conversationMessages.slice(-20).map((message) => ({
       id: message.id,

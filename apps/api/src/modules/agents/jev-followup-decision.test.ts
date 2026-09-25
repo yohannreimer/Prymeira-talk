@@ -196,6 +196,27 @@ describe("createJevFollowupDecision", () => {
     });
   });
 
+  it("keeps a catalog review pending after the customer requested and received the PDF", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
+      purpose: "confirm_active",
+      route: "automatic_send",
+      stage: "qualification"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+    const conversationMessages = [
+      { id: "request", label: "cliente" as const, body: "Catálogo por favor", type: "text", createdAt: "2026-09-24T17:31:34Z" },
+      { id: "reply", label: "atendente" as const, body: "Claro! Segue o catálogo para consulta.", type: "text", createdAt: "2026-09-24T17:32:50Z" },
+      { id: "catalog", label: "atendente" as const, body: "Catálogo Villefer", type: "file", createdAt: "2026-09-24T17:32:52Z" }
+    ];
+
+    await expect(decision.decide({ ...baseInput, conversationMessages })).resolves.toMatchObject({
+      outcome: "follow_up", purpose: "confirm_active", route: "automatic_send"
+    });
+    const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(request.questions.outcome.criteria.follow_up).toContain("catálogo");
+    expect(request.questions.purpose.criteria.confirm_active).toContain("catálogo");
+  });
+
   it("canonicalizes an automatic proposal with no purpose to skip and cancel", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
       purpose: "none",

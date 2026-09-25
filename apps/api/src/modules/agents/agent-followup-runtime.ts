@@ -358,6 +358,7 @@ export function createAgentFollowupRuntime(input: {
         try {
           const preflight = await input.replyPreflight.evaluate({
             agentRules: agent.systemPrompt,
+            followupPurpose: decision.purpose === "none" ? undefined : decision.purpose,
             currentMessage: toPreflightCurrentMessage(conversationContext.messages, followup, stepInstruction),
             conversationMessages: jevMessages,
             selectedKnowledge: jevReplyKnowledge
@@ -450,6 +451,7 @@ export function createAgentFollowupRuntime(input: {
         try {
           const audit = await input.replyPreflight.audit({
             agentRules: agent.systemPrompt,
+            followupPurpose: decision.purpose === "none" ? undefined : decision.purpose,
             currentMessage: toPreflightCurrentMessage(conversationContext.messages, followup, stepInstruction),
             conversationMessages: jevMessages,
             selectedKnowledge: jevReplyKnowledge,
@@ -621,7 +623,7 @@ function isAutomaticallyEligible(
 ) {
   const qualificationEligible =
     followup.kind === "qualification" &&
-    decision.purpose === "missing_qualification" &&
+    ["missing_qualification", "confirm_active"].includes(decision.purpose) &&
     decision.stage === "qualification" &&
     conversation.aiControlStatus === "agent_allowed";
   const commercialEligible =
@@ -644,6 +646,9 @@ function buildFollowupUserPrompt(instruction: string, decision: FollowupDecision
     "Gere somente um follow-up para a conversa atual.",
     `Instrução desta etapa: ${instruction}`,
     `Propósito JEV: ${decision.purpose}. Rota JEV: ${decision.route}.`,
+    ...(decision.stage === "qualification" && decision.purpose === "confirm_active"
+      ? ["Esta é uma retomada da qualificação, não uma cadência pós-proposta. Se o cliente pediu e recebeu um catálogo, pergunte brevemente se conseguiu consultá-lo e se quer seguir com o pedido. Não diga que houve proposta ou cotação enviada."]
+      : []),
     "A orientação JEV define o fluxo; ela não é evidência comercial. Não afirme fatos comerciais sem fonte confirmada."
   ].join("\n\n");
 }

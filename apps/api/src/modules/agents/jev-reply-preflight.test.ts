@@ -59,6 +59,24 @@ function auditResponse(input: {
 }
 
 describe("createJevReplyPreflight", () => {
+  it("evaluates a due catalog follow-up instead of answering the customer's already fulfilled request again", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      shouldReply: { type: "noul", noul: 0.98 },
+      conversationStage: choice("qualification"),
+      commercialPath: choice("not_applicable"),
+      nextAction: choice("followup_checkin")
+    } })));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.evaluate({ ...baseInput, followupPurpose: "confirm_active" })).resolves.toEqual({
+      outcome: "continue",
+      plan: { conversationStage: "qualification", commercialPath: "not_applicable", nextAction: "followup_checkin" }
+    });
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(payload.state.followupPurpose).toBe("confirm_active");
+    expect(payload.questions.shouldReply.instructions).toContain("follow-up agendado");
+    expect(payload.questions.nextAction.criteria.followup_checkin).toContain("catálogo");
+  });
   it("distinguishes unsupported variants, approved refusals and ongoing qualification in JEV criteria", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
       shouldReply: { type: "noul", noul: 0.98 },

@@ -396,6 +396,7 @@ describe("createAgentFollowupRuntime", () => {
     }));
     expect(JSON.stringify(harness.decide.mock.calls[0]?.[0])).not.toContain("FULL STORED AGENT PROMPT");
     expect(harness.replyPreflight.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      followupPurpose: "missing_qualification",
       currentMessage: {
         id: "customer_1",
         body: "Preciso de chapas, mas ainda não sei a espessura.",
@@ -429,6 +430,37 @@ describe("createAgentFollowupRuntime", () => {
       followupId: ids.followup,
       finalBody: "Você consegue me informar a espessura da chapa?",
       decision: expect.objectContaining({ ...automaticDecision })
+    }));
+  });
+
+  it("sends a neutral catalog check-in when catalog review is the pending qualification step", async () => {
+    const catalogDecision = { ...automaticDecision, purpose: "confirm_active" as const };
+    const decide = vi.fn().mockResolvedValue(catalogDecision);
+    const provider = { generate: vi.fn().mockResolvedValue({
+      confidence: 0.9,
+      reply: "Conseguiu consultar o catálogo? Se quiser, posso ajudar a seguir com a cotação.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    }) };
+    const harness = buildRuntime({
+      decide,
+      provider,
+      message: { findMany: vi.fn().mockResolvedValue([
+        { id: "customer_catalog", direction: "inbound", type: "text", body: "Catálogo por favor", createdAt: new Date("2026-09-24T17:31:34Z") },
+        { id: "reply_catalog", direction: "outbound", type: "text", body: "Claro! Segue o catálogo para consulta.", createdAt: new Date("2026-09-24T17:32:50Z") },
+        { id: ids.anchor, direction: "outbound", type: "file", body: "Catálogo Villefer", createdAt: new Date("2026-09-24T17:32:52Z") }
+      ]) }
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "sent" });
+    expect(harness.createPendingOutboundMessage).toHaveBeenCalledWith(expect.objectContaining({
+      body: "Conseguiu consultar o catálogo? Se quiser, posso ajudar a seguir com a cotação."
+    }));
+    expect(harness.replyPreflight.evaluate).toHaveBeenCalledWith(expect.objectContaining({ followupPurpose: "confirm_active" }));
+    expect(harness.audit).toHaveBeenCalledWith(expect.objectContaining({ followupPurpose: "confirm_active" }));
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
+      userPrompt: expect.stringContaining("não uma cadência pós-proposta")
     }));
   });
 
