@@ -47,6 +47,9 @@ import {
   type PrismaLike as ConversationsPrismaLike
 } from "./modules/conversations/conversations.service.js";
 import { conversationsRoutes } from "./modules/conversations/conversations.routes.js";
+import { createInboxTriageService } from "./modules/conversations/inbox-triage.service.js";
+import { createInboxTriageClassifier, createJevInboxTriage, createLunaInboxTriage } from "./modules/conversations/inbox-triage-model.js";
+import { createInboxTriageScheduler } from "./modules/conversations/inbox-triage-scheduler.js";
 import { createRealtimeOutboundDelivery } from "./modules/conversations/realtime-outbound-delivery.js";
 import { conversationFollowupsRoutes } from "./modules/followups/conversation-followups.routes.js";
 import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js";
@@ -232,6 +235,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   const jevEligibility = env.JEV_API_KEY
     ? createJevFollowupEligibility({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
     : undefined;
+  const inboxTriage = options.prismaEnabled === false
+    ? undefined : createInboxTriageService(app.prisma);
   const lunaImprovementDetector = options.prismaEnabled === false
     ? undefined
     : createLunaAgentImprovementDetector({ prisma: app.prisma });
@@ -390,6 +395,30 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     app.addHook("onClose", async () => {
       await conversationFollowupScheduler.stop();
     });
+  }
+
+  const inboxTriageScheduler = options.prismaEnabled === false || !inboxTriage || !env.INBOX_TRIAGE_ENABLED
+    ? undefined
+    : createInboxTriageScheduler({
+        prisma: app.prisma,
+        observer: inboxTriage,
+        classifier: createInboxTriageClassifier({
+          primary: env.INBOX_TRIAGE_PRIMARY,
+          luna: createLunaInboxTriage({ prisma: app.prisma }),
+          ...(env.JEV_API_KEY ? { jev: createJevInboxTriage({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL }) } : {})
+        }),
+        async onUpdate(workspaceId, conversationId) {
+          const conversation = await createConversationsService(app.prisma as unknown as ConversationsPrismaLike)
+            .getConversationDto({ workspaceId, conversationId });
+          app.realtime.publish({ type: "conversation.updated", workspaceId, payload: conversation });
+        },
+        onError(error, conversationId) {
+          app.log.error({ err: error, conversationId }, "Inbox triage scheduler failed");
+        }
+      });
+  inboxTriageScheduler?.start();
+  if (inboxTriageScheduler) {
+    app.addHook("onClose", async () => { await inboxTriageScheduler.stop(); });
   }
 
   const prepareAssistantHistory = options.prismaEnabled === false || !evolutionHistorySource

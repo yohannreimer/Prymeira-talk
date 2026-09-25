@@ -27,6 +27,7 @@ export async function buildApp(
       EVOLUTION_WEBHOOK_SECRET: "test_secret",
       JEV_MODEL: "jev-latest",
       INBOX_TRIAGE_PRIMARY: "luna",
+      INBOX_TRIAGE_ENABLED: false,
       TALK_UPLOAD_DIR: "tmp/test-uploads",
       LEAD_GOOGLE_MAX_CONCURRENT_JOBS: 1,
       LEAD_GOOGLE_DEFAULT_DEPTH: 5,

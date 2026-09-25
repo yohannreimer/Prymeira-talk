@@ -626,6 +626,9 @@ export function createConversationsService(
             agent: { select: { name: true } }
           }
         },
+        inboxTriage: {
+          select: { manualMarkedAt: true, decision: true, reason: true, anchorMessageId: true, dismissedMessageId: true }
+        },
         tags: { include: { tag: true } }
       }
     });
@@ -714,6 +717,9 @@ export function createConversationsService(
   }
 
   return {
+    async getConversationDto(input: { workspaceId: string; conversationId: string }): Promise<ConversationDto> {
+      return toConversationDto(await findConversation(input));
+    },
     async listConversations(input: {
       workspaceId: string;
       status?: ConversationListStatus;
