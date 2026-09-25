@@ -14,7 +14,7 @@ export function QuickSendDialog({ channels, initialChannelId, getToken, onClose,
   onClose(): void;
   onSent(): void;
 }) {
-  const availableChannels = channels.filter((channel) => channel.provider === 'evolution' && channel.status === 'connected');
+  const availableChannels = channels.filter((channel) => channel.provider === 'evolution' && (channel.status === 'connected' || channel.status === 'connecting'));
   const [channelId, setChannelId] = useState(initialChannelId && availableChannels.some((channel) => channel.id === initialChannelId) ? initialChannelId : availableChannels[0]?.id ?? '');
   const [query, setQuery] = useState('');
   const [matches, setMatches] = useState<ContactDto[]>([]);
@@ -24,6 +24,7 @@ export function QuickSendDialog({ channels, initialChannelId, getToken, onClose,
   const [sending, setSending] = useState(false);
   const [results, setResults] = useState<SendResult[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const selectedChannel = availableChannels.find((channel) => channel.id === channelId);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape' && !sending) onClose(); };
@@ -92,8 +93,9 @@ export function QuickSendDialog({ channels, initialChannelId, getToken, onClose,
       <div className="inbox-action-dialog-body">
         {results.length === recipients.length && results.length > 0 && !sending ? <div className="inbox-bulk-results" role="status"><strong>Envio concluído</strong>{results.map(({ recipient, status, error }) => <p key={recipient.phone}><span>{status === 'sent' ? <Check size={15} /> : <X size={15} />}</span>{recipient.name}: {status === 'sent' ? 'enviado' : `verificar antes de tentar novamente${error ? ` — ${error}` : ''}`}</p>)}</div> : <>
           <label className="inbox-field-label" htmlFor="quick-channel">Canal de envio</label>
-          <select id="quick-channel" value={channelId} disabled={reviewing || sending} onChange={(event) => setChannelId(event.target.value)}><option value="">Selecione um canal</option>{availableChannels.map((channel) => <option key={channel.id} value={channel.id}>{channel.displayName ?? channel.phoneNumber ?? 'Canal'}</option>)}</select>
+          <select id="quick-channel" value={channelId} disabled={reviewing || sending} onChange={(event) => setChannelId(event.target.value)}><option value="">Selecione um canal</option>{availableChannels.map((channel) => <option key={channel.id} value={channel.id}>{channel.displayName ?? channel.phoneNumber ?? 'Canal'}{channel.status === 'connecting' ? ' · conexão não confirmada' : ''}</option>)}</select>
           {availableChannels.length === 0 ? <p className="inbox-dialog-error">Conecte um canal WhatsApp Evolution para usar este envio.</p> : null}
+          {selectedChannel?.status === 'connecting' ? <p className="inbox-dialog-error">A conexão deste canal ainda não foi confirmada. Confira o resultado de cada envio antes de tentar novamente.</p> : null}
           {!reviewing ? <>
             <label className="inbox-field-label" htmlFor="quick-recipient-search">Destinatários</label>
             <div className="inbox-dialog-search"><Search size={16} /><textarea id="quick-recipient-search" placeholder="Busque um contato ou cole números, um por linha" value={query} onChange={(event) => { setQuery(event.target.value); setError(null); }} /></div>
