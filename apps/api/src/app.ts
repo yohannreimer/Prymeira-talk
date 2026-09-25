@@ -50,6 +50,7 @@ import { conversationsRoutes } from "./modules/conversations/conversations.route
 import { createInboxTriageService } from "./modules/conversations/inbox-triage.service.js";
 import { createInboxTriageClassifier, createJevInboxTriage, createLunaInboxTriage } from "./modules/conversations/inbox-triage-model.js";
 import { createInboxTriageScheduler } from "./modules/conversations/inbox-triage-scheduler.js";
+import { inboxTriageRoutes } from "./modules/conversations/inbox-triage.routes.js";
 import { createRealtimeOutboundDelivery } from "./modules/conversations/realtime-outbound-delivery.js";
 import { conversationFollowupsRoutes } from "./modules/followups/conversation-followups.routes.js";
 import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js";
@@ -304,7 +305,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           realtime: app.realtime,
           logger: app.log,
           boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike),
-          followupService
+          followupService,
+          inboxTriage
         });
   const agentReplyScheduler =
     options.prismaEnabled === false || !agentRuntime
@@ -435,19 +437,22 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     handoffBriefService,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,
     followupService,
+    inboxTriage,
     agentImprovements,
     agentRuntime,
     agentReplyScheduler,
     evolution: evolutionRuntime
   });
-  await app.register(metaWebhooksRoutes, { assistantScheduler, handoffBriefService });
+  await app.register(metaWebhooksRoutes, { assistantScheduler, handoffBriefService, inboxTriage });
   await app.register(conversationsRoutes, {
     evolution: evolutionRuntime,
     assistantScheduler,
     handoffBriefService,
     followupService,
+    inboxTriage,
     agentImprovements
   });
+  if (inboxTriage) await app.register(inboxTriageRoutes, { triage: inboxTriage });
   if (followupService && followupOutbound) {
     await app.register(conversationFollowupsRoutes, {
       followups: followupService,

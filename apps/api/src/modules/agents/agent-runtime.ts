@@ -44,6 +44,7 @@ import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { evaluateAgentLoopGuard } from "./agent-loop-guard.js";
 import type { AgentReplyPreflight, AgentReplyPreflightResult } from "./jev-reply-preflight.js";
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
+import type { InboxTriageObserver } from "../conversations/inbox-triage.service.js";
 
 import { blocksAutonomousAgent } from '../assistant/assistant-policy.js';
 type JsonValue = unknown;
@@ -252,13 +253,23 @@ export function createAgentRuntime(input: {
   realtime?: AgentRuntimeRealtime;
   boardRules?: AgentRuntimeBoardRules;
   followupService?: ConversationFollowupsObserver;
+  inboxTriage?: InboxTriageObserver;
   logger?: { warn(fields: Record<string, unknown>, message: string): void };
 }) {
   const { prisma, provider } = input;
 
   async function observeAgentOutboundFollowup(
-    outboundMessage: Pick<MessageRecord, "id" | "workspaceId" | "conversationId">
+    outboundMessage: Pick<MessageRecord, "id" | "workspaceId" | "conversationId" | "status">
   ) {
+    if (outboundMessage.status !== "pending") {
+      await input.inboxTriage?.observeMessage({
+        workspaceId: outboundMessage.workspaceId,
+        conversationId: outboundMessage.conversationId,
+        messageId: outboundMessage.id, direction: "outbound", observedAt: new Date()
+      }).catch((error: unknown) => {
+        input.logger?.warn({ err: error, conversationId: outboundMessage.conversationId }, "Inbox triage observation failed");
+      });
+    }
     await input.followupService?.observeConversationActivity({
       workspaceId: outboundMessage.workspaceId,
       conversationId: outboundMessage.conversationId,

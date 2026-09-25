@@ -207,7 +207,7 @@ function hasValidMetaSignature(
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-export const metaWebhooksRoutes: FastifyPluginAsync<{ assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler; handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService> }> = async (app, options) => {
+export const metaWebhooksRoutes: FastifyPluginAsync<{ assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler; handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>; inboxTriage?: import('../conversations/inbox-triage.service.js').InboxTriageObserver }> = async (app, options) => {
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {
     const rawBody = Buffer.isBuffer(body) ? body : Buffer.from(body);
@@ -474,6 +474,12 @@ export const metaWebhooksRoutes: FastifyPluginAsync<{ assistantScheduler?: impor
         type: "conversation.updated",
         workspaceId,
         payload: toConversationDto(result.conversation)
+      });
+      await options.inboxTriage?.observeMessage({
+        workspaceId, conversationId: result.message.conversationId,
+        messageId: result.message.id, direction: "inbound", observedAt: new Date()
+      }).catch((error: unknown) => {
+        request.log.error({ err: error, conversationId: result.message.conversationId }, "Inbox triage observation failed");
       });
     }
 

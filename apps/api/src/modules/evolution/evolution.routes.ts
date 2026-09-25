@@ -26,12 +26,14 @@ import {
 } from "./evolution.schemas.js";
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
 import type { AgentImprovementObserver } from "../agents/agent-improvements.service.js";
+import type { InboxTriageObserver } from "../conversations/inbox-triage.service.js";
 
 export interface EvolutionRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
   handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>;
   followupService?: ConversationFollowupsObserver;
   agentImprovements?: AgentImprovementObserver;
+  inboxTriage?: InboxTriageObserver;
   webhookSecret: string;
   agentRuntime?: AutomationRunnerAgentRuntime & {
     prepareAudioMessage(input: {
@@ -789,6 +791,15 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         workspaceId,
         payload: toConversationDto(conversation)
       });
+
+      if (messageContent.type !== "system") {
+        await options.inboxTriage?.observeMessage({
+          workspaceId, conversationId: message.conversationId, messageId: message.id,
+          direction: message.direction, observedAt: new Date()
+        }).catch((error: unknown) => {
+          request.log.error({ err: error, conversationId: message.conversationId }, "Inbox triage observation failed");
+        });
+      }
 
       if (message.direction === "inbound" && messageContent.type !== "system") {
         await options.followupService?.observeConversationActivity({

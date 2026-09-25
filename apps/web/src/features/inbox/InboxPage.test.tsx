@@ -19,6 +19,7 @@ import {
   outboundStatusLabel,
   sortConversationsByRecency,
   mergeConversationPage,
+  resolveSelectedConversation,
   upsertConversation
 } from "./InboxPage";
 import { quickReplyMatchesQuery, quickReplyMutationErrorMessage } from "./QuickRepliesPopover";
@@ -369,5 +370,21 @@ describe("conversation queue ordering", () => {
       "older",
       "newer"
     ]);
+  });
+
+  it("keeps confirmed triage fields when an older realtime producer omits them", () => {
+    const current = conversationFixture({ id: "c", manualMarked: true, replyTriageDecision: "needs_reply" });
+    const event = conversationFixture({ id: "c", lastMessagePreview: "Nova mensagem" });
+    delete event.manualMarked;
+    delete event.replyTriageDecision;
+    expect(upsertConversation([current], event)[0]).toMatchObject({
+      manualMarked: true, replyTriageDecision: "needs_reply", lastMessagePreview: "Nova mensagem"
+    });
+  });
+
+  it("keeps the opened conversation visible after a filter removes its card", () => {
+    const opened = conversationFixture({ id: "opened", unreadCount: 0 });
+    expect(resolveSelectedConversation([], "opened", opened)).toEqual(opened);
+    expect(resolveSelectedConversation([], "other", opened)).toBeNull();
   });
 });

@@ -1449,6 +1449,7 @@ export async function apiGetConversations(
   getToken: () => Promise<string | null>,
   filters: Partial<{
     status: "active" | "closed" | "all";
+    view: import("@prymeira-talk/shared").InboxView;
     assignee: "me";
     channelId: string;
     cursor: string;
@@ -1459,6 +1460,9 @@ export async function apiGetConversations(
 
   if (filters.status) {
     url.searchParams.set("status", filters.status);
+  }
+  if (filters.view) {
+    url.searchParams.set("view", filters.view);
   }
   if (filters.assignee) {
     url.searchParams.set("assignee", filters.assignee);
@@ -1482,6 +1486,49 @@ export async function apiGetConversations(
 
   const data = await response.json();
   return conversationSchema.array().parse(data);
+}
+
+export async function apiGetAttentionCount(
+  getToken: () => Promise<string | null>, channelId?: string
+): Promise<number> {
+  const token = await getRequiredToken(getToken);
+  const url = new URL(`${apiUrl}/conversations/attention-count`);
+  if (channelId) url.searchParams.set("channelId", channelId);
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, "Failed to load attention count"));
+  const data: unknown = await response.json();
+  if (!data || typeof data !== "object" || !("count" in data) ||
+      typeof data.count !== "number" || !Number.isInteger(data.count) || data.count < 0) {
+    throw new Error("Invalid attention count response");
+  }
+  return data.count;
+}
+
+async function apiPostInboxTriageAction(
+  getToken: () => Promise<string | null>, conversationId: string,
+  action: "manual-mark" | "reply-dismiss" | "reply-undo",
+  body: { marked: boolean } | { anchorMessageId: string }
+): Promise<ConversationDto> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/conversations/${conversationId}/${action}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, "Failed to update inbox triage"));
+  return conversationSchema.parse(await response.json());
+}
+
+export function apiSetManualMark(getToken: () => Promise<string | null>, conversationId: string, marked: boolean) {
+  return apiPostInboxTriageAction(getToken, conversationId, "manual-mark", { marked });
+}
+
+export function apiDismissReply(getToken: () => Promise<string | null>, conversationId: string, anchorMessageId: string) {
+  return apiPostInboxTriageAction(getToken, conversationId, "reply-dismiss", { anchorMessageId });
+}
+
+export function apiUndoReply(getToken: () => Promise<string | null>, conversationId: string, anchorMessageId: string) {
+  return apiPostInboxTriageAction(getToken, conversationId, "reply-undo", { anchorMessageId });
 }
 
 export type FollowupListStatus = "review" | "scheduled" | "sent" | "cancelled";

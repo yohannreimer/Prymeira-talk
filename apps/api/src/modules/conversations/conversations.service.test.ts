@@ -19,6 +19,7 @@ type MockPrisma = {
     findUnique: ReturnType<typeof vi.fn>;
   };
   conversation: {
+    count: ReturnType<typeof vi.fn>;
     findMany: ReturnType<typeof vi.fn<PrismaLike["conversation"]["findMany"]>>;
     findUnique: ReturnType<typeof vi.fn<PrismaLike["conversation"]["findUnique"]>>;
     update: ReturnType<typeof vi.fn<PrismaLike["conversation"]["update"]>>;
@@ -104,6 +105,7 @@ function createMockPrisma(overrides: {
       findUnique: vi.fn().mockResolvedValue(null)
     },
     conversation: {
+      count: vi.fn().mockResolvedValue(71),
       findMany: overrides.findMany ?? vi.fn<PrismaLike["conversation"]["findMany"]>().mockResolvedValue([]),
       findUnique:
         overrides.findUnique ??
@@ -366,7 +368,7 @@ describe("conversations service", () => {
       replyTriageReason: "Cliente pediu um orçamento", replyTriageAnchorMessageId: "msg_1",
       replyDismissed: false
     });
-    expect(toConversationDto(base)).toMatchObject({
+    expect(toConversationDto({ ...base, inboxTriage: null })).toMatchObject({
       manualMarked: false, replyTriageDecision: null,
       replyTriageReason: null, replyTriageAnchorMessageId: null, replyDismissed: false
     });
@@ -416,6 +418,31 @@ describe("conversations service", () => {
         }
       })
     );
+  });
+
+  it("filters unread human work in the database before pagination", async () => {
+    const prisma = createMockPrisma();
+    await createConversationsService(prisma).listConversations({ workspaceId: "workspace_a", status: "all", channelId: "channel_a", view: "unread", cursor: "older_id" });
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ workspaceId: "workspace_a", channelId: "channel_a", unreadCount: { gt: 0 }, OR: expect.any(Array) }),
+      cursor: { id: "older_id" }, skip: 1, take: 50
+    }));
+  });
+
+  it("unites semantic requests and handoffs in the database", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+    await service.listConversations({ workspaceId: "workspace_a", status: "all", view: "reply" });
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ workspaceId: "workspace_a", OR: expect.arrayContaining([
+        expect.objectContaining({ inboxTriage: expect.any(Object) }),
+        expect.objectContaining({ status: { not: "closed" } })
+      ]) })
+    }));
+    await service.listConversations({ workspaceId: "workspace_a", status: "all", view: "marked" });
+    expect(prisma.conversation.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ inboxTriage: { is: { manualMarkedAt: { not: null } } } })
+    }));
   });
 
   it("can list conversations assigned to the current user", async () => {
@@ -2010,6 +2037,23 @@ describe("conversations service", () => {
 });
 
 describe("conversation routes", () => {
+  it("counts all pending handoffs in the selected workspace and channel", async () => {
+    const prisma = createMockPrisma();
+    const app = Fastify({ logger: false });
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish: vi.fn(), addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => { request.talk = { workspaceId: "workspace_a", role: "agent" }; });
+    await app.register(conversationsRoutes);
+    try {
+      const channelId = "00000000-0000-4000-8000-000000000001";
+      const response = await app.inject({ method: "GET", url: `/conversations/attention-count?channelId=${channelId}` });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ count: 71 });
+      expect(prisma.conversation.count).toHaveBeenCalledWith({ where: expect.objectContaining({
+        workspaceId: "workspace_a", channelId, status: { not: "closed" }, OR: expect.any(Array)
+      }) });
+    } finally { await app.close(); }
+  });
   it("forwards channel and cursor filters to the paginated conversation query", async () => {
     const prisma = createMockPrisma();
     const app = Fastify({ logger: false });
@@ -2109,6 +2153,7 @@ describe("conversation routes", () => {
   it("returns outbound messages and publishes message plus conversation updates once", async () => {
     const prisma = createMockPrisma();
     const publish = vi.fn();
+    const observeMessage = vi.fn().mockResolvedValue(undefined);
     const control = vi.fn().mockResolvedValue(undefined);
     const assistantMessage = vi.fn().mockResolvedValue(undefined);
     const observeConversationActivity = vi.fn().mockResolvedValue({ status: "scheduled" });
@@ -2121,6 +2166,7 @@ describe("conversation routes", () => {
     });
     await app.register(conversationsRoutes, {
       followupService: { observeConversationActivity },
+      inboxTriage: { observeMessage },
       assistantScheduler: { control, message: assistantMessage } as never
     });
 
@@ -2141,6 +2187,7 @@ describe("conversation routes", () => {
       expect(control).toHaveBeenCalledWith("workspace_a", "00000000-0000-4000-8000-000000000001", true);
       expect(assistantMessage).not.toHaveBeenCalled();
       expect(messageSchema.parse(response.json())).toEqual(response.json());
+      expect(observeMessage).not.toHaveBeenCalled();
       expect(observeConversationActivity).toHaveBeenCalledWith({
         workspaceId: "workspace_a",
         conversationId: "00000000-0000-4000-8000-000000000001",

@@ -3,7 +3,7 @@ import { config } from "dotenv";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { createJevInboxTriage, createLunaInboxTriage } from "../src/modules/conversations/inbox-triage-model.js";
+import { createInboxTriageClassifier, createJevInboxTriage, createLunaInboxTriage } from "../src/modules/conversations/inbox-triage-model.js";
 
 config({ path: resolve(import.meta.dirname, "../../../.env") });
 
@@ -21,7 +21,7 @@ const caseSchema = z.object({
   messages: z.array(messageSchema).min(1)
 });
 
-type Result = { caseId: string; expected: string; decision: string; latencyMs: number };
+type Result = { caseId: string; expected: string; decision: string; model: string; latencyMs: number };
 
 function percentile(values: number[], fraction: number) {
   if (!values.length) return null;
@@ -40,22 +40,29 @@ async function main() {
   if (cases.length < 50) throw new Error("At least 50 human-labeled cases are required");
   if (!process.env.JEV_API_KEY) throw new Error("JEV_API_KEY is required for comparison");
   const prisma = new PrismaClient();
+  const luna = createLunaInboxTriage({ prisma });
+  const jev = createJevInboxTriage({ apiKey: process.env.JEV_API_KEY, model: process.env.JEV_MODEL });
   const adapters = {
-    luna: createLunaInboxTriage({ prisma }),
-    jev: createJevInboxTriage({ apiKey: process.env.JEV_API_KEY, model: process.env.JEV_MODEL })
+    luna: createInboxTriageClassifier({ primary: "luna", luna }),
+    jev: createInboxTriageClassifier({ primary: "jev", jev })
   };
   try {
     for (const [name, adapter] of Object.entries(adapters)) {
       const results: Result[] = [];
-      for (const item of cases) {
-        const started = performance.now();
-        let decision: string;
-        try {
-          decision = (await adapter.assess(item)).decision;
-        } catch {
-          decision = "error";
-        }
-        results.push({ caseId: item.caseId, expected: item.expected, decision, latencyMs: Math.round(performance.now() - started) });
+      for (let offset = 0; offset < cases.length; offset += 3) {
+        const batch = await Promise.all(cases.slice(offset, offset + 3).map(async (item) => {
+          const started = performance.now();
+          try {
+            const result = await adapter.assess(item);
+            return { caseId: item.caseId, expected: item.expected, decision: result.decision,
+              model: result.model, latencyMs: Math.round(performance.now() - started) };
+          } catch {
+            return { caseId: item.caseId, expected: item.expected, decision: "error",
+              model: "error", latencyMs: Math.round(performance.now() - started) };
+          }
+        }));
+        results.push(...batch);
+        console.error(JSON.stringify({ model: name, completed: results.length, total: cases.length }));
       }
       const missedRequests = results.filter((item) => item.expected === "needs_reply" && item.decision === "no_reply");
       const falseAlerts = results.filter((item) => item.expected === "no_reply" && item.decision === "needs_reply");
@@ -65,6 +72,8 @@ async function main() {
         missedRequests: missedRequests.map((item) => item.caseId),
         falseAlerts: falseAlerts.map((item) => item.caseId),
         uncertainOrError: uncertain.map((item) => item.caseId),
+        failedCalls: results.filter((item) => item.model === "fallback" || item.model === "error").map((item) => item.caseId),
+        decisions: results.map((item) => [item.caseId, item.decision, item.model]),
         latencyMs: { p50: percentile(results.map((item) => item.latencyMs), 0.5), p95: percentile(results.map((item) => item.latencyMs), 0.95) }
       }));
     }

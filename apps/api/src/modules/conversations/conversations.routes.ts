@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
+import { inboxViewSchema } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { createBoardRulesService } from "../boards/board-rules.service.js";
 import type { BoardRulesPrismaLike } from "../boards/board-rules.service.js";
@@ -13,10 +14,12 @@ import {
   OutboundMessageValidationError,
   createConversationsService
 } from "./conversations.service.js";
+import { inboxHandoffWhere } from "./conversations.service.js";
 import type { PrismaLike } from "./conversations.service.js";
 import { createInboxMediaService } from './inbox-media.js';
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
 import type { AgentImprovementObserver } from "../agents/agent-improvements.service.js";
+import type { InboxTriageObserver } from "./inbox-triage.service.js";
 import { readCurrentClerkUserId, resolveCurrentUserProfileId } from "./current-user.js";
 import { pauseAgentOnHumanOutbound } from "./pause-agent-on-human-outbound.js";
 
@@ -26,6 +29,7 @@ interface ConversationsRoutesOptions {
   evolution?: EvolutionRuntime;
   followupService?: ConversationFollowupsObserver;
   agentImprovements?: AgentImprovementObserver;
+  inboxTriage?: InboxTriageObserver;
 }
 
 export const createMessageParamsSchema = z.object({
@@ -34,6 +38,7 @@ export const createMessageParamsSchema = z.object({
 
 const listConversationsQuerySchema = z.object({
   status: z.enum(["active", "closed", "all"]).optional(),
+  view: inboxViewSchema.default("all"),
   assignee: z.enum(["me"]).optional(),
   channelId: z.string().uuid().optional(),
   cursor: z.string().uuid().optional()
@@ -194,8 +199,22 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       status: query.data.status,
       assignedUserId: query.data.assignee === "me" ? assignedUserId : null,
       channelId: query.data.channelId,
-      cursor: query.data.cursor
+      cursor: query.data.cursor,
+      view: query.data.view
     });
+  });
+
+  app.get("/conversations/attention-count", async (request, reply) => {
+    const query = z.object({ channelId: z.string().uuid().optional() }).safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: "Invalid attention count request." });
+    const count = await app.prisma.conversation.count({
+      where: {
+        workspaceId: request.talk.workspaceId,
+        ...(query.data.channelId ? { channelId: query.data.channelId } : {}),
+        ...inboxHandoffWhere
+      }
+    });
+    return { count };
   });
 
   app.get("/conversations/:conversationId/messages", async (request, reply) => {
@@ -569,6 +588,15 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       return reply.code(502).send({
         code: "META_SEND_FAILED",
         error: "Meta did not accept the outbound message."
+      });
+    }
+
+    if (result.message.status !== "pending") {
+      await options.inboxTriage?.observeMessage({
+        workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId,
+        messageId: result.message.id, direction: "outbound", observedAt: new Date()
+      }).catch((error: unknown) => {
+        request.log.error({ err: error, conversationId: params.data.conversationId }, "Inbox triage observation failed");
       });
     }
 

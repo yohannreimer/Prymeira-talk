@@ -56,14 +56,22 @@ function isUsefulMessage(message: TriageMessage) {
   return metadata?.source !== "followup_review";
 }
 
+const mediaPlaceholders = /^(?:áudio (?:recebido|enviado)|imagem recebida|figurinha recebida|arquivo recebido|documento recebido|contato recebido)$/i;
+const attachmentFilename = /^[^\n]{1,240}\.(?:pdf|png|jpe?g|webp|gif|docx?|xlsx?|csv|mp3|ogg|opus|mp4)$/i;
+
+export function readableTriageContent(message: TriageMessage) {
+  const body = message.body?.trim() ?? "";
+  const isMedia = ["image", "audio", "file"].includes(message.type);
+  const readableBody = !isMedia || (!mediaPlaceholders.test(body) && !attachmentFilename.test(body));
+  return [readableBody ? body : "", message.caption?.trim() ?? "", message.transcript?.trim() ?? ""]
+    .filter(Boolean).join("\n").slice(0, 2_000);
+}
+
 export function formatTriageContext(messages: TriageMessage[]) {
   return messages.filter(isUsefulMessage).slice(-20).map((message) => {
     const author = message.author === "cliente" ? "Cliente" :
       message.author === "empresa_ia" ? "Empresa (IA)" : "Empresa (humano)";
-    const content = [message.body, message.caption, message.transcript]
-      .filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
-      .join("\n")
-      .slice(0, 2_000) || "conteúdo indisponível";
+    const content = readableTriageContent(message) || "conteúdo indisponível";
     return `[id=${message.id}; ${message.createdAt}; ${author}; tipo=${message.type}]\n${content}`;
   }).join("\n\n");
 }

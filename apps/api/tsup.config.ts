@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/server.ts"],
+  entry: { server: "src/server.ts", "evaluate-inbox-triage": "scripts/evaluate-inbox-triage.ts" },
   tsconfig: "tsconfig.production.json",
   format: ["esm"],
   platform: "node",

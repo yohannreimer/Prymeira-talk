@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
-import type { ChannelDto, ConversationDto, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bot, CheckCircle2, History, MessageSquare, Plus, RotateCcw, StickyNote, TriangleAlert, UserCheck, UserRound, X } from "lucide-react";
+import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
+import { Bookmark, Bot, CheckCircle2, History, MessageCircleX, MessageSquare, Plus, RotateCcw, StickyNote, TriangleAlert, UserCheck, UserRound, X } from "lucide-react";
 import type { ChangeEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -11,6 +11,10 @@ import {
   apiGetConversationContext,
   apiGetConversationMessages,
   apiGetConversations,
+  apiGetAttentionCount,
+  apiSetManualMark,
+  apiDismissReply,
+  apiUndoReply,
   apiGetChannels,
   apiGetCurrentTalkUser,
   apiGetLeadComposerDraft,
@@ -28,12 +32,10 @@ import {
 } from "../../app/api";
 import {
   contactDisplayName,
-  filterConversationsByChannel,
-  filterConversationsByQueue,
   getConversationControlBadge,
-  type ConversationQueueFilter,
   getChannelFilterOptions
 } from "./conversation-display";
+import { InboxQuickFilters } from "./InboxQuickFilters";
 import { QuickRepliesPopover } from "./QuickRepliesPopover";
 import { useRealtimeEvents } from "./useRealtimeEvents";
 import { AssistantPanel } from './AssistantPanel';
@@ -98,9 +100,10 @@ export function aiControlActionLabel(conversation: Pick<ConversationDto, "aiCont
 }
 
 export function needsHumanAttention(
-  conversation: Pick<ConversationDto, "aiControlStatus" | "activeAgentSessionStatus" | "handoffReason" | "handoffActionCompletedAt">
+  conversation: Pick<ConversationDto, "aiControlStatus" | "activeAgentSessionStatus" | "handoffReason" | "handoffActionCompletedAt"> &
+    Partial<Pick<ConversationDto, "status">>
 ) {
-  if (conversation.handoffActionCompletedAt) return false;
+  if (conversation.status === "closed" || conversation.handoffActionCompletedAt) return false;
   return (
     conversation.activeAgentSessionStatus === "handoff_requested" ||
     (conversation.aiControlStatus === "human_controlled" && Boolean(conversation.handoffReason))
@@ -166,13 +169,21 @@ export function upsertConversation(list: ConversationDto[], conversation: Conver
   }
 
   const next = [...list];
-  next[index] = conversation;
+  next[index] = { ...next[index], ...conversation };
   return sortConversationsByRecency(next);
 }
 
 export function mergeConversationPage(current: ConversationDto[], page: ConversationDto[]) {
   const seen = new Set(current.map((conversation) => conversation.id));
   return [...current, ...page.filter((conversation) => !seen.has(conversation.id))];
+}
+
+export function resolveSelectedConversation(
+  list: ConversationDto[], selectedId: string | null, snapshot: ConversationDto | null
+) {
+  if (!selectedId) return null;
+  return list.find((conversation) => conversation.id === selectedId) ??
+    (snapshot?.id === selectedId ? snapshot : null);
 }
 
 export function insertComposerText(value: string, selectionStart: number, selectionEnd: number, text: string) {
@@ -421,6 +432,7 @@ function InboxPageContent() {
   const [messages, setMessages] = useState<MessageDto[]>([]);
   const [messagesConversationId, setMessagesConversationId] = useState<string | null>(null);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [selectedConversationSnapshot, setSelectedConversationSnapshot] = useState<ConversationDto | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [contactContext, setContactContext] = useState<ContactContextDto | null>(null);
@@ -440,9 +452,12 @@ function InboxPageContent() {
   const [notesHistoryOpen, setNotesHistoryOpen] = useState(false);
   const [tagCatalog, setTagCatalog] = useState<TagDto[]>([]);
   const [selectedTagId, setSelectedTagId] = useState("");
-  const [selectedQueueFilter, setSelectedQueueFilter] = useState<ConversationQueueFilter>("active");
+  const [activeView, setActiveView] = useState<InboxView>("all");
   const [selectedChannelFilter, setSelectedChannelFilter] = useState("all");
-  const [onlyHumanAttention, setOnlyHumanAttention] = useState(false);
+  const [humanAttentionCount, setHumanAttentionCount] = useState(0);
+  const [attentionCountReloadKey, setAttentionCountReloadKey] = useState(0);
+  const [actionBusyConversationId, setActionBusyConversationId] = useState<string | null>(null);
+  const [dismissUndo, setDismissUndo] = useState<{ conversationId: string; anchorMessageId: string } | null>(null);
   const [conversationReloadKey, setConversationReloadKey] = useState(0);
   const [isSending, setIsSending] = useState(false);
   const [isRunningAction, setIsRunningAction] = useState(false);
@@ -457,7 +472,7 @@ function InboxPageContent() {
   const [quickRepliesError, setQuickRepliesError] = useState<string | null>(null);
   const [newMessagesBelow, setNewMessagesBelow] = useState(0);
   const selectedConversationIdRef = useRef<string | null>(null);
-  const selectedQueueFilterRef = useRef<ConversationQueueFilter>("active");
+  const activeViewRef = useRef<InboxView>("all");
   const conversationsRef = useRef<ConversationDto[]>([]);
   const conversationCursorRef = useRef<string | null>(null);
   const conversationListGenerationRef = useRef(0);
@@ -555,8 +570,8 @@ function InboxPageContent() {
   }, [selectedConversationId]);
 
   useEffect(() => {
-    selectedQueueFilterRef.current = selectedQueueFilter;
-  }, [selectedQueueFilter]);
+    activeViewRef.current = activeView;
+  }, [activeView]);
 
   useEffect(() => {
     conversationsRef.current = conversations;
@@ -624,8 +639,8 @@ function InboxPageContent() {
 
       try {
         const nextConversations = await apiGetConversations(getFreshToken, {
-          status: selectedQueueFilter === "mine" ? "active" : selectedQueueFilter,
-          ...(selectedQueueFilter === "mine" ? { assignee: "me" as const } : {}),
+          status: "all",
+          view: activeView,
           ...(selectedChannelFilter !== "all" ? { channelId: selectedChannelFilter } : {})
         });
 
@@ -659,7 +674,7 @@ function InboxPageContent() {
     return () => {
       isMounted = false;
     };
-  }, [conversationReloadKey, getFreshToken, selectedQueueFilter, selectedChannelFilter]);
+  }, [conversationReloadKey, getFreshToken, activeView, selectedChannelFilter]);
 
   const loadMoreConversations = useCallback(async () => {
     const cursor = conversationCursorRef.current;
@@ -671,8 +686,8 @@ function InboxPageContent() {
 
     try {
       const page = await apiGetConversations(getFreshToken, {
-        status: selectedQueueFilter === "mine" ? "active" : selectedQueueFilter,
-        ...(selectedQueueFilter === "mine" ? { assignee: "me" as const } : {}),
+        status: "all",
+        view: activeView,
         ...(selectedChannelFilter !== "all" ? { channelId: selectedChannelFilter } : {}),
         cursor
       });
@@ -690,7 +705,21 @@ function InboxPageContent() {
         setIsLoadingMoreConversations(false);
       }
     }
-  }, [getFreshToken, selectedQueueFilter, selectedChannelFilter]);
+  }, [getFreshToken, activeView, selectedChannelFilter]);
+
+  useEffect(() => {
+    let active = true;
+    void apiGetAttentionCount(getFreshToken, selectedChannelFilter === "all" ? undefined : selectedChannelFilter)
+      .then((count) => { if (active) setHumanAttentionCount(count); })
+      .catch(() => { if (active) setHumanAttentionCount(0); });
+    return () => { active = false; };
+  }, [getFreshToken, selectedChannelFilter, attentionCountReloadKey]);
+
+  useEffect(() => {
+    if (!dismissUndo) return;
+    const timer = window.setTimeout(() => setDismissUndo(null), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [dismissUndo]);
 
   useEffect(() => {
     let isMounted = true;
@@ -851,15 +880,19 @@ function InboxPageContent() {
     }
 
     if (event.type !== "conversation.updated") return;
-
-    if (selectedQueueFilterRef.current === "mine") {
+    setAttentionCountReloadKey((current) => current + 1);
+    if (event.payload.id === selectedConversationIdRef.current) {
+      setSelectedConversationSnapshot((current) => current ? { ...current, ...event.payload } : event.payload);
+      refreshSelectedContext(event.payload.id);
+    }
+    if (selectedChannelFilter !== "all" && event.payload.channelId !== selectedChannelFilter) return;
+    if (activeViewRef.current !== "all") {
       setConversationReloadKey((current) => current + 1);
       return;
     }
 
     setConversations((current) => upsertConversation(current, event.payload));
     if (event.payload.id === selectedConversationIdRef.current) {
-      refreshSelectedContext(event.payload.id);
       if (needsHumanAttention(event.payload)) {
         setAcknowledgedHandoffIds((current) => new Set(current).add(event.payload.id));
       }
@@ -873,34 +906,18 @@ function InboxPageContent() {
       });
     }
 
-    setSelectedConversationId((current) => current ?? event.payload.id);
-  }, [refreshSelectedContext]);
+  }, [refreshSelectedContext, selectedChannelFilter]);
 
   useRealtimeEvents({
     token,
     onEvent: handleRealtimeEvent
   });
 
-  const queueFilteredConversations = useMemo(
-    () => filterConversationsByQueue(conversations, selectedQueueFilter),
-    [conversations, selectedQueueFilter]
-  );
   const channelFilterOptions = useMemo(
-    () => getChannelFilterOptions(queueFilteredConversations, channels),
-    [queueFilteredConversations, channels]
+    () => getChannelFilterOptions(conversations, channels),
+    [conversations, channels]
   );
-  const channelFilteredConversations = useMemo(
-    () => filterConversationsByChannel(queueFilteredConversations, selectedChannelFilter),
-    [queueFilteredConversations, selectedChannelFilter]
-  );
-  const humanAttentionCount = useMemo(
-    () => filterConversationsNeedingHuman(channelFilteredConversations, true).length,
-    [channelFilteredConversations]
-  );
-  const visibleConversations = useMemo(
-    () => filterConversationsNeedingHuman(channelFilteredConversations, onlyHumanAttention),
-    [channelFilteredConversations, onlyHumanAttention]
-  );
+  const visibleConversations = conversations;
 
   useEffect(() => {
     if (
@@ -913,18 +930,13 @@ function InboxPageContent() {
   }, [channels, selectedChannelFilter]);
 
   useEffect(() => {
-    setSelectedConversationId((current) => {
-      if (current && visibleConversations.some((conversation) => conversation.id === current)) {
-        return current;
-      }
-
-      return visibleConversations[0]?.id ?? null;
-    });
-  }, [visibleConversations]);
+    const current = conversations.find((conversation) => conversation.id === selectedConversationId);
+    if (current) setSelectedConversationSnapshot(current);
+  }, [conversations, selectedConversationId]);
 
   const selectedConversation = useMemo(
-    () => visibleConversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
-    [visibleConversations, selectedConversationId]
+    () => resolveSelectedConversation(visibleConversations, selectedConversationId, selectedConversationSnapshot),
+    [visibleConversations, selectedConversationId, selectedConversationSnapshot]
   );
   const visibleMessages = messagesConversationId === selectedConversationId ? messages : [];
   const handoffEnabled = Boolean(selectedConversation && needsHumanAttention(selectedConversation));
@@ -1009,13 +1021,13 @@ function InboxPageContent() {
         setConversations((current) =>
           current.map((item) => (item.id === conversation.id ? conversation : item))
         );
+        if (selectedConversationIdRef.current === conversation.id) {
+          setSelectedConversationSnapshot((current) => current ? { ...current, ...conversation } : conversation);
+        }
       })
       .catch(() => undefined);
   }, [getFreshToken, selectedConversation]);
 
-  const openCount = conversations.filter((conversation) => conversation.status === "open").length;
-  const closedCount = conversations.filter((conversation) => conversation.status === "closed").length;
-  const unreadCount = conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
 
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1239,7 +1251,7 @@ function InboxPageContent() {
     try {
       const result = await apiRunConversationAction(targetConversationId, body, getFreshToken);
       applyActionResult(result, targetConversationId);
-      if (body.action === "complete_handoff_action") setOnlyHumanAttention(false);
+      if (body.action === "complete_handoff_action" && activeView === "handoff") setActiveView("all");
       if (["complete_handoff_action", "reanalyze_handoff_reply"].includes(body.action) && selectedConversationIdRef.current === targetConversationId) {
         setHandoffFeedback(handoffAnalysisFeedback(result.improvementAnalysis));
       }
@@ -1370,6 +1382,55 @@ function InboxPageContent() {
     }
   }
 
+  async function handleManualMark(conversation: ConversationDto) {
+    if (actionBusyConversationId) return;
+    setActionBusyConversationId(conversation.id);
+    setError(null);
+    try {
+      const updated = await apiSetManualMark(getFreshToken, conversation.id, !conversation.manualMarked);
+      if (selectedConversationIdRef.current === conversation.id) setSelectedConversationSnapshot(updated);
+      if (activeView === "all") setConversations((current) => upsertConversation(current, updated));
+      else setConversationReloadKey((current) => current + 1);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Não foi possível atualizar a marcação.");
+    } finally {
+      setActionBusyConversationId(null);
+    }
+  }
+
+  async function handleDismissReply(conversation: ConversationDto) {
+    const anchorMessageId = conversation.replyTriageAnchorMessageId;
+    if (!anchorMessageId || actionBusyConversationId) return;
+    setActionBusyConversationId(conversation.id);
+    setError(null);
+    try {
+      const updated = await apiDismissReply(getFreshToken, conversation.id, anchorMessageId);
+      if (selectedConversationIdRef.current === conversation.id) setSelectedConversationSnapshot(updated);
+      setDismissUndo({ conversationId: conversation.id, anchorMessageId });
+      setConversationReloadKey((current) => current + 1);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Não foi possível dispensar a resposta.");
+    } finally {
+      setActionBusyConversationId(null);
+    }
+  }
+
+  async function handleUndoDismiss() {
+    if (!dismissUndo || actionBusyConversationId) return;
+    setActionBusyConversationId(dismissUndo.conversationId);
+    setError(null);
+    try {
+      const updated = await apiUndoReply(getFreshToken, dismissUndo.conversationId, dismissUndo.anchorMessageId);
+      if (selectedConversationIdRef.current === updated.id) setSelectedConversationSnapshot(updated);
+      setDismissUndo(null);
+      setConversationReloadKey((current) => current + 1);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Não foi possível desfazer.");
+    } finally {
+      setActionBusyConversationId(null);
+    }
+  }
+
   return (
     <section className={`talk-workspace talk-workspace-atendimento${selectedConversationId ? ' has-selected-conversation' : ''}`} aria-label="Atendimento">
       <section className="conversation-list" aria-label="Atendimento">
@@ -1380,46 +1441,6 @@ function InboxPageContent() {
           </div>
           <span className="live-indicator">{token ? "Online" : "Conectando"}</span>
         </header>
-
-        <div className="queue-summary" aria-label="Resumo da fila">
-          <div>
-            <span>{openCount}{hasMoreConversations && selectedQueueFilter !== "closed" ? "+" : ""}</span>
-            <p>Abertas</p>
-          </div>
-          <div>
-            <span>{unreadCount}{hasMoreConversations && selectedQueueFilter !== "closed" ? "+" : ""}</span>
-            <p>Novas</p>
-          </div>
-          <div>
-            <span>{closedCount}{hasMoreConversations && ["closed", "all"].includes(selectedQueueFilter) ? "+" : ""}</span>
-            <p>Finalizadas</p>
-          </div>
-        </div>
-
-        <div className="queue-filter-row" aria-label="Filtrar por status da conversa">
-          {[
-            { id: "mine" as const, label: "Minhas" },
-            { id: "active" as const, label: "Ativas" },
-            { id: "closed" as const, label: "Finalizadas" },
-            { id: "all" as const, label: "Todas" }
-          ].map((option) => (
-            <button
-              aria-pressed={selectedQueueFilter === option.id}
-              className={[
-                "queue-filter-chip",
-                selectedQueueFilter === option.id ? "is-active" : ""
-              ].filter(Boolean).join(" ")}
-              key={option.id}
-              onClick={() => {
-                setOnlyHumanAttention(false);
-                setSelectedQueueFilter(option.id);
-              }}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
 
         <div className="channel-filter-row" aria-label="Filtrar por canal">
           {channelFilterOptions.map((option) => (
@@ -1438,23 +1459,22 @@ function InboxPageContent() {
           ))}
         </div>
 
+        <InboxQuickFilters value={activeView} onChange={setActiveView} />
+
         <div className="attention-filter-row" role="group" aria-label="Visualização das conversas">
           <button
-            aria-pressed={!onlyHumanAttention}
-            className={`attention-filter-button${onlyHumanAttention ? "" : " is-active"}`}
-            onClick={() => setOnlyHumanAttention(false)}
+            aria-pressed={activeView !== "handoff"}
+            className={`attention-filter-button${activeView !== "handoff" ? " is-active" : ""}`}
+            onClick={() => setActiveView("all")}
             type="button"
           >
             Conversas
           </button>
           <button
             aria-label={`Próxima ação: ${humanAttentionCount} conversas com humano necessário`}
-            aria-pressed={onlyHumanAttention}
-            className={`attention-filter-button attention-filter-button--human${onlyHumanAttention ? " is-active" : ""}`}
-            onClick={() => {
-              setSelectedQueueFilter("active");
-              setOnlyHumanAttention(true);
-            }}
+            aria-pressed={activeView === "handoff"}
+            className={`attention-filter-button attention-filter-button--human${activeView === "handoff" ? " is-active" : ""}`}
+            onClick={() => setActiveView("handoff")}
             type="button"
           >
             <TriangleAlert size={14} aria-hidden="true" />
@@ -1467,6 +1487,10 @@ function InboxPageContent() {
 
         {isLoading ? <p className="list-note">Carregando conversas...</p> : null}
         {error ? <p className="error-note">{error}</p> : null}
+        {dismissUndo ? <div className="inbox-undo-toast" role="status">
+          Indicação dispensada.
+          <button type="button" onClick={() => void handleUndoDismiss()}>Desfazer</button>
+        </div> : null}
 
         <div className="conversation-items" onScroll={(event) => {
           const list = event.currentTarget;
@@ -1476,7 +1500,7 @@ function InboxPageContent() {
         }}>
           {!isLoading && !hasMoreConversations && visibleConversations.length === 0 ? (
             <p className="list-note">
-              {onlyHumanAttention
+              {activeView === "handoff"
                 ? "Nenhuma conversa aguardando ação humana neste canal."
                 : "Nenhuma conversa encontrada para este canal."}
             </p>
@@ -1492,24 +1516,31 @@ function InboxPageContent() {
               `Abrir conversa com ${contactDisplayName(conversation)}`,
               controlBadge?.label
             ].filter(Boolean).join(". ");
+            const showSemanticDismiss = activeView === "reply" && !conversationNeedsHuman &&
+              (conversation.replyTriageDecision === "needs_reply" || conversation.replyTriageDecision === "uncertain") &&
+              Boolean(conversation.replyTriageAnchorMessageId) && !conversation.replyDismissed;
 
             return (
-            <button
-              aria-label={conversationAriaLabel}
+            <div
               className={[
                 "conversation-card",
                 conversation.id === selectedConversationId ? "is-selected" : "",
                 showHumanAttention ? "needs-human-attention" : ""
               ].filter(Boolean).join(" ")}
               key={conversation.id}
-              onClick={() => {
-                setSelectedConversationId(conversation.id);
-                if (conversationNeedsHuman) {
-                  setAcknowledgedHandoffIds((current) => new Set(current).add(conversation.id));
-                }
-              }}
-              type="button"
             >
+              <button
+                type="button"
+                className="conversation-card-main"
+                aria-label={conversationAriaLabel}
+                onClick={() => {
+                  setSelectedConversationId(conversation.id);
+                  setSelectedConversationSnapshot(conversation);
+                  if (conversationNeedsHuman) {
+                    setAcknowledgedHandoffIds((current) => new Set(current).add(conversation.id));
+                  }
+                }}
+              >
               <div className="conv-avatar-wrap">
                 <ContactAvatar conversationId={conversation.id} name={conversation.contactName} className="conversation-avatar" />
                 {controlBadge ? (
@@ -1534,6 +1565,9 @@ function InboxPageContent() {
                     {conversationNeedsHuman ? (
                       <span className="conv-human-tag">Humano necessário</span>
                     ) : null}
+                    {activeView === "reply" && conversation.replyTriageDecision === "uncertain" && !conversationNeedsHuman ? (
+                      <span className="conv-review-tag">Revisar</span>
+                    ) : null}
                   </span>
                   <span className="conv-meta-right">
                     <time className="conv-time">{formatTime(conversation.lastMessageAt)}</time>
@@ -1555,7 +1589,27 @@ function InboxPageContent() {
                   {conversation.lastMessagePreview ?? "Conversa iniciada."}
                 </span>
               </span>
-            </button>
+              </button>
+              <div className="conversation-card-actions">
+                <button
+                  type="button"
+                  className={`conversation-card-icon${conversation.manualMarked ? " is-marked" : ""}`}
+                  aria-label={conversation.manualMarked ? "Remover marcação" : "Marcar para cuidar depois"}
+                  aria-pressed={Boolean(conversation.manualMarked)}
+                  title={conversation.manualMarked ? "Remover marcação" : "Marcar para cuidar depois"}
+                  disabled={actionBusyConversationId === conversation.id}
+                  onClick={() => void handleManualMark(conversation)}
+                ><Bookmark size={17} fill={conversation.manualMarked ? "currentColor" : "none"} aria-hidden="true" /></button>
+                {showSemanticDismiss ? <button
+                  type="button"
+                  className="conversation-card-icon"
+                  aria-label="Não precisa responder"
+                  title="Não precisa responder"
+                  disabled={actionBusyConversationId === conversation.id}
+                  onClick={() => void handleDismissReply(conversation)}
+                ><MessageCircleX size={17} aria-hidden="true" /></button> : null}
+              </div>
+            </div>
             );
           })}
           {loadMoreError ? <p className="error-note">{loadMoreError}</p> : null}

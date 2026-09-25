@@ -61,6 +61,7 @@ export function createInboxTriageScheduler(input: {
   let timer: NodeJS.Timeout | null = null;
   let activePoll: Promise<void> | null = null;
   let fullScanCursor: string | null = null;
+  let nextFullScanAt: Date | null = null;
 
   function report(error: unknown, conversationId?: string) {
     try { input.onError?.(error, conversationId); } catch { /* logging cannot stop polling */ }
@@ -188,14 +189,17 @@ export function createInboxTriageScheduler(input: {
       const divider = key.indexOf(":");
       await reconcileConversation(key.slice(0, divider), key.slice(divider + 1), now);
     }
-    const page = await input.prisma.conversation.findMany({
-      select: { id: true, workspaceId: true }, orderBy: { id: "asc" }, take: 50,
-      ...(fullScanCursor ? { cursor: { id: fullScanCursor }, skip: 1 } : {})
-    });
-    for (const conversation of page) {
-      await reconcileConversation(conversation.workspaceId, conversation.id, now);
+    if (fullScanCursor !== null || nextFullScanAt === null || now >= nextFullScanAt) {
+      const page = await input.prisma.conversation.findMany({
+        select: { id: true, workspaceId: true }, orderBy: { id: "asc" }, take: 50,
+        ...(fullScanCursor ? { cursor: { id: fullScanCursor }, skip: 1 } : {})
+      });
+      for (const conversation of page) {
+        await reconcileConversation(conversation.workspaceId, conversation.id, now);
+      }
+      fullScanCursor = page.length === 50 ? page.at(-1)!.id : null;
+      if (!fullScanCursor) nextFullScanAt = new Date(now.getTime() + 10 * 60_000);
     }
-    fullScanCursor = page.length === 50 ? page.at(-1)!.id : null;
   }
 
   async function execute(now: Date, shouldReconcile: boolean) {

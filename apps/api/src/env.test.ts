@@ -50,7 +50,7 @@ describe("readEnv", () => {
   });
 
   it("selects the inbox triage model from a validated setting", () => {
-    expect(readEnv(baseProductionEnv).INBOX_TRIAGE_PRIMARY).toBe("luna");
+    expect(readEnv(baseProductionEnv).INBOX_TRIAGE_PRIMARY).toBe("jev");
     expect(readEnv(baseProductionEnv).INBOX_TRIAGE_ENABLED).toBe(false);
     expect(readEnv({ ...baseProductionEnv, INBOX_TRIAGE_PRIMARY: "jev" }).INBOX_TRIAGE_PRIMARY).toBe("jev");
     expect(readEnv({ ...baseProductionEnv, INBOX_TRIAGE_ENABLED: "true" }).INBOX_TRIAGE_ENABLED).toBe(true);

@@ -32,6 +32,10 @@ describe("inbox triage classifier", () => {
     await expect(classifier.assess({ ...input, anchorMessageId: "m1" })).rejects.toThrow("STALE_TRIAGE_ANCHOR");
     expect(await classifier.assess({ ...input, messages: [messages[0], { ...messages[1], type: "file", body: null }] }))
       .toMatchObject({ decision: "uncertain", model: "content_guard" });
+    for (const [type, body] of [["audio", "Áudio recebido"], ["image", "Imagem recebida"], ["file", "Comprovante.pdf"]]) {
+      expect(await classifier.assess({ ...input, messages: [messages[0], { ...messages[1], type, body }] }))
+        .toMatchObject({ decision: "uncertain", model: "content_guard" });
+    }
     expect(luna.assess).not.toHaveBeenCalled();
   });
 
@@ -47,5 +51,17 @@ describe("inbox triage classifier", () => {
       expect.objectContaining({ id: "m2", author: "cliente" })
     ]));
     expect(result).toMatchObject({ decision: "needs_reply", model: "jev-latest", anchorMessageId: "m2" });
+  });
+
+  it("does not present an unreadable earlier attachment to JEV as if it were its content", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ answers: {
+      decision: { type: "choice", choice: "needs_reply" },
+      reason: { type: "choice", choice: "customer_request" }
+    } }) });
+    await createJevInboxTriage({ apiKey: "test", fetchImpl }).assess({
+      ...input, messages: [{ ...messages[0], type: "audio", body: "Áudio recebido" }, messages[1]]
+    });
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.state.messages[0].body).toBe("conteúdo indisponível");
   });
 });

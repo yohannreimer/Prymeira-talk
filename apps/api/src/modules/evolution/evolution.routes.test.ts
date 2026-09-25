@@ -810,9 +810,11 @@ describe("Evolution webhook routes", () => {
     const control = vi.fn().mockResolvedValue(undefined);
     const assistantMessage = vi.fn().mockResolvedValue(undefined);
     const observeConversationActivity = vi.fn().mockResolvedValue({ status: "scheduled" });
+    const observeMessage = vi.fn().mockResolvedValue(undefined);
     const { app, publish } = await buildEvolutionApp(prisma, undefined, {
       assistantScheduler: { control, message: assistantMessage, persistInbound: vi.fn().mockResolvedValue(undefined) } as never,
-      followupService: { observeConversationActivity }
+      followupService: { observeConversationActivity },
+      inboxTriage: { observeMessage }
     });
 
     try {
@@ -853,6 +855,9 @@ describe("Evolution webhook routes", () => {
         direction: "outbound",
         source: "human"
       });
+      expect(observeMessage).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: "workspace_a", conversationId: "conv_1", messageId: "msg_1", direction: "outbound"
+      }));
       expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.updated" }));
     } finally {
       await app.close();
@@ -1446,8 +1451,10 @@ describe("Evolution webhook routes", () => {
 
   it("ingests a new inbound text event and publishes a workspace-consistent message", async () => {
     const observeConversationActivity = vi.fn().mockResolvedValue({ status: "cancelled" });
+    const observeMessage = vi.fn().mockResolvedValue(undefined);
     const { app, prisma, publish } = await buildEvolutionApp(undefined, undefined, {
-      followupService: { observeConversationActivity }
+      followupService: { observeConversationActivity },
+      inboxTriage: { observeMessage }
     });
 
     try {
@@ -1467,6 +1474,9 @@ describe("Evolution webhook routes", () => {
         direction: "inbound",
         source: "customer"
       });
+      expect(observeMessage).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: "workspace_a", conversationId: "conv_1", messageId: "msg_1", direction: "inbound"
+      }));
       expect(prisma.contact.findFirst).toHaveBeenCalledWith({
         where: {
           workspaceId: "workspace_a",

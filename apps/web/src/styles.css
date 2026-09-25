@@ -6394,7 +6394,70 @@ select:disabled {
   color: #ae2929;
 }
 
-.conversation-list :is(.queue-filter-chip, .channel-filter-chip, .attention-filter-button):focus-visible {
+.inbox-quick-filters {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 0 12px 4px;
+}
+
+.inbox-quick-filters button,
+.conversation-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.inbox-quick-filters button:hover,
+.conversation-card-icon:hover {
+  background: var(--color-brand-50);
+  color: var(--color-brand-700);
+}
+
+.inbox-quick-filters button.is-active {
+  border-color: rgba(36, 86, 74, 0.25);
+  background: #e0eee7;
+  color: var(--color-brand-700);
+}
+
+.conversation-card-icon.is-marked {
+  color: #c82d35;
+}
+
+.conversation-card-icon:disabled { opacity: .5; cursor: wait; }
+
+.inbox-undo-toast {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 12px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: #e7f2ec;
+  color: var(--color-brand-700);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.inbox-undo-toast button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 800;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.conversation-list :is(.queue-filter-chip, .channel-filter-chip, .attention-filter-button, .inbox-quick-filters button, .conversation-card-main, .conversation-card-icon, .inbox-undo-toast button):focus-visible {
   outline: 2px solid var(--color-brand-600);
   outline-offset: -2px;
 }
@@ -6435,9 +6498,9 @@ select:disabled {
   position: relative;
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 0;
   width: 100%;
-  padding: 11px 12px;
+  padding: 0;
   border: 0;
   border-radius: var(--radius-lg);
   background: var(--color-surface-card);
@@ -6448,6 +6511,43 @@ select:disabled {
     box-shadow var(--transition-fast),
     background var(--transition-fast),
     transform var(--transition-fast);
+}
+
+.conversation-card-main {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: 11px 4px 11px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.conversation-card-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 5px 4px 0;
+}
+
+.conv-review-tag {
+  border-radius: var(--radius-full);
+  background: #fff0d8;
+  color: #80541d;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+@media (pointer: coarse) {
+  .inbox-quick-filters button,
+  .conversation-card-icon { width: 44px; height: 44px; }
 }
 
 .conversation-card:hover {

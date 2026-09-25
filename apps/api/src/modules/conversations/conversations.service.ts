@@ -5,6 +5,7 @@ import type {
   ContactBoardMembershipDto,
   ContactBoardMoveSource,
   ConversationDto,
+  InboxView,
   MessageDto
 } from "@prymeira-talk/shared";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
@@ -132,6 +133,29 @@ export interface ConversationRecord {
     tag: TagRecord;
   }>;
 }
+
+export const inboxHandoffWhere: Prisma.ConversationWhereInput = {
+  status: { not: "closed" },
+  OR: [
+    { activeAgentSession: { is: { status: "handoff_requested", handoffActionCompletedAt: null } } },
+    {
+      aiControlStatus: "human_controlled",
+      activeAgentSession: { is: {
+        handoffReason: { notIn: [""] }, handoffActionCompletedAt: null
+      } }
+    }
+  ]
+};
+
+const inboxSemanticReplyWhere: Prisma.ConversationWhereInput = {
+  status: { not: "closed" },
+  aiControlStatus: "human_controlled",
+  inboxTriage: { is: {
+    decision: { in: ["needs_reply", "uncertain"] },
+    dismissedMessageId: null,
+    anchorMessageId: { not: null }
+  } }
+};
 
 const conversationDtoInclude = {
   assignedUser: { select: { displayName: true } },
@@ -467,12 +491,14 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
     handoffActionCompletedAt: record.activeAgentSession?.handoffActionCompletedAt
       ? toIsoString(record.activeAgentSession.handoffActionCompletedAt)
       : null,
-    manualMarked: Boolean(record.inboxTriage?.manualMarkedAt),
-    replyTriageDecision: record.inboxTriage?.decision ?? null,
-    replyTriageReason: record.inboxTriage?.reason ?? null,
-    replyTriageAnchorMessageId: record.inboxTriage?.anchorMessageId ?? null,
-    replyDismissed: Boolean(record.inboxTriage?.anchorMessageId &&
-      record.inboxTriage.dismissedMessageId === record.inboxTriage.anchorMessageId)
+    ...(record.inboxTriage !== undefined ? {
+      manualMarked: Boolean(record.inboxTriage?.manualMarkedAt),
+      replyTriageDecision: record.inboxTriage?.decision ?? null,
+      replyTriageReason: record.inboxTriage?.reason ?? null,
+      replyTriageAnchorMessageId: record.inboxTriage?.anchorMessageId ?? null,
+      replyDismissed: Boolean(record.inboxTriage?.anchorMessageId &&
+        record.inboxTriage.dismissedMessageId === record.inboxTriage.anchorMessageId)
+    } : {})
   };
 }
 
@@ -578,16 +604,24 @@ export function createConversationsService(
     status?: ConversationListStatus;
     assignedUserId?: string | null;
     channelId?: string;
-  }) {
+    view?: InboxView;
+  }): Prisma.ConversationWhereInput {
     const assigneeWhere = input.assignedUserId ? { assignedUserId: input.assignedUserId } : {};
     const channelWhere = input.channelId ? { channelId: input.channelId } : {};
-
+    const viewWhere: Prisma.ConversationWhereInput = input.view === "unread"
+      ? { unreadCount: { gt: 0 }, OR: [inboxHandoffWhere, { aiControlStatus: "human_controlled" }] }
+      : input.view === "marked"
+        ? { inboxTriage: { is: { manualMarkedAt: { not: null } } } }
+        : input.view === "reply"
+          ? { OR: [inboxHandoffWhere, inboxSemanticReplyWhere] }
+          : input.view === "handoff" ? inboxHandoffWhere : {};
     if (input.status === "closed") {
       return {
         workspaceId: input.workspaceId,
         status: "closed" as const,
         ...assigneeWhere,
-        ...channelWhere
+        ...channelWhere,
+        ...viewWhere
       };
     }
 
@@ -595,7 +629,8 @@ export function createConversationsService(
       return {
         workspaceId: input.workspaceId,
         ...assigneeWhere,
-        ...channelWhere
+        ...channelWhere,
+        ...viewWhere
       };
     }
 
@@ -603,7 +638,8 @@ export function createConversationsService(
       workspaceId: input.workspaceId,
       status: { in: activeConversationStatuses },
       ...assigneeWhere,
-      ...channelWhere
+      ...channelWhere,
+      ...viewWhere
     };
   }
 
@@ -726,6 +762,7 @@ export function createConversationsService(
       assignedUserId?: string | null;
       channelId?: string;
       cursor?: string;
+      view?: InboxView;
     }): Promise<ConversationDto[]> {
       const conversations = await prisma.conversation.findMany({
         where: conversationListWhere(input),

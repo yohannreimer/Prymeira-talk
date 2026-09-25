@@ -42,6 +42,21 @@ describe("buildRealtimeUrl", () => {
   });
 });
 
+describe("inbox triage API", () => {
+  it("requests the selected server view, channel and cursor before pagination", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const fetchMock = vi.fn().mockResolvedValue(new Response("[]", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+    const { apiGetConversations } = await import("./api");
+    await apiGetConversations(async () => null, { status: "all", view: "reply", channelId: "channel_1", cursor: "older_1" });
+    const url = new URL(fetchMock.mock.calls[0][0]);
+    expect(url.searchParams.get("view")).toBe("reply");
+    expect(url.searchParams.get("channelId")).toBe("channel_1");
+    expect(url.searchParams.get("cursor")).toBe("older_1");
+  });
+});
+
 describe("readApiErrorMessage", () => {
   it("uses structured API error bodies before falling back to HTTP status", async () => {
     const { readApiErrorMessage } = await import("./api");
