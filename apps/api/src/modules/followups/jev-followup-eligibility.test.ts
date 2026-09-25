@@ -24,6 +24,29 @@ describe("JEV follow-up eligibility", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("does not pursue a customer when the seller said they would separate the goods", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response("schedule", "customer_answer_pending"));
+    const eligibility = createJevFollowupEligibility({ apiKey: "test", fetchImpl });
+    const messages = [conversationMessages[0]!, { ...conversationMessages[1]!, body: "Certo, vou deixar separado aqui." }];
+
+    await expect(eligibility.evaluate({ workspaceId: "workspace_1", kind: "human_commercial", anchorMessageId, conversationMessages: messages }))
+      .resolves.toEqual({ eligibility: "skip", reason: "seller_action_pending" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not treat outbound-only prospecting as a conversation that cooled", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response("schedule", "customer_answer_pending"));
+    const eligibility = createJevFollowupEligibility({ apiKey: "test", fetchImpl });
+    const messages = [
+      { ...conversationMessages[1]!, id: "greeting", body: "Boa tarde, amigo tudo certo?" },
+      { ...conversationMessages[1]!, body: "Precisando de algum material essa semana?" }
+    ];
+
+    await expect(eligibility.evaluate({ workspaceId: "workspace_1", kind: "human_commercial", anchorMessageId, conversationMessages: messages }))
+      .resolves.toEqual({ eligibility: "skip", reason: "resolved_or_unclear" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("requires an explicit customer pendency in the classification instructions", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response("skip", "resolved_or_unclear"));
     const eligibility = createJevFollowupEligibility({ apiKey: "test", fetchImpl });

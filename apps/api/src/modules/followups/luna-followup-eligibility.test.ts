@@ -36,10 +36,24 @@ describe("GPT-6 Luna follow-up eligibility", () => {
     const eligibility = createLunaFollowupEligibility({ prisma, fetchImpl });
     await expect(eligibility.evaluate({
       workspaceId: "workspace", kind: "human_commercial", anchorMessageId: "anchor",
-      conversationMessages: [{ ...messages[1]!, body: "O vendedor responsável irá entrar em contato." }]
+      conversationMessages: [messages[0]!, { ...messages[1]!, body: "O vendedor responsável irá entrar em contato." }]
     })).resolves.toEqual({ eligibility: "skip", reason: "seller_action_pending" });
     expect(fetchImpl).not.toHaveBeenCalled();
     await expect(eligibility.evaluate({ workspaceId: "workspace", kind: "human_commercial", anchorMessageId: "anchor", conversationMessages: messages }))
       .resolves.toEqual({ eligibility: "skip", reason: "resolved_or_unclear" });
+  });
+
+  it("screens first-person seller commitments and outbound-only messages before calling Luna", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(completion({ eligibility: "schedule", reason: "customer_answer_pending" }));
+    const eligibility = createLunaFollowupEligibility({ prisma, fetchImpl });
+    await expect(eligibility.evaluate({
+      workspaceId: "workspace", kind: "human_commercial", anchorMessageId: "anchor",
+      conversationMessages: [messages[0]!, { ...messages[1]!, body: "Certo, vou deixar separado aqui." }]
+    })).resolves.toEqual({ eligibility: "skip", reason: "seller_action_pending" });
+    await expect(eligibility.evaluate({
+      workspaceId: "workspace", kind: "human_commercial", anchorMessageId: "anchor",
+      conversationMessages: [{ ...messages[1]!, body: "Precisando de algum material essa semana?" }]
+    })).resolves.toEqual({ eligibility: "skip", reason: "resolved_or_unclear" });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
