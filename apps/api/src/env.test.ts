@@ -49,6 +49,12 @@ describe("readEnv", () => {
     });
   });
 
+  it("selects the inbox triage model from a validated setting", () => {
+    expect(readEnv(baseProductionEnv).INBOX_TRIAGE_PRIMARY).toBe("luna");
+    expect(readEnv({ ...baseProductionEnv, INBOX_TRIAGE_PRIMARY: "jev" }).INBOX_TRIAGE_PRIMARY).toBe("jev");
+    expect(() => readEnv({ ...baseProductionEnv, INBOX_TRIAGE_PRIMARY: "unknown" })).toThrow(/INBOX_TRIAGE_PRIMARY/);
+  });
+
   it("loads the conservative Leads defaults without source services", () => {
     const env = readEnv(baseProductionEnv);
 

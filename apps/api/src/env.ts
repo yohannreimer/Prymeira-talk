@@ -56,6 +56,7 @@ export const envSchema = z
     EVOLUTION_WEBHOOK_SECRET: z.string().min(1),
     JEV_API_KEY: optionalNonEmptyString,
     JEV_MODEL: z.string().min(1).default("jev-latest"),
+    INBOX_TRIAGE_PRIMARY: z.enum(["luna", "jev"]).default("luna"),
     TALK_UPLOAD_DIR: z.string().min(1).default("storage/uploads"),
     VINCULA_CRM_API_URL: optionalUrl,
     CNPJ_DATABASE_URL: optionalUrlWithProtocols(["postgres:", "postgresql:"]),
