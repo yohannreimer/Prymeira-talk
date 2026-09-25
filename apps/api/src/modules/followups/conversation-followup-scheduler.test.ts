@@ -16,6 +16,29 @@ function buildPrisma(followups: Array<{ id: string; workspaceId: string }> = [])
 }
 
 describe("createConversationFollowupScheduler", () => {
+  it("screens candidates in the background after processing due sends", async () => {
+    const due = { id: ids.first, workspaceId: ids.workspace };
+    const candidate = { id: ids.second, workspaceId: ids.workspace };
+    const prisma = {
+      conversationFollowup: {
+        findMany: vi.fn().mockImplementation(async (args: any) =>
+          args.where.status === "scheduled" ? [due] : [candidate])
+      }
+    };
+    const calls: string[] = [];
+    const scheduler = createConversationFollowupScheduler({
+      prisma,
+      runtime: { runFollowup: vi.fn().mockImplementation(async () => { calls.push("send"); return { status: "sent" }; }) },
+      evaluator: { evaluateCandidate: vi.fn().mockImplementation(async () => { calls.push("evaluate"); return { status: "skipped" }; }) }
+    });
+
+    await expect(scheduler.processDueFollowups()).resolves.toEqual([
+      { id: ids.first, status: "sent" },
+      { id: ids.second, status: "skipped" }
+    ]);
+    expect(calls).toEqual(["send", "evaluate"]);
+  });
+
   it("reconciles stale processing leases before polling and never dispatches them", async () => {
     const prisma = buildPrisma([]);
     const reconcileStaleProcessingFollowups = vi.fn().mockResolvedValue({ reconciled: 2 });
@@ -30,6 +53,27 @@ describe("createConversationFollowupScheduler", () => {
     await expect(scheduler.processDueFollowups({ now })).resolves.toEqual([]);
     expect(reconcileStaleProcessingFollowups).toHaveBeenCalledWith({ now });
     expect(runFollowup).not.toHaveBeenCalled();
+  });
+
+  it("screens separate candidates concurrently while keeping one active poll", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const prisma = buildPrisma([
+      { id: ids.first, workspaceId: ids.workspace },
+      { id: ids.second, workspaceId: ids.workspace }
+    ]);
+    const evaluateCandidate = vi.fn().mockImplementation(async () => {
+      await gate;
+      return { status: "scheduled" };
+    });
+    const scheduler = createConversationFollowupScheduler({ prisma, evaluator: { evaluateCandidate } });
+    const poll = scheduler.processDueFollowups();
+    await vi.waitFor(() => expect(evaluateCandidate).toHaveBeenCalledTimes(2));
+    await expect(scheduler.processDueFollowups()).resolves.toEqual([]);
+    release?.();
+    await expect(poll).resolves.toEqual([
+      { id: ids.first, status: "scheduled" }, { id: ids.second, status: "scheduled" }
+    ]);
   });
 
   it("selects due scheduled follow-ups in a bounded, stable order and runs each one", async () => {

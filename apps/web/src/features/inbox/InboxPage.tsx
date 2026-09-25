@@ -108,13 +108,13 @@ function handoffAnalysisFeedback(analysis: ConversationActionResultDto["improvem
   if (analysis?.created) return "A resposta gerou um aprimoramento pendente de revisão em Agentes.";
   switch (analysis?.reason) {
     case "already_observed": return "Essa resposta já foi analisada. Confira os aprimoramentos em Agentes.";
-    case "analysis_failed": return "A próxima ação foi concluída, mas a análise falhou. Tente analisar novamente.";
+    case "analysis_failed": return "A análise falhou. Tente analisar novamente.";
     case "analysis_unavailable":
-    case "detector_unavailable": return "A próxima ação foi concluída, mas a análise está indisponível.";
-    case "no_human_reply_since_handoff": return "Ação concluída. Ainda não há resposta humana depois do repasse.";
-    case "no_handoff_run": return "Ação concluída. Não foi possível localizar o repasse original para analisar a resposta.";
-    case "no_customer_request": return "Ação concluída. Falta o pedido do cliente no histórico para propor um aprimoramento.";
-    default: return "Ação concluída. A resposta não gerou um aprimoramento reutilizável.";
+    case "detector_unavailable": return "A análise está indisponível.";
+    case "no_human_reply": return "Ainda não há resposta humana para analisar nesta conversa.";
+    case "no_handoff_run": return "Não foi possível localizar o repasse original para analisar a resposta.";
+    case "no_customer_request": return "Falta o pedido do cliente no histórico para propor um aprimoramento.";
+    default: return "As respostas analisadas não geraram um aprimoramento reutilizável.";
   }
 }
 

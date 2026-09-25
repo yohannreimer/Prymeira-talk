@@ -8,6 +8,7 @@ export type AgentImprovementScope =
   | "broader_catalog_scope";
 
 export type AgentImprovementDetectorInput = {
+  workspaceId: string;
   customerMessage: string;
   humanReply: string;
   conversationMessages: Array<{
@@ -18,8 +19,8 @@ export type AgentImprovementDetectorInput = {
 };
 
 export type AgentImprovementAssessment =
-  | { outcome: "ignore"; reason: string }
-  | { outcome: "suggest"; kind: AgentImprovementKind; confidence: number };
+  | { outcome: "ignore"; reason: string; provider?: string }
+  | { outcome: "suggest"; kind: AgentImprovementKind; confidence: number; provider?: string };
 
 export type AgentImprovementDetector = {
   assess(input: AgentImprovementDetectorInput): Promise<AgentImprovementAssessment>;

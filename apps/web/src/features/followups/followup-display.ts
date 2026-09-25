@@ -16,6 +16,7 @@ const reasonLabels: Record<string, string> = {
   customer_replied: "O cliente respondeu antes do acompanhamento.",
   outbound_replaced: "A equipe retomou a conversa por outro caminho.",
   conversation_closed: "A conversa foi encerrada.",
+  channel_paused: "Os follow-ups deste número foram pausados.",
   handoff_active: "O atendimento passou para uma pessoa da equipe.",
   manual_cancelled: "Cancelado pela equipe.",
   not_interested: "O cliente informou que não tem interesse.",
@@ -26,7 +27,7 @@ const reasonLabels: Record<string, string> = {
   manual_postponed: "Adiado pela equipe.",
   manual_delivery_uncertain: "O provedor pode ter recebido a mensagem; o reenvio foi bloqueado por segurança.",
   delivery_completion_failed: "A entrega foi confirmada, mas houve falha ao concluir o registro.",
-  max_steps_reached: "A sequência de três acompanhamentos foi concluída.",
+  max_steps_reached: "A sequência de acompanhamentos configurada foi concluída.",
   followup_not_needed: "O contexto não pede um novo contato.",
   jev_skip: "A análise indicou que não é necessário acompanhar agora.",
   jev_human_review: "A análise indicou revisão humana antes do contato.",
@@ -50,6 +51,7 @@ export function followupKindLabel(kind: ConversationFollowupKind) {
 }
 export function followupStatusLabel(status: ConversationFollowupStatus) {
   const labels: Record<ConversationFollowupStatus, string> = {
+    evaluating: "Em análise",
     scheduled: "Agendado",
     processing: "Processando",
     review: "Para revisar",
@@ -67,7 +69,7 @@ export function followupPurposeLabel(followup: ConversationFollowupDto) {
     missing_qualification: "Completar dados da qualificação",
     proposal_checkin: "Retomar proposta enviada",
     objection_help: "Ajudar com uma objeção",
-    confirm_active: "Confirmar se o atendimento continua ativo"
+    confirm_active: "Retomar próximo passo do cliente"
   } as const;
 
   if (!followup.purpose || followup.purpose === "none") return "Continuidade da conversa";
@@ -75,7 +77,7 @@ export function followupPurposeLabel(followup: ConversationFollowupDto) {
 }
 
 export function followupStepLabel(stepIndex: number) {
-  return `Etapa ${Math.min(3, Math.max(1, stepIndex))} de 3`;
+  return `Etapa ${Math.max(1, stepIndex)}`;
 }
 
 export function followupReasonLabel(
@@ -128,6 +130,9 @@ export function matchesFollowupFilter(
   followup: ConversationFollowupDto,
   filter: FollowupListStatus
 ) {
-  if (filter === "cancelled") return terminalCancelledStatuses.has(followup.status);
+  if (filter === "cancelled") {
+    return terminalCancelledStatuses.has(followup.status) &&
+      !("reason" in followup && followup.reason.startsWith("eligibility_"));
+  }
   return followup.status === filter;
 }

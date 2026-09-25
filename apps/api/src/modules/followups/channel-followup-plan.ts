@@ -3,6 +3,7 @@ import { resolveEffectiveFollowupConfig } from "../agents/effective-followup-con
 import { addBusinessMinutes, nextBusinessStart } from "./business-time.js";
 
 export const DEFAULT_CHANNEL_FOLLOWUP_CONFIG: ChannelFollowupConfig = {
+  enabled: true,
   timeZone: "America/Sao_Paulo",
   businessDays: [1, 2, 3, 4, 5],
   businessHours: { start: "08:00", end: "18:00" },
@@ -17,6 +18,7 @@ export function resolveFollowupPlan(agentBehavior: unknown, channelConfig: unkno
   const agent = resolveEffectiveFollowupConfig(agentBehavior);
   const channel = channelFollowupConfigSchema.safeParse(channelConfig);
   if (channel.success) {
+    if (!channel.data.enabled) return null;
     return {
       ...channel.data,
       mode: "elapsed_between_steps" as const,

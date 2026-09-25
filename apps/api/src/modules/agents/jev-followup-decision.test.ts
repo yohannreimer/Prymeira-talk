@@ -150,6 +150,23 @@ describe("createJevFollowupDecision", () => {
     });
   });
 
+  it("accepts the configured channel agent for an opted-in human commercial follow-up without a session", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
+      purpose: "confirm_active", route: "automatic_send", stage: "seller_owned", risk: "none"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+    await expect(decision.decide({
+      ...baseInput,
+      followupKind: "human_commercial",
+      aiControlStatus: "human_controlled",
+      hasCompatibleActiveAgentSession: false,
+      hasConfiguredHumanAgent: true,
+      allowHumanAutomatic: true
+    })).resolves.toMatchObject({ route: "automatic_send" });
+    const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(request.state.hasConfiguredHumanAgent).toBe(true);
+  });
+
   it("does not classify asking for an explicitly missing technical field as commercial risk", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       decisionResponse({ route: "automatic_send" })

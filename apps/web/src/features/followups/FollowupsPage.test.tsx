@@ -158,7 +158,7 @@ describe("FollowupsPage", () => {
     expect(container.textContent).toContain("Vou verificar a proposta e retorno.");
     expect(container.textContent).toContain("Retomar proposta enviada");
     expect(container.textContent).toContain("A análise indicou revisão humana");
-    expect(container.textContent).toContain("Etapa 1 de 3");
+    expect(container.textContent).toContain("Etapa 1");
     expect(mocks.getConversations).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Para revisar");
     expect(buttonByText(container, "Para revisar")?.getAttribute("aria-pressed")).toBe("true");

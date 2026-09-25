@@ -104,10 +104,16 @@ function matches(value: unknown, where: Record<string, unknown>): boolean {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
   return Object.entries(where).every(([key, expected]) => {
+    if (key === "NOT") return !matches(record, expected as Record<string, unknown>);
+    if (key === "conversation" && expected && typeof expected === "object") {
+      const filter = expected as { is?: { channelId?: string } };
+      return record.conversationId === ids.conversation && filter.is?.channelId === ids.channel;
+    }
     const actual = record[key];
     if (expected && typeof expected === "object" && !(expected instanceof Date)) {
-      const condition = expected as { in?: unknown[] };
+      const condition = expected as { in?: unknown[]; startsWith?: string };
       if (condition.in) return condition.in.includes(actual);
+      if (condition.startsWith) return typeof actual === "string" && actual.startsWith(condition.startsWith);
     }
     if (expected instanceof Date) {
       return actual instanceof Date && actual.getTime() === expected.getTime();
@@ -322,6 +328,31 @@ describe("conversation follow-up review routes", () => {
     }
   });
 
+  it("pauses a number without deleting its cadence and cancels queued follow-ups", async () => {
+    const pending = followup({ status: "scheduled", activeKey: "active" });
+    const { app, db } = await buildRouteApp({ records: [pending] });
+    try {
+      const paused = await app.inject({
+        method: "PUT", url: `/followups/config/${ids.channel}`,
+        payload: { ...DEFAULT_CHANNEL_FOLLOWUP_CONFIG, enabled: false }
+      });
+      expect(paused.statusCode).toBe(200);
+      expect(paused.json().config.enabled).toBe(false);
+      expect(paused.json().config.steps).toEqual(DEFAULT_CHANNEL_FOLLOWUP_CONFIG.steps);
+      expect(pending).toMatchObject({ status: "cancelled", activeKey: null, reason: "channel_paused" });
+
+      const resumed = await app.inject({
+        method: "PUT", url: `/followups/config/${ids.channel}`,
+        payload: { ...DEFAULT_CHANNEL_FOLLOWUP_CONFIG, enabled: true }
+      });
+      expect(resumed.statusCode).toBe(200);
+      expect(pending.status).toBe("cancelled");
+      expect(db.channelRecord.followupConfig).toMatchObject({ enabled: true });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("keeps a reviewed draft unsent when the number is outside its service hours", async () => {
     const { app, db, outbound } = await buildRouteApp();
     db.channelRecord.followupConfig = DEFAULT_CHANNEL_FOLLOWUP_CONFIG;
@@ -408,10 +439,11 @@ describe("conversation follow-up review routes", () => {
     }
   });
 
-  it("lists all terminal failures in the cancelled tab with a bounded query", async () => {
+  it("lists operational failures while hiding candidates rejected during screening", async () => {
     const { app, db } = await buildRouteApp({ records: [
       followup({ id: ids.followup, status: "failed", activeKey: null, reason: "private_provider_failure" }),
-      followup({ id: ids.followupB, status: "skipped", activeKey: null, reason: "private_decision" })
+      followup({ id: ids.followupB, status: "skipped", activeKey: null, reason: "private_decision" }),
+      followup({ id: "screened_out", status: "skipped", activeKey: null, reason: "eligibility_seller_action_pending" })
     ] });
     try {
       const response = await app.inject("/followups?status=cancelled");
@@ -419,7 +451,11 @@ describe("conversation follow-up review routes", () => {
       expect(response.json().map((item: { status: string }) => item.status)).toEqual(["failed", "skipped"]);
       expect(response.body).not.toContain("private_provider_failure");
       expect(db.conversationFollowup.findMany).toHaveBeenCalledWith(expect.objectContaining({
-        where: { workspaceId: ids.workspaceA, status: { in: ["cancelled", "failed", "skipped", "expired"] } },
+        where: {
+          workspaceId: ids.workspaceA,
+          status: { in: ["cancelled", "failed", "skipped", "expired"] },
+          NOT: { reason: { startsWith: "eligibility_" } }
+        },
         orderBy: [{ updatedAt: "desc" }],
         take: 100
       }));

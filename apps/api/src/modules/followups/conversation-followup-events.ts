@@ -157,6 +157,8 @@ export function toConversationFollowupDto(
   };
 
   switch (record.status) {
+    case "evaluating":
+      return conversationFollowupSchema.parse({ ...base, status: "evaluating" });
     case "sent":
       return conversationFollowupSchema.parse({
         ...base,
@@ -233,9 +235,15 @@ function safeReason(
     "outbound_replaced",
     "conversation_missing",
     "conversation_closed",
+    "channel_paused",
     "human_controlled",
     "session_context_changed",
-    "delivery_completion_failed"
+    "delivery_completion_failed",
+    "eligibility_customer_answer_pending",
+    "eligibility_proposal_response_pending",
+    "eligibility_seller_action_pending",
+    "eligibility_resolved_or_unclear",
+    "eligibility_unavailable"
   ]);
   if (reason && allowed.has(reason)) return reason;
   return status === "failed" ? "delivery_failed" : "system_cancelled";

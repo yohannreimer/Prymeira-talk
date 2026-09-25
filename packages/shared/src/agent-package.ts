@@ -55,6 +55,7 @@ export const agentFollowupConfigSchema = z.object({
 });
 
 export const channelFollowupConfigSchema = z.object({
+  enabled: z.boolean().default(true),
   timeZone: z.string().trim().min(1).max(80),
   businessDays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
   businessHours: z.object({

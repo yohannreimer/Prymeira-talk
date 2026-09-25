@@ -10,6 +10,7 @@ import type {
   AgentImprovementNormalizer
 } from "./jev-agent-improvement.js";
 import type { AgentImprovementRuleWriter } from "./openai-agent-improvement.js";
+import { readAssistantSettings } from "../assistant/assistant-policy.js";
 
 type DateLike = Date | string;
 type ImprovementStatus = AiAgentImprovementDto["status"];
@@ -27,7 +28,10 @@ type HandoffSessionRecord = {
   lastRunAt?: DateLike | null;
 };
 
-type ConversationRecord = { activeAgentSessionId: string | null };
+type ConversationRecord = {
+  activeAgentSessionId: string | null;
+  channel?: { encryptedConfig: unknown } | null;
+};
 
 type MessageRecord = {
   id: string;
@@ -473,7 +477,7 @@ export function createAgentImprovementsService(
         }),
         prisma.conversation.findFirst({
           where: { workspaceId: input.workspaceId, id: input.conversationId },
-          select: { activeAgentSessionId: true }
+          select: { activeAgentSessionId: true, channel: { select: { encryptedConfig: true } } }
         })
       ]);
 
@@ -492,23 +496,26 @@ export function createAgentImprovementsService(
 
       const session = conversation?.activeAgentSessionId
         ? await prisma.aiAgentSession.findFirst({
-            where: {
-              workspaceId: input.workspaceId,
-              id: conversation.activeAgentSessionId,
-              conversationId: input.conversationId,
-              status: { in: ["handoff_requested", "paused_by_human"] },
-              handoffReason: { not: null }
-            }
+          where: {
+            workspaceId: input.workspaceId,
+            id: conversation.activeAgentSessionId,
+            conversationId: input.conversationId,
+            status: { in: ["handoff_requested", "paused_by_human"] }
+          }
           })
         : null;
-      if (!session) {
-        return { created: false, reason: "no_agent_handoff" };
-      }
+      const configuredAgentId = readAssistantSettings(conversation?.channel?.encryptedConfig).agentId;
+      const configuredAgent = !session && configuredAgentId
+        ? await prisma.aiAgent.findFirst({ where: { workspaceId: input.workspaceId, id: configuredAgentId } })
+        : null;
+      const targetAgentId = session?.agentId ?? configuredAgent?.id;
+      if (!targetAgentId) return { created: false, reason: "no_agent_context" };
 
       const messages = await prisma.message.findMany({
         where: {
           workspaceId: input.workspaceId,
-          conversationId: input.conversationId
+          conversationId: input.conversationId,
+          createdAt: { lte: new Date(humanReply.createdAt) }
         },
         orderBy: { createdAt: "desc" },
         take: 16
@@ -527,6 +534,7 @@ export function createAgentImprovementsService(
       let detected: AgentImprovementAssessment;
       try {
         detected = options.detector ? await options.detector.assess({
+          workspaceId: input.workspaceId,
           customerMessage,
           humanReply: humanReply.body,
           conversationMessages: chronological.map((message) => ({
@@ -556,7 +564,7 @@ export function createAgentImprovementsService(
         await prisma.aiAgentImprovement.create({
           data: {
             workspaceId: input.workspaceId,
-            agentId: session.agentId,
+            agentId: targetAgentId,
             conversationId: input.conversationId,
             sourceMessageId: input.messageId,
             status: "pending",
@@ -567,7 +575,7 @@ export function createAgentImprovementsService(
             sourceCustomerMessage: customerMessage,
             sourceHumanReply: humanReply.body,
             detector: {
-              provider: detected.outcome === "ignore" ? "explicit_human_refusal" : "jev",
+              provider: detected.outcome === "ignore" ? "explicit_human_refusal" : detected.provider ?? "jev",
               confidence: assessment.confidence,
               kind: assessment.kind
             },
@@ -591,42 +599,27 @@ export function createAgentImprovementsService(
       workspaceId: string;
       conversationId: string;
     }): Promise<{ created: boolean; reason?: string }> {
-      const conversation = await prisma.conversation.findFirst({
-        where: { workspaceId: input.workspaceId, id: input.conversationId },
-        select: { activeAgentSessionId: true }
-      });
-      if (!conversation?.activeAgentSessionId) return { created: false, reason: "no_agent_handoff" };
-      const session = await prisma.aiAgentSession.findFirst({
-        where: {
-          workspaceId: input.workspaceId,
-          id: conversation.activeAgentSessionId,
-          conversationId: input.conversationId,
-          status: { in: ["handoff_requested", "paused_by_human"] },
-          handoffReason: { not: null }
-        }
-      });
-      if (!session) return { created: false, reason: "no_agent_handoff" };
-      const run = await prisma.aiAgentRun.findFirst({
-        where: { workspaceId: input.workspaceId, sessionId: session.id, status: "handoff_requested" },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        select: { createdAt: true }
-      });
-      const since = run?.createdAt ?? session.lastRunAt;
-      if (!since) return { created: false, reason: "no_handoff_run" };
       const replies = await prisma.message.findMany({
         where: {
           workspaceId: input.workspaceId,
           conversationId: input.conversationId,
           direction: "outbound",
-          type: "text",
-          createdAt: { gt: new Date(since) }
+          type: "text"
         },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: 20
       });
-      const latest = replies.find((message) => message.body?.trim() && !isAiAgentMessage(message));
-      if (!latest) return { created: false, reason: "no_human_reply_since_handoff" };
-      return this.observeHumanReply({ ...input, messageId: latest.id });
+      const humanReplies = replies.filter((message) => message.body?.trim() && !isAiAgentMessage(message))
+        .slice(0, 8)
+        .sort((left, right) => Number(isExplicitCatalogRefusal(right.body ?? "")) - Number(isExplicitCatalogRefusal(left.body ?? "")));
+      if (!humanReplies.length) return { created: false, reason: "no_human_reply" };
+      let reason = "already_observed";
+      for (const reply of humanReplies) {
+        const result = await this.observeHumanReply({ ...input, messageId: reply.id });
+        if (result.created) return result;
+        if (result.reason && result.reason !== "already_observed") reason = result.reason;
+      }
+      return { created: false, reason };
     },
 
     async listImprovements(input: {

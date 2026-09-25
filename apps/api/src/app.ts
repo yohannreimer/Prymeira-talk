@@ -9,12 +9,15 @@ import { cnpjDatabasePlugin } from "./plugins/cnpj-database.js";
 import { createAgentFollowupRuntime } from "./modules/agents/agent-followup-runtime.js";
 import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
 import { createJevFollowupDecision } from "./modules/agents/jev-followup-decision.js";
+import { createJevFollowupEligibility } from "./modules/followups/jev-followup-eligibility.js";
+import { createLunaFollowupEligibility } from "./modules/followups/luna-followup-eligibility.js";
 import { createJevReplyPreflight } from "./modules/agents/jev-reply-preflight.js";
 import {
   createJevAgentImprovementDetector,
   createJevAgentImprovementNormalizer
 } from "./modules/agents/jev-agent-improvement.js";
 import { createAgentImprovementsService } from "./modules/agents/agent-improvements.service.js";
+import { createLunaAgentImprovementDetector } from "./modules/agents/luna-agent-improvement.js";
 import { createOpenAiAgentImprovementRuleWriter } from "./modules/agents/openai-agent-improvement.js";
 import { createAgentReplyScheduler } from "./modules/agents/agent-reply-scheduler.js";
 import { createConversationFollowupScheduler } from "./modules/followups/conversation-followup-scheduler.js";
@@ -161,6 +164,9 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
 
   await app.register(realtimeRoutes);
   const followupPublisher = createConversationFollowupRealtimePublisher(app.realtime);
+  if (!env.JEV_API_KEY) {
+    app.log.warn("JEV_API_KEY is unavailable; contextual follow-up selection and delivery are disabled.");
+  }
 
   const evolutionRuntime = createEvolutionRuntime({
     mode: env.EVOLUTION_MODE,
@@ -220,12 +226,38 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           apiKey: env.EVOLUTION_API_KEY
         })
       : undefined;
+  const lunaEligibility = options.prismaEnabled === false
+    ? undefined
+    : createLunaFollowupEligibility({ prisma: app.prisma });
+  const jevEligibility = env.JEV_API_KEY
+    ? createJevFollowupEligibility({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
+    : undefined;
+  const lunaImprovementDetector = options.prismaEnabled === false
+    ? undefined
+    : createLunaAgentImprovementDetector({ prisma: app.prisma });
+  const jevImprovementDetector = env.JEV_API_KEY
+    ? createJevAgentImprovementDetector({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
+    : undefined;
   const followupService =
     options.prismaEnabled === false
       ? undefined
       : createConversationFollowupsService(
           app.prisma as unknown as Parameters<typeof createConversationFollowupsService>[0],
-          { publisher: followupPublisher }
+          {
+            publisher: followupPublisher,
+            screeningRequired: true,
+            eligibility: {
+              async evaluate(candidate) {
+                try {
+                  return await lunaEligibility!.evaluate(candidate);
+                } catch (error) {
+                  if (!jevEligibility) throw error;
+                  app.log.warn({ err: error }, "GPT-6 Luna follow-up screening unavailable; using JEV");
+                  return jevEligibility.evaluate(candidate);
+                }
+              }
+            }
+          }
         );
   const replyPreflight = env.JEV_API_KEY
     ? createJevReplyPreflight({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
@@ -234,21 +266,26 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     ? undefined
     : createAgentImprovementsService(
         app.prisma as unknown as Parameters<typeof createAgentImprovementsService>[0],
-        env.JEV_API_KEY
-          ? {
-              detector: createJevAgentImprovementDetector({
-                apiKey: env.JEV_API_KEY,
-                model: env.JEV_MODEL
-              }),
-              normalizer: createJevAgentImprovementNormalizer({
-                apiKey: env.JEV_API_KEY,
-                model: env.JEV_MODEL
-              }),
-              writer: createOpenAiAgentImprovementRuleWriter({
-                prisma: app.prisma
-              })
+        {
+          detector: {
+            async assess(observation) {
+              try {
+                return await lunaImprovementDetector!.assess(observation);
+              } catch (error) {
+                if (!jevImprovementDetector) throw error;
+                app.log.warn({ err: error }, "GPT-6 Luna improvement detection unavailable; using JEV");
+                return jevImprovementDetector.assess(observation);
+              }
             }
-          : undefined
+          },
+          ...(env.JEV_API_KEY ? {
+            normalizer: createJevAgentImprovementNormalizer({
+              apiKey: env.JEV_API_KEY,
+              model: env.JEV_MODEL
+            })
+          } : {}),
+          writer: createOpenAiAgentImprovementRuleWriter({ prisma: app.prisma })
+        }
       );
   const agentRuntime =
     options.prismaEnabled === false
@@ -329,6 +366,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     ? createConversationFollowupScheduler({
         prisma: app.prisma as unknown as Parameters<typeof createConversationFollowupScheduler>[0]["prisma"],
         runtime: followupRuntime,
+        evaluator: followupService,
         reconciler: followupService,
         onError(error, followup) {
           app.log.error(

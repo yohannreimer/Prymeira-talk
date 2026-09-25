@@ -326,7 +326,8 @@ export function createAgentFollowupRuntime(input: {
           step: followup.stepIndex,
           instruction: stepInstruction,
           aiControlStatus: conversation.aiControlStatus === "agent_allowed" ? "agent_allowed" : "human_controlled",
-          hasCompatibleActiveAgentSession: true,
+          hasCompatibleActiveAgentSession: Boolean(initial.context.session),
+          hasConfiguredHumanAgent: followup.kind === "human_commercial" && !initial.context.session,
           allowHumanAutomatic: followupConfig?.humanCommercialDelivery === "automatic"
         });
       } catch (error) {
@@ -634,7 +635,7 @@ function isAutomaticallyEligible(
     decision.route === "automatic_send" &&
     decision.risk === "none" &&
     conversation.status !== "closed" &&
-    !blocksAutonomousAgent(conversation.channel?.encryptedConfig)
+    (!qualificationEligible || !blocksAutonomousAgent(conversation.channel?.encryptedConfig))
   );
 }
 

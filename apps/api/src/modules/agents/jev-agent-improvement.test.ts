@@ -14,6 +14,7 @@ function choice(value: string, confidence = 1) {
 }
 
 const input = {
+  workspaceId: "workspace_1",
   customerMessage: "Vocês têm barra chata galvanizada com furos de 7 mm?",
   humanReply: "Não trabalhamos com esse produto.",
   conversationMessages: [

@@ -178,6 +178,74 @@ describe("createAgentImprovementsService", () => {
     expect(prisma.aiKnowledgeSource.create).not.toHaveBeenCalled();
   });
 
+  it("proposes catalog learning after a manual takeover without an agent handoff reason", async () => {
+    const prisma = buildPrisma();
+    const service = createAgentImprovementsService(prisma);
+    await expect(service.observeHumanReply({ workspaceId, conversationId, messageId: humanReplyId }))
+      .resolves.toEqual({ created: true, reason: "detector_unavailable_explicit_refusal_fallback" });
+    expect(prisma.aiAgentSession.findFirst).toHaveBeenCalledWith({
+      where: {
+        workspaceId,
+        id: handoffSession.id,
+        conversationId,
+        status: { in: ["handoff_requested", "paused_by_human"] }
+      }
+    });
+    expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        agentId,
+        kind: "not_sold",
+        sourceCustomerMessage: customerMessage.body,
+        sourceHumanReply: humanReply.body,
+        status: "pending"
+      })
+    }));
+  });
+
+  it("uses the configured support agent when the conversation never had an agent session", async () => {
+    const prisma = buildPrisma();
+    prisma.message.findFirst.mockResolvedValue({ ...humanReply, body: "Bom dia, flange não trabalhamos" });
+    prisma.conversation.findFirst.mockResolvedValue({
+      activeAgentSessionId: null,
+      channel: { encryptedConfig: { assistant: { mode: "automatic", agentId } } }
+    });
+    const service = createAgentImprovementsService(prisma);
+
+    await expect(service.observeHumanReply({ workspaceId, conversationId, messageId: humanReplyId }))
+      .resolves.toEqual({ created: true, reason: "detector_unavailable_explicit_refusal_fallback" });
+    expect(prisma.aiAgent.findFirst).toHaveBeenCalledWith({ where: { workspaceId, id: agentId } });
+    expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        agentId,
+        kind: "not_sold",
+        sourceHumanReply: "Bom dia, flange não trabalhamos",
+        status: "pending"
+      })
+    }));
+  });
+
+  it("reanalyses an earlier catalog refusal even when a later human message and customer greeting followed", async () => {
+    const prisma = buildPrisma();
+    const refusal = { ...humanReply, body: "Bom dia, flange não trabalhamos" };
+    const laterReply = { ...humanReply, id: "later_reply", body: "Nosso foco são as chapas de ferro e laminados", createdAt: new Date(now.getTime() + 60_000) };
+    prisma.conversation.findFirst.mockResolvedValue({
+      activeAgentSessionId: null,
+      channel: { encryptedConfig: { assistant: { mode: "automatic", agentId } } }
+    });
+    prisma.message.findMany.mockImplementation(async (args: { where?: { direction?: string } }) =>
+      args.where?.direction === "outbound" ? [laterReply, refusal] : [refusal, customerMessage]
+    );
+    prisma.message.findFirst.mockImplementation(async (args: { where: { id: string } }) =>
+      args.where.id === refusal.id ? refusal : laterReply
+    );
+    const service = createAgentImprovementsService(prisma);
+    await expect(service.observeLatestHumanReplyAfterHandoff({ workspaceId, conversationId }))
+      .resolves.toMatchObject({ created: true });
+    expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ sourceMessageId: refusal.id, kind: "not_sold", status: "pending" })
+    }));
+  });
+
   it("does not create a suggestion for a response that JEV cannot classify as reusable", async () => {
     const prisma = buildPrisma();
     prisma.message.findFirst.mockResolvedValue({ ...humanReply, body: "Vou consultar e retorno." });
@@ -237,7 +305,7 @@ describe("createAgentImprovementsService", () => {
     prisma.message.findMany.mockResolvedValue([]);
     const service = createAgentImprovementsService(prisma);
     await expect(service.observeLatestHumanReplyAfterHandoff({ workspaceId, conversationId })).resolves.toEqual({
-      created: false, reason: "no_human_reply_since_handoff"
+      created: false, reason: "no_human_reply"
     });
     expect(prisma.aiAgentImprovement.create).not.toHaveBeenCalled();
   });

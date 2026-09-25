@@ -34,9 +34,13 @@ describe('assistant panel', () => {
     const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled handoffCompleted handoffFeedback="A resposta gerou um aprimoramento pendente." />);
     expect(html).toContain('Ação anterior');
     expect(html).not.toContain('Próxima ação concluída');
-    expect(html).toContain('Analisar resposta humana');
+    expect(html).toContain('Analisar respostas humanas');
     expect(html).toContain('Reabrir próxima ação');
     expect(html).toContain('aprimoramento pendente');
+  });
+  it('offers reanalysis for a human-controlled conversation without a handoff', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled />);
+    expect(html).toContain('Analisar respostas humanas');
   });
   it('keeps the human action focused until it is completed', () => {
     const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled data={{...data,humanControlled:true,humanSupport:true}} handoffBrief={{

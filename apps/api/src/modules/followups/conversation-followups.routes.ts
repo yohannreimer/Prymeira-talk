@@ -249,7 +249,10 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
         workspaceId: request.talk.workspaceId,
         status: query.data.status === "cancelled"
           ? { in: ["cancelled", "failed", "skipped", "expired"] }
-          : query.data.status
+          : query.data.status,
+        ...(query.data.status === "cancelled"
+          ? { NOT: { reason: { startsWith: "eligibility_" } } }
+          : {})
       },
       select: followupSelect,
       orderBy: query.data.status === "review" || query.data.status === "scheduled"
@@ -292,6 +295,25 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
       where: { workspaceId_id: { workspaceId: request.talk.workspaceId, id: params.data.channelId } },
       data: { followupConfig: body.data }
     });
+    if (!body.data.enabled) {
+      const where = {
+        workspaceId: request.talk.workspaceId,
+        activeKey: "active",
+        status: { in: ["evaluating", "scheduled", "processing", "review"] },
+        conversation: { is: { channelId: params.data.channelId } }
+      };
+      const pending = await prisma.conversationFollowup.findMany({ where, select: { id: true } });
+      await prisma.conversationFollowup.updateMany({
+        where,
+        data: { status: "cancelled", activeKey: null, reason: "channel_paused", cancelledAt: new Date() }
+      });
+      await Promise.all(pending.map((followup) => publishPersistedConversationFollowup({
+        store: prisma.conversationFollowup,
+        publisher,
+        workspaceId: request.talk.workspaceId,
+        followupId: followup.id
+      })));
+    }
     return { config: body.data, customized: true };
   });
 

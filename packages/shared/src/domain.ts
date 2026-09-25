@@ -357,6 +357,7 @@ export const conversationFollowupKindSchema = z.enum(["qualification", "human_co
 export type ConversationFollowupKind = z.infer<typeof conversationFollowupKindSchema>;
 
 export const conversationFollowupStatusSchema = z.enum([
+  "evaluating",
   "scheduled",
   "processing",
   "review",
@@ -425,6 +426,7 @@ const conversationFollowupBaseSchema = z.object({
 });
 
 export const conversationFollowupSchema = z.discriminatedUnion("status", [
+  conversationFollowupBaseSchema.extend({ status: z.literal("evaluating") }),
   conversationFollowupBaseSchema.extend({ status: z.literal("scheduled") }),
   conversationFollowupBaseSchema.extend({ status: z.literal("processing") }),
   conversationFollowupBaseSchema.extend({ status: z.literal("review") }),

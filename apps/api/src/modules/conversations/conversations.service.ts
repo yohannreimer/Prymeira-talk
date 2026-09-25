@@ -986,6 +986,9 @@ export function createConversationsService(
       completed?: boolean;
       actorUserId?: string | null;
     }): Promise<ConversationDto> {
+      if (input.completed === undefined) {
+        return toConversationDto(await findConversation(input));
+      }
       const updatedConversation = (await prisma.$transaction(async (tx) => {
         const current = await tx.conversation.findUnique({
           where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },

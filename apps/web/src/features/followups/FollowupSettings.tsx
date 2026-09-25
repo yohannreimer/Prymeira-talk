@@ -26,6 +26,7 @@ export function FollowupSettings({ getToken }: { getToken: () => Promise<string 
   const [channels, setChannels] = useState<ChannelDto[]>([]);
   const [channelId, setChannelId] = useState("");
   const [config, setConfig] = useState<ChannelFollowupConfig | null>(null);
+  const [savedConfig, setSavedConfig] = useState<ChannelFollowupConfig | null>(null);
   const [steps, setSteps] = useState<StepDraft[]>([]);
   const [customized, setCustomized] = useState(false);
   const [manager, setManager] = useState(false);
@@ -55,6 +56,7 @@ export function FollowupSettings({ getToken }: { getToken: () => Promise<string 
     apiGetChannelFollowupConfig(getToken, channelId).then((result) => {
       if (!active) return;
       setConfig(result.config);
+      setSavedConfig(result.config);
       setSteps(result.config.steps.map((step) => toDraft(step.afterMinutes)));
       setCustomized(result.customized);
       setLoading(false);
@@ -78,11 +80,32 @@ export function FollowupSettings({ getToken }: { getToken: () => Promise<string 
     try {
       const result = await apiSetChannelFollowupConfig(getToken, channelId, nextConfig);
       setConfig(result.config);
+      setSavedConfig(result.config);
       setSteps(result.config.steps.map((step) => toDraft(step.afterMinutes)));
       setCustomized(true);
       setMessage("Configuração salva para este número. Novas sequências usam os intervalos escolhidos.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Não foi possível salvar.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleEnabled() {
+    if (!savedConfig || !channelId || !manager) return;
+    const enabled = !savedConfig.enabled;
+    setSaving(true);
+    setMessage(null);
+    try {
+      const result = await apiSetChannelFollowupConfig(getToken, channelId, { ...savedConfig, enabled });
+      setSavedConfig(result.config);
+      setConfig((current) => current ? { ...current, enabled: result.config.enabled } : result.config);
+      setCustomized(true);
+      setMessage(enabled
+        ? "Follow-ups reativados neste número. Novas conversas poderão iniciar sequências."
+        : "Follow-ups pausados neste número. Os pendentes foram cancelados; os intervalos foram preservados.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Não foi possível alterar o status.");
     } finally {
       setSaving(false);
     }
@@ -101,7 +124,12 @@ export function FollowupSettings({ getToken }: { getToken: () => Promise<string 
     {!channels.length && !loading ? <p>Nenhum número disponível.</p> : null}
     {loading ? <p>Carregando configuração…</p> : null}
     {config && !loading ? <form onSubmit={(event) => void save(event)}>
-      <p className="followups-settings-caption">{customized ? "Cadência personalizada ativa neste número." : "Sugestão de seis etapas. Salve para ativá-la neste número."}</p>
+      <div className="followups-settings-field">
+        <strong>{savedConfig?.enabled ? "Follow-ups ativos" : "Follow-ups pausados"}</strong>
+        <p className="followups-settings-caption">Ao pausar, os pendentes deste número são cancelados. Reativar mantém os intervalos e vale para novas conversas.</p>
+        {manager ? <button className="followups-button" type="button" disabled={saving || !savedConfig} onClick={() => void toggleEnabled()}>{savedConfig?.enabled ? "Pausar neste número" : "Reativar neste número"}</button> : null}
+      </div>
+      <p className="followups-settings-caption">{customized ? "Cadência personalizada configurada neste número." : "Sugestão de seis etapas. Salve para ativá-la neste número."}</p>
       <h3>Intervalos entre tentativas</h3>
       <div className="followups-settings-steps">
         {steps.map((step, index) => <div className="followups-settings-step" key={index}>

@@ -840,4 +840,44 @@ describe("createAgentFollowupRuntime", () => {
       .resolves.toEqual({ status: "cancelled", followupId: ids.followup, reason: "human_controlled" });
     expect(humanControlled.createPendingOutboundMessage).not.toHaveBeenCalled();
   });
+
+  it("generates a fresh commercial reply when an explicit channel setting allows automatic follow-up without a session", async () => {
+    const conversation = {
+      ...baseConversation,
+      aiControlStatus: "human_controlled",
+      activeAgentSessionId: null,
+      channel: {
+        ...baseConversation.channel,
+        encryptedConfig: { assistant: { mode: "automatic", agentId: ids.agent } },
+        followupConfig: {
+          timeZone: "America/Sao_Paulo", businessDays: [1, 2, 3, 4, 5],
+          businessHours: { start: "08:00", end: "18:00" },
+          steps: [{ afterMinutes: 60 }], humanCommercialDelivery: "automatic"
+        }
+      }
+    };
+    const context = {
+      ...validContext({ kind: "human_commercial", sessionId: null }),
+      conversation,
+      session: null
+    };
+    const decision = {
+      outcome: "follow_up" as const, purpose: "confirm_active" as const,
+      route: "automatic_send" as const, stage: "seller_owned" as const, risk: "none" as const
+    };
+    const harness = buildRuntime({
+      conversation: { findUnique: vi.fn().mockResolvedValue(conversation) },
+      revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context }),
+      decide: vi.fn().mockResolvedValue(decision)
+    });
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "sent" });
+    expect(harness.decide).toHaveBeenCalledWith(expect.objectContaining({
+      hasCompatibleActiveAgentSession: false,
+      hasConfiguredHumanAgent: true,
+      allowHumanAutomatic: true
+    }));
+    expect(harness.provider.generate).toHaveBeenCalledOnce();
+    expect(harness.createPendingOutboundMessage).toHaveBeenCalledOnce();
+  });
 });

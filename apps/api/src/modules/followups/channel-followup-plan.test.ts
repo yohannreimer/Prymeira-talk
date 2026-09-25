@@ -26,4 +26,11 @@ describe("channel follow-up cadence", () => {
     expect(calculateFollowupDueAt(new Date("2026-09-25T16:00:00.000Z"), 20, plan!).toISOString())
       .toBe("2026-09-25T16:20:00.000Z");
   });
+
+  it("pauses the entire channel cadence without removing the configured steps", () => {
+    const paused = { ...DEFAULT_CHANNEL_FOLLOWUP_CONFIG, enabled: false };
+    expect(paused.steps).toHaveLength(6);
+    expect(resolveFollowupPlan({}, paused)).toBeNull();
+    expect(resolveFollowupPlan({}, { ...paused, enabled: true })?.steps).toHaveLength(6);
+  });
 });
