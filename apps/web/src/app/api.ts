@@ -1452,6 +1452,7 @@ export async function apiGetConversations(
     view: import("@prymeira-talk/shared").InboxView;
     assignee: "me";
     channelId: string;
+    search: string;
     cursor: string;
   }> = {}
 ): Promise<ConversationDto[]> {
@@ -1469,6 +1470,9 @@ export async function apiGetConversations(
   }
   if (filters.channelId) {
     url.searchParams.set("channelId", filters.channelId);
+  }
+  if (filters.search) {
+    url.searchParams.set("search", filters.search);
   }
   if (filters.cursor) {
     url.searchParams.set("cursor", filters.cursor);
@@ -2240,6 +2244,7 @@ export async function apiGetCurrentTalkUser(
 
 export interface CreateConversationMessageInput {
   body?: string;
+  contactCard?: { sourceConversationId: string };
   attachment?: {
     fileName: string;
     mediaUrl: string;

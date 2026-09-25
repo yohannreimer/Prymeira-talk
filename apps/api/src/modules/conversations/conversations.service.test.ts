@@ -1262,6 +1262,45 @@ describe("conversations service", () => {
     expect(result.message.providerMessageId).toBe("provider_msg_1");
   });
 
+  it("sends a native contact card instead of a text substitute", async () => {
+    const sendContact = vi.fn().mockResolvedValue({ providerMessageId: "contact_msg_1", raw: {} });
+    const sendText = vi.fn();
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>()
+        .mockResolvedValueOnce({
+          id: "conv_1", workspaceId: "workspace_a", channelId: "channel_1", contactId: "contact_1",
+          channel: { provider: "evolution", providerKey: "talk-workspace_a-abc" },
+          contact: { phone: "5547999990000" }
+        })
+        .mockResolvedValue({
+          id: "conv_1", workspaceId: "workspace_a", channelId: "channel_1", contactId: "contact_1",
+          status: "open", assignedUserId: null, departmentId: null,
+          lastMessageAt: new Date("2026-05-20T12:00:00.000Z"), lastMessagePreview: "Contato compartilhado: Ana (5547888880000)",
+          unreadCount: 0, priority: "normal", tags: []
+        })
+    });
+    const service = createConversationsService(prisma, { evolution: {
+      mode: "real", webhookSecret: "secret", publicWebhookUrl: vi.fn(), localWebhookUrl: vi.fn(),
+      client: { createInstance: vi.fn(), connectInstance: vi.fn(), setWebhook: vi.fn(), sendText, sendMedia: vi.fn(), sendContact }
+    } });
+    await service.createPendingOutboundMessage({
+      workspaceId: "workspace_a", conversationId: "conv_1", sentByUserId: "user_1",
+      contactCard: { fullName: "Ana", phoneNumber: "5547888880000" }
+    });
+    expect(sendContact).toHaveBeenCalledWith({
+      instanceName: "talk-workspace_a-abc", number: "5547999990000",
+      contact: [{ fullName: "Ana", wuid: "5547888880000", phoneNumber: "5547888880000" }]
+    });
+    expect(sendText).not.toHaveBeenCalled();
+    expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        body: "Contato compartilhado: Ana (5547888880000)",
+        providerMessageId: "contact_msg_1",
+        metadata: expect.objectContaining({ contactCard: { fullName: "Ana", phoneNumber: "5547888880000" } })
+      })
+    }));
+  });
+
   it("sends outbound media through Evolution in real mode", async () => {
     const sendMedia = vi.fn().mockResolvedValue({
       providerMessageId: "provider_media_1",
@@ -2076,6 +2115,40 @@ describe("conversation routes", () => {
     } finally {
       await app.close();
     }
+  });
+
+  it("searches older conversations by contact name or phone on the server", async () => {
+    const prisma = createMockPrisma();
+    const app = Fastify({ logger: false });
+    app.decorate("prisma", prisma as never);
+    app.addHook("preHandler", async (request) => { request.talk = { workspaceId: "workspace_a", role: "agent" }; });
+    await app.register(conversationsRoutes);
+    try {
+      const response = await app.inject({ method: "GET", url: "/conversations?status=all&search=Ana%20Silva" });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({
+          workspaceId: "workspace_a",
+          contact: { is: { OR: [
+            { name: { contains: "Ana Silva", mode: "insensitive" } },
+            { phone: { contains: "Ana Silva" } }
+          ] } }
+        }),
+        take: 50
+      }));
+    } finally { await app.close(); }
+  });
+
+  it("normalizes a pasted formatted number before searching saved phone records", async () => {
+    const prisma = createMockPrisma();
+    const service = createConversationsService(prisma);
+    await service.listConversations({ workspaceId: "workspace_a", search: "+55 (47) 99139-6920" });
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ contact: { is: { OR: [
+        { name: { contains: "+55 (47) 99139-6920", mode: "insensitive" } },
+        { phone: { contains: "554791396920" } }
+      ] } } })
+    }));
   });
 
   it("completes a handoff, reports the improvement analysis and publishes the cleared queue state", async () => {

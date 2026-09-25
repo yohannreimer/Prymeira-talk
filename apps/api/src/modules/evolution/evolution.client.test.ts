@@ -239,6 +239,25 @@ describe("Evolution client", () => {
     });
   });
 
+  it("sends a native WhatsApp contact card", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse({ key: { id: "contact_msg_1" } }));
+    const client = createEvolutionClient({ baseUrl: "https://wsapi.yrdnegocios.com.br", apiKey: "secret-key", fetch: fetchMock });
+    const result = await client.sendContact!({
+      instanceName: "talk-local_workspace-abc",
+      number: "5547999990000",
+      contact: [{ fullName: "Ana", wuid: "5547888880000", phoneNumber: "5547888880000" }]
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://wsapi.yrdnegocios.com.br/message/sendContact/talk-local_workspace-abc",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      number: "5547999990000",
+      contact: [{ fullName: "Ana", wuid: "5547888880000", phoneNumber: "5547888880000" }]
+    });
+    expect(result.providerMessageId).toBe("contact_msg_1");
+  });
+
   it("sends a media message with raw base64 in the provider payload", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       createJsonResponse({ key: { id: "provider_media_1" } })

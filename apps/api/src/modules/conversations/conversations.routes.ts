@@ -40,6 +40,7 @@ const listConversationsQuerySchema = z.object({
   status: z.enum(["active", "closed", "all"]).optional(),
   view: inboxViewSchema.default("all"),
   assignee: z.enum(["me"]).optional(),
+  search: z.string().trim().max(100).optional(),
   channelId: z.string().uuid().optional(),
   cursor: z.string().uuid().optional()
 });
@@ -53,10 +54,13 @@ const createMessageBodySchema = z
         mimetype: z.string().trim().min(1).max(160),
         mediaUrl: z.string().min(1)
       })
-      .optional()
+      .optional(),
+    contactCard: z.object({ sourceConversationId: z.string().uuid() }).optional()
   })
-  .refine((body) => body.body || body.attachment, {
+  .refine((body) => body.body || body.attachment || body.contactCard, {
     message: "Message body or attachment is required."
+  }).refine((body) => !body.contactCard || (!body.body && !body.attachment), {
+    message: "Contact cards must be sent separately."
   });
 
 const conversationPrioritySchema = z.enum(["low", "normal", "high"]);
@@ -199,6 +203,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       status: query.data.status,
       assignedUserId: query.data.assignee === "me" ? assignedUserId : null,
       channelId: query.data.channelId,
+      search: query.data.search,
       cursor: query.data.cursor,
       view: query.data.view
     });
@@ -517,6 +522,22 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       return reply.code(400).send({ error: "Invalid conversation message request." });
     }
 
+    let contactCard: { fullName: string; phoneNumber: string } | undefined;
+    if (body.data.contactCard) {
+      if (options.evolution?.mode !== "real" || !options.evolution.client?.sendContact) {
+        return reply.code(409).send({ code: "CONTACT_CARD_NOT_SUPPORTED", error: "O envio de contatos não está disponível neste canal." });
+      }
+      const source = await app.prisma.conversation.findFirst({
+        where: { id: body.data.contactCard.sourceConversationId, workspaceId: request.talk.workspaceId },
+        select: { contact: { select: { name: true, phone: true } } }
+      });
+      if (!source?.contact.phone) return reply.code(404).send({ error: "Contato de origem não encontrado." });
+      contactCard = {
+        fullName: source.contact.name?.trim() || source.contact.phone,
+        phoneNumber: source.contact.phone
+      };
+    }
+
     const meta = await resolveMetaRuntime(app.prisma, { workspaceId: request.talk.workspaceId });
     const writeService = createConversationsService(app.prisma as unknown as PrismaLike, {
       evolution: options.evolution,
@@ -550,6 +571,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       conversationId: params.data.conversationId,
       body: body.data.body,
       attachment: body.data.attachment,
+      contactCard,
       sentByUserId: null
     }).catch((error: unknown) => {
       if (error instanceof ConversationNotFoundError) {

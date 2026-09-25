@@ -11,6 +11,7 @@ import type {
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { MetaClientError, type MetaClient } from "../meta/meta.client.js";
+import { canonicalizePhone } from "../contacts/phone-normalization.js";
 import { visibleConversationMessageWhere, withoutInternalFollowupReservations } from "./internal-message.js";
 
 type DateLike = Date | string;
@@ -50,6 +51,7 @@ type OutboundMessageValidationErrorCode =
   | "OUTBOUND_CONTACT_PHONE_REQUIRED"
   | "OUTBOUND_PROVIDER_KEY_REQUIRED"
   | "META_MEDIA_NOT_SUPPORTED"
+  | "CONTACT_CARD_NOT_SUPPORTED"
   | "META_NOT_CONFIGURED"
   | "META_SERVICE_WINDOW_CLOSED";
 
@@ -604,10 +606,20 @@ export function createConversationsService(
     status?: ConversationListStatus;
     assignedUserId?: string | null;
     channelId?: string;
+    search?: string;
     view?: InboxView;
   }): Prisma.ConversationWhereInput {
     const assigneeWhere = input.assignedUserId ? { assignedUserId: input.assignedUserId } : {};
     const channelWhere = input.channelId ? { channelId: input.channelId } : {};
+    const searchPhone = input.search?.replace(/\D/g, '')
+      ? canonicalizePhone(input.search)
+      : input.search?.trim() ?? '';
+    const searchWhere: Prisma.ConversationWhereInput = input.search?.trim()
+      ? { contact: { is: { OR: [
+          { name: { contains: input.search.trim(), mode: "insensitive" } },
+          { phone: { contains: searchPhone } }
+        ] } } }
+      : {};
     const viewWhere: Prisma.ConversationWhereInput = input.view === "unread"
       ? { unreadCount: { gt: 0 }, OR: [inboxHandoffWhere, { aiControlStatus: "human_controlled" }] }
       : input.view === "marked"
@@ -621,6 +633,7 @@ export function createConversationsService(
         status: "closed" as const,
         ...assigneeWhere,
         ...channelWhere,
+        ...searchWhere,
         ...viewWhere
       };
     }
@@ -630,6 +643,7 @@ export function createConversationsService(
         workspaceId: input.workspaceId,
         ...assigneeWhere,
         ...channelWhere,
+        ...searchWhere,
         ...viewWhere
       };
     }
@@ -639,6 +653,7 @@ export function createConversationsService(
       status: { in: activeConversationStatuses },
       ...assigneeWhere,
       ...channelWhere,
+      ...searchWhere,
       ...viewWhere
     };
   }
@@ -761,6 +776,7 @@ export function createConversationsService(
       status?: ConversationListStatus;
       assignedUserId?: string | null;
       channelId?: string;
+      search?: string;
       cursor?: string;
       view?: InboxView;
     }): Promise<ConversationDto[]> {
@@ -785,6 +801,7 @@ export function createConversationsService(
         mimetype: string;
         mediaUrl: string;
       };
+      contactCard?: { fullName: string; phoneNumber: string };
       sentByUserId: string | null;
       metadata?: Record<string, unknown>;
     }): Promise<{ message: MessageDto; conversation: ConversationDto }> {
@@ -806,7 +823,9 @@ export function createConversationsService(
       const isAudio = input.attachment?.mimetype.toLowerCase().startsWith('audio/') ?? false;
       if (isAudio && conversation.channel?.provider !== 'evolution') throw new OutboundMessageValidationError('AUDIO_CHANNEL_NOT_SUPPORTED', 'A gravação de voz está disponível em canais Evolution.');
       let audio: Awaited<ReturnType<typeof prepareVoiceRecording>> | null = null;
-      const messageBody = isAudio ? 'Áudio enviado' : input.body?.trim() || input.attachment?.fileName || "";
+      const messageBody = isAudio ? 'Áudio enviado' : input.contactCard
+        ? `Contato compartilhado: ${input.contactCard.fullName} (${input.contactCard.phoneNumber})`
+        : input.body?.trim() || input.attachment?.fileName || "";
       const messageType: MessageDto["type"] = input.attachment
         ? isAudio ? 'audio' : input.attachment.mimetype.toLowerCase().startsWith("image/")
           ? "image"
@@ -849,7 +868,18 @@ export function createConversationsService(
           );
         }
 
-        if (isAudio && input.attachment) {
+        if (input.contactCard) {
+          if (!options.evolution.client.sendContact) throw new OutboundMessageValidationError('CONTACT_CARD_NOT_SUPPORTED', 'Este canal não oferece cartão de contato.');
+          providerSend = await callProvider(() => options.evolution!.client!.sendContact!({
+            instanceName: providerKey,
+            number: contactPhone,
+            contact: [{
+              fullName: input.contactCard!.fullName,
+              wuid: input.contactCard!.phoneNumber,
+              phoneNumber: input.contactCard!.phoneNumber
+            }]
+          }));
+        } else if (isAudio && input.attachment) {
           if (!options.evolution.client.sendAudio) throw new OutboundMessageValidationError('AUDIO_CHANNEL_NOT_SUPPORTED', 'Este canal ainda não oferece envio de voz.');
           try { audio = await prepareVoiceRecording(input.attachment.mediaUrl, input.attachment.mimetype); }
           catch (e) { throw new OutboundMessageValidationError('INVALID_VOICE_RECORDING', e instanceof Error ? e.message : 'Áudio inválido.'); }
@@ -881,9 +911,9 @@ export function createConversationsService(
         const metaClient = options.meta?.client;
         const metaEvolutionClient = options.metaEvolution?.client;
 
-        if (input.attachment) {
+        if (input.attachment || input.contactCard) {
           throw new OutboundMessageValidationError(
-            "META_MEDIA_NOT_SUPPORTED",
+            input.contactCard ? "CONTACT_CARD_NOT_SUPPORTED" : "META_MEDIA_NOT_SUPPORTED",
             "Meta Cloud inbox replies support text only in this release."
           );
         }
@@ -936,13 +966,14 @@ export function createConversationsService(
           type: messageType,
           body: messageBody,
           mediaUrl: audio?.mediaUrl ?? input.attachment?.mediaUrl,
-          ...(audio || input.metadata
+          ...(audio || input.metadata || input.contactCard
             ? {
                 metadata: {
                   ...(audio
                     ? { attachment: { fileName: "audio.ogg", durationSeconds: audio.durationSeconds } }
                     : {}),
-                  ...(input.metadata ?? {})
+                  ...(input.metadata ?? {}),
+                  ...(input.contactCard ? { contactCard: input.contactCard } : {})
                 } as Prisma.InputJsonValue
               }
             : {}),

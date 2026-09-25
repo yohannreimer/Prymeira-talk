@@ -78,6 +78,12 @@ export interface SendTextResult {
   raw: unknown;
 }
 
+export interface SendContactInput {
+  instanceName: string;
+  number: string;
+  contact: { fullName: string; wuid: string; phoneNumber: string }[];
+}
+
 export interface SendMediaInput {
   instanceName: string;
   number: string;
@@ -155,6 +161,7 @@ export interface EvolutionClient {
   connectInstance(input: ConnectInstanceInput): Promise<ConnectInstanceResult>;
   setWebhook(input: SetWebhookInput): Promise<SetWebhookResult>;
   sendText(input: SendTextInput): Promise<SendTextResult>;
+  sendContact?(input: SendContactInput): Promise<SendTextResult>;
   sendMedia(input: SendMediaInput): Promise<SendMediaResult>;
   sendTemplate?(input: SendTemplateInput): Promise<SendTemplateResult>;
   listTemplates?(input: ListTemplatesInput): Promise<ListTemplatesResult>;
@@ -570,6 +577,14 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
         providerMessageId: extractProviderMessageId(responseBody),
         raw: responseBody
       };
+    },
+
+    async sendContact(input) {
+      const responseBody = await post(`/message/sendContact/${encodeURIComponent(input.instanceName)}`, {
+        number: input.number,
+        contact: input.contact
+      });
+      return { providerMessageId: extractProviderMessageId(responseBody), raw: responseBody };
     },
 
     async sendAudio(input) {

@@ -1,7 +1,7 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bookmark, Bot, CheckCircle2, History, MessageCircleX, MessageSquare, Plus, RotateCcw, StickyNote, TriangleAlert, UserCheck, UserRound, X } from "lucide-react";
-import type { ChangeEvent, FormEvent } from "react";
+import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, Paperclip, Plus, Search, RotateCcw, Send, StickyNote, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
+import type { ChangeEvent, DragEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiCreateQuickReply,
@@ -36,6 +36,8 @@ import {
   getChannelFilterOptions
 } from "./conversation-display";
 import { InboxQuickFilters } from "./InboxQuickFilters";
+import { ShareContactDialog } from "./ShareContactDialog";
+import { QuickSendDialog } from "./QuickSendDialog";
 import { QuickRepliesPopover } from "./QuickRepliesPopover";
 import { useRealtimeEvents } from "./useRealtimeEvents";
 import { AssistantPanel } from './AssistantPanel';
@@ -454,12 +456,22 @@ function InboxPageContent() {
   const [selectedTagId, setSelectedTagId] = useState("");
   const [activeView, setActiveView] = useState<InboxView>("all");
   const [selectedChannelFilter, setSelectedChannelFilter] = useState("all");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchDraft, setSearchDraft] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [shareContactOpen, setShareContactOpen] = useState(false);
+  const [quickSendOpen, setQuickSendOpen] = useState(false);
+  const [sendNotice, setSendNotice] = useState<string | null>(null);
   const [humanAttentionCount, setHumanAttentionCount] = useState(0);
   const [attentionCountReloadKey, setAttentionCountReloadKey] = useState(0);
   const [actionBusyConversationId, setActionBusyConversationId] = useState<string | null>(null);
   const [dismissUndo, setDismissUndo] = useState<{ conversationId: string; anchorMessageId: string } | null>(null);
   const [conversationReloadKey, setConversationReloadKey] = useState(0);
   const [isSending, setIsSending] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingFilePreview, setPendingFilePreview] = useState<string | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const dragDepthRef = useRef(0);
   const [isRunningAction, setIsRunningAction] = useState(false);
   const [currentRole, setCurrentRole] = useState<"owner" | "manager" | "agent">("agent");
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
@@ -490,7 +502,17 @@ function InboxPageContent() {
     return nextToken;
   }, [getToken]);
   const assistant = useAssistantConversation(selectedConversationId, getToken);
-  useEffect(() => { setComposerOrigin(null); setDraft(''); setAssistantOpen(false); }, [selectedConversationId]);
+  useEffect(() => { setComposerOrigin(null); setDraft(''); setPendingFile(null); setAssistantOpen(false); setShareContactOpen(false); setIsDraggingFile(false); dragDepthRef.current = 0; }, [selectedConversationId]);
+  useEffect(() => {
+    if (!pendingFile?.type.startsWith('image/')) { setPendingFilePreview(null); return; }
+    const url = URL.createObjectURL(pendingFile);
+    setPendingFilePreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [pendingFile]);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setSearchQuery(searchDraft.trim()), 250);
+    return () => window.clearTimeout(timeout);
+  }, [searchDraft]);
   useEffect(() => {
     if (!selectedConversationId) return;
     const cleanUrl = takeLeadDraftRequest(window.location.href, selectedConversationId);
@@ -641,6 +663,7 @@ function InboxPageContent() {
         const nextConversations = await apiGetConversations(getFreshToken, {
           status: "all",
           view: activeView,
+          ...(searchQuery ? { search: searchQuery } : {}),
           ...(selectedChannelFilter !== "all" ? { channelId: selectedChannelFilter } : {})
         });
 
@@ -674,7 +697,7 @@ function InboxPageContent() {
     return () => {
       isMounted = false;
     };
-  }, [conversationReloadKey, getFreshToken, activeView, selectedChannelFilter]);
+  }, [conversationReloadKey, getFreshToken, activeView, selectedChannelFilter, searchQuery]);
 
   const loadMoreConversations = useCallback(async () => {
     const cursor = conversationCursorRef.current;
@@ -688,6 +711,7 @@ function InboxPageContent() {
       const page = await apiGetConversations(getFreshToken, {
         status: "all",
         view: activeView,
+        ...(searchQuery ? { search: searchQuery } : {}),
         ...(selectedChannelFilter !== "all" ? { channelId: selectedChannelFilter } : {}),
         cursor
       });
@@ -705,7 +729,7 @@ function InboxPageContent() {
         setIsLoadingMoreConversations(false);
       }
     }
-  }, [getFreshToken, activeView, selectedChannelFilter]);
+  }, [getFreshToken, activeView, selectedChannelFilter, searchQuery]);
 
   useEffect(() => {
     let active = true;
@@ -886,7 +910,7 @@ function InboxPageContent() {
       refreshSelectedContext(event.payload.id);
     }
     if (selectedChannelFilter !== "all" && event.payload.channelId !== selectedChannelFilter) return;
-    if (activeViewRef.current !== "all") {
+    if (activeViewRef.current !== "all" || searchQuery) {
       setConversationReloadKey((current) => current + 1);
       return;
     }
@@ -906,7 +930,7 @@ function InboxPageContent() {
       });
     }
 
-  }, [refreshSelectedContext, selectedChannelFilter]);
+  }, [refreshSelectedContext, selectedChannelFilter, searchQuery]);
 
   useRealtimeEvents({
     token,
@@ -1032,6 +1056,13 @@ function InboxPageContent() {
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
+    if (pendingFile) {
+      const file = pendingFile;
+      try { await sendAttachment(file); setPendingFile(null); }
+      catch { /* sendAttachment displays the error beside the composer. */ }
+      return;
+    }
+
     if (!selectedConversationId || !draft.trim() || isSending) return;
     if (composerOrigin) {
       if (originNeedsReview) { setMessageError('Chegaram novas informações. Revise o rascunho antes de enviar.'); return; }
@@ -1131,10 +1162,47 @@ function InboxPageContent() {
     }
   }
 
-  async function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
+  function stageAttachment(file: File) {
+    if (!selectedConversationId) return;
+    if (file.size > 8 * 1024 * 1024) { setMessageError('Envie um arquivo de até 8 MB.'); return; }
+    if (composerOrigin) { setMessageError('Envie primeiro o texto em revisão. Depois anexe o arquivo em uma nova mensagem.'); return; }
+    const serviceWindowError = metaServiceWindowSendError(selectedConversation);
+    if (serviceWindowError) { setMessageError(serviceWindowError); return; }
+    setMessageError(null);
+    setPendingFile(file);
+  }
+
+  function hasDraggedFiles(event: DragEvent<HTMLElement>) {
+    return Array.from(event.dataTransfer.types).includes('Files');
+  }
+
+  function handleChatDragEnter(event: DragEvent<HTMLElement>) {
+    if (!selectedConversationId || !hasDraggedFiles(event)) return;
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDraggingFile(true);
+  }
+
+  function handleChatDragLeave(event: DragEvent<HTMLElement>) {
+    if (!isDraggingFile) return;
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDraggingFile(false);
+  }
+
+  function handleChatDrop(event: DragEvent<HTMLElement>) {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDraggingFile(false);
+    const file = event.dataTransfer.files[0];
+    if (file) stageAttachment(file);
+  }
+
+  function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (file) await sendAttachment(file, file.type.startsWith('audio/')).catch(() => {});
+    if (file) stageAttachment(file);
   }
 
   async function sendAttachment(file: File, voice = false) {
@@ -1439,7 +1507,7 @@ function InboxPageContent() {
             <p className="eyebrow">Prymeira Talk</p>
             <h1>Atendimento</h1>
           </div>
-          <span className="live-indicator">{token ? "Online" : "Conectando"}</span>
+          <div className="inbox-list-header-actions"><button type="button" className="inbox-header-icon" aria-label="Enviar mensagem para várias pessoas" title="Enviar para várias pessoas" onClick={() => setQuickSendOpen(true)}><Users size={18} /></button><span className="live-indicator">{token ? "Online" : "Conectando"}</span></div>
         </header>
 
         <div className="channel-filter-row" aria-label="Filtrar por canal">
@@ -1459,7 +1527,20 @@ function InboxPageContent() {
           ))}
         </div>
 
-        <InboxQuickFilters value={activeView} onChange={setActiveView} />
+        <div className="inbox-search-filters">
+          <InboxQuickFilters value={activeView} onChange={setActiveView} />
+          <button type="button" className={`inbox-search-toggle${searchOpen ? " is-active" : ""}`}
+            aria-label="Buscar conversa" title="Buscar conversa" aria-expanded={searchOpen}
+            onClick={() => { setSearchOpen((current) => !current); if (searchOpen) { setSearchDraft(""); setSearchQuery(""); } }}>
+            <Search size={18} strokeWidth={1.9} aria-hidden="true" />
+          </button>
+        </div>
+        {searchOpen ? <div className="inbox-search-field">
+          <Search size={16} aria-hidden="true" />
+          <input autoFocus aria-label="Nome ou telefone" placeholder="Nome ou telefone" value={searchDraft}
+            onChange={(event) => setSearchDraft(event.target.value)} />
+          {searchDraft ? <button type="button" aria-label="Limpar busca" onClick={() => setSearchDraft("")}><X size={16} /></button> : null}
+        </div> : null}
 
         <div className="attention-filter-row" role="group" aria-label="Visualização das conversas">
           <button
@@ -1487,6 +1568,7 @@ function InboxPageContent() {
 
         {isLoading ? <p className="list-note">Carregando conversas...</p> : null}
         {error ? <p className="error-note">{error}</p> : null}
+        {sendNotice ? <div className="inbox-send-notice" role="status">{sendNotice}<button type="button" aria-label="Fechar aviso" onClick={() => setSendNotice(null)}><X size={14} /></button></div> : null}
         {dismissUndo ? <div className="inbox-undo-toast" role="status">
           Indicação dispensada.
           <button type="button" onClick={() => void handleUndoDismiss()}>Desfazer</button>
@@ -1502,7 +1584,7 @@ function InboxPageContent() {
             <p className="list-note">
               {activeView === "handoff"
                 ? "Nenhuma conversa aguardando ação humana neste canal."
-                : "Nenhuma conversa encontrada para este canal."}
+                : searchQuery ? "Nenhuma conversa encontrada para esta busca." : "Nenhuma conversa encontrada para este canal."}
             </p>
           ) : null}
           {visibleConversations.map((conversation) => {
@@ -1626,7 +1708,11 @@ function InboxPageContent() {
         </div>
       </section>
 
-      <section className="chat-panel" aria-label="Area de atendimento">
+      <section className={`chat-panel${isDraggingFile ? ' is-dragging-file' : ''}`} aria-label="Area de atendimento"
+        onDragEnter={handleChatDragEnter} onDragLeave={handleChatDragLeave}
+        onDragOver={(event) => { if (selectedConversationId && hasDraggedFiles(event)) event.preventDefault(); }}
+        onDrop={handleChatDrop}>
+        {isDraggingFile ? <div className="chat-drop-overlay" aria-hidden="true"><UploadCloud size={34} />Solte para anexar à conversa</div> : null}
         <header className="chat-header">
           <button className="assistant-mobile-back" type="button" onClick={() => setSelectedConversationId(null)}>Voltar</button>
           <div>
@@ -1639,6 +1725,7 @@ function InboxPageContent() {
           </div>
           {selectedConversation ? (
             <div className="conversation-ai-control module-header-actions" aria-label="Controle da IA">
+              {selectedConversation.channelProvider === 'evolution' && selectedConversation.contactPhone ? <button type="button" className="inbox-share-trigger" title="Enviar contato para outra pessoa" aria-label="Enviar contato para outra pessoa" onClick={() => setShareContactOpen(true)}><ContactRound size={17} /><Send size={12} /></button> : null}
               <span className="status-badge status-badge--bot">
                 {aiControlLabel(selectedConversation)}
               </span>
@@ -1730,6 +1817,11 @@ function InboxPageContent() {
         )}
 
         <div className="composer-shell">
+          {pendingFile ? <div className="composer-attachment-preview" aria-label="Anexo pronto para enviar">
+            <span className="composer-attachment-icon">{pendingFilePreview ? <img src={pendingFilePreview} alt="Prévia do anexo" /> : <FileText size={22} aria-hidden="true" />}</span>
+            <span className="composer-attachment-details"><strong>{pendingFile.name}</strong><small>{(pendingFile.size / 1024 / 1024).toFixed(1)} MB · Pronto para enviar</small></span>
+            <button type="button" aria-label="Remover anexo" title="Remover anexo" onClick={() => setPendingFile(null)}><X size={18} /></button>
+          </div> : null}
           <button ref={assistantTriggerRef} type="button" className="assistant-mobile-trigger" onClick={() => { setAssistantTab('assistant'); setAssistantOpen(true); }} disabled={!selectedConversation}><MessageSquare size={15} /> IA de apoio <span>{handoffBrief ? 'Próxima ação' : assistant.data?.status === 'ready' ? 'Sugestão pronta' : 'Abrir'}</span></button>
           {composerOrigin ? <div className="assistant-composer-origin"><span>{originNeedsReview ? 'A conversa mudou. Confira o rascunho.' : 'Sugestão em edição. O texto enviado ficará registrado.'}</span>{originNeedsReview ? <button type="button" disabled={!assistant.data?.currentContextKey} onClick={() => setComposerOrigin(current => current && assistant.data?.currentContextKey ? { ...current, contextKey: assistant.data.currentContextKey } : current)}>Revisei o contexto</button> : null}</div> : null}
           {showQuickReplies ? (
@@ -1801,7 +1893,7 @@ function InboxPageContent() {
                 disabled={!selectedConversation}
                 onClick={() => fileInputRef.current?.click()}
               >
-                📎
+                <Paperclip size={16} aria-hidden="true" />
               </button>
               <input
                 className="composer-file-input"
@@ -1840,9 +1932,9 @@ function InboxPageContent() {
               <RichDraft key={selectedConversationId ?? 'no-conversation'} ref={draftTextAreaRef} value={draft} disabled={!selectedConversation || isSending} onFormatChange={setDraftFormat} onChange={value => { setDraft(value); if (!value) setComposerOrigin(null); }} />
               <button
                 className="composer-send"
-                disabled={!selectedConversation || !draft.trim() || isSending}
+                disabled={!selectedConversation || (!draft.trim() && !pendingFile) || isSending}
                 type="submit"
-                aria-label="Enviar mensagem"
+                aria-label={pendingFile ? "Enviar anexo" : "Enviar mensagem"}
               >
                 →
               </button>
@@ -2046,6 +2138,8 @@ function InboxPageContent() {
         </div>
         </>}
       </aside>
+      {shareContactOpen && selectedConversation ? <ShareContactDialog source={selectedConversation} getToken={getToken} onClose={() => setShareContactOpen(false)} onSent={(name) => { setShareContactOpen(false); setSendNotice(`Contato enviado para ${name}.`); setConversationReloadKey((current) => current + 1); }} /> : null}
+      {quickSendOpen ? <QuickSendDialog channels={channels} initialChannelId={selectedConversation?.channelId} getToken={getToken} onClose={() => setQuickSendOpen(false)} onSent={() => setConversationReloadKey((current) => current + 1)} /> : null}
     </section>
   );
 }
