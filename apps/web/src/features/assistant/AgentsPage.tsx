@@ -1125,7 +1125,7 @@ export function AgentsPage() {
                 <option value="none">Rápido</option>
                 <option value="low">Mais cuidadoso</option>
               </select>
-              <small>Nos modelos GPT-5.6, o modo cuidadoso usa raciocínio curto antes de responder. Pode aumentar o tempo e o consumo de tokens; não garante acerto.</small>
+              <small>Nos modelos GPT-5.6 e GPT-6, o modo cuidadoso usa raciocínio curto antes de responder. Pode aumentar o tempo e o consumo de tokens; não garante acerto.</small>
             </label>
             <label className="form-field form-field--checkbox">
               <input

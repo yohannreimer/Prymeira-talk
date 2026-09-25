@@ -115,11 +115,11 @@ describe("prepareInboundMedia", () => {
     expect(body.tools).toBeUndefined();
   });
 
-  it("uses the configured gpt-5.6 proxy request conventions for visual extraction", async () => {
+  it.each(["gpt-5.6-luna", "gpt-6-luna"])("uses reasoning request conventions for %s visual extraction", async chatModel => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ complete: true, pages: [{ page: 1, text: "Tubo 20 x 20 mm, 5 pecas" }] }) } }] })));
-    await extractInboundVisualText({ settings: { ...settings, chatModel: "gpt-5.6-luna" }, images: ["data:image/png;base64,aQ=="], fetchImpl });
+    await extractInboundVisualText({ settings: { ...settings, chatModel }, images: ["data:image/png;base64,aQ=="], fetchImpl });
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body).toMatchObject({ model: "gpt-5.6-luna", reasoning_effort: "none", max_completion_tokens: 8192 });
+    expect(body).toMatchObject({ model: chatModel, reasoning_effort: "none", max_completion_tokens: 8192 });
     expect(body.temperature).toBeUndefined();
     expect(body.max_tokens).toBeUndefined();
   });

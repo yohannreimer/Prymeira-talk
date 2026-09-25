@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { resolveAgentMedia } from "./agent-media-resolver.js";
 import { createOpenAiCompatibleAudioTranscriber, type AgentAudioTranscriber } from "./audio-transcription.js";
 import type { OpenAiCompatibleSettings } from "./ai-provider-settings.js";
+import { usesOpenAiReasoningParameters } from "./openai-reasoning-model.js";
 
 export const MAX_INBOUND_MEDIA_BYTES = 8 * 1024 * 1024;
 export const MAX_INBOUND_MEDIA_TEXT = 20_000;
@@ -106,7 +107,7 @@ export const extractInboundVisualText: VisionExtract = async ({ settings, images
     signal: AbortSignal.timeout(60_000),
     body: JSON.stringify({
       model: settings.chatModel,
-      ...(/^gpt-5\.6(?:-|$)/i.test(settings.chatModel.trim())
+      ...(usesOpenAiReasoningParameters(settings.chatModel)
         ? { reasoning_effort: "none", max_completion_tokens: 8192 }
         : { temperature: 0, max_tokens: 8192 }),
       response_format: { type: "json_object" },

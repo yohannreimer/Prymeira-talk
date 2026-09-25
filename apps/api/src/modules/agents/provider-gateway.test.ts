@@ -437,7 +437,8 @@ describe("createOpenAiCompatibleAgentProvider", () => {
   it.each([
     { chatModel: "gpt-5.6-luna", reasoningEffort: undefined },
     { chatModel: "gpt-5.6-terra", reasoningEffort: undefined },
-    { chatModel: "gpt-5.6-luna", reasoningEffort: "low" as const }
+    { chatModel: "gpt-5.6-luna", reasoningEffort: "low" as const },
+    { chatModel: "gpt-6-luna", reasoningEffort: "low" as const }
   ])(
     "uses the selected bounded reasoning mode for $chatModel / $reasoningEffort",
     async ({ chatModel, reasoningEffort }) => {

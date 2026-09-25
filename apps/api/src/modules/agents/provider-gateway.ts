@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CONTEXT_FIRST, CONTEXT_FIRST_OPERATIONAL_RULES } from "./conversation-reasoning-policy.js";
+import { usesOpenAiReasoningParameters } from "./openai-reasoning-model.js";
 
 const agentActionSchema = z
   .object({
@@ -427,10 +428,6 @@ async function createProviderResponseError(response: Response) {
   );
 }
 
-function isGpt56Model(model: string) {
-  return /^gpt-5\.6(?:-|$)/i.test(model.trim());
-}
-
 function buildOpenAiCompatibleRequestBody(input: {
   chatModel: string;
   systemPrompt: string;
@@ -476,7 +473,7 @@ function buildOpenAiCompatibleRequestBody(input: {
     ]
   };
 
-  return isGpt56Model(input.chatModel)
+  return usesOpenAiReasoningParameters(input.chatModel)
     ? { ...sharedBody, reasoning_effort: input.reasoningEffort ?? "none", ...(input.reasoningEffort === "low" ? { max_completion_tokens: 8192 } : {}) }
     : { ...sharedBody, temperature: 0.2 };
 }

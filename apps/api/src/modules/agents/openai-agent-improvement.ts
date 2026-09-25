@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { resolveOpenAiCompatibleSettings, type AiProviderSettingsPrismaLike } from "./ai-provider-settings.js";
 import type { AgentImprovementKind } from "./jev-agent-improvement.js";
+import { usesOpenAiReasoningParameters } from "./openai-reasoning-model.js";
 
 export type AgentImprovementRuleDraft = { title: string; content: string };
 
@@ -60,7 +61,7 @@ export function createOpenAiAgentImprovementRuleWriter(input: {
         body: JSON.stringify({
           model: provider.chatModel,
           response_format: { type: "json_object" },
-          ...(/^gpt-5\.6(?:-|$)/i.test(provider.chatModel)
+          ...(usesOpenAiReasoningParameters(provider.chatModel)
             ? { reasoning_effort: "none", max_completion_tokens: 2_048 }
             : { temperature: 0.2 }),
           messages: [
