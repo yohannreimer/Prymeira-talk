@@ -192,9 +192,17 @@ export const conversationSchema = z.object({
   activeAgentName: z.string().nullable().optional(),
   activeAgentSessionStatus: aiAgentSessionStatusSchema.nullable().optional(),
   handoffReason: z.string().nullable().optional(),
-  handoffActionCompletedAt: z.string().datetime().nullable().optional()
+  handoffActionCompletedAt: z.string().datetime().nullable().optional(),
+  manualMarked: z.boolean().optional(),
+  replyTriageDecision: z.enum(["needs_reply", "no_reply", "uncertain"]).nullable().optional(),
+  replyTriageReason: z.string().nullable().optional(),
+  replyTriageAnchorMessageId: z.string().nullable().optional(),
+  replyDismissed: z.boolean().optional()
 });
 export type ConversationDto = z.infer<typeof conversationSchema>;
+
+export const inboxViewSchema = z.enum(["all", "unread", "marked", "reply", "handoff"]);
+export type InboxView = z.infer<typeof inboxViewSchema>;
 
 export const tagSchema = z.object({
   id: z.string().min(1),

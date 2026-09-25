@@ -31,6 +31,12 @@ enum ConversationStatus {
   closed
 }
 
+enum InboxReplyDecision {
+  needs_reply
+  no_reply
+  uncertain
+}
+
 enum ConversationPriority {
   low
   normal
@@ -220,6 +226,35 @@ model UserProfile {
   @@map("user_profiles")
 }
 
+model ConversationInboxTriage {
+  id                    String              @id @default(uuid()) @db.Uuid
+  workspaceId           String              @map("workspace_id")
+  conversationId        String              @map("conversation_id") @db.Uuid
+  manualMarkedAt        DateTime?           @map("manual_marked_at")
+  manualMarkedById      String?             @map("manual_marked_by_id") @db.Uuid
+  lastObservedMessageId String?             @map("last_observed_message_id") @db.Uuid
+  anchorMessageId       String?             @map("anchor_message_id") @db.Uuid
+  decision              InboxReplyDecision?
+  reason                String?
+  model                 String?
+  analyzedAt            DateTime?           @map("analyzed_at")
+  dismissedMessageId    String?             @map("dismissed_message_id") @db.Uuid
+  dismissedAt           DateTime?           @map("dismissed_at")
+  dueAt                 DateTime?           @map("due_at")
+  lockToken             String?             @map("lock_token") @db.Uuid
+  lockedAt              DateTime?           @map("locked_at")
+  version               Int                 @default(0)
+  createdAt             DateTime            @default(now()) @map("created_at")
+  updatedAt             DateTime            @updatedAt @map("updated_at")
+  conversation          Conversation        @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, conversationId])
+  @@index([dueAt, lockedAt])
+  @@index([workspaceId, manualMarkedAt])
+  @@index([workspaceId, decision])
+  @@map("conversation_inbox_triage")
+}
+
 model Channel {
   id              String          @id @default(uuid()) @db.Uuid
   workspaceId     String          @map("workspace_id")
@@ -372,6 +407,7 @@ model Conversation {
   improvementSuggestions AiAgentImprovement[]
   assistantState AssistantConversationState?
   assistantSuggestions AssistantSuggestion[]
+  inboxTriage ConversationInboxTriage?
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, channelId, contactId])

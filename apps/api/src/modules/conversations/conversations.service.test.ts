@@ -8,7 +8,8 @@ import {
   ConversationNotFoundError,
   OutboundDeliveryUncertainError,
   OutboundMessageValidationError,
-  createConversationsService
+  createConversationsService,
+  toConversationDto
 } from "./conversations.service.js";
 import type { PrismaLike } from "./conversations.service.js";
 import { conversationsRoutes, createMessageParamsSchema } from "./conversations.routes.js";
@@ -351,6 +352,25 @@ function createMockPrisma(overrides: {
 }
 
 describe("conversations service", () => {
+  it("includes shared inbox triage state in conversation DTOs", () => {
+    const base = {
+      id: "conv_1", workspaceId: "workspace_a", channelId: "channel_1", contactId: "contact_1",
+      status: "open" as const, assignedUserId: null, departmentId: null,
+      lastMessageAt: null, lastMessagePreview: null, unreadCount: 0, priority: "normal" as const
+    };
+    expect(toConversationDto({ ...base, inboxTriage: {
+      manualMarkedAt: new Date("2026-09-25T12:00:00.000Z"), decision: "needs_reply",
+      reason: "Cliente pediu um orçamento", anchorMessageId: "msg_1", dismissedMessageId: null
+    } })).toMatchObject({
+      manualMarked: true, replyTriageDecision: "needs_reply",
+      replyTriageReason: "Cliente pediu um orçamento", replyTriageAnchorMessageId: "msg_1",
+      replyDismissed: false
+    });
+    expect(toConversationDto(base)).toMatchObject({
+      manualMarked: false, replyTriageDecision: null,
+      replyTriageReason: null, replyTriageAnchorMessageId: null, replyDismissed: false
+    });
+  });
   it("filters conversations by workspace id", async () => {
     const prisma = createMockPrisma();
     const service = createConversationsService(prisma);

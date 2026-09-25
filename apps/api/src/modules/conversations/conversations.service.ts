@@ -121,6 +121,13 @@ export interface ConversationRecord {
       name: string;
     } | null;
   } | null;
+  inboxTriage?: {
+    manualMarkedAt: DateLike | null;
+    decision: "needs_reply" | "no_reply" | "uncertain" | null;
+    reason: string | null;
+    anchorMessageId: string | null;
+    dismissedMessageId: string | null;
+  } | null;
   tags?: Array<{
     tag: TagRecord;
   }>;
@@ -138,6 +145,9 @@ const conversationDtoInclude = {
       handoffActionCompletedAt: true,
       agent: { select: { name: true } }
     }
+  },
+  inboxTriage: {
+    select: { manualMarkedAt: true, decision: true, reason: true, anchorMessageId: true, dismissedMessageId: true }
   },
   tags: { include: { tag: true } }
 } as const;
@@ -456,7 +466,13 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
     handoffReason: record.activeAgentSession?.handoffReason ?? null,
     handoffActionCompletedAt: record.activeAgentSession?.handoffActionCompletedAt
       ? toIsoString(record.activeAgentSession.handoffActionCompletedAt)
-      : null
+      : null,
+    manualMarked: Boolean(record.inboxTriage?.manualMarkedAt),
+    replyTriageDecision: record.inboxTriage?.decision ?? null,
+    replyTriageReason: record.inboxTriage?.reason ?? null,
+    replyTriageAnchorMessageId: record.inboxTriage?.anchorMessageId ?? null,
+    replyDismissed: Boolean(record.inboxTriage?.anchorMessageId &&
+      record.inboxTriage.dismissedMessageId === record.inboxTriage.anchorMessageId)
   };
 }
 
