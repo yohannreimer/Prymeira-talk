@@ -51,13 +51,14 @@ export function QuickSendDialog({ channels, initialChannelId, getToken, onClose,
   useEffect(() => {
     if (!channelId) return;
     let active = true;
+    setRecentContacts([]);
     void apiGetConversations(getToken, { status: 'all', channelId }).then((conversations) => {
       if (!active) return;
       const seen = new Set<string>();
       setRecentContacts(conversations.filter((conversation) => {
         if (!conversation.contactPhone || seen.has(conversation.contactId)) return false;
         seen.add(conversation.contactId); return true;
-      }).slice(0, 12).map((conversation) => ({
+      }).slice(0, 30).map((conversation) => ({
         id: conversation.contactId, name: conversation.contactName ?? null, phone: conversation.contactPhone!
       })));
     }).catch(() => { if (active) setRecentContacts([]); });
@@ -201,7 +202,7 @@ export function QuickSendDialog({ channels, initialChannelId, getToken, onClose,
           {selectedChannel?.status === 'connecting' ? <p className="inbox-dialog-error">A conexão deste canal ainda não foi confirmada. A fila pausará se o WhatsApp não responder.</p> : null}
           {!reviewing ? <>
             <span className="inbox-field-label">Escolher contatos · {recipients.length} selecionados</span>
-            {recentContacts.length ? <><span className="inbox-picker-section-label">Conversas recentes</span><div className="inbox-contact-picker inbox-contact-picker--recent" role="listbox" aria-multiselectable="true" aria-label="Conversas recentes para envio">{recentContacts.slice(0, 3).map((contact) => {
+            {recentContacts.length ? <><span className="inbox-picker-section-label">Conversas recentes</span><div className="inbox-contact-picker inbox-contact-picker--recent" role="listbox" aria-multiselectable="true" aria-label="Conversas recentes para envio">{recentContacts.map((contact) => {
               const checked = recipients.some((recipient) => recipient.phone === normalizeRecipientPhone(contact.phone));
               return <ContactOption key={contact.id} contact={contact} checked={checked} onToggle={() => toggleRecipient(contact)} />;
             })}</div></> : null}

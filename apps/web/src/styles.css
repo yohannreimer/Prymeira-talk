@@ -7263,7 +7263,7 @@ select:disabled {
 .inbox-recipient-results button:hover { background: var(--color-brand-50); }
 .inbox-recipient-results button strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inbox-recipient-results button span { color: var(--color-text-secondary); white-space: nowrap; }
-.inbox-contact-picker { display: grid; gap: 3px; max-height: 270px; overflow-y: auto; padding: 5px; border: 1px solid var(--color-border-subtle); border-radius: 11px; background: #fff; }
+.inbox-contact-picker { display: grid; grid-auto-rows: max-content; align-content: start; gap: 3px; max-height: 270px; overflow-y: auto; padding: 5px; border: 1px solid var(--color-border-subtle); border-radius: 11px; background: #fff; }
 .inbox-contact-picker--recent { max-height: 155px; }
 .inbox-open-contacts { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 56px; padding: 9px 12px; border: 1px solid #c9ddd0; border-radius: 10px; background: #f5faf6; color: var(--color-brand-700); font: inherit; text-align: left; cursor: pointer; }
 .inbox-open-contacts:hover { background: #ebf5ee; border-color: #a5c5b1; }

@@ -33,9 +33,25 @@ describe('QuickSendDialog review', () => {
     vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
     container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
     api.apiGetContactsPage.mockResolvedValue({ items: contacts, nextCursor: null, total: contacts.length });
+    api.apiGetConversations.mockResolvedValue([]);
     api.apiStartInboxQuickSend.mockClear();
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
+
+  it('keeps thirty recent conversations selectable inside the compact picker', async () => {
+    api.apiGetConversations.mockResolvedValueOnce(Array.from({ length: 35 }, (_, index) => ({
+      contactId: `contact-${index}`, contactName: `Recente ${index + 1}`, contactPhone: `554799888${String(index).padStart(4, '0')}`
+    })));
+    await act(async () => { root.render(<QuickSendDialog channels={channels} getToken={async () => 'token'} onClose={() => undefined} onSent={() => undefined} />); });
+    const recent = container.querySelector('[aria-label="Conversas recentes para envio"]')!;
+    const options = recent.querySelectorAll<HTMLButtonElement>('[role="option"]');
+    expect(options).toHaveLength(30);
+    expect(options[29]?.textContent).toContain('Recente 30');
+    expect(recent.classList.contains('inbox-contact-picker--recent')).toBe(true);
+    await act(async () => options[29]!.click());
+    expect(container.textContent).toContain('1 selecionados');
+    expect(options[29]?.getAttribute('aria-selected')).toBe('true');
+  });
 
   it('lets a seller select more than ten people and queues only after explicit confirmation', async () => {
     const getToken = async () => 'token';
