@@ -1,4 +1,5 @@
 import { useTalkAuth } from "../../app/auth";
+import { ContactAvatar, ContactPhotoProvider } from "../inbox/ContactAvatar";
 import {
   DndContext,
   DragOverlay,
@@ -36,7 +37,7 @@ import {
   Trash2,
   Users
 } from "lucide-react";
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiAddContactToBoard,
   apiCreateBoard,
@@ -47,7 +48,7 @@ import {
   apiGetBoardContacts,
   apiGetBoards,
   apiGetChannels,
-  apiGetContacts,
+  apiGetContactsPage,
   apiGetTags,
   apiMoveBoardMembership,
   apiRemoveBoardMembership,
@@ -205,7 +206,14 @@ function SortableBoardContact(props: {
 export function ContactsPage() {
   const { getToken } = useTalkAuth();
   const [contacts, setContacts] = useState<ContactDto[]>([]);
+  const [totalContacts, setTotalContacts] = useState(0);
+  const [nextContactsCursor, setNextContactsCursor] = useState<string | null>(null);
+  const [isLoadingMoreContacts, setIsLoadingMoreContacts] = useState(false);
+  const loadingMoreContactsRef = useRef(false);
+  const loadMoreContactsRef = useRef<HTMLButtonElement>(null);
   const [search, setSearch] = useState("");
+  const contactsQueryRef = useRef(search);
+  contactsQueryRef.current = search;
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [createForm, setCreateForm] = useState<ContactFormState>(emptyForm);
   const [editForm, setEditForm] = useState<ContactFormState>(emptyForm);
@@ -228,6 +236,12 @@ export function ContactsPage() {
   const [syncScope, setSyncScope] = useState<BoardSyncScope>("active");
   const [syncResult, setSyncResult] = useState<BoardSyncResultDto | null>(null);
   const [addContactId, setAddContactId] = useState("");
+  const [boardContactSearch, setBoardContactSearch] = useState("");
+  const boardContactSearchRef = useRef(boardContactSearch);
+  boardContactSearchRef.current = boardContactSearch;
+  const [boardContactMatches, setBoardContactMatches] = useState<ContactDto[]>([]);
+  const [boardContactCursor, setBoardContactCursor] = useState<string | null>(null);
+  const [isLoadingBoardContactsPage, setIsLoadingBoardContactsPage] = useState(false);
   const [addStageId, setAddStageId] = useState("");
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
   const [drawerContact, setDrawerContact] = useState<ContactDto | null>(null);
@@ -299,11 +313,14 @@ export function ContactsPage() {
       setError(null);
 
       try {
-        const nextContacts = await apiGetContacts(getToken, search);
+        const page = await apiGetContactsPage(getToken, { search });
+        const nextContacts = page.items;
 
         if (!isMounted) return;
 
         setContacts(nextContacts);
+        setTotalContacts(page.total);
+        setNextContactsCursor(page.nextCursor);
         setSelectedContactId((current) =>
           nextContacts.some((contact) => contact.id === current)
             ? current
@@ -433,10 +450,44 @@ export function ContactsPage() {
     };
   }, [getToken, selectedBoardId, viewMode]);
 
+  useEffect(() => {
+    if (viewMode !== "board" || boardPanelMode !== "add-contact") return;
+    let active = true;
+    setIsLoadingBoardContactsPage(true);
+    const timer = window.setTimeout(() => {
+      void apiGetContactsPage(getToken, { search: boardContactSearch }).then((page) => {
+        if (!active) return;
+        setBoardContactMatches(page.items);
+        setBoardContactCursor(page.nextCursor);
+      }).catch(() => { if (active) setBoardError("Não foi possível buscar os contatos."); })
+        .finally(() => { if (active) setIsLoadingBoardContactsPage(false); });
+    }, boardContactSearch ? 250 : 0);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [getToken, viewMode, boardPanelMode, boardContactSearch]);
+
+  async function loadMoreBoardContacts() {
+    if (!boardContactCursor || isLoadingBoardContactsPage) return;
+    const search = boardContactSearch;
+    setIsLoadingBoardContactsPage(true);
+    try {
+      const page = await apiGetContactsPage(getToken, { search, cursor: boardContactCursor });
+      if (search !== boardContactSearchRef.current) return;
+      setBoardContactMatches((current) => {
+        const seen = new Set(current.map((contact) => contact.id));
+        return [...current, ...page.items.filter((contact) => !seen.has(contact.id))];
+      });
+      setBoardContactCursor(page.nextCursor);
+    } catch { setBoardError("Não foi possível carregar mais contatos."); }
+    finally { setIsLoadingBoardContactsPage(false); }
+  }
+
   const refreshContactsFromRealtime = useCallback(() => {
-    void apiGetContacts(getToken, search)
-      .then((nextContacts) => {
+    void apiGetContactsPage(getToken, { search })
+      .then((page) => {
+        const nextContacts = page.items;
         setContacts(nextContacts);
+        setTotalContacts(page.total);
+        setNextContactsCursor(page.nextCursor);
         setSelectedContactId((current) =>
           nextContacts.some((contact) => contact.id === current)
             ? current
@@ -445,6 +496,37 @@ export function ContactsPage() {
       })
       .catch(() => undefined);
   }, [getToken, search]);
+
+  async function loadMoreContacts() {
+    if (!nextContactsCursor || loadingMoreContactsRef.current) return;
+    const query = search;
+    loadingMoreContactsRef.current = true;
+    setIsLoadingMoreContacts(true);
+    try {
+      const page = await apiGetContactsPage(getToken, { search: query, cursor: nextContactsCursor });
+      if (contactsQueryRef.current !== query) return;
+      setContacts((current) => {
+        const seen = new Set(current.map((contact) => contact.id));
+        return [...current, ...page.items.filter((contact) => !seen.has(contact.id))];
+      });
+      setNextContactsCursor(page.nextCursor);
+      setTotalContacts(page.total);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Não foi possível carregar mais contatos.');
+    } finally {
+      loadingMoreContactsRef.current = false;
+      setIsLoadingMoreContacts(false);
+    }
+  }
+
+  useEffect(() => {
+    if (viewMode !== 'list' || !nextContactsCursor || isLoadingMoreContacts || !loadMoreContactsRef.current) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void loadMoreContacts();
+    }, { rootMargin: '240px' });
+    observer.observe(loadMoreContactsRef.current);
+    return () => observer.disconnect();
+  }, [viewMode, nextContactsCursor, isLoadingMoreContacts, search, getToken]);
 
   const refreshBoardFromRealtime = useCallback(
     (boardId: string) => {
@@ -539,9 +621,9 @@ export function ContactsPage() {
   const availableBoardContacts = useMemo(
     () =>
       loadedBoardContacts
-        ? contacts.filter((contact) => !boardContactIds.has(contact.id))
+        ? boardContactMatches.filter((contact) => !boardContactIds.has(contact.id))
         : [],
-    [boardContactIds, contacts, loadedBoardContacts]
+    [boardContactIds, boardContactMatches, loadedBoardContacts]
   );
   const membershipsByStage = useMemo(() => {
     const grouped = new Map<string, BoardContactCardDto[]>();
@@ -1219,7 +1301,7 @@ export function ContactsPage() {
   }
 
   return (
-    <section className="module-page contacts-page" aria-label="Contatos">
+    <ContactPhotoProvider getToken={getToken}><section className="module-page contacts-page" aria-label="Contatos">
       <header className="module-header">
         <div>
           <p className="eyebrow">Prymeira Talk</p>
@@ -1240,7 +1322,7 @@ export function ContactsPage() {
           <Search size={18} aria-hidden="true" />
           <input
             aria-label="Buscar contatos"
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => { setNextContactsCursor(null); setSearch(event.target.value); }}
             placeholder="Buscar por nome, telefone, email ou empresa"
             type="search"
             value={search}
@@ -1268,23 +1350,23 @@ export function ContactsPage() {
 
       <div className="contacts-stats-row" aria-label="Resumo de contatos">
         <span className="contacts-stat">
-          <strong>{contacts.length}</strong>
+          <strong>{totalContacts}</strong>
           <span>Total</span>
         </span>
         <span className="contacts-stat">
           <strong>{contactsWithEmail}</strong>
-          <span>Com email</span>
+          <span>Com email exibidos</span>
         </span>
         <span className="contacts-stat">
           <strong>{recentlyUpdated}</strong>
-          <span>Atualizados (7d)</span>
+          <span>Atualizados exibidos (7d)</span>
         </span>
       </div>
 
       <section className="module-panel" style={{ margin: '0 8px 8px', borderRadius: 'var(--radius-lg)' }}>
             <div className="panel-title-row">
               <h2>{viewMode === "list" ? "Lista de contatos" : "Board de contatos"}</h2>
-              <span>{contactsWithCompany} com empresa</span>
+              <span>{contactsWithCompany} exibidos com empresa</span>
             </div>
 
             {isLoading ? <p className="list-note">Carregando contatos...</p> : null}
@@ -1301,7 +1383,7 @@ export function ContactsPage() {
             ) : null}
 
             {viewMode === "list" && contacts.length > 0 ? (
-              <div className="contacts-table" role="table" aria-label="Contatos locais">
+              <><div className="contacts-table" role="table" aria-label="Contatos locais">
                 <div className="contacts-table-head" role="row">
                   <span role="columnheader">Contato</span>
                   <span role="columnheader">Telefone</span>
@@ -1322,7 +1404,7 @@ export function ContactsPage() {
                     type="button"
                   >
                     <span className="contacts-person" role="cell">
-                      <span className="contact-avatar" aria-hidden="true">{initials(contact)}</span>
+                      <ContactAvatar contactId={contact.id} name={contactName(contact)} className="contact-avatar" />
                       <span>
                         <strong>{contactName(contact)}</strong>
                         <small>{contact.email ?? "Sem email"}</small>
@@ -1337,6 +1419,7 @@ export function ContactsPage() {
                   </button>
                 ))}
               </div>
+              {nextContactsCursor ? <button ref={loadMoreContactsRef} className="contacts-load-more" type="button" disabled={isLoadingMoreContacts} onClick={() => void loadMoreContacts()}>{isLoadingMoreContacts ? 'Carregando contatos...' : 'Carregar mais contatos'}</button> : null}</>
             ) : null}
 
             {viewMode === "board" ? (
@@ -1800,6 +1883,10 @@ export function ContactsPage() {
                     {boardPanelMode === "add-contact" ? (
                       <form className="board-add-form" onSubmit={handleAddContactToBoard}>
                         <label>
+                          Buscar contato
+                          <input type="search" value={boardContactSearch} placeholder="Nome ou telefone" onChange={(event) => { setBoardContactSearch(event.target.value); setBoardContactMatches([]); setBoardContactCursor(null); }} />
+                        </label>
+                        <label>
                           Contato
                           <select
                             disabled={
@@ -1818,6 +1905,7 @@ export function ContactsPage() {
                             ))}
                           </select>
                         </label>
+                        {boardContactCursor ? <button type="button" className="secondary-button" disabled={isLoadingBoardContactsPage} onClick={() => void loadMoreBoardContacts()}>{isLoadingBoardContactsPage ? "Carregando..." : "Mostrar mais contatos"}</button> : null}
                         <label>
                           Etapa
                           <select
@@ -2272,6 +2360,6 @@ export function ContactsPage() {
           </aside>
         </>
       ) : null}
-    </section>
+    </section></ContactPhotoProvider>
   );
 }

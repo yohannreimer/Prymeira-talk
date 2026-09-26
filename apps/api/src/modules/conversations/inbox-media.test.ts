@@ -4,7 +4,10 @@ import { createInboxMediaService } from './inbox-media.js';
 
 function setup() {
   const conversation = { id: 'c', contact: { phone: '5511999999999' }, channel: { provider: 'evolution', providerKey: 'instance' } };
-  const prisma = { conversation: { findFirst: vi.fn().mockResolvedValue(conversation) }, message: { findFirst: vi.fn().mockResolvedValue({ id: 'm', type: 'audio', mediaUrl: 'data:audio/ogg;base64,YQ==', providerMessageId: 'provider-m' }) } };
+  const prisma = { conversation: { findFirst: vi.fn().mockResolvedValue(conversation) },
+    message: { findFirst: vi.fn().mockResolvedValue({ id: 'm', type: 'audio', mediaUrl: 'data:audio/ogg;base64,YQ==', providerMessageId: 'provider-m' }) },
+    contact: { findFirst: vi.fn().mockResolvedValue({ phone: '5511999999999', avatarUrl: null }) },
+    channel: { findFirst: vi.fn().mockResolvedValue(null) }, $executeRaw: vi.fn().mockResolvedValue(1) };
   const resolve = vi.fn().mockResolvedValue({ bytes: Buffer.from('ogg'), mimeType: 'audio/ogg', source: 'data_url' });
   const convert = vi.fn().mockResolvedValue({ bytes: Buffer.from('mp3'), mimeType: 'audio/mpeg' });
   const profile = vi.fn().mockResolvedValue('https://pps.whatsapp.net/photo.jpg');
@@ -76,5 +79,19 @@ describe('inbox media without AI or sending', () => {
     prisma.conversation.findFirst.mockResolvedValue({ contact: { phone: '5511999999999' }, channel: { provider: 'meta_cloud' } });
     expect(await service.photo('w', 'c')).toBeNull();
     expect(profile).not.toHaveBeenCalled();
+  });
+  it('loads a saved contact photo through the workspace channel and persists its URL', async () => {
+    const { service, prisma, profile, resolve } = setup();
+    resolve.mockResolvedValue({ bytes: Buffer.from('jpg'), mimeType: 'image/jpeg', source: 'remote' });
+    const photo = await service.photoForContact('w', 'contact-1');
+    expect(photo?.mimeType).toBe('image/jpeg');
+    expect(prisma.contact.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { workspaceId: 'w', id: 'contact-1' }
+    }));
+    expect(profile).toHaveBeenCalledWith({ instanceName: 'instance', number: '5511999999999' });
+    expect(prisma.$executeRaw).toHaveBeenCalled();
+    prisma.contact.findFirst.mockResolvedValue(null);
+    await expect(service.photoForContact('other', 'contact-1')).rejects.toThrow('NOT_FOUND');
+    expect(profile).toHaveBeenCalledTimes(1);
   });
 });

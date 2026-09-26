@@ -465,7 +465,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     publicTalkUrl: env.PUBLIC_TALK_URL,
     uploadDir: env.TALK_UPLOAD_DIR
   });
-  await app.register(contactsRoutes);
+  await app.register(contactsRoutes, { evolution: evolutionRuntime });
   await app.register(boardsRoutes);
   await app.register(channelsRoutes, { evolution: evolutionRuntime });
   await app.register(automationsRoutes, { agentRuntime, evolution: evolutionRuntime });

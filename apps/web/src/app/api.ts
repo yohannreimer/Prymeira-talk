@@ -1372,6 +1372,16 @@ export async function apiGetContactPhoto(conversationId: string, getToken: () =>
   return response.blob();
 }
 
+export async function apiGetSavedContactPhoto(contactId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/contacts/${encodeURIComponent(contactId)}/photo`, {
+    headers: { Authorization: `Bearer ${token}` }, signal
+  });
+  if (response.status === 204) return null;
+  if (!response.ok) throw new Error('Não foi possível carregar a foto do contato.');
+  return response.blob();
+}
+
 async function fetchJson<T>(
   getToken: () => Promise<string | null>,
   path: string,
@@ -1699,6 +1709,54 @@ export async function apiGetContacts(
 
   const data = await response.json();
   return contactSchema.array().parse(data);
+}
+
+export async function apiGetContactsPage(
+  getToken: () => Promise<string | null>,
+  options: { search?: string; cursor?: string; limit?: number } = {}
+): Promise<{ items: ContactDto[]; nextCursor: string | null; total: number }> {
+  const token = await getRequiredToken(getToken);
+  const url = new URL(`${apiUrl}/contacts/page`);
+  if (options.search?.trim()) url.searchParams.set('search', options.search.trim());
+  if (options.cursor) url.searchParams.set('cursor', options.cursor);
+  if (options.limit) url.searchParams.set('limit', String(options.limit));
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error(`Failed to load contacts page: ${response.status}`);
+  const data = await response.json() as { items: unknown[]; nextCursor: unknown; total: unknown };
+  return {
+    items: contactSchema.array().parse(data.items),
+    nextCursor: typeof data.nextCursor === 'string' ? data.nextCursor : null,
+    total: typeof data.total === 'number' ? data.total : 0
+  };
+}
+
+export function apiStartInboxQuickSend(getToken: () => Promise<string | null>, body: {
+  confirmation: true;
+  idempotencyKey: string; channelId: string; body: string;
+  recipients: Array<{ contactId?: string; phone: string; name?: string }>;
+}): Promise<{ campaignId: string; recipientsQueued: number }> {
+  return fetchJson(getToken, '/inbox/quick-sends', { method: 'POST', body: JSON.stringify(body) },
+    (data) => data as { campaignId: string; recipientsQueued: number }, 'Não foi possível iniciar o envio.');
+}
+
+export function apiGetInboxQuickSend(getToken: () => Promise<string | null>, campaignId: string): Promise<CampaignProgressDto> {
+  return fetchJson(getToken, `/inbox/quick-sends/${encodeURIComponent(campaignId)}`, { method: 'GET' },
+    (data) => data as CampaignProgressDto, 'Não foi possível acompanhar o envio.');
+}
+
+export function apiGetLatestInboxQuickSend(getToken: () => Promise<string | null>): Promise<{ campaignId: string | null }> {
+  return fetchJson(getToken, '/inbox/quick-sends/latest', { method: 'GET' },
+    (data) => data as { campaignId: string | null }, 'Não foi possível carregar a fila de envios.');
+}
+
+export function apiCancelInboxQuickSend(getToken: () => Promise<string | null>, campaignId: string): Promise<CampaignProgressDto> {
+  return fetchJson(getToken, `/inbox/quick-sends/${encodeURIComponent(campaignId)}/cancel`, { method: 'POST' },
+    (data) => data as CampaignProgressDto, 'Não foi possível cancelar as mensagens pendentes.');
+}
+
+export function apiResumeInboxQuickSend(getToken: () => Promise<string | null>, campaignId: string): Promise<CampaignProgressDto> {
+  return fetchJson(getToken, `/inbox/quick-sends/${encodeURIComponent(campaignId)}/resume`, { method: 'POST' },
+    (data) => data as CampaignProgressDto, 'Não foi possível retomar a fila.');
 }
 
 export async function apiCreateContact(

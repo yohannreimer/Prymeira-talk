@@ -9,6 +9,7 @@ import { previewCampaignAudience } from "./campaign-audience-preview.js";
 import { CampaignActivationError, createCampaignActivationService } from "./campaign-activation.service.js";
 import { CampaignControlError, createCampaignControlsService } from "./campaign-controls.service.js";
 import { nextCampaignInstant, DEFAULT_CAMPAIGN_CADENCE } from "./campaign-cadence.js";
+import { createInboxQuickSendService, InboxQuickSendError } from "./inbox-quick-send.service.js";
 
 const uuidParamSchema = z.string().uuid();
 
@@ -96,6 +97,17 @@ const sendRealBodySchema = z
   })
   .optional();
 
+const inboxQuickSendBodySchema = z.object({
+  confirmation: z.literal(true),
+  idempotencyKey: uuidParamSchema,
+  channelId: uuidParamSchema,
+  body: z.string().trim().min(1).max(2000),
+  recipients: z.array(z.object({
+    contactId: uuidParamSchema.optional(), phone: z.string().trim().min(3).max(40).optional(),
+    name: z.string().trim().max(200).optional()
+  }).refine((recipient) => recipient.contactId || recipient.phone)).min(1).max(5000)
+});
+
 function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
   return (
     typeof error === "object" &&
@@ -164,6 +176,82 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
   });
   const activation = createCampaignActivationService(app.prisma);
   const controls = createCampaignControlsService(app.prisma);
+  const inboxQuickSend = createInboxQuickSendService(app.prisma);
+
+  app.post('/inbox/quick-sends', async (request, reply) => {
+    if (!canPerform(request.talk.role, 'conversation.reply')) return reply.code(403).send({ error: 'Sem permissão para enviar mensagens.' });
+    if (options.evolution?.mode !== 'real' || !options.evolution.client?.checkWhatsappNumbersAvailability) {
+      return reply.code(409).send({ error: 'O envio WhatsApp não está disponível agora.' });
+    }
+    const body = inboxQuickSendBodySchema.safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: 'Revise os destinatários e a mensagem.' });
+    try {
+      return reply.code(201).send(await inboxQuickSend.enqueue({
+        ...body.data, workspaceId: request.talk.workspaceId,
+        actorId: request.talk.clerkUserId ?? request.talk.workspaceId
+      }));
+    } catch (error) {
+      if (error instanceof InboxQuickSendError) return reply.code(error.code === 'CONTACT_NOT_FOUND' ? 404 : 409)
+        .send({ code: error.code, error: error.message });
+      throw error;
+    }
+  });
+
+  app.get('/inbox/quick-sends/latest', async (request) => {
+    const campaign = await app.prisma.campaign.findFirst({ where: {
+      workspaceId: request.talk.workspaceId, startMode: 'inbox_quick',
+      confirmedBy: request.talk.clerkUserId ?? request.talk.workspaceId,
+      status: { in: ['scheduled', 'sending', 'paused', 'needs_attention'] }
+    }, orderBy: { createdAt: 'desc' }, select: { id: true } });
+    return { campaignId: campaign?.id ?? null };
+  });
+
+  app.get('/inbox/quick-sends/:campaignId', async (request, reply) => {
+    const params = campaignParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Envio inválido.' });
+    const campaign = await app.prisma.campaign.findFirst({ where: {
+      workspaceId: request.talk.workspaceId, id: params.data.campaignId, startMode: 'inbox_quick'
+    }, select: { confirmedBy: true } });
+    if (!campaign) return reply.code(404).send({ error: 'Envio não encontrado.' });
+    if (!canPerform(request.talk.role, 'campaign.manage') && campaign.confirmedBy !== request.talk.clerkUserId) {
+      return reply.code(403).send({ error: 'Sem permissão para acompanhar este envio.' });
+    }
+    return controls.progress(request.talk.workspaceId, params.data.campaignId);
+  });
+
+  app.post('/inbox/quick-sends/:campaignId/cancel', async (request, reply) => {
+    const params = campaignParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Envio inválido.' });
+    const campaign = await app.prisma.campaign.findFirst({ where: {
+      workspaceId: request.talk.workspaceId, id: params.data.campaignId, startMode: 'inbox_quick'
+    }, select: { confirmedBy: true } });
+    if (!campaign) return reply.code(404).send({ error: 'Envio não encontrado.' });
+    if (!canPerform(request.talk.role, 'campaign.manage') && campaign.confirmedBy !== request.talk.clerkUserId) {
+      return reply.code(403).send({ error: 'Sem permissão para cancelar este envio.' });
+    }
+    try { return await controls.cancelRemaining(request.talk.workspaceId, params.data.campaignId); }
+    catch (error) {
+      if (error instanceof CampaignControlError) return reply.code(409).send({ code: error.code, error: error.message });
+      throw error;
+    }
+  });
+
+  app.post('/inbox/quick-sends/:campaignId/resume', async (request, reply) => {
+    const params = campaignParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Envio inválido.' });
+    const campaign = await app.prisma.campaign.findFirst({ where: {
+      workspaceId: request.talk.workspaceId, id: params.data.campaignId, startMode: 'inbox_quick'
+    }, select: { confirmedBy: true } });
+    if (!campaign) return reply.code(404).send({ error: 'Envio não encontrado.' });
+    if (!canPerform(request.talk.role, 'campaign.manage') && campaign.confirmedBy !== request.talk.clerkUserId) {
+      return reply.code(403).send({ error: 'Sem permissão para retomar este envio.' });
+    }
+    try { return await controls.resume(request.talk.workspaceId, params.data.campaignId); }
+    catch (error) {
+      if (error instanceof CampaignControlError) return reply.code(409).send({ code: error.code, error: error.message });
+      throw error;
+    }
+  });
 
   async function verifiedPreview(workspaceId: string, campaignId: string, channelId: string,
     schedule?: { startMode: "now" | "scheduled"; scheduledAt?: string | null; timeZone: string }) {

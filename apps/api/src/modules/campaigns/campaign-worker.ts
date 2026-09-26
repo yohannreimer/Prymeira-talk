@@ -48,7 +48,8 @@ export function createCampaignWorker(input: {
       return true;
     }
     const channel = await input.prisma.channel.findFirst({ where: {
-      id: job.channelId, workspaceId: job.workspaceId, provider: "evolution", status: "connected"
+      id: job.channelId, workspaceId: job.workspaceId, provider: "evolution",
+      status: job.campaign.startMode === 'inbox_quick' ? { in: ['connected', 'connecting'] } : 'connected'
     }, select: { providerKey: true } });
     if (!channel || !input.evolution.checkWhatsappNumbersAvailability) {
       await repository.returnPending({ id: job.id, leaseToken: token,

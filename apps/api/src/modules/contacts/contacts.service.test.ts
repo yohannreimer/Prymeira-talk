@@ -8,6 +8,7 @@ import { contactsRoutes } from "./contacts.routes.js";
 type MockPrisma = {
   contact: {
     findMany: ReturnType<typeof vi.fn<PrismaLike["contact"]["findMany"]>>;
+    count: ReturnType<typeof vi.fn<PrismaLike["contact"]["count"]>>;
     create: ReturnType<typeof vi.fn<PrismaLike["contact"]["create"]>>;
     update: ReturnType<typeof vi.fn<PrismaLike["contact"]["update"]>>;
     findUnique: ReturnType<typeof vi.fn<PrismaLike["contact"]["findUnique"]>>;
@@ -44,6 +45,7 @@ function createMockPrisma(
       findMany:
         overrides.findMany ??
         vi.fn<PrismaLike["contact"]["findMany"]>().mockResolvedValue([baseContact]),
+      count: overrides.count ?? vi.fn<PrismaLike["contact"]["count"]>().mockResolvedValue(1),
       create:
         overrides.create ??
         vi.fn<PrismaLike["contact"]["create"]>().mockResolvedValue(baseContact),
@@ -111,6 +113,21 @@ describe("contacts service", () => {
       orderBy: [{ updatedAt: "desc" }, { name: "asc" }],
       take: 100
     });
+  });
+
+  it("paginates contacts beyond the first 100 and reports the full count", async () => {
+    const first = { ...baseContact, id: "00000000-0000-4000-8000-000000000011" };
+    const second = { ...baseContact, id: "00000000-0000-4000-8000-000000000012" };
+    const prisma = createMockPrisma({
+      findMany: vi.fn<PrismaLike["contact"]["findMany"]>().mockResolvedValue([first, second]),
+      count: vi.fn<PrismaLike["contact"]["count"]>().mockResolvedValue(247)
+    });
+    const page = await createContactsService(prisma).listContactsPage({ workspaceId: "workspace_a", limit: 1 });
+    expect(page).toEqual({ items: [expect.objectContaining({ id: first.id })], nextCursor: first.id, total: 247 });
+    expect(prisma.contact.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 2,
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }] }));
+    await createContactsService(prisma).listContactsPage({ workspaceId: "workspace_a", limit: 1, cursor: first.id });
+    expect(prisma.contact.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: { id: first.id }, skip: 1 }));
   });
 
   it("adds search filters without dropping the workspace filter", async () => {

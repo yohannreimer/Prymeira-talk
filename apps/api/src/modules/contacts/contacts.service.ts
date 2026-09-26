@@ -27,6 +27,7 @@ interface ContactRecord {
 }
 
 type ContactFindManyArgs = Parameters<PrismaClient["contact"]["findMany"]>[0];
+type ContactCountArgs = Parameters<PrismaClient["contact"]["count"]>[0];
 type ContactCreateArgs = Parameters<PrismaClient["contact"]["create"]>[0];
 type ContactUpdateArgs = Parameters<PrismaClient["contact"]["update"]>[0];
 type ContactFindUniqueArgs = Parameters<PrismaClient["contact"]["findUnique"]>[0];
@@ -37,6 +38,7 @@ type ConversationUpsertArgs = Parameters<PrismaClient["conversation"]["upsert"]>
 export interface PrismaLike {
   contact: {
     findMany(args: ContactFindManyArgs): Promise<ContactRecord[]>;
+    count(args: ContactCountArgs): Promise<number>;
     create(args: ContactCreateArgs): Promise<ContactRecord>;
     update(args: ContactUpdateArgs): Promise<ContactRecord>;
     findUnique(args: ContactFindUniqueArgs): Promise<{ id: string } | null>;
@@ -87,6 +89,19 @@ export function toContactDto(record: ContactRecord): ContactDto {
 }
 
 export function createContactsService(prisma: PrismaLike) {
+  function contactWhere(workspaceId: string, search?: string) {
+    const term = search?.trim();
+    return term ? {
+      workspaceId,
+      OR: [
+        { name: { contains: term, mode: "insensitive" as const } },
+        { company: { contains: term, mode: "insensitive" as const } },
+        { email: { contains: term, mode: "insensitive" as const } },
+        { phone: { contains: term, mode: "insensitive" as const } }
+      ]
+    } : { workspaceId };
+  }
+
   async function findContactByPhoneVariant(workspaceId: string, phone: string) {
     return prisma.contact.findFirst({
       where: {
@@ -104,22 +119,33 @@ export function createContactsService(prisma: PrismaLike) {
     }): Promise<ContactDto[]> {
       const search = input.search?.trim();
       const contacts = await prisma.contact.findMany({
-        where: search
-          ? {
-              workspaceId: input.workspaceId,
-              OR: [
-                { name: { contains: search, mode: "insensitive" } },
-                { company: { contains: search, mode: "insensitive" } },
-                { email: { contains: search, mode: "insensitive" } },
-                { phone: { contains: search, mode: "insensitive" } }
-              ]
-            }
-          : { workspaceId: input.workspaceId },
+        where: contactWhere(input.workspaceId, search),
         orderBy: [{ updatedAt: "desc" }, { name: "asc" }],
         take: 100
       });
 
       return contacts.map(toContactDto);
+    },
+
+    async listContactsPage(input: {
+      workspaceId: string;
+      search?: string;
+      cursor?: string;
+      limit: number;
+    }): Promise<{ items: ContactDto[]; nextCursor: string | null; total: number }> {
+      const where = contactWhere(input.workspaceId, input.search);
+      const [rows, total] = await Promise.all([prisma.contact.findMany({
+        where,
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        take: input.limit + 1,
+        ...(input.cursor ? { cursor: { id: input.cursor }, skip: 1 } : {})
+      }), prisma.contact.count({ where })]);
+      const items = rows.slice(0, input.limit);
+      return {
+        items: items.map(toContactDto),
+        nextCursor: rows.length > input.limit ? items.at(-1)?.id ?? null : null,
+        total
+      };
     },
 
     async createContact(input: {

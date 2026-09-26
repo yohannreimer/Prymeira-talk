@@ -23,7 +23,7 @@ export function createCampaignWorkerRepository(prisma: PrismaClient, options: {
               WHERE active.workspace_id = r.workspace_id
                 AND active.channel_id = r.channel_id AND active.status IN ('in_flight', 'uncertain')
             )
-          ORDER BY r.scheduled_at, r.id
+          ORDER BY r.scheduled_at, r.sequence_number NULLS LAST, r.id
           FOR UPDATE OF r, t SKIP LOCKED LIMIT 1
         `;
         const id = rows[0]?.id;

@@ -13,7 +13,7 @@ const photoPolicy: AgentMediaPolicy = { kind: 'image', maxBytes: 2 * 1024 * 1024
 
 /** Memory-only, tenant-scoped, bounded cache. No changes to AI state, message bodies or sends. */
 export function createInboxMediaService(options: {
-  prisma: Pick<PrismaClient, 'conversation' | 'message'>;
+  prisma: Pick<PrismaClient, 'conversation' | 'message' | 'contact' | 'channel' | '$executeRaw'>;
   client?: Pick<EvolutionClient, 'fetchMedia' | 'fetchProfilePicture'> | null;
   resolve?: typeof resolveAgentMedia;
   convert?: typeof prepareAudioPlayback;
@@ -60,6 +60,38 @@ export function createInboxMediaService(options: {
     return result;
   }
   return {
+    async photoForContact(workspaceId: string, contactId: string) {
+      const contact = await options.prisma.contact.findFirst({
+        where: { workspaceId, id: contactId }, select: { phone: true, avatarUrl: true }
+      });
+      if (!contact) throw new Error('NOT_FOUND');
+      const conversationChannel = await options.prisma.conversation.findFirst({
+        where: { workspaceId, contactId, channel: { provider: 'evolution' } },
+        orderBy: { updatedAt: 'desc' },
+        select: { channel: { select: { providerKey: true } } }
+      });
+      const fallbackChannel = conversationChannel ? null : await options.prisma.channel.findFirst({
+        where: { workspaceId, provider: 'evolution', status: { in: ['connected', 'connecting'] } },
+        orderBy: { updatedAt: 'desc' }, select: { providerKey: true }
+      });
+      const providerKey = conversationChannel?.channel.providerKey ?? fallbackChannel?.providerKey;
+      return cached(`contact-photo:${workspaceId}:${contactId}:${providerKey ?? ''}`, async () => {
+        let freshUrl: string | null = null;
+        if (providerKey && options.client?.fetchProfilePicture) {
+          try { freshUrl = await options.client.fetchProfilePicture({ instanceName: providerKey, number: contact.phone }); }
+          catch { /* A saved picture may still be available. */ }
+        }
+        const url = freshUrl ?? contact.avatarUrl;
+        if (!url) return null;
+        try {
+          const media = await resolve({ mediaUrl: url, policy: photoPolicy });
+          if (freshUrl && freshUrl !== contact.avatarUrl) {
+            await options.prisma.$executeRaw`UPDATE contacts SET avatar_url = ${freshUrl} WHERE workspace_id = ${workspaceId} AND id = ${contactId}::uuid`.catch(() => undefined);
+          }
+          return { bytes: media.bytes, mimeType: media.mimeType };
+        } catch { return null; }
+      });
+    },
     async preview(workspaceId: string, conversationId: string, messageId: string, page: number): Promise<Media> {
       if (!Number.isInteger(page) || page < 1 || page > 2000) throw new Error('INVALID_PDF_PAGE');
       const media = await this.media(workspaceId, conversationId, messageId);

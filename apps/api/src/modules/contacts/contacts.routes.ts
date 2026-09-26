@@ -1,9 +1,16 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { createContactsService } from "./contacts.service.js";
+import { createInboxMediaService } from "../conversations/inbox-media.js";
+import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 
 const searchQuerySchema = z.object({
   search: z.string().optional()
+});
+const pageQuerySchema = z.object({
+  search: z.string().trim().max(100).optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
 });
 
 const contactParamsSchema = z.object({
@@ -57,8 +64,29 @@ function sendPhoneConflict(reply: FastifyReply) {
     });
 }
 
-export const contactsRoutes: FastifyPluginAsync = async (app) => {
+export const contactsRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntime }> = async (app, options) => {
   const service = createContactsService(app.prisma);
+  const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client });
+
+  app.get("/contacts/page", async (request, reply) => {
+    const query = pageQuerySchema.safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: "Invalid contacts page request." });
+    return service.listContactsPage({ workspaceId: request.talk.workspaceId, ...query.data });
+  });
+
+  app.get("/contacts/:contactId/photo", async (request, reply) => {
+    const params = contactParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: "Invalid contact photo request." });
+    reply.header("Cache-Control", "private, no-store").header("X-Content-Type-Options", "nosniff");
+    try {
+      const photo = await mediaService.photoForContact(request.talk.workspaceId, params.data.contactId);
+      return photo ? reply.type(photo.mimeType).send(photo.bytes) : reply.code(204).send();
+    } catch (error) {
+      if (error instanceof Error && error.message === "NOT_FOUND") return reply.code(404).send();
+      request.log.warn({ err: error }, "Failed to fetch contact photo");
+      return reply.code(503).send({ error: "Não foi possível carregar a foto do contato." });
+    }
+  });
 
   app.get("/contacts", async (request, reply) => {
     const query = searchQuerySchema.safeParse(request.query);
