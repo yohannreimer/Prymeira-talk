@@ -40,11 +40,17 @@ describe('QuickSendDialog review', () => {
   it('lets a seller select more than ten people and queues only after explicit confirmation', async () => {
     const getToken = async () => 'token';
     await act(async () => { root.render(<QuickSendDialog channels={channels} getToken={getToken} onClose={() => undefined} onSent={() => undefined} />); });
+    expect(container.textContent).toContain('Todos os contatos');
+    expect(container.querySelectorAll('[aria-label="Contatos para envio"] [role="option"]')).toHaveLength(0);
+    const openContacts = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes('Todos os contatos'))!;
+    await act(async () => openContacts.click());
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
-    expect(container.querySelectorAll('[role="option"]')).toHaveLength(12);
-    const options = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+    expect(container.querySelectorAll('[aria-label="Contatos para envio"] [role="option"]')).toHaveLength(12);
+    const options = [...container.querySelectorAll<HTMLButtonElement>('[aria-label="Contatos para envio"] [role="option"]')];
     for (const option of options.slice(0, 11)) await act(async () => option.click());
     expect(container.textContent).toContain('11 selecionados');
+    await act(async () => container.querySelector<HTMLButtonElement>('.inbox-all-contacts-panel footer button')!.click());
+    expect(container.querySelector('.inbox-all-contacts-panel')).toBeNull();
     const message = container.querySelector<HTMLTextAreaElement>('#quick-message')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(message, 'Chapas em aço carbono');
