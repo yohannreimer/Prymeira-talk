@@ -1591,19 +1591,25 @@ describe("createAgentRuntime", () => {
       messageId: ids.message
     });
 
-    expect(result.status).toBe("skipped");
+    expect(result.status).toBe("handoff_requested");
     expect(result.message).toContain("Conversa anterior ao WhatsApp");
     expect(hasPriorMessages).not.toHaveBeenCalled();
-    expect(prisma.aiAgentSession.upsert).not.toHaveBeenCalled();
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.aiAgentSession.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
+        status: "handoff_requested",
+        handoffReason: expect.stringContaining("Conversa anterior ao WhatsApp")
+      })
+    }));
     expect(prisma.conversation.update).toHaveBeenCalledWith({
       where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.conversation } },
       data: {
         aiControlStatus: "human_controlled",
-        handoffReason: expect.stringContaining("Conversa anterior ao WhatsApp")
+        activeAgentSessionId: ids.session
       }
     });
     expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ status: "skipped" })
+      data: expect.objectContaining({ status: "handoff_requested", sessionId: ids.session })
     });
   });
 
@@ -1636,14 +1642,19 @@ describe("createAgentRuntime", () => {
       messageId: ids.message
     });
 
-    expect(result.status).toBe("skipped");
+    expect(result.status).toBe("handoff_requested");
     expect(hasPriorMessages).toHaveBeenCalled();
-    expect(prisma.aiAgentSession.upsert).not.toHaveBeenCalled();
+    expect(prisma.aiAgentSession.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
+        status: "handoff_requested",
+        handoffReason: expect.stringContaining("Conversa anterior ao WhatsApp")
+      })
+    }));
     expect(prisma.conversation.update).toHaveBeenCalledWith({
       where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.conversation } },
       data: {
         aiControlStatus: "human_controlled",
-        handoffReason: expect.stringContaining("Conversa anterior ao WhatsApp")
+        activeAgentSessionId: ids.session
       }
     });
   });
@@ -1677,14 +1688,19 @@ describe("createAgentRuntime", () => {
       messageId: ids.message
     });
 
-    expect(result.status).toBe("skipped");
+    expect(result.status).toBe("handoff_requested");
     expect(result.message).toContain("Não foi possível confirmar o histórico do WhatsApp");
-    expect(prisma.aiAgentSession.upsert).not.toHaveBeenCalled();
+    expect(prisma.aiAgentSession.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
+        status: "handoff_requested",
+        handoffReason: expect.stringContaining("Não foi possível confirmar")
+      })
+    }));
     expect(prisma.conversation.update).toHaveBeenCalledWith({
       where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.conversation } },
       data: {
         aiControlStatus: "human_controlled",
-        handoffReason: expect.stringContaining("Não foi possível confirmar")
+        activeAgentSessionId: ids.session
       }
     });
   });
