@@ -79,6 +79,13 @@ describe('hasPriorMessages', () => {
     await expect(source.hasPriorMessages({ instanceName: 'Diogo', remoteJid: jid })).resolves.toBe(true);
   });
 
+  it('does not mistake later messages in the same new conversation for older history', async () => {
+    const { source } = setup([[row(current, end.getTime()), row('later', end.getTime() + 60_000)]]);
+    await expect(source.hasPriorMessages({ instanceName: 'Diogo', remoteJid: jid, excludeMessageId: current, before: end })).resolves.toBe(false);
+    const { source: withHistory } = setup([[row('old', end.getTime() - 60_000), row(current, end.getTime()), row('later', end.getTime() + 60_000)]]);
+    await expect(withHistory.hasPriorMessages({ instanceName: 'Diogo', remoteJid: jid, excludeMessageId: current, before: end })).resolves.toBe(true);
+  });
+
   it('treats malformed records as prior history instead of guessing', async () => {
     const { source } = setup([[{ key: { remoteJid: jid } }]]);
     await expect(source.hasPriorMessages({ instanceName: 'Diogo', remoteJid: jid, excludeMessageId: current })).resolves.toBe(true);

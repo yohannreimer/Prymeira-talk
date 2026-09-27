@@ -145,6 +145,7 @@ type AgentRuntimeChatHistory = {
     instanceName: string;
     remoteJid: string;
     excludeMessageId?: string | null;
+    before?: Date;
   }): Promise<boolean>;
 };
 
@@ -1519,11 +1520,18 @@ async function evaluateFreshConversation(input: {
   conversation: ConversationRecord;
   message: MessageRecord;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const messageCreatedAt = input.message.createdAt instanceof Date
+    ? input.message.createdAt
+    : new Date(input.message.createdAt);
+  if (!Number.isFinite(messageCreatedAt.getTime())) {
+    return { ok: false, reason: FRESH_CONVERSATION_UNVERIFIED_REASON };
+  }
   const priorMessages = await input.prisma.message.count({
     where: {
       workspaceId: input.workspaceId,
       conversationId: input.conversation.id,
-      id: { not: input.message.id }
+      id: { not: input.message.id },
+      createdAt: { lt: messageCreatedAt }
     }
   });
 
@@ -1543,7 +1551,8 @@ async function evaluateFreshConversation(input: {
     const hasPriorMessages = await input.chatHistory.hasPriorMessages({
       instanceName,
       remoteJid,
-      excludeMessageId: input.message.providerMessageId ?? null
+      excludeMessageId: input.message.providerMessageId ?? null,
+      before: messageCreatedAt
     });
 
     return hasPriorMessages

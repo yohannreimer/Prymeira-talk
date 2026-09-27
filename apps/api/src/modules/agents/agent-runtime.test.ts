@@ -1551,7 +1551,16 @@ describe("createAgentRuntime", () => {
     expect(hasPriorMessages).toHaveBeenCalledWith({
       instanceName: "instancia",
       remoteJid: "5511999999999@s.whatsapp.net",
-      excludeMessageId: null
+      excludeMessageId: null,
+      before: now
+    });
+    expect(prisma.message.count).toHaveBeenCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        conversationId: ids.conversation,
+        id: { not: ids.message },
+        createdAt: { lt: now }
+      }
     });
     expect(prisma.aiAgentSession.upsert).toHaveBeenCalled();
   });

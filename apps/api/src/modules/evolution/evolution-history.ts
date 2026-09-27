@@ -49,15 +49,21 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       if (matches.length > 1) throw new Error('HISTORY_DUPLICATE_MESSAGE');
       return matches.length ? parse(matches[0]) : null;
     },
-    async hasPriorMessages(input: { instanceName: string; remoteJid: string; excludeMessageId?: string | null }): Promise<boolean> {
+    async hasPriorMessages(input: { instanceName: string; remoteJid: string; excludeMessageId?: string | null; before?: Date }): Promise<boolean> {
       if (!direct(input.remoteJid)) throw new Error('HISTORY_IDENTITY');
+      const beforeSeconds = input.before ? Math.floor(input.before.getTime() / 1000) : null;
+      if (beforeSeconds !== null && !Number.isFinite(beforeSeconds)) throw new Error('HISTORY_WINDOW');
       const data = await post(`/chat/findMessages/${encodeURIComponent(input.instanceName)}`, {
         where: { key: { remoteJid: input.remoteJid } }, page: 1, offset: 100
       });
       if (!record(data) || !record(data.messages) || !Array.isArray(data.messages.records)) throw new Error('HISTORY_SHAPE');
       return data.messages.records.some((raw) => {
         if (!record(raw) || !record(raw.key) || typeof raw.key.id !== 'string' || !raw.key.id) return true;
-        return raw.key.id !== (input.excludeMessageId ?? null);
+        if (raw.key.id === (input.excludeMessageId ?? null)) return false;
+        if (beforeSeconds === null) return true;
+        const timestamp = Number(raw.messageTimestamp);
+        if (raw.messageTimestamp === null || !Number.isFinite(timestamp) || timestamp <= 0 || timestamp > 1e11) return true;
+        return timestamp < beforeSeconds;
       });
     },
     async load(input: { instanceName: string; anchorId: string; from: Date; to: Date }): Promise<HistoryRecord[]> {
