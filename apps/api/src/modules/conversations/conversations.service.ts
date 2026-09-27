@@ -533,6 +533,7 @@ export function toMessageDto(record: MessageRecord): MessageDto {
     ...(unread ? { attachmentReadStatus: 'unread' as const } : {}),
     status: record.status,
     sentByUserId: record.sentByUserId ?? null,
+    ...(typeof metadata.editedAt === 'string' ? { editedAt: metadata.editedAt } : {}),
     createdAt: toIsoString(record.createdAt)
   };
 }

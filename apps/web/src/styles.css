@@ -7162,7 +7162,22 @@ select:disabled {
 
 .message-bubble time {
   font-size: 10px;
+}
+
+.message-bubble-meta {
+  display: flex;
+  align-items: center;
   align-self: flex-end;
+  gap: 6px;
+}
+
+.message-edited-label {
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+
+.message-bubble.is-outbound .message-edited-label {
+  color: rgba(255, 255, 255, 0.55);
 }
 
 .message-bubble.is-inbound time {

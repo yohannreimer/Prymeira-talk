@@ -132,7 +132,7 @@ describe("Evolution client", () => {
             "x-prymeira-talk-secret": "webhook-secret",
             "Content-Type": "application/json"
           }),
-          events: expect.arrayContaining(["QRCODE_UPDATED", "CONNECTION_UPDATE", "MESSAGES_UPSERT"])
+          events: expect.arrayContaining(["QRCODE_UPDATED", "CONNECTION_UPDATE", "MESSAGES_UPSERT", "MESSAGES_EDITED"])
         })
       })
     );

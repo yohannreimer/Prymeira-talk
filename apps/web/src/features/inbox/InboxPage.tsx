@@ -835,6 +835,12 @@ function InboxPageContent() {
   }, [getFreshToken]);
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
+    if (event.type === "message.updated") {
+      setMessages((current) => current.map((message) =>
+        message.id === event.payload.id ? event.payload : message
+      ));
+      return;
+    }
     if (event.type === "message.status_changed") {
       setMessages((current) =>
         current.map((message) =>
@@ -1787,7 +1793,10 @@ function InboxPageContent() {
                     {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
                     {attachmentReadNotice(message) ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
                   </> : <p><WhatsappText text={messageDisplayText(message)} /></p>}
-                  <time>{formatMessageTime(message.createdAt)}</time>
+                  <div className="message-bubble-meta">
+                    {message.editedAt ? <span className="message-edited-label">Editada</span> : null}
+                    <time>{formatMessageTime(message.createdAt)}</time>
+                  </div>
                   {outboundStatusLabel(message) ? (
                     <span className={`message-send-state message-send-state--${message.status}`}>
                       {outboundStatusLabel(message)}

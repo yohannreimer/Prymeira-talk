@@ -433,6 +433,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   assistantScheduler?.start();
   app.addHook('onClose', async () => { assistantScheduler?.stop(); handoffBriefService?.stop(); });
   await app.register(evolutionRoutes, {
+    messageHistory: evolutionHistorySource,
     assistantScheduler,
     handoffBriefService,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,

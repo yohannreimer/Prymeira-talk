@@ -39,6 +39,16 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       ...(typeof value.messageType === 'string' ? { messageType: value.messageType } : {}) };
   }
   return {
+    async findMessage(input: { instanceName: string; id: string }): Promise<HistoryRecord | null> {
+      if (!input.id) throw new Error('HISTORY_MESSAGE_ID');
+      const data = await post(`/chat/findMessages/${encodeURIComponent(input.instanceName)}`, {
+        where: { key: { id: input.id } }, page: 1, offset: 10
+      });
+      if (!record(data) || !record(data.messages) || !Array.isArray(data.messages.records)) throw new Error('HISTORY_SHAPE');
+      const matches = data.messages.records.filter((item) => record(item) && record(item.key) && item.key.id === input.id);
+      if (matches.length > 1) throw new Error('HISTORY_DUPLICATE_MESSAGE');
+      return matches.length ? parse(matches[0]) : null;
+    },
     async hasPriorMessages(input: { instanceName: string; remoteJid: string; excludeMessageId?: string | null }): Promise<boolean> {
       if (!direct(input.remoteJid)) throw new Error('HISTORY_IDENTITY');
       const data = await post(`/chat/findMessages/${encodeURIComponent(input.instanceName)}`, {

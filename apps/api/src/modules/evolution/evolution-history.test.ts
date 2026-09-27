@@ -16,6 +16,14 @@ function setup(passes: unknown[][] = [[row('old'), row('anchor', end.getTime())]
 }
 const input = { instanceName: 'Diogo', anchorId: 'anchor', from, to: end };
 describe('read-only Evolution history', () => {
+  it('loads one exact provider message to recover its edit secret', async () => {
+    const { source, fetchMock } = setup();
+    const result = await source.findMessage({ instanceName: 'Diogo', id: 'anchor' });
+    expect(result?.key.id).toBe('anchor');
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1].body))).toEqual({
+      where: { key: { id: 'anchor' } }, page: 1, offset: 10
+    });
+  });
   it('uses exact anchor identity, fixed window, deduplicates and orders chronologically', async () => {
     const { source, fetchMock } = setup([[row('future', end.getTime()+1000), row('old'), row('old'), row('too-old', from.getTime()-1000), row('anchor', end.getTime())]]);
     const result = await source.load(input);

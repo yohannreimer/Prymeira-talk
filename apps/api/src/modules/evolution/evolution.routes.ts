@@ -27,8 +27,11 @@ import {
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
 import type { AgentImprovementObserver } from "../agents/agent-improvements.service.js";
 import type { InboxTriageObserver } from "../conversations/inbox-triage.service.js";
+import type { EvolutionHistorySource } from "./evolution-history.js";
+import { decryptEncryptedMessageEdit, extractEncryptedMessageEdit } from "./evolution-message-edit.js";
 
 export interface EvolutionRoutesOptions {
+  messageHistory?: Pick<EvolutionHistorySource, "findMessage">;
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
   handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>;
   followupService?: ConversationFollowupsObserver;
@@ -91,6 +94,10 @@ function normalizeEvolutionEvent(event: string) {
   return event.toLowerCase().replace(/_/g, ".");
 }
 
+function isEditProtocolType(type: unknown) {
+  return type === 14 || type === "14" || type === "MESSAGE_EDIT";
+}
+
 function mapConnectionState(state: string | undefined): ChannelDto["status"] {
   if (state === "open" || state === "connected") return "connected";
   if (state === "connecting") return "connecting";
@@ -109,6 +116,11 @@ function mapEvolutionMessageStatus(status: string | number | undefined): Message
 }
 
 function readStringPath(data: unknown, path: string[]) {
+  const current = readPath(data, path);
+  return typeof current === "string" && current.length > 0 ? current : null;
+}
+
+function readPath(data: unknown, path: string[]): unknown {
   let current = data;
 
   for (const segment of path) {
@@ -119,7 +131,7 @@ function readStringPath(data: unknown, path: string[]) {
     current = (current as Record<string, unknown>)[segment];
   }
 
-  return typeof current === "string" && current.length > 0 ? current : null;
+  return current;
 }
 
 function readFirstStringPath(data: unknown, paths: string[][]) {
@@ -346,6 +358,29 @@ export function extractMessageContent(message: unknown, messageType?: unknown): 
   };
 }
 
+function extractMessageEdit(data: unknown, event: string): {
+  targetId: string;
+  body: string;
+} | null {
+  const message = unwrapMessage(readPath(data, ["message"]));
+  const protocol = readPath(message, ["protocolMessage"]);
+  const protocolType = readPath(protocol, ["type"]);
+  const isProtocolEdit = isEditProtocolType(protocolType);
+  const updateMessage = readPath(data, ["update", "message"]);
+  const editedContent = isProtocolEdit
+    ? readPath(protocol, ["editedMessage"])
+    : readPath(updateMessage, ["editedMessage", "message"])
+      ?? readPath(message, ["editedMessage", "message"]);
+  const candidate = editedContent ?? (event === "messages.edited" ? updateMessage ?? message : null);
+  const content = candidate ? extractMessageContent(candidate) : null;
+  if (content?.type !== "text" || !content.body) return null;
+
+  const targetId = isProtocolEdit
+    ? readStringPath(protocol, ["key", "id"])
+    : readFirstStringPath(data, [["key", "id"], ["keyId"], ["id"]]);
+  return targetId ? { targetId, body: content.body } : null;
+}
+
 function extractPushName(data: unknown) {
   const candidates = [
     readStringPath(data, ["pushName"]),
@@ -433,6 +468,74 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
 
     const normalizedEvent = normalizeEvolutionEvent(envelope.data.event);
     const workspaceId = params.data.workspaceId;
+
+    const editData = envelope.data.data;
+    const encryptedEdit = extractEncryptedMessageEdit(editData);
+    const editEnvelope = normalizedEvent === "messages.edited" ||
+      encryptedEdit !== null ||
+      (normalizedEvent === "messages.upsert" &&
+        (hasRecordPath(unwrapMessage(readPath(editData, ["message"])), ["editedMessage"]) ||
+          isEditProtocolType(readPath(unwrapMessage(readPath(editData, ["message"])), ["protocolMessage", "type"])))) ||
+      (normalizedEvent === "messages.update" &&
+        (hasRecordPath(readPath(editData, ["update", "message"]), ["editedMessage"]) ||
+          hasRecordPath(readPath(editData, ["message"]), ["editedMessage"])));
+    if (editEnvelope) {
+      const clearEdit = extractMessageEdit(editData, normalizedEvent);
+      const targetId = clearEdit?.targetId ?? encryptedEdit?.targetId;
+      if (!targetId) return { ok: true, ignored: true };
+
+      const original = await app.prisma.message.findUnique({
+        where: { workspaceId_providerMessageId: { workspaceId, providerMessageId: targetId } },
+        include: { conversation: { include: { channel: true } } }
+      });
+      if (!original || original.conversation.channel.providerKey !== envelope.data.instance) {
+        return { ok: true, ignored: true };
+      }
+      let edit = clearEdit;
+      if (!edit && encryptedEdit && options.messageHistory) {
+        const providerOriginal = await options.messageHistory.findMessage({
+          instanceName: envelope.data.instance, id: targetId
+        });
+        const body = providerOriginal && decryptEncryptedMessageEdit(encryptedEdit, providerOriginal);
+        if (body) edit = { targetId, body };
+      }
+      if (!edit) return { ok: true, ignored: true };
+      if (original.body === edit.body &&
+        typeof original.metadata === "object" && original.metadata !== null &&
+        "editedAt" in original.metadata) {
+        return { ok: true };
+      }
+
+      const metadata = original.metadata && typeof original.metadata === "object" && !Array.isArray(original.metadata)
+        ? original.metadata as Record<string, unknown> : {};
+      const updated = await app.prisma.message.update({
+        where: { workspaceId_providerMessageId: { workspaceId, providerMessageId: edit.targetId } },
+        data: { type: "text", body: edit.body, metadata: { ...metadata, editedAt: new Date().toISOString() } }
+      });
+      const latest = await app.prisma.message.findFirst({
+        where: { workspaceId, conversationId: original.conversationId },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { id: true }
+      });
+      if (latest?.id === original.id) {
+        await app.prisma.conversation.updateMany({
+          where: { workspaceId, id: original.conversationId },
+          data: { lastMessagePreview: edit.body }
+        });
+        const conversation = await app.prisma.conversation.findUnique({
+          where: { workspaceId_id: { workspaceId, id: original.conversationId } },
+          include: {
+            assignedUser: { select: { displayName: true } },
+            channel: { select: { displayName: true, phoneNumber: true } },
+            contact: { select: { name: true, phone: true } },
+            department: { select: { name: true } }
+          }
+        });
+        if (conversation) app.realtime.publish({ type: "conversation.updated", workspaceId, payload: toConversationDto(conversation) });
+      }
+      app.realtime.publish({ type: "message.updated", workspaceId, payload: toMessageDto(updated) });
+      return { ok: true };
+    }
 
     if (normalizedEvent === "connection.update") {
       const body = evolutionConnectionUpdateSchema.safeParse(request.body);
