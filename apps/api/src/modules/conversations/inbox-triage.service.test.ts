@@ -41,6 +41,13 @@ describe("inbox triage observation", () => {
     expect(observationChange({ current: null, messageId: "m1", direction: "inbound", humanControlled: false, observedAt: at })?.dueAt).toBeNull();
   });
 
+  it("schedules the same inbound after an existing conversation moves from AI eligibility to human control", () => {
+    const first = observationChange({ current: null, messageId: "m1", direction: "inbound", humanControlled: false, observedAt: at });
+    const next = observationChange({ current: first!, messageId: "m1", direction: "inbound", humanControlled: true, observedAt: at });
+    expect(next).toMatchObject({ anchorMessageId: "m1", version: 2, decision: null });
+    expect(next?.dueAt?.toISOString()).toBe("2026-09-25T12:02:00.000Z");
+  });
+
   it("observes only the latest persisted message and is idempotent", async () => {
     const tx = {
       conversation: { findUnique: vi.fn().mockResolvedValue({ aiControlStatus: "human_controlled" }) },

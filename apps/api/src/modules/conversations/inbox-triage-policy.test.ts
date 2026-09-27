@@ -19,6 +19,7 @@ describe("inbox triage policy", () => {
   });
 
   it("keeps handoffs separate from semantic dismissals and closed conversations", () => {
+    expect(hasPendingHandoff({ status: "open", aiControlStatus: "human_controlled" })).toBe(false);
     expect(hasPendingHandoff({ status: "open", aiControlStatus: "human_controlled", handoffReason: "Revisão" })).toBe(true);
     expect(hasPendingHandoff({ status: "closed", aiControlStatus: "human_controlled", handoffReason: "Revisão" })).toBe(false);
     expect(hasPendingHandoff({ status: "open", aiControlStatus: "agent_allowed", activeAgentSessionStatus: "handoff_requested", handoffActionCompletedAt: "2026-09-25T12:00:00Z" })).toBe(false);

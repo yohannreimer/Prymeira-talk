@@ -52,7 +52,17 @@ export function observationChange(input: {
   humanControlled: boolean;
   observedAt: Date;
 }): ObservationState | null {
-  if (input.current?.lastObservedMessageId === input.messageId) return null;
+  if (input.current?.lastObservedMessageId === input.messageId) {
+    // The webhook can observe a message before the automation decides that an
+    // older conversation belongs to a human. Queue its triage once control moves.
+    if (input.direction === "inbound" && input.humanControlled &&
+        input.current.anchorMessageId === input.messageId &&
+        input.current.dueAt === null && input.current.decision === null &&
+        input.current.analyzedAt === null) {
+      return { ...input.current, dueAt: nextInboxAnalysisAt(input.observedAt), version: input.current.version + 1 };
+    }
+    return null;
+  }
   return {
     lastObservedMessageId: input.messageId,
     anchorMessageId: input.direction === "inbound" ? input.messageId : null,

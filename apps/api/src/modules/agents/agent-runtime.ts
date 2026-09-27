@@ -436,28 +436,6 @@ export function createAgentRuntime(input: {
         });
 
         if (!freshness.ok) {
-          const session = await prisma.aiAgentSession.upsert({
-            where: {
-              workspaceId_agentId_conversationId: {
-                workspaceId: runInput.workspaceId,
-                agentId: activeAgent.id,
-                conversationId: conversation.id
-              }
-            },
-            create: {
-              workspaceId: runInput.workspaceId,
-              agentId: activeAgent.id,
-              conversationId: conversation.id,
-              status: "handoff_requested",
-              handoffReason: freshness.reason,
-              metadata: { source: "fresh_conversation_guard" }
-            },
-            update: {
-              status: "handoff_requested",
-              handoffReason: freshness.reason,
-              handoffActionCompletedAt: null
-            }
-          });
           await prisma.conversation.update({
             where: {
               workspaceId_id: {
@@ -467,23 +445,23 @@ export function createAgentRuntime(input: {
             },
             data: {
               aiControlStatus: "human_controlled",
-              activeAgentSessionId: session.id
+              activeAgentSessionId: null
             }
           });
-          const run = await createRun({
-            workspaceId: runInput.workspaceId,
-            agentId: activeAgent.id,
-            sessionId: session.id,
-            conversationId: conversation.id,
-            trigger: "automation",
-            input: runInput,
-            model: activeAgent.model,
-            status: "handoff_requested",
-            errorMessage: freshness.reason
-          });
+          if (message.direction === "inbound") {
+            await input.inboxTriage?.observeMessage({
+              workspaceId: runInput.workspaceId,
+              conversationId: conversation.id,
+              messageId: message.id,
+              direction: "inbound",
+              observedAt: new Date()
+            }).catch((error: unknown) => {
+              input.logger?.warn({ err: error, conversationId: conversation.id }, "Inbox triage observation failed");
+            });
+          }
           await publishConversationUpdated(runInput.workspaceId, conversation.id);
 
-          return { status: "handoff_requested", runId: run.id, sessionId: session.id, message: freshness.reason };
+          return { status: "skipped", message: freshness.reason };
         }
       }
 
