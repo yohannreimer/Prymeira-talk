@@ -541,6 +541,14 @@ describe("createAgentRuntime", () => {
     expect((await runtime.runForMessage(input)).status).toBe('skipped');
     expect(provider.generate).not.toHaveBeenCalled(); expect(sendText).not.toHaveBeenCalled(); expect(prisma.message.create).not.toHaveBeenCalled();
   });
+  it('activates the autonomous agent when the channel also generates private suggestions', async () => {
+    const prisma = buildPrisma({ conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: { ...baseConversation.channel, encryptedConfig: { assistant: { mode: 'automatic_with_agent', agentId: ids.agent } } } }), update: vi.fn().mockResolvedValue({}) } });
+    const provider = buildProvider({ reply: 'Resposta', confidence: 1, actions: [], handoff: { required: false, reason: null } });
+    const runtime = createAgentRuntime({ prisma, provider });
+    expect((await runtime.activateForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message })).status).toBe('completed');
+    expect(prisma.aiAgentSession.upsert).toHaveBeenCalled();
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ activeAgentSessionId: ids.session }) }));
+  });
   it('rechecks channel mode after the provider returns, before tools or send', async () => {
     const prisma = buildPrisma();
     const provider = { generate: vi.fn(async () => {

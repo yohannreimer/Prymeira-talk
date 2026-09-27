@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const assistantModeSchema=z.enum(['disabled','automatic','on_demand']);
+export const assistantModeSchema=z.enum(['disabled','automatic','on_demand','automatic_with_agent']);
 export type AssistantMode=z.infer<typeof assistantModeSchema>;
 export const assistantChannelSettingsSchema=z.object({
   mode:assistantModeSchema.default('disabled'),

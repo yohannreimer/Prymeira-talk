@@ -420,7 +420,9 @@ export function createAgentRuntime(input: {
       }
 
       if (conversation.aiControlStatus === "human_controlled" || blocksAutonomousAgent(conversation.channel?.encryptedConfig)) {
-        return { status: "skipped", message: "Conversation is controlled by a human." };
+        return { status: "skipped", message: conversation.aiControlStatus === "human_controlled"
+          ? "Conversation is controlled by a human."
+          : "Channel is configured for private suggestions without autonomous sending." };
       }
 
       if (readOnlyNewConversations(activeAgent.behaviorConfig) && !conversation.activeAgentSessionId) {
@@ -590,7 +592,9 @@ export function createAgentRuntime(input: {
       }
 
       if (conversation.aiControlStatus === "human_controlled" || blocksAutonomousAgent(conversation.channel?.encryptedConfig)) {
-        const errorMessage = "Conversation is controlled by a human.";
+        const errorMessage = conversation.aiControlStatus === "human_controlled"
+          ? "Conversation is controlled by a human."
+          : "Channel is configured for private suggestions without autonomous sending.";
         const run = await createRun({
           workspaceId: runInput.workspaceId,
           agentId: agent.id,

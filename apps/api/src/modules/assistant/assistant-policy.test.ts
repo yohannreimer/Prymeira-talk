@@ -30,6 +30,7 @@ describe('assistant policy', () => {
   });
   it('generates inbound only in automatic mode',()=>{
     expect(canGenerateSuggestion({mode:'automatic',control:'agent_allowed',trigger:'inbound'})).toBe(true);
+    expect(canGenerateSuggestion({mode:'automatic_with_agent',control:'agent_allowed',trigger:'inbound'})).toBe(true);
     expect(canGenerateSuggestion({mode:'on_demand',control:'agent_allowed',trigger:'inbound'})).toBe(false);
     expect(canGenerateSuggestion({mode:'on_demand',control:'agent_allowed',trigger:'manual'})).toBe(true);
     expect(canGenerateSuggestion({mode:'disabled',control:'agent_allowed',trigger:'manual'})).toBe(false);
@@ -48,6 +49,8 @@ describe('assistant policy', () => {
     const agentId='00000000-0000-4000-8000-000000000101';
     expect(blocksAutonomousAgent({assistant:{mode:'automatic',agentId}})).toBe(true);
     expect(blocksAutonomousAgent({assistant:{mode:'on_demand',agentId}})).toBe(true);
+    expect(blocksAutonomousAgent({assistant:{mode:'automatic_with_agent',agentId}})).toBe(false);
+    expect(blocksAutonomousAgent({assistant:{mode:'automatic_with_agent'}})).toBe(true);
     expect(blocksAutonomousAgent({})).toBe(false);
   });
 });

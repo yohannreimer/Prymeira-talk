@@ -42,6 +42,8 @@ describe("AI control helpers", () => {
     expect(aiControlLabel({ aiControlStatus: "human_controlled", activeAgentName: null })).toBe("Humano no controle");
     expect(aiControlLabel({ aiControlStatus: "agent_allowed", activeAgentName: "Secretaria IA" })).toBe("IA ativa: Secretaria IA");
     expect(aiControlLabel({ aiControlStatus: "agent_allowed", activeAgentName: null })).toBe("IA liberada");
+    expect(aiControlLabel({ aiControlStatus: "agent_allowed", activeAgentName: null }, "automatic")).toBe("Apoio com revisão");
+    expect(aiControlLabel({ aiControlStatus: "agent_allowed", activeAgentName: null }, "automatic_with_agent")).toBe("Agente liberado");
   });
 
   it("chooses the correct AI control action label", () => {

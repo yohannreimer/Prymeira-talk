@@ -9,7 +9,9 @@ export function blocksAutonomousAgent(config:unknown):boolean{
   const assistant=typeof config==='object'&&config!==null?(config as Record<string,unknown>).assistant:null;
   const mode=typeof assistant==='object'&&assistant!==null?(assistant as Record<string,unknown>).mode:undefined;
   // An enabled but incomplete setting must never fall back to autonomous sending.
-  return mode!==undefined&&mode!=='disabled';
+  if (mode === undefined || mode === 'disabled') return false;
+  if (mode === 'automatic_with_agent') return !assistantChannelSettingsSchema.safeParse(assistant).success;
+  return true;
 }
 export function resolveConversationAssistant(input:{
   aiControlStatus:string;
@@ -27,7 +29,7 @@ export function resolveConversationAssistant(input:{
 }
 export function canGenerateSuggestion(input:{mode:AssistantMode;control:string;trigger:'inbound'|'manual'|'continuation';humanSupport?:boolean}):boolean{
   const allowedControl=input.control==='agent_allowed'||(input.control==='human_controlled'&&input.humanSupport===true);
-  return allowedControl&&input.mode!=='disabled'&&(input.mode==='automatic'||input.trigger==='manual');
+  return allowedControl&&input.mode!=='disabled'&&(input.mode==='automatic'||input.mode==='automatic_with_agent'||input.trigger==='manual');
 }
 export function nextSuggestionAt(firstPendingMs:number,lastInboundMs:number):number{
   return Math.min(lastInboundMs+5000,firstPendingMs+10000);

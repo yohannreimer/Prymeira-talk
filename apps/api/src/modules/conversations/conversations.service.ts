@@ -159,6 +159,22 @@ const inboxSemanticReplyWhere: Prisma.ConversationWhereInput = {
   } }
 };
 
+// In private review modes the autonomous agent is blocked. A ready suggestion or
+// generation failure therefore belongs in the seller's reply queue, even after
+// the conversation has been opened and its unread counter reached zero.
+const privateReviewChannelWhere: Prisma.ConversationWhereInput = {
+  channel: { is: { OR: [
+    { encryptedConfig: { path: ["assistant", "mode"], equals: "automatic" } },
+    { encryptedConfig: { path: ["assistant", "mode"], equals: "on_demand" } }
+  ] } }
+};
+
+const inboxPrivateReviewWhere: Prisma.ConversationWhereInput = {
+  status: { not: "closed" },
+  assistantState: { is: { status: { in: ["ready", "failed"] } } },
+  ...privateReviewChannelWhere
+};
+
 const conversationDtoInclude = {
   assignedUser: { select: { displayName: true } },
   channel: { select: { displayName: true, phoneNumber: true, provider: true } },
@@ -622,11 +638,11 @@ export function createConversationsService(
         ] } } }
       : {};
     const viewWhere: Prisma.ConversationWhereInput = input.view === "unread"
-      ? { unreadCount: { gt: 0 }, OR: [inboxHandoffWhere, { aiControlStatus: "human_controlled" }] }
+      ? { unreadCount: { gt: 0 }, OR: [inboxHandoffWhere, { aiControlStatus: "human_controlled" }, privateReviewChannelWhere] }
       : input.view === "marked"
         ? { inboxTriage: { is: { manualMarkedAt: { not: null } } } }
         : input.view === "reply"
-          ? { OR: [inboxHandoffWhere, inboxSemanticReplyWhere] }
+          ? { OR: [inboxHandoffWhere, inboxSemanticReplyWhere, inboxPrivateReviewWhere] }
           : input.view === "handoff" ? inboxHandoffWhere : {};
     if (input.status === "closed") {
       return {

@@ -90,10 +90,13 @@ function statusLabel(status: ConversationDto["status"]) {
 }
 
 export function aiControlLabel(
-  conversation: Pick<ConversationDto, "aiControlStatus" | "activeAgentName">
+  conversation: Pick<ConversationDto, "aiControlStatus" | "activeAgentName">,
+  assistantMode?: 'disabled' | 'automatic' | 'on_demand' | 'automatic_with_agent'
 ) {
   if (conversation.aiControlStatus === "human_controlled") return "Humano no controle";
   if (conversation.activeAgentName) return `IA ativa: ${conversation.activeAgentName}`;
+  if (assistantMode === 'automatic' || assistantMode === 'on_demand') return "Apoio com revisão";
+  if (assistantMode === 'automatic_with_agent') return "Agente liberado";
   return "IA liberada";
 }
 
@@ -1733,7 +1736,7 @@ function InboxPageContent() {
             <div className="conversation-ai-control module-header-actions" aria-label="Controle da IA">
               {selectedConversation.channelProvider === 'evolution' && selectedConversation.contactPhone ? <button type="button" className="inbox-share-trigger" title="Enviar contato para outra pessoa" aria-label="Enviar contato para outra pessoa" onClick={() => setShareContactOpen(true)}><ContactRound size={17} /><Send size={12} /></button> : null}
               <span className="status-badge status-badge--bot">
-                {aiControlLabel(selectedConversation)}
+                {aiControlLabel(selectedConversation, assistant.data?.settings.mode)}
               </span>
               <button
                 className="secondary-button"

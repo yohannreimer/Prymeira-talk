@@ -436,7 +436,8 @@ describe("conversations service", () => {
     expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ workspaceId: "workspace_a", OR: expect.arrayContaining([
         expect.objectContaining({ inboxTriage: expect.any(Object) }),
-        expect.objectContaining({ status: { not: "closed" } })
+        expect.objectContaining({ status: { not: "closed" } }),
+        expect.objectContaining({ assistantState: { is: { status: { in: ["ready", "failed"] } } } })
       ]) })
     }));
     await service.listConversations({ workspaceId: "workspace_a", status: "all", view: "marked" });
