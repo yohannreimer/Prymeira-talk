@@ -1027,7 +1027,7 @@ export function CampaignsPage() {
                     {statusLabel(campaign.status)}
                   </span>
                   <strong>{campaign.name}</strong>
-                  <span>{campaign.audience.type === "imported" ? "Lista importada" : "Board do CRM"}</span>
+                  <span>{campaign.audience.type === 'list' ? 'Lista de contatos' : campaign.audience.type === "imported" ? "Lista importada" : "Board do CRM"}</span>
                   <small>{formatDateTime(campaign.scheduledAt)}</small>
                 </button>
                 {campaign.status === "draft" ? (

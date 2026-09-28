@@ -1407,6 +1407,24 @@ describe("campaigns service", () => {
     expect(prisma.contactBoardMembership.findMany).not.toHaveBeenCalled();
   });
 
+  it('resolves the current members of a reusable list for each draft preview', async () => {
+    const listId = '00000000-0000-4000-8000-000000000301';
+    const contact = { id: firstContactId, workspaceId: 'workspace_a', name: 'Ana',
+      phone: '5547999999999', email: 'ana@example.com', company: 'Villefer' };
+    const findFirst = vi.fn().mockResolvedValueOnce({ members: [{ contactId: firstContactId, contact }] })
+      .mockResolvedValueOnce({ members: [] });
+    const prisma = Object.assign(createMockPrisma({ campaign: {
+      findMany: vi.fn(), findFirst: vi.fn().mockResolvedValue({ ...baseCampaign, audience: { type: 'list', listId } }),
+      create: vi.fn(), update: vi.fn()
+    } }), { broadcastList: { findFirst } });
+    const service = createCampaignsService(prisma);
+    expect(await service.resolveAudience({ workspaceId: 'workspace_a', campaignId })).toEqual([
+      expect.objectContaining({ contactId: firstContactId, name: 'Ana', fields: expect.objectContaining({ company: 'Villefer' }) })
+    ]);
+    expect(await service.resolveAudience({ workspaceId: 'workspace_a', campaignId })).toEqual([]);
+    expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: 'workspace_a', id: listId } }));
+  });
+
   it("keeps a saved future schedule as a draft until explicit activation", async () => {
     const prisma = createMockPrisma();
     const service = createCampaignsService(prisma);

@@ -305,6 +305,7 @@ model Contact {
   notes              ContactNote[]
   campaignRecipients CampaignRecipient[]
   contactTags        ContactTag[]
+  broadcastListMembers BroadcastListMember[]
   leadProvenances    LeadContactProvenance[]
 
   @@unique([workspaceId, id])
@@ -881,6 +882,35 @@ model Campaign {
   @@unique([workspaceId, activationKey])
   @@index([workspaceId, status])
   @@map("campaigns")
+}
+
+model BroadcastList {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  name        String
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  members BroadcastListMember[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, name])
+  @@index([workspaceId, updatedAt])
+  @@map("broadcast_lists")
+}
+
+model BroadcastListMember {
+  workspaceId String   @map("workspace_id")
+  listId      String   @map("list_id") @db.Uuid
+  contactId   String   @map("contact_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  list    BroadcastList @relation(fields: [workspaceId, listId], references: [workspaceId, id], onDelete: Cascade)
+  contact Contact       @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@id([workspaceId, listId, contactId])
+  @@index([workspaceId, contactId])
+  @@map("broadcast_list_members")
 }
 
 model CampaignRecipient {

@@ -26,6 +26,15 @@ const preview: CampaignAudiencePreviewDto = {
 };
 
 describe("guided campaign editor", () => {
+  it('starts new campaigns with reusable contact lists', () => {
+    const html = renderToStaticMarkup(<GuidedCampaignEditor campaign={null}
+      boards={[]} channels={[]} getToken={async () => null} parseFile={async () => []}
+      onSaved={vi.fn()} onBack={vi.fn()} onMeta={vi.fn()} />);
+    expect(html).toContain('CONTATOS');
+    expect(html).toContain('Escolher contatos');
+    expect(html).not.toContain('Contatos do CRM');
+    expect(html).not.toContain('Planilha Excel/CSV');
+  });
   it("identifies Leads drafts and hides real-send actions before review", () => {
     const html = renderToStaticMarkup(<GuidedCampaignEditor campaign={campaign}
       boards={[]} channels={[]} getToken={async () => null} parseFile={async () => []}

@@ -275,8 +275,20 @@ export interface AutomationAssetUploadResultDto {
 
 export type CampaignStatus = "draft" | "scheduled" | "sending" | "paused" | "completed" | "failed" | "canceled" | "needs_attention";
 
+export interface BroadcastListDto {
+  id: string;
+  name: string;
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BroadcastListDetailDto extends BroadcastListDto {
+  contacts: Array<{ id: string; name: string | null; phone: string; avatarUrl: string | null }>;
+}
+
 export interface CampaignAudienceDto {
-  type: "board" | "imported";
+  type: "board" | "imported" | 'list';
   origin?: "leads";
   listId?: string;
   selectedCount?: number;
@@ -883,6 +895,8 @@ function parseCampaignAudience(data: unknown): CampaignAudienceDto {
         : []
     };
   }
+
+  if (payload.type === 'list') return { type: 'list', listId: typeof payload.listId === 'string' ? payload.listId : '' };
 
   return {
     type: "board",
@@ -2656,6 +2670,41 @@ export async function apiGetCampaigns(
 
   const data = await response.json();
   return Array.isArray(data) ? data.map(parseCampaign) : [];
+}
+
+export function apiGetBroadcastLists(getToken: () => Promise<string | null>): Promise<BroadcastListDto[]> {
+  return fetchJson(getToken, '/broadcast-lists', { method: 'GET' },
+    (data) => data as BroadcastListDto[], 'Não foi possível carregar as listas.');
+}
+
+export function apiGetBroadcastList(getToken: () => Promise<string | null>, listId: string): Promise<BroadcastListDetailDto> {
+  return fetchJson(getToken, `/broadcast-lists/${encodeURIComponent(listId)}`, { method: 'GET' },
+    (data) => data as BroadcastListDetailDto, 'Não foi possível carregar os contatos da lista.');
+}
+
+export function apiCreateBroadcastList(getToken: () => Promise<string | null>, name: string): Promise<BroadcastListDto> {
+  return fetchJson(getToken, '/broadcast-lists', { method: 'POST', body: JSON.stringify({ name }) },
+    (data) => data as BroadcastListDto, 'Não foi possível criar a lista.');
+}
+
+export function apiRenameBroadcastList(getToken: () => Promise<string | null>, listId: string, name: string): Promise<BroadcastListDto> {
+  return fetchJson(getToken, `/broadcast-lists/${encodeURIComponent(listId)}`, { method: 'PATCH', body: JSON.stringify({ name }) },
+    (data) => data as BroadcastListDto, 'Não foi possível renomear a lista.');
+}
+
+async function changeBroadcastListMembers(getToken: () => Promise<string | null>, path: string, method: 'POST' | 'DELETE', body?: unknown) {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}${path}`, { method, headers: { Authorization: `Bearer ${token}`,
+    ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível alterar a lista.'));
+}
+
+export function apiAddBroadcastListMembers(getToken: () => Promise<string | null>, listId: string, contactIds: string[]) {
+  return changeBroadcastListMembers(getToken, `/broadcast-lists/${encodeURIComponent(listId)}/members`, 'POST', { contactIds });
+}
+
+export function apiRemoveBroadcastListMember(getToken: () => Promise<string | null>, listId: string, contactId: string) {
+  return changeBroadcastListMembers(getToken, `/broadcast-lists/${encodeURIComponent(listId)}/members/${encodeURIComponent(contactId)}`, 'DELETE');
 }
 
 export async function apiDeleteCampaignDraft(

@@ -38,6 +38,7 @@ import { createHandoffBriefService } from './modules/assistant/handoff-brief-ser
 import { createBoardRulesService, type BoardRulesPrismaLike } from "./modules/boards/board-rules.service.js";
 import { boardsRoutes } from "./modules/boards/boards.routes.js";
 import { campaignsRoutes } from "./modules/campaigns/campaigns.routes.js";
+import { broadcastListsRoutes } from './modules/campaigns/broadcast-lists.routes.js';
 import { createCampaignWorker } from "./modules/campaigns/campaign-worker.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
 import { createChannelHistoryImporter, createChannelHistoryImportScheduler } from "./modules/channels/channel-history-import.js";
@@ -496,6 +497,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(channelsRoutes, { evolution: evolutionRuntime });
   await app.register(automationsRoutes, { agentRuntime, evolution: evolutionRuntime });
   await app.register(campaignsRoutes, { evolution: evolutionRuntime });
+  await app.register(broadcastListsRoutes);
   if (options.prismaEnabled !== false && evolutionRuntime.mode === "real" &&
       evolutionRuntime.client?.checkWhatsappNumbersAvailability) {
     const campaignWorker = createCampaignWorker({ prisma: app.prisma,

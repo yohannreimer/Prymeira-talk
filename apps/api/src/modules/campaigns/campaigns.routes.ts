@@ -25,6 +25,7 @@ const audienceSchema = z
       boardId: uuidParamSchema,
       stageId: uuidParamSchema.optional()
     }),
+    z.object({ type: z.literal('list'), listId: uuidParamSchema }),
     z.object({
       type: z.literal("imported"),
       rows: z.array(
@@ -124,6 +125,8 @@ function handleCampaignsError(reply: FastifyReply, error: unknown) {
         ? 400
         : error.code === "CAMPAIGN_BOARD_NOT_FOUND"
           ? 404
+          : error.code === 'CAMPAIGN_LIST_NOT_FOUND'
+            ? 404
           : error.code === "CAMPAIGN_CHANNEL_NOT_FOUND"
             ? 404
             : error.code === "CAMPAIGN_EVOLUTION_NOT_CONFIGURED"

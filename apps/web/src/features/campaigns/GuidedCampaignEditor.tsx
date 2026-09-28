@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react";
 import type { ChannelDto } from "@prymeira-talk/shared";
-import { ArrowLeft, ArrowRight, CheckCircle2, Clock3, Pause, Play, ShieldCheck, Upload } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, Clock3, ListPlus, Pause, Play, ShieldCheck, Upload, Users } from "lucide-react";
 import {
   apiActivateCampaign, apiControlCampaign, apiCreateCampaign, apiGetCampaignProgress,
-  apiGetCampaigns, apiGetCampaignRecipients, apiPreviewCampaignAudience,
+  apiGetBroadcastLists, apiGetCampaigns, apiGetCampaignRecipients, apiPreviewCampaignAudience,
   apiResolveUncertainCampaignRecipient, apiUpdateCampaign,
   type CampaignAudiencePreviewDto, type CampaignCadenceDto, type CampaignDto,
-  type CampaignProgressDto, type CampaignRecipientDto, type ContactBoardWithStagesDto
+  type CampaignProgressDto, type CampaignRecipientDto, type ContactBoardWithStagesDto, type BroadcastListDto
 } from "../../app/api";
 import { CampaignReview } from "./CampaignReview";
+import { BroadcastListDialog } from './BroadcastListDialog';
 
 type ImportedRow = { name?: string; phone: string; fields: Record<string, string> };
 type Stage = 1 | 2 | 3;
@@ -59,7 +60,10 @@ export function GuidedCampaignEditor(props: {
   const [current, setCurrent] = useState(props.campaign);
   const [stage, setStage] = useState<Stage>(1);
   const [name, setName] = useState(props.campaign?.name ?? "");
-  const [source, setSource] = useState<"board" | "imported">(props.campaign?.audience.type ?? "board");
+  const [source, setSource] = useState<'list' | "board" | "imported">(props.campaign?.audience.type ?? 'list');
+  const [listId, setListId] = useState(props.campaign?.audience.type === 'list' ? props.campaign.audience.listId ?? '' : '');
+  const [selectedList, setSelectedList] = useState<BroadcastListDto | null>(null);
+  const [listDialogOpen, setListDialogOpen] = useState(false);
   const [boardId, setBoardId] = useState(props.campaign?.audience.boardId ?? props.boards[0]?.id ?? "");
   const [rows, setRows] = useState<ImportedRow[]>(props.campaign?.audience.rows?.map((row) =>
     ({ ...row, fields: row.fields ?? {} })) ?? []);
@@ -86,6 +90,23 @@ export function GuidedCampaignEditor(props: {
   const isActive = current?.status !== undefined && current.status !== "draft";
   const isLeadDraft = current?.audience.origin === "leads";
 
+  function closeListDialog() {
+    setListDialogOpen(false);
+    if (!listId) return;
+    void apiGetBroadcastLists(props.getToken).then((lists) => {
+      setSelectedList(lists.find((list) => list.id === listId) ?? null);
+    }).catch(() => undefined);
+  }
+
+  useEffect(() => {
+    if (!listId) return;
+    let active = true;
+    void apiGetBroadcastLists(props.getToken).then((lists) => {
+      if (active) setSelectedList(lists.find((list) => list.id === listId) ?? null);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [listId, props.getToken]);
+
   useEffect(() => {
     if (!current || current.status === "draft") return;
     let mounted = true;
@@ -103,9 +124,10 @@ export function GuidedCampaignEditor(props: {
   async function saveDraft() {
     if (!name.trim()) throw new Error("Dê um nome para este disparo.");
     if (!message.trim()) throw new Error("Escreva a mensagem antes de continuar.");
-    const audience = source === "board"
-      ? { type: "board" as const, boardId }
+    const audience = source === 'list' ? { type: 'list' as const, listId }
+      : source === "board" ? { type: "board" as const, boardId }
       : { type: "imported" as const, rows };
+    if (source === 'list' && !listId) throw new Error('Escolha uma lista de contatos.');
     if (source === "board" && !boardId) throw new Error("Escolha um board de contatos.");
     if (source === "imported" && rows.length === 0) throw new Error("Importe uma planilha com contatos.");
     const scheduled = startMode === "scheduled" && scheduledAt
@@ -128,7 +150,8 @@ export function GuidedCampaignEditor(props: {
   }
 
   async function continueStage() {
-    if (stage === 1) { if (!channelId) { setError("Escolha o número que enviará as mensagens."); return; }
+    if (stage === 1) { if (source === 'list' && !listId) { setError('Escolha ou crie uma lista de contatos.'); return; }
+      if (!channelId) { setError("Escolha o número que enviará as mensagens."); return; }
       setError(null); setStage(2); return; }
     setBusy(true); setError(null);
     try {
@@ -268,10 +291,11 @@ export function GuidedCampaignEditor(props: {
           onChange={(event) => setName(event.target.value)} placeholder="Ex.: Academias de Joinville" /></label>
         {isLeadDraft ? <div className="guided-campaign-source"><CheckCircle2 size={20} />
           <div><strong>Lista vinda de Leads</strong><span>{current?.audience.selectedCount ?? rows.length} selecionados originalmente · {rows.length} importados para o rascunho</span></div></div>
-          : <div className="guided-campaign-source-choice"><label><input type="radio" checked={source === "board"}
+          : source === 'list' ? <div className="guided-campaign-list-choice"><div className="guided-campaign-list-icon"><Users size={22} /></div><div><span>CONTATOS</span><strong>{selectedList?.name || 'Sua lista de transmissão'}</strong><small>{selectedList ? `${selectedList.memberCount} ${selectedList.memberCount === 1 ? 'contato salvo' : 'contatos salvos'} · reutilize em outros disparos` : 'Crie ou escolha uma lista para este disparo'}</small></div><button type="button" className="secondary-button" onClick={() => setListDialogOpen(true)}><ListPlus size={17} /> {selectedList ? 'Ver e editar lista' : 'Escolher contatos'}</button></div>
+          : <><div className="guided-campaign-source-choice"><label><input type="radio" checked={source === "board"}
               onChange={() => { setSource("board"); setAudienceChanged(true); }} /> Contatos do CRM</label>
             <label><input type="radio" checked={source === "imported"}
-              onChange={() => { setSource("imported"); setAudienceChanged(true); }} /> Planilha Excel/CSV</label></div>}
+              onChange={() => { setSource("imported"); setAudienceChanged(true); }} /> Planilha Excel/CSV</label></div><button type="button" className="guided-campaign-switch-list" onClick={() => { setSource('list'); setAudienceChanged(true); setListDialogOpen(true); }}>Usar uma lista de contatos reutilizável</button></>}
         {!isLeadDraft && source === "board" && <label className="form-field"><span>Board de contatos</span>
           <select value={boardId} onChange={(event) => { setBoardId(event.target.value); setAudienceChanged(true); }}>
             <option value="">Selecione</option>{props.boards.map((board) => <option value={board.id} key={board.id}>{board.name}</option>)}
@@ -352,5 +376,6 @@ export function GuidedCampaignEditor(props: {
         {(stage > 1 || message.trim()) && <button type="button" className="secondary-button"
           disabled={busy} onClick={() => void saveOnly()}>Salvar rascunho</button>}
       </div></div></>}
+    {listDialogOpen ? <BroadcastListDialog initialListId={listId || null} getToken={props.getToken} onClose={closeListDialog} onSelected={(list) => { setListId(list.id); setSelectedList(list); setSource('list'); setAudienceChanged(true); setPreview(null); setListDialogOpen(false); }} /> : null}
   </section>;
 }

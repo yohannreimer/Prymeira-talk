@@ -223,6 +223,7 @@ export class CampaignsServiceError extends Error {
       | "CAMPAIGN_NOT_FOUND"
       | "CAMPAIGN_AUDIENCE_INVALID"
       | "CAMPAIGN_BOARD_NOT_FOUND"
+      | 'CAMPAIGN_LIST_NOT_FOUND'
       | "CAMPAIGN_CHANNEL_NOT_FOUND"
       | "CAMPAIGN_EVOLUTION_NOT_CONFIGURED"
       | "CAMPAIGN_META_NOT_CONFIGURED"
@@ -435,6 +436,12 @@ function getBoardAudience(audience: unknown) {
     boardId: payload.boardId,
     stageId: typeof payload.stageId === "string" ? payload.stageId : undefined
   };
+}
+
+function getBroadcastListAudience(audience: unknown) {
+  if (!audience || typeof audience !== 'object') return null;
+  const value = audience as { type?: unknown; listId?: unknown };
+  return value.type === 'list' && typeof value.listId === 'string' ? value.listId : null;
 }
 
 function getImportedAudience(audience: unknown) {
@@ -847,6 +854,23 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
   };
 
   const resolveCampaignAudience = async (campaign: CampaignRecord): Promise<ResolvedCampaignContact[]> => {
+    const listId = getBroadcastListAudience(campaign.audience);
+    if (listId) {
+      const list = await (prisma as unknown as PrismaClient).broadcastList.findFirst({
+        where: { workspaceId: campaign.workspaceId, id: listId },
+        include: { members: { include: { contact: true }, orderBy: { createdAt: 'asc' } } }
+      });
+      if (!list) throw new CampaignsServiceError('CAMPAIGN_LIST_NOT_FOUND', 'Lista de contatos não encontrada.');
+      return list.members.map((member): ResolvedCampaignContact => ({
+        contactId: member.contactId,
+        audienceKey: member.contactId,
+        name: member.contact.name,
+        phone: member.contact.phone,
+        fields: { email: member.contact.email ?? '', company: member.contact.company ?? '',
+          empresa: member.contact.company ?? '' },
+        contact: member.contact
+      }));
+    }
     const importedRows = getImportedAudience(campaign.audience);
 
     if (importedRows) {

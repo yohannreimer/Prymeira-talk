@@ -61,4 +61,14 @@ describe("campaign audience preview", () => {
     });
     expect(result.selectedCount).toBe(1);
   });
+
+  it('counts contacts in a saved list during review', async () => {
+    const result = await previewCampaignAudience({
+      campaign: { id: 'campaign-list', updatedAt: '2026-09-28T19:15:00Z',
+        audience: { type: 'list', listId: 'list-1' }, messageBody: 'Olá' }, channelId: 'channel-1',
+      contacts: [{ audienceKey: 'contact-1', contactId: 'contact-1', name: 'Ana', phone: '5547999999999', fields: {} }],
+      verify: async (numbers) => numbers.map((phone) => ({ phone, available: true }))
+    });
+    expect(result.selectedCount).toBe(1);
+  });
 });

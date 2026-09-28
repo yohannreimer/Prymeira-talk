@@ -117,12 +117,12 @@ export async function previewCampaignAudience(input: {
   }
 
   const audience = input.campaign.audience;
-  const isBoard = typeof audience === "object" && audience !== null &&
-    "type" in audience && (audience as { type?: unknown }).type === "board";
+  const isSavedAudience = typeof audience === "object" && audience !== null &&
+    "type" in audience && ['board', 'list'].includes(String((audience as { type?: unknown }).type));
   const storedCount = typeof audience === "object" && audience !== null &&
     "selectedCount" in audience ? (audience as { selectedCount?: unknown }).selectedCount : null;
   const selectedCount = typeof storedCount === "number" && Number.isInteger(storedCount) &&
-    storedCount >= input.contacts.length ? storedCount : isBoard ? input.contacts.length : null;
+    storedCount >= input.contacts.length ? storedCount : isSavedAudience ? input.contacts.length : null;
   const revision = new Date(input.campaign.updatedAt).toISOString();
   const audienceHash = createHash("sha256").update(JSON.stringify({
     campaignId: input.campaign.id,
