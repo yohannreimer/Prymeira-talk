@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { Download, FileText, LoaderCircle, Mic, Pause, Play, RotateCcw, X } from 'lucide-react';
 import type { MessageDto } from '@prymeira-talk/shared';
-import { apiGetInboxMedia, apiGetPdfPreview } from '../../app/api';
+import { apiGetAudioTranscription, apiGetInboxMedia, apiGetPdfPreview } from '../../app/api';
 import { mediaDataUrl } from './media-data-url';
 import './inbox-media.css';
 
 type MediaMessage = Pick<MessageDto, 'type' | 'body'> & Partial<Pick<MessageDto, 'mediaUrl' | 'attachment'>>;
 const placeholder = /^(Imagem recebida|Figurinha recebida|Arquivo recebido|Áudio recebido|Áudio enviado|Vídeo recebido)$/i;
+const pendingAudio = /^(Áudio recebido|Áudio enviado|Processando áudio\.\.\.|Não foi possível transcrever este áudio\.)$/i;
+function audioTranscript(body: string | null) {
+  const text = body?.trim();
+  return text && !pendingAudio.test(text) ? text : null;
+}
 const filename = /^[^\n]{1,240}\.(pdf|docx?|xlsx?|csv|txt|zip|png|jpe?g|webp|mp4|ogg|mp3)$/i;
 export function mediaFileName(message: MediaMessage) {
   if (message.attachment?.fileName?.trim()) return message.attachment.fileName;
@@ -63,6 +68,7 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
   const root = useRef<HTMLDivElement>(null);
   const audio = useRef<HTMLAudioElement>(null);
   const controller = useRef<AbortController | null>(null);
+  const transcriptController = useRef<AbortController | null>(null);
   const resource = useRef<{ url: string; blob: Blob } | null>(null);
   const pending = useRef<Promise<{ url: string; blob: Blob }> | null>(null);
   const [loading, setLoading] = useState(false);
@@ -73,6 +79,10 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
   const [duration, setDuration] = useState(message.attachment?.durationSeconds ?? 0);
   const [position, setPosition] = useState(0);
   const [speed, setSpeed] = useState(1);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [requestedTranscript, setRequestedTranscript] = useState<string | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [transcriptError, setTranscriptError] = useState(false);
   const name = mediaFileName(message);
   const isImage = message.type === 'image';
   const isAudio = message.type === 'audio';
@@ -81,8 +91,10 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
     setSrc(message.type === 'image' && /^data:image\/(jpeg|png|webp|gif);/i.test(message.mediaUrl ?? '') ? message.mediaUrl : null);
     setError(false); setViewer(null); setPlaying(false); setLoading(false);
     setPosition(0); setDuration(message.attachment?.durationSeconds ?? 0);
+    setTranscriptOpen(false); setRequestedTranscript(null); setTranscriptLoading(false); setTranscriptError(false);
     return () => {
       controller.current?.abort();
+      transcriptController.current?.abort();
       audio.current?.pause();
       resource.current = null; pending.current = null;
     };
@@ -140,7 +152,24 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
       } else setViewer(kind);
     } catch { /* Visible retry is shared by every attachment type. */ }
   }
-  const transcript = isAudio && message.body?.trim() && !placeholder.test(message.body.trim()) && message.body !== 'Não foi possível transcrever este áudio.' ? message.body : null;
+  const transcript = audioTranscript(message.body) ?? requestedTranscript;
+  async function showTranscript() {
+    if (transcriptOpen) { setTranscriptOpen(false); return; }
+    setTranscriptOpen(true);
+    if (transcript || transcriptLoading) return;
+    transcriptController.current?.abort();
+    const abort = new AbortController();
+    transcriptController.current = abort;
+    setTranscriptLoading(true); setTranscriptError(false);
+    try {
+      const result = await apiGetAudioTranscription(message.conversationId, message.id, getToken, abort.signal);
+      if (!abort.signal.aborted) setRequestedTranscript(result.text);
+    } catch {
+      if (!abort.signal.aborted) setTranscriptError(true);
+    } finally {
+      if (!abort.signal.aborted) setTranscriptLoading(false);
+    }
+  }
   return <div className="talk-attachment" ref={root}>
     {isAudio ? <>
       <div className="talk-voice-note">
@@ -161,7 +190,10 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
           onTimeUpdate={() => setPosition(audio.current?.currentTime ?? 0)} onPlay={() => { setPlaying(true); setError(false); }}
           onPause={() => setPlaying(false)} onEnded={() => { setPlaying(false); setPosition(0); }} onError={() => { setError(true); setPlaying(false); }} />
       </div>
-      {transcript ? <details className="talk-audio-transcript"><summary>Ver transcrição</summary><p>{transcript}</p></details> : null}
+      <div className="talk-audio-transcript">
+        <button type="button" aria-expanded={transcriptOpen} onClick={() => void showTranscript()}>{transcriptOpen ? 'Ocultar transcrição' : 'Ver transcrição'}</button>
+        {transcriptOpen ? <p role="status">{transcript ?? (transcriptLoading ? 'Transcrevendo áudio…' : transcriptError ? 'Transcrição indisponível. Feche e tente novamente.' : 'Transcrição indisponível.')}</p> : null}
+      </div>
     </> : isImage ? <button className={`talk-image-preview${message.body === 'Figurinha recebida' ? ' is-sticker' : ''}`} type="button" aria-label="Ampliar imagem" onClick={() => void open()}>
       {src && !error ? <img src={src} alt={mediaCaption(message) || 'Imagem da conversa'} onError={() => setError(true)} /> : <span>{loading ? 'Carregando imagem…' : 'Abrir imagem'}</span>}
     </button> : <div className="talk-document-card">

@@ -15,6 +15,7 @@ describe('WhatsApp-style attachments', () => {
   it('renders OGG with an in-app play action without claiming transcription is running', () => {
     const html = renderToStaticMarkup(<InboxMedia message={{ ...base, type: 'audio', body: 'Áudio recebido', mediaUrl: 'data:audio/ogg;base64,YQ==' }} getToken={async () => null} />);
     expect(html).toContain('Reproduzir áudio');
+    expect(html).toContain('Ver transcrição');
     expect(html).not.toContain('Processando áudio');
     expect(html).not.toContain('Abrir áudio original');
   });

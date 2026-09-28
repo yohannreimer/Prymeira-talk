@@ -53,14 +53,12 @@ import { useAssistantConversation } from './useAssistantConversation';
 import { canCopySuggestion, draftNeedsReview, suggestionOrigin, type ComposerSuggestionOrigin } from './assistant-composer-state';
 import { apiSendAssistantSuggestion } from '../../app/api';
 import type { AssistantSuggestionDto } from '@prymeira-talk/shared';
+import { formatConversationCardDate } from './conversation-card-date';
 
-function formatTime(value: string | null) {
-  if (!value) return "Sem mensagens";
-
-  return new Intl.DateTimeFormat("pt-BR", {
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(value));
+function ConversationCardTime({ value }: { value: string | null }) {
+  if (!value) return <time className="conv-time">Sem mensagens</time>;
+  const { day, time } = formatConversationCardDate(value);
+  return <time className="conv-time" dateTime={value}><span>{day}</span><span>{time}</span></time>;
 }
 
 const CONVERSATION_PAGE_SIZE = 50;
@@ -1661,7 +1659,7 @@ function InboxPageContent() {
                     ) : null}
                   </span>
                   <span className="conv-meta-right">
-                    <time className="conv-time">{formatTime(conversation.lastMessageAt)}</time>
+                    <ConversationCardTime value={conversation.lastMessageAt} />
                     {conversation.unreadCount > 0 ? (
                       <span className="conv-unread-badge">
                         {conversation.unreadCount > 99 ? "99+" : conversation.unreadCount}

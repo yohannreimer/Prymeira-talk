@@ -6714,7 +6714,9 @@ select:disabled {
 }
 
 .conv-time {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
   width: 100%;
   font-size: 10px;
   color: var(--color-text-muted);

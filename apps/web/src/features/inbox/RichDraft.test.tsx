@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RichDraft } from './RichDraft';
@@ -61,5 +61,21 @@ describe('RichDraft clipboard paste', () => {
 
     expect(onPasteImage).toHaveBeenCalledTimes(1);
     expect(onPasteImage.mock.calls[0][0]).toMatchObject({ name: 'captura-de-tela.png', type: 'image/png', size: image.size });
+  });
+
+  it('clears the visible editor when a sent message resets the controlled draft', async () => {
+    function Composer() {
+      const [value, setValue] = useState('');
+      const [sending, setSending] = useState(false);
+      return <form onSubmit={event => { event.preventDefault(); setSending(true); setValue(''); }}>
+        <RichDraft value={value} disabled={sending} onChange={setValue} onFormatChange={() => {}} />
+        <button type="submit">Enviar</button>
+      </form>;
+    }
+    await act(async () => root.render(<Composer />));
+    await paste({ items: [] as unknown as DataTransferItemList, files: [] as unknown as FileList, getData: () => 'Mensagem enviada' });
+    expect(container.querySelector('[role="textbox"]')?.textContent).toBe('Mensagem enviada');
+    await act(async () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click());
+    expect(container.querySelector('[role="textbox"]')?.textContent).toBe('');
   });
 });

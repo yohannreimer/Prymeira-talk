@@ -12,11 +12,14 @@ import {
   ConversationActionError,
   ConversationNotFoundError,
   OutboundMessageValidationError,
-  createConversationsService
+  createConversationsService,
+  toMessageDto
 } from "./conversations.service.js";
 import { inboxHandoffWhere } from "./conversations.service.js";
 import type { PrismaLike } from "./conversations.service.js";
 import { createInboxMediaService } from './inbox-media.js';
+import { transcribeInboundAudio } from '../agents/inbound-media.js';
+import { resolveOpenAiCompatibleSettings } from '../agents/ai-provider-settings.js';
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
 import type { AgentImprovementObserver } from "../agents/agent-improvements.service.js";
 import type { InboxTriageObserver } from "./inbox-triage.service.js";
@@ -153,6 +156,29 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       const code = error instanceof Error ? error.message : '';
       return reply.code(code === 'NOT_FOUND' ? 404 : code === 'MEDIA_BUSY' ? 429 : 422)
         .send({ error: 'Não foi possível carregar o anexo. Tente novamente.' });
+    }
+  });
+  app.post('/conversations/:conversationId/messages/:messageId/transcription', async (request, reply) => {
+    const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Áudio inválido.' });
+    const { conversationId, messageId } = params.data;
+    const workspaceId = request.talk.workspaceId;
+    const message = await app.prisma.message.findFirst({ where: { id: messageId, conversationId, workspaceId, type: 'audio' } });
+    if (!message) return reply.code(404).send({ error: 'Áudio não encontrado.' });
+    const existing = message.body?.trim();
+    if (existing && !/^(Áudio recebido|Áudio enviado|Processando áudio\.\.\.|Não foi possível transcrever este áudio\.)$/i.test(existing)) {
+      return reply.send({ text: existing });
+    }
+    try {
+      const media = await mediaService.media(workspaceId, conversationId, messageId);
+      const settings = await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId });
+      const result = await transcribeInboundAudio({ bytes: media.bytes, mimeType: media.mimeType, settings });
+      const updated = await app.prisma.message.update({ where: { id: messageId }, data: { body: result.text } });
+      app.realtime.publish({ type: 'message.created', workspaceId, payload: toMessageDto(updated) });
+      return reply.send({ text: result.text });
+    } catch (error) {
+      request.log.warn({ err: error, conversationId, messageId }, 'Audio transcription requested from inbox failed.');
+      return reply.code(422).send({ error: 'Não foi possível transcrever este áudio. Tente novamente.' });
     }
   });
   app.get('/conversations/:conversationId/contact-photo', async (request, reply) => {

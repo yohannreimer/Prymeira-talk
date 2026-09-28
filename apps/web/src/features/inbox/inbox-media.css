@@ -12,6 +12,7 @@
 .is-outbound .talk-attachment { color: #f2faf7; }
 .is-outbound .talk-voice-icon, .is-outbound .talk-voice-speed { color: #e6fff4; background: #ffffff21; }
 .talk-audio-transcript { max-width: 310px; font-size: 12px; margin-top: 6px; border-top: 1px solid #91afa43b; padding-top: 7px; }
+.talk-audio-transcript > button { padding: 0; border: 0; background: transparent; font-size: 12px !important; text-decoration: underline; opacity: .8; }
 .talk-audio-transcript summary { cursor: pointer; opacity: .8; }
 .talk-audio-transcript p { margin-top: 8px !important; white-space: pre-wrap; }
 .talk-image-preview { display: block; width: min(340px, 58vw); padding: 0; border: 0; border-radius: 10px; overflow: hidden; background: #dce7e2; }

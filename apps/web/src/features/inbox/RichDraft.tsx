@@ -40,10 +40,10 @@ export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: 
     onUpdate({ editor }) { const value = serializeWhatsappText(editor.getJSON()); written.current = value; latest.current.onChange(value); },
     onTransaction({ editor }) { latest.current.onFormatChange({ bold: editor.isActive('bold'), italic: editor.isActive('italic') }); }
   });
-  useEffect(() => { editor?.setEditable(!props.disabled); }, [editor, props.disabled]);
   useEffect(() => {
     if (editor && props.value !== written.current) { written.current = props.value; editor.commands.setContent(parseWhatsappText(props.value), { emitUpdate: false }); }
   }, [editor, props.value]);
+  useEffect(() => { editor?.setEditable(!props.disabled); }, [editor, props.disabled]);
   useImperativeHandle(ref, () => ({
     focus: () => { editor?.commands.focus(); },
     format: mark => { if (!props.disabled) editor?.chain().focus().toggleMark(mark).run(); },

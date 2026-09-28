@@ -1362,6 +1362,11 @@ export async function apiGetInboxMedia(conversationId: string, messageId: string
   return response.blob();
 }
 
+export function apiGetAudioTranscription(conversationId: string, messageId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return fetchJson(getToken, `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/transcription`,
+    { method: 'POST', signal }, data => data as { text: string }, 'Não foi possível transcrever este áudio.');
+}
+
 export async function apiGetContactPhoto(conversationId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
   const token = await getRequiredToken(getToken);
   const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/contact-photo`, {
