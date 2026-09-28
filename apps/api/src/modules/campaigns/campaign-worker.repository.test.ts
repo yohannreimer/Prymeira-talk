@@ -48,4 +48,14 @@ describe('campaign worker inbox visibility', () => {
       data: expect.objectContaining({ hiddenUntilReply: false })
     }));
   });
+
+  it('reuses the provider message when its webhook arrives before settlement', async () => {
+    const { tx, repository } = harness(true);
+    await repository.settle({ id: 'recipient-1', leaseToken: 'lease-1', status: 'sent',
+      providerMessageId: 'provider-1', contactId: 'contact-1', message: 'Olá' });
+    expect(tx.message.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { workspaceId_providerMessageId: { workspaceId: 'workspace-1',
+        providerMessageId: 'provider-1' } }
+    }));
+  });
 });

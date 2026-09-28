@@ -123,8 +123,11 @@ export function createCampaignWorkerRepository(prisma: PrismaClient, options: {
               hiddenUntilReply: recipient.campaign.hideFromInboxUntilReply }, update: {}
           });
           conversationId = conversation.id;
-          await tx.message.upsert({ where: { workspaceId_providerEventId: {
-            workspaceId: recipient.workspaceId, providerEventId: `campaign:${recipient.id}` } },
+          await tx.message.upsert({ where: input.providerMessageId
+            ? { workspaceId_providerMessageId: { workspaceId: recipient.workspaceId,
+                providerMessageId: input.providerMessageId } }
+            : { workspaceId_providerEventId: { workspaceId: recipient.workspaceId,
+                providerEventId: `campaign:${recipient.id}` } },
             create: { workspaceId: recipient.workspaceId, conversationId: conversation.id,
               providerEventId: `campaign:${recipient.id}`, providerMessageId: input.providerMessageId,
               direction: "outbound", type: "text", body: input.message,
