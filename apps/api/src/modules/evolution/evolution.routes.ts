@@ -65,8 +65,11 @@ const evolutionWebhookParamsSchema = z.object({
   workspaceId: z.string().min(1)
 });
 
-function extractPhone(remoteJid: string) {
-  return normalizePhoneForStorage(remoteJid.split("@")[0] ?? remoteJid);
+export function resolveWebhookPhone(remoteJid: string, remoteJidAlt?: string): string | null {
+  const address = remoteJid.endsWith('@lid') ? remoteJidAlt : remoteJid;
+  if (!address || (address.includes('@') && !address.endsWith('@s.whatsapp.net'))) return null;
+  const phone = normalizePhoneForStorage(address.split('@')[0]);
+  return phone.length >= 8 && phone.length <= 15 ? phone : null;
 }
 
 function normalizeHeaderValue(header: string | string[] | undefined) {
@@ -680,7 +683,13 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
     }
 
     const payload = body.data;
-    const phone = extractPhone(payload.data.key.remoteJid);
+    const phone = resolveWebhookPhone(payload.data.key.remoteJid, payload.data.key.remoteJidAlt);
+    if (!phone) {
+      request.log.warn({ event: 'evolution_unresolved_identity', workspaceId,
+        providerMessageId: payload.data.key.id, remoteJidType: payload.data.key.remoteJid.split('@')[1] ?? 'unknown' },
+      'Evolution message has no phone identity yet.');
+      return { ok: true, ignored: true, reason: 'unresolved_identity' };
+    }
     const pushName = payload.data.key.fromMe ? null : extractPushName(request.body);
     const messageContent = extractMessageContent(payload.data.message, payload.data.messageType);
     if (messageContent.body === "Template recebido sem texto" || messageContent.body === "Mensagem não reconhecida") {

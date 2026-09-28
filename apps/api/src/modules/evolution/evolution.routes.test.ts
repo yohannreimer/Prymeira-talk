@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { conversationSchema, messageSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
-import { evolutionRoutes, isUniqueConstraintError } from "./evolution.routes.js";
+import { evolutionRoutes, isUniqueConstraintError, resolveWebhookPhone } from "./evolution.routes.js";
 import type { EvolutionRoutesOptions } from "./evolution.routes.js";
 import { evolutionWebhookEnvelopeSchema, evolutionWebhookSchema } from "./evolution.schemas.js";
 import { createCipheriv, hkdfSync } from "node:crypto";
@@ -361,6 +361,16 @@ describe("Evolution webhook schema", () => {
 
     expect(parsed.data.key.id).toBe("provider_msg_1");
   });
+
+  it("uses a phone alternate for LID messages without treating the LID as a phone", () => {
+    const parsed = evolutionWebhookSchema.parse({ ...validWebhookBody, data: {
+      ...validWebhookBody.data, key: { ...validWebhookBody.data.key,
+        remoteJid: '123456789012345@lid', remoteJidAlt: '5511999999999@s.whatsapp.net' }
+    } });
+    expect(resolveWebhookPhone(parsed.data.key.remoteJid, parsed.data.key.remoteJidAlt)).toBe('551199999999');
+    expect(resolveWebhookPhone('123456789012345@lid')).toBeNull();
+    expect(resolveWebhookPhone('123456789012345@g.us')).toBeNull();
+  });
 });
 
 describe("Evolution webhook routes", () => {
@@ -380,6 +390,21 @@ describe("Evolution webhook routes", () => {
     ).toBe(true);
 
     expect(isUniqueConstraintError({ code: "P2002", meta: { target: ["email"] } })).toBe(false);
+  });
+
+  it("does not create a contact with an unresolved LID mistaken for a phone", async () => {
+    const { app, prisma } = await buildEvolutionApp();
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' },
+        payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, remoteJid: '123456789012345@lid' } } } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ ok: true, ignored: true, reason: 'unresolved_identity' });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
   });
 
   it("returns 401 for invalid secrets without touching Prisma", async () => {
