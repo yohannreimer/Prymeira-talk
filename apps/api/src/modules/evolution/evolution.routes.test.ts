@@ -368,7 +368,7 @@ describe("Evolution webhook schema", () => {
         remoteJid: '123456789012345@lid', remoteJidAlt: '5511999999999@s.whatsapp.net' }
     } });
     expect(resolveWebhookPhone(parsed.data.key.remoteJid, parsed.data.key.remoteJidAlt)).toBe('551199999999');
-    expect(resolveWebhookPhone('123456789012345@lid')).toBeNull();
+    expect(resolveWebhookPhone('123456789012345@lid')).toBe('123456789012345@lid');
     expect(resolveWebhookPhone('123456789012345@g.us')).toBeNull();
   });
 });
@@ -392,16 +392,18 @@ describe("Evolution webhook routes", () => {
     expect(isUniqueConstraintError({ code: "P2002", meta: { target: ["email"] } })).toBe(false);
   });
 
-  it("does not create a contact with an unresolved LID mistaken for a phone", async () => {
-    const { app, prisma } = await buildEvolutionApp();
+  it("ingests an unmapped LID under its exact identity without treating it as a phone", async () => {
+    const prisma = createMockPrisma({ contact: { findFirst: vi.fn().mockResolvedValue(null) } });
+    const { app } = await buildEvolutionApp(prisma);
     try {
       const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
         headers: { 'x-prymeira-talk-secret': 'top_secret' },
         payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
           key: { ...validWebhookBody.data.key, remoteJid: '123456789012345@lid' } } } });
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ ok: true, ignored: true, reason: 'unresolved_identity' });
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(response.json()).toMatchObject({ ok: true });
+      expect(prisma.contact.create).toHaveBeenCalledWith({ data: { workspaceId: 'workspace_a', phone: '123456789012345@lid' } });
+      expect(prisma.conversation.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ aiControlStatus: 'human_controlled' }) }));
     } finally {
       await app.close();
     }

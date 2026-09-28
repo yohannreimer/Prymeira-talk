@@ -5,6 +5,8 @@ import { extractMessageContent } from '../evolution/evolution.routes.js';
 import { buildPhoneLookupCandidates, normalizePhoneForStorage } from '../contacts/phone-normalization.js';
 
 type ImportChannel = { id: string; workspaceId: string; providerKey: string; historyImportAttempts: number };
+const lid = (value: string) => /^\d+@lid$/.test(value);
+const contactIdentity = (jid: string) => lid(jid) ? jid : normalizePhoneForStorage(jid.split('@')[0]);
 
 function preview(record: HistoryRecord) {
   return extractMessageContent(record.message, record.messageType).preview;
@@ -17,13 +19,13 @@ export function createChannelHistoryImporter(input: {
   onConversation?: (workspaceId: string, conversationId: string) => Promise<void> | void;
 }) {
   async function importChat(channel: ImportChannel, chat: RecentEvolutionChat) {
-    const phone = normalizePhoneForStorage(chat.phoneJid.split('@')[0]);
-    if (!phone || phone.length < 8 || phone.length > 15) return 0;
-    const records = await input.source.recentMessages({ instanceName: channel.providerKey, remoteJid: chat.remoteJid, limit: 20 });
+    const phone = contactIdentity(chat.phoneJid);
+    if (!lid(phone) && (!phone || phone.length < 8 || phone.length > 15)) return 0;
+    const records = await input.source.recentMessages({ instanceName: channel.providerKey, remoteJid: chat.remoteJid, limit: 500 });
     if (!records.length) return 0;
     const name = chat.pushName ?? [...records].reverse().find((record) => !record.key.fromMe && record.pushName)?.pushName ?? null;
     const result = await input.prisma.$transaction(async (tx) => {
-      const candidates = buildPhoneLookupCandidates(phone);
+      const candidates = lid(phone) ? [phone] : [...new Set([chat.remoteJid.endsWith('@lid') ? chat.remoteJid : '', ...buildPhoneLookupCandidates(phone)].filter(Boolean))];
       const contact = await tx.contact.findFirst({ where: { workspaceId: channel.workspaceId, phone: { in: candidates } }, orderBy: { updatedAt: 'desc' } })
         ?? await tx.contact.upsert({ where: { workspaceId_phone: { workspaceId: channel.workspaceId, phone } },
           create: { workspaceId: channel.workspaceId, phone, name, avatarUrl: chat.profilePicUrl }, update: {} });
@@ -67,7 +69,7 @@ export function createChannelHistoryImporter(input: {
           data: { lastMessageAt: newestAt, lastMessagePreview: preview(newest) } });
       }
       return { conversationId: conversation.id, inserted: inserted.count };
-    }, { timeout: 20_000 });
+    }, { timeout: 60_000 });
     await input.onConversation?.(channel.workspaceId, result.conversationId);
     return result.inserted;
   }
@@ -76,8 +78,8 @@ export function createChannelHistoryImporter(input: {
     const source = await input.source.recentContacts({ instanceName: channel.providerKey });
     const contacts = new Map<string, { name: string | null; avatarUrl: string | null }>();
     for (const item of source) {
-      const phone = normalizePhoneForStorage(item.phoneJid.split('@')[0]);
-      if (phone.length < 8 || phone.length > 15) continue;
+      const phone = contactIdentity(item.phoneJid);
+      if (!lid(phone) && (phone.length < 8 || phone.length > 15)) continue;
       const previous = contacts.get(phone);
       contacts.set(phone, {
         name: item.name ?? previous?.name ?? null,
@@ -85,12 +87,12 @@ export function createChannelHistoryImporter(input: {
       });
     }
     if (!contacts.size) return contacts;
-    const candidates = [...new Set([...contacts.keys()].flatMap(buildPhoneLookupCandidates))];
+    const candidates = [...new Set([...contacts.keys()].flatMap((identity) => lid(identity) ? [identity] : buildPhoneLookupCandidates(identity)))];
     const existing = await input.prisma.contact.findMany({
       where: { workspaceId: channel.workspaceId, phone: { in: candidates } },
       select: { id: true, phone: true, name: true, avatarUrl: true }
     });
-    const known = new Map(existing.map((contact) => [normalizePhoneForStorage(contact.phone), contact]));
+    const known = new Map(existing.map((contact) => [lid(contact.phone) ? contact.phone : normalizePhoneForStorage(contact.phone), contact]));
     const missing = [...contacts].filter(([phone]) => !known.has(phone));
     if (missing.length) {
       await input.prisma.contact.createMany({ data: missing.map(([phone, details]) => ({
@@ -112,23 +114,21 @@ export function createChannelHistoryImporter(input: {
 
   return async (channel: ImportChannel, shouldStop: () => boolean = () => false) => {
     const contacts = await importContacts(channel);
-    const { chats, unresolvedLids } = await input.source.recentChats({ instanceName: channel.providerKey, limit: 50 });
+    const { chats } = await input.source.recentChats({ instanceName: channel.providerKey, limit: 1000 });
     if (!chats.length) throw new Error('HISTORY_CHATS_NOT_READY');
     let inserted = 0;
     for (const chat of chats) {
       if (shouldStop()) throw new Error('HISTORY_IMPORT_STOPPED');
-      chat.pushName = contacts.get(normalizePhoneForStorage(chat.phoneJid.split('@')[0]))?.name ?? chat.pushName;
+      chat.pushName = contacts.get(contactIdentity(chat.phoneJid))?.name ?? chat.pushName;
       inserted += await importChat(channel, chat);
     }
-    // A few mapped LID chats must not make a mostly unresolved instance look fully imported.
-    if (unresolvedLids > 0) throw new Error('HISTORY_LID_UNRESOLVED');
     if (inserted === 0) {
       // The chat list can arrive before Evolution finishes synchronizing messages.
       const total = await input.prisma.message.count({ where: { workspaceId: channel.workspaceId, conversation: { channelId: channel.id } } });
       if (total === 0) throw new Error('HISTORY_MESSAGES_NOT_READY');
     }
     // A connected instance can expose all chats long before their messages finish syncing.
-    // Revisit the same 50 chats until at least four passes and one pass adds no messages.
+    // Revisit the available chats until at least four passes and one pass adds no messages.
     if (channel.historyImportAttempts < 3 || inserted > 0) throw new Error('HISTORY_CHATS_SETTLING');
     return { conversations: chats.length, messages: inserted };
   };

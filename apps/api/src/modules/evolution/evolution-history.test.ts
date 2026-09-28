@@ -150,9 +150,28 @@ describe('new channel history', () => {
     ]);
   });
 
-  it('does not mistake LID identifiers for telephone numbers', async () => {
+  it('retains unresolved LID identities without mistaking them for telephone numbers', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([{ remoteJid: '987654@lid' }])));
     const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
-    await expect(source.recentChats({ instanceName: 'New', limit: 50 })).rejects.toThrow('HISTORY_LID_UNRESOLVED');
+    await expect(source.recentChats({ instanceName: 'New', limit: 50 })).resolves.toEqual({
+      chats: [{ remoteJid: '987654@lid', phoneJid: '987654@lid', pushName: null, profilePicUrl: null }], unresolvedLids: 1
+    });
+  });
+
+  it('loads older message pages for a conversation without changing their chronological order', async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { page: number; offset: number };
+      const records = Array.from({ length: body.page === 1 ? 100 : 2 }, (_, index) => ({
+        ...row(`page-${body.page}-${index}`, 1_790_000_000_000 + (body.page === 1 ? 100 + index : index) * 1000),
+        key: { id: `page-${body.page}-${index}`, remoteJid: jid, fromMe: false }
+      }));
+      return new Response(JSON.stringify({ messages: { records, pages: 2 } }));
+    });
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
+    const messages = await source.recentMessages({ instanceName: 'New', remoteJid: jid, limit: 500 });
+    expect(messages).toHaveLength(102);
+    expect(messages[0]?.key.id).toBe('page-2-0');
+    expect(messages.at(-1)?.key.id).toBe('page-1-99');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

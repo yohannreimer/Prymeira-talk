@@ -73,14 +73,15 @@ describe('new channel history import', () => {
     await expect(importer({ ...channel, historyImportAttempts: 3 })).resolves.toEqual({ conversations: 1, messages: 0 });
   });
 
-  it('keeps retrying when some recent LID chats still have no phone mapping', async () => {
+  it('completes after importing addressable LID chats without phone mapping', async () => {
     const prisma = { message: { count: vi.fn().mockResolvedValue(1) } } as unknown as PrismaClient;
     const source = {
       recentContacts: vi.fn().mockResolvedValue([]),
       recentChats: vi.fn().mockResolvedValue({ chats: [{ remoteJid, phoneJid: remoteJid, pushName: null, profilePicUrl: null }], unresolvedLids: 4 }),
       recentMessages: vi.fn().mockResolvedValue([])
     } as unknown as EvolutionHistorySource;
-    await expect(createChannelHistoryImporter({ prisma, source })({ ...channel, historyImportAttempts: 20 })).rejects.toThrow('HISTORY_LID_UNRESOLVED');
+    await expect(createChannelHistoryImporter({ prisma, source })({ ...channel, historyImportAttempts: 20 })).resolves.toEqual({ conversations: 1, messages: 0 });
+    expect(source.recentChats).toHaveBeenCalledWith({ instanceName: 'instance-1', limit: 1000 });
   });
 
   it('never completes an empty history even after repeated attempts', async () => {

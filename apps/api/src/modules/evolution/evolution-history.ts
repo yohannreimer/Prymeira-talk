@@ -47,12 +47,12 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
   return {
     async recentContacts(input: { instanceName: string }): Promise<RecentEvolutionContact[]> {
       const contacts = new Map<string, RecentEvolutionContact>();
-      for (let offset = 0; offset < 5000; offset += 1000) {
+      for (let offset = 0; offset < 20000; offset += 1000) {
         const data = await post(`/chat/findContacts/${encodeURIComponent(input.instanceName)}`, { take: 1000, skip: offset });
         const rows = Array.isArray(data) ? data : record(data) && Array.isArray(data.contacts) ? data.contacts : null;
         if (!rows) throw new Error('HISTORY_CONTACTS_SHAPE');
         for (const raw of rows) {
-          if (!record(raw) || !phoneJid(raw.remoteJid)) continue;
+          if (!record(raw) || !direct(raw.remoteJid)) continue;
           const previous = contacts.get(raw.remoteJid);
           contacts.set(raw.remoteJid, {
             phoneJid: raw.remoteJid,
@@ -65,11 +65,11 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       throw new Error('HISTORY_CONTACT_LIMIT');
     },
     async recentChats(input: { instanceName: string; limit: number }): Promise<RecentEvolutionChats> {
-      if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 50) throw new Error('HISTORY_CHAT_LIMIT');
+      if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 1000) throw new Error('HISTORY_CHAT_LIMIT');
       const chats: RecentEvolutionChat[] = [];
       const seen = new Set<string>();
       let unresolvedLids = 0;
-      for (let offset = 0; offset < 1000 && chats.length < input.limit; offset += 100) {
+      for (let offset = 0; offset < 10000 && chats.length < input.limit; offset += 100) {
         const data = await post(`/chat/findChats/${encodeURIComponent(input.instanceName)}`, { take: 100, skip: offset });
         const rows = Array.isArray(data) ? data : record(data) && Array.isArray(data.chats) ? data.chats : null;
         if (!rows) throw new Error('HISTORY_CHATS_SHAPE');
@@ -77,15 +77,15 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
           if (!record(raw) || !direct(raw.remoteJid)) continue;
           const alternate = record(raw.lastMessage) && record(raw.lastMessage.key) ? raw.lastMessage.key.remoteJidAlt : null;
           const resolvedPhoneJid = phoneJid(raw.remoteJid) ? raw.remoteJid : phoneJid(raw.remoteJidAlt) ? raw.remoteJidAlt : phoneJid(alternate) ? alternate : null;
-          if (!resolvedPhoneJid) {
-            if (raw.remoteJid.endsWith('@lid')) unresolvedLids++;
-            continue;
-          }
-          if (seen.has(resolvedPhoneJid)) continue;
-          seen.add(resolvedPhoneJid);
+          // A LID is an addressable WhatsApp identity, but never a telephone number.
+          // Keep its suffix so it cannot collide with a real contact's phone.
+          const identity = resolvedPhoneJid ?? raw.remoteJid;
+          if (!resolvedPhoneJid) unresolvedLids++;
+          if (seen.has(identity)) continue;
+          seen.add(identity);
           chats.push({
             remoteJid: raw.remoteJid,
-            phoneJid: resolvedPhoneJid,
+            phoneJid: identity,
             pushName: typeof raw.pushName === 'string' && raw.pushName.trim() ? raw.pushName.trim().slice(0, 200) : null,
             profilePicUrl: typeof raw.profilePicUrl === 'string' && /^https:\/\//i.test(raw.profilePicUrl) ? raw.profilePicUrl : null
           });
@@ -93,18 +93,24 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
         }
         if (rows.length < 100) break;
       }
-      if (!chats.length && unresolvedLids) throw new Error('HISTORY_LID_UNRESOLVED');
       return { chats, unresolvedLids };
     },
     async recentMessages(input: { instanceName: string; remoteJid: string; limit: number }): Promise<HistoryRecord[]> {
       if (!direct(input.remoteJid)) throw new Error('HISTORY_IDENTITY');
-      if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 20) throw new Error('HISTORY_MESSAGE_LIMIT');
-      const data = await post(`/chat/findMessages/${encodeURIComponent(input.instanceName)}`, {
-        where: { key: { remoteJid: input.remoteJid } }, page: 1, offset: input.limit
-      });
-      if (!record(data) || !record(data.messages) || !Array.isArray(data.messages.records)) throw new Error('HISTORY_SHAPE');
-      const rows = data.messages.records.slice(0, input.limit).filter((raw) => record(raw) && record(raw.message));
-      const records = rows.map(parse);
+      if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 500) throw new Error('HISTORY_MESSAGE_LIMIT');
+      const rows: unknown[] = [];
+      const pageSize = Math.min(input.limit, 100);
+      for (let index = 1; rows.length < input.limit; index++) {
+        const data = await post(`/chat/findMessages/${encodeURIComponent(input.instanceName)}`, {
+          where: { key: { remoteJid: input.remoteJid } }, page: index, offset: pageSize
+        });
+        if (!record(data) || !record(data.messages) || !Array.isArray(data.messages.records)) throw new Error('HISTORY_SHAPE');
+        rows.push(...data.messages.records.slice(0, input.limit - rows.length));
+        const pages = Number(data.messages.pages);
+        if (data.messages.records.length < pageSize || (Number.isInteger(pages) && index >= pages)) break;
+      }
+      const readable = rows.filter((raw) => record(raw) && record(raw.message));
+      const records = readable.map(parse);
       if (records.some((item) => item.key.remoteJid !== input.remoteJid)) throw new Error('HISTORY_IDENTITY');
       return records.sort((a, b) => a.messageTimestamp - b.messageTimestamp || a.key.id.localeCompare(b.key.id));
     },

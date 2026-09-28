@@ -66,7 +66,8 @@ const evolutionWebhookParamsSchema = z.object({
 });
 
 export function resolveWebhookPhone(remoteJid: string, remoteJidAlt?: string): string | null {
-  const address = remoteJid.endsWith('@lid') ? remoteJidAlt : remoteJid;
+  const address = remoteJid.endsWith('@lid') ? remoteJidAlt ?? remoteJid : remoteJid;
+  if (/^\d+@lid$/.test(address)) return address;
   if (!address || (address.includes('@') && !address.endsWith('@s.whatsapp.net'))) return null;
   const phone = normalizePhoneForStorage(address.split('@')[0]);
   return phone.length >= 8 && phone.length <= 15 ? phone : null;
@@ -735,13 +736,18 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           return { kind: "channel_not_found" as const };
         }
 
+        const candidates = phone.endsWith('@lid') ? [phone] : buildPhoneLookupCandidates(phone);
+        const existingLidContact = payload.data.key.remoteJid.endsWith('@lid')
+          ? await tx.contact.findFirst({ where: { workspaceId, phone: payload.data.key.remoteJid } })
+          : null;
         const contact = await tx.contact.findFirst({
           where: {
             workspaceId,
-            phone: { in: buildPhoneLookupCandidates(phone) }
+            phone: { in: candidates }
           },
           orderBy: { updatedAt: "desc" }
-        }) ?? await tx.contact.create({
+        });
+        const selectedContact = existingLidContact ?? contact ?? await tx.contact.create({
           data: {
             workspaceId,
             phone,
@@ -753,7 +759,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           await tx.contact.updateMany({
             where: {
               workspaceId,
-              phone: { in: buildPhoneLookupCandidates(phone) },
+              ...(existingLidContact || phone.endsWith('@lid') ? { id: selectedContact.id } : { phone: { in: candidates } }),
               name: null
             },
             data: { name: pushName }
@@ -765,14 +771,15 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             workspaceId_channelId_contactId: {
               workspaceId,
               channelId: channel.id,
-              contactId: contact.id
+              contactId: selectedContact.id
             }
           },
           create: {
             workspaceId,
             channelId: channel.id,
-            contactId: contact.id,
+            contactId: selectedContact.id,
             status: "open",
+            ...(phone.endsWith('@lid') ? { aiControlStatus: 'human_controlled' as const } : {}),
             ...(channel.provider === "meta_cloud" && !payload.data.key.fromMe
               ? { customerServiceWindowExpiresAt: new Date(receivedAt.getTime() + 24 * 60 * 60 * 1000) }
               : {}),
@@ -932,7 +939,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           });
         }
 
-        await automationRunner.runForInboundMessage({
+        if (!phone.endsWith('@lid')) await automationRunner.runForInboundMessage({
           workspaceId,
           messageId: message.id,
           eventKey: `message.received:${message.providerMessageId ?? message.id}`
@@ -940,7 +947,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           request.log.error({ error }, "Failed to run message automations.");
         });
 
-        await options.agentReplyScheduler?.scheduleActiveSessionForMessage({
+        if (!phone.endsWith('@lid')) await options.agentReplyScheduler?.scheduleActiveSessionForMessage({
           workspaceId,
           conversationId: message.conversationId,
           messageId: message.id
