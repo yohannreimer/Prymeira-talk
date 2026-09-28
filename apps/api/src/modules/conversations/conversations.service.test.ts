@@ -484,7 +484,7 @@ describe("conversations service", () => {
       skip: 1,
       take: 50,
       orderBy: [
-        { lastMessageAt: "desc" },
+        { lastMessageAt: { sort: "desc", nulls: "last" } },
         { createdAt: "desc" },
         { id: "desc" }
       ]

@@ -800,7 +800,7 @@ export function createConversationsService(
       const conversations = await prisma.conversation.findMany({
         where: conversationListWhere(input),
         include: conversationDtoInclude,
-        orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+        orderBy: [{ lastMessageAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }, { id: "desc" }],
         ...(input.cursor ? { cursor: { id: input.cursor }, skip: 1 } : {}),
         take: 50
       });
