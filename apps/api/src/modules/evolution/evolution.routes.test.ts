@@ -409,6 +409,22 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it('asks for older context when a new inbound Evolution message arrives', async () => {
+    const historyBackfill = vi.fn().mockResolvedValue(undefined);
+    const { app } = await buildEvolutionApp(createMockPrisma(), undefined, { historyBackfill });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: validWebhookBody });
+      expect(response.statusCode).toBe(200);
+      expect(historyBackfill).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: 'workspace_a', channelId: 'channel_1', conversationId: 'conv_1',
+        providerKey: 'client-one', remoteJid: validWebhookBody.data.key.remoteJid
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns 401 for invalid secrets without touching Prisma", async () => {
     const { app, prisma } = await buildEvolutionApp();
 

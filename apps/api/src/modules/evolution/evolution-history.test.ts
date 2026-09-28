@@ -134,7 +134,7 @@ describe('new channel history', () => {
       { remoteJid: '987654@lid', remoteJidAlt: jid, pushName: 'Cliente' },
       { remoteJid: jid, pushName: 'Cliente' }
     ])));
-    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock as typeof fetch });
     await expect(source.recentChats({ instanceName: 'New', limit: 50 })).resolves.toEqual({ chats: [
       { remoteJid: '987654@lid', phoneJid: jid, pushName: 'Cliente', profilePicUrl: null }
     ], unresolvedLids: 0 });
@@ -167,11 +167,22 @@ describe('new channel history', () => {
       }));
       return new Response(JSON.stringify({ messages: { records, pages: 2 } }));
     });
-    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock as typeof fetch });
     const messages = await source.recentMessages({ instanceName: 'New', remoteJid: jid, limit: 500 });
     expect(messages).toHaveLength(102);
     expect(messages[0]?.key.id).toBe('page-2-0');
     expect(messages.at(-1)?.key.id).toBe('page-1-99');
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('limits the initial chat list to activity within the requested window', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([
+      { remoteJid: jid, lastMessage: { messageTimestamp: now } },
+      { remoteJid: '987654321@lid', lastMessage: { messageTimestamp: now - 20 * 86400 } }
+    ])));
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
+    const result = await source.recentChats({ instanceName: 'New', limit: 1000, since: new Date((now - 15 * 86400) * 1000) });
+    expect(result.chats.map(chat => chat.remoteJid)).toEqual([jid]);
   });
 });

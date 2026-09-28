@@ -40,7 +40,7 @@ import { boardsRoutes } from "./modules/boards/boards.routes.js";
 import { campaignsRoutes } from "./modules/campaigns/campaigns.routes.js";
 import { createCampaignWorker } from "./modules/campaigns/campaign-worker.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
-import { createChannelHistoryImportScheduler } from "./modules/channels/channel-history-import.js";
+import { createChannelHistoryImporter, createChannelHistoryImportScheduler } from "./modules/channels/channel-history-import.js";
 import { contactsRoutes } from "./modules/contacts/contacts.routes.js";
 import {
   createConversationsService,
@@ -450,6 +450,14 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   app.addHook('onClose', async () => { assistantScheduler?.stop(); handoffBriefService?.stop(); });
   await app.register(evolutionRoutes, {
     messageHistory: evolutionHistorySource,
+    historyBackfill: options.prismaEnabled === false || !evolutionHistorySource ? undefined : async (input) => {
+      const count = await app.prisma.message.count({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
+      if (count >= 30) return;
+      const importer = createChannelHistoryImporter({ prisma: app.prisma, source: evolutionHistorySource });
+      await importer.importChat({ id: input.channelId, workspaceId: input.workspaceId,
+        providerKey: input.providerKey, historyImportAttempts: 0 },
+      { remoteJid: input.remoteJid, phoneJid: input.identity, pushName: input.pushName, profilePicUrl: null }, 30);
+    },
     assistantScheduler,
     handoffBriefService,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,

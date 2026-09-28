@@ -18,11 +18,12 @@ export function createChannelHistoryImporter(input: {
   source: EvolutionHistorySource;
   onConversation?: (workspaceId: string, conversationId: string) => Promise<void> | void;
 }) {
-  async function importChat(channel: ImportChannel, chat: RecentEvolutionChat) {
+  async function importChat(channel: ImportChannel, chat: RecentEvolutionChat, limit = 30, since?: Date) {
     const phone = contactIdentity(chat.phoneJid);
     if (!lid(phone) && (!phone || phone.length < 8 || phone.length > 15)) return 0;
-    const records = await input.source.recentMessages({ instanceName: channel.providerKey, remoteJid: chat.remoteJid, limit: 500 });
+    const records = await input.source.recentMessages({ instanceName: channel.providerKey, remoteJid: chat.remoteJid, limit });
     if (!records.length) return 0;
+    if (since && records.at(-1)!.messageTimestamp * 1000 < since.getTime()) return 0;
     const name = chat.pushName ?? [...records].reverse().find((record) => !record.key.fromMe && record.pushName)?.pushName ?? null;
     const result = await input.prisma.$transaction(async (tx) => {
       const candidates = lid(phone) ? [phone] : [...new Set([chat.remoteJid.endsWith('@lid') ? chat.remoteJid : '', ...buildPhoneLookupCandidates(phone)].filter(Boolean))];
@@ -112,15 +113,19 @@ export function createChannelHistoryImporter(input: {
     return contacts;
   }
 
-  return async (channel: ImportChannel, shouldStop: () => boolean = () => false) => {
+  const importChannel = async (channel: ImportChannel, shouldStop: () => boolean = () => false) => {
     const contacts = await importContacts(channel);
-    const { chats } = await input.source.recentChats({ instanceName: channel.providerKey, limit: 1000 });
-    if (!chats.length) throw new Error('HISTORY_CHATS_NOT_READY');
+    const since = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    const { chats } = await input.source.recentChats({ instanceName: channel.providerKey, limit: 1000, since });
+    if (!chats.length) {
+      if (!contacts.size || channel.historyImportAttempts < 3) throw new Error('HISTORY_CHATS_NOT_READY');
+      return { conversations: 0, messages: 0 };
+    }
     let inserted = 0;
     for (const chat of chats) {
       if (shouldStop()) throw new Error('HISTORY_IMPORT_STOPPED');
       chat.pushName = contacts.get(contactIdentity(chat.phoneJid))?.name ?? chat.pushName;
-      inserted += await importChat(channel, chat);
+      inserted += await importChat(channel, chat, 30, since);
     }
     if (inserted === 0) {
       // The chat list can arrive before Evolution finishes synchronizing messages.
@@ -132,6 +137,7 @@ export function createChannelHistoryImporter(input: {
     if (channel.historyImportAttempts < 3 || inserted > 0) throw new Error('HISTORY_CHATS_SETTLING');
     return { conversations: chats.length, messages: inserted };
   };
+  return Object.assign(importChannel, { importChat });
 }
 
 export function createChannelHistoryImportScheduler(input: {

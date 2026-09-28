@@ -47,6 +47,7 @@ describe('new channel history import', () => {
     expect(tx.conversation.upsert.mock.calls[0]?.[0].create).toMatchObject({ unreadCount: 0, aiControlStatus: 'human_controlled' });
     expect(tx.contact.upsert.mock.calls[0]?.[0].create).toMatchObject({ name: 'Cliente', avatarUrl: 'https://example.com/avatar.jpg' });
     expect(onConversation).toHaveBeenCalledWith('workspace-1', 'conversation-1');
+    expect(source.recentMessages).toHaveBeenCalledWith({ instanceName: 'instance-1', remoteJid, limit: 30 });
   });
 
   it('retries while the newly connected Evolution instance has not synchronized chats', async () => {
@@ -81,7 +82,7 @@ describe('new channel history import', () => {
       recentMessages: vi.fn().mockResolvedValue([])
     } as unknown as EvolutionHistorySource;
     await expect(createChannelHistoryImporter({ prisma, source })({ ...channel, historyImportAttempts: 20 })).resolves.toEqual({ conversations: 1, messages: 0 });
-    expect(source.recentChats).toHaveBeenCalledWith({ instanceName: 'instance-1', limit: 1000 });
+    expect(source.recentChats).toHaveBeenCalledWith({ instanceName: 'instance-1', limit: 1000, since: expect.any(Date) });
   });
 
   it('never completes an empty history even after repeated attempts', async () => {

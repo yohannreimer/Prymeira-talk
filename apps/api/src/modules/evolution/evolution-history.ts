@@ -14,6 +14,15 @@ const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v ===
 const direct = (s: unknown): s is string => typeof s === 'string' && /^\d+@(s\.whatsapp\.net|lid)$/.test(s);
 const phoneJid = (s: unknown): s is string => typeof s === 'string' && /^\d+@s\.whatsapp\.net$/.test(s);
 const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
+function activityTime(value: unknown): number | null {
+  if (typeof value === 'string' && !/^\d+$/.test(value)) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return number < 1e11 ? number * 1000 : number;
+}
 
 // This adapter deliberately has no send, mark-read, webhook or instance mutation methods.
 export function createEvolutionHistorySource(options: { baseUrl: string; apiKey: string; fetch?: typeof fetch }) {
@@ -47,7 +56,7 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
   return {
     async recentContacts(input: { instanceName: string }): Promise<RecentEvolutionContact[]> {
       const contacts = new Map<string, RecentEvolutionContact>();
-      for (let offset = 0; offset < 20000; offset += 1000) {
+      for (let offset = 0; offset < 100000; offset += 1000) {
         const data = await post(`/chat/findContacts/${encodeURIComponent(input.instanceName)}`, { take: 1000, skip: offset });
         const rows = Array.isArray(data) ? data : record(data) && Array.isArray(data.contacts) ? data.contacts : null;
         if (!rows) throw new Error('HISTORY_CONTACTS_SHAPE');
@@ -64,7 +73,7 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       }
       throw new Error('HISTORY_CONTACT_LIMIT');
     },
-    async recentChats(input: { instanceName: string; limit: number }): Promise<RecentEvolutionChats> {
+    async recentChats(input: { instanceName: string; limit: number; since?: Date }): Promise<RecentEvolutionChats> {
       if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 1000) throw new Error('HISTORY_CHAT_LIMIT');
       const chats: RecentEvolutionChat[] = [];
       const seen = new Set<string>();
@@ -75,6 +84,9 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
         if (!rows) throw new Error('HISTORY_CHATS_SHAPE');
         for (const raw of rows) {
           if (!record(raw) || !direct(raw.remoteJid)) continue;
+          const last = record(raw.lastMessage) ? raw.lastMessage : null;
+          const lastAt = activityTime(last?.messageTimestamp ?? raw.lastMessageAt ?? raw.messageTimestamp);
+          if (input.since && lastAt !== null && lastAt < input.since.getTime()) continue;
           const alternate = record(raw.lastMessage) && record(raw.lastMessage.key) ? raw.lastMessage.key.remoteJidAlt : null;
           const resolvedPhoneJid = phoneJid(raw.remoteJid) ? raw.remoteJid : phoneJid(raw.remoteJidAlt) ? raw.remoteJidAlt : phoneJid(alternate) ? alternate : null;
           // A LID is an addressable WhatsApp identity, but never a telephone number.

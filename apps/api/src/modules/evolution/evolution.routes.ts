@@ -32,6 +32,7 @@ import { decryptEncryptedMessageEdit, extractEncryptedMessageEdit } from "./evol
 
 export interface EvolutionRoutesOptions {
   messageHistory?: Pick<EvolutionHistorySource, "findMessage">;
+  historyBackfill?: (input: { workspaceId: string; channelId: string; conversationId: string; providerKey: string; remoteJid: string; identity: string; pushName: string | null }) => Promise<void>;
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
   handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>;
   followupService?: ConversationFollowupsObserver;
@@ -890,6 +891,13 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
       }
 
       const { message, conversation, humanTookControl } = transactionResult;
+      if (message.direction === 'inbound' && messageContent.type !== 'system') {
+        await options.historyBackfill?.({ workspaceId, channelId: conversation.channelId,
+          conversationId: conversation.id, providerKey: payload.instance,
+          remoteJid: payload.data.key.remoteJid, identity: phone, pushName }).catch((error: unknown) => {
+          request.log.error({ err: error, conversationId: conversation.id }, 'Recent Evolution context backfill failed.');
+        });
+      }
       if (humanTookControl) {
         request.log.info({ event: "human_outbound_paused_agent", workspaceId, conversationId: message.conversationId, messageId: message.id }, "Human outbound message paused the agent.");
         await options.assistantScheduler?.control(workspaceId, message.conversationId, true).catch((error: unknown) => {
