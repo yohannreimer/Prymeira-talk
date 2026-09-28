@@ -7062,6 +7062,21 @@ select:disabled {
   color: var(--color-surface-card);
 }
 
+.talk-shared-contacts { display: grid; gap: 6px; min-width: min(250px, 58vw); }
+.talk-shared-contact { width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 8px; border: 0; border-radius: 10px; background: rgba(255,255,255,.14); color: inherit; text-align: left; cursor: pointer; }
+.message-bubble.is-inbound .talk-shared-contact { background: #eef5f0; }
+.talk-shared-contact:hover { background: rgba(255,255,255,.25); }
+.message-bubble.is-inbound .talk-shared-contact:hover { background: #e2eee6; }
+.talk-shared-contact-avatar { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; flex: 0 0 38px; border-radius: 50%; background: #d8ebe2; color: #285c4c; }
+.talk-shared-contact-identity { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.talk-shared-contact-identity strong, .talk-shared-contact-identity small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.talk-shared-contact-identity strong { font-size: 13px; }
+.talk-shared-contact-identity small { font-size: 11px; opacity: .75; }
+.talk-shared-contact > span:last-child { font-size: 24px; line-height: 1; opacity: .7; }
+.talk-shared-contact-detail { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 12px; background: #f1f7f3; }
+.talk-shared-contact-detail strong { font-size: 15px; }
+.talk-shared-contact-detail p { margin: 3px 0 0; color: var(--color-text-secondary); font-size: 12px; }
+
 .message-media-frame {
   display: block;
   width: min(280px, 58vw);

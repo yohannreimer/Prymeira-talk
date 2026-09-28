@@ -10,6 +10,7 @@ import {
   apiDeleteQuickReply,
   apiGetConversationContext,
   apiGetConversationMessages,
+  apiRecognizeContactMessage,
   apiGetConversations,
   apiGetAttentionCount,
   apiSetManualMark,
@@ -38,6 +39,7 @@ import {
 import { InboxQuickFilters } from "./InboxQuickFilters";
 import { ShareContactDialog } from "./ShareContactDialog";
 import { NewConversationDialog } from "./NewConversationDialog";
+import { ContactCardDialog, ContactCardMessage } from './ContactCardDialog';
 import { QuickSendDialog } from "./QuickSendDialog";
 import { QuickRepliesPopover } from "./QuickRepliesPopover";
 import { useRealtimeEvents } from "./useRealtimeEvents";
@@ -463,6 +465,7 @@ function InboxPageContent() {
   const [searchQuery, setSearchQuery] = useState("");
   const [shareContactOpen, setShareContactOpen] = useState(false);
   const [newConversationOpen, setNewConversationOpen] = useState(false);
+  const [selectedContactCard, setSelectedContactCard] = useState<NonNullable<MessageDto['contactCards']>[number] | null>(null);
   const [quickSendOpen, setQuickSendOpen] = useState(false);
   const [sendNotice, setSendNotice] = useState<string | null>(null);
   const [humanAttentionCount, setHumanAttentionCount] = useState(0);
@@ -505,7 +508,7 @@ function InboxPageContent() {
     return nextToken;
   }, [getToken]);
   const assistant = useAssistantConversation(selectedConversationId, getToken);
-  useEffect(() => { setComposerOrigin(null); setDraft(''); setPendingFile(null); setAssistantOpen(false); setShareContactOpen(false); setIsDraggingFile(false); dragDepthRef.current = 0; }, [selectedConversationId]);
+  useEffect(() => { setComposerOrigin(null); setDraft(''); setPendingFile(null); setAssistantOpen(false); setShareContactOpen(false); setSelectedContactCard(null); setIsDraggingFile(false); dragDepthRef.current = 0; }, [selectedConversationId]);
   useEffect(() => {
     if (!pendingFile?.type.startsWith('image/')) { setPendingFilePreview(null); return; }
     const url = URL.createObjectURL(pendingFile);
@@ -771,6 +774,15 @@ function InboxPageContent() {
         setNewMessagesBelow(0);
         userReadingHistoryRef.current = false;
         scheduleMessageThreadScroll("auto");
+        for (const unknown of nextMessages.filter((message) => message.type === 'system' && message.body === 'Mensagem não reconhecida' && message.providerMessageId).slice(0, 3)) {
+          void apiRecognizeContactMessage(selectedConversationId, unknown.id, getFreshToken)
+            .then((recognized) => {
+              if (!isMounted) return;
+              setMessages((current) => current.map((message) => message.id === recognized.id ? recognized : message));
+              setConversations((current) => current.map((conversation) => conversation.id === selectedConversationId && conversation.lastMessagePreview === 'Mensagem não reconhecida'
+                ? { ...conversation, lastMessagePreview: recognized.body } : conversation));
+            }).catch(() => undefined);
+        }
       } catch (loadError) {
         if (!isMounted) return;
         setMessages([]);
@@ -1795,7 +1807,7 @@ function InboxPageContent() {
                     <InboxMedia key={`${message.id}:${message.mediaUrl?.slice(0, 60)}`} message={message} getToken={getToken} />
                     {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
                     {attachmentReadNotice(message) ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
-                  </> : <p><WhatsappText text={messageDisplayText(message)} /></p>}
+                  </> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} onSelect={setSelectedContactCard} /> : <p><WhatsappText text={messageDisplayText(message)} /></p>}
                   <div className="message-bubble-meta">
                     {message.editedAt ? <span className="message-edited-label">Editada</span> : null}
                     <time>{formatMessageTime(message.createdAt)}</time>
@@ -2153,6 +2165,18 @@ function InboxPageContent() {
       {shareContactOpen && selectedConversation ? <ShareContactDialog source={selectedConversation} getToken={getToken} onClose={() => setShareContactOpen(false)} onSent={(name, contextImages) => { setShareContactOpen(false); setSendNotice(contextImages ? `Contato e histórico enviados para ${name}.` : `Contato enviado para ${name}; a conversa ainda não tem mensagens para compartilhar.`); setConversationReloadKey((current) => current + 1); }} /> : null}
       {newConversationOpen ? <NewConversationDialog channels={channels} getToken={getToken} onClose={() => setNewConversationOpen(false)} onOpened={(conversation) => {
         setNewConversationOpen(false);
+        setActiveView('all');
+        setSelectedChannelFilter('all');
+        setSearchOpen(false);
+        setSearchDraft('');
+        setSearchQuery('');
+        setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+        setSelectedConversationSnapshot(conversation);
+        setSelectedConversationId(conversation.id);
+        window.requestAnimationFrame(() => draftTextAreaRef.current?.focus());
+      }} /> : null}
+      {selectedContactCard ? <ContactCardDialog card={selectedContactCard} channels={channels} currentChannelId={selectedConversation?.channelId} getToken={getToken} onClose={() => setSelectedContactCard(null)} onOpened={(conversation) => {
+        setSelectedContactCard(null);
         setActiveView('all');
         setSelectedChannelFilter('all');
         setSearchOpen(false);

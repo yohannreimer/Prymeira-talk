@@ -5,6 +5,11 @@ import { toMessageDto } from './conversations.service.js';
 const message = { id: 'm', workspaceId: 'w', conversationId: 'c', direction: 'inbound' as const, type: 'audio' as const, body: 'Áudio recebido', mediaUrl: null, status: 'delivered' as const, createdAt: new Date() };
 const sourceHash = createHash('sha256').update(JSON.stringify(['m', 'audio', null])).digest('hex');
 describe('safe attachment state in message DTO', () => {
+  it('exposes shared contact cards from outbound and inbound metadata', () => {
+    const card = { fullName: 'Nelson Tecol', phoneNumber: '556784432788' };
+    expect(toMessageDto({ ...message, type: 'text', metadata: { contactCard: card } }).contactCards).toEqual([card]);
+    expect(toMessageDto({ ...message, type: 'text', metadata: { contactCards: [card] } }).contactCards).toEqual([card]);
+  });
   it('exposes only safe attachment presentation fields', () => {
     const dto = toMessageDto({ ...message, metadata: { attachment: { fileName: 'Cotacao.pdf', caption: 'Segue a cotação', durationSeconds: 12, secret: 'hidden' } } });
     expect(dto.attachment).toEqual({ fileName: 'Cotacao.pdf', caption: 'Segue a cotação', durationSeconds: 12 });

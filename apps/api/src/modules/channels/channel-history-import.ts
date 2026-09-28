@@ -58,7 +58,8 @@ export function createChannelHistoryImporter(input: {
           direction: record.key.fromMe ? 'outbound' : 'inbound', type: content.type,
           body: content.body, mediaUrl: content.mediaUrl,
           status: record.key.fromMe ? 'sent' : 'delivered',
-          metadata: { historyImport: { source: 'evolution', channelId: channel.id, originalType: record.messageType ?? null } },
+          metadata: { historyImport: { source: 'evolution', channelId: channel.id, originalType: record.messageType ?? null },
+            ...(content.contactCards?.length ? { contactCards: content.contactCards } : {}) },
           createdAt: date, ingestedAt: date });
       }
       const inserted = rows.length ? await tx.message.createMany({ data: rows, skipDuplicates: true }) : { count: 0 };

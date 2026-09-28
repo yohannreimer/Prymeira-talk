@@ -528,6 +528,13 @@ export function toMessageDto(record: MessageRecord): MessageDto {
   const result = cache.sourceHash === sourceHash ? object(cache.result) : {};
   const history = object(metadata.historyImport);
   const attachment = object(metadata.attachment);
+  const rawCards = Array.isArray(metadata.contactCards) ? metadata.contactCards : metadata.contactCard ? [metadata.contactCard] : [];
+  const contactCards = rawCards.slice(0, 50).map((raw) => {
+    const card = object(raw);
+    const fullName = typeof card.fullName === 'string' ? card.fullName.trim().slice(0, 200) : '';
+    const phoneNumber = typeof card.phoneNumber === 'string' ? card.phoneNumber.replace(/\D/g, '').slice(0, 20) : null;
+    return fullName ? { fullName, phoneNumber: phoneNumber || null } : null;
+  }).filter((card): card is { fullName: string; phoneNumber: string | null } => Boolean(card));
   const publicAttachment = {
     ...(typeof attachment.fileName === 'string' ? { fileName: attachment.fileName.slice(0, 240) } : {}),
     ...(typeof attachment.caption === 'string' ? { caption: attachment.caption } : {}),
@@ -545,6 +552,7 @@ export function toMessageDto(record: MessageRecord): MessageDto {
     type: record.type,
     body: record.body,
     mediaUrl: record.mediaUrl ?? null,
+    ...(contactCards.length ? { contactCards } : {}),
     ...(Object.keys(publicAttachment).length ? { attachment: publicAttachment } : {}),
     ...(unread ? { attachmentReadStatus: 'unread' as const } : {}),
     status: record.status,

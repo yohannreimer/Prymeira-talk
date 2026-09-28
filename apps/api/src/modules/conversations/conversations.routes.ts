@@ -25,11 +25,15 @@ import type { AgentImprovementObserver } from "../agents/agent-improvements.serv
 import type { InboxTriageObserver } from "./inbox-triage.service.js";
 import { readCurrentClerkUserId, resolveCurrentUserProfileId } from "./current-user.js";
 import { pauseAgentOnHumanOutbound } from "./pause-agent-on-human-outbound.js";
+import { extractMessageContent, resolveWebhookPhone } from '../evolution/evolution.routes.js';
+import { buildPhoneLookupCandidates } from '../contacts/phone-normalization.js';
+import type { EvolutionHistorySource } from '../evolution/evolution-history.js';
 
 interface ConversationsRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
   handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>;
   evolution?: EvolutionRuntime;
+  messageHistory?: Pick<EvolutionHistorySource, 'findMessage'>;
   followupService?: ConversationFollowupsObserver;
   agentImprovements?: AgentImprovementObserver;
   inboxTriage?: InboxTriageObserver;
@@ -134,6 +138,46 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
   options
 ) => {
   const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client });
+  app.post('/conversations/:conversationId/messages/:messageId/recognize-contact', async (request, reply) => {
+    const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Mensagem inválida.' });
+    const workspaceId = request.talk.workspaceId;
+    const message = await app.prisma.message.findFirst({ where: {
+      id: params.data.messageId, conversationId: params.data.conversationId, workspaceId,
+      type: 'system', body: 'Mensagem não reconhecida'
+    } });
+    if (!message?.providerMessageId) return reply.code(404).send({ error: 'Mensagem não encontrada.' });
+    const conversation = await app.prisma.conversation.findFirst({ where: { id: params.data.conversationId, workspaceId },
+      include: { channel: true, contact: true } });
+    if (!conversation || conversation.channel.provider !== 'evolution' || !options.messageHistory) {
+      return reply.code(404).send({ error: 'Histórico indisponível.' });
+    }
+    try {
+      const original = await options.messageHistory.findMessage({ instanceName: conversation.channel.providerKey, id: message.providerMessageId });
+      const phone = original && resolveWebhookPhone(original.key.remoteJid, original.key.remoteJidAlt);
+      const matchesContact = phone && (phone === conversation.contact.phone ||
+        (!phone.endsWith('@lid') && buildPhoneLookupCandidates(phone).includes(conversation.contact.phone)));
+      if (!original || original.key.id !== message.providerMessageId || !matchesContact ||
+        original.key.fromMe !== (message.direction === 'outbound')) {
+        return reply.code(404).send({ error: 'Contato não encontrado no histórico.' });
+      }
+      const content = extractMessageContent(original.message, original.messageType);
+      if (!content.contactCards?.length) return reply.code(422).send({ error: 'Esta mensagem não é um contato.' });
+      const updated = await app.prisma.message.update({ where: { id: message.id }, data: {
+        type: 'text', body: content.body,
+        metadata: { ...(message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+          ? message.metadata as Record<string, unknown> : {}), contactCards: content.contactCards }
+      } });
+      await app.prisma.conversation.updateMany({ where: { id: conversation.id, workspaceId,
+        lastMessagePreview: 'Mensagem não reconhecida' }, data: { lastMessagePreview: content.preview } });
+      const dto = toMessageDto(updated);
+      app.realtime.publish({ type: 'message.updated', workspaceId, payload: dto });
+      return dto;
+    } catch (error) {
+      request.log.warn({ err: error, messageId: message.id }, 'Contact card recovery failed.');
+      return reply.code(503).send({ error: 'Não foi possível recuperar o contato agora.' });
+    }
+  });
   app.get('/conversations/:conversationId/messages/:messageId/preview', async (request, reply) => {
     const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
     const query = z.object({ page: z.coerce.number().int().min(1).max(2000).default(1) }).safeParse(request.query);

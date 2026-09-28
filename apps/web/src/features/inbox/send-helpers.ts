@@ -1,5 +1,5 @@
 import type { ContactDto } from '@prymeira-talk/shared';
-import { apiCreateContact, apiGetContacts } from '../../app/api';
+import { apiCreateContact, apiGetContacts, apiUpdateContact } from '../../app/api';
 
 export function normalizeRecipientPhone(value: string): string | null {
   const digits = value.replace(/\D/g, '');
@@ -10,10 +10,11 @@ export function normalizeRecipientPhone(value: string): string | null {
     ? `${international.slice(0, 4)}${international.slice(5)}` : international;
 }
 
-export async function findOrCreateRecipient(getToken: () => Promise<string | null>, phone: string): Promise<ContactDto> {
+export async function findOrCreateRecipient(getToken: () => Promise<string | null>, phone: string, name?: string): Promise<ContactDto> {
   const normalized = normalizeRecipientPhone(phone);
   if (!normalized) throw new Error('Digite um telefone brasileiro válido com DDD.');
   const matches = await apiGetContacts(getToken, normalized.slice(-8));
   const existing = matches.find((contact) => normalizeRecipientPhone(contact.phone) === normalized);
-  return existing ?? apiCreateContact(getToken, { phone: normalized });
+  if (existing) return name && !existing.name ? apiUpdateContact(getToken, existing.id, { name }) : existing;
+  return apiCreateContact(getToken, { phone: normalized, ...(name ? { name } : {}) });
 }

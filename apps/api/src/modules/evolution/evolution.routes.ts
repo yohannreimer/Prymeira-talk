@@ -228,13 +228,36 @@ function attachmentPresentation(message: unknown) {
   };
 }
 
+function parseContactCard(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const card = value as Record<string, unknown>;
+  const vcard = typeof card.vcard === 'string' ? card.vcard.slice(0, 32_000).replace(/\r?\n[ \t]/g, '') : '';
+  const fullName = (typeof card.displayName === 'string' ? card.displayName : '')
+    .trim() || /^FN:(.+)$/im.exec(vcard)?.[1]?.trim() || 'Contato';
+  const tel = vcard.split(/\r?\n/).find(line => /^TEL(?:;|:)/i.test(line));
+  const waid = tel && /(?:^|;)waid=(\d+)/i.exec(tel)?.[1];
+  const phoneNumber = (waid || tel?.slice(tel.indexOf(':') + 1).replace(/\D/g, '') || '').slice(0, 20) || null;
+  return { fullName: fullName.slice(0, 200), phoneNumber };
+}
+
 export function extractMessageContent(message: unknown, messageType?: unknown): {
   type: MessageDto["type"];
   body: string | null;
   mediaUrl: string | null;
   preview: string | null;
+  contactCards?: Array<{ fullName: string; phoneNumber: string | null }>;
 } {
   message = unwrapMessage(message);
+  const singleContact = readPath(message, ['contactMessage']);
+  const contactArray = readPath(message, ['contactsArrayMessage', 'contacts']);
+  const contactCards = (Array.isArray(contactArray) ? contactArray.slice(0, 50) : singleContact ? [singleContact] : [])
+    .map(parseContactCard).filter((card): card is NonNullable<typeof card> => card !== null);
+  if (contactCards.length) {
+    const label = contactCards.length === 1
+      ? `Contato compartilhado: ${contactCards[0]!.fullName}${contactCards[0]!.phoneNumber ? ` (${contactCards[0]!.phoneNumber})` : ''}`
+      : `${contactCards.length} contatos compartilhados`;
+    return { type: 'text', body: label, mediaUrl: null, preview: label, contactCards };
+  }
   const text = readFirstStringPath(message, [
     ["conversation"],
     ["extendedTextMessage", "text"]
@@ -799,7 +822,8 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             type: messageContent.type,
             body: messageContent.body,
             mediaUrl: messageContent.mediaUrl,
-            ...(['audio', 'image', 'file'].includes(messageContent.type) ? { metadata: { attachment: attachmentPresentation(payload.data.message) } } : {}),
+            ...(messageContent.contactCards?.length ? { metadata: { contactCards: messageContent.contactCards } }
+              : ['audio', 'image', 'file'].includes(messageContent.type) ? { metadata: { attachment: attachmentPresentation(payload.data.message) } } : {}),
             status: payload.data.key.fromMe ? "sent" : "delivered",
             createdAt: receivedAt
           }

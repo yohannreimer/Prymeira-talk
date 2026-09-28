@@ -348,6 +348,10 @@ export const messageSchema = z.object({
   type: messageTypeSchema,
   body: z.string().nullable(),
   mediaUrl: z.string().url().nullable(),
+  contactCards: z.array(z.object({
+    fullName: z.string(),
+    phoneNumber: z.string().nullable()
+  })).optional(),
   attachmentReadStatus: z.literal('unread').optional(),
   attachment: z.object({
     fileName: z.string().optional(),

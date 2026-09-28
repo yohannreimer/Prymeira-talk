@@ -2286,6 +2286,15 @@ export async function apiGetConversationMessages(
   return messageSchema.array().parse(data);
 }
 
+export async function apiRecognizeContactMessage(
+  conversationId: string,
+  messageId: string,
+  getToken: () => Promise<string | null>
+): Promise<MessageDto> {
+  return fetchJson(getToken, `/conversations/${conversationId}/messages/${messageId}/recognize-contact`,
+    { method: 'POST' }, (data) => messageSchema.parse(data), 'Não foi possível recuperar o contato.');
+}
+
 export async function apiGetCurrentTalkUser(
   getToken: () => Promise<string | null>
 ): Promise<CurrentTalkUserDto> {

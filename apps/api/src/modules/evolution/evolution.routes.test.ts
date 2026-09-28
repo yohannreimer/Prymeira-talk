@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { conversationSchema, messageSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import { describe, expect, it, vi } from "vitest";
-import { evolutionRoutes, isUniqueConstraintError, resolveWebhookPhone } from "./evolution.routes.js";
+import { evolutionRoutes, extractMessageContent, isUniqueConstraintError, resolveWebhookPhone } from "./evolution.routes.js";
 import type { EvolutionRoutesOptions } from "./evolution.routes.js";
 import { evolutionWebhookEnvelopeSchema, evolutionWebhookSchema } from "./evolution.schemas.js";
 import { createCipheriv, hkdfSync } from "node:crypto";
@@ -56,6 +56,28 @@ const validWebhookBody = {
     messageTimestamp: 1779300000
   }
 };
+
+describe('WhatsApp contact cards', () => {
+  it('reads a single shared contact and its vCard phone', () => {
+    expect(extractMessageContent({ contactMessage: {
+      displayName: 'Nelson Tecol',
+      vcard: 'BEGIN:VCARD\nVERSION:3.0\nFN:Nelson Tecol\nTEL;type=CELL;waid=556784432788:+55 67 8443-2788\nEND:VCARD'
+    } })).toMatchObject({
+      type: 'text', body: 'Contato compartilhado: Nelson Tecol (556784432788)',
+      contactCards: [{ fullName: 'Nelson Tecol', phoneNumber: '556784432788' }]
+    });
+  });
+
+  it('reads a group of shared contacts through a wrapped message', () => {
+    expect(extractMessageContent({ ephemeralMessage: { message: { contactsArrayMessage: { contacts: [
+      { displayName: 'Ana', vcard: 'BEGIN:VCARD\nTEL;type=CELL:+55 11 98765-4321\nEND:VCARD' },
+      { displayName: 'Bruno', vcard: 'BEGIN:VCARD\nTEL;waid=5511999999999:+55 11 99999-9999\nEND:VCARD' }
+    ] } } } })).toMatchObject({ type: 'text', contactCards: [
+      { fullName: 'Ana', phoneNumber: '5511987654321' },
+      { fullName: 'Bruno', phoneNumber: '5511999999999' }
+    ] });
+  });
+});
 
 function createMockPrisma(overrides: {
   $transaction?: ReturnType<typeof vi.fn>;
