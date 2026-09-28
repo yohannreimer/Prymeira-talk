@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, Paperclip, Plus, Search, RotateCcw, Send, StickyNote, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
+import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Search, RotateCcw, Send, StickyNote, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
 import type { ChangeEvent, DragEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -37,6 +37,7 @@ import {
 } from "./conversation-display";
 import { InboxQuickFilters } from "./InboxQuickFilters";
 import { ShareContactDialog } from "./ShareContactDialog";
+import { NewConversationDialog } from "./NewConversationDialog";
 import { QuickSendDialog } from "./QuickSendDialog";
 import { QuickRepliesPopover } from "./QuickRepliesPopover";
 import { useRealtimeEvents } from "./useRealtimeEvents";
@@ -461,6 +462,7 @@ function InboxPageContent() {
   const [searchDraft, setSearchDraft] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [shareContactOpen, setShareContactOpen] = useState(false);
+  const [newConversationOpen, setNewConversationOpen] = useState(false);
   const [quickSendOpen, setQuickSendOpen] = useState(false);
   const [sendNotice, setSendNotice] = useState<string | null>(null);
   const [humanAttentionCount, setHumanAttentionCount] = useState(0);
@@ -1514,7 +1516,7 @@ function InboxPageContent() {
             <p className="eyebrow">Prymeira Talk</p>
             <h1>Atendimento</h1>
           </div>
-          <div className="inbox-list-header-actions"><button type="button" className="inbox-header-icon" aria-label="Enviar mensagem para várias pessoas" title="Enviar para várias pessoas" onClick={() => setQuickSendOpen(true)}><Users size={18} /></button><span className="live-indicator">{token ? "Online" : "Conectando"}</span></div>
+          <div className="inbox-list-header-actions"><button type="button" className="inbox-header-icon" aria-label="Nova conversa por número" title="Nova conversa por número" onClick={() => setNewConversationOpen(true)}><MessageSquarePlus size={18} /></button><button type="button" className="inbox-header-icon" aria-label="Enviar mensagem para várias pessoas" title="Enviar para várias pessoas" onClick={() => setQuickSendOpen(true)}><Users size={18} /></button><span className="live-indicator">{token ? "Online" : "Conectando"}</span></div>
         </header>
 
         <div className="channel-filter-row" aria-label="Filtrar por canal">
@@ -2148,7 +2150,19 @@ function InboxPageContent() {
         </div>
         </>}
       </aside>
-      {shareContactOpen && selectedConversation ? <ShareContactDialog source={selectedConversation} getToken={getToken} onClose={() => setShareContactOpen(false)} onSent={(name) => { setShareContactOpen(false); setSendNotice(`Contato enviado para ${name}.`); setConversationReloadKey((current) => current + 1); }} /> : null}
+      {shareContactOpen && selectedConversation ? <ShareContactDialog source={selectedConversation} getToken={getToken} onClose={() => setShareContactOpen(false)} onSent={(name, contextImages) => { setShareContactOpen(false); setSendNotice(contextImages ? `Contato e histórico enviados para ${name}.` : `Contato enviado para ${name}; a conversa ainda não tem mensagens para compartilhar.`); setConversationReloadKey((current) => current + 1); }} /> : null}
+      {newConversationOpen ? <NewConversationDialog channels={channels} getToken={getToken} onClose={() => setNewConversationOpen(false)} onOpened={(conversation) => {
+        setNewConversationOpen(false);
+        setActiveView('all');
+        setSelectedChannelFilter('all');
+        setSearchOpen(false);
+        setSearchDraft('');
+        setSearchQuery('');
+        setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+        setSelectedConversationSnapshot(conversation);
+        setSelectedConversationId(conversation.id);
+        window.requestAnimationFrame(() => draftTextAreaRef.current?.focus());
+      }} /> : null}
       {quickSendOpen ? <QuickSendDialog channels={channels} initialChannelId={selectedConversation?.channelId} getToken={getToken} onClose={() => setQuickSendOpen(false)} onSent={() => setConversationReloadKey((current) => current + 1)} /> : null}
     </section>
   );
