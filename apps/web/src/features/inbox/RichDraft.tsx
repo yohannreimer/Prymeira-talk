@@ -8,7 +8,7 @@ function insertedText(text: string) {
   return paragraphs.length === 1 ? paragraphs[0].content ?? [] : paragraphs;
 }
 export interface RichDraftHandle { focus(): void; format(mark: 'bold' | 'italic'): void; insertText(text: string): void }
-export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: boolean; onChange(value: string): void; onFormatChange(value: { bold: boolean; italic: boolean }): void }>(function RichDraft(props, ref) {
+export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: boolean; onChange(value: string): void; onFormatChange(value: { bold: boolean; italic: boolean }): void; onPasteImage?(file: File): void }>(function RichDraft(props, ref) {
   const latest = useRef(props); latest.current = props;
   const written = useRef(props.value);
   const editor = useEditor({
@@ -25,6 +25,13 @@ export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: 
         return false;
       },
       handlePaste(_view, event) {
+        const imageItem = Array.from(event.clipboardData?.items ?? []).find(item => item.kind === 'file' && item.type.startsWith('image/'));
+        const image = imageItem?.getAsFile() ?? Array.from(event.clipboardData?.files ?? []).find(file => file.type.startsWith('image/'));
+        if (image && latest.current.onPasteImage) {
+          event.preventDefault();
+          latest.current.onPasteImage(image.name ? image : new File([image], 'captura-de-tela.png', { type: image.type }));
+          return true;
+        }
         const text = event.clipboardData?.getData('text/plain');
         if (!text) return false;
         event.preventDefault(); editor?.commands.insertContent(insertedText(text)); return true;

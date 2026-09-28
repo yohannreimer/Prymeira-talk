@@ -1941,7 +1941,7 @@ function InboxPageContent() {
               </div>
             ) : null}
             <div className="composer-input-row">
-              <RichDraft key={selectedConversationId ?? 'no-conversation'} ref={draftTextAreaRef} value={draft} disabled={!selectedConversation || isSending} onFormatChange={setDraftFormat} onChange={value => { setDraft(value); if (!value) setComposerOrigin(null); }} />
+              <RichDraft key={selectedConversationId ?? 'no-conversation'} ref={draftTextAreaRef} value={draft} disabled={!selectedConversation || isSending} onFormatChange={setDraftFormat} onChange={value => { setDraft(value); if (!value) setComposerOrigin(null); }} onPasteImage={stageAttachment} />
               <button
                 className="composer-send"
                 disabled={!selectedConversation || (!draft.trim() && !pendingFile) || isSending}
