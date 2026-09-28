@@ -84,6 +84,7 @@ export function createChannelHistoryImporter(input: {
       const total = await input.prisma.message.count({ where: { workspaceId: channel.workspaceId, conversation: { channelId: channel.id } } });
       if (total === 0) throw new Error('HISTORY_MESSAGES_NOT_READY');
     }
+    if (chats.length < 50 && channel.historyImportAttempts < 2) throw new Error('HISTORY_CHATS_SETTLING');
     return { conversations: chats.length, messages: inserted };
   };
 }
@@ -122,7 +123,8 @@ export function createChannelHistoryImportScheduler(input: {
         } });
         input.onComplete?.(channel.id, result.conversations, result.messages);
       } catch (error) {
-        if (!(stopping && error instanceof Error && error.message === 'HISTORY_IMPORT_STOPPED')) input.onError?.(error, channel.id);
+        const expected = error instanceof Error && ['HISTORY_IMPORT_STOPPED', 'HISTORY_CHATS_NOT_READY', 'HISTORY_MESSAGES_NOT_READY', 'HISTORY_CHATS_SETTLING'].includes(error.message);
+        if (!expected) input.onError?.(error, channel.id);
         const attempts = channel.historyImportAttempts + 1;
         await input.prisma.channel.updateMany({ where: { id: channel.id, historyImportLeaseToken: token }, data: {
           historyImportAttempts: { increment: stopping ? 0 : 1 },

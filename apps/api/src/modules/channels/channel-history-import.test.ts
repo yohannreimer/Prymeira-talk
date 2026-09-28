@@ -38,8 +38,8 @@ describe('new channel history import', () => {
     } as unknown as EvolutionHistorySource;
     const onConversation = vi.fn();
     const importer = createChannelHistoryImporter({ prisma, source, onConversation });
-    await expect(importer(channel)).resolves.toEqual({ conversations: 1, messages: 2 });
-    await expect(importer(channel)).resolves.toEqual({ conversations: 1, messages: 0 });
+    await expect(importer({ ...channel, historyImportAttempts: 2 })).resolves.toEqual({ conversations: 1, messages: 2 });
+    await expect(importer({ ...channel, historyImportAttempts: 2 })).resolves.toEqual({ conversations: 1, messages: 0 });
     expect(rows).toHaveLength(2);
     expect(rows.map(row => row.direction)).toEqual(['inbound', 'outbound']);
     expect(rows.every(row => (row.ingestedAt as Date).getTime() === (row.createdAt as Date).getTime())).toBe(true);
@@ -56,7 +56,18 @@ describe('new channel history import', () => {
     const onError = vi.fn();
     const scheduler = createChannelHistoryImportScheduler({ prisma, source, onError });
     await scheduler.runOnce();
-    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'HISTORY_CHATS_NOT_READY' }), 'channel-1');
+    expect(onError).not.toHaveBeenCalled();
     expect(updateMany.mock.calls[1]?.[0].data).toMatchObject({ historyImportAttempts: { increment: 1 }, historyImportLeaseToken: null });
+  });
+
+  it('rechecks a partial chat list before marking the import complete', async () => {
+    const prisma = { message: { count: vi.fn().mockResolvedValue(1) } } as unknown as PrismaClient;
+    const source = {
+      recentChats: vi.fn().mockResolvedValue([{ remoteJid, phoneJid: remoteJid, pushName: null, profilePicUrl: null }]),
+      recentMessages: vi.fn().mockResolvedValue([])
+    } as unknown as EvolutionHistorySource;
+    const importer = createChannelHistoryImporter({ prisma, source });
+    await expect(importer(channel)).rejects.toThrow('HISTORY_CHATS_SETTLING');
+    await expect(importer({ ...channel, historyImportAttempts: 2 })).resolves.toEqual({ conversations: 1, messages: 0 });
   });
 });
