@@ -5,8 +5,10 @@ export type HistoryRecord = {
   messageTimestamp: number;
   message: Record<string, unknown>;
   messageType?: string;
+  pushName?: string;
 };
 export type RecentEvolutionChat = { remoteJid: string; phoneJid: string; pushName: string | null; profilePicUrl: string | null };
+export type RecentEvolutionChats = { chats: RecentEvolutionChat[]; unresolvedLids: number };
 export type RecentEvolutionContact = { phoneJid: string; name: string | null; profilePicUrl: string | null };
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const direct = (s: unknown): s is string => typeof s === 'string' && /^\d+@(s\.whatsapp\.net|lid)$/.test(s);
@@ -39,7 +41,8 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
     if (value.messageTimestamp === null || !Number.isFinite(timestamp) || timestamp <= 0 || timestamp > 1e11) throw new Error('HISTORY_RECORD');
     return { key: { id: value.key.id, remoteJid: value.key.remoteJid, fromMe: value.key.fromMe,
       ...(direct(value.key.remoteJidAlt) ? { remoteJidAlt: value.key.remoteJidAlt } : {}) }, messageTimestamp: timestamp, message: value.message,
-      ...(typeof value.messageType === 'string' ? { messageType: value.messageType } : {}) };
+      ...(typeof value.messageType === 'string' ? { messageType: value.messageType } : {}),
+      ...(typeof value.pushName === 'string' && value.pushName.trim() ? { pushName: value.pushName.trim().slice(0, 200) } : {}) };
   }
   return {
     async recentContacts(input: { instanceName: string }): Promise<RecentEvolutionContact[]> {
@@ -61,7 +64,7 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       }
       throw new Error('HISTORY_CONTACT_LIMIT');
     },
-    async recentChats(input: { instanceName: string; limit: number }): Promise<RecentEvolutionChat[]> {
+    async recentChats(input: { instanceName: string; limit: number }): Promise<RecentEvolutionChats> {
       if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 50) throw new Error('HISTORY_CHAT_LIMIT');
       const chats: RecentEvolutionChat[] = [];
       const seen = new Set<string>();
@@ -91,7 +94,7 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
         if (rows.length < 100) break;
       }
       if (!chats.length && unresolvedLids) throw new Error('HISTORY_LID_UNRESOLVED');
-      return chats;
+      return { chats, unresolvedLids };
     },
     async recentMessages(input: { instanceName: string; remoteJid: string; limit: number }): Promise<HistoryRecord[]> {
       if (!direct(input.remoteJid)) throw new Error('HISTORY_IDENTITY');

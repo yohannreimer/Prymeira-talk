@@ -6,7 +6,7 @@ import { createChannelHistoryImporter, createChannelHistoryImportScheduler } fro
 const remoteJid = '551199998888@s.whatsapp.net';
 const channel = { id: 'channel-1', workspaceId: 'workspace-1', providerKey: 'instance-1', historyImportAttempts: 0 };
 const records = [
-  { key: { id: 'm1', remoteJid, fromMe: false }, messageTimestamp: 1_790_000_000, message: { conversation: 'Olá' } },
+  { key: { id: 'm1', remoteJid, fromMe: false }, messageTimestamp: 1_790_000_000, message: { conversation: 'Olá' }, pushName: 'Cliente' },
   { key: { id: 'm2', remoteJid, fromMe: true }, messageTimestamp: 1_790_000_030, message: { conversation: 'Bom dia' } }
 ];
 
@@ -34,7 +34,7 @@ describe('new channel history import', () => {
     } as unknown as PrismaClient;
     const source = {
       recentContacts: vi.fn().mockResolvedValue([]),
-      recentChats: vi.fn().mockResolvedValue([{ remoteJid, phoneJid: remoteJid, pushName: 'Cliente', profilePicUrl: 'https://example.com/avatar.jpg' }]),
+      recentChats: vi.fn().mockResolvedValue({ chats: [{ remoteJid, phoneJid: remoteJid, pushName: null, profilePicUrl: 'https://example.com/avatar.jpg' }], unresolvedLids: 0 }),
       recentMessages: vi.fn().mockResolvedValue(records)
     } as unknown as EvolutionHistorySource;
     const onConversation = vi.fn();
@@ -53,7 +53,7 @@ describe('new channel history import', () => {
     const row = { ...channel, status: 'connected', historyImportStatus: 'pending' };
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const prisma = { channel: { findMany: vi.fn().mockResolvedValue([row]), updateMany } } as unknown as PrismaClient;
-    const source = { recentContacts: vi.fn().mockResolvedValue([]), recentChats: vi.fn().mockResolvedValue([]) } as unknown as EvolutionHistorySource;
+    const source = { recentContacts: vi.fn().mockResolvedValue([]), recentChats: vi.fn().mockResolvedValue({ chats: [], unresolvedLids: 0 }) } as unknown as EvolutionHistorySource;
     const onError = vi.fn();
     const scheduler = createChannelHistoryImportScheduler({ prisma, source, onError });
     await scheduler.runOnce();
@@ -65,7 +65,7 @@ describe('new channel history import', () => {
     const prisma = { message: { count: vi.fn().mockResolvedValue(1) } } as unknown as PrismaClient;
     const source = {
       recentContacts: vi.fn().mockResolvedValue([]),
-      recentChats: vi.fn().mockResolvedValue([{ remoteJid, phoneJid: remoteJid, pushName: null, profilePicUrl: null }]),
+      recentChats: vi.fn().mockResolvedValue({ chats: [{ remoteJid, phoneJid: remoteJid, pushName: null, profilePicUrl: null }], unresolvedLids: 0 }),
       recentMessages: vi.fn().mockResolvedValue([])
     } as unknown as EvolutionHistorySource;
     const importer = createChannelHistoryImporter({ prisma, source });
@@ -73,8 +73,18 @@ describe('new channel history import', () => {
     await expect(importer({ ...channel, historyImportAttempts: 3 })).resolves.toEqual({ conversations: 1, messages: 0 });
   });
 
+  it('keeps retrying when some recent LID chats still have no phone mapping', async () => {
+    const prisma = { message: { count: vi.fn().mockResolvedValue(1) } } as unknown as PrismaClient;
+    const source = {
+      recentContacts: vi.fn().mockResolvedValue([]),
+      recentChats: vi.fn().mockResolvedValue({ chats: [{ remoteJid, phoneJid: remoteJid, pushName: null, profilePicUrl: null }], unresolvedLids: 4 }),
+      recentMessages: vi.fn().mockResolvedValue([])
+    } as unknown as EvolutionHistorySource;
+    await expect(createChannelHistoryImporter({ prisma, source })({ ...channel, historyImportAttempts: 20 })).rejects.toThrow('HISTORY_LID_UNRESOLVED');
+  });
+
   it('never completes an empty history even after repeated attempts', async () => {
-    const source = { recentContacts: vi.fn().mockResolvedValue([]), recentChats: vi.fn().mockResolvedValue([]) } as unknown as EvolutionHistorySource;
+    const source = { recentContacts: vi.fn().mockResolvedValue([]), recentChats: vi.fn().mockResolvedValue({ chats: [], unresolvedLids: 0 }) } as unknown as EvolutionHistorySource;
     const importer = createChannelHistoryImporter({ prisma: {} as PrismaClient, source });
     await expect(importer({ ...channel, historyImportAttempts: 20 })).rejects.toThrow('HISTORY_CHATS_NOT_READY');
   });
@@ -89,7 +99,7 @@ describe('new channel history import', () => {
     const source = { recentContacts: vi.fn().mockResolvedValue([
       { phoneJid: remoteJid, name: 'Nome salvo', profilePicUrl: null },
       { phoneJid: '551188887777@s.whatsapp.net', name: 'Outro contato', profilePicUrl: null }
-    ]), recentChats: vi.fn().mockResolvedValue([]) } as unknown as EvolutionHistorySource;
+    ]), recentChats: vi.fn().mockResolvedValue({ chats: [], unresolvedLids: 0 }) } as unknown as EvolutionHistorySource;
     await expect(createChannelHistoryImporter({ prisma, source })(channel)).rejects.toThrow('HISTORY_CHATS_NOT_READY');
     expect(createMany.mock.calls[0]?.[0].data).toMatchObject([{ phone: '551188887777', name: 'Outro contato' }]);
     expect(updateMany.mock.calls[0]?.[0]).toMatchObject({ where: { id: 'old', name: null }, data: { name: 'Nome salvo' } });

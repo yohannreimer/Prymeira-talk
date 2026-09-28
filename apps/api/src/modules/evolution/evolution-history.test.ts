@@ -109,14 +109,17 @@ describe('new channel history', () => {
       const body = JSON.parse(String(init.body));
       if (url.includes('findChats')) return new Response(JSON.stringify(body.skip ? secondPage : firstPage));
       if (url.includes('findContacts')) return new Response(JSON.stringify([]));
-      return new Response(JSON.stringify({ messages: { records: [row('new', end.getTime()), row('old')] } }));
+      return new Response(JSON.stringify({ messages: { records: [row('new', end.getTime()), { ...row('old'), pushName: ' Cliente ' }] } }));
     });
     const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock as typeof fetch });
-    const chats = await source.recentChats({ instanceName: 'New', limit: 50 });
+    const { chats, unresolvedLids } = await source.recentChats({ instanceName: 'New', limit: 50 });
     expect(chats).toHaveLength(50);
+    expect(unresolvedLids).toBe(0);
     expect(chats[0]?.remoteJid).toBe('60@s.whatsapp.net');
     expect(chats.at(-1)?.remoteJid).toBe('109@s.whatsapp.net');
-    expect((await source.recentMessages({ instanceName: 'New', remoteJid: jid, limit: 20 })).map(r => r.key.id)).toEqual(['old', 'new']);
+    const messages = await source.recentMessages({ instanceName: 'New', remoteJid: jid, limit: 20 });
+    expect(messages.map(r => r.key.id)).toEqual(['old', 'new']);
+    expect(messages[0]?.pushName).toBe('Cliente');
     expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1].body))).toEqual({ where: { key: { remoteJid: jid } }, page: 1, offset: 20 });
   });
 
@@ -132,9 +135,9 @@ describe('new channel history', () => {
       { remoteJid: jid, pushName: 'Cliente' }
     ])));
     const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
-    await expect(source.recentChats({ instanceName: 'New', limit: 50 })).resolves.toEqual([
+    await expect(source.recentChats({ instanceName: 'New', limit: 50 })).resolves.toEqual({ chats: [
       { remoteJid: '987654@lid', phoneJid: jid, pushName: 'Cliente', profilePicUrl: null }
-    ]);
+    ], unresolvedLids: 0 });
   });
 
   it('reads saved contact names independently of chat push names', async () => {
