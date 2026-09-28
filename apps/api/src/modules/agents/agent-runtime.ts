@@ -1,4 +1,5 @@
 import { aiAgentAllowedActionSchema, type AiAgentAllowedAction, type MessageDto } from "@prymeira-talk/shared";
+import { createHash } from "node:crypto";
 import { usesContextFirst, resolveConversationSafetyOutput, conversationReasoningContext } from "./conversation-reasoning-policy.js";
 import {
   resolveOpenAiCompatibleSettings,
@@ -755,6 +756,64 @@ export function createAgentRuntime(input: {
         let mediaProcessingError: string | null = null;
         let mediaMetadata: Record<string, unknown> | null = null;
         let unreadableImageRequiresHandoff = false;
+
+        // A debounced run may be anchored on the customer's final text message,
+        // leaving earlier images in that same burst unprocessed by this agent.
+        const burstMessages = await prisma.message.findMany({
+          where: visibleConversationMessageWhere({ workspaceId: runInput.workspaceId, conversationId: conversation.id }),
+          orderBy: [{ createdAt: "desc" }],
+          take: 80
+        }) as MessageRecord[];
+        const currentTime = new Date(message.createdAt).getTime();
+        const throughCurrent = burstMessages
+          .filter((entry) => new Date(entry.createdAt).getTime() <= currentTime)
+          .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+        let lastOutbound = -1;
+        for (let index = throughCurrent.length - 1; index >= 0; index -= 1) {
+          if (throughCurrent[index].direction === "outbound") { lastOutbound = index; break; }
+        }
+        const customerBurstAttachments = throughCurrent.slice(lastOutbound + 1).filter((entry) =>
+          entry.id !== message.id && entry.direction === "inbound" && (entry.type === "image" || entry.type === "file")
+        );
+        if (customerBurstAttachments.length > 5) {
+          unreadableImageRequiresHandoff = true;
+          mediaProcessingError = "MEDIA_BURST_LIMIT";
+        }
+        for (const attachment of customerBurstAttachments.slice(0, 5)) {
+          const attachmentMetadata = isRecord(attachment.metadata) ? attachment.metadata : {};
+          const alreadyProcessed = isRecord(attachmentMetadata.inboundMedia) && attachmentMetadata.inboundMedia.status === "processed";
+          if (alreadyProcessed) continue;
+          const cache = isRecord(attachmentMetadata.assistantMedia) ? attachmentMetadata.assistantMedia : null;
+          const expectedHash = createHash("sha256").update(JSON.stringify([attachment.id, attachment.type, attachment.mediaUrl ?? null])).digest("hex");
+          const cachedResult = cache?.sourceHash === expectedHash && isRecord(cache.result) && cache.result.status === "processed" && typeof cache.result.extractedText === "string"
+            ? cache.result as InboundMediaResult
+            : null;
+          const prepared = cachedResult ?? await (input.mediaPreparer ?? prepareInboundMedia)({
+            mediaUrl: attachment.mediaUrl,
+            kind: attachment.type === "file" ? "document" : "image",
+            settings: providerSettings,
+            mediaResolver
+          });
+          const handled = attachment.type === "image" && prepared.status === "failed"
+            ? { ...prepared, fallback: IMAGE_PROCESSING_FALLBACK }
+            : prepared;
+          const updated = await prisma.message.update({
+            where: { id: attachment.id },
+            data: {
+              body: formatProcessedMediaMessage(attachment.body ?? "", handled),
+              metadata: { ...attachmentMetadata, inboundMedia: handled }
+            }
+          });
+          input.realtime?.publish({ type: "message.created", workspaceId: attachment.workspaceId, payload: toMessageDto(updated) });
+          if (prepared.status === "failed") {
+            mediaProcessingError = prepared.errorCode ?? "MEDIA_EXTRACTION_FAILED";
+            if (attachment.type === "image") unreadableImageRequiresHandoff = true;
+            else mediaFallback = handled.fallback ?? "Pode reenviar o arquivo?";
+            input.logger?.warn({ event: "agent_context_media_processing_failed", workspaceId: runInput.workspaceId,
+              conversationId: conversation.id, messageId: attachment.id, errorCode: mediaProcessingError },
+            "Context attachment could not be read.");
+          }
+        }
 
         if (message.type === "image" || message.type === "file") {
           const metadata = isRecord(message.metadata) ? message.metadata : {};

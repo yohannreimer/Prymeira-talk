@@ -669,6 +669,58 @@ describe("createAgentRuntime", () => {
     expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ body: expect.stringContaining("Tubo aço\t12\t50 x 30 x 2 mm"), metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "processed" }) }) }) });
   });
 
+  it("reads images in the customer burst before answering a later text message", async () => {
+    const first = { ...baseMessage, id: "image_1", type: "image", body: "Imagem recebida", mediaUrl: "data:image/jpeg;base64,aW1hZ2Vt", createdAt: new Date(now.getTime() - 60_000), metadata: {} };
+    const second = { ...first, id: "image_2", createdAt: new Date(now.getTime() - 30_000) };
+    const current = { ...baseMessage, body: "Quais materiais estão nas imagens?" };
+    const messages: any[] = [first, second, current];
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(current);
+    vi.mocked(prisma.message.findMany).mockImplementation(async () => messages);
+    vi.mocked(prisma.message.update).mockImplementation(async ({ where, data }: any) => {
+      const index = messages.findIndex((item) => item.id === where.id);
+      messages[index] = { ...messages[index], ...data };
+      return messages[index];
+    });
+    const mediaPreparer = vi.fn()
+      .mockResolvedValueOnce({ kind: "image", status: "processed", extractedText: "FERRO CHATO 3/4 x 2, 100 unidades" })
+      .mockResolvedValueOnce({ kind: "image", status: "processed", extractedText: "ORDEM DE COMPRA SETEP" });
+    const provider = buildProvider({ confidence: 0.9, reply: "Vejo ferro chato e uma ordem de compra.", actions: [], handoff: { required: false, reason: null } });
+    const runtime = createAgentRuntime({ prisma, provider, mediaPreparer });
+
+    await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: current.id, trigger: "automation" });
+
+    expect(mediaPreparer).toHaveBeenCalledTimes(2);
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ conversationHistory: expect.stringContaining("FERRO CHATO 3/4 x 2, 100 unidades") })
+    }));
+    expect(messages[0].metadata.inboundMedia.status).toBe("processed");
+    expect(messages[1].metadata.inboundMedia.status).toBe("processed");
+  });
+
+  it("hands off a later text request when an image in that customer burst cannot be read", async () => {
+    const image = { ...baseMessage, id: "image_before", type: "image", body: "Imagem recebida", mediaUrl: null, createdAt: new Date(now.getTime() - 60_000), metadata: {} };
+    const current = { ...baseMessage, body: "Preciso cotar o material acima" };
+    const messages: any[] = [image, current];
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(current);
+    vi.mocked(prisma.message.findMany).mockImplementation(async () => messages);
+    vi.mocked(prisma.message.update).mockImplementation(async ({ where, data }: any) => {
+      const index = messages.findIndex((item) => item.id === where.id);
+      messages[index] = { ...messages[index], ...data };
+      return messages[index];
+    });
+    const provider = buildProvider({ confidence: 0.9, reply: "Vou cotar os itens da imagem.", actions: [], handoff: { required: false, reason: null } });
+    const runtime = createAgentRuntime({ prisma, provider, mediaPreparer: vi.fn().mockResolvedValue({ kind: "image", status: "failed", errorCode: "MEDIA_UNREADABLE" }) });
+
+    const result = await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: current.id, trigger: "automation" });
+
+    expect(result.status).toBe("handoff_requested");
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(messages[0].metadata.inboundMedia.errorCode).toBe("MEDIA_UNREADABLE");
+  });
+
   it("processes PDFs as retained customer data, then reuses them on a later turn", async () => {
     const document = { ...baseMessage, type: "file", body: "Segue o arquivo.", mediaUrl: "https://cdn.example/lista.pdf", metadata: { fileName: "lista.pdf" } };
     const prisma = buildPrisma();
@@ -2312,7 +2364,7 @@ it("continues after a material answer without requiring a document for its own p
     const message = { ...baseMessage, body: "Quais medidas estão na lista?" };
     vi.mocked(prisma.message.findFirst).mockResolvedValue(message);
     vi.mocked(prisma.message.findMany).mockResolvedValue([
-      { ...baseMessage, id: "media-before", type: mediaType, body: `${mediaType === "file" ? "[Texto do PDF — conteúdo enviado pelo cliente]\n" : ""}2 chapas 3 x 1200 x 3000 mm` }, message
+      { ...baseMessage, id: "media-before", type: mediaType, body: `${mediaType === "file" ? "[Texto do PDF — conteúdo enviado pelo cliente]\n" : ""}2 chapas 3 x 1200 x 3000 mm`, metadata: mediaType === "file" ? { inboundMedia: { kind: "document", status: "processed", extractedText: "2 chapas 3 x 1200 x 3000 mm" } } : {} }, message
     ]);
     const provider = buildProvider({ confidence: 0.95, reply: "A lista informa 3 x 1200 x 3000 mm.", actions: [], handoff: { required: false, reason: null } });
     const result = await createAgentRuntime({ prisma, provider }).runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });

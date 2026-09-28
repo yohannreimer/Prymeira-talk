@@ -57,14 +57,17 @@ export function createAssistantGeneration(db: AssistantDb, dependencies: { provi
         const sourceHash = assistantHash([message.id, message.type, message.mediaUrl]);
         const cache = record(record(message.metadata).assistantMedia);
         let media: InboundMediaResult | undefined;
-        if (cache.sourceHash === sourceHash && record(cache.result).status === 'processed' && typeof record(cache.result).extractedText === 'string') media = cache.result as InboundMediaResult;
+        const retainedExtraction = record(record(message.metadata).inboundMedia).status === 'processed' &&
+          /\[(Texto do PDF|Leitura da imagem|Transcrição do áudio) — conteúdo enviado pelo cliente\]/.test(content);
+        if (retainedExtraction) media = { kind: message.type === 'file' ? 'document' : message.type as 'image' | 'audio', status: 'processed' };
+        else if (cache.sourceHash === sourceHash && record(cache.result).status === 'processed' && typeof record(cache.result).extractedText === 'string') media = cache.result as InboundMediaResult;
         else if (recentAttachments.includes(message.id)) {
           media = await (dependencies.mediaPreparer ?? prepareInboundMedia)({ settings, mediaUrl: message.mediaUrl, kind: message.type === 'file' ? 'document' : message.type as 'image' | 'audio' });
           if (message.metadata !== null) {
             await db.message.updateMany({ where: { workspaceId: message.workspaceId, id: message.id, metadata: { equals: message.metadata as Prisma.InputJsonValue } }, data: { metadata: { ...record(message.metadata), assistantMedia: { sourceHash, result: media } } as Prisma.InputJsonValue } });
           }
         }
-        if (media) content = formatProcessedMediaMessage(content, media);
+        if (media && !retainedExtraction) content = formatProcessedMediaMessage(content, media);
         if (!media || media.status === 'failed') {
           const referenceId = `A${unreadAttachments.length + 1}`;
           unreadAttachments.push({ messageId: message.id, referenceId, type: message.type, createdAt: message.createdAt?.toISOString() ?? null,
