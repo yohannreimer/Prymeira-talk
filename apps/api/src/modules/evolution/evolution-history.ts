@@ -78,8 +78,11 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       const chats: RecentEvolutionChat[] = [];
       const seen = new Set<string>();
       let unresolvedLids = 0;
-      for (let offset = 0; offset < 10000 && chats.length < input.limit; offset += 100) {
-        const data = await post(`/chat/findChats/${encodeURIComponent(input.instanceName)}`, { take: 100, skip: offset });
+      // Evolution's chat ordering can shift between requests. Read the largest
+      // supported batch first so pagination does not skip contacts between pages.
+      let pageSize = Math.max(100, input.limit);
+      for (let offset = 0; offset < 10000 && chats.length < input.limit;) {
+        const data = await post(`/chat/findChats/${encodeURIComponent(input.instanceName)}`, { take: pageSize, skip: offset });
         const rows = Array.isArray(data) ? data : record(data) && Array.isArray(data.chats) ? data.chats : null;
         if (!rows) throw new Error('HISTORY_CHATS_SHAPE');
         for (const raw of rows) {
@@ -104,7 +107,16 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
           });
           if (chats.length === input.limit) break;
         }
-        if (rows.length < 100) break;
+        if (rows.length < pageSize) {
+          // Older Evolution installations may cap responses at 100 rows.
+          if (pageSize > 100 && rows.length === 100) {
+            offset += 100;
+            pageSize = 100;
+            continue;
+          }
+          break;
+        }
+        offset += pageSize;
       }
       return { chats, unresolvedLids };
     },

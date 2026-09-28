@@ -99,6 +99,18 @@ describe('hasPriorMessages', () => {
 });
 
 describe('new channel history', () => {
+  it('reads a full chat batch when small pages overlap', async () => {
+    const full = Array.from({ length: 150 }, (_, index) => ({ remoteJid: `${index + 1000}@s.whatsapp.net` }));
+    const fetchMock = vi.fn(async (_url: unknown, init: RequestInit) => {
+      const { take, skip } = JSON.parse(String(init.body)) as { take: number; skip: number };
+      return new Response(JSON.stringify(take === 1000 ? full : skip === 0 ? full.slice(0, 100) : full.slice(0, 10)));
+    });
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock as typeof fetch });
+    const result = await source.recentChats({ instanceName: 'New', limit: 1000 });
+    expect(result.chats).toHaveLength(150);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1].body))).toEqual({ take: 1000, skip: 0 });
+  });
+
   it('pages recent chats, skips groups, and reads 20 messages in chronological order', async () => {
     const firstPage = Array.from({ length: 100 }, (_, index) => ({
       remoteJid: index < 60 ? `${index}@g.us` : `${index}@s.whatsapp.net`,
