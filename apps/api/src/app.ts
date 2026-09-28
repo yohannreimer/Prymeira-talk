@@ -502,6 +502,11 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
       evolutionRuntime.client?.checkWhatsappNumbersAvailability) {
     const campaignWorker = createCampaignWorker({ prisma: app.prisma,
       evolution: evolutionRuntime.client,
+      onConversationUpdated: async ({ workspaceId, conversationId }) => {
+        const payload = await createConversationsService(app.prisma as unknown as ConversationsPrismaLike)
+          .getConversationDto({ workspaceId, conversationId });
+        app.realtime.publish({ type: 'conversation.updated', workspaceId, payload });
+      },
       onError: (error) => app.log.error({ err: error }, "Campaign worker failed; queue remains persisted.") });
     campaignWorker.start();
     app.addHook("onClose", async () => { await campaignWorker.stop(); });

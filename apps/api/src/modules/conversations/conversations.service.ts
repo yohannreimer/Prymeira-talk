@@ -111,8 +111,10 @@ export interface ConversationRecord {
   assignedUserId: string | null;
   departmentId: string | null;
   lastMessageAt: DateLike | null;
+  lastMessagePreviewAt?: DateLike | null;
   lastMessagePreview: string | null;
   unreadCount: number;
+  hiddenUntilReply?: boolean;
   priority: ConversationDto["priority"];
   aiControlStatus?: NonNullable<ConversationDto["aiControlStatus"]>;
   activeAgentSessionId?: string | null;
@@ -499,8 +501,10 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
     assignedUserId: record.assignedUserId,
     departmentId: record.departmentId,
     lastMessageAt: record.lastMessageAt ? toIsoString(record.lastMessageAt) : null,
+    lastMessagePreviewAt: record.lastMessagePreviewAt ? toIsoString(record.lastMessagePreviewAt) : null,
     lastMessagePreview: record.lastMessagePreview,
     unreadCount: record.unreadCount,
+    hiddenUntilReply: Boolean(record.hiddenUntilReply),
     priority: record.priority,
     aiControlStatus: record.aiControlStatus ?? "agent_allowed",
     activeAgentName: record.activeAgentSession?.agent?.name ?? null,
@@ -645,6 +649,8 @@ export function createConversationsService(
           { phone: { contains: searchPhone } }
         ] } } }
       : {};
+    const visibilityWhere: Prisma.ConversationWhereInput = input.search?.trim()
+      ? {} : { hiddenUntilReply: false };
     const viewWhere: Prisma.ConversationWhereInput = input.view === "unread"
       ? { unreadCount: { gt: 0 }, OR: [inboxHandoffWhere, { aiControlStatus: "human_controlled" }, privateReviewChannelWhere] }
       : input.view === "marked"
@@ -658,6 +664,7 @@ export function createConversationsService(
         status: "closed" as const,
         ...assigneeWhere,
         ...channelWhere,
+        ...visibilityWhere,
         ...searchWhere,
         ...viewWhere
       };
@@ -668,6 +675,7 @@ export function createConversationsService(
         workspaceId: input.workspaceId,
         ...assigneeWhere,
         ...channelWhere,
+        ...visibilityWhere,
         ...searchWhere,
         ...viewWhere
       };
@@ -678,6 +686,7 @@ export function createConversationsService(
       status: { in: activeConversationStatuses },
       ...assigneeWhere,
       ...channelWhere,
+      ...visibilityWhere,
       ...searchWhere,
       ...viewWhere
     };

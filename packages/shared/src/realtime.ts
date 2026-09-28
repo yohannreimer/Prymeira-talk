@@ -112,6 +112,7 @@ const campaignSchema = z.object({
   messageBody: z.string().min(1),
   scheduledAt: z.string().datetime().nullable(),
   timeZone: z.string().optional(),
+  hideFromInboxUntilReply: z.boolean().optional(),
   mode: integrationModeSchema,
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()

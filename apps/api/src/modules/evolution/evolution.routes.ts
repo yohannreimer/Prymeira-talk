@@ -790,6 +790,24 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           });
         }
 
+        const hiddenCampaignMessage = payload.data.key.fromMe && channel.provider === 'evolution' &&
+          typeof tx.campaignRecipient?.findFirst === 'function'
+          ? await tx.campaignRecipient.findFirst({
+              where: { workspaceId, channelId: channel.id,
+                campaign: { is: { hideFromInboxUntilReply: true } },
+                OR: [{ providerMessageId: payload.data.key.id },
+                  { status: 'in_flight',
+                    contactSnapshot: { path: ['message'], equals: messageContent.body ?? '' },
+                    OR: [{ contactId: selectedContact.id },
+                    { phoneSnapshot: { in: candidates } }] },
+                  { status: 'sent', providerMessageId: null,
+                    sentAt: { gte: new Date(receivedAt.getTime() - 10 * 60 * 1000) },
+                    contactSnapshot: { path: ['message'], equals: messageContent.body ?? '' },
+                    OR: [{ contactId: selectedContact.id }, { phoneSnapshot: { in: candidates } }] }] },
+              select: { id: true }
+            })
+          : null;
+
         const conversation = await tx.conversation.upsert({
           where: {
             workspaceId_channelId_contactId: {
@@ -803,6 +821,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             channelId: channel.id,
             contactId: selectedContact.id,
             status: "open",
+            hiddenUntilReply: Boolean(hiddenCampaignMessage),
             ...(phone.endsWith('@lid') ? { aiControlStatus: 'human_controlled' as const } : {}),
             ...(channel.provider === "meta_cloud" && !payload.data.key.fromMe
               ? { customerServiceWindowExpiresAt: new Date(receivedAt.getTime() + 24 * 60 * 60 * 1000) }
@@ -860,22 +879,32 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
               }
             },
             data: {
-              unreadCount: { increment: 1 }
+              unreadCount: { increment: 1 },
+              hiddenUntilReply: false
             }
           });
         }
 
-        await tx.conversation.updateMany({
-          where: {
-            id: conversation.id,
-            workspaceId,
-            OR: [{ lastMessageAt: null }, { lastMessageAt: { lte: receivedAt } }]
-          },
-          data: {
-            lastMessageAt: receivedAt,
-            lastMessagePreview: messageContent.preview
-          }
-        });
+        if (hiddenCampaignMessage) {
+          await tx.conversation.updateMany({
+            where: { id: conversation.id, workspaceId,
+              OR: [{ lastMessagePreviewAt: null }, { lastMessagePreviewAt: { lte: receivedAt } }] },
+            data: { lastMessagePreview: messageContent.preview, lastMessagePreviewAt: receivedAt }
+          });
+        } else {
+          await tx.conversation.updateMany({
+            where: {
+              id: conversation.id,
+              workspaceId,
+              OR: [{ lastMessageAt: null }, { lastMessageAt: { lte: receivedAt } }]
+            },
+            data: {
+              lastMessageAt: receivedAt,
+              lastMessagePreview: messageContent.preview,
+              lastMessagePreviewAt: receivedAt
+            }
+          });
+        }
 
         if (!payload.data.key.fromMe && supportsDepartmentRouting(tx)) {
           await applyInboundDepartmentRouting(tx, {

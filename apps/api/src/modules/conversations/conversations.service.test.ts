@@ -399,7 +399,8 @@ describe("conversations service", () => {
       expect.objectContaining({
         where: {
           workspaceId: "workspace_a",
-          status: "closed"
+          status: "closed",
+          hiddenUntilReply: false
         }
       })
     );
@@ -414,10 +415,19 @@ describe("conversations service", () => {
     expect(prisma.conversation.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          workspaceId: "workspace_a"
+          workspaceId: "workspace_a",
+          hiddenUntilReply: false
         }
       })
     );
+  });
+
+  it("keeps hidden broadcast conversations searchable by contact", async () => {
+    const prisma = createMockPrisma();
+    await createConversationsService(prisma).listConversations({ workspaceId: "workspace_a", status: "all", search: "Maria" });
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.not.objectContaining({ hiddenUntilReply: false })
+    }));
   });
 
   it("filters unread human work in the database before pagination", async () => {
@@ -457,7 +467,8 @@ describe("conversations service", () => {
         where: {
           workspaceId: "workspace_a",
           status: { in: ["open", "pending"] },
-          assignedUserId: "user_1"
+          assignedUserId: "user_1",
+          hiddenUntilReply: false
         }
       })
     );
@@ -478,7 +489,8 @@ describe("conversations service", () => {
       where: {
         workspaceId: "workspace_a",
         status: { in: ["open", "pending"] },
-        channelId: "channel_a"
+        channelId: "channel_a",
+        hiddenUntilReply: false
       },
       cursor: { id: "older_conversation" },
       skip: 1,

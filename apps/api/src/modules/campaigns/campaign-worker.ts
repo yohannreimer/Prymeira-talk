@@ -18,6 +18,7 @@ export function createCampaignWorker(input: {
   now?: () => Date;
   draw?: Draw;
   onError?: (error: unknown) => void;
+  onConversationUpdated?: (input: { workspaceId: string; conversationId: string }) => Promise<void>;
 }) {
   const now = input.now ?? (() => new Date());
   const repository = createCampaignWorkerRepository(input.prisma, { now });
@@ -111,10 +112,13 @@ export function createCampaignWorker(input: {
     const nextAvailableAt = nextCampaignInstant(sentAt,
       (job.gapSeconds ?? cadence.minDelaySeconds) + pauseSeconds,
       job.campaign.timeZone, cadence);
-    await repository.settle({ id: job.id, leaseToken: token, status: "sent",
+    const settled = await repository.settle({ id: job.id, leaseToken: token, status: "sent",
       providerMessageId, sentAt, pauseSeconds, nextAvailableAt,
       attemptsSincePause: pauseSeconds ? 0 : afterAttempts,
       contactId: job.contactId ?? undefined, message });
+    if (settled.conversationId) await input.onConversationUpdated?.({
+      workspaceId: job.workspaceId, conversationId: settled.conversationId
+    });
     return true;
   }
 

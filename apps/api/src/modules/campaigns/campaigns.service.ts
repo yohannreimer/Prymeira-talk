@@ -22,6 +22,7 @@ interface CampaignRecord {
   cadence?: Prisma.JsonValue;
   scheduledAt: DateLike | null;
   timeZone?: string;
+  hideFromInboxUntilReply?: boolean;
   activationKey?: string | null;
   mode: IntegrationMode;
   createdAt: DateLike;
@@ -154,6 +155,7 @@ export interface CampaignDto {
   cadence: CampaignCadenceDto;
   scheduledAt: string | null;
   timeZone: string;
+  hideFromInboxUntilReply: boolean;
   mode: IntegrationMode;
   createdAt: string;
   updatedAt: string;
@@ -394,6 +396,7 @@ function toCampaignDto(record: CampaignRecord): CampaignDto {
     cadence: normalizeCadence(record.cadence),
     scheduledAt: toNullableIsoString(record.scheduledAt),
     timeZone: record.timeZone ?? "America/Sao_Paulo",
+    hideFromInboxUntilReply: Boolean(record.hideFromInboxUntilReply),
     mode: record.mode,
     createdAt: toIsoString(record.createdAt),
     updatedAt: toIsoString(record.updatedAt)
@@ -778,6 +781,7 @@ const campaignSelect = {
   cadence: true,
   scheduledAt: true,
   timeZone: true,
+  hideFromInboxUntilReply: true,
   activationKey: true,
   mode: true,
   createdAt: true,
@@ -968,6 +972,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       cadence?: CampaignCadenceDto;
       scheduledAt?: string | null;
       timeZone?: string;
+      hideFromInboxUntilReply?: boolean;
     }): Promise<CampaignDto> {
       const campaign = await prisma.campaign.create({
         select: campaignSelect,
@@ -982,6 +987,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
           cadence: input.cadence ? cadenceToJson(input.cadence) : cadenceToJson(normalizeCadence({})),
           scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : null,
           timeZone: input.timeZone ?? "America/Sao_Paulo",
+          hideFromInboxUntilReply: input.hideFromInboxUntilReply ?? false,
           mode: "simulated"
         }
       });
@@ -1002,6 +1008,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
         cadence: CampaignCadenceDto;
         scheduledAt: string | null;
         timeZone: string;
+        hideFromInboxUntilReply: boolean;
       }>;
     }): Promise<CampaignDto> {
       const currentCampaign = await findCampaignForWorkspace(input);
@@ -1035,7 +1042,8 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
               : input.data.scheduledAt
                 ? new Date(input.data.scheduledAt)
                 : null,
-          timeZone: input.data.timeZone
+          timeZone: input.data.timeZone,
+          hideFromInboxUntilReply: input.data.hideFromInboxUntilReply
         })
       });
 

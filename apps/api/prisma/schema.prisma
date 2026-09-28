@@ -389,8 +389,10 @@ model Conversation {
   departmentId                   String?              @map("department_id") @db.Uuid
   lastMessageAt                  DateTime?            @map("last_message_at")
   lastMessagePreview             String?              @map("last_message_preview")
+  lastMessagePreviewAt           DateTime?            @map("last_message_preview_at")
   customerServiceWindowExpiresAt DateTime?            @map("customer_service_window_expires_at")
   unreadCount                    Int                  @default(0) @map("unread_count")
+  hiddenUntilReply               Boolean              @default(false) @map("hidden_until_reply")
   priority                       ConversationPriority @default(normal)
   aiControlStatus                AiControlStatus      @default(agent_allowed) @map("ai_control_status")
   aiControlUpdatedAt             DateTime?            @map("ai_control_updated_at")
@@ -420,6 +422,7 @@ model Conversation {
   @@unique([workspaceId, id])
   @@unique([workspaceId, channelId, contactId])
   @@index([workspaceId, status, lastMessageAt])
+  @@index([workspaceId, hiddenUntilReply, status, lastMessageAt], map: "conversations_workspace_hidden_status_activity_idx")
   @@index([workspaceId, assignedUserId])
   @@index([workspaceId, aiControlUpdatedById])
   @@index([workspaceId, activeAgentSessionId])
@@ -872,6 +875,7 @@ model Campaign {
   channelId   String?         @map("channel_id") @db.Uuid
   startMode   String?         @map("start_mode")
   timeZone    String          @default("America/Sao_Paulo") @map("time_zone")
+  hideFromInboxUntilReply Boolean @default(false) @map("hide_from_inbox_until_reply")
   mode        IntegrationMode @default(simulated)
   createdAt   DateTime        @default(now()) @map("created_at")
   updatedAt   DateTime        @updatedAt @map("updated_at")
@@ -948,6 +952,7 @@ model CampaignRecipient {
   @@index([workspaceId, campaignId, status])
   @@index([status, scheduledAt])
   @@index([workspaceId, channelId, status])
+  @@index([workspaceId, providerMessageId])
   @@map("campaign_recipients")
 }
 

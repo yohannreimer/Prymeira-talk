@@ -93,6 +93,7 @@ function createMockPrisma(overrides: {
     update?: ReturnType<typeof vi.fn>;
     updateMany?: ReturnType<typeof vi.fn>;
   };
+  campaignRecipient?: { findFirst?: ReturnType<typeof vi.fn> };
   aiAgentSession?: { updateMany?: ReturnType<typeof vi.fn> };
   aiAgentPendingReply?: { updateMany?: ReturnType<typeof vi.fn> };
   message?: {
@@ -221,6 +222,7 @@ function createMockPrisma(overrides: {
           count: 1
         })
     },
+    campaignRecipient: { findFirst: overrides.campaignRecipient?.findFirst ?? vi.fn().mockResolvedValue(null) },
     message: {
       findUnique:
         overrides.message?.findUnique ??
@@ -1178,6 +1180,30 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it("keeps a hidden campaign send out of inbox recency when its outbound webhook arrives first", async () => {
+    const prisma = createMockPrisma({ campaignRecipient: {
+      findFirst: vi.fn().mockResolvedValue({ id: 'recipient-1' })
+    } });
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' },
+        payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, fromMe: true } } } });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.campaignRecipient.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ workspaceId: 'workspace_a', channelId: 'channel_1',
+          campaign: { is: { hideFromInboxUntilReply: true } } })
+      }));
+      expect(prisma.conversation.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        create: expect.objectContaining({ hiddenUntilReply: true })
+      }));
+      const previewUpdate = prisma.conversation.updateMany.mock.calls.find(([input]) =>
+        input.data?.lastMessagePreviewAt);
+      expect(previewUpdate?.[0].data).not.toHaveProperty('lastMessageAt');
+    } finally { await app.close(); }
+  });
+
   it("stores Evolution image messages with media type and readable preview", async () => {
     const prisma = createMockPrisma();
     const { app } = await buildEvolutionApp(prisma);
@@ -1559,7 +1585,8 @@ describe("Evolution webhook routes", () => {
           }
         },
         data: {
-          unreadCount: { increment: 1 }
+          unreadCount: { increment: 1 },
+          hiddenUntilReply: false
         }
       });
       expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
@@ -1570,7 +1597,8 @@ describe("Evolution webhook routes", () => {
         },
         data: {
           lastMessageAt: incomingMessageAt,
-          lastMessagePreview: "Oi"
+          lastMessagePreview: "Oi",
+          lastMessagePreviewAt: incomingMessageAt
         }
       });
       expect(publish).toHaveBeenCalledTimes(2);
@@ -1812,7 +1840,8 @@ describe("Evolution webhook routes", () => {
           }
         },
         data: {
-          unreadCount: { increment: 1 }
+          unreadCount: { increment: 1 },
+          hiddenUntilReply: false
         }
       });
       expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
@@ -1823,7 +1852,8 @@ describe("Evolution webhook routes", () => {
         },
         data: {
           lastMessageAt: timestampDate,
-          lastMessagePreview: "Oi"
+          lastMessagePreview: "Oi",
+          lastMessagePreviewAt: timestampDate
         }
       });
 

@@ -70,6 +70,7 @@ export function GuidedCampaignEditor(props: {
   const [audienceChanged, setAudienceChanged] = useState(false);
   const [channelId, setChannelId] = useState(props.channels[0]?.id ?? "");
   const [message, setMessage] = useState(props.campaign?.messageBody ?? "");
+  const [hideFromInboxUntilReply, setHideFromInboxUntilReply] = useState(props.campaign?.hideFromInboxUntilReply ?? false);
   const [startMode, setStartMode] = useState<"now" | "scheduled">(
     props.campaign?.scheduledAt ? "scheduled" : "now");
   const [scheduledAt, setScheduledAt] = useState(localDateTime(props.campaign?.scheduledAt ?? null,
@@ -133,7 +134,7 @@ export function GuidedCampaignEditor(props: {
     const scheduled = startMode === "scheduled" && scheduledAt
       ? zonedDateTimeToIso(scheduledAt, timeZone) : null;
     const body = { name: name.trim(), messageBody: message.trim(),
-      templates: [message.trim()], cadence, scheduledAt: scheduled, timeZone };
+      templates: [message.trim()], cadence, scheduledAt: scheduled, timeZone, hideFromInboxUntilReply };
     const saved = current
       ? await apiUpdateCampaign(props.getToken, current.id, {
           ...body, ...(audienceChanged ? { audience } : {}) })
@@ -318,6 +319,9 @@ export function GuidedCampaignEditor(props: {
         <label className="form-field"><span>Mensagem</span><textarea rows={7} value={message}
           onChange={(event) => { setMessage(event.target.value); setPreview(null); }} maxLength={2000}
           placeholder="Olá {{nome}}, tudo bem?" /></label>
+        <label className="guided-campaign-hidden-option"><input type="checkbox" checked={hideFromInboxUntilReply}
+          onChange={(event) => setHideFromInboxUntilReply(event.target.checked)} /><span><strong>Não mover conversas por causa deste disparo</strong>
+          <small>Conversas já visíveis ficam na mesma posição, com a nova mensagem no card. Contatos novos aparecem na busca e entram na caixa quando responderem.</small></span></label>
         <div className="guided-campaign-source-choice"><label><input type="radio" checked={startMode === "now"}
           onChange={() => setStartMode("now")} /> Iniciar após minha confirmação</label>
           <label><input type="radio" checked={startMode === "scheduled"}
@@ -356,6 +360,7 @@ export function GuidedCampaignEditor(props: {
       </>}
       {stage === 3 && preview && <><div className="guided-campaign-panel-heading"><div><span className="guided-campaign-kicker">ETAPA 3 DE 3</span>
         <h2>Revise antes de confirmar</h2><p>Somente os números com WhatsApp confirmado entrarão na fila.</p></div></div>
+        {hideFromInboxUntilReply ? <p className="campaign-guidance-note">Modo discreto: conversas atuais não mudam de posição; conversas novas entram na caixa após uma resposta.</p> : null}
         <CampaignReview preview={preview} message={message} channelName={selectedChannel?.displayName ||
           selectedChannel?.phoneNumber || "Canal selecionado"} startLabel={startLabel} cadence={cadence}
           confirmed={confirmed} onConfirmedChange={setConfirmed} />

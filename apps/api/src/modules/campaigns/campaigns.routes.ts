@@ -56,7 +56,8 @@ const createCampaignBodySchema = z.object({
   fallbackName: z.string().trim().min(1).max(80).optional(),
   cadence: cadenceSchema.optional(),
   scheduledAt: z.string().datetime().nullable().optional(),
-  timeZone: z.string().min(1).max(100).optional()
+  timeZone: z.string().min(1).max(100).optional(),
+  hideFromInboxUntilReply: z.boolean().optional()
 });
 
 const updateCampaignBodySchema = createCampaignBodySchema

@@ -6,6 +6,7 @@ import {
   aiControlLabel,
   applyComposerMarker,
   canResetConversation,
+  conversationPreviewTime,
   filterConversationsNeedingHuman,
   insertComposerText,
   isBrowserPlayableAudio,
@@ -361,6 +362,17 @@ describe("conversation queue ordering", () => {
       "newer",
       "older"
     ]);
+  });
+
+  it("shows a broadcast's latest text and time without changing an existing card's position", () => {
+    const older = conversationFixture({ id: "older", lastMessageAt: "2026-09-20T10:00:00.000Z" });
+    const newer = conversationFixture({ id: "newer", lastMessageAt: "2026-09-20T11:00:00.000Z" });
+    const broadcast = { ...older, lastMessagePreview: "Oferta de hoje",
+      lastMessagePreviewAt: "2026-09-20T13:00:00.000Z" };
+    const list = upsertConversation([newer, older], broadcast);
+    expect(list.map((item) => item.id)).toEqual(["newer", "older"]);
+    expect(list[1]?.lastMessagePreview).toBe("Oferta de hoje");
+    expect(conversationPreviewTime(list[1]!)).toBe("2026-09-20T13:00:00.000Z");
   });
 
   it("moves a conversation up only when it receives newer activity", () => {

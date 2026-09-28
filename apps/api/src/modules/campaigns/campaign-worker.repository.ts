@@ -89,8 +89,10 @@ export function createCampaignWorkerRepository(prisma: PrismaClient, options: {
             attempts: input.status === "sent" || input.status === "uncertain" ? 1 : 0,
             result: { outcome: input.status, providerMessageId: input.providerMessageId ?? null } }
         });
-        if (changed.count !== 1) return false;
-        const recipient = await tx.campaignRecipient.findUniqueOrThrow({ where: { id: input.id } });
+        if (changed.count !== 1) return { settled: false, conversationId: null as string | null };
+        const recipient = await tx.campaignRecipient.findUniqueOrThrow({ where: { id: input.id },
+          include: { campaign: { select: { hideFromInboxUntilReply: true } } } });
+        let conversationId: string | null = null;
         if (input.nextAvailableAt && recipient.channelId) {
           await tx.campaignChannelThrottle.update({
             where: { workspaceId_channelId: { workspaceId: recipient.workspaceId,
@@ -104,6 +106,7 @@ export function createCampaignWorkerRepository(prisma: PrismaClient, options: {
           data: { scheduledAt: input.nextAvailableAt } });
         }
         if (input.status === "sent" && recipient.channelId && input.message && recipient.phoneSnapshot) {
+          const sentAt = input.sentAt ?? now();
           const snapshot = recipient.contactSnapshot && typeof recipient.contactSnapshot === "object" &&
             !Array.isArray(recipient.contactSnapshot) ? recipient.contactSnapshot : {};
           const contact = input.contactId ? { id: input.contactId } : await tx.contact.upsert({
@@ -116,17 +119,23 @@ export function createCampaignWorkerRepository(prisma: PrismaClient, options: {
             where: { workspaceId_channelId_contactId: { workspaceId: recipient.workspaceId,
               channelId: recipient.channelId, contactId: contact.id } },
             create: { workspaceId: recipient.workspaceId, channelId: recipient.channelId,
-              contactId: contact.id, status: "open", unreadCount: 0 }, update: {}
+              contactId: contact.id, status: "open", unreadCount: 0,
+              hiddenUntilReply: recipient.campaign.hideFromInboxUntilReply }, update: {}
           });
+          conversationId = conversation.id;
           await tx.message.upsert({ where: { workspaceId_providerEventId: {
             workspaceId: recipient.workspaceId, providerEventId: `campaign:${recipient.id}` } },
             create: { workspaceId: recipient.workspaceId, conversationId: conversation.id,
               providerEventId: `campaign:${recipient.id}`, providerMessageId: input.providerMessageId,
               direction: "outbound", type: "text", body: input.message,
-              status: "sent", createdAt: input.sentAt ?? now() }, update: {} });
+              status: "sent", createdAt: sentAt }, update: {} });
           await tx.conversation.updateMany({ where: { id: conversation.id,
-            workspaceId: recipient.workspaceId },
-          data: { lastMessageAt: input.sentAt ?? now(), lastMessagePreview: input.message } });
+            workspaceId: recipient.workspaceId,
+            AND: [{ OR: [{ lastMessageAt: null }, { lastMessageAt: { lte: sentAt } }] },
+              { OR: [{ lastMessagePreviewAt: null }, { lastMessagePreviewAt: { lte: sentAt } }] }] },
+          data: { ...(!recipient.campaign.hideFromInboxUntilReply ? { lastMessageAt: sentAt,
+            hiddenUntilReply: false } : {}), lastMessagePreview: input.message,
+            lastMessagePreviewAt: sentAt } });
         }
         if (input.status === "uncertain") {
           await tx.campaign.updateMany({ where: { id: recipient.campaignId,
@@ -139,7 +148,7 @@ export function createCampaignWorkerRepository(prisma: PrismaClient, options: {
             id: recipient.campaignId, workspaceId: recipient.workspaceId,
             status: { in: ["scheduled", "sending", "paused"] } }, data: { status: "completed" } });
         }
-        return true;
+        return { settled: true, conversationId };
       });
     },
 

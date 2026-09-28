@@ -324,6 +324,7 @@ export interface CampaignDto {
   cadence: CampaignCadenceDto;
   scheduledAt: string | null;
   timeZone?: string;
+  hideFromInboxUntilReply?: boolean;
   mode: "simulated" | "real";
   createdAt: string;
   updatedAt: string;
@@ -934,6 +935,7 @@ function parseCampaign(data: unknown): CampaignDto {
     cadence: parseCampaignCadence(payload.cadence),
     scheduledAt: payload.scheduledAt,
     timeZone: payload.timeZone ?? "America/Sao_Paulo",
+    hideFromInboxUntilReply: Boolean(payload.hideFromInboxUntilReply),
     mode: payload.mode === "real" ? "real" : "simulated",
     createdAt: payload.createdAt,
     updatedAt: payload.updatedAt
@@ -2734,6 +2736,7 @@ export async function apiCreateCampaign(
     cadence?: CampaignCadenceDto;
     scheduledAt?: string | null;
     timeZone?: string;
+    hideFromInboxUntilReply?: boolean;
   }
 ): Promise<CampaignDto> {
   const token = await getRequiredToken(getToken);
@@ -2768,6 +2771,7 @@ export async function apiUpdateCampaign(
     cadence: CampaignCadenceDto;
     scheduledAt: string | null;
     timeZone: string;
+    hideFromInboxUntilReply: boolean;
   }>
 ): Promise<CampaignDto> {
   const token = await getRequiredToken(getToken);

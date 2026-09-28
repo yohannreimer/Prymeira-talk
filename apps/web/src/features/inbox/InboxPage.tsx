@@ -179,6 +179,12 @@ export function upsertConversation(list: ConversationDto[], conversation: Conver
   return sortConversationsByRecency(next);
 }
 
+export function conversationPreviewTime(conversation: Pick<ConversationDto, 'lastMessageAt' | 'lastMessagePreviewAt'>) {
+  return conversation.lastMessagePreviewAt &&
+    (!conversation.lastMessageAt || Date.parse(conversation.lastMessagePreviewAt) > Date.parse(conversation.lastMessageAt))
+    ? conversation.lastMessagePreviewAt : conversation.lastMessageAt;
+}
+
 export function mergeConversationPage(current: ConversationDto[], page: ConversationDto[]) {
   const seen = new Set(current.map((conversation) => conversation.id));
   return [...current, ...page.filter((conversation) => !seen.has(conversation.id))];
@@ -936,7 +942,9 @@ function InboxPageContent() {
       return;
     }
 
-    setConversations((current) => upsertConversation(current, event.payload));
+    setConversations((current) => event.payload.hiddenUntilReply
+      ? current.filter((conversation) => conversation.id !== event.payload.id)
+      : upsertConversation(current, event.payload));
     if (event.payload.id === selectedConversationIdRef.current) {
       if (needsHumanAttention(event.payload)) {
         setAcknowledgedHandoffIds((current) => new Set(current).add(event.payload.id));
@@ -1673,7 +1681,7 @@ function InboxPageContent() {
                     ) : null}
                   </span>
                   <span className="conv-meta-right">
-                    <ConversationCardTime value={conversation.lastMessageAt} />
+                    <ConversationCardTime value={conversationPreviewTime(conversation)} />
                     {conversation.unreadCount > 0 ? (
                       <span className="conv-unread-badge">
                         {conversation.unreadCount > 99 ? "99+" : conversation.unreadCount}
