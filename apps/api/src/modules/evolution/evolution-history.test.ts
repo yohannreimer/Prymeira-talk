@@ -124,4 +124,15 @@ describe('new channel history', () => {
       fetch: vi.fn().mockResolvedValue(new Response(JSON.stringify({ messages: { records: [row('wrong', end.getTime(), '999@s.whatsapp.net')] } }))) });
     await expect(source.recentMessages({ instanceName: 'New', remoteJid: jid, limit: 20 })).rejects.toThrow('HISTORY_IDENTITY');
   });
+
+  it('uses a phone alternate for LID chats and deduplicates the same contact', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([
+      { remoteJid: '987654@lid', remoteJidAlt: jid, pushName: 'Cliente' },
+      { remoteJid: jid, pushName: 'Cliente' }
+    ])));
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
+    await expect(source.recentChats({ instanceName: 'New', limit: 50 })).resolves.toEqual([
+      { remoteJid: '987654@lid', phoneJid: jid, pushName: 'Cliente', profilePicUrl: null }
+    ]);
+  });
 });

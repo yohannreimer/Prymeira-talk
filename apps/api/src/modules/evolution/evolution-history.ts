@@ -50,11 +50,11 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
         const rows = Array.isArray(data) ? data : record(data) && Array.isArray(data.chats) ? data.chats : null;
         if (!rows) throw new Error('HISTORY_CHATS_SHAPE');
         for (const raw of rows) {
-          if (!record(raw) || !direct(raw.remoteJid) || seen.has(raw.remoteJid)) continue;
+          if (!record(raw) || !direct(raw.remoteJid)) continue;
           const alternate = record(raw.lastMessage) && record(raw.lastMessage.key) ? raw.lastMessage.key.remoteJidAlt : null;
           const resolvedPhoneJid = phoneJid(raw.remoteJid) ? raw.remoteJid : phoneJid(raw.remoteJidAlt) ? raw.remoteJidAlt : phoneJid(alternate) ? alternate : null;
-          if (!resolvedPhoneJid) continue;
-          seen.add(raw.remoteJid);
+          if (!resolvedPhoneJid || seen.has(resolvedPhoneJid)) continue;
+          seen.add(resolvedPhoneJid);
           chats.push({
             remoteJid: raw.remoteJid,
             phoneJid: resolvedPhoneJid,
