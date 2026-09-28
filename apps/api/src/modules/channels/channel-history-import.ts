@@ -71,20 +71,62 @@ export function createChannelHistoryImporter(input: {
     return result.inserted;
   }
 
+  async function importContacts(channel: ImportChannel) {
+    const source = await input.source.recentContacts({ instanceName: channel.providerKey });
+    const contacts = new Map<string, { name: string | null; avatarUrl: string | null }>();
+    for (const item of source) {
+      const phone = normalizePhoneForStorage(item.phoneJid.split('@')[0]);
+      if (phone.length < 8 || phone.length > 15) continue;
+      const previous = contacts.get(phone);
+      contacts.set(phone, {
+        name: item.name ?? previous?.name ?? null,
+        avatarUrl: item.profilePicUrl ?? previous?.avatarUrl ?? null
+      });
+    }
+    if (!contacts.size) return contacts;
+    const candidates = [...new Set([...contacts.keys()].flatMap(buildPhoneLookupCandidates))];
+    const existing = await input.prisma.contact.findMany({
+      where: { workspaceId: channel.workspaceId, phone: { in: candidates } },
+      select: { id: true, phone: true, name: true, avatarUrl: true }
+    });
+    const known = new Map(existing.map((contact) => [normalizePhoneForStorage(contact.phone), contact]));
+    const missing = [...contacts].filter(([phone]) => !known.has(phone));
+    if (missing.length) {
+      await input.prisma.contact.createMany({ data: missing.map(([phone, details]) => ({
+        workspaceId: channel.workspaceId, phone, name: details.name, avatarUrl: details.avatarUrl
+      })), skipDuplicates: true });
+    }
+    for (const [phone, details] of contacts) {
+      const contact = known.get(phone);
+      if (!contact) continue;
+      if (details.name && !contact.name) {
+        await input.prisma.contact.updateMany({ where: { id: contact.id, workspaceId: channel.workspaceId, name: null }, data: { name: details.name } });
+      }
+      if (details.avatarUrl && !contact.avatarUrl) {
+        await input.prisma.contact.updateMany({ where: { id: contact.id, workspaceId: channel.workspaceId, avatarUrl: null }, data: { avatarUrl: details.avatarUrl } });
+      }
+    }
+    return contacts;
+  }
+
   return async (channel: ImportChannel, shouldStop: () => boolean = () => false) => {
+    const contacts = await importContacts(channel);
     const chats = await input.source.recentChats({ instanceName: channel.providerKey, limit: 50 });
-    if (!chats.length && channel.historyImportAttempts < 2) throw new Error('HISTORY_CHATS_NOT_READY');
+    if (!chats.length) throw new Error('HISTORY_CHATS_NOT_READY');
     let inserted = 0;
     for (const chat of chats) {
       if (shouldStop()) throw new Error('HISTORY_IMPORT_STOPPED');
+      chat.pushName = contacts.get(normalizePhoneForStorage(chat.phoneJid.split('@')[0]))?.name ?? chat.pushName;
       inserted += await importChat(channel, chat);
     }
-    if (chats.length && inserted === 0 && channel.historyImportAttempts < 2) {
+    if (inserted === 0) {
       // The chat list can arrive before Evolution finishes synchronizing messages.
       const total = await input.prisma.message.count({ where: { workspaceId: channel.workspaceId, conversation: { channelId: channel.id } } });
       if (total === 0) throw new Error('HISTORY_MESSAGES_NOT_READY');
     }
-    if (chats.length < 50 && channel.historyImportAttempts < 2) throw new Error('HISTORY_CHATS_SETTLING');
+    // A connected instance can expose all chats long before their messages finish syncing.
+    // Revisit the same 50 chats until at least four passes and one pass adds no messages.
+    if (channel.historyImportAttempts < 3 || inserted > 0) throw new Error('HISTORY_CHATS_SETTLING');
     return { conversations: chats.length, messages: inserted };
   };
 }
@@ -123,7 +165,7 @@ export function createChannelHistoryImportScheduler(input: {
         } });
         input.onComplete?.(channel.id, result.conversations, result.messages);
       } catch (error) {
-        const expected = error instanceof Error && ['HISTORY_IMPORT_STOPPED', 'HISTORY_CHATS_NOT_READY', 'HISTORY_MESSAGES_NOT_READY', 'HISTORY_CHATS_SETTLING'].includes(error.message);
+        const expected = error instanceof Error && ['HISTORY_IMPORT_STOPPED', 'HISTORY_CHATS_NOT_READY', 'HISTORY_MESSAGES_NOT_READY', 'HISTORY_CHATS_SETTLING', 'HISTORY_LID_UNRESOLVED'].includes(error.message);
         if (!expected) input.onError?.(error, channel.id);
         const attempts = channel.historyImportAttempts + 1;
         await input.prisma.channel.updateMany({ where: { id: channel.id, historyImportLeaseToken: token }, data: {

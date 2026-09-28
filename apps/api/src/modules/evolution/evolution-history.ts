@@ -7,6 +7,7 @@ export type HistoryRecord = {
   messageType?: string;
 };
 export type RecentEvolutionChat = { remoteJid: string; phoneJid: string; pushName: string | null; profilePicUrl: string | null };
+export type RecentEvolutionContact = { phoneJid: string; name: string | null; profilePicUrl: string | null };
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const direct = (s: unknown): s is string => typeof s === 'string' && /^\d+@(s\.whatsapp\.net|lid)$/.test(s);
 const phoneJid = (s: unknown): s is string => typeof s === 'string' && /^\d+@s\.whatsapp\.net$/.test(s);
@@ -41,10 +42,30 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       ...(typeof value.messageType === 'string' ? { messageType: value.messageType } : {}) };
   }
   return {
+    async recentContacts(input: { instanceName: string }): Promise<RecentEvolutionContact[]> {
+      const contacts = new Map<string, RecentEvolutionContact>();
+      for (let offset = 0; offset < 5000; offset += 1000) {
+        const data = await post(`/chat/findContacts/${encodeURIComponent(input.instanceName)}`, { take: 1000, skip: offset });
+        const rows = Array.isArray(data) ? data : record(data) && Array.isArray(data.contacts) ? data.contacts : null;
+        if (!rows) throw new Error('HISTORY_CONTACTS_SHAPE');
+        for (const raw of rows) {
+          if (!record(raw) || !phoneJid(raw.remoteJid)) continue;
+          const previous = contacts.get(raw.remoteJid);
+          contacts.set(raw.remoteJid, {
+            phoneJid: raw.remoteJid,
+            name: typeof raw.pushName === 'string' && raw.pushName.trim() ? raw.pushName.trim().slice(0, 200) : previous?.name ?? null,
+            profilePicUrl: typeof raw.profilePicUrl === 'string' && /^https:\/\//i.test(raw.profilePicUrl) ? raw.profilePicUrl : previous?.profilePicUrl ?? null
+          });
+        }
+        if (rows.length < 1000) return [...contacts.values()];
+      }
+      throw new Error('HISTORY_CONTACT_LIMIT');
+    },
     async recentChats(input: { instanceName: string; limit: number }): Promise<RecentEvolutionChat[]> {
       if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 50) throw new Error('HISTORY_CHAT_LIMIT');
       const chats: RecentEvolutionChat[] = [];
       const seen = new Set<string>();
+      let unresolvedLids = 0;
       for (let offset = 0; offset < 1000 && chats.length < input.limit; offset += 100) {
         const data = await post(`/chat/findChats/${encodeURIComponent(input.instanceName)}`, { take: 100, skip: offset });
         const rows = Array.isArray(data) ? data : record(data) && Array.isArray(data.chats) ? data.chats : null;
@@ -53,7 +74,11 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
           if (!record(raw) || !direct(raw.remoteJid)) continue;
           const alternate = record(raw.lastMessage) && record(raw.lastMessage.key) ? raw.lastMessage.key.remoteJidAlt : null;
           const resolvedPhoneJid = phoneJid(raw.remoteJid) ? raw.remoteJid : phoneJid(raw.remoteJidAlt) ? raw.remoteJidAlt : phoneJid(alternate) ? alternate : null;
-          if (!resolvedPhoneJid || seen.has(resolvedPhoneJid)) continue;
+          if (!resolvedPhoneJid) {
+            if (raw.remoteJid.endsWith('@lid')) unresolvedLids++;
+            continue;
+          }
+          if (seen.has(resolvedPhoneJid)) continue;
           seen.add(resolvedPhoneJid);
           chats.push({
             remoteJid: raw.remoteJid,
@@ -65,6 +90,7 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
         }
         if (rows.length < 100) break;
       }
+      if (!chats.length && unresolvedLids) throw new Error('HISTORY_LID_UNRESOLVED');
       return chats;
     },
     async recentMessages(input: { instanceName: string; remoteJid: string; limit: number }): Promise<HistoryRecord[]> {

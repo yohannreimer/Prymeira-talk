@@ -108,6 +108,7 @@ describe('new channel history', () => {
     const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body));
       if (url.includes('findChats')) return new Response(JSON.stringify(body.skip ? secondPage : firstPage));
+      if (url.includes('findContacts')) return new Response(JSON.stringify([]));
       return new Response(JSON.stringify({ messages: { records: [row('new', end.getTime()), row('old')] } }));
     });
     const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock as typeof fetch });
@@ -126,7 +127,7 @@ describe('new channel history', () => {
   });
 
   it('uses a phone alternate for LID chats and deduplicates the same contact', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([
+    const fetchMock = vi.fn(async (url: unknown) => new Response(JSON.stringify(String(url).includes('findContacts') ? [] : [
       { remoteJid: '987654@lid', remoteJidAlt: jid, pushName: 'Cliente' },
       { remoteJid: jid, pushName: 'Cliente' }
     ])));
@@ -134,5 +135,21 @@ describe('new channel history', () => {
     await expect(source.recentChats({ instanceName: 'New', limit: 50 })).resolves.toEqual([
       { remoteJid: '987654@lid', phoneJid: jid, pushName: 'Cliente', profilePicUrl: null }
     ]);
+  });
+
+  it('reads saved contact names independently of chat push names', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => new Response(JSON.stringify(String(url).includes('findContacts')
+      ? [{ remoteJid: jid, pushName: 'Nome salvo' }]
+      : [{ remoteJid: jid, pushName: null }])));
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
+    expect(await source.recentContacts({ instanceName: 'New' })).toEqual([
+      { phoneJid: jid, name: 'Nome salvo', profilePicUrl: null }
+    ]);
+  });
+
+  it('does not mistake LID identifiers for telephone numbers', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([{ remoteJid: '987654@lid' }])));
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
+    await expect(source.recentChats({ instanceName: 'New', limit: 50 })).rejects.toThrow('HISTORY_LID_UNRESOLVED');
   });
 });
