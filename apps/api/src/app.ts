@@ -40,6 +40,7 @@ import { boardsRoutes } from "./modules/boards/boards.routes.js";
 import { campaignsRoutes } from "./modules/campaigns/campaigns.routes.js";
 import { createCampaignWorker } from "./modules/campaigns/campaign-worker.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
+import { createChannelHistoryImportScheduler } from "./modules/channels/channel-history-import.js";
 import { contactsRoutes } from "./modules/contacts/contacts.routes.js";
 import {
   createConversationsService,
@@ -230,6 +231,21 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           apiKey: env.EVOLUTION_API_KEY
         })
       : undefined;
+  const channelHistoryImportScheduler = options.prismaEnabled === false || !evolutionHistorySource
+    ? undefined
+    : createChannelHistoryImportScheduler({
+        prisma: app.prisma,
+        source: evolutionHistorySource,
+        async onConversation(workspaceId, conversationId) {
+          const conversation = await createConversationsService(app.prisma as unknown as ConversationsPrismaLike)
+            .getConversationDto({ workspaceId, conversationId });
+          app.realtime.publish({ type: "conversation.updated", workspaceId, payload: conversation });
+        },
+        onError(error, channelId) { app.log.error({ err: error, channelId }, "Channel history import failed; retry scheduled."); },
+        onComplete(channelId, conversations, messages) { app.log.info({ channelId, conversations, messages }, "Channel history import completed."); }
+      });
+  channelHistoryImportScheduler?.start();
+  if (channelHistoryImportScheduler) app.addHook("onClose", async () => { await channelHistoryImportScheduler.stop(); });
   const lunaEligibility = options.prismaEnabled === false
     ? undefined
     : createLunaFollowupEligibility({ prisma: app.prisma });

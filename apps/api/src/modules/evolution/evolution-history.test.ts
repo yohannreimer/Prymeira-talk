@@ -97,3 +97,31 @@ describe('hasPriorMessages', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('new channel history', () => {
+  it('pages recent chats, skips groups, and reads 20 messages in chronological order', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      remoteJid: index < 60 ? `${index}@g.us` : `${index}@s.whatsapp.net`,
+      pushName: `Pessoa ${index}`, profilePicUrl: 'https://example.com/avatar.jpg'
+    }));
+    const secondPage = Array.from({ length: 10 }, (_, index) => ({ remoteJid: `${index + 100}@s.whatsapp.net` }));
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (url.includes('findChats')) return new Response(JSON.stringify(body.skip ? secondPage : firstPage));
+      return new Response(JSON.stringify({ messages: { records: [row('new', end.getTime()), row('old')] } }));
+    });
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock as typeof fetch });
+    const chats = await source.recentChats({ instanceName: 'New', limit: 50 });
+    expect(chats).toHaveLength(50);
+    expect(chats[0]?.remoteJid).toBe('60@s.whatsapp.net');
+    expect(chats.at(-1)?.remoteJid).toBe('109@s.whatsapp.net');
+    expect((await source.recentMessages({ instanceName: 'New', remoteJid: jid, limit: 20 })).map(r => r.key.id)).toEqual(['old', 'new']);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1].body))).toEqual({ where: { key: { remoteJid: jid } }, page: 1, offset: 20 });
+  });
+
+  it('rejects an identity mismatch from the message endpoint', async () => {
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test',
+      fetch: vi.fn().mockResolvedValue(new Response(JSON.stringify({ messages: { records: [row('wrong', end.getTime(), '999@s.whatsapp.net')] } }))) });
+    await expect(source.recentMessages({ instanceName: 'New', remoteJid: jid, limit: 20 })).rejects.toThrow('HISTORY_IDENTITY');
+  });
+});

@@ -265,6 +265,12 @@ model Channel {
   status          ChannelStatus   @default(disconnected)
   encryptedConfig Json            @default("{}") @map("encrypted_config")
   followupConfig  Json            @default("{}") @map("followup_config")
+  historyImportStatus String?      @map("history_import_status")
+  historyImportNextAt DateTime?    @map("history_import_next_at")
+  historyImportLeaseToken String?  @map("history_import_lease_token") @db.Uuid
+  historyImportLeaseUntil DateTime? @map("history_import_lease_until")
+  historyImportAttempts Int        @default(0) @map("history_import_attempts")
+  historyImportCompletedAt DateTime? @map("history_import_completed_at")
   createdAt       DateTime        @default(now()) @map("created_at")
   updatedAt       DateTime        @updatedAt @map("updated_at")
 
@@ -276,6 +282,7 @@ model Channel {
   @@unique([workspaceId, id])
   @@unique([workspaceId, provider, providerKey])
   @@index([workspaceId, status])
+  @@index([historyImportStatus, historyImportNextAt])
   @@map("channels")
 }
 

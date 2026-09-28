@@ -48,6 +48,8 @@ export interface PrismaLike {
         displayName: string;
         phoneNumber: string | null;
         status: ChannelDto["status"];
+        historyImportStatus?: string | null;
+        historyImportNextAt?: Date | null;
       };
     }): Promise<ChannelRecord>;
     update(args: {
@@ -354,7 +356,11 @@ export function createChannelsService(
           providerKey,
           displayName: input.displayName.trim(),
           phoneNumber: normalizeOptional(input.phoneNumber) ?? null,
-          status: "disconnected"
+          status: "disconnected",
+          ...(options.evolution?.mode === "real" ? {
+            historyImportStatus: "pending",
+            historyImportNextAt: new Date(Date.now() + 30_000)
+          } : {})
         }
       });
 

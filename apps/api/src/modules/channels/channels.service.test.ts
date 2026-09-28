@@ -176,7 +176,9 @@ describe("channels service", () => {
         providerKey: "requested-instance",
         displayName: "WhatsApp Comercial",
         phoneNumber: "+55 47 99999-0000",
-        status: "disconnected"
+        status: "disconnected",
+        historyImportStatus: "pending",
+        historyImportNextAt: expect.any(Date)
       }
     });
     expect(result).toEqual(

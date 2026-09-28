@@ -6,8 +6,10 @@ export type HistoryRecord = {
   message: Record<string, unknown>;
   messageType?: string;
 };
+export type RecentEvolutionChat = { remoteJid: string; phoneJid: string; pushName: string | null; profilePicUrl: string | null };
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const direct = (s: unknown): s is string => typeof s === 'string' && /^\d+@(s\.whatsapp\.net|lid)$/.test(s);
+const phoneJid = (s: unknown): s is string => typeof s === 'string' && /^\d+@s\.whatsapp\.net$/.test(s);
 const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 
 // This adapter deliberately has no send, mark-read, webhook or instance mutation methods.
@@ -39,6 +41,44 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       ...(typeof value.messageType === 'string' ? { messageType: value.messageType } : {}) };
   }
   return {
+    async recentChats(input: { instanceName: string; limit: number }): Promise<RecentEvolutionChat[]> {
+      if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 50) throw new Error('HISTORY_CHAT_LIMIT');
+      const chats: RecentEvolutionChat[] = [];
+      const seen = new Set<string>();
+      for (let offset = 0; offset < 1000 && chats.length < input.limit; offset += 100) {
+        const data = await post(`/chat/findChats/${encodeURIComponent(input.instanceName)}`, { take: 100, skip: offset });
+        const rows = Array.isArray(data) ? data : record(data) && Array.isArray(data.chats) ? data.chats : null;
+        if (!rows) throw new Error('HISTORY_CHATS_SHAPE');
+        for (const raw of rows) {
+          if (!record(raw) || !direct(raw.remoteJid) || seen.has(raw.remoteJid)) continue;
+          const alternate = record(raw.lastMessage) && record(raw.lastMessage.key) ? raw.lastMessage.key.remoteJidAlt : null;
+          const resolvedPhoneJid = phoneJid(raw.remoteJid) ? raw.remoteJid : phoneJid(raw.remoteJidAlt) ? raw.remoteJidAlt : phoneJid(alternate) ? alternate : null;
+          if (!resolvedPhoneJid) continue;
+          seen.add(raw.remoteJid);
+          chats.push({
+            remoteJid: raw.remoteJid,
+            phoneJid: resolvedPhoneJid,
+            pushName: typeof raw.pushName === 'string' && raw.pushName.trim() ? raw.pushName.trim().slice(0, 200) : null,
+            profilePicUrl: typeof raw.profilePicUrl === 'string' && /^https:\/\//i.test(raw.profilePicUrl) ? raw.profilePicUrl : null
+          });
+          if (chats.length === input.limit) break;
+        }
+        if (rows.length < 100) break;
+      }
+      return chats;
+    },
+    async recentMessages(input: { instanceName: string; remoteJid: string; limit: number }): Promise<HistoryRecord[]> {
+      if (!direct(input.remoteJid)) throw new Error('HISTORY_IDENTITY');
+      if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 20) throw new Error('HISTORY_MESSAGE_LIMIT');
+      const data = await post(`/chat/findMessages/${encodeURIComponent(input.instanceName)}`, {
+        where: { key: { remoteJid: input.remoteJid } }, page: 1, offset: input.limit
+      });
+      if (!record(data) || !record(data.messages) || !Array.isArray(data.messages.records)) throw new Error('HISTORY_SHAPE');
+      const rows = data.messages.records.slice(0, input.limit).filter((raw) => record(raw) && record(raw.message));
+      const records = rows.map(parse);
+      if (records.some((item) => item.key.remoteJid !== input.remoteJid)) throw new Error('HISTORY_IDENTITY');
+      return records.sort((a, b) => a.messageTimestamp - b.messageTimestamp || a.key.id.localeCompare(b.key.id));
+    },
     async findMessage(input: { instanceName: string; id: string }): Promise<HistoryRecord | null> {
       if (!input.id) throw new Error('HISTORY_MESSAGE_ID');
       const data = await post(`/chat/findMessages/${encodeURIComponent(input.instanceName)}`, {
