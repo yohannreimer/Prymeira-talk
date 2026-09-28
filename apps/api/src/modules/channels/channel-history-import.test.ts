@@ -30,6 +30,7 @@ describe('new channel history import', () => {
     };
     const prisma = {
       $transaction: vi.fn().mockImplementation(async (fn: (client: unknown) => Promise<unknown>) => fn(tx)),
+      contact: { findMany: vi.fn().mockResolvedValue([]), createMany: vi.fn().mockResolvedValue({ count: 1 }) },
       message: { count: vi.fn().mockImplementation(async () => rows.length) }
     } as unknown as PrismaClient;
     const source = {
@@ -63,7 +64,7 @@ describe('new channel history import', () => {
   });
 
   it('rechecks a partial chat list before marking the import complete', async () => {
-    const prisma = { message: { count: vi.fn().mockResolvedValue(1) } } as unknown as PrismaClient;
+    const prisma = { contact: { findMany: vi.fn().mockResolvedValue([]), createMany: vi.fn() }, message: { count: vi.fn().mockResolvedValue(1) } } as unknown as PrismaClient;
     const source = {
       recentContacts: vi.fn().mockResolvedValue([]),
       recentChats: vi.fn().mockResolvedValue({ chats: [{ remoteJid, phoneJid: remoteJid, pushName: null, profilePicUrl: null }], unresolvedLids: 0 }),
@@ -75,7 +76,7 @@ describe('new channel history import', () => {
   });
 
   it('completes after importing addressable LID chats without phone mapping', async () => {
-    const prisma = { message: { count: vi.fn().mockResolvedValue(1) } } as unknown as PrismaClient;
+    const prisma = { contact: { findMany: vi.fn().mockResolvedValue([]), createMany: vi.fn() }, message: { count: vi.fn().mockResolvedValue(1) } } as unknown as PrismaClient;
     const source = {
       recentContacts: vi.fn().mockResolvedValue([]),
       recentChats: vi.fn().mockResolvedValue({ chats: [{ remoteJid, phoneJid: remoteJid, pushName: null, profilePicUrl: null }], unresolvedLids: 4 }),
@@ -105,5 +106,16 @@ describe('new channel history import', () => {
     await expect(createChannelHistoryImporter({ prisma, source })(channel)).rejects.toThrow('HISTORY_CHATS_NOT_READY');
     expect(createMany.mock.calls[0]?.[0].data).toMatchObject([{ phone: '551188887777', name: 'Outro contato' }]);
     expect(updateMany.mock.calls[0]?.[0]).toMatchObject({ where: { id: 'old', name: null }, data: { name: 'Nome salvo' } });
+  });
+
+  it('keeps older chat identities available as contacts without importing their conversations', async () => {
+    const createMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = { contact: { findMany: vi.fn().mockResolvedValue([]), createMany, updateMany: vi.fn() } } as unknown as PrismaClient;
+    const oldChat = { remoteJid, phoneJid: remoteJid, pushName: 'Cliente antigo', profilePicUrl: null };
+    const source = { recentContacts: vi.fn().mockResolvedValue([]),
+      recentChats: vi.fn().mockResolvedValueOnce({ chats: [oldChat], unresolvedLids: 0 }).mockResolvedValueOnce({ chats: [], unresolvedLids: 0 }) } as unknown as EvolutionHistorySource;
+    const importer = createChannelHistoryImporter({ prisma, source });
+    await expect(importer({ ...channel, historyImportAttempts: 3 })).resolves.toEqual({ conversations: 0, messages: 0 });
+    expect(createMany).toHaveBeenCalledWith({ data: [{ workspaceId: 'workspace-1', phone: '551199998888', name: 'Cliente antigo', avatarUrl: null }], skipDuplicates: true });
   });
 });

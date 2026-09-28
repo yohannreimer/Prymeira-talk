@@ -98,7 +98,8 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
           chats.push({
             remoteJid: raw.remoteJid,
             phoneJid: identity,
-            pushName: typeof raw.pushName === 'string' && raw.pushName.trim() ? raw.pushName.trim().slice(0, 200) : null,
+            pushName: typeof raw.pushName === 'string' && raw.pushName.trim() ? raw.pushName.trim().slice(0, 200)
+              : last && typeof last.pushName === 'string' && last.pushName.trim() ? last.pushName.trim().slice(0, 200) : null,
             profilePicUrl: typeof raw.profilePicUrl === 'string' && /^https:\/\//i.test(raw.profilePicUrl) ? raw.profilePicUrl : null
           });
           if (chats.length === input.limit) break;

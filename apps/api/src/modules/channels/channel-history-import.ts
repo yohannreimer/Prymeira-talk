@@ -75,10 +75,10 @@ export function createChannelHistoryImporter(input: {
     return result.inserted;
   }
 
-  async function importContacts(channel: ImportChannel) {
+  async function importContacts(channel: ImportChannel, chats: RecentEvolutionChat[] = []) {
     const source = await input.source.recentContacts({ instanceName: channel.providerKey });
     const contacts = new Map<string, { name: string | null; avatarUrl: string | null }>();
-    for (const item of source) {
+    for (const item of [...chats.map((chat) => ({ phoneJid: chat.phoneJid, name: chat.pushName, profilePicUrl: chat.profilePicUrl })), ...source]) {
       const phone = contactIdentity(item.phoneJid);
       if (!lid(phone) && (phone.length < 8 || phone.length > 15)) continue;
       const previous = contacts.get(phone);
@@ -114,7 +114,8 @@ export function createChannelHistoryImporter(input: {
   }
 
   const importChannel = async (channel: ImportChannel, shouldStop: () => boolean = () => false) => {
-    const contacts = await importContacts(channel);
+    const all = await input.source.recentChats({ instanceName: channel.providerKey, limit: 1000 });
+    const contacts = await importContacts(channel, all.chats);
     const since = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
     const { chats } = await input.source.recentChats({ instanceName: channel.providerKey, limit: 1000, since });
     if (!chats.length) {
