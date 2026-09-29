@@ -85,6 +85,7 @@ function createMockPrisma(overrides: {
   contact?: {
     findFirst?: ReturnType<typeof vi.fn>;
     create?: ReturnType<typeof vi.fn>;
+    upsert?: ReturnType<typeof vi.fn>;
     updateMany?: ReturnType<typeof vi.fn>;
   };
   conversation?: {
@@ -173,6 +174,7 @@ function createMockPrisma(overrides: {
           workspaceId: "workspace_a",
           phone: "551199999999"
         }),
+      upsert: overrides.contact?.upsert ?? vi.fn().mockResolvedValue({ id: "contact_1", phone: "551199999999" }),
       updateMany: overrides.contact?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 })
     },
     conversation: {
@@ -1891,6 +1893,82 @@ describe("Evolution webhook routes", () => {
     } finally {
       await app.close();
     }
+  });
+
+  it("keeps a group message in its own conversation without running direct-chat observers", async () => {
+    const groupJid = "120363024158769234@g.us";
+    const participant = "5511999999999@s.whatsapp.net";
+    const contact = { id: "group_contact", workspaceId: "workspace_a", phone: groupJid, name: "Equipe comercial", isGroup: true };
+    const conversation = {
+      id: "group_conversation", workspaceId: "workspace_a", channelId: "channel_1", contactId: contact.id,
+      status: "open", assignedUserId: null, departmentId: null, lastMessageAt: new Date(),
+      lastMessagePreview: "Bom dia", unreadCount: 1, priority: "normal", aiControlStatus: "human_controlled",
+      aiControlUpdatedAt: null, activeAgentSessionId: null,
+      channel: { displayName: "Client One", phoneNumber: null, provider: "evolution" }, contact,
+      department: null, assignedUser: null
+    };
+    const metadata = { groupSender: { jid: participant, name: "Ana" } };
+    const message = { id: "group_message", workspaceId: "workspace_a", conversationId: conversation.id,
+      providerMessageId: "group_provider_1", direction: "inbound", type: "text", body: "Bom dia",
+      mediaUrl: null, metadata, status: "delivered", sentByUserId: null, createdAt: new Date() };
+    const prisma = createMockPrisma({ contact: { findFirst: vi.fn().mockResolvedValue(null), upsert: vi.fn().mockResolvedValue(contact) },
+      conversation: { findUnique: vi.fn().mockResolvedValue(conversation), upsert: vi.fn().mockResolvedValue(conversation) },
+      message: { create: vi.fn().mockResolvedValue(message) } });
+    const followup = vi.fn().mockResolvedValue({ status: "skipped" });
+    const triage = vi.fn().mockResolvedValue(undefined);
+    const assistant = vi.fn().mockResolvedValue(undefined);
+    const groupInfo = vi.fn().mockResolvedValue({ subject: "Equipe comercial" });
+    const { app, publish } = await buildEvolutionApp(prisma,
+      { mode: "real", client: { getGroupInfo: groupInfo } } as never,
+      { followupService: { observeConversationActivity: followup }, inboxTriage: { observeMessage: triage },
+        assistantScheduler: { message: assistant, persistInbound: assistant } as never });
+    try {
+      const response = await app.inject({ method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: { event: "messages.upsert", instance: "client-one", data: {
+          key: { id: "group_provider_1", remoteJid: groupJid, participant, fromMe: false },
+          pushName: "Ana", message: { conversation: "Bom dia" }, messageTimestamp: 1779300000
+        } } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true });
+      expect(groupInfo).toHaveBeenCalledWith({ instanceName: "client-one", groupJid });
+      expect(prisma.contact.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        create: expect.objectContaining({ workspaceId: "workspace_a", phone: groupJid,
+          name: "Equipe comercial", isGroup: true })
+      }));
+      expect(prisma.conversation.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        create: expect.objectContaining({ aiControlStatus: "human_controlled", contactId: contact.id })
+      }));
+      expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({ metadata }) });
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "message.created",
+        payload: expect.objectContaining({ senderName: "Ana", senderJid: participant }) }));
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.updated",
+        payload: expect.objectContaining({ isGroup: true, contactName: "Equipe comercial", contactPhone: null }) }));
+      expect(followup).not.toHaveBeenCalled();
+      expect(triage).not.toHaveBeenCalled();
+      expect(assistant).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  it("keeps a group message when Evolution cannot provide its subject", async () => {
+    const groupJid = '120363024158769234@g.us';
+    const groupInfo = vi.fn().mockRejectedValue(new Error('Group info unavailable'));
+    const { app, prisma } = await buildEvolutionApp(createMockPrisma({
+      contact: { findFirst: vi.fn().mockResolvedValue(null) }
+    }), { mode: 'real', client: { getGroupInfo: groupInfo } } as never);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: {
+          event: 'messages.upsert', instance: 'client-one', data: {
+            key: { id: 'group_fallback_1', remoteJid: groupJid, fromMe: false },
+            message: { conversation: 'Olá' }, messageTimestamp: 1779300000
+          }
+        } });
+      expect(response.json()).toEqual({ ok: true });
+      expect(prisma.contact.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        create: expect.objectContaining({ phone: groupJid, isGroup: true, name: 'Grupo 58769234' })
+      }));
+    } finally { await app.close(); }
   });
 
   it("runs enabled automations after an inbound Evolution message is ingested", async () => {

@@ -683,7 +683,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       });
     }
 
-    if (result.message.status !== "pending") {
+    if (!result.conversation.isGroup && result.message.status !== "pending") {
       await options.inboxTriage?.observeMessage({
         workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId,
         messageId: result.message.id, direction: "outbound", observedAt: new Date()
@@ -692,7 +692,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       });
     }
 
-    await options.followupService?.observeConversationActivity({
+    if (!result.conversation.isGroup) await options.followupService?.observeConversationActivity({
       workspaceId: request.talk.workspaceId,
       conversationId: params.data.conversationId,
       messageId: result.message.id,
@@ -701,7 +701,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     }).catch((error: unknown) => {
       request.log.error({ error }, "Failed to observe human outbound follow-up.");
     });
-    if (options.agentImprovements) {
+    if (!result.conversation.isGroup && options.agentImprovements) {
       void options.agentImprovements.observeHumanReply({
         workspaceId: request.talk.workspaceId,
         conversationId: params.data.conversationId,
@@ -720,10 +720,10 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
         request.log.error({ error, event: "agent_improvement_observation_failed", source: "talk_outbound", workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId, messageId: result.message.id }, "Failed to prepare agent improvement suggestion.");
       });
     }
-    if (!humanTookControl) {
+    if (!result.conversation.isGroup && !humanTookControl) {
       await options.assistantScheduler?.message({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId, messageId: result.message.id, direction: 'outbound' });
     }
-    options.handoffBriefService?.schedule({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId });
+    if (!result.conversation.isGroup) options.handoffBriefService?.schedule({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId });
     app.realtime.publish({
       type: "message.created",
       workspaceId: request.talk.workspaceId,

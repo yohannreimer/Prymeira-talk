@@ -513,7 +513,6 @@ function InboxPageContent() {
     setToken(nextToken);
     return nextToken;
   }, [getToken]);
-  const assistant = useAssistantConversation(selectedConversationId, getToken);
   useEffect(() => { setComposerOrigin(null); setDraft(''); setPendingFile(null); setAssistantOpen(false); setShareContactOpen(false); setSelectedContactCard(null); setIsDraggingFile(false); dragDepthRef.current = 0; }, [selectedConversationId]);
   useEffect(() => {
     if (!pendingFile?.type.startsWith('image/')) { setPendingFilePreview(null); return; }
@@ -812,7 +811,9 @@ function InboxPageContent() {
     let isMounted = true;
 
     async function loadContext() {
-      if (!selectedConversationId) {
+      const target = conversationsRef.current.find((conversation) => conversation.id === selectedConversationId)
+        ?? (selectedConversationSnapshot?.id === selectedConversationId ? selectedConversationSnapshot : null);
+      if (!selectedConversationId || target?.isGroup) {
         setContactContext(null);
         return;
       }
@@ -843,7 +844,7 @@ function InboxPageContent() {
     return () => {
       isMounted = false;
     };
-  }, [getFreshToken, selectedConversationId]);
+  }, [getFreshToken, selectedConversationId, selectedConversationSnapshot?.id, selectedConversationSnapshot?.isGroup]);
 
   const refreshSelectedContext = useCallback((targetConversationId: string) => {
     void apiGetConversationContext(targetConversationId, getFreshToken)
@@ -991,8 +992,9 @@ function InboxPageContent() {
     () => resolveSelectedConversation(visibleConversations, selectedConversationId, selectedConversationSnapshot),
     [visibleConversations, selectedConversationId, selectedConversationSnapshot]
   );
+  const assistant = useAssistantConversation(selectedConversation?.isGroup ? null : selectedConversationId, getToken);
   const visibleMessages = messagesConversationId === selectedConversationId ? messages : [];
-  const handoffEnabled = Boolean(selectedConversation && needsHumanAttention(selectedConversation));
+  const handoffEnabled = Boolean(selectedConversation && !selectedConversation.isGroup && needsHumanAttention(selectedConversation));
   const handoff = useHandoffBrief(selectedConversationId, handoffEnabled, selectedConversation?.lastMessageAt, getToken);
   const handoffBrief = handoffEnabled ? handoff.data ?? {
     status: handoff.error ? 'failed' as const : 'pending' as const,
@@ -1622,7 +1624,7 @@ function InboxPageContent() {
               conversationNeedsHuman &&
               conversation.id !== selectedConversationId &&
               !acknowledgedHandoffIds.has(conversation.id);
-            const controlBadge = getConversationControlBadge(conversation, showHumanAttention);
+            const controlBadge = conversation.isGroup ? null : getConversationControlBadge(conversation, showHumanAttention);
             const conversationAriaLabel = [
               `Abrir conversa com ${contactDisplayName(conversation)}`,
               controlBadge?.label
@@ -1670,6 +1672,7 @@ function InboxPageContent() {
                 <span className="conversation-row">
                   <span className="conv-name-wrap">
                     <strong>{contactDisplayName(conversation)}</strong>
+                    {conversation.isGroup ? <span className="conv-dept-tag"><Users size={12} aria-hidden="true" /> Grupo</span> : null}
                     {conversation.departmentName ? (
                       <span className="conv-dept-tag">{conversation.departmentName}</span>
                     ) : null}
@@ -1753,8 +1756,9 @@ function InboxPageContent() {
             </h2>
           </div>
           {selectedConversation ? (
-            <div className="conversation-ai-control module-header-actions" aria-label="Controle da IA">
-              {selectedConversation.channelProvider === 'evolution' && selectedConversation.contactPhone ? <button type="button" className="inbox-share-trigger" title="Enviar contato para outra pessoa" aria-label="Enviar contato para outra pessoa" onClick={() => setShareContactOpen(true)}><ContactRound size={17} /><Send size={12} /></button> : null}
+            <div className="conversation-ai-control module-header-actions" aria-label={selectedConversation.isGroup ? "Atendimento do grupo" : "Controle da IA"}>
+              {!selectedConversation.isGroup && selectedConversation.channelProvider === 'evolution' && selectedConversation.contactPhone ? <button type="button" className="inbox-share-trigger" title="Enviar contato para outra pessoa" aria-label="Enviar contato para outra pessoa" onClick={() => setShareContactOpen(true)}><ContactRound size={17} /><Send size={12} /></button> : null}
+              {selectedConversation.isGroup ? <span className="status-badge">Grupo</span> : <>
               <span className="status-badge status-badge--bot">
                 {aiControlLabel(selectedConversation, assistant.data?.settings.mode)}
               </span>
@@ -1766,6 +1770,7 @@ function InboxPageContent() {
               >
                 {aiControlActionLabel(selectedConversation)}
               </button>
+              </>}
               <span className={`status-badge status-badge--${selectedConversation.status}`}>
                 {statusLabel(selectedConversation.status)}
               </span>
@@ -1808,9 +1813,10 @@ function InboxPageContent() {
                 key={message.id}
               >
                 {message.direction === "inbound" ? (
-                  <ContactAvatar conversationId={selectedConversation?.id} name={selectedConversation?.contactName} className="msg-avatar" />
+                  <ContactAvatar conversationId={selectedConversation?.id} name={selectedConversation?.isGroup ? message.senderName ?? message.senderJid : selectedConversation?.contactName} className="msg-avatar" />
                 ) : null}
                 <div className="msg-bubble-body">
+                  {selectedConversation.isGroup && message.direction === "inbound" ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
                   {['image', 'audio', 'file'].includes(message.type) ? <>
                     <InboxMedia key={`${message.id}:${message.mediaUrl?.slice(0, 60)}`} message={message} getToken={getToken} />
                     {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
@@ -1854,7 +1860,7 @@ function InboxPageContent() {
             <span className="composer-attachment-details"><strong>{pendingFile.name}</strong><small>{(pendingFile.size / 1024 / 1024).toFixed(1)} MB · Pronto para enviar</small></span>
             <button type="button" aria-label="Remover anexo" title="Remover anexo" onClick={() => setPendingFile(null)}><X size={18} /></button>
           </div> : null}
-          <button ref={assistantTriggerRef} type="button" className="assistant-mobile-trigger" onClick={() => { setAssistantTab('assistant'); setAssistantOpen(true); }} disabled={!selectedConversation}><MessageSquare size={15} /> IA de apoio <span>{handoffBrief ? 'Próxima ação' : assistant.data?.status === 'ready' ? 'Sugestão pronta' : 'Abrir'}</span></button>
+          {!selectedConversation?.isGroup ? <button ref={assistantTriggerRef} type="button" className="assistant-mobile-trigger" onClick={() => { setAssistantTab('assistant'); setAssistantOpen(true); }} disabled={!selectedConversation}><MessageSquare size={15} /> IA de apoio <span>{handoffBrief ? 'Próxima ação' : assistant.data?.status === 'ready' ? 'Sugestão pronta' : 'Abrir'}</span></button> : null}
           {composerOrigin ? <div className="assistant-composer-origin"><span>{originNeedsReview ? 'A conversa mudou. Confira o rascunho.' : 'Sugestão em edição. O texto enviado ficará registrado.'}</span>{originNeedsReview ? <button type="button" disabled={!assistant.data?.currentContextKey} onClick={() => setComposerOrigin(current => current && assistant.data?.currentContextKey ? { ...current, contextKey: assistant.data.currentContextKey } : current)}>Revisei o contexto</button> : null}</div> : null}
           {showQuickReplies ? (
             <QuickRepliesPopover
@@ -1976,6 +1982,10 @@ function InboxPageContent() {
       </section>
 
       <aside className={`contact-panel assistant-contact-panel${assistantOpen ? ' assistant-drawer-open' : ''}`} aria-label="Contato e IA de apoio">
+        {selectedConversation?.isGroup ? <>
+          <div className="context-card"><div className="context-card-title">Grupo do WhatsApp</div><strong>{contactDisplayName(selectedConversation)}</strong><p>As respostas neste grupo são enviadas manualmente.</p></div>
+          <div className="context-card"><div className="context-card-title">Atendimento</div><p>{selectedConversation.assignedUserName ?? 'Fila geral'} · {statusLabel(selectedConversation.status)}</p><div className="quick-actions"><button type="button" disabled={isRunningAction} onClick={() => void runAction({ action: 'assign_current_user' })}>Assumir</button><button type="button" disabled={isRunningAction} onClick={() => void runAction({ action: 'close_conversation' })}>Finalizar</button></div></div>
+        </> : <>
         <div className="assistant-tabs"><button type="button" aria-pressed={assistantTab === 'contact'} onClick={() => setAssistantTab('contact')}>Contato</button><button type="button" aria-pressed={assistantTab === 'assistant'} onClick={() => setAssistantTab('assistant')}>IA de apoio{handoffBrief ? <span className="assistant-tab-dot is-handoff" /> : assistant.data?.status === 'ready' ? <span className="assistant-tab-dot" /> : null}</button><button ref={assistantCloseRef} className="assistant-drawer-close" aria-label="Fechar apoio" type="button" onClick={() => { setAssistantOpen(false); assistantTriggerRef.current?.focus(); }}><X size={18} /></button></div>
         {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} handoffBrief={handoffBrief} handoffCompleted={Boolean(selectedConversation?.handoffActionCompletedAt)} handoffFeedback={handoffFeedback} handoffBusy={isRunningAction} onCompleteHandoff={() => { void runAction({ action: 'complete_handoff_action' }); }} onReopenHandoff={() => { void runAction({ action: 'reopen_handoff_action' }); }} onReanalyzeHandoff={() => { void runAction({ action: 'reanalyze_handoff_reply' }); }} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={sendSuggestion} onEdit={editSuggestion} /> : <>
         {/* Card identidade */}
@@ -2168,6 +2178,7 @@ function InboxPageContent() {
             <p className="crm-status">{crmStatus}</p>
           ) : null}
         </div>
+        </>}
         </>}
       </aside>
       {shareContactOpen && selectedConversation ? <ShareContactDialog source={selectedConversation} getToken={getToken} onClose={() => setShareContactOpen(false)} onSent={(name, contextImages) => { setShareContactOpen(false); setSendNotice(contextImages ? `Contato e histórico enviados para ${name}.` : `Contato enviado para ${name}; a conversa ainda não tem mensagens para compartilhar.`); setConversationReloadKey((current) => current + 1); }} /> : null}

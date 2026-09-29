@@ -546,7 +546,7 @@ describe("conversations service", () => {
           lastMessagePreview: "Oi"
         },
         include: expect.objectContaining({
-          contact: { select: { name: true, phone: true } },
+          contact: { select: { name: true, phone: true, isGroup: true } },
           channel: { select: { displayName: true, phoneNumber: true, provider: true } }
         })
       })
@@ -841,9 +841,29 @@ describe("conversations service", () => {
         customerServiceWindowExpiresAt: true,
         id: true,
         channel: { select: { provider: true, providerKey: true } },
-        contact: { select: { phone: true } }
+        contact: { select: { phone: true, isGroup: true } }
       }
     });
+  });
+
+  it("sends a manual group reply to the exact group JID and rejects contact cards", async () => {
+    const groupJid = "120363024158769234@g.us";
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "group_sent", raw: {} });
+    const sendContact = vi.fn().mockResolvedValue({ providerMessageId: "contact_sent", raw: {} });
+    const prisma = createMockPrisma({ findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>()
+      .mockResolvedValue({ id: "group_conversation", workspaceId: "workspace_a", channelId: "channel_1",
+        contactId: "group_identity", status: "open", assignedUserId: null, departmentId: null,
+        lastMessageAt: null, lastMessagePreview: null, unreadCount: 0, priority: "normal",
+        channel: { provider: "evolution", providerKey: "instance_1" },
+        contact: { phone: groupJid, isGroup: true }, tags: [] }) });
+    const service = createConversationsService(prisma, { evolution: { mode: "real", client: { sendText, sendContact } } as never });
+    await service.createPendingOutboundMessage({ workspaceId: "workspace_a", conversationId: "group_conversation",
+      body: "Oi, pessoal", sentByUserId: "user_1" });
+    expect(sendText).toHaveBeenCalledWith({ instanceName: "instance_1", number: groupJid, text: "Oi, pessoal" });
+    await expect(service.createPendingOutboundMessage({ workspaceId: "workspace_a", conversationId: "group_conversation",
+      contactCard: { fullName: "Ana", phoneNumber: "5511999999999" }, sentByUserId: "user_1" }))
+      .rejects.toMatchObject({ code: "CONTACT_CARD_NOT_SUPPORTED" });
+    expect(sendContact).not.toHaveBeenCalled();
   });
 
   it("marks a reserved delivery uncertain when the provider accepts but message persistence fails", async () => {

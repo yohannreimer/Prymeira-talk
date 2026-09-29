@@ -215,6 +215,18 @@ describe("Evolution client", () => {
     expect(result.providerMessageId).toBe("provider_msg_1");
   });
 
+  it("reads a WhatsApp group subject by its exact JID", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse({ subject: "Equipe comercial" }));
+    const client = createEvolutionClient({ baseUrl: "https://evolution.invalid", apiKey: "key", fetch: fetchMock });
+    const groupJid = "120363024158769234@g.us";
+    await expect(client.getGroupInfo!({ instanceName: "vendas", groupJid }))
+      .resolves.toEqual({ subject: "Equipe comercial" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://evolution.invalid/group/findGroupInfos/vendas?groupJid=${encodeURIComponent(groupJid)}&getParticipants=false`,
+      expect.objectContaining({ method: "GET" })
+    );
+  });
+
   it("allows link preview to be explicitly enabled for text messages", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       createJsonResponse({ key: { id: "provider_msg_1" } })

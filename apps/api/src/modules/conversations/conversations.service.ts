@@ -93,6 +93,7 @@ export interface ConversationRecord {
   contact?: {
     name?: string | null;
     phone?: string | null;
+    isGroup?: boolean;
   } | null;
   channel?: {
     displayName?: string | null;
@@ -180,7 +181,7 @@ const inboxPrivateReviewWhere: Prisma.ConversationWhereInput = {
 const conversationDtoInclude = {
   assignedUser: { select: { displayName: true } },
   channel: { select: { displayName: true, phoneNumber: true, provider: true } },
-  contact: { select: { name: true, phone: true } },
+  contact: { select: { name: true, phone: true, isGroup: true } },
   department: { select: { name: true } },
   activeAgentSession: {
     select: {
@@ -479,6 +480,7 @@ function isFutureDate(value: DateLike | null | undefined) {
 
 export function toConversationDto(record: ConversationRecord): ConversationDto {
   const channelProvider = toChannelProvider(record.channel?.provider);
+  const isGroup = Boolean(record.contact?.isGroup || record.contact?.phone?.endsWith('@g.us'));
   const customerServiceWindowExpiresAt = record.customerServiceWindowExpiresAt
     ? toIsoString(record.customerServiceWindowExpiresAt)
     : null;
@@ -489,7 +491,8 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
     channelId: record.channelId,
     contactId: record.contactId,
     contactName: record.contact?.name ?? null,
-    contactPhone: record.contact?.phone ?? null,
+    contactPhone: isGroup ? null : record.contact?.phone ?? null,
+    isGroup,
     channelName: record.channel?.displayName ?? record.channel?.phoneNumber ?? null,
     channelProvider,
     customerServiceWindowExpiresAt,
@@ -532,6 +535,7 @@ export function toMessageDto(record: MessageRecord): MessageDto {
   const result = cache.sourceHash === sourceHash ? object(cache.result) : {};
   const history = object(metadata.historyImport);
   const attachment = object(metadata.attachment);
+  const groupSender = object(metadata.groupSender);
   const rawCards = Array.isArray(metadata.contactCards) ? metadata.contactCards : metadata.contactCard ? [metadata.contactCard] : [];
   const contactCards = rawCards.slice(0, 50).map((raw) => {
     const card = object(raw);
@@ -555,6 +559,10 @@ export function toMessageDto(record: MessageRecord): MessageDto {
     direction: record.direction,
     type: record.type,
     body: record.body,
+    ...(groupSender.name || groupSender.jid ? {
+      senderName: typeof groupSender.name === 'string' ? groupSender.name.slice(0, 120) : null,
+      senderJid: typeof groupSender.jid === 'string' ? groupSender.jid.slice(0, 100) : null
+    } : {}),
     mediaUrl: record.mediaUrl ?? null,
     ...(contactCards.length ? { contactCards } : {}),
     ...(Object.keys(publicAttachment).length ? { attachment: publicAttachment } : {}),
@@ -846,12 +854,16 @@ export function createConversationsService(
           customerServiceWindowExpiresAt: true,
           id: true,
           channel: { select: { provider: true, providerKey: true } },
-          contact: { select: { phone: true } }
+          contact: { select: { phone: true, isGroup: true } }
         }
       });
 
       if (!conversation) {
         throw new ConversationNotFoundError();
+      }
+
+      if (input.contactCard && (conversation.contact?.isGroup || conversation.contact?.phone?.endsWith('@g.us'))) {
+        throw new OutboundMessageValidationError('CONTACT_CARD_NOT_SUPPORTED', 'Não é possível compartilhar um contato em uma conversa de grupo.');
       }
 
       const isAudio = input.attachment?.mimetype.toLowerCase().startsWith('audio/') ?? false;

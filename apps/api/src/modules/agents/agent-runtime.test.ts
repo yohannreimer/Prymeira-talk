@@ -541,6 +541,18 @@ describe("createAgentRuntime", () => {
     expect((await runtime.runForMessage(input)).status).toBe('skipped');
     expect(provider.generate).not.toHaveBeenCalled(); expect(sendText).not.toHaveBeenCalled(); expect(prisma.message.create).not.toHaveBeenCalled();
   });
+  it('never activates an autonomous agent for a WhatsApp group', async () => {
+    const prisma = buildPrisma({ conversation: { findUnique: vi.fn().mockResolvedValue({
+      ...baseConversation, contact: { ...baseConversation.contact, isGroup: true, phone: '120363024158769234@g.us' }
+    }) } });
+    const provider = buildProvider({ reply: 'Não enviar', confidence: 1, actions: [], handoff: { required: false, reason: null } });
+    const runtime = createAgentRuntime({ prisma, provider });
+    const input = { workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation,
+      messageId: ids.message, trigger: 'automation' as const };
+    expect((await runtime.activateForMessage(input)).status).toBe('skipped');
+    expect((await runtime.runForMessage(input)).status).toBe('skipped');
+    expect(provider.generate).not.toHaveBeenCalled();
+  });
   it('activates the autonomous agent when the channel also generates private suggestions', async () => {
     const prisma = buildPrisma({ conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: { ...baseConversation.channel, encryptedConfig: { assistant: { mode: 'automatic_with_agent', agentId: ids.agent } } } }), update: vi.fn().mockResolvedValue({}) } });
     const provider = buildProvider({ reply: 'Resposta', confidence: 1, actions: [], handoff: { required: false, reason: null } });

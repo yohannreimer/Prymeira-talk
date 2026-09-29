@@ -74,6 +74,14 @@ export function resolveWebhookPhone(remoteJid: string, remoteJidAlt?: string): s
   return phone.length >= 8 && phone.length <= 15 ? phone : null;
 }
 
+function resolveGroupJid(remoteJid: string): string | null {
+  return /^\d+(?:-\d+)?@g\.us$/.test(remoteJid) && remoteJid.length <= 80 ? remoteJid : null;
+}
+
+function groupFallbackName(groupJid: string): string {
+  return `Grupo ${groupJid.split('@')[0]!.slice(-8)}`;
+}
+
 function normalizeHeaderValue(header: string | string[] | undefined) {
   if (Array.isArray(header)) {
     return header.length === 1 ? header[0] : undefined;
@@ -555,7 +563,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           include: {
             assignedUser: { select: { displayName: true } },
             channel: { select: { displayName: true, phoneNumber: true } },
-            contact: { select: { name: true, phone: true } },
+            contact: { select: { name: true, phone: true, isGroup: true } },
             department: { select: { name: true } }
           }
         });
@@ -708,7 +716,9 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
     }
 
     const payload = body.data;
-    const phone = resolveWebhookPhone(payload.data.key.remoteJid, payload.data.key.remoteJidAlt);
+    const groupJid = resolveGroupJid(payload.data.key.remoteJid);
+    const isGroup = Boolean(groupJid);
+    const phone = groupJid ?? resolveWebhookPhone(payload.data.key.remoteJid, payload.data.key.remoteJidAlt);
     if (!phone) {
       request.log.warn({ event: 'evolution_unresolved_identity', workspaceId,
         providerMessageId: payload.data.key.id, remoteJidType: payload.data.key.remoteJid.split('@')[1] ?? 'unknown' },
@@ -716,6 +726,20 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
       return { ok: true, ignored: true, reason: 'unresolved_identity' };
     }
     const pushName = payload.data.key.fromMe ? null : extractPushName(request.body);
+    const existingGroup = groupJid ? await app.prisma.contact.findFirst({
+      where: { workspaceId, phone: groupJid, isGroup: true }, select: { name: true }
+    }) : null;
+    const savedGroupName = existingGroup?.name?.trim();
+    const groupName = groupJid ? (savedGroupName && savedGroupName !== groupFallbackName(groupJid)
+      ? savedGroupName
+      : await options.evolution?.client?.getGroupInfo?.({ instanceName: payload.instance, groupJid })
+        .then(result => result.subject).catch((error: unknown) => {
+          request.log.warn({ err: error, groupJid }, 'Evolution group name lookup failed.');
+          return null;
+        }) ?? savedGroupName ?? groupFallbackName(groupJid)) : null;
+    const participant = payload.data.key.participant ?? payload.data.participant;
+    const senderJid = isGroup && !payload.data.key.fromMe && typeof participant === 'string'
+      ? participant.slice(0, 100) : null;
     const messageContent = extractMessageContent(payload.data.message, payload.data.messageType);
     if (messageContent.body === "Template recebido sem texto" || messageContent.body === "Mensagem não reconhecida") {
       const message = unwrapMessage(payload.data.message);
@@ -759,19 +783,26 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         if (!channel) {
           return { kind: "channel_not_found" as const };
         }
+        if (isGroup && channel.provider !== 'evolution') {
+          return { kind: "unsupported_group_provider" as const };
+        }
 
-        const candidates = phone.endsWith('@lid') ? [phone] : buildPhoneLookupCandidates(phone);
+        const candidates = isGroup || phone.endsWith('@lid') ? [phone] : buildPhoneLookupCandidates(phone);
         const existingLidContact = payload.data.key.remoteJid.endsWith('@lid')
           ? await tx.contact.findFirst({ where: { workspaceId, phone: payload.data.key.remoteJid } })
           : null;
-        const contact = await tx.contact.findFirst({
+        const contact = isGroup ? null : await tx.contact.findFirst({
           where: {
             workspaceId,
             phone: { in: candidates }
           },
           orderBy: { updatedAt: "desc" }
         });
-        const selectedContact = existingLidContact ?? contact ?? await tx.contact.create({
+        const selectedContact = isGroup ? await tx.contact.upsert({
+          where: { workspaceId_phone: { workspaceId, phone } },
+          create: { workspaceId, phone, isGroup: true, name: groupName },
+          update: { name: groupName }
+        }) : existingLidContact ?? contact ?? await tx.contact.create({
           data: {
             workspaceId,
             phone,
@@ -779,7 +810,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           }
         });
 
-        if (pushName) {
+        if (!isGroup && pushName) {
           await tx.contact.updateMany({
             where: {
               workspaceId,
@@ -790,7 +821,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           });
         }
 
-        const hiddenCampaignMessage = payload.data.key.fromMe && channel.provider === 'evolution' &&
+        const hiddenCampaignMessage = !isGroup && payload.data.key.fromMe && channel.provider === 'evolution' &&
           typeof tx.campaignRecipient?.findFirst === 'function'
           ? await tx.campaignRecipient.findFirst({
               where: { workspaceId, channelId: channel.id,
@@ -822,7 +853,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             contactId: selectedContact.id,
             status: "open",
             hiddenUntilReply: Boolean(hiddenCampaignMessage),
-            ...(phone.endsWith('@lid') ? { aiControlStatus: 'human_controlled' as const } : {}),
+            ...(isGroup || phone.endsWith('@lid') ? { aiControlStatus: 'human_controlled' as const } : {}),
             ...(channel.provider === "meta_cloud" && !payload.data.key.fromMe
               ? { customerServiceWindowExpiresAt: new Date(receivedAt.getTime() + 24 * 60 * 60 * 1000) }
               : {}),
@@ -841,14 +872,18 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             type: messageContent.type,
             body: messageContent.body,
             mediaUrl: messageContent.mediaUrl,
-            ...(messageContent.contactCards?.length ? { metadata: { contactCards: messageContent.contactCards } }
-              : ['audio', 'image', 'file'].includes(messageContent.type) ? { metadata: { attachment: attachmentPresentation(payload.data.message) } } : {}),
+            ...(isGroup || messageContent.contactCards?.length || ['audio', 'image', 'file'].includes(messageContent.type)
+              ? { metadata: {
+                  ...(isGroup && !payload.data.key.fromMe ? { groupSender: { jid: senderJid, name: pushName } } : {}),
+                  ...(messageContent.contactCards?.length ? { contactCards: messageContent.contactCards } : {}),
+                  ...(['audio', 'image', 'file'].includes(messageContent.type) ? { attachment: attachmentPresentation(payload.data.message) } : {})
+                } } : {}),
             status: payload.data.key.fromMe ? "sent" : "delivered",
             createdAt: receivedAt
           }
         });
 
-        const humanTookControl = payload.data.key.fromMe
+        const humanTookControl = payload.data.key.fromMe && !isGroup
           ? await pauseAgentOnHumanOutbound(tx, {
               workspaceId,
               conversationId: conversation.id
@@ -906,7 +941,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           });
         }
 
-        if (!payload.data.key.fromMe && supportsDepartmentRouting(tx)) {
+        if (!isGroup && !payload.data.key.fromMe && supportsDepartmentRouting(tx)) {
           await applyInboundDepartmentRouting(tx, {
             workspaceId,
             conversationId: conversation.id,
@@ -924,7 +959,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           include: {
             assignedUser: { select: { displayName: true } },
             channel: { select: { displayName: true, phoneNumber: true } },
-            contact: { select: { name: true, phone: true } },
+            contact: { select: { name: true, phone: true, isGroup: true } },
             department: { select: { name: true } }
           }
         });
@@ -933,7 +968,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           throw new Error("Conversation disappeared during Evolution webhook ingestion.");
         }
 
-        if (messageContent.type !== "system") {
+        if (!isGroup && messageContent.type !== "system") {
           await options.assistantScheduler?.persistInbound(tx, { workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
         }
         return { kind: "created" as const, message, conversation: updatedConversation, humanTookControl };
@@ -942,25 +977,28 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
       if (transactionResult.kind === "channel_not_found") {
         return reply.code(404).send({ ok: false, error: "channel_not_found" });
       }
+      if (transactionResult.kind === 'unsupported_group_provider') {
+        return { ok: true, ignored: true, reason: 'unsupported_group_provider' };
+      }
 
       const { message, conversation, humanTookControl } = transactionResult;
-      if (message.direction === 'inbound' && messageContent.type !== 'system') {
+      if (!isGroup && message.direction === 'inbound' && messageContent.type !== 'system') {
         await options.historyBackfill?.({ workspaceId, channelId: conversation.channelId,
           conversationId: conversation.id, providerKey: payload.instance,
           remoteJid: payload.data.key.remoteJid, identity: phone, pushName }).catch((error: unknown) => {
           request.log.error({ err: error, conversationId: conversation.id }, 'Recent Evolution context backfill failed.');
         });
       }
-      if (humanTookControl) {
+      if (!isGroup && humanTookControl) {
         request.log.info({ event: "human_outbound_paused_agent", workspaceId, conversationId: message.conversationId, messageId: message.id }, "Human outbound message paused the agent.");
         await options.assistantScheduler?.control(workspaceId, message.conversationId, true).catch((error: unknown) => {
           request.log.error({ error, workspaceId, conversationId: message.conversationId }, "Failed to pause assistant suggestions after human outbound message.");
         });
       }
-      if (!humanTookControl && messageContent.type !== "system") {
+      if (!isGroup && !humanTookControl && messageContent.type !== "system") {
         await options.assistantScheduler?.message({ workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
       }
-      options.handoffBriefService?.schedule({ workspaceId, conversationId: message.conversationId });
+      if (!isGroup) options.handoffBriefService?.schedule({ workspaceId, conversationId: message.conversationId });
       app.realtime.publish({
         type: "message.created",
         workspaceId,
@@ -972,7 +1010,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         payload: toConversationDto(conversation)
       });
 
-      if (messageContent.type !== "system") {
+      if (!isGroup && messageContent.type !== "system") {
         await options.inboxTriage?.observeMessage({
           workspaceId, conversationId: message.conversationId, messageId: message.id,
           direction: message.direction, observedAt: new Date()
@@ -981,7 +1019,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         });
       }
 
-      if (message.direction === "inbound" && messageContent.type !== "system") {
+      if (!isGroup && message.direction === "inbound" && messageContent.type !== "system") {
         await options.followupService?.observeConversationActivity({
           workspaceId,
           conversationId: message.conversationId,
@@ -1015,7 +1053,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         }).catch((error: unknown) => {
           request.log.error({ error }, "Failed to schedule agent reply.");
         });
-      } else if (message.direction === "outbound" && messageContent.type !== "system") {
+      } else if (!isGroup && message.direction === "outbound" && messageContent.type !== "system") {
         await options.followupService?.observeConversationActivity({
           workspaceId,
           conversationId: message.conversationId,

@@ -292,7 +292,8 @@ async function findOrCreateCampaignContact(input: {
     const existingById = await input.prisma.contact.findFirst({
       where: {
         workspaceId: input.workspaceId,
-        id: input.contact.contactId
+        id: input.contact.contactId,
+        isGroup: false
       }
     });
 
@@ -305,6 +306,7 @@ async function findOrCreateCampaignContact(input: {
   const existingByPhone = await input.prisma.contact.findFirst({
     where: {
       workspaceId: input.workspaceId,
+      isGroup: false,
       phone: { in: buildPhoneLookupCandidates(phone) }
     },
     orderBy: { updatedAt: "desc" }

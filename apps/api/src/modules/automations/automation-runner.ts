@@ -152,7 +152,7 @@ interface AutomationRunnerRealtime {
 
 export interface AutomationRunnerEvolution {
   mode: EvolutionRuntime["mode"];
-  client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText" | "sendMedia"> | null;
+  client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText" | "sendMedia" | "getGroupInfo"> | null;
 }
 
 export interface AutomationRunnerAgentRuntime {

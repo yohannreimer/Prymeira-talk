@@ -29,6 +29,7 @@ interface ContactRecord {
   company: string | null;
   atomicCrmContactId: string | null;
   atomicCrmLeadId: string | null;
+  isGroup?: boolean;
   updatedAt?: DateLike;
 }
 
@@ -452,11 +453,12 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
         email: true,
         company: true,
         atomicCrmContactId: true,
-        atomicCrmLeadId: true
+        atomicCrmLeadId: true,
+        isGroup: true
       }
     });
 
-    if (!contact) {
+    if (!contact || contact.isGroup) {
       throw new CrmServiceError("CRM_CONTACT_NOT_FOUND", "CRM contact not found.");
     }
 

@@ -77,7 +77,7 @@ export const broadcastListsRoutes: FastifyPluginAsync = async (app) => {
     if (!list) return reply.code(404).send({ error: 'Lista não encontrada.' });
     const ids = [...new Set(body.data.contactIds)];
     const [contacts, existing, count] = await Promise.all([
-      app.prisma.contact.findMany({ where: { workspaceId, id: { in: ids } }, select: { id: true } }),
+      app.prisma.contact.findMany({ where: { workspaceId, id: { in: ids }, isGroup: false }, select: { id: true } }),
       app.prisma.broadcastListMember.findMany({ where: { workspaceId, listId: list.id, contactId: { in: ids } }, select: { contactId: true } }),
       app.prisma.broadcastListMember.count({ where: { workspaceId, listId: list.id } })
     ]);

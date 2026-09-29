@@ -155,6 +155,7 @@ export interface CheckWhatsappNumbersAvailabilityResult {
 }
 
 export interface EvolutionClient {
+  getGroupInfo?(input: { instanceName: string; groupJid: string }): Promise<{ subject: string | null }>;
   sendAudio?(input: { instanceName: string; number: string; audio: string }): Promise<SendMediaResult>;
   fetchProfilePicture?(input: { instanceName: string; number: string }): Promise<string | null>;
   fetchMedia?(input: { instanceName: string; id: string }): Promise<string>;
@@ -469,12 +470,13 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     return responseBody;
   }
 
-  async function get(path: string) {
+  async function get(path: string, timeoutMs?: number) {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method: "GET",
       headers: {
         apikey: options.apiKey
-      }
+      },
+      ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {})
     });
     const responseBody = sanitizeResponseBody(await parseResponseBody(response));
 
@@ -578,6 +580,14 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
         providerMessageId: extractProviderMessageId(responseBody),
         raw: responseBody
       };
+    },
+
+    async getGroupInfo(input) {
+      const responseBody = await get(`/group/findGroupInfos/${encodeURIComponent(input.instanceName)}?groupJid=${encodeURIComponent(input.groupJid)}&getParticipants=false`, 5_000);
+      const value = isRecord(responseBody) ? responseBody : {};
+      const subject = [value.subject, value.name, value.groupName, value.title]
+        .find((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0);
+      return { subject: subject?.trim() ?? null };
     },
 
     async sendContact(input) {

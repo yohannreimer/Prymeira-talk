@@ -90,6 +90,7 @@ type ConversationRecord = {
     id?: string;
     name?: string | null;
     phone?: string | null;
+    isGroup?: boolean;
     email?: string | null;
     company?: string | null;
   } | null;
@@ -421,10 +422,12 @@ export function createAgentRuntime(input: {
         return { status: "failed", message: "Conversation or message was not found." };
       }
 
-      if (conversation.aiControlStatus === "human_controlled" || blocksAutonomousAgent(conversation.channel?.encryptedConfig)) {
+      if (conversation.contact?.isGroup || conversation.contact?.phone?.endsWith('@g.us') || conversation.aiControlStatus === "human_controlled" || blocksAutonomousAgent(conversation.channel?.encryptedConfig)) {
         return { status: "skipped", message: conversation.aiControlStatus === "human_controlled"
           ? "Conversation is controlled by a human."
-          : "Channel is configured for private suggestions without autonomous sending." };
+          : conversation.contact?.isGroup || conversation.contact?.phone?.endsWith('@g.us')
+            ? "Autonomous replies are disabled for WhatsApp groups."
+            : "Channel is configured for private suggestions without autonomous sending." };
       }
 
       if (readOnlyNewConversations(activeAgent.behaviorConfig) && !conversation.activeAgentSessionId) {
@@ -594,10 +597,12 @@ export function createAgentRuntime(input: {
         return { status: "failed", runId: run.id, message: "Message does not belong to the conversation." };
       }
 
-      if (conversation.aiControlStatus === "human_controlled" || blocksAutonomousAgent(conversation.channel?.encryptedConfig)) {
+      if (conversation.contact?.isGroup || conversation.contact?.phone?.endsWith('@g.us') || conversation.aiControlStatus === "human_controlled" || blocksAutonomousAgent(conversation.channel?.encryptedConfig)) {
         const errorMessage = conversation.aiControlStatus === "human_controlled"
           ? "Conversation is controlled by a human."
-          : "Channel is configured for private suggestions without autonomous sending.";
+          : conversation.contact?.isGroup || conversation.contact?.phone?.endsWith('@g.us')
+            ? "Autonomous replies are disabled for WhatsApp groups."
+            : "Channel is configured for private suggestions without autonomous sending.";
         const run = await createRun({
           workspaceId: runInput.workspaceId,
           agentId: agent.id,

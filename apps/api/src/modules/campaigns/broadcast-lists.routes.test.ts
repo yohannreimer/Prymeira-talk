@@ -46,7 +46,7 @@ describe('saved broadcast lists', () => {
     try {
       const response = await app.inject({ method: 'POST', url: `/broadcast-lists/${listId}/members`, payload: { contactIds: [contactId] } });
       expect(response.statusCode).toBe(204);
-      expect(prisma.contact.findMany).toHaveBeenCalledWith({ where: { workspaceId: 'workspace-a', id: { in: [contactId] } }, select: { id: true } });
+      expect(prisma.contact.findMany).toHaveBeenCalledWith({ where: { workspaceId: 'workspace-a', id: { in: [contactId] }, isGroup: false }, select: { id: true } });
       expect(prisma.broadcastListMember.createMany).toHaveBeenCalledWith({ data: [{ workspaceId: 'workspace-a', listId, contactId }], skipDuplicates: true });
     } finally { await app.close(); }
   });

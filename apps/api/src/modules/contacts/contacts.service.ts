@@ -41,7 +41,7 @@ export interface PrismaLike {
     count(args: ContactCountArgs): Promise<number>;
     create(args: ContactCreateArgs): Promise<ContactRecord>;
     update(args: ContactUpdateArgs): Promise<ContactRecord>;
-    findUnique(args: ContactFindUniqueArgs): Promise<{ id: string } | null>;
+    findUnique(args: ContactFindUniqueArgs): Promise<{ id: string; isGroup?: boolean } | null>;
     findFirst(args: ContactFindFirstArgs): Promise<ContactRecord | null>;
   };
   channel: {
@@ -93,19 +93,21 @@ export function createContactsService(prisma: PrismaLike) {
     const term = search?.trim();
     return term ? {
       workspaceId,
+      isGroup: false,
       OR: [
         { name: { contains: term, mode: "insensitive" as const } },
         { company: { contains: term, mode: "insensitive" as const } },
         { email: { contains: term, mode: "insensitive" as const } },
         { phone: { contains: term, mode: "insensitive" as const } }
       ]
-    } : { workspaceId };
+    } : { workspaceId, isGroup: false };
   }
 
   async function findContactByPhoneVariant(workspaceId: string, phone: string) {
     return prisma.contact.findFirst({
       where: {
         workspaceId,
+        isGroup: false,
         phone: { in: buildPhoneLookupCandidates(phone) }
       },
       orderBy: { updatedAt: "desc" }
@@ -190,6 +192,8 @@ export function createContactsService(prisma: PrismaLike) {
       email?: string;
       company?: string;
     }): Promise<ContactDto> {
+      const current = await prisma.contact.findUnique({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.contactId } }, select: { id: true, isGroup: true } });
+      if (!current || current.isGroup) throw new Error('CONTACT_NOT_FOUND');
       const contact = await prisma.contact.update({
         where: {
           workspaceId_id: {
@@ -221,7 +225,7 @@ export function createContactsService(prisma: PrismaLike) {
               id: input.contactId
             }
           },
-          select: { id: true }
+          select: { id: true, isGroup: true }
         }),
         prisma.channel.findFirst({
           where: {
@@ -233,7 +237,7 @@ export function createContactsService(prisma: PrismaLike) {
         })
       ]);
 
-      if (!contact) {
+      if (!contact || contact.isGroup) {
         throw new Error("CONTACT_NOT_FOUND");
       }
 

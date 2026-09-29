@@ -291,6 +291,7 @@ model Contact {
   workspaceId        String   @map("workspace_id")
   name               String?
   phone              String
+  isGroup            Boolean  @default(false) @map("is_group")
   email              String?
   company            String?
   avatarUrl          String?  @map("avatar_url")

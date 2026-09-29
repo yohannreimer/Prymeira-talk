@@ -35,7 +35,7 @@ export function createInboxQuickSendService(prisma: PrismaClient, now: () => Dat
 
       const ids = input.recipients.flatMap((recipient) => recipient.contactId ? [recipient.contactId] : []);
       const contacts = ids.length ? await prisma.contact.findMany({ where: {
-        workspaceId: input.workspaceId, id: { in: ids }
+        workspaceId: input.workspaceId, id: { in: ids }, isGroup: false
       }, select: { id: true, name: true, phone: true } }) : [];
       const byId = new Map(contacts.map((contact) => [contact.id, contact]));
       const unique = new Map<string, { contactId: string | null; phone: string; name: string | null }>();

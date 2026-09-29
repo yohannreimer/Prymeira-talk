@@ -687,6 +687,7 @@ describe("campaigns service", () => {
     expect(prisma.contact.findFirst).toHaveBeenCalledWith({
       where: {
         workspaceId: "workspace_a",
+        isGroup: false,
         phone: { in: expect.arrayContaining(["5511999990001"]) }
       },
       orderBy: { updatedAt: "desc" }

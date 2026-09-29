@@ -109,7 +109,7 @@ describe("contacts service", () => {
     await service.listContacts({ workspaceId: "workspace_a" });
 
     expect(prisma.contact.findMany).toHaveBeenCalledWith({
-      where: { workspaceId: "workspace_a" },
+      where: { workspaceId: "workspace_a", isGroup: false },
       orderBy: [{ updatedAt: "desc" }, { name: "asc" }],
       take: 100
     });
@@ -140,6 +140,7 @@ describe("contacts service", () => {
       expect.objectContaining({
         where: {
           workspaceId: "workspace_a",
+          isGroup: false,
           OR: [
             { name: { contains: "ana", mode: "insensitive" } },
             { company: { contains: "ana", mode: "insensitive" } },
@@ -195,6 +196,7 @@ describe("contacts service", () => {
     expect(prisma.contact.findFirst).toHaveBeenCalledWith({
       where: {
         workspaceId: "workspace_a",
+        isGroup: false,
         phone: { in: ["554791396920", "5547991396920"] }
       },
       orderBy: { updatedAt: "desc" }

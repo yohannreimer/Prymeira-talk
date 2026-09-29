@@ -175,6 +175,7 @@ export const conversationSchema = z.object({
   contactId: z.string().min(1),
   contactName: z.string().nullable().optional(),
   contactPhone: z.string().nullable().optional(),
+  isGroup: z.boolean().optional(),
   channelName: z.string().nullable().optional(),
   channelProvider: channelProviderSchema.nullable().optional(),
   customerServiceWindowExpiresAt: z.string().datetime().nullable().optional(),
@@ -349,6 +350,8 @@ export const messageSchema = z.object({
   direction: messageDirectionSchema,
   type: messageTypeSchema,
   body: z.string().nullable(),
+  senderName: z.string().nullable().optional(),
+  senderJid: z.string().nullable().optional(),
   mediaUrl: z.string().url().nullable(),
   contactCards: z.array(z.object({
     fullName: z.string(),
