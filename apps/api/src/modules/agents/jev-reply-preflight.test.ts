@@ -40,6 +40,7 @@ function auditResponse(input: {
   followsPlan: number;
   assertsUnsupportedCommercialFact: number;
   advancesOpenQualification?: number;
+  stalledQuoteNeedsSeller?: number;
 }) {
   return new Response(JSON.stringify({
     model: "jev-1.13.0",
@@ -53,6 +54,10 @@ function auditResponse(input: {
       advancesOpenQualification: {
         type: "noul",
         noul: input.advancesOpenQualification ?? 0
+      },
+      stalledQuoteNeedsSeller: {
+        type: "noul",
+        noul: input.stalledQuoteNeedsSeller ?? 0
       }
     }
   }));
@@ -282,6 +287,33 @@ describe("createJevReplyPreflight", () => {
     })).resolves.toEqual({ outcome: "handoff", reason: "plan_mismatch" });
   });
 
+  it("hands a stalled tube quote to a seller instead of repeating commercial conditions", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
+      disposition: "send",
+      followsPlan: 0.86,
+      assertsUnsupportedCommercialFact: 0.02,
+      advancesOpenQualification: 0.12,
+      stalledQuoteNeedsSeller: 0.96
+    }));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.audit!({
+      currentMessage: { id: "customer-material", body: "Tubo de aço", type: "text" },
+      conversationMessages: [
+        { id: "customer-quote", label: "cliente", body: "Pode cotar tubos redondos 1.1/2 parede 4,5 (1 barra), 2.1/2 parede 6,3 (1 barra) e 6 parede 4,5 (2 barras)?", type: "text", createdAt: null },
+        { id: "agent-minimum", label: "atendente", body: "Tubos sob encomenda. Mínimo de 1.000 kg; não consigo confirmar esse peso pelas barras. Prefere catálogo ou vendedor?", type: "text", createdAt: null },
+        { id: "customer-material", label: "cliente", body: "Tubo de aço", type: "text", createdAt: null }
+      ],
+      selectedKnowledge: [],
+      candidateReply: "Entendi: tubos de aço. São sob encomenda. O mínimo é 1.000 kg. Prazo de 5 a 10 dias e pagamento à vista. Essas condições atendem?",
+      plan: { conversationStage: "qualification", commercialPath: "made_to_order", nextAction: "wait_for_customer" }
+    })).resolves.toEqual({ outcome: "handoff", reason: "stalled_quote" });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body));
+    expect(body.questions.stalledQuoteNeedsSeller.instructions).toContain("medidas e quantidades");
+  });
+
   it("suppresses a social closure before a generative reply is created", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({
@@ -356,7 +388,8 @@ describe("createJevReplyPreflight", () => {
           disposition: choice("handoff"),
           followsPlan: { type: "noul", noul: 0.1 },
           assertsUnsupportedCommercialFact: { type: "noul", noul: 0.98 },
-          advancesOpenQualification: { type: "noul", noul: 0.01 }
+          advancesOpenQualification: { type: "noul", noul: 0.01 },
+          stalledQuoteNeedsSeller: { type: "noul", noul: 0.01 }
         },
         usage: { input_tokens: 120, output_tokens: 6 }
       }))
@@ -387,7 +420,8 @@ describe("createJevReplyPreflight", () => {
           },
           followsPlan: { type: "noul", noul: 0.87 },
           assertsUnsupportedCommercialFact: { type: "noul", noul: 0.09 },
-          advancesOpenQualification: { type: "noul", noul: 0.02 }
+          advancesOpenQualification: { type: "noul", noul: 0.02 },
+          stalledQuoteNeedsSeller: { type: "noul", noul: 0.01 }
         },
         usage: { input_tokens: 120, output_tokens: 6 }
       }))
@@ -413,7 +447,8 @@ describe("createJevReplyPreflight", () => {
           disposition: { type: "choice", choice: "handoff" },
           followsPlan: { type: "noul", noul: 0.91 },
           assertsUnsupportedCommercialFact: { type: "noul", noul: 0.08 },
-          advancesOpenQualification: { type: "noul", noul: 0.02 }
+          advancesOpenQualification: { type: "noul", noul: 0.02 },
+          stalledQuoteNeedsSeller: { type: "noul", noul: 0.01 }
         }
       }))
     );

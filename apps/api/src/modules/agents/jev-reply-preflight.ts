@@ -60,7 +60,7 @@ export type AgentReplyQualityAuditInput = AgentReplyPreflightInput & {
 export type AgentReplyQualityAuditResult =
   | { outcome: "send" }
   | { outcome: "suppress"; reason: "redundant_or_unhelpful" }
-  | { outcome: "handoff"; reason: "commercial_policy_risk" | "plan_mismatch" };
+  | { outcome: "handoff"; reason: "commercial_policy_risk" | "plan_mismatch" | "stalled_quote" };
 
 export type AgentReplyPreflight = {
   evaluate(input: AgentReplyPreflightInput): Promise<AgentReplyPreflightResult>;
@@ -126,7 +126,8 @@ const auditResponseSchema = z.object({
     disposition: choiceAnswerSchema(z.enum(["send", "suppress", "handoff"])),
     followsPlan: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) }),
     assertsUnsupportedCommercialFact: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) }),
-    advancesOpenQualification: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) })
+    advancesOpenQualification: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) }),
+    stalledQuoteNeedsSeller: z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) })
   })
 });
 
@@ -168,14 +169,14 @@ const replyPreflightQuestions = {
   nextAction: {
     type: "choice",
     instructions:
-      "Qual único próximo movimento evita repetir a conversa e respeita o histórico? Se a variante está fora da faixa aprovada ou o cliente pediu material/norma não confirmados, escolha handoff para consulta ao vendedor, mesmo que a resposta ao cliente diga que a consulta será feita; não escolha answer_current_request para encerrar essa pendência. Se há negativa explícita aplicável, escolha answer_current_request para recusa curta, sem handoff apenas para repetir a regra. Não invente fatos comerciais nem reinicie uma negociação humana.",
+      "Qual único próximo movimento evita repetir a conversa e respeita o histórico? Quando o cliente já deu especificações e quantidades para cotação, a IA já explicou o mínimo/limitação e ofereceu catálogo ou vendedor, mas a nova mensagem só esclarece o material sem resolver a viabilidade, escolha handoff: a cotação precisa de avaliação do vendedor, não de outra rodada de condições. Se a variante está fora da faixa aprovada ou o cliente pediu material/norma não confirmados, escolha handoff para consulta ao vendedor, mesmo que a resposta ao cliente diga que a consulta será feita; não escolha answer_current_request para encerrar essa pendência. Se há negativa explícita aplicável, escolha answer_current_request para recusa curta, sem handoff apenas para repetir a regra. Não invente fatos comerciais nem reinicie uma negociação humana.",
     criteria: {
       answer_current_request: "Responder diretamente com informação aprovada, inclusive recusa objetiva de item explicitamente não vendido. Não confirmar fornecimento, disponibilidade ou equivalência de variante sem evidência; uma resposta de que será consultada não substitui handoff quando a variante está fora da faixa aprovada ou a especificação solicitada não foi confirmada.",
       ask_missing_technical: "Pedir somente os dados técnicos realmente ausentes de uma cotação em andamento.",
       offer_catalog_or_seller: "Para novo item sob encomenda, oferecer catálogo aprovado ou vendedor antes de checklist técnico adicional.",
       state_made_to_order_conditions: "Informar condições de encomenda ainda não apresentadas e perguntar se atendem.",
-      handoff: "Encaminhar para humano quando o cliente pedir vendedor ou quando variante fora da faixa ou especificação não confirmada exigir consulta comercial; não para repetir uma negativa aprovada e aplicável ao pedido.",
-      wait_for_customer: "O cliente precisa responder uma pendência já apresentada; não criar nova pergunta.",
+      handoff: "Encaminhar para humano quando o cliente pedir vendedor, quando variante fora da faixa ou especificação não confirmada exigir consulta comercial, ou quando uma cotação com medidas e quantidades já fornecidas não avança após a IA explicar o mesmo bloqueio comercial; não para repetir uma negativa aprovada e aplicável ao pedido.",
+      wait_for_customer: "Ainda não chegou informação nova do cliente e ele precisa responder uma pendência já apresentada. Se a mensagem atual traz informação nova, avalie a próxima ação ou handoff; não use esta opção para justificar uma nova pergunta genérica.",
       followup_checkin: "Retomar brevemente uma avaliação ou decisão pendente do cliente após uma explicação, catálogo solicitado e entregue ou proposta confirmada, sem repetir o conteúdo nem inventar condição comercial.",
       silence: "Não enviar resposta para encerramento social sem pendência."
     }
@@ -185,11 +186,11 @@ const replyPreflightQuestions = {
 const replyQualityAuditQuestions = {
   disposition: {
     type: "choice",
-    instructions: "Decida se a candidateReply deve ser enviada, suprimida ou bloqueada para revisão humana. Atenção: handoff nesta auditoria significa bloquear a candidateReply; é diferente de agentPreflight.nextAction=handoff, que pode exigir enviar ao cliente um aviso seguro de encaminhamento. Avalie `candidateReply` contra `agentPreflight`, `currentMessage`, `conversationMessages`, `agentRules` e conhecimento aprovado. Uma recusa objetiva de item explicitamente classificado como not_sold no plano e sustentado por regra explícita do agente ou conhecimento aprovado segue o plano. Uma mensagem que apenas informa que um vendedor verificará disponibilidade ou especificação segue um plano handoff e não afirma que o item está disponível. Nunca escolha suppress para uma resposta que confirma uma informação nova do cliente e solicita o próximo dado necessário de uma qualificação em aberto.",
+    instructions: "Decida se a candidateReply deve ser enviada, suprimida ou bloqueada para revisão humana. Atenção: handoff nesta auditoria significa bloquear a candidateReply; é diferente de agentPreflight.nextAction=handoff, que pode exigir enviar ao cliente um aviso seguro de encaminhamento. Avalie `candidateReply` contra `agentPreflight`, `currentMessage`, `conversationMessages`, `agentRules` e conhecimento aprovado. Se já há pedido com medidas e quantidades, a IA explicou o bloqueio comercial e a nova resposta volta a repetir condições ou pedir aceite genérico sem tornar a cotação viável, escolha handoff para o vendedor. Uma recusa objetiva de item explicitamente classificado como not_sold no plano e sustentado por regra explícita do agente ou conhecimento aprovado segue o plano. Uma mensagem que apenas informa que um vendedor verificará disponibilidade ou especificação segue um plano handoff e não afirma que o item está disponível. Nunca escolha suppress para uma resposta que confirma uma informação nova do cliente e solicita o próximo dado necessário de uma qualificação em aberto.",
     criteria: {
       send: "A resposta avança a demanda, segue o plano interno e não afirma fato comercial sem regra explícita do agente ou conhecimento aprovado. Inclui uma recusa curta sustentada quando agentPreflight.commercialPath é not_sold. Mesmo com agentPreflight.nextAction=handoff, escolha send para um aviso como 'Vou encaminhar ao vendedor para verificar a disponibilidade e a especificação', desde que não afirme disponibilidade, equivalência ou outra condição não verificada. Exemplo: depois de o atendente perguntar 'Será entrega ou retirada?' e o cliente responder 'Retirada', a resposta 'Certo, retirada em Joinville. Para seguir, informe a empresa e CNPJ ou, se for pessoa física, seu nome.' deve ser send: confirma a informação nova e coleta o próximo dado, sem prometer preço, estoque ou prazo.",
       suppress: "Somente quando candidateReply for uma duplicação real de resposta já enviada, ou uma confirmação social/encerramento sem pergunta, sem novo dado e sem pendência aberta. Não é suppress uma etapa que registra uma decisão do cliente e pede o próximo dado de qualificação.",
-      handoff: "Bloqueie a candidateReply para revisão humana se ela afirma, promete ou decide preço, estoque, prazo, frete, pagamento, especificação ou exceção sem base aprovada, ou conflita com o plano; não escolha handoff apenas porque o texto comunica um encaminhamento ao vendedor para verificar algo ainda não confirmado."
+      handoff: "Bloqueie a candidateReply para revisão humana se ela afirma, promete ou decide preço, estoque, prazo, frete, pagamento, especificação ou exceção sem base aprovada, conflita com o plano, ou prolonga uma cotação travada com condições já explicadas em vez de solicitar avaliação do vendedor; não escolha handoff apenas porque o texto comunica um encaminhamento ao vendedor para verificar algo ainda não confirmado."
     }
   },
   followsPlan: {
@@ -211,6 +212,14 @@ const replyQualityAuditQuestions = {
     criteria: {
       true: "A resposta reconhece dado novo e avança uma pendência aberta com a próxima pergunta ou ação necessária, sem inventar fato comercial.",
       false: "A resposta apenas repete algo já respondido, encerra socialmente, ou não há qualificação/cotação pendente que ela faça avançar."
+    }
+  },
+  stalledQuoteNeedsSeller: {
+    type: "noul",
+    instructions: "O cliente já pediu cotação com medidas e quantidades; a IA já explicou o mínimo ou outra limitação comercial; a mensagem atual não resolve a viabilidade; e candidateReply volta a condições ou pergunta genérica em vez de obter um dado técnico realmente ausente ou encaminhar ao vendedor? Julgue o histórico inteiro. Marque alto somente quando o vendedor precisa avaliar a cotação agora. Não marque alto para primeira explicação, escolha de catálogo, nova pergunta específica do cliente ou próximo dado concreto de qualificação.",
+    criteria: {
+      true: "A conversa comercial está travada e a resposta candidata prolonga o ciclo sem poder avançar a cotação; requer vendedor.",
+      false: "A resposta atende uma pergunta nova, entrega o catálogo solicitado ou coleta um dado concreto necessário que a IA consegue usar."
     }
   }
 } as const;
@@ -316,6 +325,9 @@ export function createJevReplyPreflight(input: JevReplyPreflightOptions): AgentR
       }
       if (answers.followsPlan.noul < 0.2) {
         return { outcome: "handoff", reason: "plan_mismatch" };
+      }
+      if (answers.stalledQuoteNeedsSeller.noul >= 0.8) {
+        return { outcome: "handoff", reason: "stalled_quote" };
       }
       if (answers.advancesOpenQualification.noul >= 0.8) {
         return { outcome: "send" };
