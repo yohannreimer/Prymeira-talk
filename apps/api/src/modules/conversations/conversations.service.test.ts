@@ -15,6 +15,10 @@ import type { PrismaLike } from "./conversations.service.js";
 import { conversationsRoutes, createMessageParamsSchema } from "./conversations.routes.js";
 
 type MockPrisma = {
+  channel: {
+    findFirst: ReturnType<typeof vi.fn>;
+    updateMany: ReturnType<typeof vi.fn>;
+  };
   integrationConfig: {
     findUnique: ReturnType<typeof vi.fn>;
   };
@@ -101,6 +105,10 @@ function createMockPrisma(overrides: {
 } = {}): MockPrisma {
   let result: MockPrisma;
   result = {
+    channel: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 })
+    },
     integrationConfig: {
       findUnique: vi.fn().mockResolvedValue(null)
     },
@@ -2573,10 +2581,76 @@ describe("conversation routes", () => {
       expect(response.statusCode).toBe(502);
       expect(response.json()).toEqual({
         code: "EVOLUTION_SEND_FAILED",
-        error: "Evolution did not accept the outbound message."
+        error: "A Evolution recusou o envio. Tente novamente após conferir a conexão do canal."
       });
       expect(prisma.message.create).not.toHaveBeenCalled();
       expect(publish).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("shows a specific error when Evolution reports a closed WhatsApp connection", async () => {
+    const sendText = vi.fn().mockRejectedValue(new EvolutionClientError(500, {
+      status: 500, response: { message: "Connection Closed" }
+    }));
+    const prisma = createMockPrisma({
+      findUnique: vi.fn<PrismaLike["conversation"]["findUnique"]>().mockResolvedValue({
+        id: "conv_1",
+        workspaceId: "workspace_a",
+        channelId: "channel_1",
+        contactId: "contact_1",
+        channel: { provider: "evolution", providerKey: "talk-workspace_a-abc" },
+        contact: { phone: "5547999990000" }
+      })
+    });
+    prisma.channel.findFirst.mockResolvedValue({
+      id: "channel_1", workspaceId: "workspace_a", provider: "evolution",
+      providerKey: "talk-workspace_a-abc", phoneNumber: null, displayName: "Geral Villefer",
+      status: "failed", createdAt: new Date("2026-09-01T00:00:00.000Z"), updatedAt: new Date("2026-09-29T18:00:00.000Z")
+    });
+    const app = Fastify({ logger: false });
+    const publish = vi.fn();
+    app.decorate("prisma", prisma as never);
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook("preHandler", async (request) => {
+      request.talk = { workspaceId: "workspace_a", role: "agent" };
+    });
+    await app.register(conversationsRoutes, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "secret",
+        publicWebhookUrl: vi.fn(),
+        localWebhookUrl: vi.fn(),
+        client: { createInstance: vi.fn(), connectInstance: vi.fn(), setWebhook: vi.fn(), sendText, sendMedia: vi.fn() }
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/conversations/00000000-0000-4000-8000-000000000001/messages",
+        payload: { body: "Oi" }
+      });
+      expect(response.statusCode).toBe(502);
+      expect(response.json()).toEqual({
+        code: "EVOLUTION_CONNECTION_CLOSED",
+        error: "A conexão do WhatsApp fechou durante o envio. Confira a conversa do destinatário antes de tentar novamente e reconecte o canal em Canais se o problema continuar."
+      });
+      expect(prisma.channel.updateMany).toHaveBeenCalledWith({
+        where: {
+          workspaceId: "workspace_a",
+          provider: "evolution",
+          status: "connected",
+          conversations: { some: { id: "00000000-0000-4000-8000-000000000001" } }
+        },
+        data: { status: "failed" }
+      });
+      expect(publish).toHaveBeenCalledWith({
+        type: "channel.updated", workspaceId: "workspace_a",
+        payload: expect.objectContaining({ id: "channel_1", status: "failed" })
+      });
+      expect(prisma.message.create).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

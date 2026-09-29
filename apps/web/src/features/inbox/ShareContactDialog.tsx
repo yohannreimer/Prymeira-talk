@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ContactRound, Search, Send, X } from 'lucide-react';
 import type { ContactDto, ConversationDto } from '@prymeira-talk/shared';
-import { apiCreateConversationMessage, apiGetContacts, apiGetConversationMessages, apiStartContactConversation } from '../../app/api';
+import { ApiRequestError, apiCreateConversationMessage, apiGetContacts, apiGetConversationMessages, apiStartContactConversation } from '../../app/api';
 import { findOrCreateRecipient, normalizeRecipientPhone } from './send-helpers';
 import { createConversationContextImages } from './conversation-context-image';
 
@@ -79,6 +79,9 @@ export function ShareContactDialog({ source, getToken, onClose, onSent }: {
       }
       onSent(target.name, contextImages.length);
     } catch (sendError) {
+      if (sendError instanceof ApiRequestError && sendError.code === 'EVOLUTION_CONNECTION_CLOSED') {
+        setDeliveryUncertain(true);
+      }
       setError(sendError instanceof Error ? sendError.message : 'Não foi possível enviar o contato.');
     } finally { setBusy(false); }
   }

@@ -6,6 +6,9 @@ import type { ContactDto, ConversationDto } from '@prymeira-talk/shared';
 import { ShareContactDialog } from './ShareContactDialog';
 
 const api = vi.hoisted(() => ({
+  ApiRequestError: class ApiRequestError extends Error {
+    constructor(message: string, public debug?: Record<string, unknown>, public code?: string) { super(message); }
+  },
   apiGetContacts: vi.fn().mockResolvedValue([]),
   apiCreateContact: vi.fn(),
   apiStartContactConversation: vi.fn(),
@@ -70,5 +73,15 @@ describe('ShareContactDialog context forwarding', () => {
     expect(api.apiCreateConversationMessage.mock.calls[2]?.[1]).toEqual(expect.objectContaining({ attachment: image }));
     expect(api.apiGetConversationMessages).toHaveBeenCalledTimes(1);
     expect(onSent).toHaveBeenCalledWith(recipient.phone, 1);
+  });
+
+  it('stops automatic retry when Evolution closes the connection during contact send', async () => {
+    api.apiCreateConversationMessage.mockRejectedValueOnce(new api.ApiRequestError('A conexão do WhatsApp fechou durante o envio.', undefined, 'EVOLUTION_CONNECTION_CLOSED'));
+    await act(async () => root.render(<ShareContactDialog source={source} getToken={async () => 'token'} onClose={() => undefined} onSent={vi.fn()} />));
+    await chooseRecipient();
+    await act(async () => container.querySelector<HTMLButtonElement>('footer .primary-button')!.click());
+    expect(container.textContent).toContain('A conexão do WhatsApp fechou durante o envio.');
+    expect(container.querySelector<HTMLButtonElement>('footer .primary-button')!.disabled).toBe(true);
+    expect(api.apiCreateConversationMessage).toHaveBeenCalledTimes(1);
   });
 });

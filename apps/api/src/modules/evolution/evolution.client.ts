@@ -57,6 +57,8 @@ export interface ConnectInstanceResult {
   raw: unknown;
 }
 
+export type EvolutionConnectionState = "open" | "connecting" | "close";
+
 export interface SetWebhookInput {
   instanceName: string;
   webhookUrl: string;
@@ -169,6 +171,8 @@ export interface EvolutionClient {
   fetchMedia?(input: { instanceName: string; id: string }): Promise<string>;
   createInstance(input: CreateInstanceInput): Promise<CreateInstanceResult>;
   connectInstance(input: ConnectInstanceInput): Promise<ConnectInstanceResult>;
+  logoutInstance?(input: ConnectInstanceInput): Promise<void>;
+  getConnectionState?(input: ConnectInstanceInput): Promise<EvolutionConnectionState | null>;
   setWebhook(input: SetWebhookInput): Promise<SetWebhookResult>;
   sendText(input: SendTextInput): Promise<SendTextResult>;
   sendContact?(input: SendContactInput): Promise<SendTextResult>;
@@ -391,6 +395,11 @@ export function isEvolutionLicenseRequiredError(error: unknown): error is Evolut
   );
 }
 
+export function isEvolutionConnectionClosedError(error: unknown): error is EvolutionClientError {
+  return error instanceof EvolutionClientError &&
+    collectStrings(error.responseBody).some((message) => /\bconnection closed\b/i.test(message));
+}
+
 function webhookPayload(webhookUrl: string, webhookSecret: string) {
   return {
     url: webhookUrl,
@@ -495,6 +504,19 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     return responseBody;
   }
 
+  async function remove(path: string) {
+    const response = await fetchImpl(`${baseUrl}${path}`, {
+      method: "DELETE",
+      headers: { apikey: options.apiKey },
+      signal: AbortSignal.timeout(15_000)
+    });
+    const responseBody = sanitizeResponseBody(await parseResponseBody(response));
+
+    if (!response.ok || (isRecord(responseBody) && responseBody.error === true)) {
+      throw new EvolutionClientError(response.status, responseBody);
+    }
+  }
+
   async function del(path: string, body: unknown) {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method: "DELETE",
@@ -582,6 +604,16 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
         qrCode: extractQrCode(responseBody),
         raw: responseBody
       };
+    },
+
+    async logoutInstance(input) {
+      await remove(`/instance/logout/${encodeURIComponent(input.instanceName)}`);
+    },
+
+    async getConnectionState(input) {
+      const responseBody = await get(`/instance/connectionState/${encodeURIComponent(input.instanceName)}`);
+      const state = getString(getRecord(responseBody, "instance"), "state") ?? getString(responseBody, "state");
+      return state === "open" || state === "connecting" || state === "close" ? state : null;
     },
 
     async setWebhook(input) {

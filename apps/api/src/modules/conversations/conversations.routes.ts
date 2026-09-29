@@ -3,7 +3,8 @@ import { inboxViewSchema } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { createBoardRulesService } from "../boards/board-rules.service.js";
 import type { BoardRulesPrismaLike } from "../boards/board-rules.service.js";
-import { EvolutionClientError } from "../evolution/evolution.client.js";
+import { toChannelDto } from "../channels/channels.service.js";
+import { EvolutionClientError, isEvolutionConnectionClosedError } from "../evolution/evolution.client.js";
 import { AgentMediaError } from "../agents/agent-media-resolver.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { MetaClientError } from "../meta/meta.client.js";
@@ -745,9 +746,50 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     }
 
     if (result instanceof EvolutionClientError) {
+      request.log.error({
+        event: "evolution_outbound_rejected",
+        workspaceId: request.talk.workspaceId,
+        conversationId: params.data.conversationId,
+        messageType: body.data.contactCard ? "contact_card" : body.data.attachment ? "attachment" : "text",
+        providerStatus: result.statusCode,
+        providerResponse: result.responseBody
+      }, "Evolution rejected an outbound message.");
+
+      if (isEvolutionConnectionClosedError(result)) {
+        const degraded = await app.prisma.channel.updateMany({
+          where: {
+            workspaceId: request.talk.workspaceId,
+            provider: "evolution",
+            status: "connected",
+            conversations: { some: { id: params.data.conversationId } }
+          },
+          data: { status: "failed" }
+        }).catch((error: unknown) => {
+          request.log.error({ err: error, conversationId: params.data.conversationId }, "Failed to mark Evolution channel as unhealthy after closed connection.");
+          return { count: 0 };
+        });
+        if (degraded.count > 0) {
+          const channel = await app.prisma.channel.findFirst({
+            where: {
+              workspaceId: request.talk.workspaceId,
+              provider: "evolution",
+              conversations: { some: { id: params.data.conversationId } }
+            }
+          }).catch((error: unknown) => {
+            request.log.error({ err: error, conversationId: params.data.conversationId }, "Failed to load degraded Evolution channel.");
+            return null;
+          });
+          if (channel) app.realtime.publish({ type: "channel.updated", workspaceId: request.talk.workspaceId, payload: toChannelDto(channel) });
+        }
+        return reply.code(502).send({
+          code: "EVOLUTION_CONNECTION_CLOSED",
+          error: "A conexão do WhatsApp fechou durante o envio. Confira a conversa do destinatário antes de tentar novamente e reconecte o canal em Canais se o problema continuar."
+        });
+      }
+
       return reply.code(502).send({
         code: "EVOLUTION_SEND_FAILED",
-        error: "Evolution did not accept the outbound message."
+        error: "A Evolution recusou o envio. Tente novamente após conferir a conexão do canal."
       });
     }
 

@@ -54,7 +54,15 @@ export interface PrismaLike {
     }): Promise<ChannelRecord>;
     update(args: {
       where: { workspaceId_id: { workspaceId: string; id: string } };
-      data: { status: ChannelDto["status"] };
+      data: {
+        status: ChannelDto["status"];
+        historyImportStatus?: string;
+        historyImportNextAt?: Date;
+        historyImportAttempts?: number;
+        historyImportCompletedAt?: null;
+        historyImportLeaseToken?: null;
+        historyImportLeaseUntil?: null;
+      };
     }): Promise<ChannelRecord>;
     delete(args: {
       where: { workspaceId_id: { workspaceId: string; id: string } };
@@ -139,6 +147,8 @@ export class ChannelsServiceError extends Error {
       | "CHANNEL_PROVIDER_KEY_REQUIRED"
       | "CHANNEL_PROVIDER_UNSUPPORTED"
       | "EVOLUTION_LICENSE_REQUIRED"
+      | "EVOLUTION_ALREADY_LINKED"
+      | "EVOLUTION_DISCONNECT_UNAVAILABLE"
       | "EVOLUTION_QR_UNAVAILABLE",
     message: string,
     statusCode = 404
@@ -414,6 +424,18 @@ export function createChannelsService(
         }
 
         if (!instance.qrCode) {
+          const connectionState = client.getConnectionState
+            ? await client.getConnectionState({ instanceName: existingChannel.providerKey }).catch(() => null)
+            : null;
+
+          if (connectionState === "open") {
+            throw new ChannelsServiceError(
+              "EVOLUTION_ALREADY_LINKED",
+              "A Evolution informa que esta sessão já está vinculada e não gerou QR. Se as mensagens não funcionam, clique em Desconectar e depois em Reconectar para vincular o WhatsApp novamente.",
+              409
+            );
+          }
+
           throw new ChannelsServiceError(
             "EVOLUTION_QR_UNAVAILABLE",
             "Evolution did not return a QR code for this channel.",
@@ -421,9 +443,22 @@ export function createChannelsService(
           );
         }
 
-        const channel = await updateChannelStatus({
-          ...input,
-          status: "connecting"
+        const channel = await prisma.channel.update({
+          where: {
+            workspaceId_id: {
+              workspaceId: input.workspaceId,
+              id: input.channelId
+            }
+          },
+          data: {
+            status: "connecting",
+            historyImportStatus: "pending",
+            historyImportNextAt: new Date(Date.now() + 30_000),
+            historyImportAttempts: 0,
+            historyImportCompletedAt: null,
+            historyImportLeaseToken: null,
+            historyImportLeaseUntil: null
+          }
         });
 
         return {
@@ -475,8 +510,18 @@ export function createChannelsService(
       workspaceId: string;
       channelId: string;
     }): Promise<ChannelOperationResultDto> {
-      await getEvolutionChannel(input);
+      const existingChannel = await getEvolutionChannel(input);
       const mode = await resolveMode(input.workspaceId);
+      if (options.evolution?.mode === "real") {
+        if (!options.evolution?.client?.logoutInstance) {
+          throw new ChannelsServiceError(
+            "EVOLUTION_DISCONNECT_UNAVAILABLE",
+            "Não foi possível encerrar a sessão na Evolution no momento.",
+            503
+          );
+        }
+        await options.evolution.client.logoutInstance({ instanceName: existingChannel.providerKey });
+      }
       const channel = await updateChannelStatus({
         ...input,
         status: "disconnected"
