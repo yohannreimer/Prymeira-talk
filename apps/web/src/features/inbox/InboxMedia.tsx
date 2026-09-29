@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, FileText, LoaderCircle, Mic, Pause, Play, RotateCcw, X } from 'lucide-react';
+import { Download, FileText, LoaderCircle, Mic, Pause, Play, RotateCcw, Video, X } from 'lucide-react';
 import type { MessageDto } from '@prymeira-talk/shared';
 import { apiGetAudioTranscription, apiGetInboxMedia, apiGetPdfPreview } from '../../app/api';
 import { mediaDataUrl } from './media-data-url';
 import './inbox-media.css';
 
 type MediaMessage = Pick<MessageDto, 'type' | 'body'> & Partial<Pick<MessageDto, 'mediaUrl' | 'attachment'>>;
-const placeholder = /^(Imagem recebida|Figurinha recebida|Arquivo recebido|Áudio recebido|Áudio enviado|Vídeo recebido)$/i;
+const placeholder = /^(Imagem recebida|Figurinha recebida|Arquivo recebido|Áudio recebido|Áudio enviado|Vídeo recebido|Vídeo enviado)$/i;
 const pendingAudio = /^(Áudio recebido|Áudio enviado|Processando áudio\.\.\.|Não foi possível transcrever este áudio\.)$/i;
 function audioTranscript(body: string | null) {
   const text = body?.trim();
@@ -17,6 +17,7 @@ export function mediaFileName(message: MediaMessage) {
   if (message.attachment?.fileName?.trim()) return message.attachment.fileName;
   const body = message.body?.trim();
   if (body && filename.test(body)) return body;
+  if (message.attachment?.mimeType?.toLowerCase().startsWith('video/')) return 'Vídeo.mp4';
   return /(?:application\/pdf|\.pdf(?:\?|$))/i.test(message.mediaUrl ?? '') ? 'Documento.pdf' : 'Documento';
 }
 export function mediaCaption(message: MediaMessage) {
@@ -73,7 +74,8 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
   const pending = useRef<Promise<{ url: string; blob: Blob }> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
-  const [src, setSrc] = useState<string | null>(() => message.type === 'image' && /^data:image\/(jpeg|png|webp|gif);/i.test(message.mediaUrl ?? '') ? message.mediaUrl : null);
+  const initialMediaSource = () => /^(data:image\/(jpeg|png|webp|gif)|data:video\/(mp4|webm|quicktime));/i.test(message.mediaUrl ?? '') ? message.mediaUrl : null;
+  const [src, setSrc] = useState<string | null>(initialMediaSource);
   const [viewer, setViewer] = useState<'image' | 'pdf' | 'video' | null>(null);
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(message.attachment?.durationSeconds ?? 0);
@@ -86,9 +88,9 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
   const name = mediaFileName(message);
   const isImage = message.type === 'image';
   const isAudio = message.type === 'audio';
-  const isVideo = /^data:video\//i.test(message.mediaUrl ?? '') || /\.(mp4|mov|webm)(\?|$)/i.test(message.mediaUrl ?? '');
+  const isVideo = message.attachment?.mimeType?.toLowerCase().startsWith('video/') || /^data:video\//i.test(message.mediaUrl ?? '') || /\.(mp4|mov|webm)(\?|$)/i.test(message.mediaUrl ?? '');
   useEffect(() => {
-    setSrc(message.type === 'image' && /^data:image\/(jpeg|png|webp|gif);/i.test(message.mediaUrl ?? '') ? message.mediaUrl : null);
+    setSrc(initialMediaSource());
     setError(false); setViewer(null); setPlaying(false); setLoading(false);
     setPosition(0); setDuration(message.attachment?.durationSeconds ?? 0);
     setTranscriptOpen(false); setRequestedTranscript(null); setTranscriptLoading(false); setTranscriptError(false);
@@ -196,7 +198,12 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
       </div>
     </> : isImage ? <button className={`talk-image-preview${message.body === 'Figurinha recebida' ? ' is-sticker' : ''}`} type="button" aria-label="Ampliar imagem" onClick={() => void open()}>
       {src && !error ? <img src={src} alt={mediaCaption(message) || 'Imagem da conversa'} onError={() => setError(true)} /> : <span>{loading ? 'Carregando imagem…' : 'Abrir imagem'}</span>}
-    </button> : <div className="talk-document-card">
+    </button> : isVideo ? <div className="talk-video-preview">
+      {src ? <video src={src} controls playsInline preload="metadata" aria-label="Vídeo da conversa" /> :
+        <button type="button" aria-label="Reproduzir vídeo" disabled={loading} onClick={() => void load().catch(() => {})}>
+          {loading ? <LoaderCircle className="talk-media-loading" size={28} /> : <><Video size={28} /><span>Reproduzir vídeo</span></>}
+        </button>}
+    </div> : <div className="talk-document-card">
       <button type="button" className="talk-document-open" aria-label="Abrir documento" onClick={() => void open()} disabled={loading}>
         <span className="talk-document-icon"><FileText size={27} /><small>{isVideo ? 'VÍDEO' : /pdf/i.test(name + message.mediaUrl?.slice(0, 40)) ? 'PDF' : 'ARQ'}</small></span>
         <span className="talk-document-title"><strong>{name}</strong><small>{loading ? 'Carregando…' : isVideo ? 'Abrir vídeo' : 'Abrir documento'}</small></span>

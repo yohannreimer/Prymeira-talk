@@ -79,6 +79,14 @@ describe('WhatsApp contact cards', () => {
   });
 });
 
+describe('WhatsApp videos', () => {
+  it('classifies a video message as an attachment with a video preview', () => {
+    expect(extractMessageContent({ videoMessage: {
+      mimetype: 'video/mp4', url: 'https://example.test/media/encrypted'
+    } })).toMatchObject({ type: 'file', body: 'Vídeo recebido', preview: 'Vídeo recebido' });
+  });
+});
+
 function createMockPrisma(overrides: {
   $transaction?: ReturnType<typeof vi.fn>;
   channel?: { findUnique?: ReturnType<typeof vi.fn>; update?: ReturnType<typeof vi.fn> };
@@ -86,6 +94,7 @@ function createMockPrisma(overrides: {
     findFirst?: ReturnType<typeof vi.fn>;
     create?: ReturnType<typeof vi.fn>;
     upsert?: ReturnType<typeof vi.fn>;
+    update?: ReturnType<typeof vi.fn>;
     updateMany?: ReturnType<typeof vi.fn>;
   };
   conversation?: {
@@ -175,6 +184,7 @@ function createMockPrisma(overrides: {
           phone: "551199999999"
         }),
       upsert: overrides.contact?.upsert ?? vi.fn().mockResolvedValue({ id: "contact_1", phone: "551199999999" }),
+      update: overrides.contact?.update ?? vi.fn().mockResolvedValue({ id: "contact_1", phone: "551199999999" }),
       updateMany: overrides.contact?.updateMany ?? vi.fn().mockResolvedValue({ count: 1 })
     },
     conversation: {
@@ -435,6 +445,38 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it('upgrades an LID-only contact when Evolution supplies its phone alternate', async () => {
+    const lid = { id: 'contact_lid', workspaceId: 'workspace_a', phone: '123456789012345@lid' };
+    const findFirst = vi.fn().mockResolvedValueOnce(lid).mockResolvedValueOnce(null);
+    const update = vi.fn().mockResolvedValue({ ...lid, phone: '551199999999' });
+    const prisma = createMockPrisma({ contact: { findFirst, update } });
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, remoteJid: lid.phone, remoteJidAlt: '5511999999999@s.whatsapp.net' } } } });
+      expect(response.statusCode).toBe(200);
+      expect(update).toHaveBeenCalledWith({ where: { workspaceId_id: { workspaceId: 'workspace_a', id: lid.id } }, data: { phone: '551199999999', customFields: { evolutionLid: lid.phone } } });
+      expect(prisma.conversation.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        where: { workspaceId_channelId_contactId: { workspaceId: 'workspace_a', channelId: 'channel_1', contactId: lid.id } }
+      }));
+    } finally { await app.close(); }
+  });
+
+  it('keeps the video MIME type when storing an inbound message', async () => {
+    const prisma = createMockPrisma();
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          message: { videoMessage: { mimetype: 'video/mp4', url: 'https://example.test/video.enc' } } } } });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+        type: 'file', body: 'Vídeo recebido', metadata: expect.objectContaining({ attachment: expect.objectContaining({ mimeType: 'video/mp4' }) })
+      }) }));
+    } finally { await app.close(); }
+  });
+
   it('asks for older context when a new inbound Evolution message arrives', async () => {
     const historyBackfill = vi.fn().mockResolvedValue(undefined);
     const { app } = await buildEvolutionApp(createMockPrisma(), undefined, { historyBackfill });
@@ -449,6 +491,21 @@ describe("Evolution webhook routes", () => {
     } finally {
       await app.close();
     }
+  });
+
+  it('publishes a new message without waiting for historical backfill', async () => {
+    let release!: () => void;
+    const historyBackfill = vi.fn().mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+    const { app, publish } = await buildEvolutionApp(createMockPrisma(), undefined, { historyBackfill });
+    try {
+      const response = await Promise.race([
+        app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+          headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: validWebhookBody }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Webhook waited for history')), 500))
+      ]);
+      expect(response.statusCode).toBe(200);
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.created' }));
+    } finally { release?.(); await app.close(); }
   });
 
   it("returns 401 for invalid secrets without touching Prisma", async () => {

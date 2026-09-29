@@ -224,14 +224,15 @@ function unwrapMessage(message: unknown) {
   return current;
 }
 
-function attachmentPresentation(message: unknown) {
+export function attachmentPresentation(message: unknown) {
   message = unwrapMessage(message);
   const fileName = readStringPath(message, ['documentMessage', 'fileName']);
   const caption = readFirstStringPath(message, [['documentMessage', 'caption'], ['imageMessage', 'caption'], ['videoMessage', 'caption']]);
+  const mimeType = readFirstStringPath(message, [['videoMessage', 'mimetype'], ['documentMessage', 'mimetype'], ['imageMessage', 'mimetype'], ['audioMessage', 'mimetype']]);
   const raw = message && typeof message === 'object' ? (message as Record<string, unknown>).audioMessage : null;
   const seconds = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).seconds : null;
   return {
-    ...(fileName ? { fileName } : {}), ...(caption ? { caption } : {}),
+    ...(fileName ? { fileName } : {}), ...(caption ? { caption } : {}), ...(mimeType ? { mimeType } : {}),
     ...(typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0 ? { durationSeconds: seconds } : {})
   };
 }
@@ -376,7 +377,7 @@ export function extractMessageContent(message: unknown, messageType?: unknown): 
       readStringPath(message, ["documentMessage", "fileName"]) ??
       readStringPath(message, ["documentMessage", "caption"]) ??
       readStringPath(message, ["videoMessage", "caption"]) ??
-      "Arquivo recebido";
+      (hasRecordPath(message, ["videoMessage"]) || documentMimetype?.toLowerCase().startsWith('video/') ? "Vídeo recebido" : "Arquivo recebido");
 
     return {
       type: "file",
@@ -799,11 +800,34 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           },
           orderBy: { updatedAt: "desc" }
         });
+        const lid = !isGroup && /^\d+@lid$/.test(payload.data.key.remoteJid) ? payload.data.key.remoteJid : null;
+        const linkedContact = lid && !existingLidContact && !contact ? await tx.contact.findFirst({
+          where: { workspaceId, customFields: { path: ['evolutionLid'], equals: lid } }
+        }) : null;
+        const phoneContact = contact && !contact.phone.endsWith('@lid') ? contact : null;
+        const lidContact = existingLidContact ?? linkedContact;
+        const mappedContact = lid && !phone.endsWith('@lid') && lidContact && !phoneContact
+          ? await tx.contact.update({
+              where: { workspaceId_id: { workspaceId, id: lidContact.id } },
+              data: { phone, customFields: {
+                ...(lidContact.customFields && typeof lidContact.customFields === 'object' && !Array.isArray(lidContact.customFields)
+                  ? lidContact.customFields as Record<string, unknown> : {}), evolutionLid: lid
+              } }
+            })
+          : null;
+        if (lid && phoneContact) {
+          const fields = phoneContact.customFields && typeof phoneContact.customFields === 'object' && !Array.isArray(phoneContact.customFields)
+            ? phoneContact.customFields as Record<string, unknown> : {};
+          if (fields.evolutionLid !== lid) await tx.contact.update({
+            where: { workspaceId_id: { workspaceId, id: phoneContact.id } },
+            data: { customFields: { ...fields, evolutionLid: lid } }
+          });
+        }
         const selectedContact = isGroup ? await tx.contact.upsert({
           where: { workspaceId_phone: { workspaceId, phone } },
           create: { workspaceId, phone, isGroup: true, name: groupName },
           update: { name: groupName }
-        }) : existingLidContact ?? contact ?? await tx.contact.create({
+        }) : phoneContact ?? mappedContact ?? lidContact ?? contact ?? await tx.contact.create({
           data: {
             workspaceId,
             phone,
@@ -983,13 +1007,6 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
       }
 
       const { message, conversation, humanTookControl } = transactionResult;
-      if (!isGroup && message.direction === 'inbound' && messageContent.type !== 'system') {
-        await options.historyBackfill?.({ workspaceId, channelId: conversation.channelId,
-          conversationId: conversation.id, providerKey: payload.instance,
-          remoteJid: payload.data.key.remoteJid, identity: phone, pushName }).catch((error: unknown) => {
-          request.log.error({ err: error, conversationId: conversation.id }, 'Recent Evolution context backfill failed.');
-        });
-      }
       if (!isGroup && humanTookControl) {
         request.log.info({ event: "human_outbound_paused_agent", workspaceId, conversationId: message.conversationId, messageId: message.id }, "Human outbound message paused the agent.");
         await options.assistantScheduler?.control(workspaceId, message.conversationId, true).catch((error: unknown) => {
@@ -1010,6 +1027,16 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         workspaceId,
         payload: toConversationDto(conversation)
       });
+
+      // Historical sync may need several provider requests. Never hold the live
+      // webhook or the realtime notification while those older messages load.
+      if (!isGroup && message.direction === 'inbound' && messageContent.type !== 'system') {
+        void options.historyBackfill?.({ workspaceId, channelId: conversation.channelId,
+          conversationId: conversation.id, providerKey: payload.instance,
+          remoteJid: payload.data.key.remoteJid, identity: phone, pushName }).catch((error: unknown) => {
+          request.log.error({ err: error, conversationId: conversation.id }, 'Recent Evolution context backfill failed.');
+        });
+      }
 
       if (!isGroup && messageContent.type !== "system") {
         await options.inboxTriage?.observeMessage({

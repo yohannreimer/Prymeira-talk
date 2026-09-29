@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import type { EvolutionHistorySource, HistoryRecord, RecentEvolutionChat } from '../evolution/evolution-history.js';
-import { extractMessageContent } from '../evolution/evolution.routes.js';
+import { attachmentPresentation, extractMessageContent } from '../evolution/evolution.routes.js';
 import { buildPhoneLookupCandidates, normalizePhoneForStorage } from '../contacts/phone-normalization.js';
 
 type ImportChannel = { id: string; workspaceId: string; providerKey: string; historyImportAttempts: number };
@@ -26,8 +26,12 @@ export function createChannelHistoryImporter(input: {
     if (since && records.at(-1)!.messageTimestamp * 1000 < since.getTime()) return 0;
     const name = chat.pushName ?? [...records].reverse().find((record) => !record.key.fromMe && record.pushName)?.pushName ?? null;
     const result = await input.prisma.$transaction(async (tx) => {
-      const candidates = lid(phone) ? [phone] : [...new Set([chat.remoteJid.endsWith('@lid') ? chat.remoteJid : '', ...buildPhoneLookupCandidates(phone)].filter(Boolean))];
+      const candidates = lid(phone) ? [phone] : buildPhoneLookupCandidates(phone);
       const contact = await tx.contact.findFirst({ where: { workspaceId: channel.workspaceId, phone: { in: candidates } }, orderBy: { updatedAt: 'desc' } })
+        ?? (chat.remoteJid.endsWith('@lid') && !lid(phone)
+          ? await tx.contact.findFirst({ where: { workspaceId: channel.workspaceId, OR: [
+              { phone: chat.remoteJid }, { customFields: { path: ['evolutionLid'], equals: chat.remoteJid } }
+            ] } }) : null)
         ?? await tx.contact.upsert({ where: { workspaceId_phone: { workspaceId: channel.workspaceId, phone } },
           create: { workspaceId: channel.workspaceId, phone, name, avatarUrl: chat.profilePicUrl }, update: {} });
       const contactPatch = {
@@ -59,6 +63,7 @@ export function createChannelHistoryImporter(input: {
           body: content.body, mediaUrl: content.mediaUrl,
           status: record.key.fromMe ? 'sent' : 'delivered',
           metadata: { historyImport: { source: 'evolution', channelId: channel.id, originalType: record.messageType ?? null },
+            ...(['audio', 'image', 'file'].includes(content.type) ? { attachment: attachmentPresentation(record.message) } : {}),
             ...(content.contactCards?.length ? { contactCards: content.contactCards } : {}) },
           createdAt: date, ingestedAt: date });
       }

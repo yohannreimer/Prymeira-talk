@@ -26,6 +26,14 @@ describe('WhatsApp-style attachments', () => {
     expect(html).toContain('Abrir documento'); expect(html).toContain('Baixar documento');
     expect(mediaCaption(message)).toBeNull();
   });
+  it('recognizes a video from the attachment MIME type without relying on its URL', () => {
+    const message: MessageDto = { ...base, type: 'file', body: 'Vídeo recebido',
+      mediaUrl: 'https://example.test/media/encrypted', attachment: { mimeType: 'video/mp4' } };
+    const html = renderToStaticMarkup(<InboxMedia message={message} getToken={async () => null} />);
+    expect(html).toContain('Reproduzir vídeo');
+    expect(html).not.toContain('Abrir documento');
+    expect(mediaCaption(message)).toBeNull();
+  });
   it('hides image placeholders but preserves a real caption and never invents a filename from prose', () => {
     expect(mediaCaption({ type: 'image', body: 'Imagem recebida' })).toBeNull();
     expect(mediaCaption({ type: 'image', body: 'Favor cotar estas medidas' })).toBe('Favor cotar estas medidas');

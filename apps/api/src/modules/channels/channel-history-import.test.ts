@@ -11,6 +11,23 @@ const records = [
 ];
 
 describe('new channel history import', () => {
+  it('uses the phone conversation when a chat has both phone and LID identities', async () => {
+    const lidJid = '123456789012345@lid';
+    const phoneContact = { id: 'phone-contact', phone: '551199998888', name: null, avatarUrl: null };
+    const findFirst = vi.fn().mockImplementation(async ({ where }: { where: { phone?: { in?: string[] } } }) =>
+      where.phone?.in?.includes(phoneContact.phone) ? phoneContact : null);
+    const upsert = vi.fn();
+    const tx = { contact: { findFirst, upsert, updateMany: vi.fn().mockResolvedValue({ count: 1 }) }, conversation: {
+      upsert: vi.fn().mockResolvedValue({ id: 'phone-conversation' }), updateMany: vi.fn().mockResolvedValue({ count: 1 })
+    }, message: { findMany: vi.fn().mockResolvedValue([]), createMany: vi.fn().mockResolvedValue({ count: 1 }) } };
+    const prisma = { $transaction: vi.fn().mockImplementation(async (fn: (client: unknown) => Promise<unknown>) => fn(tx)) } as unknown as PrismaClient;
+    const source = { recentMessages: vi.fn().mockResolvedValue([{ ...records[0], key: { ...records[0]!.key, remoteJid: lidJid } }]) } as unknown as EvolutionHistorySource;
+    await createChannelHistoryImporter({ prisma, source }).importChat(channel,
+      { remoteJid: lidJid, phoneJid: remoteJid, pushName: null, profilePicUrl: null }, 30);
+    expect(findFirst.mock.calls[0]?.[0].where.phone.in).not.toContain(lidJid);
+    expect(tx.conversation.upsert.mock.calls[0]?.[0].where.workspaceId_channelId_contactId.contactId).toBe(phoneContact.id);
+    expect(upsert).not.toHaveBeenCalled();
+  });
   it('imports history idempotently without unread messages or AI control', async () => {
     const rows: Array<Record<string, unknown>> = [];
     const tx = {

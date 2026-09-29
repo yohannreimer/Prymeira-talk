@@ -870,9 +870,10 @@ export function createConversationsService(
       const isAudio = input.attachment?.mimetype.toLowerCase().startsWith('audio/') ?? false;
       if (isAudio && conversation.channel?.provider !== 'evolution') throw new OutboundMessageValidationError('AUDIO_CHANNEL_NOT_SUPPORTED', 'A gravação de voz está disponível em canais Evolution.');
       let audio: Awaited<ReturnType<typeof prepareVoiceRecording>> | null = null;
+      const isVideo = input.attachment?.mimetype.toLowerCase().startsWith('video/') ?? false;
       const messageBody = isAudio ? 'Áudio enviado' : input.contactCard
         ? `Contato compartilhado: ${input.contactCard.fullName} (${input.contactCard.phoneNumber})`
-        : input.body?.trim() || input.attachment?.fileName || "";
+        : input.body?.trim() || (isVideo ? 'Vídeo enviado' : input.attachment?.fileName) || "";
       const messageType: MessageDto["type"] = input.attachment
         ? isAudio ? 'audio' : input.attachment.mimetype.toLowerCase().startsWith("image/")
           ? "image"
@@ -937,7 +938,7 @@ export function createConversationsService(
           ? await callProvider(() => options.evolution!.client!.sendMedia({
               instanceName: providerKey,
               number: contactPhone,
-              mediatype: messageType === "image" ? "image" : "document",
+              mediatype: messageType === "image" ? "image" : isVideo ? "video" : "document",
               mimetype: attachment.mimetype,
               media: attachment.mediaUrl,
               fileName: attachment.fileName,
@@ -1013,12 +1014,13 @@ export function createConversationsService(
           type: messageType,
           body: messageBody,
           mediaUrl: audio?.mediaUrl ?? input.attachment?.mediaUrl,
-          ...(audio || input.metadata || input.contactCard
+          ...(audio || input.attachment || input.metadata || input.contactCard
             ? {
                 metadata: {
                   ...(audio
-                    ? { attachment: { fileName: "audio.ogg", durationSeconds: audio.durationSeconds } }
-                    : {}),
+                    ? { attachment: { fileName: "audio.ogg", mimeType: 'audio/ogg', durationSeconds: audio.durationSeconds } }
+                    : input.attachment ? { attachment: { fileName: input.attachment.fileName, mimeType: input.attachment.mimetype,
+                      ...(input.body?.trim() ? { caption: input.body.trim() } : {}) } } : {}),
                   ...(input.metadata ?? {}),
                   ...(input.contactCard ? { contactCard: input.contactCard } : {})
                 } as Prisma.InputJsonValue
