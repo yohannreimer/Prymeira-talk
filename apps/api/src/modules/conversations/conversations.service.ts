@@ -570,6 +570,7 @@ export function toMessageDto(record: MessageRecord): MessageDto {
     status: record.status,
     sentByUserId: record.sentByUserId ?? null,
     ...(typeof metadata.editedAt === 'string' ? { editedAt: metadata.editedAt } : {}),
+    ...(typeof metadata.deletedAt === 'string' ? { deletedAt: metadata.deletedAt } : {}),
     createdAt: toIsoString(record.createdAt)
   };
 }

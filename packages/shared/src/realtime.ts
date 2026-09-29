@@ -23,6 +23,12 @@ const messageUpdatedEventSchema = z.object({
   payload: messageSchema
 });
 
+const messageDeletedEventSchema = z.object({
+  type: z.literal('message.deleted'),
+  workspaceId: z.string().min(1),
+  payload: z.object({ messageId: z.string().min(1), conversationId: z.string().min(1) })
+});
+
 const messageStatusChangedEventSchema = z.object({
   type: z.literal("message.status_changed"),
   workspaceId: z.string().min(1),
@@ -146,6 +152,7 @@ export const realtimeEventSchema = z
   .discriminatedUnion("type", [
     messageCreatedEventSchema,
     messageUpdatedEventSchema,
+    messageDeletedEventSchema,
     messageStatusChangedEventSchema,
     conversationUpdatedEventSchema,
     contactUpdatedEventSchema,

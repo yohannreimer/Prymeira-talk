@@ -2308,9 +2308,21 @@ export async function apiRecognizeContactMessage(
   conversationId: string,
   messageId: string,
   getToken: () => Promise<string | null>
-): Promise<MessageDto> {
+): Promise<MessageDto | { removedMessageId: string }> {
   return fetchJson(getToken, `/conversations/${conversationId}/messages/${messageId}/recognize-contact`,
-    { method: 'POST' }, (data) => messageSchema.parse(data), 'Não foi possível recuperar o contato.');
+    { method: 'POST' }, (data) => data && typeof data === 'object' &&
+      'removedMessageId' in data && typeof data.removedMessageId === 'string'
+      ? { removedMessageId: data.removedMessageId } : messageSchema.parse(data),
+    'Não foi possível recuperar a mensagem.');
+}
+
+export async function apiDeleteMessageForEveryone(
+  conversationId: string,
+  messageId: string,
+  getToken: () => Promise<string | null>
+): Promise<MessageDto> {
+  return fetchJson(getToken, `/conversations/${conversationId}/messages/${messageId}/delete-for-everyone`,
+    { method: 'POST' }, (data) => messageSchema.parse(data), 'Não foi possível apagar a mensagem para todos.');
 }
 
 export async function apiGetCurrentTalkUser(

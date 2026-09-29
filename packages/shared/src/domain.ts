@@ -367,6 +367,7 @@ export const messageSchema = z.object({
   status: messageStatusSchema,
   sentByUserId: z.string().nullable(),
   editedAt: z.string().datetime().optional(),
+  deletedAt: z.string().datetime().optional(),
   createdAt: z.string().datetime()
 });
 export type MessageDto = z.infer<typeof messageSchema>;

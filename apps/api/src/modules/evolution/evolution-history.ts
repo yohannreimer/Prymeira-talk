@@ -12,6 +12,7 @@ export type RecentEvolutionChats = { chats: RecentEvolutionChat[]; unresolvedLid
 export type RecentEvolutionContact = { phoneJid: string; name: string | null; profilePicUrl: string | null };
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const direct = (s: unknown): s is string => typeof s === 'string' && /^\d+@(s\.whatsapp\.net|lid)$/.test(s);
+const historyAddress = (s: unknown): s is string => direct(s) || (typeof s === 'string' && /^\d+(?:-\d+)?@g\.us$/.test(s));
 const phoneJid = (s: unknown): s is string => typeof s === 'string' && /^\d+@s\.whatsapp\.net$/.test(s);
 const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 function activityTime(value: unknown): number | null {
@@ -45,7 +46,7 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
     return { pages, records: data.messages.records };
   }
   function parse(value: unknown): HistoryRecord {
-    if (!record(value) || !record(value.key) || typeof value.key.id !== 'string' || !value.key.id || !direct(value.key.remoteJid) || typeof value.key.fromMe !== 'boolean' || !record(value.message)) throw new Error('HISTORY_RECORD');
+    if (!record(value) || !record(value.key) || typeof value.key.id !== 'string' || !value.key.id || !historyAddress(value.key.remoteJid) || typeof value.key.fromMe !== 'boolean' || !record(value.message)) throw new Error('HISTORY_RECORD');
     const timestamp = Number(value.messageTimestamp);
     if (value.messageTimestamp === null || !Number.isFinite(timestamp) || timestamp <= 0 || timestamp > 1e11) throw new Error('HISTORY_RECORD');
     return { key: { id: value.key.id, remoteJid: value.key.remoteJid, fromMe: value.key.fromMe,

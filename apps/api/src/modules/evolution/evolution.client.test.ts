@@ -78,6 +78,15 @@ function createJsonResponse(body: unknown, status = 200) {
 }
 
 describe("Evolution client", () => {
+  it("sends the provider key to delete a message for everyone", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse({ key: { id: 'revoke-1' } }, 201));
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key', fetch: fetchMock });
+    await client.deleteMessageForEveryone?.({ instanceName: 'vendas-5', id: 'message-1',
+      remoteJid: '12345@g.us', fromMe: true });
+    expect(fetchMock).toHaveBeenCalledWith('https://evolution.invalid/chat/deleteMessageForEveryone/vendas-5',
+      expect.objectContaining({ method: 'DELETE', body: JSON.stringify({ id: 'message-1',
+        remoteJid: '12345@g.us', fromMe: true }) }));
+  });
   it("uses only a matching cached contact photo when the live lookup has no photo", async () => {
     const fetchMock = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(createJsonResponse({ profilePictureUrl: null }))

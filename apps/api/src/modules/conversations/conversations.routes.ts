@@ -13,6 +13,7 @@ import {
   ConversationNotFoundError,
   OutboundMessageValidationError,
   createConversationsService,
+  toConversationDto,
   toMessageDto
 } from "./conversations.service.js";
 import { inboxHandoffWhere } from "./conversations.service.js";
@@ -28,6 +29,7 @@ import { pauseAgentOnHumanOutbound } from "./pause-agent-on-human-outbound.js";
 import { extractMessageContent, resolveWebhookPhone } from '../evolution/evolution.routes.js';
 import { buildPhoneLookupCandidates } from '../contacts/phone-normalization.js';
 import type { EvolutionHistorySource } from '../evolution/evolution-history.js';
+import { isEncryptedControlEnvelope } from '../evolution/evolution-message-edit.js';
 
 interface ConversationsRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
@@ -138,6 +140,60 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
   options
 ) => {
   const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client });
+  app.post('/conversations/:conversationId/messages/:messageId/delete-for-everyone', async (request, reply) => {
+    const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Mensagem inválida.' });
+    const workspaceId = request.talk.workspaceId;
+    const record = await app.prisma.message.findFirst({
+      where: { id: params.data.messageId, conversationId: params.data.conversationId, workspaceId },
+      include: { conversation: { include: { channel: true, contact: true } } }
+    });
+    if (!record) return reply.code(404).send({ error: 'Mensagem não encontrada.' });
+    const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
+      ? record.metadata as Record<string, unknown> : {};
+    if (typeof metadata.deletedAt === 'string') return toMessageDto(record);
+    const client = options.evolution?.client;
+    if (options.evolution?.mode !== 'real' || !client?.deleteMessageForEveryone ||
+      record.conversation.channel.provider !== 'evolution' || record.conversation.contact.isGroup ||
+      record.direction !== 'outbound' ||
+      !record.providerMessageId || record.status === 'pending' || record.status === 'failed') {
+      return reply.code(409).send({ error: 'Esta mensagem não pode ser apagada para todos.' });
+    }
+    const phone = record.conversation.contact.phone;
+    const remoteJid = /^\d+@lid$/.test(phone) ? phone
+      : /^\d{8,15}$/.test(phone) ? `${phone}@s.whatsapp.net` : null;
+    if (!remoteJid) return reply.code(409).send({ error: 'Destino do WhatsApp inválido.' });
+    try {
+      await client.deleteMessageForEveryone({
+        instanceName: record.conversation.channel.providerKey,
+        id: record.providerMessageId, remoteJid, fromMe: true
+      });
+    } catch (error) {
+      request.log.warn({ err: error, messageId: record.id }, 'Evolution failed to revoke message.');
+      return reply.code(502).send({ error: 'O WhatsApp não confirmou a exclusão. A mensagem continua visível no Talk.' });
+    }
+    const updated = await app.prisma.message.update({
+      where: { id: record.id }, data: {
+        type: 'system', body: 'Você apagou esta mensagem', mediaUrl: null,
+        metadata: { deletedAt: new Date().toISOString() }
+      }
+    });
+    await app.prisma.conversation.updateMany({
+      where: { id: record.conversationId, workspaceId, lastMessageAt: record.createdAt },
+      data: { lastMessagePreview: 'Você apagou esta mensagem' }
+    });
+    const conversation = await app.prisma.conversation.findUnique({
+      where: { workspaceId_id: { workspaceId, id: record.conversationId } },
+      include: { assignedUser: { select: { displayName: true } },
+        channel: { select: { displayName: true, phoneNumber: true, provider: true } },
+        contact: { select: { name: true, phone: true, isGroup: true } },
+        department: { select: { name: true } } }
+    });
+    const dto = toMessageDto(updated);
+    app.realtime.publish({ type: 'message.updated', workspaceId, payload: dto });
+    if (conversation) app.realtime.publish({ type: 'conversation.updated', workspaceId, payload: toConversationDto(conversation) });
+    return dto;
+  });
   app.post('/conversations/:conversationId/messages/:messageId/recognize-contact', async (request, reply) => {
     const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
     if (!params.success) return reply.code(400).send({ error: 'Mensagem inválida.' });
@@ -155,11 +211,30 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     try {
       const original = await options.messageHistory.findMessage({ instanceName: conversation.channel.providerKey, id: message.providerMessageId });
       const phone = original && resolveWebhookPhone(original.key.remoteJid, original.key.remoteJidAlt);
-      const matchesContact = phone && (phone === conversation.contact.phone ||
-        (!phone.endsWith('@lid') && buildPhoneLookupCandidates(phone).includes(conversation.contact.phone)));
+      const matchesContact = conversation.contact.isGroup
+        ? original?.key.remoteJid === conversation.contact.phone
+        : phone && (phone === conversation.contact.phone ||
+          (!phone.endsWith('@lid') && buildPhoneLookupCandidates(phone).includes(conversation.contact.phone)));
       if (!original || original.key.id !== message.providerMessageId || !matchesContact ||
         original.key.fromMe !== (message.direction === 'outbound')) {
         return reply.code(404).send({ error: 'Contato não encontrado no histórico.' });
+      }
+      if (isEncryptedControlEnvelope({ message: original.message })) {
+        await app.prisma.message.delete({ where: { id: message.id } });
+        const previous = await app.prisma.message.findFirst({
+          where: { workspaceId, conversationId: conversation.id },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }]
+        });
+        await app.prisma.conversation.updateMany({
+          where: { id: conversation.id, workspaceId, lastMessagePreview: 'Mensagem não reconhecida',
+            lastMessageAt: message.createdAt },
+          data: { lastMessagePreview: previous?.body ?? null,
+            lastMessageAt: previous?.createdAt ?? null,
+            lastMessagePreviewAt: previous?.createdAt ?? null }
+        });
+        app.realtime.publish({ type: 'message.deleted', workspaceId,
+          payload: { messageId: message.id, conversationId: conversation.id } });
+        return { removedMessageId: message.id };
       }
       const content = extractMessageContent(original.message, original.messageType);
       if (!content.contactCards?.length) return reply.code(422).send({ error: 'Esta mensagem não é um contato.' });
@@ -174,8 +249,8 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       app.realtime.publish({ type: 'message.updated', workspaceId, payload: dto });
       return dto;
     } catch (error) {
-      request.log.warn({ err: error, messageId: message.id }, 'Contact card recovery failed.');
-      return reply.code(503).send({ error: 'Não foi possível recuperar o contato agora.' });
+      request.log.warn({ err: error, messageId: message.id }, 'Unknown message recovery failed.');
+      return reply.code(503).send({ error: 'Não foi possível recuperar a mensagem agora.' });
     }
   });
   app.get('/conversations/:conversationId/messages/:messageId/preview', async (request, reply) => {

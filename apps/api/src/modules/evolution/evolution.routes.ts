@@ -28,7 +28,7 @@ import type { ConversationFollowupsObserver } from "../followups/conversation-fo
 import type { AgentImprovementObserver } from "../agents/agent-improvements.service.js";
 import type { InboxTriageObserver } from "../conversations/inbox-triage.service.js";
 import type { EvolutionHistorySource } from "./evolution-history.js";
-import { decryptEncryptedMessageEdit, extractEncryptedMessageEdit } from "./evolution-message-edit.js";
+import { decryptEncryptedMessageEdit, extractEncryptedMessageEdit, isEncryptedControlEnvelope } from "./evolution-message-edit.js";
 
 export interface EvolutionRoutesOptions {
   messageHistory?: Pick<EvolutionHistorySource, "findMessage">;
@@ -507,6 +507,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
 
     const editData = envelope.data.data;
     const encryptedEdit = extractEncryptedMessageEdit(editData);
+    if (!encryptedEdit && isEncryptedControlEnvelope(editData)) return { ok: true, ignored: true };
     const editEnvelope = normalizedEvent === "messages.edited" ||
       encryptedEdit !== null ||
       (normalizedEvent === "messages.upsert" &&

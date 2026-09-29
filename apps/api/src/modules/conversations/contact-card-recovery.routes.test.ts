@@ -49,4 +49,29 @@ describe('recovering a previously unrecognized contact', () => {
       expect(context.update).not.toHaveBeenCalled();
     } finally { await context.app.close(); }
   });
+
+  it('removes an old phantom bubble after verifying an encrypted group notice in Evolution history', async () => {
+    const groupMessage = { ...message, providerMessageId: 'encrypted-1', createdAt: new Date('2026-09-29T12:10:00Z') };
+    const previous = { ...message, id: 'previous-1', body: 'Tubom de aço', type: 'text', createdAt: new Date('2026-09-29T12:09:00Z') };
+    const findFirst = vi.fn().mockResolvedValueOnce(groupMessage).mockResolvedValueOnce(previous);
+    const remove = vi.fn().mockResolvedValue(groupMessage);
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const publish = vi.fn();
+    const findMessage = vi.fn().mockResolvedValue({ key: { id: 'encrypted-1', remoteJid: '12345@g.us', fromMe: false },
+      message: { messageContextInfo: {}, secretEncryptedMessage: { secretEncType: 2 } } });
+    const app = Fastify({ logger: false });
+    app.decorate('prisma', { message: { findFirst, delete: remove }, conversation: {
+      findFirst: vi.fn().mockResolvedValue({ ...conversation, contact: { phone: '12345@g.us', isGroup: true } }), updateMany
+    } } as never);
+    app.decorate('realtime', { publish } as never);
+    app.addHook('preHandler', async request => { request.talk = { workspaceId: 'workspace-a', role: 'agent' }; });
+    await app.register(conversationsRoutes, { messageHistory: { findMessage } });
+    try {
+      const response = await app.inject({ method: 'POST', url: `/conversations/${conversationId}/messages/${messageId}/recognize-contact` });
+      expect(response.json()).toEqual({ removedMessageId: messageId });
+      expect(remove).toHaveBeenCalledWith({ where: { id: messageId } });
+      expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ lastMessagePreview: 'Tubom de aço' }) }));
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.deleted' }));
+    } finally { await app.close(); }
+  });
 });

@@ -24,6 +24,13 @@ describe('read-only Evolution history', () => {
       where: { key: { id: 'anchor' } }, page: 1, offset: 10
     });
   });
+  it('loads an exact group message for repair without enabling bulk group history', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messages: {
+      records: [row('group-1', end.getTime(), '123456-789@g.us')], pages: 1
+    } })));
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'key', fetch: fetchMock });
+    expect((await source.findMessage({ instanceName: 'Diogo', id: 'group-1' }))?.key.remoteJid).toBe('123456-789@g.us');
+  });
   it('uses exact anchor identity, fixed window, deduplicates and orders chronologically', async () => {
     const { source, fetchMock } = setup([[row('future', end.getTime()+1000), row('old'), row('old'), row('too-old', from.getTime()-1000), row('anchor', end.getTime())]]);
     const result = await source.load(input);

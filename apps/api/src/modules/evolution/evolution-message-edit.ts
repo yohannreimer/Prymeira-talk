@@ -39,6 +39,13 @@ export function extractEncryptedMessageEdit(data: unknown): EncryptedEdit | null
   return { targetId, iv, payload, senderJids: [...new Set(jids(object(wrapper?.key)))] };
 }
 
+export function isEncryptedControlEnvelope(data: unknown): boolean {
+  const wrapper = object(data);
+  const message = object(wrapper?.message);
+  return Boolean(object(message?.secretEncryptedMessage)) &&
+    Object.keys(message ?? {}).every((key) => key === "secretEncryptedMessage" || key === "messageContextInfo");
+}
+
 type Field = { number: number; wire: number; value: Buffer | number };
 
 function varint(buffer: Buffer, offset: number): { value: number; next: number } | null {

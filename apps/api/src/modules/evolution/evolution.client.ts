@@ -79,6 +79,13 @@ export interface SendTextResult {
   raw: unknown;
 }
 
+export interface DeleteMessageInput {
+  instanceName: string;
+  id: string;
+  remoteJid: string;
+  fromMe: true;
+}
+
 export interface SendContactInput {
   instanceName: string;
   number: string;
@@ -155,6 +162,7 @@ export interface CheckWhatsappNumbersAvailabilityResult {
 }
 
 export interface EvolutionClient {
+  deleteMessageForEveryone?(input: DeleteMessageInput): Promise<void>;
   getGroupInfo?(input: { instanceName: string; groupJid: string }): Promise<{ subject: string | null }>;
   sendAudio?(input: { instanceName: string; number: string; audio: string }): Promise<SendMediaResult>;
   fetchProfilePicture?(input: { instanceName: string; number: string }): Promise<string | null>;
@@ -487,7 +495,23 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     return responseBody;
   }
 
+  async function del(path: string, body: unknown) {
+    const response = await fetchImpl(`${baseUrl}${path}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", apikey: options.apiKey },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15_000)
+    });
+    const responseBody = sanitizeResponseBody(await parseResponseBody(response));
+    if (!response.ok) throw new EvolutionClientError(response.status, responseBody);
+  }
+
   return {
+    async deleteMessageForEveryone(input) {
+      await del(`/chat/deleteMessageForEveryone/${encodeURIComponent(input.instanceName)}`, {
+        id: input.id, remoteJid: input.remoteJid, fromMe: input.fromMe
+      });
+    },
     async checkWhatsappNumbersAvailability(input) {
       const responseBody = await post(
         `/chat/whatsappNumbers/${encodeURIComponent(input.instanceName)}`,

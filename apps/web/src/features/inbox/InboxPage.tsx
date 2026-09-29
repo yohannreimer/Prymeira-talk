@@ -1,11 +1,12 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Search, RotateCcw, Send, StickyNote, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
+import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
 import type { ChangeEvent, DragEvent, FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiCreateQuickReply,
   apiCreateConversationMessage,
+  apiDeleteMessageForEveryone,
   apiCreateCrmLead,
   apiDeleteQuickReply,
   apiGetConversationContext,
@@ -451,6 +452,7 @@ function InboxPageContent() {
   const [isLoadingContext, setIsLoadingContext] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [messageError, setMessageError] = useState<string | null>(null);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [contextError, setContextError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [assistantTab, setAssistantTab] = useState<'contact' | 'assistant'>('assistant');
@@ -783,6 +785,11 @@ function InboxPageContent() {
           void apiRecognizeContactMessage(selectedConversationId, unknown.id, getFreshToken)
             .then((recognized) => {
               if (!isMounted) return;
+              if ('removedMessageId' in recognized) {
+                setMessages((current) => current.filter((message) => message.id !== recognized.removedMessageId));
+                setConversationReloadKey((current) => current + 1);
+                return;
+              }
               setMessages((current) => current.map((message) => message.id === recognized.id ? recognized : message));
               setConversations((current) => current.map((conversation) => conversation.id === selectedConversationId && conversation.lastMessagePreview === 'Mensagem não reconhecida'
                 ? { ...conversation, lastMessagePreview: recognized.body } : conversation));
@@ -857,6 +864,11 @@ function InboxPageContent() {
   }, [getFreshToken]);
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
+    if (event.type === 'message.deleted') {
+      setMessages((current) => current.filter((message) => message.id !== event.payload.messageId));
+      setConversationReloadKey((current) => current + 1);
+      return;
+    }
     if (event.type === "message.updated") {
       setMessages((current) => current.map((message) =>
         message.id === event.payload.id ? event.payload : message
@@ -1368,6 +1380,24 @@ function InboxPageContent() {
 
   useEffect(() => { setHandoffFeedback(null); }, [selectedConversationId]);
 
+  async function deleteMessageForEveryone(message: MessageDto) {
+    if (!selectedConversationId || deletingMessageId ||
+      !window.confirm('Apagar esta mensagem para todos no WhatsApp?')) return;
+    const targetConversationId = selectedConversationId;
+    setDeletingMessageId(message.id);
+    setMessageError(null);
+    try {
+      const updated = await apiDeleteMessageForEveryone(targetConversationId, message.id, getFreshToken);
+      setMessages((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setConversations((current) => current.map((item) => item.id === targetConversationId &&
+        item.lastMessageAt === message.createdAt ? { ...item, lastMessagePreview: updated.body } : item));
+    } catch (error) {
+      setMessageError(error instanceof Error ? error.message : 'Não foi possível apagar a mensagem para todos.');
+    } finally {
+      setDeletingMessageId(null);
+    }
+  }
+
   async function resetSelectedConversation() {
     if (!selectedConversationId || !canResetConversation(currentRole)) return;
 
@@ -1825,6 +1855,14 @@ function InboxPageContent() {
                   <div className="message-bubble-meta">
                     {message.editedAt ? <span className="message-edited-label">Editada</span> : null}
                     <time>{formatMessageTime(message.createdAt)}</time>
+                    {selectedConversation.channelProvider === 'evolution' && !selectedConversation.isGroup && message.direction === 'outbound' &&
+                      message.providerMessageId && !message.deletedAt && ['sent', 'delivered', 'read'].includes(message.status) ? (
+                        <button type="button" className="message-delete-action" title="Apagar para todos"
+                          aria-label="Apagar mensagem para todos" disabled={Boolean(deletingMessageId)}
+                          onClick={() => { void deleteMessageForEveryone(message); }}>
+                          <Trash2 size={13} aria-hidden="true" />
+                        </button>
+                      ) : null}
                   </div>
                   {outboundStatusLabel(message) ? (
                     <span className={`message-send-state message-send-state--${message.status}`}>

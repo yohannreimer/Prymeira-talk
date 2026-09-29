@@ -797,6 +797,25 @@ describe("Evolution webhook routes", () => {
     } finally { await app.close(); }
   });
 
+  it("ignores a standalone encrypted control envelope with no readable content", async () => {
+    const { app, prisma, publish } = await buildEvolutionApp();
+    try {
+      const response = await app.inject({
+        method: "POST", url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: { ...validWebhookBody, data: {
+          ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, id: "encrypted_notice_1" },
+          messageType: "secretEncryptedMessage",
+          message: { messageContextInfo: {}, secretEncryptedMessage: { secretEncType: 2 } }
+        } }
+      });
+      expect(response.json()).toEqual({ ok: true, ignored: true });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
   it("refreshes the conversation preview only when the edited message is the latest", async () => {
     const prisma = createMockPrisma({
       message: {
