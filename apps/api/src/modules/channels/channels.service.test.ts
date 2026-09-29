@@ -563,7 +563,15 @@ describe("channels service", () => {
           id: channelId
         }
       },
-      data: { status: "connecting" }
+      data: {
+        status: "connecting",
+        historyImportStatus: "pending",
+        historyImportNextAt: expect.any(Date),
+        historyImportAttempts: 0,
+        historyImportCompletedAt: null,
+        historyImportLeaseToken: null,
+        historyImportLeaseUntil: null
+      }
     });
     expect(result).toEqual(
       expect.objectContaining({

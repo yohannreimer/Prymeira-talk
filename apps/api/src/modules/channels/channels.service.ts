@@ -54,7 +54,15 @@ export interface PrismaLike {
     }): Promise<ChannelRecord>;
     update(args: {
       where: { workspaceId_id: { workspaceId: string; id: string } };
-      data: { status: ChannelDto["status"] };
+      data: {
+        status: ChannelDto["status"];
+        historyImportStatus?: string;
+        historyImportNextAt?: Date;
+        historyImportAttempts?: number;
+        historyImportCompletedAt?: null;
+        historyImportLeaseToken?: null;
+        historyImportLeaseUntil?: null;
+      };
     }): Promise<ChannelRecord>;
     delete(args: {
       where: { workspaceId_id: { workspaceId: string; id: string } };
@@ -434,9 +442,22 @@ export function createChannelsService(
           );
         }
 
-        const channel = await updateChannelStatus({
-          ...input,
-          status: "connecting"
+        const channel = await prisma.channel.update({
+          where: {
+            workspaceId_id: {
+              workspaceId: input.workspaceId,
+              id: input.channelId
+            }
+          },
+          data: {
+            status: "connecting",
+            historyImportStatus: "pending",
+            historyImportNextAt: new Date(Date.now() + 30_000),
+            historyImportAttempts: 0,
+            historyImportCompletedAt: null,
+            historyImportLeaseToken: null,
+            historyImportLeaseUntil: null
+          }
         });
 
         return {
