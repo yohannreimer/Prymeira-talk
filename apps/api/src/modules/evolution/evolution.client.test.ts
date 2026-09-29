@@ -523,6 +523,37 @@ describe("Evolution client", () => {
     );
   });
 
+  it("logs out the exact Evolution instance before a QR relink", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({ status: "SUCCESS", error: false })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    await client.logoutInstance?.({ instanceName: "Geral Villefer/1" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://wsapi.yrdnegocios.com.br/instance/logout/Geral%20Villefer%2F1",
+      expect.objectContaining({ method: "DELETE", headers: { apikey: "secret-key" } })
+    );
+  });
+
+  it("treats an Evolution logout error body as a failure even on HTTP 200", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({ error: true, message: "logout failed" })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    await expect(client.logoutInstance?.({ instanceName: "Geral Villefer" })).rejects.toBeInstanceOf(EvolutionClientError);
+  });
+
   it("connects an existing instance and returns its QR code", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       createJsonResponse({

@@ -171,6 +171,7 @@ export interface EvolutionClient {
   fetchMedia?(input: { instanceName: string; id: string }): Promise<string>;
   createInstance(input: CreateInstanceInput): Promise<CreateInstanceResult>;
   connectInstance(input: ConnectInstanceInput): Promise<ConnectInstanceResult>;
+  logoutInstance?(input: ConnectInstanceInput): Promise<void>;
   getConnectionState?(input: ConnectInstanceInput): Promise<EvolutionConnectionState | null>;
   setWebhook(input: SetWebhookInput): Promise<SetWebhookResult>;
   sendText(input: SendTextInput): Promise<SendTextResult>;
@@ -503,6 +504,19 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     return responseBody;
   }
 
+  async function remove(path: string) {
+    const response = await fetchImpl(`${baseUrl}${path}`, {
+      method: "DELETE",
+      headers: { apikey: options.apiKey },
+      signal: AbortSignal.timeout(15_000)
+    });
+    const responseBody = sanitizeResponseBody(await parseResponseBody(response));
+
+    if (!response.ok || (isRecord(responseBody) && responseBody.error === true)) {
+      throw new EvolutionClientError(response.status, responseBody);
+    }
+  }
+
   async function del(path: string, body: unknown) {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method: "DELETE",
@@ -590,6 +604,10 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
         qrCode: extractQrCode(responseBody),
         raw: responseBody
       };
+    },
+
+    async logoutInstance(input) {
+      await remove(`/instance/logout/${encodeURIComponent(input.instanceName)}`);
     },
 
     async getConnectionState(input) {

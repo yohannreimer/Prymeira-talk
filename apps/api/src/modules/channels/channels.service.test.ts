@@ -795,6 +795,35 @@ describe("channels service", () => {
     expect(result.channel.status).toBe("disconnected");
   });
 
+  it("logs out the provider before marking a real Evolution channel disconnected", async () => {
+    const logoutInstance = vi.fn().mockResolvedValue(undefined);
+    const prisma = createMockPrisma();
+    const service = createChannelsService(prisma, {
+      evolution: {
+        mode: "real",
+        client: { logoutInstance } as never
+      } as never
+    });
+
+    await service.disconnectChannel({ workspaceId: "workspace_a", channelId });
+
+    expect(logoutInstance).toHaveBeenCalledWith({ instanceName: baseChannel.providerKey });
+    expect(logoutInstance.mock.invocationCallOrder[0]).toBeLessThan(prisma.channel.update.mock.invocationCallOrder[0]);
+  });
+
+  it("keeps the Talk status unchanged when provider logout fails", async () => {
+    const prisma = createMockPrisma();
+    const service = createChannelsService(prisma, {
+      evolution: {
+        mode: "real",
+        client: { logoutInstance: vi.fn().mockRejectedValue(new Error("provider unavailable")) } as never
+      } as never
+    });
+
+    await expect(service.disconnectChannel({ workspaceId: "workspace_a", channelId })).rejects.toThrow("provider unavailable");
+    expect(prisma.channel.update).not.toHaveBeenCalled();
+  });
+
   it("reconnects a simulated channel by moving it back to connecting", async () => {
     const prisma = createMockPrisma();
     const service = createChannelsService(prisma);

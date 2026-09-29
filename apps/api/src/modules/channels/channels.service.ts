@@ -148,6 +148,7 @@ export class ChannelsServiceError extends Error {
       | "CHANNEL_PROVIDER_UNSUPPORTED"
       | "EVOLUTION_LICENSE_REQUIRED"
       | "EVOLUTION_ALREADY_LINKED"
+      | "EVOLUTION_DISCONNECT_UNAVAILABLE"
       | "EVOLUTION_QR_UNAVAILABLE",
     message: string,
     statusCode = 404
@@ -430,7 +431,7 @@ export function createChannelsService(
           if (connectionState === "open") {
             throw new ChannelsServiceError(
               "EVOLUTION_ALREADY_LINKED",
-              "A Evolution informa que esta sessão já está vinculada e não gerou QR. A comunicação ainda não foi confirmada; verifique se as mensagens estão funcionando antes de considerar o canal recuperado.",
+              "A Evolution informa que esta sessão já está vinculada e não gerou QR. Se as mensagens não funcionam, clique em Desconectar e depois em Reconectar para vincular o WhatsApp novamente.",
               409
             );
           }
@@ -509,8 +510,18 @@ export function createChannelsService(
       workspaceId: string;
       channelId: string;
     }): Promise<ChannelOperationResultDto> {
-      await getEvolutionChannel(input);
+      const existingChannel = await getEvolutionChannel(input);
       const mode = await resolveMode(input.workspaceId);
+      if (options.evolution?.mode === "real") {
+        if (!options.evolution?.client?.logoutInstance) {
+          throw new ChannelsServiceError(
+            "EVOLUTION_DISCONNECT_UNAVAILABLE",
+            "Não foi possível encerrar a sessão na Evolution no momento.",
+            503
+          );
+        }
+        await options.evolution.client.logoutInstance({ instanceName: existingChannel.providerKey });
+      }
       const channel = await updateChannelStatus({
         ...input,
         status: "disconnected"
