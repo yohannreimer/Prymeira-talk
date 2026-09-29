@@ -391,6 +391,11 @@ export function isEvolutionLicenseRequiredError(error: unknown): error is Evolut
   );
 }
 
+export function isEvolutionConnectionClosedError(error: unknown): error is EvolutionClientError {
+  return error instanceof EvolutionClientError &&
+    collectStrings(error.responseBody).some((message) => /\bconnection closed\b/i.test(message));
+}
+
 function webhookPayload(webhookUrl: string, webhookSecret: string) {
   return {
     url: webhookUrl,

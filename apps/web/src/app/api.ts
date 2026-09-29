@@ -1438,7 +1438,8 @@ export async function readApiErrorMessage(response: Response, fallbackLabel: str
 export class ApiRequestError extends Error {
   constructor(
     message: string,
-    public readonly debug?: Record<string, unknown>
+    public readonly debug?: Record<string, unknown>,
+    public readonly code?: string
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -1460,11 +1461,13 @@ async function readApiErrorPayload(response: Response, fallbackLabel: string) {
       const record = data as Record<string, unknown>;
       const error = record.error;
       const debug = isRecord(record.debug) ? record.debug : undefined;
+      const code = typeof record.code === "string" ? record.code : undefined;
 
       if (typeof error === "string" && error.trim().length > 0) {
         return {
           message: error,
-          debug
+          debug,
+          code
         };
       }
     }
@@ -1474,7 +1477,8 @@ async function readApiErrorPayload(response: Response, fallbackLabel: string) {
 
   return {
     message: `${fallbackLabel}: ${response.status}`,
-    debug: undefined
+    debug: undefined,
+    code: undefined
   };
 }
 
@@ -2371,7 +2375,8 @@ export async function apiCreateConversationMessage(
   });
 
   if (!response.ok) {
-    throw new Error(await readApiErrorMessage(response, "Failed to send message"));
+    const error = await readApiErrorPayload(response, "Failed to send message");
+    throw new ApiRequestError(error.message, error.debug, error.code);
   }
 
   const data = await response.json();
