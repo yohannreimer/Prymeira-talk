@@ -136,7 +136,7 @@ describe("Evolution client", () => {
         webhook: expect.objectContaining({
           url: "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace",
           byEvents: false,
-          base64: true,
+          base64: false,
           headers: expect.objectContaining({
             "x-prymeira-talk-secret": "webhook-secret",
             "Content-Type": "application/json"
@@ -493,7 +493,7 @@ describe("Evolution client", () => {
           enabled: true,
           url: "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace",
           byEvents: false,
-          base64: true,
+          base64: false,
           headers: expect.objectContaining({
             "x-prymeira-talk-secret": "webhook-secret"
           }),

@@ -395,7 +395,7 @@ function webhookPayload(webhookUrl: string, webhookSecret: string) {
   return {
     url: webhookUrl,
     byEvents: false,
-    base64: true,
+    base64: false,
     headers: {
       "x-prymeira-talk-secret": webhookSecret,
       "Content-Type": "application/json"
@@ -410,7 +410,7 @@ function setWebhookPayload(webhookUrl: string, webhookSecret: string) {
       enabled: true,
       url: webhookUrl,
       byEvents: false,
-      base64: true,
+      base64: false,
       headers: {
         "x-prymeira-talk-secret": webhookSecret,
         "Content-Type": "application/json"
