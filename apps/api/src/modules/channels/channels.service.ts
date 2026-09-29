@@ -139,6 +139,7 @@ export class ChannelsServiceError extends Error {
       | "CHANNEL_PROVIDER_KEY_REQUIRED"
       | "CHANNEL_PROVIDER_UNSUPPORTED"
       | "EVOLUTION_LICENSE_REQUIRED"
+      | "EVOLUTION_ALREADY_LINKED"
       | "EVOLUTION_QR_UNAVAILABLE",
     message: string,
     statusCode = 404
@@ -414,6 +415,18 @@ export function createChannelsService(
         }
 
         if (!instance.qrCode) {
+          const connectionState = client.getConnectionState
+            ? await client.getConnectionState({ instanceName: existingChannel.providerKey }).catch(() => null)
+            : null;
+
+          if (connectionState === "open") {
+            throw new ChannelsServiceError(
+              "EVOLUTION_ALREADY_LINKED",
+              "A Evolution informa que esta sessão já está vinculada e não gerou QR. A comunicação ainda não foi confirmada; verifique se as mensagens estão funcionando antes de considerar o canal recuperado.",
+              409
+            );
+          }
+
           throw new ChannelsServiceError(
             "EVOLUTION_QR_UNAVAILABLE",
             "Evolution did not return a QR code for this channel.",

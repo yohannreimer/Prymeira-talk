@@ -665,6 +665,34 @@ describe("channels service", () => {
     expect(prisma.channel.update).not.toHaveBeenCalled();
   });
 
+  it("explains missing QR when the existing Evolution instance is still linked", async () => {
+    const prisma = createMockPrisma();
+    const getConnectionState = vi.fn().mockResolvedValue("open");
+    const service = createChannelsService(prisma, {
+      evolution: {
+        mode: "real",
+        webhookSecret: "webhook-secret",
+        publicWebhookUrl: () => "https://talk.prymeiradigital.com.br/webhooks/evolution/workspace_a",
+        localWebhookUrl: () => "http://localhost:3002/webhooks/evolution/workspace_a",
+        client: {
+          createInstance: vi.fn().mockRejectedValue(new EvolutionClientError(403, { message: "Instance name already in use" })),
+          connectInstance: vi.fn().mockResolvedValue({ instanceName: baseChannel.providerKey, qrCode: null, raw: {} }),
+          getConnectionState,
+          setWebhook: vi.fn().mockResolvedValue({ raw: {} }),
+          sendText: vi.fn(),
+          sendMedia: vi.fn()
+        }
+      }
+    });
+
+    const error = await service.startQrSession({ workspaceId: "workspace_a", channelId }).catch((caught: unknown) => caught);
+
+    expect(getConnectionState).toHaveBeenCalledWith({ instanceName: baseChannel.providerKey });
+    expect(error).toMatchObject({ code: "EVOLUTION_ALREADY_LINKED", statusCode: 409 });
+    expect((error as Error).message).toContain("já está vinculada");
+    expect(prisma.channel.update).not.toHaveBeenCalled();
+  });
+
   it("explains Evolution license activation failures before starting QR", async () => {
     const createInstance = vi.fn().mockRejectedValue(
       new EvolutionClientError(503, {

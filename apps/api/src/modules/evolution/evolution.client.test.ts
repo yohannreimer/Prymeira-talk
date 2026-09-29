@@ -506,6 +506,23 @@ describe("Evolution client", () => {
     expect(webhook).not.toHaveProperty("webhookByEvents");
   });
 
+  it("reads the live connection state without exposing the provider response", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({ instance: { state: "open", ownerJid: "5511999999999@s.whatsapp.net" } })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    expect(await client.getConnectionState?.({ instanceName: "existing instance" })).toBe("open");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://wsapi.yrdnegocios.com.br/instance/connectionState/existing%20instance",
+      expect.objectContaining({ method: "GET" })
+    );
+  });
+
   it("connects an existing instance and returns its QR code", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       createJsonResponse({

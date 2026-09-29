@@ -57,6 +57,8 @@ export interface ConnectInstanceResult {
   raw: unknown;
 }
 
+export type EvolutionConnectionState = "open" | "connecting" | "close";
+
 export interface SetWebhookInput {
   instanceName: string;
   webhookUrl: string;
@@ -169,6 +171,7 @@ export interface EvolutionClient {
   fetchMedia?(input: { instanceName: string; id: string }): Promise<string>;
   createInstance(input: CreateInstanceInput): Promise<CreateInstanceResult>;
   connectInstance(input: ConnectInstanceInput): Promise<ConnectInstanceResult>;
+  getConnectionState?(input: ConnectInstanceInput): Promise<EvolutionConnectionState | null>;
   setWebhook(input: SetWebhookInput): Promise<SetWebhookResult>;
   sendText(input: SendTextInput): Promise<SendTextResult>;
   sendContact?(input: SendContactInput): Promise<SendTextResult>;
@@ -587,6 +590,12 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
         qrCode: extractQrCode(responseBody),
         raw: responseBody
       };
+    },
+
+    async getConnectionState(input) {
+      const responseBody = await get(`/instance/connectionState/${encodeURIComponent(input.instanceName)}`);
+      const state = getString(getRecord(responseBody, "instance"), "state") ?? getString(responseBody, "state");
+      return state === "open" || state === "connecting" || state === "close" ? state : null;
     },
 
     async setWebhook(input) {
