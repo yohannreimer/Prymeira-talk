@@ -54,6 +54,9 @@ async function setup() {
     listLeads: vi.fn(async ({ workspaceId }: { workspaceId: string }) => {
       scoped(workspaceId); return { items: [], page: 1, pageSize: 25, total: 0 };
     }),
+    listLeadSelection: vi.fn(async (workspaceId: string) => {
+      scoped(workspaceId); return { ids: [leadId], verifiableIds: [leadId] };
+    }),
     getJob: vi.fn(async (workspaceId: string) => { scoped(workspaceId); return job; }),
     createReceitaSearchJob: vi.fn(async ({ workspaceId }: { workspaceId: string }) => ({
       list: { ...list, workspaceId }, job: { ...job, workspaceId }, replayed: false
@@ -149,6 +152,7 @@ describe("Leads routes", () => {
       { method: "PATCH", url: `/leads/lists/${listId}`, payload: { name: "Novo nome" } },
       { method: "DELETE", url: `/leads/lists/${listId}` },
       { method: "GET", url: `/leads/lists/${listId}/results` },
+      { method: "GET", url: `/leads/lists/${listId}/selection` },
       { method: "GET", url: `/leads/jobs/${jobId}` },
       { method: "GET", url: `/leads/jobs/${jobId}/errors.csv` },
       { method: "GET", url: `/leads/similar?listId=${listId}&leadId=${leadId}` },
@@ -173,6 +177,16 @@ describe("Leads routes", () => {
     expect(conversion.importSelectedLeads).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: workspaceA }));
     expect(conversion.createCampaignDraftFromLeads).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: workspaceA }));
     expect(sendMessage).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("returns the full selection without loading paginated lead details", async () => {
+    const { app, service } = await setup();
+    const response = await app.inject({ method: "GET", url: `/leads/lists/${listId}/selection`, headers: headers(workspaceA) });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ids: [leadId], verifiableIds: [leadId] });
+    expect(service.listLeadSelection).toHaveBeenCalledWith(workspaceA, listId);
+    expect(service.listLeads).not.toHaveBeenCalled();
     await app.close();
   });
 

@@ -895,6 +895,9 @@ export function createLeadsService(options: LeadsServiceOptions) {
         pageSize: boundedPage(input.pageSize, 25, 100)
       });
     },
+    async listLeadSelection(workspaceId: string, listId: string) {
+      return repository.listLeadSelection(workspaceId, listId);
+    },
     getJob: repository.getJob.bind(repository),
     async retryGoogleJob(input: { workspaceId: string; jobId: string }) {
       const updated = await repository.retryGoogleJob(

@@ -14,6 +14,7 @@ import {
   leadJobSchema,
   leadListSchema,
   leadPaginatedResultSchema,
+  leadSelectionSchema,
   leadReceitaLookupQuerySchema,
   leadReceitaLookupResponseSchema,
   leadReceitaSearchRequestSchema,
@@ -152,6 +153,11 @@ export const leadsRoutes: FastifyPluginAsync<LeadsRoutesOptions> = async (app, o
     return leadPaginatedResultSchema.parse(await service.listLeads({
       workspaceId: request.talk.workspaceId, listId, ...query
     }));
+  });
+
+  app.get("/leads/lists/:listId/selection", async (request) => {
+    const { listId } = listParamsSchema.parse(request.params);
+    return leadSelectionSchema.parse(await service.listLeadSelection(request.talk.workspaceId, listId));
   });
 
   app.get("/leads/jobs/:jobId", async (request) => {

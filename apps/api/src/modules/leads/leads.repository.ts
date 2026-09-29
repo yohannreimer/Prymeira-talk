@@ -17,6 +17,7 @@ import type {
   LeadResultDto,
   LeadWhatsappVerificationResult
 } from "@prymeira-talk/shared";
+import { MAX_LEAD_BULK_SELECTION_SIZE } from "@prymeira-talk/shared";
 import { canTransitionLeadJob } from "./leads.types.js";
 import { canonicalizePhone } from "../contacts/phone-normalization.js";
 import { aggregateLeadWhatsappStatus } from "./lead-whatsapp-status.js";
@@ -498,6 +499,24 @@ export class LeadsRepository {
       page: input.page,
       pageSize: input.pageSize,
       total
+    };
+  }
+
+  async listLeadSelection(workspaceId: string, listId: string) {
+    await this.getList(workspaceId, listId);
+    const rows = await this.prisma.lead.findMany({
+      where: { workspaceId, listId },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: MAX_LEAD_BULK_SELECTION_SIZE + 1,
+      select: { id: true, normalizedPhone: true, phones: true }
+    });
+    if (rows.length > MAX_LEAD_BULK_SELECTION_SIZE) {
+      throw new LeadsDomainError("LEAD_LIMIT_EXCEEDED", `Esta lista excede o limite de ${MAX_LEAD_BULK_SELECTION_SIZE} leads por seleção.`);
+    }
+    return {
+      ids: rows.map(row => row.id),
+      verifiableIds: rows.filter(row => [row.normalizedPhone, ...strings(row.phones)]
+        .some(phone => Boolean(phone && whatsappPhoneCandidates(phone)))).map(row => row.id)
     };
   }
 
@@ -1467,6 +1486,7 @@ export type LeadsRepositoryLike = Pick<
   | "updateList"
   | "deleteList"
   | "listLeads"
+  | "listLeadSelection"
   | "getWhatsappVerificationContext"
   | "createWhatsappVerificationJobs"
   | "fencedFinishWhatsappVerificationJob"

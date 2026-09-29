@@ -66,6 +66,24 @@ function artifact(): LeadArtifact {
 }
 
 describe("Leads repository workspace isolation", () => {
+  it("returns IDs from the entire list and only verifiable phone IDs", async () => {
+    const ids = Array.from({ length: 26 }, () => randomUUID());
+    const findMany = vi.fn(async () => ids.map((id, index) => ({
+      id, normalizedPhone: index === 25 ? null : "5511999999999", phones: []
+    })));
+    const repository = new LeadsRepository({
+      leadList: { findFirst: vi.fn(async () => list()) }, lead: { findMany }
+    } as never);
+
+    const selection = await repository.listLeadSelection(workspaceId, listId);
+    expect(selection.ids).toEqual(ids);
+    expect(selection.verifiableIds).toEqual(ids.slice(0, 25));
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { workspaceId, listId }, take: 5001,
+      select: { id: true, normalizedPhone: true, phones: true }
+    }));
+  });
+
   it("makes a foreign list indistinguishable from a missing list", async () => {
     const findFirst = vi.fn(async () => null);
     const repository = new LeadsRepository({ leadList: { findFirst } } as never);

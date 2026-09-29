@@ -18,6 +18,7 @@ import {
   tagSchema,
   leadListSchema,
   leadPaginatedResultSchema,
+  leadSelectionSchema,
   leadJobSchema,
   leadGoogleSearchResponseSchema,
   leadCsvImportResponseSchema,
@@ -32,6 +33,7 @@ import {
   type LeadSearchFilters,
   type LeadListDto,
   type LeadPaginatedResultDto,
+  type LeadSelectionDto,
   type LeadJobDto,
   type LeadGoogleSearchResponse,
   type LeadCsvImportResponseDto,
@@ -3801,6 +3803,10 @@ export async function apiDeleteLeadList(getToken: TokenProvider, listId: string)
 
 export function apiGetLeadResults(getToken: TokenProvider, listId: string, page = 1): Promise<LeadPaginatedResultDto> {
   return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/results?page=${page}`, {}, value => leadPaginatedResultSchema.parse(value), "Não foi possível carregar resultados.");
+}
+
+export function apiGetLeadSelection(getToken: TokenProvider, listId: string): Promise<LeadSelectionDto> {
+  return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/selection`, {}, value => leadSelectionSchema.parse(value), "Não foi possível selecionar toda a lista.");
 }
 
 export function apiGetLeadJob(getToken: TokenProvider, jobId: string): Promise<LeadJobDto> {

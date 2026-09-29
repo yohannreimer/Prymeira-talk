@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { LeadJobDto, LeadListDto, LeadResultDto, LeadSource, SimilarCompanySearchResult } from "@prymeira-talk/shared";
+import { MAX_LEAD_WHATSAPP_SELECTION_SIZE, type LeadJobDto, type LeadListDto, type LeadResultDto, type LeadSource, type SimilarCompanySearchResult } from "@prymeira-talk/shared";
 import { ArrowLeft, ChevronLeft, ChevronRight, Download, RefreshCw, SearchX, Sparkles } from "lucide-react";
 import { useTalkAuth } from "../../app/auth";
 import {
-  apiCreateLeadCampaignDraft, apiDeleteLeadList, apiDownloadLeadErrors, apiGetLeadJob, apiGetLeadLists, apiGetLeadResults,
+  apiCreateLeadCampaignDraft, apiDeleteLeadList, apiDownloadLeadErrors, apiGetLeadJob, apiGetLeadLists, apiGetLeadResults, apiGetLeadSelection,
   apiGetSimilarLeads, apiImportLeadContacts, apiLookupReceitaLeads, apiRetryLeadJob,
   apiSaveSimilarLeadList, apiStartGoogleLeadSearch, apiStartReceitaLeadSearch,
   apiUploadLeadCsv, apiVerifyLeadWhatsapp
@@ -55,8 +55,11 @@ export function LeadsPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectingAll, setSelectingAll] = useState(false);
+  const selectionVersionRef = useRef(0);
   const [jobs, setJobs] = useState<Record<string, LeadJobDto>>({});
   const [verificationJobs, setVerificationJobs] = useState<LeadJobDto[]>([]);
+  const pollCursorRef = useRef(0);
   const [csvResult, setCsvResult] = useState<CsvResult | null>(null);
   const [lookup, setLookup] = useState<Lookup | null>(null);
   const [similar, setSimilar] = useState<SimilarCompanySearchResult | null>(null);
@@ -129,7 +132,10 @@ export function LeadsPage() {
     const active = [...Object.values(jobs), ...verificationJobs].filter(job => job.status === "queued" || job.status === "running");
     if (!active.length) return;
     const timer = window.setInterval(() => {
-      void Promise.all(active.map(job => apiGetLeadJob(getToken, job.id))).then(next => {
+      const offset = pollCursorRef.current % active.length;
+      const current = Array.from({ length: Math.min(active.length, 20) }, (_, index) => active[(offset + index) % active.length]);
+      pollCursorRef.current = (offset + current.length) % active.length;
+      void Promise.all(current.map(job => apiGetLeadJob(getToken, job.id))).then(next => {
         setJobs(current => ({ ...current, ...Object.fromEntries(next.filter(job => current[job.listId]?.id === job.id).map(job => [job.listId, job])) }));
         setVerificationJobs(current => current.map(job => next.find(updated => updated.id === job.id) ?? job));
         if (next.some(job => job.status !== "queued" && job.status !== "running")) {
@@ -145,9 +151,25 @@ export function LeadsPage() {
   const selectedIds = useMemo(() => Array.from(selected), [selected]);
   const job = selectedListId ? jobs[selectedListId] : undefined;
 
-  function chooseList(id: string) { setSelectedListId(id); setPage(1); setSelected(new Set()); setSimilar(null); setError(null); }
+  function chooseList(id: string) { selectionVersionRef.current += 1; setSelectingAll(false); setSelectedListId(id); setPage(1); setSelected(new Set()); setSimilar(null); setError(null); }
   function toggle(id: string) { setSelected(current => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; }); }
-  function togglePage() { setSelected(current => { const next = new Set(current); const all = items.every(item => next.has(item.id)); items.forEach(item => all ? next.delete(item.id) : next.add(item.id)); return next; }); }
+  async function toggleAll() {
+    if (!selectedListId || selectingAll || busy) return;
+    if (total > 0 && selected.size === total) { setSelected(new Set()); return; }
+    const version = ++selectionVersionRef.current;
+    setSelectingAll(true);
+    setError(null);
+    try {
+      const result = await apiGetLeadSelection(getToken, selectedListId);
+      if (version !== selectionVersionRef.current) return;
+      setSelected(new Set(result.ids));
+      setTotal(result.ids.length);
+    } catch (err) {
+      if (version === selectionVersionRef.current) fail(err);
+    } finally {
+      if (version === selectionVersionRef.current) setSelectingAll(false);
+    }
+  }
   function fail(err: unknown) { setError(err instanceof Error ? err.message : "Ocorreu um erro."); }
   async function perform(task: () => Promise<void>) { setBusy(true); setError(null); setNotice(null); setNextLink(null); try { await task(); } catch (err) { fail(err); } finally { setBusy(false); } }
   function acceptSearch(result: { list: LeadListDto; job: LeadJobDto }) {
@@ -204,9 +226,29 @@ export function LeadsPage() {
     if (!selectedListId || !action) return;
     await perform(async () => {
       if (action === "verify") {
-        const result = await apiVerifyLeadWhatsapp(getToken, selectedListId, selectedIds);
-        setVerificationJobs(result.jobs);
-        setNotice(`Verificação de ${result.requestedCount} lead${result.requestedCount === 1 ? "" : "s"} iniciada.`);
+        const selection = await apiGetLeadSelection(getToken, selectedListId);
+        const available = new Set(selection.verifiableIds);
+        const validIds = new Set(selection.ids);
+        if (selectedIds.some(id => !validIds.has(id))) throw new Error("A lista mudou. Selecione os leads novamente.");
+        const verifiable = selectedIds.filter(id => available.has(id));
+        if (!verifiable.length) throw new Error("Nenhum lead selecionado tem telefone válido para verificar.");
+        let started = 0;
+        for (let index = 0; index < verifiable.length; index += MAX_LEAD_WHATSAPP_SELECTION_SIZE) {
+          const chunk = verifiable.slice(index, index + MAX_LEAD_WHATSAPP_SELECTION_SIZE);
+          try {
+            const result = await apiVerifyLeadWhatsapp(getToken, selectedListId, chunk);
+            started += result.requestedCount;
+            setVerificationJobs(current => [...current, ...result.jobs.filter(job => !current.some(existing => existing.id === job.id))]);
+          } catch (err) {
+            if (!started) throw err;
+            const remaining = verifiable.slice(index);
+            setSelected(new Set(remaining));
+            setAction(null);
+            throw new Error(`${started} verificações iniciadas; ${remaining.length} leads permanecem selecionados para tentar novamente. ${err instanceof Error ? err.message : "Tente novamente."}`);
+          }
+        }
+        const skipped = selectedIds.length - verifiable.length;
+        setNotice(`Verificação de ${started} lead${started === 1 ? "" : "s"} iniciada.${skipped ? ` ${skipped} sem telefone válido foram ignorados.` : ""}`);
       } else if (action === "import") {
         const result = await apiImportLeadContacts(getToken, selectedListId, selectedIds);
         setNotice(`${result.importedCount} contatos cadastrados ou atualizados; ${result.skippedCount} ignorados.`);
@@ -234,8 +276,8 @@ export function LeadsPage() {
         <section className="leads-results" aria-label="Resultados da lista"><div className="leads-results-head"><div><span className="leads-eyebrow">LISTA SELECIONADA</span><h2>{selectedList?.name || "Resultados"}</h2><p>{selectedList ? `${total} empresas · ${selectedList.source === "google_maps" ? "Google Maps" : "Receita Federal"}` : "Escolha uma lista ou inicie uma busca."}</p></div>{selectedListId && <button className="secondary-button" type="button" onClick={() => void perform(async () => { await refreshLists(); const result = await apiGetLeadResults(getToken, selectedListId, page); setItems(result.items); setTotal(result.total); })}><RefreshCw size={15} /> Atualizar</button>}</div>
           {job && <div className={`leads-job status-${job.status}`} role="status"><div><strong>{jobLabels[job.status]}</strong><span>{selectedList?.processedCount ?? 0} processados · {selectedList?.failedCount ?? 0} falhas</span>{job.errorMessage && <small>{job.errorMessage}</small>}</div>{(job.status === "failed" || job.status === "partial") && job.retryable !== false && <button type="button" className="secondary-button" disabled={busy} onClick={() => void perform(async () => { const next = await apiRetryLeadJob(getToken, job.id); setJobs(current => ({ ...current, [next.listId]: next })); setNotice("Nova tentativa iniciada."); })}>Tentar novamente</button>}</div>}
           {verificationJobs.filter(item => item.listId === selectedListId).map((item, index) => <div className={`leads-job status-${item.status}`} role="status" key={item.id}><div><strong>WhatsApp · lote {index + 1}: {jobLabels[item.status]}</strong>{item.errorMessage && <small>{item.errorMessage}</small>}</div>{(item.status === "failed" || item.status === "partial") && item.retryable !== false && <button type="button" className="secondary-button" disabled={busy} onClick={() => void perform(async () => { const next = await apiRetryLeadJob(getToken, item.id); setVerificationJobs(current => current.map(currentJob => currentJob.id === item.id ? next : currentJob)); setNotice("Nova tentativa de verificação iniciada."); })}>Tentar novamente</button>}</div>)}
-          {loading ? <p className="leads-empty">Carregando resultados…</p> : items.length ? <><LeadResultsTable items={items} selected={selected} onToggle={toggle} onSelectAll={togglePage} onSimilar={lead => void startSimilar(lead)} /><div className="leads-pagination"><span>Página {page} · {total} resultados</span><button type="button" disabled={page === 1} onClick={() => setPage(page - 1)} aria-label="Página anterior"><ChevronLeft size={16} /></button><button type="button" disabled={page * 25 >= total} onClick={() => setPage(page + 1)} aria-label="Próxima página"><ChevronRight size={16} /></button></div></> : <div className="leads-empty"><SearchX size={28} /><h3>Um bom recorte começa pela fonte certa</h3><p>Use Google Maps para negócios locais e Receita Federal para filtrar empresas por atividade, cidade ou CNPJ.</p></div>}
-          {selectedListId && <LeadActionsBar count={selected.size} busy={busy} onVerify={() => setAction("verify")} onImport={() => setAction("import")} onCampaign={() => setAction("campaign")} />}
+          {loading ? <p className="leads-empty">Carregando resultados…</p> : items.length ? <><LeadResultsTable items={items} selected={selected} allSelected={total > 0 && selected.size === total} selectingAll={selectingAll} onToggle={toggle} onSelectAll={() => void toggleAll()} onSimilar={lead => void startSimilar(lead)} /><div className="leads-pagination"><span>Página {page} · {total} resultados</span><button type="button" disabled={page === 1} onClick={() => setPage(page - 1)} aria-label="Página anterior"><ChevronLeft size={16} /></button><button type="button" disabled={page * 25 >= total} onClick={() => setPage(page + 1)} aria-label="Próxima página"><ChevronRight size={16} /></button></div></> : <div className="leads-empty"><SearchX size={28} /><h3>Um bom recorte começa pela fonte certa</h3><p>Use Google Maps para negócios locais e Receita Federal para filtrar empresas por atividade, cidade ou CNPJ.</p></div>}
+          {selectedListId && <LeadActionsBar count={selected.size} busy={busy || selectingAll} onVerify={() => setAction("verify")} onImport={() => setAction("import")} onCampaign={() => setAction("campaign")} />}
         </section>
         {similar && <section className="leads-similar" aria-label="Empresas semelhantes"><div className="leads-section-heading"><span><Sparkles size={16} /> Similares a {similar.seed.tradeName || similar.seed.companyName || formatCnpj(similar.seed.cnpj)}</span><button type="button" onClick={() => setSimilar(null)}><ArrowLeft size={15} /> Voltar</button></div><p className="leads-muted">Pontuação considera atividade, localização, perfil e dados comerciais. Empresas sem correspondência suficiente ficam fora do resultado.</p>{similar.items.length ? <>{similar.items.map(item => <label className="leads-similar-item" key={item.cnpj}><input type="checkbox" checked={similarSelected.has(item.cnpj)} onChange={() => setSimilarSelected(current => { const next = new Set(current); next.has(item.cnpj) ? next.delete(item.cnpj) : next.add(item.cnpj); return next; })} /><span><b>{item.tradeName || item.companyName || formatCnpj(item.cnpj)}</b><small>{formatCnpj(item.cnpj)} · {[item.city, item.state].filter(Boolean).join(" / ")}</small><small>{scoreReasons(item).join(" · ") || "Sem motivos detalhados"}</small></span><strong className="leads-score">{Math.round(item.score)}</strong></label>)}<div className="leads-similar-save"><input className="text-input" aria-label="Nome da lista de similares" maxLength={160} value={similarName} onChange={e => setSimilarName(e.target.value)} /><button className="primary-button" type="button" disabled={busy || !similarSelected.size || !similarName.trim() || !similarSeed || !selectedListId} onClick={() => void perform(async () => { if (!similarSeed || !selectedListId) return; acceptSearch(await apiSaveSimilarLeadList(getToken, { listId: selectedListId, leadId: similarSeed.id, name: similarName.trim(), selectedCnpjs: [...similarSelected] })); setSimilar(null); })}>Salvar {similarSelected.size} em lista</button></div></> : <p>Nenhuma empresa elegível encontrada.</p>}</section>}
       </div></div>

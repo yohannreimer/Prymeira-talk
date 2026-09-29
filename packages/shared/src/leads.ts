@@ -200,6 +200,13 @@ export const leadPaginatedResultSchema = z.object({
 });
 export type LeadPaginatedResultDto = z.infer<typeof leadPaginatedResultSchema>;
 
+export const MAX_LEAD_BULK_SELECTION_SIZE = 5000;
+export const leadSelectionSchema = z.object({
+  ids: z.array(uuidSchema).max(MAX_LEAD_BULK_SELECTION_SIZE),
+  verifiableIds: z.array(uuidSchema).max(MAX_LEAD_BULK_SELECTION_SIZE)
+});
+export type LeadSelectionDto = z.infer<typeof leadSelectionSchema>;
+
 export const leadJobSchema = z.object({
   id: uuidSchema,
   workspaceId: z.string().min(1),
@@ -391,7 +398,7 @@ export const leadContactImportRequestSchema = z.object({
   selectedLeadIds: z
     .array(uuidSchema)
     .min(1)
-    .max(5000)
+    .max(MAX_LEAD_BULK_SELECTION_SIZE)
     .refine((ids) => new Set(ids.map((id) => id.toLowerCase())).size === ids.length, {
       message: "selectedLeadIds must not contain duplicates."
     })
@@ -419,11 +426,11 @@ export const leadCampaignDraftRequestSchema = z
     selectedLeadIds: z
       .array(uuidSchema)
       .min(1)
-      .max(5000)
+      .max(MAX_LEAD_BULK_SELECTION_SIZE)
       .refine((ids) => new Set(ids.map((id) => id.toLowerCase())).size === ids.length, {
         message: "selectedLeadIds must not contain duplicates."
       }),
-    originalSelectedLeadIds: z.array(uuidSchema).min(1).max(5000).optional(),
+    originalSelectedLeadIds: z.array(uuidSchema).min(1).max(MAX_LEAD_BULK_SELECTION_SIZE).optional(),
     name: z.string().trim().min(1).max(160).optional(),
     messageBody: z.string().trim().min(1).max(2000).optional(),
     quickReplyId: uuidSchema.optional()

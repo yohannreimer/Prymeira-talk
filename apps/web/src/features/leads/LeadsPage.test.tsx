@@ -9,7 +9,7 @@ const getToken = vi.fn(async () => "token");
 const list: LeadListDto = { id: "00000000-0000-4000-8000-000000000001", workspaceId: "workspace", name: "Clínicas", source: "receita_federal", criteria: {}, totalCount: 1, processedCount: 1, failedCount: 0, startedAt: null, completedAt: null, createdAt: "2026-09-22T00:00:00.000Z", updatedAt: "2026-09-22T00:00:00.000Z" };
 const lead: LeadResultDto = { id: "00000000-0000-4000-8000-000000000002", workspaceId: "workspace", listId: list.id, source: "receita_federal", companyName: "Clínica Aurora", tradeName: null, cnpj: "12345678000190", cnaePrimary: "8630", cnaeSecondary: [], category: null, address: "Rua A, 10", city: "Campinas", state: "SP", postalCode: null, phones: ["5511999999999"], normalizedPhone: "5511999999999", email: null, website: null, rating: null, reviewCount: null, latitude: null, longitude: null, sourceUrl: null, whatsappStatus: "unverified", whatsappVerifications: [], createdAt: "2026-09-22T00:00:00.000Z", updatedAt: "2026-09-22T00:00:00.000Z" };
 const api = vi.hoisted(() => ({
-  apiGetLeadLists: vi.fn(), apiDeleteLeadList: vi.fn(), apiGetLeadResults: vi.fn(), apiGetLeadJob: vi.fn(), apiStartGoogleLeadSearch: vi.fn(), apiStartReceitaLeadSearch: vi.fn(), apiLookupReceitaLeads: vi.fn(), apiUploadLeadCsv: vi.fn(), apiDownloadLeadErrors: vi.fn(), apiGetSimilarLeads: vi.fn(), apiSaveSimilarLeadList: vi.fn(), apiRetryLeadJob: vi.fn(), apiVerifyLeadWhatsapp: vi.fn(), apiImportLeadContacts: vi.fn(), apiCreateLeadCampaignDraft: vi.fn()
+  apiGetLeadLists: vi.fn(), apiDeleteLeadList: vi.fn(), apiGetLeadResults: vi.fn(), apiGetLeadSelection: vi.fn(), apiGetLeadJob: vi.fn(), apiStartGoogleLeadSearch: vi.fn(), apiStartReceitaLeadSearch: vi.fn(), apiLookupReceitaLeads: vi.fn(), apiUploadLeadCsv: vi.fn(), apiDownloadLeadErrors: vi.fn(), apiGetSimilarLeads: vi.fn(), apiSaveSimilarLeadList: vi.fn(), apiRetryLeadJob: vi.fn(), apiVerifyLeadWhatsapp: vi.fn(), apiImportLeadContacts: vi.fn(), apiCreateLeadCampaignDraft: vi.fn()
 }));
 vi.mock("../../app/auth", () => ({ useTalkAuth: () => ({ getToken }) }));
 vi.mock("../../app/api", () => api);
@@ -22,6 +22,7 @@ beforeEach(() => {
   api.apiGetLeadLists.mockResolvedValue([list]);
   api.apiDeleteLeadList.mockResolvedValue(undefined);
   api.apiGetLeadResults.mockResolvedValue({ items: [lead], page: 1, pageSize: 25, total: 1 });
+  api.apiGetLeadSelection.mockResolvedValue({ ids: [lead.id], verifiableIds: [lead.id] });
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.clearAllMocks(); });
 async function render() { await act(async () => { root.render(<LeadsPage />); }); }
@@ -132,6 +133,62 @@ describe("LeadsPage", () => {
     await render();
     const button = [...container.querySelectorAll("button")].find(item => item.textContent?.includes("Verificar WhatsApp"))!;
     expect(button.disabled).toBe(true);
+  });
+
+  it("selects every page of a Google Maps list and verifies all eligible leads in supported requests", async () => {
+    const googleList = { ...list, source: "google_maps" as const, totalCount: 251 };
+    const ids = Array.from({ length: 251 }, (_, index) => `00000000-0000-4000-8000-${(index + 2).toString().padStart(12, "0")}`);
+    api.apiGetLeadLists.mockResolvedValue([googleList]);
+    api.apiGetLeadResults.mockImplementation(async (_token: unknown, _listId: string, page: number) => ({
+      items: ids.slice((page - 1) * 25, page * 25).map(id => ({ ...lead, id, listId: googleList.id, source: "google_maps" })),
+      page, pageSize: 25, total: ids.length
+    }));
+    api.apiGetLeadSelection.mockResolvedValue({ ids, verifiableIds: ids });
+    api.apiVerifyLeadWhatsapp.mockImplementation(async (_token: unknown, _listId: string, selectedIds: string[]) => ({
+      jobs: [], requestedCount: selectedIds.length
+    }));
+    await render();
+    await act(async () => container.querySelector<HTMLInputElement>('[aria-label="Selecionar todos os resultados da lista"]')!.click());
+    expect(container.querySelector(".leads-actions-bar")?.textContent).toContain("251 selecionados");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Próxima página"]')!.click());
+    expect(container.querySelector<HTMLInputElement>(`input[aria-label="Selecionar Clínica Aurora"]`)?.checked).toBe(true);
+    await click("Verificar WhatsApp");
+    await click("Confirmar 251");
+    expect(api.apiVerifyLeadWhatsapp).toHaveBeenCalledTimes(2);
+    expect(api.apiVerifyLeadWhatsapp.mock.calls[0]?.[2]).toEqual(ids.slice(0, 250));
+    expect(api.apiVerifyLeadWhatsapp.mock.calls[1]?.[2]).toEqual(ids.slice(250));
+  });
+
+  it("uses the complete selection when creating a campaign draft", async () => {
+    const ids = Array.from({ length: 30 }, (_, index) => `00000000-0000-4000-8000-${(index + 2).toString().padStart(12, "0")}`);
+    api.apiGetLeadResults.mockResolvedValue({ items: ids.slice(0, 25).map(id => ({ ...lead, id })), page: 1, pageSize: 25, total: 30 });
+    api.apiGetLeadSelection.mockResolvedValue({ ids, verifiableIds: ids });
+    api.apiImportLeadContacts.mockResolvedValue({ contacts: ids.map(leadId => ({ leadId, contactId: leadId, provenanceId: leadId })) });
+    api.apiCreateLeadCampaignDraft.mockResolvedValue({ campaignId: list.id, contactCount: 30 });
+    await render();
+    await act(async () => container.querySelector<HTMLInputElement>('[aria-label="Selecionar todos os resultados da lista"]')!.click());
+    await click("Criar lote de disparo");
+    const textarea = container.querySelector<HTMLTextAreaElement>(".leads-dialog textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Olá!");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click("Confirmar 30");
+    expect(api.apiImportLeadContacts).toHaveBeenCalledWith(getToken, list.id, ids);
+    expect(api.apiCreateLeadCampaignDraft).toHaveBeenCalledWith(getToken, list.id, ids, "Olá!", ids);
+  });
+
+  it("skips selected leads without a valid phone during WhatsApp verification", async () => {
+    const secondId = "00000000-0000-4000-8000-000000000099";
+    api.apiGetLeadResults.mockResolvedValue({ items: [lead, { ...lead, id: secondId, phones: [], normalizedPhone: null }], page: 1, pageSize: 25, total: 2 });
+    api.apiGetLeadSelection.mockResolvedValue({ ids: [lead.id, secondId], verifiableIds: [lead.id] });
+    api.apiVerifyLeadWhatsapp.mockResolvedValue({ jobs: [], requestedCount: 1 });
+    await render();
+    await act(async () => container.querySelector<HTMLInputElement>('[aria-label="Selecionar todos os resultados da lista"]')!.click());
+    await click("Verificar WhatsApp");
+    await click("Confirmar 2");
+    expect(api.apiVerifyLeadWhatsapp).toHaveBeenCalledWith(getToken, list.id, [lead.id]);
+    expect(container.textContent).toContain("1 sem telefone válido foram ignorados");
   });
 
   it("rejects an oversized CSV before sending it", async () => {
