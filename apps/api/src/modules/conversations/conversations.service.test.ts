@@ -16,6 +16,7 @@ import { conversationsRoutes, createMessageParamsSchema } from "./conversations.
 
 type MockPrisma = {
   channel: {
+    findFirst: ReturnType<typeof vi.fn>;
     updateMany: ReturnType<typeof vi.fn>;
   };
   integrationConfig: {
@@ -105,6 +106,7 @@ function createMockPrisma(overrides: {
   let result: MockPrisma;
   result = {
     channel: {
+      findFirst: vi.fn().mockResolvedValue(null),
       updateMany: vi.fn().mockResolvedValue({ count: 1 })
     },
     integrationConfig: {
@@ -2602,9 +2604,15 @@ describe("conversation routes", () => {
         contact: { phone: "5547999990000" }
       })
     });
+    prisma.channel.findFirst.mockResolvedValue({
+      id: "channel_1", workspaceId: "workspace_a", provider: "evolution",
+      providerKey: "talk-workspace_a-abc", phoneNumber: null, displayName: "Geral Villefer",
+      status: "failed", createdAt: new Date("2026-09-01T00:00:00.000Z"), updatedAt: new Date("2026-09-29T18:00:00.000Z")
+    });
     const app = Fastify({ logger: false });
+    const publish = vi.fn();
     app.decorate("prisma", prisma as never);
-    app.decorate("realtime", { publish: vi.fn(), addClient: vi.fn(), clientCount: vi.fn() });
+    app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
     app.addHook("preHandler", async (request) => {
       request.talk = { workspaceId: "workspace_a", role: "agent" };
     });
@@ -2637,6 +2645,10 @@ describe("conversation routes", () => {
           conversations: { some: { id: "00000000-0000-4000-8000-000000000001" } }
         },
         data: { status: "failed" }
+      });
+      expect(publish).toHaveBeenCalledWith({
+        type: "channel.updated", workspaceId: "workspace_a",
+        payload: expect.objectContaining({ id: "channel_1", status: "failed" })
       });
       expect(prisma.message.create).not.toHaveBeenCalled();
     } finally {
