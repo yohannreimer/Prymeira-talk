@@ -463,6 +463,23 @@ describe("Evolution webhook routes", () => {
     } finally { await app.close(); }
   });
 
+  it('routes an LID-only message to a previously linked phone contact', async () => {
+    const lid = { id: 'contact_lid', workspaceId: 'workspace_a', phone: '123456789012345@lid' };
+    const linked = { id: 'contact_phone', workspaceId: 'workspace_a', phone: '551199999999', customFields: { evolutionLid: lid.phone } };
+    const findFirst = vi.fn().mockResolvedValueOnce(lid).mockResolvedValueOnce(lid).mockResolvedValueOnce(linked);
+    const prisma = createMockPrisma({ contact: { findFirst } });
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, remoteJid: lid.phone } } } });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.conversation.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        where: { workspaceId_channelId_contactId: { workspaceId: 'workspace_a', channelId: 'channel_1', contactId: linked.id } }
+      }));
+    } finally { await app.close(); }
+  });
+
   it('keeps the video MIME type when storing an inbound message', async () => {
     const prisma = createMockPrisma();
     const { app } = await buildEvolutionApp(prisma);

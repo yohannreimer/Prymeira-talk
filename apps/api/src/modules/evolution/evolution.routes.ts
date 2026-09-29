@@ -801,12 +801,12 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           orderBy: { updatedAt: "desc" }
         });
         const lid = !isGroup && /^\d+@lid$/.test(payload.data.key.remoteJid) ? payload.data.key.remoteJid : null;
-        const linkedContact = lid && !existingLidContact && !contact ? await tx.contact.findFirst({
+        const phoneContact = contact && !contact.phone.endsWith('@lid') ? contact : null;
+        const linkedContact = lid && !phoneContact && (phone.endsWith('@lid') || !existingLidContact) ? await tx.contact.findFirst({
           where: { workspaceId, customFields: { path: ['evolutionLid'], equals: lid } }
         }) : null;
-        const phoneContact = contact && !contact.phone.endsWith('@lid') ? contact : null;
-        const lidContact = existingLidContact ?? linkedContact;
-        const mappedContact = lid && !phone.endsWith('@lid') && lidContact && !phoneContact
+        const lidContact = linkedContact ?? existingLidContact;
+        const mappedContact = lid && !phone.endsWith('@lid') && lidContact?.phone.endsWith('@lid') && !phoneContact
           ? await tx.contact.update({
               where: { workspaceId_id: { workspaceId, id: lidContact.id } },
               data: { phone, customFields: {
