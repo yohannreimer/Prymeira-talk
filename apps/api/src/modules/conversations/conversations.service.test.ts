@@ -15,6 +15,9 @@ import type { PrismaLike } from "./conversations.service.js";
 import { conversationsRoutes, createMessageParamsSchema } from "./conversations.routes.js";
 
 type MockPrisma = {
+  channel: {
+    updateMany: ReturnType<typeof vi.fn>;
+  };
   integrationConfig: {
     findUnique: ReturnType<typeof vi.fn>;
   };
@@ -101,6 +104,9 @@ function createMockPrisma(overrides: {
 } = {}): MockPrisma {
   let result: MockPrisma;
   result = {
+    channel: {
+      updateMany: vi.fn().mockResolvedValue({ count: 1 })
+    },
     integrationConfig: {
       findUnique: vi.fn().mockResolvedValue(null)
     },
@@ -2622,6 +2628,15 @@ describe("conversation routes", () => {
       expect(response.json()).toEqual({
         code: "EVOLUTION_CONNECTION_CLOSED",
         error: "A conexão do WhatsApp fechou durante o envio. Confira a conversa do destinatário antes de tentar novamente e reconecte o canal em Canais se o problema continuar."
+      });
+      expect(prisma.channel.updateMany).toHaveBeenCalledWith({
+        where: {
+          workspaceId: "workspace_a",
+          provider: "evolution",
+          status: "connected",
+          conversations: { some: { id: "00000000-0000-4000-8000-000000000001" } }
+        },
+        data: { status: "failed" }
       });
       expect(prisma.message.create).not.toHaveBeenCalled();
     } finally {

@@ -755,6 +755,17 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       }, "Evolution rejected an outbound message.");
 
       if (isEvolutionConnectionClosedError(result)) {
+        await app.prisma.channel.updateMany({
+          where: {
+            workspaceId: request.talk.workspaceId,
+            provider: "evolution",
+            status: "connected",
+            conversations: { some: { id: params.data.conversationId } }
+          },
+          data: { status: "failed" }
+        }).catch((error: unknown) => {
+          request.log.error({ err: error, conversationId: params.data.conversationId }, "Failed to mark Evolution channel as unhealthy after closed connection.");
+        });
         return reply.code(502).send({
           code: "EVOLUTION_CONNECTION_CLOSED",
           error: "A conexão do WhatsApp fechou durante o envio. Confira a conversa do destinatário antes de tentar novamente e reconecte o canal em Canais se o problema continuar."
