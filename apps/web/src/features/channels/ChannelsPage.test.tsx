@@ -28,6 +28,21 @@ describe('same-channel two QR setup', () => {
     mocks.apiGetConnectionState.mockResolvedValue({ mode: 'real', channel: next });
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
+  it.each(['button', 'overlay'] as const)('does not reopen the drawer when a pending Evolution QR resolves after %s dismissal', async (dismissal) => {
+    let finish!: (result: unknown) => void;
+    mocks.apiStartChannelQr.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await act(async () => root.render(<ChannelsPage />));
+    await act(async () => button('Reconectar').click());
+    expect(container.querySelector('[aria-label="Conectar canal via QR"]')).not.toBeNull();
+    await act(async () => {
+      const close = dismissal === 'button' ? container.querySelector<HTMLButtonElement>('[aria-label="Conectar canal via QR"] [aria-label="Fechar"]') : container.querySelector<HTMLDivElement>('.contact-drawer-overlay');
+      close!.click();
+    });
+    expect(container.querySelector('[aria-label="Conectar canal via QR"]')).toBeNull();
+    await act(async () => finish(qr('evolution', 'late-primary-qr', 'evo')));
+    expect(container.querySelector('[aria-label="Conectar canal via QR"]')).toBeNull();
+    expect(container.querySelectorAll('.qr-image')).toHaveLength(0);
+  });
   it.each(['evolution', 'waha'] as const)('shows provider status, %s degradation and the opposite active sender in the channel row', async (degradedProvider) => {
     const records = [
       { ...primary, health: degradedProvider === 'evolution' ? 'degraded' : 'healthy', isActiveWriter: degradedProvider !== 'evolution' },

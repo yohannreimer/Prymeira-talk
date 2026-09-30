@@ -6,23 +6,25 @@ const ch = '00000000-0000-4000-8000-000000000001';
 const evo = '00000000-0000-4000-8000-000000000002';
 const wahaId = '00000000-0000-4000-8000-000000000003';
 function fixture() {
-  let channel: any = { id: ch, workspaceId: 'ws', provider: 'evolution', providerKey: 'evo-existing', phoneNumber: '+55 47 99999-0000', status: 'connected', displayName: 'Comercial', redundancyEnabled: true, activeConnectionId: evo, createdAt: new Date(), updatedAt: new Date() };
+  let channel: any = { id: ch, workspaceId: 'ws', provider: 'evolution', providerKey: 'evo-existing', phoneNumber: '+55 47 99999-0000', status: 'connected', displayName: 'Comercial', redundancyEnabled: true, connectionLifecycleGeneration: 0, activeConnectionId: evo, createdAt: new Date(), updatedAt: new Date() };
   const records: any[] = [
-    { id: evo, workspaceId: 'ws', channelId: ch, provider: 'evolution', sessionName: 'evo-existing', status: 'connected', health: 'healthy', verifiedPhoneNumber: '5547999990000', eligible: true },
-    { id: wahaId, workspaceId: 'ws', channelId: ch, provider: 'waha', sessionName: 'talk-waha', status: 'connecting', health: 'unknown', verifiedPhoneNumber: null, eligible: false }
+    { id: evo, workspaceId: 'ws', channelId: ch, provider: 'evolution', sessionName: 'evo-existing', status: 'connected', health: 'healthy', lifecycleGeneration: 0, verifiedPhoneNumber: '5547999990000', eligible: true },
+    { id: wahaId, workspaceId: 'ws', channelId: ch, provider: 'waha', sessionName: 'talk-waha', status: 'connecting', health: 'unknown', lifecycleGeneration: 0, verifiedPhoneNumber: null, eligible: false }
   ];
   const matches = (r: any, where: any) => Object.entries(where).every(([k,v]) => r[k] === v);
+  const apply = (record: any, data: any) => { for (const [key, value] of Object.entries(data)) record[key] = value && typeof value === 'object' && 'increment' in value ? (record[key] ?? 0) + (value as any).increment : value; return { ...record }; };
   const prisma: any = {
-    channel: { findFirst: vi.fn(async ({ where }) => matches(channel, where) ? channel : null), update: vi.fn(async ({ data }) => channel = { ...channel, ...data }) },
+    channel: { findFirst: vi.fn(async ({ where }) => matches(channel, where) ? { ...channel } : null), update: vi.fn(async ({ data }) => apply(channel, data)), updateMany: vi.fn(async ({ where, data }) => { if (!matches(channel, where)) return { count: 0 }; apply(channel, data); return { count: 1 }; }) },
     channelConnection: {
-      findMany: vi.fn(async ({ where }) => records.filter((r) => matches(r, where))),
-      findFirst: vi.fn(async ({ where }) => records.find((r) => matches(r, where)) ?? null),
+      findMany: vi.fn(async ({ where }) => records.filter((r) => matches(r, where)).map((r) => ({ ...r }))),
+      findFirst: vi.fn(async ({ where }) => records.find((r) => matches(r, where)) ? { ...records.find((r) => matches(r, where)) } : null),
       upsert: vi.fn(async ({ where, create }) => {
         const record = records.find((r) => matches(r, where.workspaceId_channelId_provider));
-        if (record) return record;
+        if (record) return { ...record };
         const value = { id: wahaId, ...create }; records.push(value); return value;
       }),
-      update: vi.fn(async ({ where, data }) => { const record = records.find((r) => matches(r, where.workspaceId_id)); Object.assign(record, data); return record; })
+      updateMany: vi.fn(async ({ where, data }) => { const found = records.filter((r) => matches(r, where)); found.forEach((record) => apply(record, data)); return { count: found.length }; }),
+      update: vi.fn(async ({ where, data }) => { const record = records.find((r) => matches(r, where.workspaceId_id)); return apply(record, data); })
     },
     $transaction: vi.fn(async (fn) => fn(prisma))
   };
@@ -31,6 +33,82 @@ function fixture() {
   return { prisma, client, evolution, channel: () => channel, records };
 }
 describe('physical channel lifecycle', () => {
+  it('rejects a delayed secondary QR after logout without reopening its physical state', async () => {
+    const f = fixture();
+    f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'STOPPED', engine: {}, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+    let release!: (qr: string) => void; let entered!: () => void;
+    const paused = new Promise<void>((resolve) => { entered = resolve; });
+    f.client.getQr.mockImplementationOnce(() => { entered(); return new Promise((resolve) => { release = resolve; }); });
+    const pending = service.startQr({ workspaceId: 'ws', channelId: ch, connectionId: wahaId }).then((result) => result, (error) => error);
+    await paused;
+    await service.disconnect({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    const disconnected = { ...f.records.find((r) => r.id === wahaId) };
+    release('late-qr');
+    expect(await pending).toMatchObject({ code: 'LIFECYCLE_SUPERSEDED', statusCode: 409 });
+    expect(f.records.find((r) => r.id === wahaId)).toEqual(disconnected);
+    expect(f.evolution.client.logoutInstance).not.toHaveBeenCalled();
+  });
+
+  it('blocks probes completing inside a pending logout and preserves the sending fence', async () => {
+    const f = fixture();
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+    await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    let finishLogout!: () => void; let entered!: () => void;
+    const paused = new Promise<void>((resolve) => { entered = resolve; });
+    f.client.logoutSession.mockImplementationOnce(() => { entered(); return new Promise<void>((resolve) => { finishLogout = resolve; }); });
+    const logout = service.disconnect({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    await paused;
+    const fenced = { ...f.records.find((r) => r.id === wahaId) };
+    expect(fenced).toMatchObject({ eligible: false, verifiedPhoneNumber: null, lastHealthyAt: null });
+    expect(fenced.lifecycleGeneration % 2).toBe(1);
+    const during = await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    expect(during.channel.connections!.find((r) => r.id === wahaId)?.eligible).toBe(false);
+    expect(f.records.find((r) => r.id === wahaId)).toEqual(fenced);
+    expect(f.client.getMe).toHaveBeenCalledTimes(1);
+    finishLogout(); await logout;
+    expect(f.records.find((r) => r.id === wahaId)).toMatchObject({ status: 'disconnected', eligible: false });
+    expect(f.records.find((r) => r.id === wahaId).lifecycleGeneration % 2).toBe(0);
+  });
+  it('discards a delayed failed Evolution probe after secondary logout', async () => {
+    const f = fixture();
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+    let rejectProbe!: (error: Error) => void; let entered!: () => void;
+    const paused = new Promise<void>((resolve) => { entered = resolve; });
+    f.evolution.client.getConnectionState.mockImplementationOnce(() => { entered(); return new Promise((_, reject) => { rejectProbe = reject; }); });
+    const probe = service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: evo });
+    await paused;
+    await service.disconnect({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    const primary = { ...f.records.find((r) => r.id === evo) };
+    rejectProbe(new Error('delayed network failure')); await probe;
+    expect(f.records.find((r) => r.id === evo)).toEqual(primary);
+  });
+
+  it.each(['logout', 'disable', 'fresh-qr'] as const)('discards a delayed WAHA probe after %s revokes its lifecycle', async (action) => {
+    const f = fixture();
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+    await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    let release!: (owner: string) => void; let entered!: () => void;
+    const paused = new Promise<void>((resolve) => { entered = resolve; });
+    f.evolution.client.getInstanceIdentity.mockImplementationOnce(() => { entered(); return new Promise((resolve) => { release = resolve; }); });
+    const oldProbe = service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    await paused;
+    if (action === 'logout') await service.disconnect({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    else if (action === 'disable') await service.setRedundancy({ workspaceId: 'ws', channelId: ch, enabled: false });
+    else {
+      f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'STOPPED', engine: {}, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
+      await service.startQr({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    }
+    const revoked = { ...f.records.find((r) => r.id === wahaId) };
+    const primary = { ...f.records.find((r) => r.id === evo) };
+    release('5547999990000@s.whatsapp.net');
+    const result = await oldProbe;
+    expect(f.records.find((r) => r.id === wahaId)).toEqual(revoked);
+    expect(f.records.find((r) => r.id === evo)).toEqual(primary);
+    expect(result.channel.connections!.find((r) => r.id === wahaId)?.eligible).toBe(false);
+    if (action === 'disable') expect(result.channel.redundancyEnabled).toBe(false);
+  });
+
   it('persists connecting before a bounded QR retry and reports pending without restarting either session', async () => {
     const f = fixture();
     f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'STOPPED', engine: {}, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
@@ -42,6 +120,7 @@ describe('physical channel lifecycle', () => {
       await vi.runAllTimersAsync();
       expect(await pending).toMatchObject({ code: 'WAHA_QR_PENDING', statusCode: 503 });
       expect(f.client.getQr).toHaveBeenCalledTimes(3);
+      expect(f.records.find((r) => r.id === wahaId).lifecycleGeneration % 2).toBe(0);
       expect(f.client.startSession).toHaveBeenCalledTimes(1);
       expect(f.records.find((r) => r.id === wahaId)).toMatchObject({ status: 'connecting', eligible: false, health: 'unknown' });
       expect(f.evolution.client.logoutInstance).not.toHaveBeenCalled();
@@ -177,7 +256,7 @@ describe('physical channel lifecycle', () => {
     f.client.getVersion.mockResolvedValue({ version: '2026.7.2', engine: 'NOWEB' });
     const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
     await expect(service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId })).rejects.toMatchObject({ code: 'WAHA_ENGINE_UNSUPPORTED' });
-    expect(secondary).toMatchObject({ health: 'unhealthy', eligible: false, lastError: 'WAHA_ENGINE_UNSUPPORTED', consecutiveFailures: { increment: 1 } });
+    expect(secondary).toMatchObject({ health: 'unhealthy', eligible: false, lastError: 'WAHA_ENGINE_UNSUPPORTED', consecutiveFailures: 1 });
     expect(secondary.failureStartedAt).toBeInstanceOf(Date);
     expect(f.client.getSession).not.toHaveBeenCalled();
   });

@@ -359,6 +359,11 @@ export function ChannelsPage() {
     }
   }
 
+  function closeQrDrawer() {
+    primaryGeneration.current += 1;
+    setQrDrawerOpen(false);
+  }
+
   async function reconnectChannel(channel: ChannelDto) {
     setIsSaving(true);
     setError(null);
@@ -697,7 +702,7 @@ export function ChannelsPage() {
         <>
           <div
             className="contact-drawer-overlay"
-            onClick={() => setQrDrawerOpen(false)}
+            onClick={closeQrDrawer}
             aria-hidden="true"
           />
           <aside className="contact-drawer is-open" aria-label="Conectar canal via QR">
@@ -705,7 +710,7 @@ export function ChannelsPage() {
               <span className="context-card-title">Conectar via QR</span>
               <button
                 className="drawer-close"
-                onClick={() => setQrDrawerOpen(false)}
+                onClick={closeQrDrawer}
                 type="button"
                 aria-label="Fechar"
               >

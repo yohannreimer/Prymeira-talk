@@ -275,6 +275,7 @@ model Channel {
   phoneNumber     String?         @map("phone_number")
   displayName     String?         @map("display_name")
   status          ChannelStatus   @default(disconnected)
+  connectionLifecycleGeneration Int @default(0) @map("connection_lifecycle_generation")
   redundancyEnabled Boolean       @default(false) @map("redundancy_enabled")
   activeConnectionId String?       @map("active_connection_id") @db.Uuid
   encryptedConfig Json            @default("{}") @map("encrypted_config")
@@ -306,6 +307,7 @@ model ChannelConnection {
   workspaceId         String                    @map("workspace_id")
   channelId           String                    @map("channel_id") @db.Uuid
   provider            ChannelConnectionProvider
+  lifecycleGeneration Int                       @default(0) @map("lifecycle_generation")
   sessionName         String                    @map("session_name")
   status              ChannelStatus             @default(disconnected)
   health              ChannelConnectionHealth    @default(unknown)

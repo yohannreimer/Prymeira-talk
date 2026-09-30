@@ -11,7 +11,7 @@ import {
 } from "../evolution/evolution.client.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import type { WahaRuntime } from '../waha/waha.client.js';
-import { createChannelConnectionsService, type ConnectionPrisma } from './channel-connections.js';
+import { createChannelConnectionsService, type ConnectionPrisma, type ConnectionLifecycle } from './channel-connections.js';
 import type { Channel } from '@prisma/client';
 import { toChannelDto } from './channel-dto.js';
 export { toChannelDto } from './channel-dto.js';
@@ -232,14 +232,6 @@ export function createChannelsService(
     ? createChannelConnectionsService(prisma as unknown as ConnectionPrisma, options)
     : null;
   const describe = (record: ChannelRecord) => physical ? physical.describe(record as Channel) : Promise.resolve(toChannelDto(record));
-  const syncPrimary = async (record: ChannelRecord) => {
-    if (!physical || record.provider !== 'evolution') return;
-    const connection = await physical.ensurePrimary(record as Channel);
-    await prisma.channelConnection!.update({ where: { workspaceId_id: { workspaceId: record.workspaceId, id: connection.id } }, data: {
-      status: record.status, eligible: record.status === 'connected', health: 'unknown',
-      ...(record.status === 'disconnected' ? { verifiedPhoneNumber: null, disconnectedAt: new Date() } : {})
-    } });
-  };
   const resolveMode = async (workspaceId: string): Promise<IntegrationMode> => {
     const config = await prisma.integrationConfig.findUnique({
       where: {
@@ -253,20 +245,13 @@ export function createChannelsService(
     return hasRealEvolutionConfig(config) ? "real" : "simulated";
   };
 
-  const updateChannelStatus = async (input: {
-    workspaceId: string;
-    channelId: string;
-    status: ChannelDto["status"];
-  }) => {
-    return prisma.channel.update({
-      where: {
-        workspaceId_id: {
-          workspaceId: input.workspaceId,
-          id: input.channelId
-        }
-      },
-      data: { status: input.status }
-    });
+  const completePrimaryLifecycle = async (
+    input: { workspaceId: string; channelId: string },
+    operation: ConnectionLifecycle | null,
+    data: Parameters<PrismaLike['channel']['update']>[0]['data']
+  ): Promise<ChannelRecord> => {
+    if (physical && operation) return physical.completePrimaryLifecycle(operation, data);
+    return prisma.channel.update({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.channelId } }, data });
   };
 
   const getEvolutionChannel = async (input: {
@@ -390,75 +375,70 @@ export function createChannelsService(
       channelId: string;
     }): Promise<ChannelQrResultDto> {
       const existingChannel = await getEvolutionChannel(input);
-      const evolution = options.evolution;
-      const client = evolution?.client;
+      const operation = physical ? await physical.beginPrimaryLifecycle(existingChannel as Channel) : null;
+      try {
+        const evolution = options.evolution;
+        const client = evolution?.client;
 
-      if (evolution?.mode === "real" && client) {
-        const webhookUrl = evolution.publicWebhookUrl(input.workspaceId);
-        let instance;
+        if (evolution?.mode === "real" && client) {
+          const webhookUrl = evolution.publicWebhookUrl(input.workspaceId);
+          let instance;
 
-        try {
-          instance = await client
-            .createInstance({
-              instanceName: existingChannel.providerKey,
+          try {
+            instance = await client
+              .createInstance({
+                instanceName: existingChannel.providerKey,
+                webhookUrl,
+                webhookSecret: evolution.webhookSecret
+              })
+              .catch((error: unknown) => {
+                if (!isEvolutionInstanceNameInUseError(error)) {
+                  throw error;
+                }
+
+                return client.connectInstance({
+                  instanceName: existingChannel.providerKey
+                });
+              });
+
+            await client.setWebhook({
+              instanceName: instance.instanceName,
               webhookUrl,
               webhookSecret: evolution.webhookSecret
-            })
-            .catch((error: unknown) => {
-              if (!isEvolutionInstanceNameInUseError(error)) {
-                throw error;
-              }
-
-              return client.connectInstance({
-                instanceName: existingChannel.providerKey
-              });
             });
-
-          await client.setWebhook({
-            instanceName: instance.instanceName,
-            webhookUrl,
-            webhookSecret: evolution.webhookSecret
-          });
-        } catch (error) {
-          if (isEvolutionLicenseRequiredError(error)) {
-            throw new ChannelsServiceError(
-              "EVOLUTION_LICENSE_REQUIRED",
-              "Evolution API 2.4.0+ exige ativação da licenca antes de criar sessoes WhatsApp. Ative a instancia no Evolution Manager ou configure a licenca no container da Evolution e tente novamente.",
-              503
-            );
-          }
-
-          throw error;
-        }
-
-        if (!instance.qrCode) {
-          const connectionState = client.getConnectionState
-            ? await client.getConnectionState({ instanceName: existingChannel.providerKey }).catch(() => null)
-            : null;
-
-          if (connectionState === "open") {
-            throw new ChannelsServiceError(
-              "EVOLUTION_ALREADY_LINKED",
-              "A Evolution informa que esta sessão já está vinculada e não gerou QR. Se as mensagens não funcionam, clique em Desconectar e depois em Reconectar para vincular o WhatsApp novamente.",
-              409
-            );
-          }
-
-          throw new ChannelsServiceError(
-            "EVOLUTION_QR_UNAVAILABLE",
-            "Evolution did not return a QR code for this channel.",
-            502
-          );
-        }
-
-        const channel = await prisma.channel.update({
-          where: {
-            workspaceId_id: {
-              workspaceId: input.workspaceId,
-              id: input.channelId
+          } catch (error) {
+            if (isEvolutionLicenseRequiredError(error)) {
+              throw new ChannelsServiceError(
+                "EVOLUTION_LICENSE_REQUIRED",
+                "Evolution API 2.4.0+ exige ativação da licenca antes de criar sessoes WhatsApp. Ative a instancia no Evolution Manager ou configure a licenca no container da Evolution e tente novamente.",
+                503
+              );
             }
-          },
-          data: {
+
+            throw error;
+          }
+
+          if (!instance.qrCode) {
+            const connectionState = client.getConnectionState
+              ? await client.getConnectionState({ instanceName: existingChannel.providerKey }).catch(() => null)
+              : null;
+
+            if (connectionState === "open") {
+              throw new ChannelsServiceError(
+                "EVOLUTION_ALREADY_LINKED",
+                "A Evolution informa que esta sessão já está vinculada e não gerou QR. Se as mensagens não funcionam, clique em Desconectar e depois em Reconectar para vincular o WhatsApp novamente.",
+                409
+              );
+            }
+
+            throw new ChannelsServiceError(
+              "EVOLUTION_QR_UNAVAILABLE",
+              "Evolution did not return a QR code for this channel.",
+              502
+            );
+          }
+
+          const channel = await completePrimaryLifecycle(input, operation, {
             status: "connecting",
             historyImportStatus: "pending",
             historyImportNextAt: new Date(Date.now() + 30_000),
@@ -466,63 +446,57 @@ export function createChannelsService(
             historyImportCompletedAt: null,
             historyImportLeaseToken: null,
             historyImportLeaseUntil: null
-          }
-        });
+          });
 
-        await syncPrimary(channel);
+          const connectionId = physical ? (await physical.ensurePrimary(channel as Channel)).id : undefined;
+
+          return {
+            mode: "real",
+            channel: await describe(channel),
+            connectionId,
+            provider: 'evolution',
+            qrCode: instance.qrCode,
+            qr: {
+              payload: instance.qrCode,
+              expiresAt: realQrExpiresAt(),
+              issuedAt: new Date().toISOString()
+            }
+          };
+        }
+
+        const mode = await resolveMode(input.workspaceId);
+        const channel = await completePrimaryLifecycle(input, operation, { status: "connecting" });
         const connectionId = physical ? (await physical.ensurePrimary(channel as Channel)).id : undefined;
 
         return {
-          mode: "real",
+          mode,
           channel: await describe(channel),
           connectionId,
           provider: 'evolution',
-          qrCode: instance.qrCode,
+          qrCode: demoQrPayload(input),
           qr: {
-            payload: instance.qrCode,
-            expiresAt: realQrExpiresAt(),
-            issuedAt: new Date().toISOString()
+            payload: demoQrPayload(input),
+            expiresAt: demoQrExpiresAt()
           }
         };
-      }
-
-      const mode = await resolveMode(input.workspaceId);
-      const channel = await updateChannelStatus({
-        ...input,
-        status: "connecting"
-      });
-      await syncPrimary(channel);
-      const connectionId = physical ? (await physical.ensurePrimary(channel as Channel)).id : undefined;
-
-      return {
-        mode,
-        channel: await describe(channel),
-        connectionId,
-        provider: 'evolution',
-        qrCode: demoQrPayload(input),
-        qr: {
-          payload: demoQrPayload(input),
-          expiresAt: demoQrExpiresAt()
-        }
-      };
+      } finally { if (physical && operation) await physical.finishPrimaryLifecycle(operation); }
     },
 
     async reconnectChannel(input: {
       workspaceId: string;
       channelId: string;
     }): Promise<ChannelOperationResultDto> {
-      await getEvolutionChannel(input);
-      const mode = await resolveMode(input.workspaceId);
-      const channel = await updateChannelStatus({
-        ...input,
-        status: "connecting"
-      });
-      await syncPrimary(channel);
+      const existingChannel = await getEvolutionChannel(input);
+      const operation = physical ? await physical.beginPrimaryLifecycle(existingChannel as Channel) : null;
+      try {
+        const mode = await resolveMode(input.workspaceId);
+        const channel = await completePrimaryLifecycle(input, operation, { status: "connecting" });
 
-      return {
-        mode,
-        channel: await describe(channel)
-      };
+        return {
+          mode,
+          channel: await describe(channel)
+        };
+      } finally { if (physical && operation) await physical.finishPrimaryLifecycle(operation); }
     },
 
     async disconnectChannel(input: {
@@ -530,27 +504,26 @@ export function createChannelsService(
       channelId: string;
     }): Promise<ChannelOperationResultDto> {
       const existingChannel = await getEvolutionChannel(input);
-      const mode = await resolveMode(input.workspaceId);
-      if (options.evolution?.mode === "real") {
-        if (!options.evolution?.client?.logoutInstance) {
-          throw new ChannelsServiceError(
-            "EVOLUTION_DISCONNECT_UNAVAILABLE",
-            "Não foi possível encerrar a sessão na Evolution no momento.",
-            503
-          );
+      const operation = physical ? await physical.beginPrimaryLifecycle(existingChannel as Channel) : null;
+      try {
+        const mode = await resolveMode(input.workspaceId);
+        if (options.evolution?.mode === "real") {
+          if (!options.evolution?.client?.logoutInstance) {
+            throw new ChannelsServiceError(
+              "EVOLUTION_DISCONNECT_UNAVAILABLE",
+              "Não foi possível encerrar a sessão na Evolution no momento.",
+              503
+            );
+          }
+          await options.evolution.client.logoutInstance({ instanceName: existingChannel.providerKey });
         }
-        await options.evolution.client.logoutInstance({ instanceName: existingChannel.providerKey });
-      }
-      const channel = await updateChannelStatus({
-        ...input,
-        status: "disconnected"
-      });
-      await syncPrimary(channel);
+        const channel = await completePrimaryLifecycle(input, operation, { status: "disconnected" });
 
-      return {
-        mode,
-        channel: await describe(channel)
-      };
+        return {
+          mode,
+          channel: await describe(channel)
+        };
+      } finally { if (physical && operation) await physical.finishPrimaryLifecycle(operation); }
     },
 
     async deleteChannel(input: {
