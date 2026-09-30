@@ -1,3 +1,5 @@
+import { buildProspectingInstructions } from "../prospecting/prospecting-instructions.js";
+import { autonomousAgentAllowed, findProspectingReservation } from "../prospecting/prospecting-policy.js";
 import { blocksAutonomousAgent } from "../assistant/assistant-policy.js";
 import type { ConversationOutboundTextDelivery } from "../conversations/conversations.service.js";
 import {
@@ -45,6 +47,7 @@ type AgentFollowupAgent = {
   status: string;
   model: string;
   systemPrompt: string;
+  handoffConfig?: unknown;
   behaviorConfig: unknown;
 };
 
@@ -247,7 +250,9 @@ export function createAgentFollowupRuntime(input: {
         return { status: "review", followupId: followup.id };
       }
 
-      const followupConfig = resolveFollowupPlan(agent.behaviorConfig, conversation.channel?.followupConfig);
+      const prospecting = await findProspectingReservation(prisma, runInput.workspaceId, followup.conversationId);
+      if (prospecting && !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: followup.conversationId, agentId: agent.id, sessionId: followup.sessionId, expectedGeneration: prospecting.generation })) { await markSkipped(followup, { outcome: "skip" }, "prospecting_stopped"); return { status: "cancelled", followupId: followup.id, reason: "prospecting_stopped" }; }
+      const followupConfig = resolveFollowupPlan(agent.behaviorConfig, conversation.channel?.followupConfig, !!prospecting);
       if (followup.stepIndex > MAX_AUTOMATIC_FOLLOWUP_STEPS || followup.stepIndex > (followupConfig?.steps.length ?? 0)) {
         await markSkipped(followup, { outcome: "skip", reason: "followup_step_limit" }, "followup_step_limit");
         return { status: "skipped", followupId: followup.id };
@@ -257,6 +262,8 @@ export function createAgentFollowupRuntime(input: {
         await markSkipped(followup, { outcome: "skip", reason: "followup_step_unconfigured" }, "followup_step_unconfigured");
         return { status: "skipped", followupId: followup.id };
       }
+      const campaign = prospecting ? await (prisma as unknown as import('@prisma/client').PrismaClient).campaign.findFirst({ where: { workspaceId: runInput.workspaceId, id: prospecting.campaignId } }) : null;
+      const effectiveSystemPrompt = prospecting ? buildProspectingInstructions(agent.systemPrompt, asRecord(agent.handoffConfig)?.prospectingGoal, campaign?.prospectingContext) : agent.systemPrompt;
       const stepInstruction = resolveFollowupStepInstruction({
         kind: followup.kind,
         configuredInstruction: step.instruction
@@ -328,7 +335,7 @@ export function createAgentFollowupRuntime(input: {
           aiControlStatus: conversation.aiControlStatus === "agent_allowed" ? "agent_allowed" : "human_controlled",
           hasCompatibleActiveAgentSession: Boolean(initial.context.session),
           hasConfiguredHumanAgent: followup.kind === "human_commercial" && !initial.context.session,
-          allowAutomaticSend: followupConfig?.humanCommercialDelivery === "automatic"
+          allowAutomaticSend: !!prospecting || followupConfig?.humanCommercialDelivery === "automatic"
         });
       } catch (error) {
         await markReview({
@@ -349,14 +356,14 @@ export function createAgentFollowupRuntime(input: {
       }
 
       const automaticDeliveryBlocked = decision.route === "automatic_send" &&
-        !isAutomaticallyEligible(decision, followup, conversation, followupConfig?.humanCommercialDelivery);
+        !isAutomaticallyEligible(decision, followup, conversation, followupConfig?.humanCommercialDelivery, !!prospecting);
       if (automaticDeliveryBlocked) decision = { ...decision, route: "human_review" };
 
       let preflightPlan: AgentReplyPreflightPlan | undefined;
       if (input.replyPreflight) {
         try {
           const preflight = await input.replyPreflight.evaluate({
-            agentRules: agent.systemPrompt,
+            agentRules: effectiveSystemPrompt,
             followupPurpose: decision.purpose === "none" ? undefined : decision.purpose,
             currentMessage: toPreflightCurrentMessage(conversationContext.messages, followup, stepInstruction),
             conversationMessages: jevMessages,
@@ -411,7 +418,7 @@ export function createAgentFollowupRuntime(input: {
         output = await runProvider.generate({
           reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
           model: runModel,
-          systemPrompt: agent.systemPrompt,
+          systemPrompt: effectiveSystemPrompt,
           userPrompt: buildFollowupUserPrompt(stepInstruction, decision),
           context: buildFollowupContext({
             conversation,
@@ -449,7 +456,7 @@ export function createAgentFollowupRuntime(input: {
       if (input.replyPreflight?.audit && preflightPlan) {
         try {
           const audit = await input.replyPreflight.audit({
-            agentRules: agent.systemPrompt,
+            agentRules: effectiveSystemPrompt,
             followupPurpose: decision.purpose === "none" ? undefined : decision.purpose,
             currentMessage: toPreflightCurrentMessage(conversationContext.messages, followup, stepInstruction),
             conversationMessages: jevMessages,
@@ -496,10 +503,10 @@ export function createAgentFollowupRuntime(input: {
 
       const currentConversation = await loadConversation(prisma, runInput.workspaceId, beforeDelivery.context.followup.conversationId);
       const currentFollowupConfig = currentConversation
-        ? resolveFollowupPlan(agent.behaviorConfig, currentConversation.channel?.followupConfig)
+        ? resolveFollowupPlan(agent.behaviorConfig, currentConversation.channel?.followupConfig, !!prospecting)
         : null;
       if (!currentConversation || !currentFollowupConfig ||
-        !isAutomaticallyEligible(decision, beforeDelivery.context.followup, currentConversation, currentFollowupConfig.humanCommercialDelivery)) {
+        !isAutomaticallyEligible(decision, beforeDelivery.context.followup, currentConversation, currentFollowupConfig.humanCommercialDelivery, !!prospecting)) {
         await markReview({
           followup: beforeDelivery.context.followup,
           decision,
@@ -528,6 +535,7 @@ export function createAgentFollowupRuntime(input: {
         return { status: "deferred", followupId: beforeDelivery.context.followup.id };
       }
 
+      if (prospecting && !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: followup.conversationId, agentId: agent.id, sessionId: followup.sessionId, expectedGeneration: prospecting.generation })) { await markSkipped(followup, { outcome: "skip" }, "prospecting_stopped"); return { status: "cancelled", followupId: followup.id, reason: "prospecting_stopped" }; }
       let delivery;
       try {
         delivery = await input.outbound.createPendingOutboundMessage({
@@ -538,6 +546,7 @@ export function createAgentFollowupRuntime(input: {
           metadata: {
             source: "ai_agent",
             agentId: agent.id,
+            ...(prospecting ? { prospectingGeneration: prospecting.generation } : {}),
             followupId: beforeDelivery.context.followup.id
           }
         });
@@ -622,7 +631,8 @@ function isAutomaticallyEligible(
   decision: FollowupDecision,
   followup: ConversationFollowupRecord,
   conversation: FollowupConversation,
-  automaticDelivery: "review" | "automatic" | undefined
+  automaticDelivery: "review" | "automatic" | undefined,
+  campaignProspecting = false
 ) {
   const qualificationEligible =
     followup.kind === "qualification" &&
@@ -634,13 +644,13 @@ function isAutomaticallyEligible(
     ["proposal_checkin", "objection_help", "confirm_active"].includes(decision.purpose) &&
     ["post_proposal", "seller_owned"].includes(decision.stage);
   return (
-    automaticDelivery === "automatic" &&
+    (campaignProspecting || automaticDelivery === "automatic") &&
     (qualificationEligible || commercialEligible) &&
     decision.outcome === "follow_up" &&
     decision.route === "automatic_send" &&
     decision.risk === "none" &&
     conversation.status !== "closed" &&
-    (!qualificationEligible || !blocksAutonomousAgent(conversation.channel?.encryptedConfig))
+    (!qualificationEligible || campaignProspecting || !blocksAutonomousAgent(conversation.channel?.encryptedConfig))
   );
 }
 

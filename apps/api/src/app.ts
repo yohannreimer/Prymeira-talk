@@ -63,6 +63,7 @@ import { metaWebhooksRoutes } from "./modules/meta/meta.webhooks.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 import { reportsRoutes } from "./modules/reports/reports.routes.js";
 import { settingsRoutes } from "./modules/settings/settings.routes.js";
+import { supervisionRoutes } from "./modules/supervision/supervision.routes.js";
 import { tagsRoutes } from "./modules/tags/tags.routes.js";
 import { teamRoutes } from "./modules/team/team.routes.js";
 import { quickRepliesRoutes } from "./modules/quick-replies/quick-replies.routes.js";
@@ -310,6 +311,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           writer: createOpenAiAgentImprovementRuleWriter({ prisma: app.prisma })
         }
       );
+  const handoffBriefService = options.prismaEnabled === false ? undefined : createHandoffBriefService(app.prisma);
   const agentRuntime =
     options.prismaEnabled === false
       ? undefined
@@ -323,14 +325,16 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           logger: app.log,
           boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike),
           followupService,
-          inboxTriage
+          inboxTriage,
+          handoffBriefService
         });
   const agentReplyScheduler =
     options.prismaEnabled === false || !agentRuntime
       ? undefined
       : createAgentReplyScheduler({
           prisma: app.prisma as unknown as Parameters<typeof createAgentReplyScheduler>[0]["prisma"],
-          agentRuntime
+          agentRuntime,
+          followupService
         });
   agentReplyScheduler?.start();
   if (agentReplyScheduler) {
@@ -446,7 +450,6 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
         prepareMedia: async ({ workspaceId, mediaUrl, kind }) => prepareInboundMedia({ settings: await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId }), mediaUrl, kind })
       });
   const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { prepareContext: prepareAssistantHistory, onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });
-  const handoffBriefService = options.prismaEnabled === false ? undefined : createHandoffBriefService(app.prisma);
   assistantScheduler?.start();
   app.addHook('onClose', async () => { assistantScheduler?.stop(); handoffBriefService?.stop(); });
   await app.register(evolutionRoutes, {
@@ -479,6 +482,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     inboxTriage,
     agentImprovements
   });
+  await app.register(supervisionRoutes, { evolution: evolutionRuntime });
   if (inboxTriage) await app.register(inboxTriageRoutes, { triage: inboxTriage });
   if (followupService && followupOutbound) {
     await app.register(conversationFollowupsRoutes, {
@@ -502,6 +506,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
       evolutionRuntime.client?.checkWhatsappNumbersAvailability) {
     const campaignWorker = createCampaignWorker({ prisma: app.prisma,
       evolution: evolutionRuntime.client,
+      onProspectingReplyReady: async (reply) => { await agentRuntime?.prepareAudioMessage({ workspaceId: reply.workspaceId, messageId: reply.messageId }); await agentReplyScheduler?.scheduleActiveSessionForMessage(reply); },
       onConversationUpdated: async ({ workspaceId, conversationId }) => {
         const payload = await createConversationsService(app.prisma as unknown as ConversationsPrismaLike)
           .getConversationDto({ workspaceId, conversationId });
@@ -525,7 +530,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(crmRoutes, {
     vinculaApiUrl: env.VINCULA_CRM_API_URL
   });
-  await app.register(settingsRoutes);
+  await app.register(settingsRoutes, { handoffBriefService });
 
   return app;
 }

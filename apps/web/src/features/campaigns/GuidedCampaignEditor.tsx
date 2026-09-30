@@ -4,7 +4,8 @@ import { ArrowLeft, ArrowRight, CheckCircle2, Clock3, ListPlus, Pause, Play, Shi
 import {
   apiActivateCampaign, apiControlCampaign, apiCreateCampaign, apiGetCampaignProgress,
   apiGetBroadcastLists, apiGetCampaigns, apiGetCampaignRecipients, apiPreviewCampaignAudience,
-  apiResolveUncertainCampaignRecipient, apiUpdateCampaign,
+  apiResolveUncertainCampaignRecipient, apiUpdateCampaign, apiGetSettings, apiGetAgents,
+  type AiAgentDto,
   type CampaignAudiencePreviewDto, type CampaignCadenceDto, type CampaignDto,
   type CampaignProgressDto, type CampaignRecipientDto, type ContactBoardWithStagesDto, type BroadcastListDto
 } from "../../app/api";
@@ -57,6 +58,14 @@ export function GuidedCampaignEditor(props: {
   onBack: () => void;
   onMeta: () => void;
 }) {
+  const [prospectingEnabled, setProspectingEnabled] = useState(Boolean(props.campaign?.prospectingAgentId));
+  const [prospectingAgentId, setProspectingAgentId] = useState(props.campaign?.prospectingAgentId ?? "");
+  const [prospectingContext, setProspectingContext] = useState(props.campaign?.prospectingContext ?? "");
+  const [agents, setAgents] = useState<AiAgentDto[]>([]);
+  const [moduleEnabled, setModuleEnabled] = useState(false);
+  const [prospectingLoading, setProspectingLoading] = useState(true);
+  const [prospectingError, setProspectingError] = useState<string | null>(null);
+  const [skippedRows, setSkippedRows] = useState<CampaignRecipientDto[]>([]);
   const [current, setCurrent] = useState(props.campaign);
   const [stage, setStage] = useState<Stage>(1);
   const [name, setName] = useState(props.campaign?.name ?? "");
@@ -91,6 +100,29 @@ export function GuidedCampaignEditor(props: {
   const isActive = current?.status !== undefined && current.status !== "draft";
   const isLeadDraft = current?.audience.origin === "leads";
 
+  const prospectingAgents = agents.filter((agent) => agent.status === "active" && agent.type === "prospecting");
+  const responsibleAgent = agents.find((agent) => agent.id === prospectingAgentId);
+
+  useEffect(() => {
+    let mounted = true;
+    setProspectingLoading(true); setProspectingError(null);
+    void Promise.all([apiGetSettings(props.getToken), apiGetAgents(props.getToken)])
+      .then(([settings, agents]) => { if (mounted) { setModuleEnabled(settings.modules?.campaignProspecting === true); setAgents(agents); } })
+      .catch(() => { if (mounted) setProspectingError("Não foi possível carregar a configuração de prospecção. Atualize a página para tentar novamente."); })
+      .finally(() => { if (mounted) setProspectingLoading(false); });
+    return () => { mounted = false; };
+  }, [props.getToken]);
+
+  function validateProspecting() {
+    if (!prospectingEnabled) return;
+    if (prospectingLoading) throw new Error("Aguarde o carregamento da configuração de prospecção.");
+    if (prospectingError) throw new Error(prospectingError);
+    if (!moduleEnabled) throw new Error("Ative o módulo de prospecção em Configurações para acompanhar respostas com IA.");
+    if (!prospectingAgents.some((agent) => agent.id === prospectingAgentId))
+      throw new Error("Escolha um agente ativo de Prospecção para acompanhar as respostas.");
+    if (prospectingContext.trim().length > 6000) throw new Error("O contexto da oferta deve ter até 6000 caracteres.");
+  }
+
   function closeListDialog() {
     setListDialogOpen(false);
     if (!listId) return;
@@ -113,8 +145,9 @@ export function GuidedCampaignEditor(props: {
     let mounted = true;
     const load = async () => {
       try { const next = await apiGetCampaignProgress(props.getToken, current.id);
-        const rows = next.uncertain > 0 ? await apiGetCampaignRecipients(props.getToken, current.id) : [];
-        if (mounted) { setProgress(next); setUncertainRows(rows.filter((row) => row.status === "uncertain")); } }
+        const rows = (next.uncertain > 0 || next.skipped > 0) ? await apiGetCampaignRecipients(props.getToken, current.id) : [];
+        if (mounted) { setProgress(next); setUncertainRows(rows.filter((row) => row.status === "uncertain"));
+          setSkippedRows(rows.filter((row) => row.status.startsWith("skipped"))); } }
       catch { if (mounted) setError("Não foi possível atualizar o andamento da fila."); }
     };
     void load();
@@ -123,6 +156,7 @@ export function GuidedCampaignEditor(props: {
   }, [current?.id, current?.status, props.getToken]);
 
   async function saveDraft() {
+    validateProspecting();
     if (!name.trim()) throw new Error("Dê um nome para este disparo.");
     if (!message.trim()) throw new Error("Escreva a mensagem antes de continuar.");
     const audience = source === 'list' ? { type: 'list' as const, listId }
@@ -134,7 +168,9 @@ export function GuidedCampaignEditor(props: {
     const scheduled = startMode === "scheduled" && scheduledAt
       ? zonedDateTimeToIso(scheduledAt, timeZone) : null;
     const body = { name: name.trim(), messageBody: message.trim(),
-      templates: [message.trim()], cadence, scheduledAt: scheduled, timeZone, hideFromInboxUntilReply };
+      templates: [message.trim()], cadence, scheduledAt: scheduled, timeZone, hideFromInboxUntilReply,
+      prospectingAgentId: prospectingEnabled ? prospectingAgentId : null,
+      prospectingContext: prospectingEnabled ? prospectingContext.trim() || null : null };
     const saved = current
       ? await apiUpdateCampaign(props.getToken, current.id, {
           ...body, ...(audienceChanged ? { audience } : {}) })
@@ -178,6 +214,7 @@ export function GuidedCampaignEditor(props: {
       preview.unresolvedVariables.length > 0) return;
     setBusy(true); setError(null);
     try {
+      validateProspecting();
       await apiActivateCampaign(props.getToken, current.id, {
         idempotencyKey: activationKey, channelId, startMode,
         scheduledAt: startMode === "scheduled" ? zonedDateTimeToIso(scheduledAt, timeZone) : null,
@@ -243,6 +280,7 @@ export function GuidedCampaignEditor(props: {
       <p>Confira cada etapa. Salvar um rascunho não envia mensagens.</p>
     </div>{!isActive && <button type="button" className="secondary-button" onClick={props.onMeta}>Usar Meta oficial</button>}</header>
     {error && <p role="alert" className="error-note campaign-inline-note">{error}</p>}
+    {prospectingError && <p role="alert" className="error-note campaign-inline-note">{prospectingError}</p>}
     {notice && <p role="status" className="campaign-toast">{notice}</p>}
     {isActive ? <div className="guided-campaign-panel">
       <div className="guided-campaign-panel-heading"><div><span className="guided-campaign-kicker">ACOMPANHAMENTO</span>
@@ -250,6 +288,11 @@ export function GuidedCampaignEditor(props: {
           ? "Ação humana necessária" : progress?.status === "completed" ? "Envio concluído" :
           progress?.status === "canceled" ? "Envios restantes cancelados" : "Mensagens em andamento"}</h2></div>
         <ShieldCheck aria-hidden="true" size={26} /></div>
+      {current?.prospectingAgentId && <dl className="campaign-review-details">
+        <div><dt>Agente responsável</dt><dd>{responsibleAgent?.name ?? "Agente associado"}</dd></div>
+        {current.prospectingContext && <div><dt>Contexto da oferta</dt><dd>{current.prospectingContext}</dd></div>}
+      </dl>}
+      <p className="campaign-guidance-note">Pausar, cancelar os envios restantes ou concluir este disparo não encerra as conversas em andamento.</p>
       {progress && <><div className="campaign-review-summary">
         <div><strong>{progress.total}</strong><span>na fila</span></div>
         <div className="is-ready"><strong>{progress.sent}</strong><span>enviadas</span></div>
@@ -259,6 +302,12 @@ export function GuidedCampaignEditor(props: {
         `Próxima tentativa prevista: ${new Date(progress.nextScheduledAt).toLocaleString("pt-BR")}.` :
         "Não há próxima tentativa agendada."} {progress.uncertain > 0 &&
         `${progress.uncertain} envio com resultado incerto: confira no WhatsApp antes de qualquer nova ação.`}</p></>}
+      {skippedRows.length > 0 && <div className="guided-campaign-uncertain"><h3>Contatos ignorados</h3>
+        {skippedRows.map((row) => <div className="guided-campaign-uncertain-row" key={row.id}>
+          <strong>{row.contactName || "Contato"}</strong><span>{row.contactPhone}</span>
+          <p>{row.status === "skipped_in_service" ? "Contato já está em atendimento. " : ""}{row.skipReason || row.errorMessage || "Contato indisponível para este envio."}</p>
+        </div>)}
+      </div>}
       {uncertainRows.length > 0 && <div className="guided-campaign-uncertain"><h3>Confira no WhatsApp antes de continuar</h3>
         <p>O sistema não recebeu confirmação destes envios. Não vamos tentar de novo automaticamente.</p>
         {uncertainRows.map((row) => <div className="guided-campaign-uncertain-row" key={row.id}>
@@ -319,6 +368,28 @@ export function GuidedCampaignEditor(props: {
         <label className="form-field"><span>Mensagem</span><textarea rows={7} value={message}
           onChange={(event) => { setMessage(event.target.value); setPreview(null); }} maxLength={2000}
           placeholder="Olá {{nome}}, tudo bem?" /></label>
+        <div className="module-form">
+          <label className="guided-campaign-hidden-option"><input type="checkbox" checked={prospectingEnabled}
+            disabled={prospectingLoading || !!prospectingError || (!moduleEnabled && !prospectingEnabled)}
+            onChange={(event) => { setProspectingEnabled(event.target.checked); setPreview(null); }} />
+            <span><strong>Acompanhar respostas com IA</strong>
+              <small>Após o contato responder, o agente de Prospecção acompanha a conversa e passa para o time conforme o critério configurado.</small></span></label>
+          {prospectingLoading && <p role="status" className="campaign-guidance-note">Carregando agentes e módulos...</p>}
+          {!prospectingLoading && !prospectingError && !moduleEnabled && <p className="campaign-guidance-note">O módulo está desativado. <a href="?module=ajustes#settings-modules">Ativar em Configurações</a>.</p>}
+          {prospectingEnabled && <>
+            <label className="form-field"><span>Agente de Prospecção</span><select required value={prospectingAgentId}
+              disabled={prospectingLoading || !moduleEnabled || !!prospectingError}
+              onChange={(event) => { setProspectingAgentId(event.target.value); setPreview(null); }}>
+              <option value="">Escolha um agente ativo</option>
+              {prospectingAgentId && !prospectingAgents.some((agent) => agent.id === prospectingAgentId) &&
+                <option value={prospectingAgentId}>{responsibleAgent?.name ?? "Agente salvo"} (indisponível)</option>}
+              {prospectingAgents.map((agent) => <option value={agent.id} key={agent.id}>{agent.name}</option>)}
+            </select><small>Prepare agentes em <a href="?module=ia">Agentes</a>. Somente agentes ativos do tipo Prospecção podem acompanhar respostas.</small></label>
+            <label className="form-field"><span>Contexto da oferta (opcional)</span><textarea rows={4} maxLength={6000}
+              value={prospectingContext} onChange={(event) => { setProspectingContext(event.target.value); setPreview(null); }}
+              placeholder="Descreva a oferta deste disparo para orientar o agente." /></label>
+          </>}
+        </div>
         <label className="guided-campaign-hidden-option"><input type="checkbox" checked={hideFromInboxUntilReply}
           onChange={(event) => setHideFromInboxUntilReply(event.target.checked)} /><span><strong>Não mover conversas por causa deste disparo</strong>
           <small>Conversas já visíveis ficam na mesma posição, com a nova mensagem no card. Contatos novos aparecem na busca e entram na caixa quando responderem.</small></span></label>
@@ -363,6 +434,8 @@ export function GuidedCampaignEditor(props: {
         {hideFromInboxUntilReply ? <p className="campaign-guidance-note">Modo discreto: conversas atuais não mudam de posição; conversas novas entram na caixa após uma resposta.</p> : null}
         <CampaignReview preview={preview} message={message} channelName={selectedChannel?.displayName ||
           selectedChannel?.phoneNumber || "Canal selecionado"} startLabel={startLabel} cadence={cadence}
+          prospectingAgentName={prospectingEnabled ? responsibleAgent?.name : undefined}
+          prospectingContext={prospectingEnabled ? prospectingContext : undefined}
           confirmed={confirmed} onConfirmedChange={setConfirmed} />
         {preview.excluded.some((row) => row.reason === "verification_error") && <p role="alert" className="error-note">
           A verificação falhou para alguns números. Verifique novamente antes de ativar.</p>}

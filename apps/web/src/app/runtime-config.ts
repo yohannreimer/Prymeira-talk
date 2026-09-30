@@ -2,6 +2,7 @@ interface RuntimeConfig {
   VITE_API_URL?: string;
   VITE_LOCAL_AUTH_BYPASS?: string;
   VITE_CLERK_PUBLISHABLE_KEY?: string;
+  VITE_PRYMEIRA_HUB_URL?: string;
 }
 
 declare global {

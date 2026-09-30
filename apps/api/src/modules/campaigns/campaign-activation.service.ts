@@ -1,3 +1,4 @@
+import { validateProspectingAgent } from "../prospecting/prospecting-policy.js";
 import type { PrismaClient } from "@prisma/client";
 import type { AudiencePreview } from "./campaign-audience-preview.js";
 import { DEFAULT_CAMPAIGN_CADENCE, drawGap, nextCampaignInstant, type CampaignCadence } from "./campaign-cadence.js";
@@ -57,6 +58,7 @@ export function createCampaignActivationService(prisma: PrismaClient, options: {
         workspaceId: input.workspaceId, id: input.campaignId
       } });
       if (!prior) throw new CampaignActivationError("CAMPAIGN_NOT_FOUND", "Campanha não encontrada.");
+      await validateProspectingAgent(prisma, input.workspaceId, prior.prospectingAgentId, input.channelId);
       if (prior.activationKey === input.idempotencyKey) return prior;
       if (prior.status !== "draft") throw new CampaignActivationError("CAMPAIGN_NOT_DRAFT",
         "Esta campanha já foi ativada.");
@@ -83,6 +85,7 @@ export function createCampaignActivationService(prisma: PrismaClient, options: {
       const activeStatus = start > now() ? "scheduled" : "sending";
       try {
         return await prisma.$transaction(async (tx) => {
+          await validateProspectingAgent(tx, input.workspaceId, prior.prospectingAgentId, input.channelId);
           const changed = await tx.campaign.updateMany({
             where: { id: input.campaignId, workspaceId: input.workspaceId, status: "draft",
               updatedAt: new Date(input.preview.revision), activationKey: null },

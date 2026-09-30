@@ -1,3 +1,4 @@
+import { findProspectingReservation } from "../prospecting/prospecting-policy.js";
 import { randomUUID } from 'node:crypto';
 import type { AssistantConversationState, Prisma, PrismaClient } from '@prisma/client';
 import { lockAssistantConversation } from './assistant-access.js';
@@ -10,6 +11,8 @@ export function createAssistantRepository(prisma: PrismaClient) {
         await lockAssistantConversation(tx, input.workspaceId, input.conversationId);
         const conversation = await tx.conversation.findFirst({ where: { workspaceId: input.workspaceId, id: input.conversationId }, include: { channel: true, activeAgentSession: true } });
         if (!conversation) return false;
+        const prospecting = await findProspectingReservation(tx, input.workspaceId, input.conversationId);
+        if (prospecting && prospecting.status !== "stopped") return false;
         const {settings,humanSupport}=resolveConversationAssistant(conversation);
         const where = { workspaceId_conversationId: { workspaceId: input.workspaceId, conversationId: input.conversationId } };
         const state = await tx.assistantConversationState.findUnique({ where });

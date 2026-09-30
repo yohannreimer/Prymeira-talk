@@ -381,6 +381,7 @@ model DepartmentChannelRule {
 }
 
 model Conversation {
+  prospectingOrigin CampaignProspectingReservation?
   id                             String               @id @default(uuid()) @db.Uuid
   workspaceId                    String               @map("workspace_id")
   channelId                      String               @map("channel_id") @db.Uuid
@@ -866,6 +867,8 @@ model Campaign {
   status      CampaignStatus  @default(draft)
   audience    Json            @default("{}")
   messageBody String          @map("message_body")
+  prospectingAgentId String? @map("prospecting_agent_id") @db.Uuid
+  prospectingContext String? @map("prospecting_context")
   templates   Json            @default("[]")
   fallbackName String         @default("cliente") @map("fallback_name")
   cadence     Json            @default("{}")
@@ -881,6 +884,7 @@ model Campaign {
   createdAt   DateTime        @default(now()) @map("created_at")
   updatedAt   DateTime        @updatedAt @map("updated_at")
 
+  prospectingReservations CampaignProspectingReservation[]
   recipients CampaignRecipient[]
 
   @@unique([workspaceId, id])
@@ -969,6 +973,7 @@ model CampaignChannelThrottle {
 }
 
 model AiAgent {
+  type           String         @default("attendance")
   id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId    String         @map("workspace_id")
   name           String
@@ -1140,6 +1145,11 @@ model AiAgentImprovement {
 }
 
 model AiAgentSession {
+  sourceCampaignId String? @map("source_campaign_id") @db.Uuid
+  sourceRecipientId String? @map("source_recipient_id") @db.Uuid
+  firstResponseMessageId String? @map("first_response_message_id") @db.Uuid
+  firstResponseAt DateTime? @map("first_response_at")
+  prospectingGeneration String? @map("prospecting_generation") @db.Uuid
   id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId    String               @map("workspace_id")
   agentId        String               @map("agent_id") @db.Uuid
@@ -1167,6 +1177,8 @@ model AiAgentSession {
 }
 
 model AiAgentPendingReply {
+  claimToken     String? @map("claim_token") @db.Uuid
+  prospectingGeneration String? @map("prospecting_generation") @db.Uuid
   id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId    String    @map("workspace_id")
   conversationId String    @map("conversation_id") @db.Uuid
@@ -1328,4 +1340,35 @@ model AuditLog {
   @@unique([workspaceId, id])
   @@index([workspaceId, createdAt])
   @@map("audit_logs")
+}
+
+// A reservation remains after uncertain sends and handoff, so another campaign or
+// attendance automation cannot silently take over a bound conversation.
+model CampaignProspectingReservation {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  contactId String @map("contact_id") @db.Uuid
+  conversationId String @map("conversation_id") @db.Uuid
+  campaignId String @map("campaign_id") @db.Uuid
+  recipientId String @map("recipient_id") @db.Uuid
+  agentId String @map("agent_id") @db.Uuid
+  generation String @default(uuid()) @db.Uuid
+  status String @default("sending")
+  dispatchStartedAt DateTime @map("dispatch_started_at")
+  dispatchIntentAt DateTime? @map("dispatch_intent_at")
+  confirmedAt DateTime? @map("confirmed_at")
+  pendingInboundMessageId String? @map("pending_inbound_message_id") @db.Uuid
+  pendingInboundAt DateTime? @map("pending_inbound_at")
+  latestInboundMessageId String? @map("latest_inbound_message_id") @db.Uuid
+  latestInboundAt DateTime? @map("latest_inbound_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  campaign Campaign @relation(fields: [workspaceId, campaignId], references: [workspaceId, id], onDelete: Restrict)
+  @@unique([workspaceId, channelId, contactId])
+  @@unique([workspaceId, conversationId])
+  @@unique([workspaceId, recipientId])
+  @@index([workspaceId, campaignId])
+  @@map("campaign_prospecting_reservations")
 }

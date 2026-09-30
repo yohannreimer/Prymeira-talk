@@ -18,6 +18,7 @@ export function createCampaignWorker(input: {
   now?: () => Date;
   draw?: Draw;
   onError?: (error: unknown) => void;
+  onProspectingReplyReady?: (input: { workspaceId: string; conversationId: string; messageId: string }) => Promise<unknown>;
   onConversationUpdated?: (input: { workspaceId: string; conversationId: string }) => Promise<void>;
 }) {
   const now = input.now ?? (() => new Date());
@@ -86,7 +87,24 @@ export function createCampaignWorker(input: {
       await repository.settle({ id: job.id, leaseToken: token, status: "skipped_no_whatsapp" });
       return true;
     }
-    if (!await repository.markVerified(job.id, token)) return true;
+    const reservation = await repository.reserveProspecting(job.id, token);
+    if (reservation.status === 'unavailable') {
+      await repository.returnPending({ id: job.id, leaseToken: token, pauseCampaign: true, reason: 'Agente ou módulo de prospecção indisponível.' });
+      return true;
+    }
+    if (reservation.status === 'in_service') {
+      await repository.settle({ id: job.id, leaseToken: token, status: 'skipped_in_service', errorMessage: 'Contato já está em atendimento ou reservado por outra campanha.' });
+      return true;
+    }
+    if (!await repository.prospectingSendStillAllowed(job.id)) {
+      await repository.settle({ id: job.id, leaseToken: token, status: 'skipped_in_service', errorMessage: 'Controle ou agente mudou antes do envio.' });
+      return true;
+    }
+
+    if (!await repository.markVerified(job.id, token)) {
+      await repository.returnPending({ id: job.id, leaseToken: token, reason: "Envio pausado antes da confirmação de intenção." });
+      return true;
+    }
 
     // The in-flight lease was persisted before this call. An error here may mean Evolution sent
     // the text but the acknowledgment was lost; never retry this recipient automatically.
@@ -116,6 +134,7 @@ export function createCampaignWorker(input: {
       providerMessageId, sentAt, pauseSeconds, nextAvailableAt,
       attemptsSincePause: pauseSeconds ? 0 : afterAttempts,
       contactId: job.contactId ?? undefined, message });
+    if (settled.replay) await input.onProspectingReplyReady?.(settled.replay);
     if (settled.conversationId) await input.onConversationUpdated?.({
       workspaceId: job.workspaceId, conversationId: settled.conversationId
     });

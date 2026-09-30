@@ -397,7 +397,8 @@ describe("createAgentRuntime", () => {
       audit: vi.fn().mockResolvedValue({ outcome: "handoff", reason: "commercial_policy_risk" })
     };
 
-    const result = await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+    const schedule = vi.fn();
+    const result = await createAgentRuntime({ prisma, provider, replyPreflight, handoffBriefService: { schedule } }).runForMessage({
       workspaceId: ids.workspace,
       agentId: ids.agent,
       conversationId: ids.conversation,
@@ -406,6 +407,8 @@ describe("createAgentRuntime", () => {
     });
 
     expect(result).toEqual({ status: "handoff_requested", runId: ids.run });
+    expect(schedule).toHaveBeenCalledWith({ workspaceId: ids.workspace, conversationId: ids.conversation });
+    expect(schedule.mock.invocationCallOrder[0]).toBeGreaterThan(vi.mocked(prisma.aiAgentRun.create).mock.invocationCallOrder[0]!);
     expect(provider.generate).toHaveBeenCalledOnce();
     expect(replyPreflight.audit).toHaveBeenCalledOnce();
     expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({
@@ -591,10 +594,11 @@ describe("createAgentRuntime", () => {
       actions: [],
       handoff: { required: false, reason: null }
     });
-    const sendText = vi.fn();
+    const sendText = vi.fn(), schedule = vi.fn();
     const runtime = createAgentRuntime({
       prisma,
       provider,
+      handoffBriefService: { schedule },
       evolution: { mode: "real", client: { sendText } }
     });
 
@@ -607,6 +611,8 @@ describe("createAgentRuntime", () => {
     });
 
     expect(result).toEqual({ status: "handoff_requested", runId: ids.run, message: "possible_automation_loop" });
+    expect(schedule).toHaveBeenCalledWith({ workspaceId: ids.workspace, conversationId: ids.conversation });
+    expect(schedule.mock.invocationCallOrder[0]).toBeGreaterThan(vi.mocked(prisma.aiAgentRun.create).mock.invocationCallOrder[0]!);
     expect(provider.generate).not.toHaveBeenCalled();
     expect(sendText).not.toHaveBeenCalled();
     expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({

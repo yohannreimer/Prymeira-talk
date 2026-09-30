@@ -1,4 +1,5 @@
 import { LocationMessage } from './LocationMessage';
+import { needsHumanAttention } from "@prymeira-talk/shared";
 import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
 import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
@@ -92,6 +93,13 @@ function statusLabel(status: ConversationDto["status"]) {
   return labels[status];
 }
 
+export function ConversationCampaignSource({ conversation }: { conversation: Pick<ConversationDto, "sourceCampaign"> }) {
+  return conversation.sourceCampaign ? <a className="status-badge conversation-campaign-source"
+    href={`?module=disparos&campaign=${encodeURIComponent(conversation.sourceCampaign.id)}`}>
+    Campanha: {conversation.sourceCampaign.name}
+  </a> : null;
+}
+
 export function aiControlLabel(
   conversation: Pick<ConversationDto, "aiControlStatus" | "activeAgentName">,
   assistantMode?: 'disabled' | 'automatic' | 'on_demand' | 'automatic_with_agent'
@@ -107,16 +115,7 @@ export function aiControlActionLabel(conversation: Pick<ConversationDto, "aiCont
   return conversation.aiControlStatus === "human_controlled" ? "Liberar IA" : "Assumir";
 }
 
-export function needsHumanAttention(
-  conversation: Pick<ConversationDto, "aiControlStatus" | "activeAgentSessionStatus" | "handoffReason" | "handoffActionCompletedAt"> &
-    Partial<Pick<ConversationDto, "status">>
-) {
-  if (conversation.status === "closed" || conversation.handoffActionCompletedAt) return false;
-  return (
-    conversation.activeAgentSessionStatus === "handoff_requested" ||
-    (conversation.aiControlStatus === "human_controlled" && Boolean(conversation.handoffReason))
-  );
-}
+export { needsHumanAttention } from "@prymeira-talk/shared";
 
 function handoffAnalysisFeedback(analysis: ConversationActionResultDto["improvementAnalysis"]): string {
   if (analysis?.created) return "A resposta gerou um aprimoramento pendente de revisão em Agentes.";
@@ -1802,6 +1801,7 @@ function InboxPageContent() {
                 {aiControlActionLabel(selectedConversation)}
               </button>
               </>}
+              <ConversationCampaignSource conversation={selectedConversation} />
               <span className={`status-badge status-badge--${selectedConversation.status}`}>
                 {statusLabel(selectedConversation.status)}
               </span>
