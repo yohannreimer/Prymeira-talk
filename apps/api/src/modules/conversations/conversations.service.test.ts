@@ -3108,6 +3108,27 @@ describe("conversation routes", () => {
 });
 
 describe('compact history attachment DTOs', () => {
+  it('compacts stored visual bytes at the 64 MiB cache boundary and preserves direct display above it', () => {
+    // Canonical base64 length/padding represents the boundary without allocating a binary buffer.
+    const byteLimit = 64 * 1024 * 1024;
+    const encodedLength = Math.ceil(byteLimit / 3) * 4;
+    const encoded = 'A'.repeat(encodedLength - 2);
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type: 'image' as const,
+      body: null, mediaUrl: `data:image/png;base64,${encoded}==`, status: 'read' as const, createdAt: new Date() };
+    expect(toCompactMessageDto(record, 'https://talk.example.test').mediaUrl).toMatch(/^https:/);
+    const oversize = { ...record, type: 'file' as const, mediaUrl: `data:video/mp4;base64,${encoded}A=` };
+    expect(toCompactMessageDto(oversize, 'https://talk.example.test').mediaUrl).toBe(oversize.mediaUrl);
+  });
+  it.each([
+    ['image', 'data:image/png;charset=utf-8;base64,YQ=='],
+    ['image', 'data:image/png;charset=utf-8,%61'],
+    ['file', 'data:video/mp4;charset=utf-8;base64,YQ=='],
+    ['file', 'data:video/mp4;charset=utf-8,%61']
+  ] as const)('preserves direct inline %s URLs outside the media decoder format', (type, mediaUrl) => {
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type,
+      body: null, mediaUrl, status: 'read' as const, createdAt: new Date() };
+    expect(toCompactMessageDto(record, 'https://talk.example.test')).toEqual(toMessageDto(record));
+  });
   it.each([['image', 'image/png'], ['audio', 'audio/ogg'], ['file', 'application/pdf'], ['file', 'video/mp4']] as const)('preserves %s presentation/state and infers %s without inline bytes', (type, mimeType) => {
     const mediaUrl = `data:${mimeType};base64,YQ==`;
     const sourceHash = createHash('sha256').update(JSON.stringify(['m', type, mediaUrl])).digest('hex');

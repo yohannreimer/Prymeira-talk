@@ -108,11 +108,17 @@ export function createInboxMediaService(options: {
       const key = `${workspaceId}:${conversationId}:${messageId}:${fingerprint}`;
       const policy: AgentMediaPolicy = { kind: message.type === 'audio' ? 'audio' : message.type === 'image' ? 'image' : 'document',
         maxBytes: 25 * 1024 * 1024, allowedMimeTypes: message.type === 'audio' ? audio : message.type === 'image' ? images : documents };
+      const storedMime = /^data:([^;,]+);base64,/i.exec(message.mediaUrl ?? '')?.[1].trim().toLowerCase();
+      const storedVisual = storedMime && (message.type === 'image' && images.has(storedMime) ||
+        message.type === 'file' && storedMime.startsWith('video/') && documents.has(storedMime));
+      // These stored visuals were displayed directly before compact history reads.
+      // The raw URL bounds their decoded bytes; provider/remote recovery keeps its limit.
+      const storedPolicy = storedVisual ? { ...policy, maxBytes: Math.max(policy.maxBytes, Math.ceil(message.mediaUrl!.length * 3 / 4)) } : policy;
       return (await cached(key, async () => {
         let resolved: Media;
         try {
           if (/\.enc(?:\?|$)/i.test(message.mediaUrl ?? '')) throw new Error('ENCRYPTED_MEDIA');
-          resolved = await resolve({ mediaUrl: message.mediaUrl, policy });
+          resolved = await resolve({ mediaUrl: message.mediaUrl, policy: storedPolicy });
         }
         catch {
           if (owner.channel.provider !== 'evolution' || !message.providerMessageId || !options.client?.fetchMedia) throw new Error('MEDIA_UNAVAILABLE');

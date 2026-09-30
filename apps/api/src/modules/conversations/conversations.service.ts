@@ -557,7 +557,11 @@ function mapMessageDto(record: MessageRecord, publicTalkUrl?: string): MessageDt
   const result = cache.sourceHash === sourceHash ? object(cache.result) : {};
   const history = object(metadata.historyImport);
   const attachment = object(metadata.attachment);
-  const compactMedia = Boolean(publicTalkUrl && ['image', 'audio', 'file'].includes(record.type) && record.mediaUrl?.startsWith('data:'));
+  const inlineHeader = /^data:([^;,]+);base64,/i.exec(record.mediaUrl ?? '');
+  const storedVisual = record.type === 'image' || record.type === 'file' && /^video\/(mp4|webm|quicktime)$/i.test(inlineHeader?.[1] ?? '');
+  // Preserve direct display above the frontend's 64 MiB Blob cache budget.
+  const inlineBytes = inlineHeader ? (record.mediaUrl!.length - inlineHeader[0].length) * 3 / 4 - (record.mediaUrl!.endsWith('==') ? 2 : record.mediaUrl!.endsWith('=') ? 1 : 0) : 0;
+  const compactMedia = Boolean(publicTalkUrl && ['image', 'audio', 'file'].includes(record.type) && record.mediaUrl?.startsWith('data:') && inlineHeader && (!storedVisual || inlineBytes <= 64 * 1024 * 1024));
   const sourceMimeType = compactMedia ? /^data:([^;,]{1,120})[;,]/i.exec(record.mediaUrl!)?.[1].trim().toLowerCase() : undefined;
   const inferredMimeType = typeof attachment.mimeType !== 'string' ? sourceMimeType : undefined;
   // The inline URL used to identify video/PDF even with generic provider MIME
