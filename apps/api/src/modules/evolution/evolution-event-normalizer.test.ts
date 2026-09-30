@@ -75,6 +75,8 @@ describe('Evolution shared event adapter', () => {
     expect(result.target).toMatchObject({ rawId: 'A_B', direction: 'inbound' });
     expect(result.action).toMatchObject({ rawId: 'EDIT', direction: 'outbound' });
     expect(result.order.timestampMs).toBe(123456);
+    expect(result.patch).toEqual({ field: 'body', body: 'edited' });
+    expect(result).not.toHaveProperty('content');
   });
   it('emits revoke control instead of phantom system message', () => {
     const result = normalize({ key: { ...key, id: 'REVOKE' }, message: { protocolMessage: { type: 0, key } } });

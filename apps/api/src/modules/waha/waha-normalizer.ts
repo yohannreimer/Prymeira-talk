@@ -1,4 +1,4 @@
-import type { AddressMappingEvidence, NormalizationResult, SourceOrder, TrustedMessagingContext } from '../messaging/normalized-event.js';
+import type { AddressMappingEvidence, MessageEditPatch, NormalizationResult, SourceOrder, TrustedMessagingContext } from '../messaging/normalized-event.js';
 import { normalizeChatAddress, parseWahaMessageKey, record, serialized, string, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 import { wahaContent } from './waha-content.js';
 
@@ -38,10 +38,16 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
     const action = !msg.latestEditMsgKey && candidateAction.rawId === target.rawId && candidateAction.chatAddress === target.chatAddress
       ? parseWahaMessageKey(null) : candidateAction;
     if (action.rawId) action.nativeId = action.nativeId ?? string(payload.id);
-    const body = string(msg.body) ?? string(payload.body);
-    if ((!target.rawId && !target.nativeId) || !body) return { kind: 'invalid', reason: 'invalid_edit' };
-    return { kind: 'accepted', event: { ...base, kind: 'edit', target, action,
-      content: { type: 'text', body, preview: body, mediaUrl: null }, order: { ...unknownOrder } } };
+    // WPP media body may contain original bytes. WAHA normalizes media body from caption.
+    const mediaEdit = payload.hasMedia === true || msg.isMedia === true || msg.isMMS === true
+      || string(msg.mimetype) !== null || ['image', 'video', 'document', 'audio', 'ptt', 'sticker'].includes(String(msg.type));
+    const caption = typeof msg.caption === 'string' ? msg.caption : typeof payload.body === 'string' ? payload.body : null;
+    const body = mediaEdit ? null : string(msg.body) ?? string(payload.body);
+    const patch: MessageEditPatch | null = mediaEdit
+      ? caption === null ? null : { field: 'caption', caption }
+      : body === null ? null : { field: 'body', body };
+    if ((!target.rawId && !target.nativeId) || !patch) return { kind: 'invalid', reason: 'invalid_edit' };
+    return { kind: 'accepted', event: { ...base, kind: 'edit', target, action, patch, order: { ...unknownOrder } } };
   }
   if (eventName === 'message.revoked') {
     // WPP before/after are short keys; raw refId/id retain full target/action identity.

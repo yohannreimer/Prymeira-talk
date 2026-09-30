@@ -84,8 +84,32 @@ describe('WAHA 2026.9.1 WPP normalization', () => {
     expect(result.target.rawId).toBe('A_B_C');
     expect(result.action.rawId).toBe('EDIT_2');
     expect(result.action.nativeId).toBe('false_123-456@g.us_EDIT_2_777@lid');
-    expect(result.content.body).toBe('edited');
+    expect(result.patch).toEqual({ field: 'body', body: 'edited' });
+    expect(result).not.toHaveProperty('content');
     expect(result.order.timestampMs).toBeNull();
+  });
+  it.each(['image', 'video', 'document'])('normalizes %s caption edits without carrying original media bytes or replacement fields', type => {
+    const result = event({ event: 'message.edited', payload: { id: 'false_5547999990000@c.us_EDIT_2', body: 'Legenda corrigida', hasMedia: true, media: { url: 'https://waha.example/api/files/existing' }, _data: { id: nativeId, msg: { type, isMedia: true, body: '/9j/4AAQSkZJRgABAQ', caption: 'Legenda corrigida', filename: 'original.pdf', latestEditSenderTimestampMs: 987654321, latestEditMsgKey: { id: 'EDIT_2', remote: '5547999990000@c.us', fromMe: false } } } } });
+    if (result.kind !== 'edit') throw new Error('Expected caption edit');
+    expect(result.patch).toEqual({ field: 'caption', caption: 'Legenda corrigida' });
+    expect(result).not.toHaveProperty('content');
+    expect(result).not.toHaveProperty('attachment');
+    expect(result).not.toHaveProperty('media');
+    expect(JSON.stringify(result)).not.toContain('/9j/');
+    expect(result.order).toEqual({ timestampMs: null, sequence: null });
+  });
+  it.each(['image', 'video', 'document'])('retains an empty %s caption as explicit removal', type => {
+    const result = event({ event: 'message.edited', payload: { id: 'false_5547999990000@c.us_EDIT_2', body: '', hasMedia: true, _data: { id: nativeId, msg: { type, body: '/9j/opaque-original', caption: '' } } } });
+    if (result.kind !== 'edit') throw new Error('Expected caption edit');
+    expect(result.patch).toEqual({ field: 'caption', caption: '' });
+  });
+  it('uses WAHA normalized media body when WPP raw caption is absent, never raw body', () => {
+    const result = event({ event: 'message.edited', payload: { id: 'false_5547999990000@c.us_EDIT_2', body: 'Legenda normalizada', hasMedia: true, editedMessageId: 'A_B_C', _data: { msg: { type: 'image', body: '/9j/opaque-original' } } } });
+    if (result.kind !== 'edit') throw new Error('Expected caption edit');
+    expect(result.patch).toEqual({ field: 'caption', caption: 'Legenda normalizada' });
+  });
+  it('rejects a media edit without any caption evidence instead of using raw bytes', () => {
+    expect(normalizeWahaEvent(context, { event: 'message.edited', payload: { id: 'false_5547999990000@c.us_EDIT_2', hasMedia: true, editedMessageId: 'A_B_C', _data: { msg: { type: 'image', body: '/9j/opaque-original' } } } }).kind).toBe('invalid');
   });
   it('separates revoke refId target from action, even when before/after short keys are lossy', () => {
     const result = event({ event: 'message.revoked', payload: { revokedMessageId: 'A', before: { id: 'A', remoteJid: '5547999990000@c.us', fromMe: false }, after: { id: 'R', remoteJid: '5547999990000@c.us', fromMe: true }, _data: { id: 'true_5547999990000@c.us_REVOKE_2', refId: nativeId } } });

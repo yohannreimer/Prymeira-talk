@@ -28,6 +28,11 @@ export interface AddressMappingEvidence {
   role: 'chat' | 'sender'; lid: string; pn: string;
   source: 'evolution.remoteJidAlt' | 'evolution.participantAlt' | 'waha.lid_lookup';
 }
+/** Apply only the named field to an existing message. Caption removal is an empty string.
+ * A caption patch preserves type, media URL, file metadata and prepared results; the
+ * writer recomputes presentation from the existing media kind instead of replacing content.
+ */
+export type MessageEditPatch = { field: 'body'; body: string } | { field: 'caption'; caption: string };
 /** Timestamp/sequence can be absent. Absence must hold conflicting edits for reconciliation. */
 export interface SourceOrder { timestampMs: number | null; sequence: string | null }
 interface BaseEvent {
@@ -39,7 +44,7 @@ interface BaseEvent {
 export type NormalizedMessagingEvent = BaseEvent & (
   | { kind: 'message'; key: WhatsAppMessageKey; content: NormalizedContent; attachment: AttachmentPresentation;
       media: MediaSourceDescriptor | null; currentRevision: WhatsAppMessageKey | null; pushName: string | null; source: string | null; order: SourceOrder }
-  | { kind: 'edit'; target: WhatsAppMessageKey; action: WhatsAppMessageKey; content: NormalizedContent; order: SourceOrder }
+  | { kind: 'edit'; target: WhatsAppMessageKey; action: WhatsAppMessageKey; patch: MessageEditPatch; order: SourceOrder }
   | { kind: 'encrypted_edit'; target: WhatsAppMessageKey; action: WhatsAppMessageKey;
       encrypted: { ivBase64: string; payloadBase64: string; senderJids: string[] }; order: SourceOrder }
   | { kind: 'revoke'; target: WhatsAppMessageKey; action: WhatsAppMessageKey; order: SourceOrder }

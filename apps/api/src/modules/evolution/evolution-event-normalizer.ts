@@ -56,7 +56,7 @@ export function normalizeEvolutionWebhook(context: TrustedMessagingContext, inpu
     const target = isEditProtocolType(protocol.type) ? keyOf(protocol.key) : keyOf({ ...rawKey, id: edit.targetId });
     // Legacy messages.edited may supply only the target key; do not relabel it as an action.
     return { kind: 'accepted', event: { ...base, kind: 'edit', target, action: isEditProtocolType(protocol.type) ? key : keyOf(null),
-      content: { type: 'text', body: edit.body, preview: edit.body, mediaUrl: null }, order: order(protocol.timestampMs) } };
+      patch: { field: 'body', body: edit.body }, order: order(protocol.timestampMs) } };
   }
   if (eventName === 'messages.edited' || isEditProtocolType(protocol.type)) return { kind: 'invalid', reason: 'invalid_edit' };
   if (eventName === 'messages.delete' || protocol.type === 0 || protocol.type === 'REVOKE') {
