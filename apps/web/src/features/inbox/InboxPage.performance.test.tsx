@@ -249,6 +249,26 @@ describe('Atendimento query/UI integration', () => {
     expect(rows.filter(row => row.body === 'outgoing')).toHaveLength(1);
     expect(apiCreateConversationMessage).toHaveBeenCalledOnce();
   });
+  it('keeps the source send failure when its history check is canceled by selection of a warm conversation', async () => {
+    await render(); await select('c2'); await select('c1');
+    vi.mocked(apiCreateConversationMessage).mockRejectedValueOnce(new Error('Falha A'));
+    await type('first send');
+    await act(async () => container.querySelector<HTMLFormElement>('.composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); await flush();
+    const failure = session.readUI('sendFailure:c1', null);
+    let finishRead!: (rows: MessageDto[]) => void; let signal!: AbortSignal;
+    vi.mocked(apiGetConversationMessages).mockImplementationOnce((_id, _token, inputSignal) => {
+      signal = inputSignal!; return new Promise(resolve => { finishRead = resolve; });
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>('.message-thread .error-note button')!.click()); await flush();
+    await select('c2'); expect(signal.aborted).toBe(true);
+    expect(session.readUI('sendFailure:c1', null)).toEqual(failure);
+    await act(async () => finishRead([message('c1')])); await flush();
+    await select('c1');
+    expect(container.querySelector('.message-thread')?.textContent).toContain('Falha A');
+    expect(session.client.getQueryData<MessageDto[]>(session.key('messages', 'c1'))?.some(row => row.id.startsWith('optimistic-') && row.status === 'failed')).toBe(true);
+    expect(apiCreateConversationMessage).toHaveBeenCalledOnce();
+    expect(apiGetConversationMessages).toHaveBeenCalledTimes(3);
+  });
   it.each([['text', 'failed'], ['text', 'pending'], ['attachment', 'failed'], ['attachment', 'pending']] as const)('keeps a later %s send %s when an older history check finishes and clears only the consulted failure', async (kind, state) => {
     vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:text/plain;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
     await render(); let failSecond!: (error: Error) => void;

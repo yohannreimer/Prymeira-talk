@@ -1,4 +1,4 @@
-import { QueryClient, type QueryKey } from '@tanstack/react-query';
+import { QueryClient, replaceEqualDeep, type QueryKey } from '@tanstack/react-query';
 import { needsHumanAttention, type ChannelDto, type ConversationDto, type InboxView, type MessageDto, type RealtimeEvent } from '@prymeira-talk/shared';
 import { SessionBlobCache } from './blob-cache';
 
@@ -9,7 +9,9 @@ export const MAX_HISTORIES = 30;
 export const MAX_MESSAGES = 100;
 type LocalMessageChange = { type: 'local.messages'; conversationId: string; rows: MessageDto[]; removedIds: Set<string> };
 type FenceEvent = RealtimeEvent | LocalMessageChange;
-type Fence = { events: FenceEvent[] };
+type Fence = { events: FenceEvent[]; queryHash?: string; finish(): void };
+type ReadCommit = { fence: Fence; apply(data: unknown): unknown };
+type ReadOptions = { signal?: AbortSignal; manualCommit?: boolean };
 
 export function receiptStatus(current: MessageDto['status'], incoming: MessageDto['status']) {
   const rank = { pending: 0, sent: 1, delivered: 2, read: 3, failed: -1 };
@@ -93,13 +95,16 @@ function scopeFromKey(key: QueryKey): InboxListScope {
 
 export class TalkSession {
   readonly client = new QueryClient({ defaultOptions: {
-    queries: { staleTime: READ_STALE_MS, gcTime: HISTORY_GC_MS, retry: false, refetchOnWindowFocus: true, refetchOnReconnect: true },
+    queries: { staleTime: READ_STALE_MS, gcTime: HISTORY_GC_MS, retry: false, refetchOnWindowFocus: true, refetchOnReconnect: true,
+      structuralSharing: (previous, incoming) => this.commitRead(previous, incoming) },
     mutations: { retry: false }
   } });
   readonly blobs = new SessionBlobCache();
   private ui = new Map<string, unknown>();
   private listeners = new Map<string, Set<() => void>>();
   private fences = new Set<Fence>();
+  private readCommits = new WeakMap<object, ReadCommit>();
+  private unsubscribeCache: () => void;
   private attentionReads = new Set<{ channel: string; dirty: boolean }>();
   private contextContacts = new Map<string, string>();
   private histories = new Map<string, number>();
@@ -110,7 +115,14 @@ export class TalkSession {
   private maxInvalidationTimer: ReturnType<typeof setTimeout> | undefined;
   private invalidationTimer: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
-  constructor(readonly scope: string, readonly workspaceId: string) {}
+  constructor(readonly scope: string, readonly workspaceId: string) {
+    this.unsubscribeCache = this.client.getQueryCache().subscribe(event => {
+      if (event.type === 'removed' || event.type === 'updated' &&
+        (event.action.type === 'error' || event.action.type === 'setState' && event.query.state.fetchStatus === 'idle')) {
+        for (const fence of this.fences) if (fence.queryHash === event.query.queryHash) fence.finish();
+      }
+    });
+  }
   get isLive() { return !this.disposed; }
   key(kind: string, ...parts: unknown[]): QueryKey { return ['talk', this.scope, kind, ...parts]; }
   readUI<T>(key: string, fallback: T): T { return this.ui.has(key) ? this.ui.get(key) as T : fallback; }
@@ -140,15 +152,29 @@ export class TalkSession {
       // Drafts and scroll positions live in UI memory and survive history eviction.
     }
   }
-  async readMessages(id: string, read: () => Promise<MessageDto[]>) {
+  async readMessages(id: string, read: () => Promise<MessageDto[]>, signal?: AbortSignal) {
     this.touch(id);
-    return this.withEvents(read, (messages, event) => {
+    return this.withEvents(this.key('messages', id), read, (messages, event) => {
       if (event.type !== 'local.messages') return patchMessages(messages, event, id);
       if (event.conversationId !== id) return messages;
       let rows = messages.filter(message => !event.removedIds.has(message.id));
       for (const row of event.rows) rows = patchMessages(rows, { type: 'message.created', workspaceId: this.workspaceId, payload: row }, id);
       return rows;
-    }, messages => messages.slice(-MAX_MESSAGES));
+    }, messages => messages.slice(-MAX_MESSAGES), { signal });
+  }
+  /** Use the source query directly: an observer may have changed targets by the
+   * time its refetch resolves. TanStack also resolves canceled reads with cached
+   * data, so only an unaborted source read can confirm an explicit recovery. */
+  async refetchMessages(id: string, read: (signal: AbortSignal) => Promise<MessageDto[]>) {
+    const query = this.client.getQueryCache().find({ queryKey: this.key('messages', id), exact: true });
+    if (!query || this.disposed) throw new DOMException('Conversa indisponível.', 'AbortError');
+    const request: { signal?: AbortSignal } = {};
+    await query.fetch({ ...query.options, queryFn: ({ signal }) => {
+      request.signal = signal;
+      return this.readMessages(id, () => read(signal), signal);
+    } }, { cancelRefetch: true });
+    if (!request.signal || this.disposed) throw new DOMException('Leitura cancelada.', 'AbortError');
+    request.signal.throwIfAborted();
   }
   /** Replay only local changes made after each read began. An explicit later
    * reconciliation can discard earlier failed optimistic messages normally. */
@@ -164,8 +190,16 @@ export class TalkSession {
     for (const fence of this.fences) fence.events.push({ type: 'local.messages', conversationId: id, rows, removedIds });
     this.client.setQueryData(key, next);
   }
-  readConversations(read: () => Promise<ConversationDto[]>, scope: InboxListScope = {}) {
-    return this.withEvents(read, (rows, event) => event.type === 'local.messages' ? rows : patchConversations(rows, event, scope));
+  readConversations(read: () => Promise<ConversationDto[]>, scope: InboxListScope = {}, options: ReadOptions = {}) {
+    const key = this.key('conversations', scope.view ?? 'all', scope.channelId ?? 'all', scope.search ?? '');
+    return this.withEvents(key, read, (rows, event) => event.type === 'local.messages' ? rows : patchConversations(rows, event, scope), undefined, options);
+  }
+  commitConversationPage(key: QueryKey, page: ConversationDto[], merge: (current: ConversationDto[], page: ConversationDto[]) => ConversationDto[]) {
+    if (this.disposed) return;
+    const rows = merge(this.client.getQueryData<ConversationDto[]>(key) ?? [], page);
+    const read = this.readCommits.get(page);
+    if (read) this.readCommits.set(rows, read);
+    this.client.setQueryData(key, rows);
   }
   readContext<T>(id: string, read: () => Promise<T>, contactId = this.findConversation(id)?.contactId) {
     if (contactId) this.contextContacts.set(id, contactId);
@@ -185,14 +219,43 @@ export class TalkSession {
       return this.client.getQueryData<number>(key) ?? count;
     } finally { this.attentionReads.delete(fence); }
   }
-  private async withEvents<T>(read: () => Promise<T>, patch: (data: T, event: FenceEvent) => T, normalize = (data: T) => data): Promise<T> {
-    const fence: Fence = { events: [] }; this.fences.add(fence);
+  private async withEvents<T extends object>(key: QueryKey, read: () => Promise<T>, patch: (data: T, event: FenceEvent) => T,
+    normalize = (data: T) => data, options: ReadOptions = {}): Promise<T> {
+    const query = this.client.getQueryCache().find({ queryKey: key, exact: true });
+    const awaitsCommit = options.manualCommit || query?.state.fetchStatus === 'fetching';
+    const fence: Fence = { events: [], queryHash: options.manualCommit ? undefined : query?.queryHash, finish: () => {
+      this.fences.delete(fence); options.signal?.removeEventListener('abort', fence.finish);
+    } };
+    this.fences.add(fence); options.signal?.addEventListener('abort', fence.finish, { once: true });
+    let handedToCache = false;
     try {
+      options.signal?.throwIfAborted();
       let result = normalize(await read());
       for (const event of fence.events) result = patch(result, event);
+      options.signal?.throwIfAborted();
       if (this.disposed) throw new DOMException('Sessão encerrada.', 'AbortError');
+      if (awaitsCommit && this.fences.has(fence)) {
+        const replayed = fence.events.length;
+        this.readCommits.set(result, { fence, apply: incoming => {
+          options.signal?.throwIfAborted();
+          if (this.disposed) throw new DOMException('Sessão encerrada.', 'AbortError');
+          let latest = incoming as T;
+          // The async query adapter has more promise continuations before its
+          // cache write. Replay only the events after the first replay, in order.
+          for (const event of fence.events.slice(replayed)) latest = patch(latest, event);
+          return latest;
+        } });
+        handedToCache = true;
+      }
       return result;
-    } finally { this.fences.delete(fence); }
+    } finally { if (!handedToCache) fence.finish(); }
+  }
+  private commitRead(previous: unknown, incoming: unknown) {
+    const read = incoming && typeof incoming === 'object' ? this.readCommits.get(incoming) : undefined;
+    if (!read) return replaceEqualDeep(previous, incoming);
+    this.readCommits.delete(incoming as object);
+    try { return replaceEqualDeep(previous, read.apply(incoming)); }
+    finally { read.fence.finish(); }
   }
   private findConversation(id: string) {
     for (const query of this.client.getQueryCache().findAll({ queryKey: this.key('conversations') })) {
@@ -310,7 +373,7 @@ export class TalkSession {
       this.prefetchTimers.delete(id);
       if (this.disposed || this.prefetching >= 2 || id === this.active) return;
       this.prefetching++;
-      void this.client.prefetchQuery({ queryKey: this.key('messages', id), queryFn: ({ signal }) => this.readMessages(id, () => read(signal)) })
+      void this.client.prefetchQuery({ queryKey: this.key('messages', id), queryFn: ({ signal }) => this.readMessages(id, () => read(signal), signal) })
         .finally(() => { this.prefetching--; this.trim(); });
     }, 150));
   }
@@ -319,6 +382,8 @@ export class TalkSession {
     this.disposed = true; clearTimeout(this.invalidationTimer); clearTimeout(this.maxInvalidationTimer); this.pendingInvalidations.clear();
     for (const timer of this.prefetchTimers.values()) clearTimeout(timer);
     this.prefetchTimers.clear(); void this.client.cancelQueries(); this.client.clear(); this.blobs.clear();
+    for (const fence of this.fences) fence.finish();
+    this.readCommits = new WeakMap(); this.unsubscribeCache();
     this.ui.clear(); this.histories.clear(); this.fences.clear(); this.attentionReads.clear(); this.contextContacts.clear(); this.listeners.clear();
   }
 }

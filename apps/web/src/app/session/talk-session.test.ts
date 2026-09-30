@@ -11,6 +11,91 @@ const session = () => { const value = new TalkSession('user:session:w', 'w'); se
 afterEach(() => { for (const value of sessions.splice(0)) value.clear(); vi.useRealTimers(); });
 
 describe('session query cache', () => {
+  it('keeps a local failure arriving between HTTP resolution and the QueryClient commit', async () => {
+    const cache = session(); const key = cache.key('messages', 'c1');
+    let finish!: (rows: MessageDto[]) => void;
+    const pending = cache.client.fetchQuery({ queryKey: key, queryFn: () => cache.readMessages('c1', () => new Promise(resolve => { finish = resolve; })) });
+    cache.updateMessages('c1', () => [{ ...message('optimistic-new'), status: 'pending' }]);
+    finish([]);
+    queueMicrotask(() => cache.updateMessages('c1', rows => rows.map(row => ({ ...row, status: 'failed' }))));
+    await pending;
+    expect(cache.client.getQueryData<MessageDto[]>(key)?.map(row => [row.id, row.status])).toEqual([['optimistic-new', 'failed']]);
+  });
+  it('keeps message frames through the QueryClient commit and preserves local/frame ingestion order', async () => {
+    const cache = session(); const key = cache.key('messages', 'c1');
+    cache.client.setQueryData(key, [message('old'), message('delete')]);
+    let finish!: (rows: MessageDto[]) => void;
+    const pending = cache.client.fetchQuery({ queryKey: key, staleTime: 0, queryFn: () => cache.readMessages('c1', () => new Promise(resolve => { finish = resolve; })) });
+    cache.updateMessages('c1', rows => [...rows, { ...message('optimistic-new', 'c1', 'outgoing'), direction: 'outbound', status: 'pending' }]);
+    finish([message('old'), message('delete')]);
+    queueMicrotask(() => {
+      cache.event(event('message.created', { ...message('server-new', 'c1', 'outgoing'), direction: 'outbound', status: 'read' }));
+      cache.event(event('message.updated', message('old', 'c1', 'edited')));
+      cache.event(event('message.status_changed', { messageId: 'old', status: 'read' }));
+      cache.event(event('message.deleted', { messageId: 'delete', conversationId: 'c1' }));
+    });
+    await pending;
+    expect(cache.client.getQueryData<MessageDto[]>(key)?.map(row => [row.id, row.body, row.status])).toEqual([['old', 'edited', 'read'], ['server-new', 'outgoing', 'read']]);
+  });
+  it('keeps filtered conversation removals and insertions through the QueryClient commit', async () => {
+    const cache = session(); const key = cache.key('conversations', 'marked', 'all', '');
+    cache.client.setQueryData(key, [conversation('c1', { manualMarked: true })]);
+    let finish!: (rows: ConversationDto[]) => void;
+    const pending = cache.client.fetchQuery({ queryKey: key, staleTime: 0, queryFn: () => cache.readConversations(() => new Promise(resolve => { finish = resolve; }), { view: 'marked' }) });
+    finish([conversation('c1', { manualMarked: true })]);
+    queueMicrotask(() => {
+      cache.event(event('conversation.updated', conversation('c1', { manualMarked: false })));
+      cache.event(event('conversation.updated', conversation('c2', { manualMarked: true })));
+    });
+    await pending;
+    expect(cache.client.getQueryData<ConversationDto[]>(key)?.map(row => row.id)).toEqual(['c2']);
+  });
+  it('keeps the pagination fence through merging its page into the cached list', async () => {
+    const cache = session(); const key = cache.key('conversations', 'marked', 'all', '');
+    cache.client.setQueryData(key, [conversation('existing', { manualMarked: true })]);
+    let finish!: (rows: ConversationDto[]) => void;
+    const pending = cache.readConversations(() => new Promise(resolve => { finish = resolve; }), { view: 'marked' }, { manualCommit: true });
+    finish([conversation('page-row', { manualMarked: true })]);
+    queueMicrotask(() => {
+      cache.event(event('conversation.updated', conversation('page-row', { manualMarked: false })));
+      cache.event(event('conversation.updated', conversation('new-row', { manualMarked: true })));
+    });
+    const page = await pending;
+    cache.commitConversationPage(key, page, (current, next) => [...current.filter(row => !next.some(item => item.id === row.id)), ...next]);
+    expect(cache.client.getQueryData<ConversationDto[]>(key)?.map(row => row.id)).toEqual(['existing', 'new-row']);
+    // A later explicit read is a new snapshot, without replaying the old fence.
+    await cache.client.fetchQuery({ queryKey: key, staleTime: 0, queryFn: () => cache.readConversations(async () => [], { view: 'marked' }) });
+    expect(cache.client.getQueryData(key)).toEqual([]);
+  });
+  it('keeps an independent pagination fence if a concurrent list reconciliation is canceled', async () => {
+    const cache = session(); const key = cache.key('conversations', 'marked', 'all', '');
+    cache.client.setQueryData(key, [conversation('c1', { manualMarked: true })]);
+    let finish!: (rows: ConversationDto[]) => void;
+    const controller = new AbortController();
+    const pageRead = cache.readConversations(() => new Promise(resolve => { finish = resolve; }), { view: 'marked' }, { signal: controller.signal, manualCommit: true });
+    const refreshing = cache.client.fetchQuery({ queryKey: key, staleTime: 0, queryFn: ({ signal }) => { void signal; return new Promise<ConversationDto[]>(() => {}); } });
+    await cache.client.cancelQueries({ queryKey: key, exact: true }); await refreshing;
+    expect(controller.signal.aborted).toBe(false);
+    cache.event(event('conversation.updated', conversation('c1', { manualMarked: false })));
+    finish([conversation('c1', { manualMarked: true })]);
+    cache.commitConversationPage(key, await pageRead, (current, next) => [...current, ...next]);
+    expect(cache.client.getQueryData(key)).toEqual([]);
+  });
+  it('cancels a source recovery without committing its late HTTP or retaining its fence', async () => {
+    const cache = session(); const key = cache.key('messages', 'c1');
+    cache.client.setQueryData(key, [message('old')]);
+    let finish!: (rows: MessageDto[]) => void; let signal!: AbortSignal;
+    const pending = cache.refetchMessages('c1', inputSignal => { signal = inputSignal; return new Promise(resolve => { finish = resolve; }); });
+    const outcome = pending.catch(error => error);
+    cache.event(event('message.updated', message('old', 'c1', 'edited')));
+    await cache.client.cancelQueries({ queryKey: key, exact: true });
+    expect(signal.aborted).toBe(true); expect((await outcome).name).toBe('AbortError');
+    finish([message('old')]); await Promise.resolve();
+    expect(cache.client.getQueryData<MessageDto[]>(key)?.[0].body).toBe('edited');
+    cache.event(event('message.deleted', { messageId: 'old', conversationId: 'c1' }));
+    await cache.client.fetchQuery({ queryKey: key, staleTime: 0, queryFn: () => cache.readMessages('c1', async () => [message('old')]) });
+    expect(cache.client.getQueryData<MessageDto[]>(key)?.[0].body).toBe('old');
+  });
   it('replays later local pending/failed changes in ingestion order with websocket events, but can discard earlier failures', async () => {
     const cache = session(); const old = { ...message('optimistic-old'), status: 'failed' as const };
     cache.client.setQueryData(cache.key('messages', 'c1'), [old]);

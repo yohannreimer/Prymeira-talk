@@ -453,7 +453,7 @@ function InboxPageContent() {
   const [selectedConversationId, setSelectedConversationId] = useSessionState<string | null>('selectedConversation', null);
   const [selectedConversationSnapshot, setSelectedConversationSnapshot] = useSessionState<ConversationDto | null>('selectedSnapshot', null);
   const [messageActionError, setMessageError] = useState<string | null>(null);
-  const [sendFailure, setSendFailure] = useSessionState<{ generation: string; message: string } | null>(`sendFailure:${selectedConversationId ?? 'none'}`, null);
+  const [sendFailure] = useSessionState<{ generation: string; message: string } | null>(`sendFailure:${selectedConversationId ?? 'none'}`, null);
   const messageError = messageActionError ?? sendFailure?.message;
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [draft, setDraft] = useSessionState(`draft:${selectedConversationId ?? 'none'}`, '');
@@ -606,9 +606,9 @@ function InboxPageContent() {
       session.writeUI(paginationKey, nextCursor, null);
       session.writeUI(pagesKey, loadedPages, 1);
       return [...rows.values()];
-    }), listFilters) });
+    }), listFilters, { signal }) });
   const messagesQuery = useQuery({ queryKey: messagesKey, enabled: Boolean(selectedConversationId),
-    queryFn: ({ signal }) => session.readMessages(selectedConversationId!, () => apiGetConversationMessages(selectedConversationId!, getFreshToken, signal)) });
+    queryFn: ({ signal }) => session.readMessages(selectedConversationId!, () => apiGetConversationMessages(selectedConversationId!, getFreshToken, signal), signal) });
   const contextQuery = useQuery({ queryKey: contextKey, enabled: Boolean(selectedConversationId && !selectedConversationSnapshot?.isGroup),
     queryFn: ({ signal }) => session.readContext(selectedConversationId!, () => apiGetConversationContext(selectedConversationId!, getFreshToken, signal)) });
   const channelsQuery = useQuery({ queryKey: session.key('channels'), staleTime: CATALOG_STALE_MS,
@@ -641,8 +641,8 @@ function InboxPageContent() {
     session.client.setQueryData<ConversationDto[]>(listKey, current => typeof next === 'function' ? next(current ?? []) : next);
   }, [session, listKey]);
   const setMessages = useCallback((next: SetStateAction<MessageDto[]>) => {
-    if (!session.isLive) return;
-    session.client.setQueryData<MessageDto[]>(messagesKey, current => (typeof next === 'function' ? next(current ?? []) : next).slice(-MAX_MESSAGES));
+    const id = messagesKey[3]; if (typeof id !== 'string') return;
+    session.updateMessages(id, current => typeof next === 'function' ? next(current) : next);
   }, [session, messagesKey]);
   const setContactContext = useCallback((next: ContactContextDto | null) => {
     if (!session.isLive) return;
@@ -721,11 +721,12 @@ function InboxPageContent() {
         controller.signal.throwIfAborted();
         nextCursor = raw.length === CONVERSATION_PAGE_SIZE ? raw.at(-1)!.id : null;
         return raw;
-      }, listFilters);
+      }, listFilters, { signal: controller.signal, manualCommit: true });
+      controller.signal.throwIfAborted();
       if (generation !== conversationListGenerationRef.current) return;
       session.writeUI(paginationKey, nextCursor, null);
       session.writeUI(pagesKey, session.readUI(pagesKey, 1) + 1, 1);
-      setConversations((current) => mergeConversationPage(current, page));
+      session.commitConversationPage(listKey, page, mergeConversationPage);
       conversationCursorRef.current = nextCursor;
       setHasMoreConversations(Boolean(conversationCursorRef.current));
     } catch (loadError) {
@@ -740,7 +741,7 @@ function InboxPageContent() {
         setIsLoadingMoreConversations(false);
       }
     }
-  }, [getFreshToken, activeView, selectedChannelFilter, searchQuery, setConversations, session, listFilters, listKey, paginationKey, pagesKey]);
+  }, [getFreshToken, activeView, selectedChannelFilter, searchQuery, session, listFilters, listKey, paginationKey, pagesKey]);
 
   useEffect(() => {
     if (!dismissUndo) return;
@@ -1587,10 +1588,11 @@ selectedConversation ? (
               <p className="thread-note">Atualizando mensagens...</p>
             ) : null}
             {messageError ? <p className="error-note" role="status">{messageError} <button type="button" onClick={() => {
-              const consultedGeneration = sendFailure?.generation;
-              void messagesQuery.refetch().then(result => {
-                if (!result.error) setSendFailure(current => current?.generation === consultedGeneration ? null : current);
-              });
+              const targetId = selectedConversationId!; const consultedGeneration = sendFailure?.generation;
+              void session.refetchMessages(targetId, signal => apiGetConversationMessages(targetId, getFreshToken, signal)).then(() => {
+                session.writeUI<{ generation: string; message: string } | null>(`sendFailure:${targetId}`,
+                  current => current?.generation === consultedGeneration ? null : current, null);
+              }).catch(() => {});
             }}>{sendFailure ? 'Conferir histórico' : 'Tentar novamente'}</button></p> : null}
             {!messageError && !isLoadingMessages && !isThreadTransitioning && visibleMessages.length === 0 ? (
               <p className="thread-note">Ainda não ha mensagens nesta conversa.</p>
@@ -1650,7 +1652,7 @@ selectedConversation ? (
           </div>
         )
   ), [selectedConversation, selectedConversationId, visibleMessages, isThreadTransitioning, isLoadingMessages,
-    messageError, sendFailure, setSendFailure, newMessagesBelow, deletingMessageId, getToken, session, messagesQuery.refetch]);
+    messageError, sendFailure, newMessagesBelow, deletingMessageId, getToken, getFreshToken, session]);
   const sidebarView = useMemo(() => (
 <aside className={`contact-panel assistant-contact-panel${assistantOpen ? ' assistant-drawer-open' : ''}`} aria-label="Contato e IA de apoio">
         {selectedConversation?.isGroup ? <>
