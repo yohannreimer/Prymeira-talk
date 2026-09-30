@@ -33,6 +33,27 @@ function fixture() {
   return { prisma, client, evolution, channel: () => channel, records };
 }
 describe('physical channel lifecycle', () => {
+  it('rejects enable during a pending disable without changing redundancy settings', async () => {
+    const f = fixture();
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+    let release!: () => void; let entered!: () => void;
+    const paused = new Promise<void>((resolve) => { entered = resolve; });
+    f.client.stopSession.mockImplementationOnce(() => { entered(); return new Promise<void>((resolve) => { release = resolve; }); });
+    const disable = service.setRedundancy({ workspaceId: 'ws', channelId: ch, enabled: false });
+    await paused;
+    const physical = f.records.map((r) => ({ ...r }));
+    let attempt: unknown; let enabledDuringStop: boolean;
+    try {
+      attempt = await service.setRedundancy({ workspaceId: 'ws', channelId: ch, enabled: true }).then((result) => result, (error) => error);
+      enabledDuringStop = f.channel().redundancyEnabled;
+      expect(f.records).toEqual(physical);
+    } finally { release(); await disable; }
+    expect(attempt).toMatchObject({ code: 'LIFECYCLE_IN_PROGRESS', statusCode: 409 });
+    expect(enabledDuringStop!).toBe(false);
+    expect(f.channel().redundancyEnabled).toBe(false);
+    expect(f.client.stopSession).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects logout while secondary QR I/O is pending without mutating that remote session', async () => {
     const f = fixture();
     f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'STOPPED', engine: {}, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
@@ -81,10 +102,13 @@ describe('physical channel lifecycle', () => {
   it('never treats an existing odd token as abandoned during an ordinary lifecycle request', async () => {
     const f = fixture();
     f.records.find((r) => r.id === wahaId).lifecycleGeneration = 7;
+    f.channel().activeConnectionId = null;
     const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
     const scope = { workspaceId: 'ws', channelId: ch, connectionId: wahaId };
     await expect(service.startQr(scope)).rejects.toMatchObject({ code: 'LIFECYCLE_IN_PROGRESS' });
     await expect(service.disconnect(scope)).rejects.toMatchObject({ code: 'LIFECYCLE_IN_PROGRESS' });
+    await expect(service.setRedundancy({ workspaceId: 'ws', channelId: ch, enabled: true })).rejects.toMatchObject({ code: 'LIFECYCLE_IN_PROGRESS' });
+    expect(f.channel().activeConnectionId).toBeNull();
     expect(f.records.find((r) => r.id === wahaId).lifecycleGeneration).toBe(7);
     expect(f.client.getVersion).not.toHaveBeenCalled();
   });

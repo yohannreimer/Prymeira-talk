@@ -255,6 +255,34 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     ]));
     expect((await prisma.channelConnection.findUniqueOrThrow({ where: { id: secondary.id } })).lifecycleGeneration).toBe(2);
   });
+  it('checks the persisted WAHA token under the channel lock before enabling during disable I/O', async () => {
+    const legacy = createChannelsService(prisma as unknown as PrismaLike, { evolution });
+    const created = await legacy.createChannel({ workspaceId, displayName: 'Enable while stopping QA' });
+    const scope = { workspaceId, channelId: created.id };
+    let release!: () => void; let entered!: () => void;
+    const paused = new Promise<void>((resolve) => { entered = resolve; });
+    const provider: any = { ...remote, getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP' }, config: { metadata: scope } })), stopSession: vi.fn(() => { entered(); return new Promise<void>((resolve) => { release = resolve; }); }) };
+    const service = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: provider } });
+    await service.setRedundancy({ ...scope, enabled: true });
+    const disable = service.setRedundancy({ ...scope, enabled: false });
+    await paused;
+    const before = await prisma.channel.findUniqueOrThrow({ where: { id: created.id } });
+    const physical = await prisma.channelConnection.findMany({ where: scope, orderBy: { id: 'asc' } });
+    expect(physical.find((r) => r.provider === 'waha')!.lifecycleGeneration % 2).toBe(1);
+    let attempt: unknown; let after: typeof before | undefined;
+    try {
+      attempt = await service.setRedundancy({ ...scope, enabled: true }).then((result) => result, (error) => error);
+      after = await prisma.channel.findUniqueOrThrow({ where: { id: created.id } });
+      expect(await prisma.channelConnection.findMany({ where: scope, orderBy: { id: 'asc' } })).toEqual(physical);
+      // The other provider remains independently operable while WAHA is stopping.
+      expect(await legacy.startQrSession(scope)).toMatchObject({ provider: 'evolution', qrCode: 'evolution-qr' });
+    } finally { release(); await disable; }
+    expect(attempt).toMatchObject({ code: 'LIFECYCLE_IN_PROGRESS', statusCode: 409 });
+    expect(after).toEqual(before);
+    expect((await prisma.channel.findUniqueOrThrow({ where: { id: created.id } })).redundancyEnabled).toBe(false);
+    expect(provider.stopSession).toHaveBeenCalledTimes(1);
+    expect((await service.setRedundancy({ ...scope, enabled: true })).channel.redundancyEnabled).toBe(true);
+  });
   it('secondary lifecycle leaves primary/history intact and deletion cascades physical identities', async () => {
     const service = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: remote } });
     const secondary = await prisma.channelConnection.findFirstOrThrow({ where: { workspaceId, channelId, provider: 'waha' } });

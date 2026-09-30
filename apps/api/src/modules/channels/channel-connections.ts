@@ -59,14 +59,14 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
     return { channel, connection };
   }
   const whereId = (record: ChannelConnection) => ({ workspaceId_id: { workspaceId: record.workspaceId, id: record.id } });
-  async function ensurePrimary(channel: Channel) {
-    const primary = await prisma.channelConnection.upsert({
+  async function ensurePrimary(channel: Channel, db: ConnectionTransaction = prisma) {
+    const primary = await db.channelConnection.upsert({
       where: { workspaceId_channelId_provider: { workspaceId: channel.workspaceId, channelId: channel.id, provider: 'evolution' } },
       create: { workspaceId: channel.workspaceId, channelId: channel.id, provider: 'evolution', sessionName: channel.providerKey, status: channel.status, eligible: channel.status === 'connected' },
       update: {}
     });
     if (!channel.activeConnectionId) {
-      await prisma.channel.update({ where: { workspaceId_id: { workspaceId: channel.workspaceId, id: channel.id } }, data: { activeConnectionId: primary.id } });
+      await db.channel.update({ where: { workspaceId_id: { workspaceId: channel.workspaceId, id: channel.id } }, data: { activeConnectionId: primary.id } });
     }
     return primary;
   }
@@ -242,9 +242,9 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
     return result(await getChannel(input));
   }
   async function stopSecondary(channel: Channel, connection: ChannelConnection, logout: boolean, disable = false) {
-    const primary = await ensurePrimary(channel);
     // Revoke proof before remote I/O, even when the remote stop subsequently fails.
     const operation = await beginConnectionLifecycle(channel, connection, async (tx, current) => {
+      const primary = await ensurePrimary(current, tx);
       if (disable) await tx.channel.update({ where: { workspaceId_id: { workspaceId: channel.workspaceId, id: channel.id } }, data: { redundancyEnabled: false, activeConnectionId: primary.id } });
       else if (current.activeConnectionId === connection.id) await tx.channel.update({ where: { workspaceId_id: { workspaceId: channel.workspaceId, id: channel.id } }, data: { activeConnectionId: primary.id } });
       await tx.channelConnection.update({ where: whereId(connection), data: { eligible: false, lastHealthyAt: null, ...(logout ? { verifiedPhoneNumber: null } : {}) } });
@@ -268,8 +268,9 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
     describe, ensurePrimary, refresh, getConnection,
     async finishPrimaryLifecycle(operation: ConnectionLifecycle) { await commitLifecycle(operation, async () => {}); },
     async beginPrimaryLifecycle(channel: Channel) {
-      const primary = await ensurePrimary(channel);
-      return beginConnectionLifecycle(channel, primary, async (tx) => {
+      const primary = await prisma.channelConnection.findFirst({ where: { workspaceId: channel.workspaceId, channelId: channel.id, provider: 'evolution' } }) ?? await ensurePrimary(channel);
+      return beginConnectionLifecycle(channel, primary, async (tx, current) => {
+        await ensurePrimary(current, tx);
         await tx.channelConnection.update({ where: whereId(primary), data: { eligible: false, health: 'unknown', verifiedPhoneNumber: null, lastHealthyAt: null } });
         await revalidateSecondary(tx, channel, null);
       });
@@ -286,9 +287,11 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
     async setRedundancy(input: Scope & { enabled: boolean }): Promise<ChannelOperationResultDto> {
       const channel = await getChannel(input);
       if (input.enabled) wahaClient();
-      const primary = await ensurePrimary(channel);
       if (input.enabled) {
         await beginLifecycle(channel, async (tx, current) => {
+          const secondary = await tx.channelConnection.findFirst({ where: { workspaceId: input.workspaceId, channelId: input.channelId, provider: 'waha' } });
+          if (secondary && lifecycleInProgress(secondary)) throw new ConnectionServiceError('LIFECYCLE_IN_PROGRESS', 'Esta conexão já possui uma operação em andamento. Aguarde a conclusão.', 409);
+          const primary = await ensurePrimary(current, tx);
           const active = current.activeConnectionId ? await tx.channelConnection.findFirst({ where: { workspaceId: input.workspaceId, channelId: input.channelId, id: current.activeConnectionId } }) : null;
           await tx.channelConnection.upsert({ where: { workspaceId_channelId_provider: { workspaceId: input.workspaceId, channelId: input.channelId, provider: 'waha' } }, create: { workspaceId: input.workspaceId, channelId: input.channelId, provider: 'waha', sessionName: wahaSessionName(input.workspaceId, input.channelId) }, update: {} });
           await tx.channel.update({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.channelId } }, data: { redundancyEnabled: true, activeConnectionId: active?.id ?? primary.id } });
@@ -297,7 +300,10 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
       }
       const secondary = await prisma.channelConnection.findFirst({ where: { workspaceId: input.workspaceId, channelId: input.channelId, provider: 'waha' } });
       if (secondary) await stopSecondary(channel, secondary, false, true);
-      else await prisma.channel.update({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.channelId } }, data: { redundancyEnabled: false, activeConnectionId: primary.id, connectionLifecycleGeneration: { increment: 1 } } });
+      else {
+        const primary = await ensurePrimary(channel);
+        await prisma.channel.update({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.channelId } }, data: { redundancyEnabled: false, activeConnectionId: primary.id, connectionLifecycleGeneration: { increment: 1 } } });
+      }
       return result(await getChannel(input));
     },
     async startQr(input: ConnectionScope): Promise<ChannelQrResultDto> {
