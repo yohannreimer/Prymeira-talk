@@ -238,14 +238,16 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
         return { removedMessageId: message.id };
       }
       const content = extractMessageContent(original.message, original.messageType);
-      if (!content.contactCards?.length) return reply.code(422).send({ error: 'Esta mensagem não é um contato.' });
+      if (!content.contactCards?.length && !content.location) return reply.code(422).send({ error: 'Esta mensagem não é um contato ou uma localização.' });
       const updated = await app.prisma.message.update({ where: { id: message.id }, data: {
         type: 'text', body: content.body,
         metadata: { ...(message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
-          ? message.metadata as Record<string, unknown> : {}), contactCards: content.contactCards }
+          ? message.metadata as Record<string, unknown> : {}),
+          ...(content.contactCards?.length ? { contactCards: content.contactCards } : {}),
+          ...(content.location ? { location: content.location } : {}) }
       } });
       await app.prisma.conversation.updateMany({ where: { id: conversation.id, workspaceId,
-        lastMessagePreview: 'Mensagem não reconhecida' }, data: { lastMessagePreview: content.preview } });
+        lastMessagePreview: 'Mensagem não reconhecida', lastMessageAt: message.createdAt }, data: { lastMessagePreview: content.preview } });
       const dto = toMessageDto(updated);
       app.realtime.publish({ type: 'message.updated', workspaceId, payload: dto });
       return dto;

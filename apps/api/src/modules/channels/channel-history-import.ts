@@ -64,7 +64,8 @@ export function createChannelHistoryImporter(input: {
           status: record.key.fromMe ? 'sent' : 'delivered',
           metadata: { historyImport: { source: 'evolution', channelId: channel.id, originalType: record.messageType ?? null },
             ...(['audio', 'image', 'file'].includes(content.type) ? { attachment: attachmentPresentation(record.message) } : {}),
-            ...(content.contactCards?.length ? { contactCards: content.contactCards } : {}) },
+            ...(content.contactCards?.length ? { contactCards: content.contactCards } : {}),
+            ...(content.location ? { location: content.location } : {}) },
           createdAt: date, ingestedAt: date });
       }
       const inserted = rows.length ? await tx.message.createMany({ data: rows, skipDuplicates: true }) : { count: 0 };

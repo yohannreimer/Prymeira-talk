@@ -1,3 +1,4 @@
+import { LocationMessage } from './LocationMessage';
 import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
 import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
@@ -791,7 +792,7 @@ function InboxPageContent() {
                 return;
               }
               setMessages((current) => current.map((message) => message.id === recognized.id ? recognized : message));
-              setConversations((current) => current.map((conversation) => conversation.id === selectedConversationId && conversation.lastMessagePreview === 'Mensagem não reconhecida'
+              setConversations((current) => current.map((conversation) => conversation.id === selectedConversationId && conversation.lastMessagePreview === 'Mensagem não reconhecida' && conversation.lastMessageAt === recognized.createdAt
                 ? { ...conversation, lastMessagePreview: recognized.body } : conversation));
             }).catch(() => undefined);
         }
@@ -1851,7 +1852,7 @@ function InboxPageContent() {
                     <InboxMedia key={`${message.id}:${message.mediaUrl?.slice(0, 60)}`} message={message} getToken={getToken} />
                     {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
                     {attachmentReadNotice(message) ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
-                  </> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} onSelect={setSelectedContactCard} /> : <p><WhatsappText text={messageDisplayText(message)} /></p>}
+                  </> : message.location ? <LocationMessage location={message.location} /> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} onSelect={setSelectedContactCard} /> : <p><WhatsappText text={messageDisplayText(message)} /></p>}
                   <div className="message-bubble-meta">
                     {message.editedAt ? <span className="message-edited-label">Editada</span> : null}
                     <time>{formatMessageTime(message.createdAt)}</time>

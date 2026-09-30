@@ -31,6 +31,16 @@ describe('context-only history import',()=>{
     expect(s.db.assistantConversationState.updateMany).not.toHaveBeenCalled();
     expect(s.source.load).toHaveBeenCalledWith(expect.objectContaining({anchorId:'a',to:date,from:new Date(date.getTime()-30*86400000)}));
   });
+  it('preserves location metadata in context-only imports without fetching media', async () => {
+    const s = setup();
+    s.source.load.mockResolvedValue([{ key: { id: 'old', remoteJid: '123@s.whatsapp.net', fromMe: true },
+      messageTimestamp: date.getTime() / 1000 - 10, message: { locationMessage: {
+        name: 'Grupo Villefer', degreesLatitude: -26.254, degreesLongitude: -48.875
+      } } }] as any);
+    await s.run('w', 'c');
+    expect(s.messages[1]).toMatchObject({ type: 'text', metadata: { location: { name: 'Grupo Villefer', latitude: -26.254, longitude: -48.875 } } });
+    expect(s.source.media).not.toHaveBeenCalled();
+  });
   it('is idempotent and never re-fetches a completed import',async()=>{
     const s=setup();await s.run('w','c');await s.run('w','c');
     expect(s.source.load).toHaveBeenCalledOnce();expect(s.messages).toHaveLength(2);

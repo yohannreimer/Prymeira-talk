@@ -1,6 +1,7 @@
+import { extractLocation, locationMessageBody } from './evolution-location.js';
 import type { FastifyPluginAsync } from "fastify";
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { ChannelDto, MessageDto } from "@prymeira-talk/shared";
+import type { ChannelDto, MessageDto, MessageLocation } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { toChannelDto } from "../channels/channels.service.js";
 import {
@@ -255,8 +256,15 @@ export function extractMessageContent(message: unknown, messageType?: unknown): 
   mediaUrl: string | null;
   preview: string | null;
   contactCards?: Array<{ fullName: string; phoneNumber: string | null }>;
+  location?: MessageLocation;
 } {
   message = unwrapMessage(message);
+  const location = extractLocation(message);
+  if (location) {
+    const body = locationMessageBody(location);
+    const preview = [location.isLive ? 'Última posição recebida' : 'Localização compartilhada', location.name ?? location.address].filter(Boolean).join(': ');
+    return { type: 'text', body, preview, mediaUrl: null, location };
+  }
   const singleContact = readPath(message, ['contactMessage']);
   const contactArray = readPath(message, ['contactsArrayMessage', 'contacts']);
   const contactCards = (Array.isArray(contactArray) ? contactArray.slice(0, 50) : singleContact ? [singleContact] : [])
@@ -897,10 +905,11 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             type: messageContent.type,
             body: messageContent.body,
             mediaUrl: messageContent.mediaUrl,
-            ...(isGroup || messageContent.contactCards?.length || ['audio', 'image', 'file'].includes(messageContent.type)
+            ...(isGroup || messageContent.location || messageContent.contactCards?.length || ['audio', 'image', 'file'].includes(messageContent.type)
               ? { metadata: {
                   ...(isGroup && !payload.data.key.fromMe ? { groupSender: { jid: senderJid, name: pushName } } : {}),
                   ...(messageContent.contactCards?.length ? { contactCards: messageContent.contactCards } : {}),
+                  ...(messageContent.location ? { location: messageContent.location } : {}),
                   ...(['audio', 'image', 'file'].includes(messageContent.type) ? { attachment: attachmentPresentation(payload.data.message) } : {})
                 } } : {}),
             status: payload.data.key.fromMe ? "sent" : "delivered",

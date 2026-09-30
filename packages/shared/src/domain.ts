@@ -1,3 +1,4 @@
+import { messageLocationSchema } from './location.js';
 import { z } from "zod";
 
 export * from "./automation-flow.js";
@@ -357,6 +358,7 @@ export const messageSchema = z.object({
     fullName: z.string(),
     phoneNumber: z.string().nullable()
   })).optional(),
+  location: messageLocationSchema.optional(),
   attachmentReadStatus: z.literal('unread').optional(),
   attachment: z.object({
     fileName: z.string().optional(),

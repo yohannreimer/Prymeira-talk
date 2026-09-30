@@ -68,6 +68,24 @@ describe('new channel history import', () => {
     expect(source.recentMessages).toHaveBeenCalledWith({ instanceName: 'instance-1', remoteJid, limit: 30 });
   });
 
+  it('imports a location sent through Business with coordinates and historical provenance', async () => {
+    const tx = {
+      contact: { findFirst: vi.fn().mockResolvedValue({ id: 'contact-1', name: 'Cliente' }) },
+      conversation: { upsert: vi.fn().mockResolvedValue({ id: 'conversation-1' }), updateMany: vi.fn() },
+      message: { findMany: vi.fn().mockResolvedValue([]), createMany: vi.fn().mockResolvedValue({ count: 1 }) }
+    };
+    const prisma = { $transaction: vi.fn().mockImplementation(async fn => fn(tx)) } as unknown as PrismaClient;
+    const source = { recentMessages: vi.fn().mockResolvedValue([{ ...records[1], messageType: 'locationMessage',
+      message: { locationMessage: { name: 'Grupo Villefer', address: 'Joinville', degreesLatitude: -26.254, degreesLongitude: -48.875 } } }]) } as unknown as EvolutionHistorySource;
+    await createChannelHistoryImporter({ prisma, source }).importChat(channel,
+      { remoteJid, phoneJid: remoteJid, pushName: null, profilePicUrl: null }, 30);
+    expect(tx.message.createMany).toHaveBeenCalledWith(expect.objectContaining({ data: [expect.objectContaining({
+      direction: 'outbound', type: 'text', body: expect.stringContaining('Grupo Villefer'),
+      metadata: expect.objectContaining({ historyImport: expect.objectContaining({ source: 'evolution' }),
+        location: expect.objectContaining({ latitude: -26.254, longitude: -48.875 }) })
+    })] }));
+  });
+
   it('retries while the newly connected Evolution instance has not synchronized chats', async () => {
     const row = { ...channel, status: 'connected', historyImportStatus: 'pending' };
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });

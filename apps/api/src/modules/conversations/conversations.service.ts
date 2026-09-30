@@ -1,3 +1,4 @@
+import { messageLocationSchema } from '@prymeira-talk/shared';
 import type { ConversationStatus, Prisma, PrismaClient } from "@prisma/client";
 import { createHash } from 'node:crypto';
 import { prepareVoiceRecording } from './outbound-audio.js';
@@ -536,6 +537,7 @@ export function toMessageDto(record: MessageRecord): MessageDto {
   const history = object(metadata.historyImport);
   const attachment = object(metadata.attachment);
   const groupSender = object(metadata.groupSender);
+  const location = messageLocationSchema.safeParse(metadata.location);
   const rawCards = Array.isArray(metadata.contactCards) ? metadata.contactCards : metadata.contactCard ? [metadata.contactCard] : [];
   const contactCards = rawCards.slice(0, 50).map((raw) => {
     const card = object(raw);
@@ -565,6 +567,7 @@ export function toMessageDto(record: MessageRecord): MessageDto {
     } : {}),
     mediaUrl: record.mediaUrl ?? null,
     ...(contactCards.length ? { contactCards } : {}),
+    ...(location.success ? { location: location.data } : {}),
     ...(Object.keys(publicAttachment).length ? { attachment: publicAttachment } : {}),
     ...(unread ? { attachmentReadStatus: 'unread' as const } : {}),
     status: record.status,
