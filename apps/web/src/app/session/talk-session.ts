@@ -216,7 +216,13 @@ export class TalkSession {
         const dirtyRead = () => { for (const fence of this.attentionReads) if (fence.channel === channel) fence.dirty = true; };
         if (!previous) { if (matches(next)) { dirtyRead(); this.scheduleInvalidation(query.queryHash); } continue; }
         const delta = Number(matches(next) && needsHumanAttention(next)) - Number(matches(previous) && needsHumanAttention(previous));
-        if (delta) { dirtyRead(); this.client.setQueryData<number>(query.queryKey, count => count === undefined ? count : Math.max(0, count + delta)); }
+        if (delta) {
+          dirtyRead();
+          this.client.setQueryData<number>(query.queryKey, count => count === undefined ? count : Math.max(0, count + delta));
+          // A completed count read can already include this frame while the
+          // conversation DTO is older. Reconcile every delta to settle that ambiguity.
+          this.scheduleInvalidation(query.queryHash);
+        }
       }
       // Notes are contact-scoped while tags are conversation-scoped. Their
       // writes publish conversation.updated, so reconcile both affected scopes.

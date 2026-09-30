@@ -93,6 +93,27 @@ describe('session query cache', () => {
 });
 
 describe('realtime list membership and reconciliation', () => {
+  it('reconciles a known attention delta when its count HTTP response arrived before the conversation event', async () => {
+    vi.useFakeTimers(); const cache = session();
+    const key = cache.key('attention', 'all'); const list = cache.key('conversations', 'all', 'all', '');
+    cache.client.setQueryData(list, [conversation('c1')]); cache.client.setQueryData(key, 0);
+    const read = vi.fn(async () => 1);
+    const observer = new QueryObserver(cache.client, { queryKey: key, queryFn: () => cache.readAttention('all', read) });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      await observer.refetch(); expect(cache.client.getQueryData(key)).toBe(1);
+      const updated = conversation('c1', { activeAgentSessionStatus: 'handoff_requested' });
+      cache.event(event('conversation.updated', updated));
+      // The immediate delta uses the older conversation membership; the server
+      // reconciliation removes its duplicate contribution without a list read.
+      expect(cache.client.getQueryData(key)).toBe(2);
+      cache.event(event('conversation.updated', updated));
+      await vi.advanceTimersByTimeAsync(199); expect(read).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(read).toHaveBeenCalledTimes(2); expect(cache.client.getQueryData(key)).toBe(1);
+      expect(cache.client.getQueryState(list)?.isInvalidated).toBe(false);
+    } finally { unsubscribe(); }
+  });
   it.each([0, 1])('retains a patched attention count when an in-flight HTTP snapshot returns %i, then reconciles without double counting', async snapshot => {
     vi.useFakeTimers(); const cache = session();
     const key = cache.key('attention', 'all');
