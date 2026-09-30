@@ -17,6 +17,7 @@ import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { MetaClientError, type MetaClient } from "../meta/meta.client.js";
 import { canonicalizePhone } from "../contacts/phone-normalization.js";
 import { visibleConversationMessageWhere, withoutInternalFollowupReservations } from "./internal-message.js";
+import { measureInboxAssembly } from "../../plugins/inbox-timing.js";
 
 type DateLike = Date | string;
 
@@ -767,7 +768,7 @@ export function createConversationsService(
       })
     ]);
 
-    return {
+    return measureInboxAssembly(() => ({
       primaryBoardStage: toPrimaryBoardStageDto(primaryMembership),
       tags: conversation.tags?.map((tagLink) => tagLink.tag) ?? [],
       notes: notes.map(toNoteDto),
@@ -776,7 +777,7 @@ export function createConversationsService(
         name: department.name
       })),
       boardStages: boardStages.map(toBoardStageOptionDto)
-    };
+    }));
   }
 
   async function resolveCurrentUser(input: {
@@ -828,7 +829,7 @@ export function createConversationsService(
         take: 50
       });
 
-      return conversations.map(toConversationDto);
+      return measureInboxAssembly(() => conversations.map(toConversationDto));
     },
 
     async createPendingOutboundMessage(input: {
@@ -1561,7 +1562,7 @@ export function createConversationsService(
         take: 100
       });
 
-      return withoutInternalFollowupReservations([...messages]).reverse().map(toMessageDto);
+      return measureInboxAssembly(() => withoutInternalFollowupReservations([...messages]).reverse().map(toMessageDto));
     }
   };
 }

@@ -5,6 +5,7 @@ import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
+import { inboxTimingPlugin } from "./plugins/inbox-timing.js";
 import { cnpjDatabasePlugin } from "./plugins/cnpj-database.js";
 import { createAgentFollowupRuntime } from "./modules/agents/agent-followup-runtime.js";
 import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
@@ -87,6 +88,7 @@ export interface CreateAppOptions {
 
 export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   const app = Fastify({ logger: options.logger ?? true, trustProxy: true });
+  await app.register(inboxTimingPlugin);
   const allowedCorsOrigins = env.CORS_ORIGINS.split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
