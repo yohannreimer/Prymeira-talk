@@ -30,6 +30,9 @@ Base: `4524fbb3e834197626d7fc6ad329a7282c562615`. Branch: `codex/talk-waha-rabbi
 
 - [x] 1. Conexões físicas, cliente WAHA, contrato e gestão dos dois QR Codes; UI de canais e migração inicial. Testes de número incorreto, isolamento e compatibilidade. Implementação local aprovada por revisões de especificação e qualidade em `95fb0b8`; homologação real permanece no bloco 5.
 - [ ] 2a. Normalização Evolution/WAHA, identidade canônica, aliases e observações; edições/exclusões/recibos e dois importadores históricos. Testes reais de concorrência, escopo e identidade.
+- [x] 2a.1. Contratos e adaptadores puros, extração Evolution compatível e parsing de IDs/alvos/participantes WAHA WPP. Conformidade aprovada em `5cc0058` e qualidade em `dd2eb72`; 173 testes focados, typecheck e build da API aprovados. Sem modificar persistência ou índices neste marco.
+- [ ] 2a.2. Schema e store canônicos, aliases/observações, resolução de chat e testes de concorrência com PostgreSQL.
+- [ ] 2a.3. Integração dos writers reais Evolution, histórico e campanhas; conversão dos lookups e índices amplos depois dos leitores/escritores compatíveis.
 - [ ] 2a-resolução. Quando PN/LID comprovados já pertencem a duas conversas existentes, preservar UUIDs e configurações, reunir o histórico por membros e resolver explicitamente a autoridade operacional. Quarentena de conflitos é um estágio de segurança, não conclusão do histórico único; incluir autorização das origens, controles humanos, reservas incertas e bloqueio de jobs antigos.
 - [ ] 2b. RabbitMQ/ingresso/consumidor, efeitos duráveis, recuperação com checkpoints e realtime entre processos. Testes de duplicação, falhas e reentrega usando a persistência do bloco 2a.
 - [ ] 3. Armazenamento e serviço comum de mídia; coordenação persistente de transcrição/leitura; integração IA. Testes de player, MIME, autorização, SSRF, retry e concorrência.
