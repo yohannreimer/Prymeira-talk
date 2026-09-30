@@ -310,7 +310,10 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
       const { channel, connection } = await getConnection(input);
       if (connection.provider !== 'waha') throw new ConnectionServiceError('USE_EVOLUTION_QR', 'Use o QR Evolution para esta conexão.', 400);
       if (!channel.redundancyEnabled) throw new ConnectionServiceError('REDUNDANCY_DISABLED', 'Habilite a redundância antes de conectar WAHA.', 409);
-      const operation = await beginConnectionLifecycle(channel, connection, async (tx) => { await tx.channelConnection.update({ where: whereId(connection), data: { eligible: false } }); });
+      const operation = await beginConnectionLifecycle(channel, connection, async (tx, current) => {
+        if (!current.redundancyEnabled) throw new ConnectionServiceError('REDUNDANCY_DISABLED', 'Habilite a redundância antes de conectar WAHA.', 409);
+        await tx.channelConnection.update({ where: whereId(connection), data: { eligible: false } });
+      });
       try {
         const client = await qualifiedClient();
         let session: WahaSession;

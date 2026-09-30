@@ -26,13 +26,40 @@ function fixture() {
       updateMany: vi.fn(async ({ where, data }) => { const found = records.filter((r) => matches(r, where)); found.forEach((record) => apply(record, data)); return { count: found.length }; }),
       update: vi.fn(async ({ where, data }) => { const record = records.find((r) => matches(r, where.workspaceId_id)); return apply(record, data); })
     },
-    $transaction: vi.fn(async (fn) => fn(prisma))
+    $transaction: vi.fn(async (fn) => {
+      const beforeChannel = { ...channel }; const beforeRecords = records.map((r) => ({ ...r }));
+      try { return await fn(prisma); }
+      catch (error) { channel = beforeChannel; records.splice(0, records.length, ...beforeRecords); throw error; }
+    })
   };
   const client: any = { getVersion: vi.fn(async () => ({ version: '2026.9.1', engine: 'WPP' })), getSession: vi.fn(async () => ({ name: 'talk-waha', status: 'WORKING', engine: { engine: 'WPP' }, config: { metadata: { workspaceId: 'ws', channelId: ch } } })), getMe: vi.fn(async () => ({ id: '5547999990000@c.us' })), getQr: vi.fn(async () => 'secondary-qr'), createSession: vi.fn(), startSession: vi.fn(), stopSession: vi.fn(), logoutSession: vi.fn(), deleteSession: vi.fn() };
   const evolution: any = { mode: 'real', client: { getConnectionState: vi.fn(async () => 'open'), getInstanceIdentity: vi.fn(async () => '5547999990000@s.whatsapp.net'), logoutInstance: vi.fn() } };
   return { prisma, client, evolution, channel: () => channel, records };
 }
 describe('physical channel lifecycle', () => {
+  it('rejects a QR from an enabled snapshot after disable completes without any new provider or persisted effect', async () => {
+    const f = fixture();
+    f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'STOPPED', engine: {}, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+    let release!: () => void; let entered!: () => void;
+    const paused = new Promise<void>((resolve) => { entered = resolve; });
+    const resume = new Promise<void>((resolve) => { release = resolve; });
+    f.prisma.channelConnection.findFirst.mockImplementationOnce(async () => { entered(); await resume; return { ...f.records.find((r) => r.id === wahaId) }; });
+    const qr = service.startQr({ workspaceId: 'ws', channelId: ch, connectionId: wahaId }).then((result) => result, (error) => error);
+    await paused;
+    await service.setRedundancy({ workspaceId: 'ws', channelId: ch, enabled: false });
+    const channel = { ...f.channel() }; const records = f.records.map((r) => ({ ...r }));
+    release();
+    expect(await qr).toMatchObject({ code: 'REDUNDANCY_DISABLED', statusCode: 409 });
+    expect(f.channel()).toEqual(channel);
+    expect(f.records).toEqual(records);
+    expect(f.client.getVersion).toHaveBeenCalledTimes(1);
+    expect(f.client.getSession).toHaveBeenCalledTimes(1);
+    expect(f.client.startSession).not.toHaveBeenCalled();
+    expect(f.client.createSession).not.toHaveBeenCalled();
+    expect(f.client.getQr).not.toHaveBeenCalled();
+  });
+
   it('rejects enable during a pending disable without changing redundancy settings', async () => {
     const f = fixture();
     const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
