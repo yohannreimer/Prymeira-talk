@@ -1,3 +1,4 @@
+import { validateProspectingAgent } from "../prospecting/prospecting-policy.js";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   buildPhoneLookupCandidates,
@@ -22,6 +23,8 @@ interface CampaignRecord {
   cadence?: Prisma.JsonValue;
   scheduledAt: DateLike | null;
   timeZone?: string;
+  prospectingAgentId?: string | null;
+  prospectingContext?: string | null;
   hideFromInboxUntilReply?: boolean;
   activationKey?: string | null;
   mode: IntegrationMode;
@@ -155,6 +158,8 @@ export interface CampaignDto {
   cadence: CampaignCadenceDto;
   scheduledAt: string | null;
   timeZone: string;
+  prospectingAgentId: string | null;
+  prospectingContext: string | null;
   hideFromInboxUntilReply: boolean;
   mode: IntegrationMode;
   createdAt: string;
@@ -398,6 +403,8 @@ function toCampaignDto(record: CampaignRecord): CampaignDto {
     cadence: normalizeCadence(record.cadence),
     scheduledAt: toNullableIsoString(record.scheduledAt),
     timeZone: record.timeZone ?? "America/Sao_Paulo",
+    prospectingAgentId: record.prospectingAgentId ?? null,
+    prospectingContext: record.prospectingContext ?? null,
     hideFromInboxUntilReply: Boolean(record.hideFromInboxUntilReply),
     mode: record.mode,
     createdAt: toIsoString(record.createdAt),
@@ -783,6 +790,8 @@ const campaignSelect = {
   cadence: true,
   scheduledAt: true,
   timeZone: true,
+  prospectingAgentId: true,
+  prospectingContext: true,
   hideFromInboxUntilReply: true,
   activationKey: true,
   mode: true,
@@ -974,8 +983,11 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       cadence?: CampaignCadenceDto;
       scheduledAt?: string | null;
       timeZone?: string;
+      prospectingAgentId?: string | null;
+      prospectingContext?: string | null;
       hideFromInboxUntilReply?: boolean;
     }): Promise<CampaignDto> {
+      await validateProspectingAgent(prisma, input.workspaceId, input.prospectingAgentId);
       const campaign = await prisma.campaign.create({
         select: campaignSelect,
         data: {
@@ -989,6 +1001,8 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
           cadence: input.cadence ? cadenceToJson(input.cadence) : cadenceToJson(normalizeCadence({})),
           scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : null,
           timeZone: input.timeZone ?? "America/Sao_Paulo",
+          prospectingAgentId: input.prospectingAgentId ?? null,
+          prospectingContext: input.prospectingContext?.trim() ?? null,
           hideFromInboxUntilReply: input.hideFromInboxUntilReply ?? false,
           mode: "simulated"
         }
@@ -1010,6 +1024,8 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
         cadence: CampaignCadenceDto;
         scheduledAt: string | null;
         timeZone: string;
+        prospectingAgentId: string | null;
+        prospectingContext: string | null;
         hideFromInboxUntilReply: boolean;
       }>;
     }): Promise<CampaignDto> {
@@ -1018,6 +1034,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
         throw new CampaignsServiceError("CAMPAIGN_NOT_DRAFT", "Uma campanha ativa não pode ser editada.");
       }
 
+      await validateProspectingAgent(prisma, input.workspaceId, input.data.prospectingAgentId === undefined ? currentCampaign.prospectingAgentId : input.data.prospectingAgentId);
       const campaign = await prisma.campaign.update({
         select: campaignSelect,
         where: {
@@ -1045,6 +1062,8 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
                 ? new Date(input.data.scheduledAt)
                 : null,
           timeZone: input.data.timeZone,
+          prospectingAgentId: input.data.prospectingAgentId,
+          prospectingContext: input.data.prospectingContext,
           hideFromInboxUntilReply: input.data.hideFromInboxUntilReply
         })
       });
@@ -1152,6 +1171,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       }
 
       const campaign = await findCampaignForWorkspace(input);
+      if (campaign.prospectingAgentId) throw new Error("PROSPECTING_UNAVAILABLE: Use o envio guiado Evolution para campanhas com IA.");
       const plans = await buildRecipientPlans(campaign);
       const channels = await listConnectedChannels({
         workspaceId: input.workspaceId,
@@ -1370,6 +1390,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       }
 
       const campaign = await findCampaignForWorkspace(input);
+      if (campaign.prospectingAgentId) throw new Error("PROSPECTING_UNAVAILABLE: Prospecção com IA requer envio guiado Evolution; Meta não é compatível.");
       if (campaign.activationKey) {
         throw new CampaignsServiceError("CAMPAIGN_NOT_DRAFT",
           "Uma campanha com fila ativa não pode usar outro modo de envio.");

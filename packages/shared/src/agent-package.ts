@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { aiAgentAllowedActionSchema } from "./domain.js";
+import { aiAgentAllowedActionSchema, aiAgentTypeSchema } from "./domain.js";
 
 export const agentPackageSlugSchema = z
   .string()
@@ -38,7 +38,7 @@ export const agentQualificationFieldSchema = z.object({
 
 export const agentFollowupConfigSchema = z.object({
   timeZone: z.string().trim().min(1).max(80),
-  businessDays: z.array(z.number().int().min(0).max(6)).min(1),
+  businessDays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
   businessHours: z.object({
     start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
     end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)
@@ -52,7 +52,24 @@ export const agentFollowupConfigSchema = z.object({
     )
     .max(10),
   closeAfterBusinessMinutes: z.number().int().min(0)
+}).superRefine((value, context) => {
+  if (new Set(value.businessDays).size !== value.businessDays.length) {
+    context.addIssue({ code: "custom", path: ["businessDays"], message: "Duplicate business day." });
+  }
+  if (value.businessHours.start >= value.businessHours.end) {
+    context.addIssue({ code: "custom", path: ["businessHours", "end"], message: "Business opening must precede closing." });
+  }
+  try { new Intl.DateTimeFormat("en-US", { timeZone: value.timeZone }); }
+  catch { context.addIssue({ code: "custom", path: ["timeZone"], message: "Invalid time zone." }); }
+  for (let index = 1; index < value.steps.length; index++) {
+    if (value.steps[index]!.afterBusinessMinutes <= value.steps[index - 1]!.afterBusinessMinutes) {
+      context.addIssue({ code: "custom", path: ["steps", index, "afterBusinessMinutes"],
+        message: "Cumulative followup delays must be strictly increasing." });
+    }
+  }
 });
+
+export type AgentFollowupConfig = z.infer<typeof agentFollowupConfigSchema>;
 
 export const channelFollowupConfigSchema = z.object({
   enabled: z.boolean().default(true),
@@ -112,6 +129,7 @@ export const agentPackageSchema = z
     }),
     variables: z.array(agentPackageVariableSchema).max(100),
     agent: z.object({
+      type: aiAgentTypeSchema.default("attendance").optional(),
       name: z.string().trim().min(1).max(120),
       description: z.string().trim().max(500).nullable(),
       systemPrompt: z.string().trim().min(10).max(12_000),
@@ -129,6 +147,9 @@ export const agentPackageSchema = z
     knowledge: z.array(agentPackageKnowledgeSourceSchema).max(200)
   })
   .superRefine((value, context) => {
+    if (value.agent.type === "prospecting" && (typeof value.agent.handoff.prospectingGoal !== "string" || !value.agent.handoff.prospectingGoal.trim())) {
+      context.addIssue({ code: "custom", path: ["agent", "handoff", "prospectingGoal"], message: "Prospecting goal is required." });
+    }
     requireUnique(value.variables.map((item) => item.key), "variable keys", context);
     requireUnique(
       value.agent.qualification.fields.map((item) => item.key),

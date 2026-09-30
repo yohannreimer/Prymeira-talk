@@ -42,6 +42,7 @@ import {
   type LeadContactImportResult,
   type LeadCampaignDraftResult,
   type LeadComposerDraft,
+  type AgentFollowupConfig,
   type AgentAllowedTagDto,
   type AgentPackage,
   type AiAgentAllowedAction,
@@ -315,6 +316,8 @@ export interface CampaignCadenceDto {
 }
 
 export interface CampaignDto {
+  prospectingAgentId?: string | null;
+  prospectingContext?: string | null;
   id: string;
   workspaceId: string;
   name: string;
@@ -341,6 +344,7 @@ export interface CampaignAudienceContactDto {
 }
 
 export interface CampaignRecipientDto {
+  skipReason?: string | null;
   id: string;
   workspaceId: string;
   campaignId: string;
@@ -598,6 +602,7 @@ export interface IntegrationConfigDto {
 }
 
 export interface SettingsDto {
+  modules?: { campaignProspecting: boolean };
   workspace: WorkspaceSettingsDto;
   integrations: IntegrationConfigDto[];
   behavior: {
@@ -938,6 +943,8 @@ function parseCampaign(data: unknown): CampaignDto {
     scheduledAt: payload.scheduledAt,
     timeZone: payload.timeZone ?? "America/Sao_Paulo",
     hideFromInboxUntilReply: Boolean(payload.hideFromInboxUntilReply),
+    prospectingAgentId: payload.prospectingAgentId ?? null,
+    prospectingContext: payload.prospectingContext ?? null,
     mode: payload.mode === "real" ? "real" : "simulated",
     createdAt: payload.createdAt,
     updatedAt: payload.updatedAt
@@ -967,6 +974,7 @@ function parseCampaignRecipient(data: unknown): CampaignRecipientDto {
     audienceKey: payload.audienceKey ?? null,
     providerMessageId: payload.providerMessageId ?? null,
     status: payload.status,
+    skipReason: payload.skipReason ?? (payload.status.startsWith("skipped") ? payload.errorMessage ?? null : null),
     result: payload.result ?? {},
     contactSnapshot: payload.contactSnapshot ?? {},
     scheduledAt: payload.scheduledAt ?? null,
@@ -1200,7 +1208,8 @@ function parseAssistantAction(data: unknown): AssistantActionDto {
 }
 
 function parseAgent(data: unknown): AiAgentDto {
-  return aiAgentSchema.parse(data);
+  const agent = aiAgentSchema.parse(data);
+  return { ...agent, type: agent.type ?? "attendance" };
 }
 
 export function parseTag(data: unknown): TagDto {
@@ -1276,6 +1285,7 @@ function parseSettings(data: unknown): SettingsDto {
   const agentReplyWaitSeconds = payload.behavior?.agentReplyWaitSeconds;
 
   return {
+    modules: { campaignProspecting: payload.modules?.campaignProspecting === true },
     workspace: {
       workspaceId: String(workspace.workspaceId ?? ""),
       name: typeof workspace.name === "string" ? workspace.name : null,
@@ -2756,6 +2766,8 @@ export async function apiCreateCampaign(
     scheduledAt?: string | null;
     timeZone?: string;
     hideFromInboxUntilReply?: boolean;
+    prospectingAgentId?: string | null;
+    prospectingContext?: string | null;
   }
 ): Promise<CampaignDto> {
   const token = await getRequiredToken(getToken);
@@ -2791,6 +2803,8 @@ export async function apiUpdateCampaign(
     scheduledAt: string | null;
     timeZone: string;
     hideFromInboxUntilReply: boolean;
+    prospectingAgentId: string | null;
+    prospectingContext: string | null;
   }>
 ): Promise<CampaignDto> {
   const token = await getRequiredToken(getToken);
@@ -3380,6 +3394,9 @@ export async function apiCreateAgent(
     allowedTagIds?: string[];
     reasoningEffort?: "none" | "low";
     onlyNewConversations?: boolean;
+    type?: "attendance" | "prospecting";
+    prospectingGoal?: string;
+    followupConfig?: AgentFollowupConfig;
   }
 ): Promise<AiAgentDto> {
   return fetchJson(
@@ -3406,6 +3423,9 @@ export async function apiUpdateAgent(
     status: AiAgentDto["status"];
     reasoningEffort: "none" | "low";
     onlyNewConversations: boolean;
+    type: "attendance" | "prospecting";
+    prospectingGoal: string;
+    followupConfig: AgentFollowupConfig;
   }>
 ): Promise<AiAgentDto> {
   return fetchJson(
@@ -3880,4 +3900,8 @@ export function apiCreateLeadCampaignDraft(getToken: TokenProvider, listId: stri
 
 export function apiGetLeadComposerDraft(getToken: TokenProvider, conversationId: string): Promise<LeadComposerDraft | null> {
   return fetchJson(getToken, `/leads/conversations/${leadPath(conversationId)}/composer-draft`, {}, value => leadComposerDraftSchema.nullable().parse(value), "Não foi possível carregar o rascunho do lead.");
+}
+
+export async function apiUpdateModules(getToken: () => Promise<string | null>, modules: { campaignProspecting: boolean }): Promise<SettingsDto> {
+  return fetchJson(getToken, "/settings/modules", { method: "PATCH", body: JSON.stringify(modules) }, parseSettings, "Não foi possível salvar os módulos.");
 }

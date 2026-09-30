@@ -1,3 +1,4 @@
+import { autonomousAgentAllowed, findProspectingReservation, lockProspectingObservation } from "../prospecting/prospecting-policy.js";
 import { calculateFollowupDueAt, resolveFollowupPlan } from "./channel-followup-plan.js";
 import { buildConversationContext } from "../agents/conversation-context-builder.js";
 import { readAssistantSettings } from "../assistant/assistant-policy.js";
@@ -257,6 +258,21 @@ export function createConversationFollowupsService(
     for (let attempt = 0; attempt < MAX_UNIQUE_CONFLICT_RETRIES; attempt += 1) {
       try {
         const mutation = await prisma.$transaction(async (tx) => {
+          if (input.source === "agent" && asRecord(candidate.message.metadata)?.prospectingDispatch === "confirmed") {
+            const metadata = asRecord(candidate.message.metadata);
+            if (!await lockProspectingObservation(tx, { workspaceId: input.workspaceId, conversationId: input.conversationId,
+              agentId: candidate.agent.id, expectedGeneration: typeof metadata?.prospectingGeneration === "string" ? metadata.prospectingGeneration : undefined })) {
+              return { ignored: true };
+            }
+            // Observation may have committed before the reply worker crashed.
+            // Any first step for this anchor, including sent/cancelled/completed,
+            // proves observation happened; never restart an exhausted sequence.
+            const observed = await tx.conversationFollowup.findFirst({ where: {
+              workspaceId: input.workspaceId, conversationId: input.conversationId,
+              anchorMessageId: candidate.message.id, kind: "qualification", stepIndex: 1
+            } });
+            if (observed) return { ignored: true };
+          }
           const current = await tx.conversationFollowup.findFirst({
             where: {
               workspaceId: input.workspaceId,
@@ -291,6 +307,7 @@ export function createConversationFollowupsService(
           return { followup, created: true, replacedId };
         });
 
+        if ("ignored" in mutation) return { status: "ignored" };
         if (mutation.replacedId) await publish(input.workspaceId, mutation.replacedId);
         if (mutation.created) await publish(input.workspaceId, mutation.followup.id);
         const result = await finishOutboundScheduling(prisma, input, mutation.followup, options.publisher);
@@ -414,7 +431,9 @@ export function createConversationFollowupsService(
     if (conversation.status === "closed") {
       return cancelActiveFollowup(prisma, followup, "conversation_closed", input.now, conversation, options.publisher, input.claim);
     }
-    if (await isChannelFollowupsPaused(prisma, conversation)) {
+    const prospecting = await findProspectingReservation(prisma, input.workspaceId, conversation.id);
+    if (prospecting && !await autonomousAgentAllowed(prisma, { workspaceId: input.workspaceId, conversationId: conversation.id, agentId: followup.agentId, sessionId: followup.sessionId })) return cancelActiveFollowup(prisma, followup, "human_controlled", input.now, conversation, options.publisher, input.claim);
+    if (!prospecting && await isChannelFollowupsPaused(prisma, conversation)) {
       return cancelActiveFollowup(prisma, followup, "channel_paused", input.now, conversation, options.publisher, input.claim);
     }
     if (
@@ -614,7 +633,7 @@ export function createConversationFollowupsService(
     const conversation = await prisma.conversation.findUnique({
       where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.followup.conversationId } }
     });
-    const followupConfig = await loadPlan(prisma, input.workspaceId, conversation?.channelId, input.agentBehaviorConfig);
+    const followupConfig = await loadPlan(prisma, input.workspaceId, conversation?.channelId, input.agentBehaviorConfig, conversation?.id);
     const nextStep =
       followupConfig && input.followup.stepIndex < Math.min(MAX_AUTOMATIC_FOLLOWUP_STEPS, followupConfig.steps.length)
         ? followupConfig.steps[input.followup.stepIndex]
@@ -705,7 +724,7 @@ export function createConversationFollowupsService(
       ? await resolveConfiguredHumanAgent(prisma, conversation) : null;
     const agent = sessionAgent ?? (configuredAgent?.id === input.followup.agentId ? configuredAgent : null);
     if (!agent) return null;
-    const plan = await loadPlan(prisma, input.workspaceId, conversation.channelId, agent.behaviorConfig);
+    const plan = await loadPlan(prisma, input.workspaceId, conversation.channelId, agent.behaviorConfig, conversation.id);
     const nextStep = plan?.steps[input.followup.stepIndex];
     if (!plan || !nextStep || input.followup.stepIndex >= MAX_AUTOMATIC_FOLLOWUP_STEPS) return null;
     const scheduledAt = calculateNextScheduledAt(input.followup, input.sentAt, nextStep.afterMinutes, plan);
@@ -968,6 +987,8 @@ async function resolveCandidate(
         orderBy: { updatedAt: "desc" }
       });
 
+  const prospecting = await findProspectingReservation(prisma, input.workspaceId, input.conversationId);
+  if (prospecting && !await autonomousAgentAllowed(prisma, { workspaceId: input.workspaceId, conversationId: input.conversationId, sessionId: session?.id, agentId: session?.agentId })) return null;
   if (isCompatibleSession(session, input.workspaceId, input.conversationId, kind)) {
     return { conversation, message, session, agent: session.agent };
   }
@@ -995,12 +1016,14 @@ async function loadPlan(
   prisma: ConversationFollowupsPrismaLike,
   workspaceId: string,
   channelId: string | undefined,
-  agentBehaviorConfig: unknown
+  agentBehaviorConfig: unknown,
+  conversationId?: string
 ) {
   const channel = channelId && prisma.channel
     ? await prisma.channel.findUnique({ where: { workspaceId_id: { workspaceId, id: channelId } } })
     : null;
-  return resolveFollowupPlan(agentBehaviorConfig, channel?.followupConfig);
+  const prospecting = conversationId ? await findProspectingReservation(prisma, workspaceId, conversationId) : null;
+  return resolveFollowupPlan(agentBehaviorConfig, channel?.followupConfig, !!prospecting);
 }
 
 async function isChannelFollowupsPaused(prisma: ConversationFollowupsPrismaLike, conversation: ConversationRecord) {
@@ -1018,7 +1041,7 @@ async function calculateFirstScheduledAt(
   conversation: ConversationRecord,
   agent: AgentRecord
 ): Promise<Date | null> {
-  const followupConfig = await loadPlan(prisma, conversation.workspaceId, conversation.channelId, agent.behaviorConfig);
+  const followupConfig = await loadPlan(prisma, conversation.workspaceId, conversation.channelId, agent.behaviorConfig, conversation.id);
   if (!followupConfig) {
     return null;
   }

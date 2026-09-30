@@ -14,6 +14,8 @@ export function CampaignReview(props: {
   channelName: string;
   startLabel: string;
   cadence: CampaignCadenceDto;
+  prospectingAgentName?: string;
+  prospectingContext?: string;
   confirmed: boolean;
   onConfirmedChange: (checked: boolean) => void;
 }) {
@@ -39,6 +41,8 @@ export function CampaignReview(props: {
         <li key={reason}>{reasonLabel[reason as keyof typeof reasonLabel]}: {count}</li>)}</ul>
     </div>}
     <dl className="campaign-review-details">
+      {props.prospectingAgentName && <div><dt>Agente responsável</dt><dd>{props.prospectingAgentName}</dd></div>}
+      {props.prospectingContext && <div><dt>Contexto da oferta</dt><dd>{props.prospectingContext}</dd></div>}
       <div><dt>Canal de envio</dt><dd>{props.channelName}</dd></div>
       <div><dt>Início</dt><dd>{props.startLabel}</dd></div>
       <div><dt>Intervalo entre mensagens</dt><dd>{props.cadence.minDelaySeconds / 60} a {props.cadence.maxDelaySeconds / 60} minutos, sorteado a cada envio</dd></div>

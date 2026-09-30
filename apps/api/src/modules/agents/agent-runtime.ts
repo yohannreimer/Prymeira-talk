@@ -1,3 +1,10 @@
+import { markProspectingFollowupObserved } from "../prospecting/prospecting-followup-observation.js";
+import { ownsAgentReplyClaim, type AgentReplyClaim } from "./agent-reply-claim.js";
+import { observeProspectingAudioRefusal, isLiveProspectingAudio } from "../prospecting/prospecting-lifecycle.js";
+import { isExplicitProspectingRefusal } from "../prospecting/prospecting-refusal.js";
+import { reserveProspectingOutbound, dispatchProspectingOutbound } from "../prospecting/prospecting-delivery.js";
+import { buildProspectingInstructions } from "../prospecting/prospecting-instructions.js";
+import { autonomousAgentAllowed, findProspectingReservation, asRecord, stopProspectingConversation } from "../prospecting/prospecting-policy.js";
 import { aiAgentAllowedActionSchema, type AiAgentAllowedAction, type MessageDto } from "@prymeira-talk/shared";
 import { createHash } from "node:crypto";
 import { usesContextFirst, resolveConversationSafetyOutput, conversationReasoningContext } from "./conversation-reasoning-policy.js";
@@ -56,6 +63,7 @@ type AiAgentRecord = {
   id: string;
   workspaceId: string;
   status?: string;
+  type?: string;
   model: string;
   systemPrompt: string;
   behaviorConfig: JsonValue;
@@ -257,6 +265,7 @@ export function createAgentRuntime(input: {
   boardRules?: AgentRuntimeBoardRules;
   followupService?: ConversationFollowupsObserver;
   inboxTriage?: InboxTriageObserver;
+  handoffBriefService?: { schedule(input: { workspaceId: string; conversationId: string }): void };
   logger?: { warn(fields: Record<string, unknown>, message: string): void };
 }) {
   const { prisma, provider } = input;
@@ -279,7 +288,7 @@ export function createAgentRuntime(input: {
       messageId: outboundMessage.id,
       direction: "outbound",
       source: "agent"
-    }).catch((error: unknown) => {
+    }).then(() => markProspectingFollowupObserved(prisma, outboundMessage.id)).catch((error: unknown) => {
       console.error("Failed to observe agent outbound follow-up.", error);
     });
   }
@@ -295,6 +304,7 @@ export function createAgentRuntime(input: {
       return { status: "failed" as const, errorCode: "TRANSCRIPTION_FAILED" };
     }
     if (!isPendingAudioBody(message.body)) {
+      await observeProspectingAudioRefusal(prisma, message, message.body ?? "");
       return { status: "completed" as const, text: message.body ?? "" };
     }
 
@@ -327,6 +337,7 @@ export function createAgentRuntime(input: {
             : {})
         }
       });
+      await observeProspectingAudioRefusal(prisma, message, transcription.text);
       input.realtime?.publish({
         type: "message.created",
         workspaceId: message.workspaceId,
@@ -364,6 +375,7 @@ export function createAgentRuntime(input: {
           id: prepareInput.messageId
         }
       });
+      if (message && await findProspectingReservation(prisma, prepareInput.workspaceId, message.conversationId) && !await isLiveProspectingAudio(prisma, message)) return { status: "skipped" as const };
       return message
         ? prepareAudioMessageRecord(message)
         : { status: "skipped" as const };
@@ -429,6 +441,8 @@ export function createAgentRuntime(input: {
             ? "Autonomous replies are disabled for WhatsApp groups."
             : "Channel is configured for private suggestions without autonomous sending." };
       }
+
+      if (activeAgent.type === "prospecting" || await findProspectingReservation(prisma, runInput.workspaceId, conversation.id)) return { status: "skipped", message: "Campaign conversation is reserved for prospecting." };
 
       if (readOnlyNewConversations(activeAgent.behaviorConfig) && !conversation.activeAgentSessionId) {
         const freshness = await evaluateFreshConversation({
@@ -520,7 +534,10 @@ export function createAgentRuntime(input: {
       messageId: string;
       trigger: AgentRunTrigger;
       instruction?: string | null;
+      prospectingGeneration?: string | null;
+      replyClaim?: AgentReplyClaim;
     }): Promise<AgentRuntimeResult> {
+      if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
       const [activeAgent, conversation, message] = await Promise.all([
         prisma.aiAgent.findFirst({
           where: {
@@ -597,7 +614,12 @@ export function createAgentRuntime(input: {
         return { status: "failed", runId: run.id, message: "Message does not belong to the conversation." };
       }
 
-      if (conversation.contact?.isGroup || conversation.contact?.phone?.endsWith('@g.us') || conversation.aiControlStatus === "human_controlled" || blocksAutonomousAgent(conversation.channel?.encryptedConfig)) {
+      const prospecting = await findProspectingReservation(prisma, runInput.workspaceId, conversation.id);
+      const prospectingGeneration = prospecting?.generation;
+      if (conversation.contact?.isGroup || conversation.contact?.phone?.endsWith('@g.us') || !await autonomousAgentAllowed(prisma, {
+        workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id,
+        expectedGeneration: runInput.prospectingGeneration ?? prospectingGeneration, channelConfig: conversation.channel?.encryptedConfig, aiControlStatus: conversation.aiControlStatus
+      })) {
         const errorMessage = conversation.aiControlStatus === "human_controlled"
           ? "Conversation is controlled by a human."
           : conversation.contact?.isGroup || conversation.contact?.phone?.endsWith('@g.us')
@@ -615,6 +637,9 @@ export function createAgentRuntime(input: {
         });
         return { status: "skipped", runId: run.id, message: errorMessage };
       }
+
+      const campaignContext = prospecting ? await (prisma as unknown as import("@prisma/client").PrismaClient).campaign.findFirst({ where: { workspaceId: runInput.workspaceId, id: prospecting.campaignId } }) : null;
+      const effectiveSystemPrompt = prospecting ? buildProspectingInstructions(agent.systemPrompt, asRecord(agent.handoffConfig).prospectingGoal, campaignContext?.prospectingContext) : agent.systemPrompt;
 
       const runInputPayload = {
         workspaceId: runInput.workspaceId,
@@ -652,7 +677,7 @@ export function createAgentRuntime(input: {
           status: "active",
           metadata: {}
         },
-        update: {
+        update: prospecting ? {} : {
           status: "active"
         }
       });
@@ -733,6 +758,7 @@ export function createAgentRuntime(input: {
               }
             }
           });
+          if (prospecting) await stopProspectingConversation(prisma, runInput.workspaceId, conversation.id, "possible_automation_loop");
           await publishConversationUpdated(runInput.workspaceId, conversation.id);
           const run = await createRun({
             workspaceId: runInput.workspaceId,
@@ -745,6 +771,7 @@ export function createAgentRuntime(input: {
             model: agent.model,
             status: "handoff_requested"
           });
+          input.handoffBriefService?.schedule({ workspaceId: runInput.workspaceId, conversationId: conversation.id });
           return {
             status: "handoff_requested",
             runId: run.id,
@@ -755,6 +782,17 @@ export function createAgentRuntime(input: {
         const providerSettings = await resolveOpenAiCompatibleSettings(prisma, {
           workspaceId: runInput.workspaceId
         });
+        if (prospecting) {
+          // A newer text anchor must not hide an opt-out in an earlier audio in
+          // the same burst, including audio received while dispatch was pending.
+          const liveAudio = await prisma.message.findMany({ where: { workspaceId: runInput.workspaceId,
+            conversationId: conversation.id, direction: "inbound", type: "audio",
+            metadata: { path: ["prospectingLiveGeneration"], equals: prospecting.generation } }, orderBy: { createdAt: "asc" } });
+          for (const audio of liveAudio) await prepareAudioMessageRecord(audio as MessageRecord, providerSettings);
+          if (!await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id,
+            agentId: agent.id, expectedGeneration: prospectingGeneration })) return { status: "skipped", message: "Prospecting authorization changed." };
+        }
+
         const mediaResolver = input.mediaResolver ?? resolveAgentMedia;
         let effectiveText = message.body ?? "";
         let mediaFallback: string | null = null;
@@ -885,7 +923,13 @@ export function createAgentRuntime(input: {
           })
         ]);
 
-        const allowedActions = readAllowedActions(agent.allowedActions);
+        if (prospecting && isExplicitProspectingRefusal(effectiveText)) {
+          await stopProspectingConversation(prisma, runInput.workspaceId, conversation.id, 'prospecting_refusal');
+          await publishConversationUpdated(runInput.workspaceId, conversation.id);
+          return { status: 'skipped', message: 'Prospecting ended after customer refusal.' };
+        }
+        const configuredActions = readAllowedActions(agent.allowedActions);
+        const allowedActions = prospecting ? Array.from(new Set<AiAgentAllowedAction>([...configuredActions, "request_handoff", "create_internal_note"])) : configuredActions;
         const allowedTags = toAllowedTags(agent);
         const approvedAttachments = knowledge.flatMap(toApprovedAttachment);
         const approvedAttachmentUrls = new Set(approvedAttachments.map((attachment) => attachment.url));
@@ -941,7 +985,7 @@ export function createAgentRuntime(input: {
           jevAgentRulesCharacters: agent.systemPrompt.length,
           jevSelectedKnowledgeCharacters: jevKnowledge.reduce((sum, source) => sum + source.content.length, 0),
           jevStateCharacters: JSON.stringify({
-            agentRules: agent.systemPrompt,
+            agentRules: effectiveSystemPrompt,
             currentMessage: { id: message.id, body: effectiveText, type: message.type },
             conversationMessages: decisionContext.messages.map((entry) => ({
               id: entry.id,
@@ -1008,7 +1052,7 @@ export function createAgentRuntime(input: {
         if (input.replyPreflight && !mediaFallback && (!safetyOutput || canReviewApprovedRefusal) && !documentRequiresHuman) {
           try {
             replyPreflight = await input.replyPreflight.evaluate({
-              agentRules: agent.systemPrompt,
+              agentRules: effectiveSystemPrompt,
               currentMessage: {
                 id: message.id,
                 body: effectiveText,
@@ -1095,7 +1139,7 @@ export function createAgentRuntime(input: {
           providerOutput = await runProvider.generate({
             reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
             model: runModel,
-            systemPrompt: agent.systemPrompt,
+            systemPrompt: effectiveSystemPrompt,
             userPrompt: buildUserPrompt(effectiveText, runInput.instruction),
             context: {
               ...context,
@@ -1116,7 +1160,7 @@ export function createAgentRuntime(input: {
         ) {
           try {
             const replyQualityAudit = await input.replyPreflight.audit({
-              agentRules: agent.systemPrompt,
+              agentRules: effectiveSystemPrompt,
               currentMessage: {
                 id: message.id,
                 body: effectiveText,
@@ -1211,11 +1255,12 @@ export function createAgentRuntime(input: {
             : providerOutput.reply;
 
         const beforeActions = await prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: conversation.id } }, include: { channel: true } });
-        if (!beforeActions || beforeActions.aiControlStatus === 'human_controlled' || blocksAutonomousAgent(beforeActions.channel?.encryptedConfig)) return { status: 'skipped', message: 'Human review is required.' };
+        if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
+        if (!beforeActions || !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id, sessionId: session.id, expectedGeneration: prospectingGeneration, channelConfig: beforeActions.channel?.encryptedConfig, aiControlStatus: beforeActions.aiControlStatus })) return { status: 'skipped', message: 'Human review is required.' };
         actionResults = await executeAgentActions(prisma as AgentToolExecutorPrismaLike, {
           workspaceId: runInput.workspaceId,
           conversationId: conversation.id,
-          allowedActions: unreadableImageRequiresHandoff
+          allowedActions: prospecting ? Array.from(new Set<AiAgentAllowedAction>([...allowedActions, "request_handoff"])) : unreadableImageRequiresHandoff
             ? Array.from(new Set<AiAgentAllowedAction>([...allowedActions, "request_handoff"]))
             : allowedActions,
           allowedTags,
@@ -1249,11 +1294,16 @@ export function createAgentRuntime(input: {
           throw new Error("Agent did not produce a reply.");
         }
 
-        if (outboundReply && allowedActions.includes("send_message")) {
+        if (outboundReply && allowedActions.includes("send_message") && (!prospecting || !handoffReason)) {
           const beforeSend = await prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: conversation.id } }, include: { channel: true } });
-          if (!beforeSend || blocksAutonomousAgent(beforeSend.channel?.encryptedConfig) || (beforeSend.aiControlStatus === 'human_controlled' && !handoffReason)) return { status: 'skipped', message: 'Human review is required.' };
-          const providerSend = await sendAgentReplyToProvider(input.evolution, conversation, outboundReply);
-          const outboundMessage = await prisma.message.create({
+          if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
+          if (!beforeSend || (prospecting ? !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id, sessionId: session.id, expectedGeneration: prospectingGeneration }) : blocksAutonomousAgent(beforeSend.channel?.encryptedConfig) || (beforeSend.aiControlStatus === 'human_controlled' && !handoffReason))) return { status: 'skipped', message: 'Human review is required.' };
+          const pending = prospecting ? await reserveProspectingOutbound(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id,
+            agentId: agent.id, generation: prospecting.generation, type: 'text', body: outboundReply,
+            metadata: runInput.replyClaim ? { replyClaimId: runInput.replyClaim.id, replyClaimToken: runInput.replyClaim.token } : undefined }) : null;
+          const providerSend = pending ? null : await sendAgentReplyToProvider(input.evolution, conversation, outboundReply);
+          const outboundMessage = pending ? await dispatchProspectingOutbound(prisma, pending,
+            () => sendAgentReplyToProvider(input.evolution, conversation, outboundReply)) : await prisma.message.create({
             data: {
               workspaceId: runInput.workspaceId,
               conversationId: conversation.id,
@@ -1290,12 +1340,15 @@ export function createAgentRuntime(input: {
         }
 
         for (const attachment of pendingAttachments) {
-          const providerSend = await sendAgentAttachmentToProvider(
-            input.evolution,
-            conversation,
-            attachment
-          );
-          const outboundMessage = await prisma.message.create({
+          if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
+          if (prospecting && !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id, sessionId: session.id, expectedGeneration: prospectingGeneration })) return { status: "skipped", message: "Prospecting authorization changed." };
+          const pending = prospecting ? await reserveProspectingOutbound(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id,
+            agentId: agent.id, generation: prospecting.generation, type: attachment.mimeType?.startsWith('image/') ? 'image' : 'file',
+            body: attachment.caption ?? attachment.fileName ?? '', mediaUrl: attachment.url,
+            metadata: { attachment: true, ...(runInput.replyClaim ? { replyClaimId: runInput.replyClaim.id, replyClaimToken: runInput.replyClaim.token } : {}) } }) : null;
+          const providerSend = pending ? null : await sendAgentAttachmentToProvider(input.evolution, conversation, attachment);
+          const outboundMessage = pending ? await dispatchProspectingOutbound(prisma, pending,
+            () => sendAgentAttachmentToProvider(input.evolution, conversation, attachment)) : await prisma.message.create({
             data: {
               workspaceId: runInput.workspaceId,
               conversationId: conversation.id,
@@ -1334,6 +1387,7 @@ export function createAgentRuntime(input: {
           });
         }
 
+        if (prospecting && handoffReason) await stopProspectingConversation(prisma, runInput.workspaceId, conversation.id, handoffReason);
         await prisma.aiAgentSession.update({
           where: {
             workspaceId_id: {
@@ -1342,7 +1396,7 @@ export function createAgentRuntime(input: {
             }
           },
           data: {
-            status: handoffReason ? "handoff_requested" : "active",
+            ...(prospecting && !handoffReason ? {} : { status: handoffReason ? "handoff_requested" as const : "active" as const }),
             handoffReason,
             handoffActionCompletedAt: null,
             lastRunAt: new Date(),
@@ -1368,6 +1422,7 @@ export function createAgentRuntime(input: {
           status
         });
 
+        if (handoffReason) input.handoffBriefService?.schedule({ workspaceId: runInput.workspaceId, conversationId: conversation.id });
         return { status, runId: run.id };
       } catch (error) {
         const errorMessage = getErrorMessage(error);
@@ -1406,6 +1461,7 @@ export function createAgentRuntime(input: {
         }
       },
       include: {
+        prospectingOrigin: { select: { campaign: { select: { id: true, name: true } } } },
         assignedUser: { select: { displayName: true } },
         channel: { select: { displayName: true, phoneNumber: true, provider: true } },
         contact: { select: { name: true, phone: true } },

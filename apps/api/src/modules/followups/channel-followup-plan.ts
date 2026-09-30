@@ -14,10 +14,10 @@ export const DEFAULT_CHANNEL_FOLLOWUP_CONFIG: ChannelFollowupConfig = {
 const FALLBACK_INSTRUCTION =
   "Releia a conversa e só retome uma pendência real, com uma mensagem breve e diferente das tentativas anteriores. Se houve recusa, resolução ou encerramento, não acompanhe.";
 
-export function resolveFollowupPlan(agentBehavior: unknown, channelConfig: unknown) {
+export function resolveFollowupPlan(agentBehavior: unknown, channelConfig: unknown, campaignProspecting = false) {
   const agent = resolveEffectiveFollowupConfig(agentBehavior);
   const channel = channelFollowupConfigSchema.safeParse(channelConfig);
-  if (channel.success) {
+  if (channel.success && !campaignProspecting) {
     if (!channel.data.enabled) return null;
     return {
       ...channel.data,

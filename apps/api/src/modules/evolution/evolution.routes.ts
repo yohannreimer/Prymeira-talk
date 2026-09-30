@@ -1,3 +1,6 @@
+import { lockProspectingConversation } from "../prospecting/prospecting-lock.js";
+import { findProspectingOutboundEcho } from "../prospecting/prospecting-delivery.js";
+import { observeProspectingInbound } from "../prospecting/prospecting-lifecycle.js";
 import type { FastifyPluginAsync } from "fastify";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { ChannelDto, MessageDto } from "@prymeira-talk/shared";
@@ -563,7 +566,8 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         const conversation = await app.prisma.conversation.findUnique({
           where: { workspaceId_id: { workspaceId, id: original.conversationId } },
           include: {
-            assignedUser: { select: { displayName: true } },
+            prospectingOrigin: { select: { campaign: { select: { id: true, name: true } } } },
+        assignedUser: { select: { displayName: true } },
             channel: { select: { displayName: true, phoneNumber: true } },
             contact: { select: { name: true, phone: true, isGroup: true } },
             department: { select: { name: true } }
@@ -887,7 +891,11 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           update: {}
         });
 
-        const message = await tx.message.create({
+        await lockProspectingConversation(tx, workspaceId, conversation.id);
+        const prospectingEcho = await findProspectingOutboundEcho(tx, { workspaceId, conversationId: conversation.id,
+          direction: payload.data.key.fromMe ? 'outbound' : 'inbound', body: messageContent.body, mediaUrl: messageContent.mediaUrl });
+        const message = prospectingEcho ? await tx.message.update({ where: { id: prospectingEcho.id }, data: {
+          providerMessageId: payload.data.key.id, providerEventId: `${payload.event}:${payload.instance}:${payload.data.key.id}`, status: 'sent' } }) : await tx.message.create({
           data: {
             workspaceId,
             conversationId: conversation.id,
@@ -908,7 +916,12 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           }
         });
 
-        const humanTookControl = payload.data.key.fromMe && !isGroup
+        const campaignDispatchMessage = payload.data.key.fromMe && !isGroup && typeof tx.campaignRecipient?.findFirst === 'function'
+          ? await tx.campaignRecipient.findFirst({ where: { workspaceId, channelId: channel.id,
+            OR: [{ providerMessageId: payload.data.key.id }, { status: 'in_flight', verifiedAt: { not: null },
+              contactSnapshot: { path: ['message'], equals: messageContent.body ?? '' },
+              OR: [{ contactId: selectedContact.id }, { phoneSnapshot: { in: candidates } }] }] }, select: { id: true } }) : null;
+        const humanTookControl = payload.data.key.fromMe && !isGroup && !campaignDispatchMessage && !prospectingEcho
           ? await pauseAgentOnHumanOutbound(tx, {
               workspaceId,
               conversationId: conversation.id
@@ -982,7 +995,8 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             }
           },
           include: {
-            assignedUser: { select: { displayName: true } },
+            prospectingOrigin: { select: { campaign: { select: { id: true, name: true } } } },
+        assignedUser: { select: { displayName: true } },
             channel: { select: { displayName: true, phoneNumber: true } },
             contact: { select: { name: true, phone: true, isGroup: true } },
             department: { select: { name: true } }
@@ -1013,6 +1027,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           request.log.error({ error, workspaceId, conversationId: message.conversationId }, "Failed to pause assistant suggestions after human outbound message.");
         });
       }
+      const prospectingInbound = await observeProspectingInbound(app.prisma, { workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction, type: messageContent.type, body: message.body, createdAt: new Date(message.createdAt), ingestedAt: message.ingestedAt, isGroup, historical: payload.data.type === "append" || payload.data.type === "history" || payload.data.isHistory === true });
       if (!isGroup && !humanTookControl && messageContent.type !== "system") {
         await options.assistantScheduler?.message({ workspaceId, conversationId: message.conversationId, messageId: message.id, direction: message.direction });
       }
@@ -1057,7 +1072,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         }).catch((error: unknown) => {
           request.log.error({ error }, "Failed to observe inbound customer follow-up.");
         });
-        if (message.type === "audio" && !await options.assistantScheduler?.isAssisted(workspaceId, message.conversationId)) {
+        if ((!prospectingInbound.reserved || prospectingInbound.liveEligible) && message.type === "audio" && (prospectingInbound.reserved || !await options.assistantScheduler?.isAssisted(workspaceId, message.conversationId))) {
           await options.agentRuntime?.prepareAudioMessage({
             workspaceId,
             messageId: message.id
@@ -1074,14 +1089,14 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
           request.log.error({ error }, "Failed to run message automations.");
         });
 
-        if (!phone.endsWith('@lid')) await options.agentReplyScheduler?.scheduleActiveSessionForMessage({
+        if (!phone.endsWith('@lid') && (!prospectingInbound.reserved || prospectingInbound.liveEligible)) await options.agentReplyScheduler?.scheduleActiveSessionForMessage({
           workspaceId,
           conversationId: message.conversationId,
           messageId: message.id
         }).catch((error: unknown) => {
           request.log.error({ error }, "Failed to schedule agent reply.");
         });
-      } else if (!isGroup && message.direction === "outbound" && messageContent.type !== "system") {
+      } else if (!isGroup && humanTookControl && message.direction === "outbound" && messageContent.type !== "system") {
         await options.followupService?.observeConversationActivity({
           workspaceId,
           conversationId: message.conversationId,
