@@ -31,6 +31,7 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
   if (eventName === 'message.edited') {
     const tuple = Array.isArray(payload._data) ? payload._data : null;
     const msg = record(tuple ? tuple[2] : raw.msg ?? raw.message);
+    if (msg.type !== undefined && typeof msg.type !== 'string') return { kind: 'invalid', reason: 'invalid_edit_type' };
     const originalKey = tuple ? tuple[1] : raw.id;
     const chat = tuple ? tuple[0] : raw.chat;
     const candidateAction = parseWahaMessageKey(msg.latestEditMsgKey ?? payload.id);
@@ -40,7 +41,7 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
     if (action.rawId) action.nativeId = action.nativeId ?? string(payload.id);
     // WPP media body may contain original bytes. WAHA normalizes media body from caption.
     const mediaEdit = payload.hasMedia === true || msg.isMedia === true || msg.isMMS === true
-      || string(msg.mimetype) !== null || ['image', 'video', 'document', 'audio', 'ptt', 'sticker'].includes(String(msg.type));
+      || string(msg.mimetype) !== null || ['image', 'video', 'document', 'audio', 'ptt', 'sticker'].includes(msg.type ?? '');
     const caption = typeof msg.caption === 'string' ? msg.caption : typeof payload.body === 'string' ? payload.body : null;
     const body = mediaEdit ? null : string(msg.body) ?? string(payload.body);
     const patch: MessageEditPatch | null = mediaEdit

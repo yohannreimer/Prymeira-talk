@@ -35,7 +35,8 @@ export function normalizeEvolutionWebhook(context: TrustedMessagingContext, inpu
   ] };
   if (eventName === 'connection.update') {
     const state = data.state ?? data.status;
-    const status = state === 'open' || state === 'connected' ? 'connected' : state === 'connecting' ? 'connecting' : ['close', 'closed', 'disconnected'].includes(String(state)) ? 'disconnected' : 'failed';
+    if (typeof state !== 'string') return { kind: 'invalid', reason: 'invalid_connection_state' };
+    const status = state === 'open' || state === 'connected' ? 'connected' : state === 'connecting' ? 'connecting' : ['close', 'closed', 'disconnected'].includes(state) ? 'disconnected' : 'failed';
     return { kind: 'accepted', event: { ...base, kind: 'control', control: 'connection', status } };
   }
   if (eventName === 'qrcode.updated') {

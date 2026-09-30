@@ -201,6 +201,10 @@ describe('WAHA 2026.9.1 WPP normalization', () => {
     expect(result.action).toMatchObject({ rawId: 'REVOKE_2', direction: 'outbound', senderParticipant: '777@lid' });
     expect(result.target).toMatchObject({ rawId: 'A_B', direction: null, senderParticipant: null });
   });
+  it.each([{ toString: null }, { toString: { nested: true } }, ['image'], 42, null].map(type => ({ type })))('returns invalid for a malformed WPP edit type $type without coercing JSON objects', ({ type }) => {
+    const input = { event: 'message.edited', payload: { id: 'false_5547999990000@c.us_EDIT_2', body: 'edited', editedMessageId: 'A_B_C', _data: { msg: { type, body: 'edited' } } } };
+    expect(normalizeWahaEvent(context, input)).toEqual({ kind: 'invalid', reason: 'invalid_edit_type' });
+  });
   it('normalizes session control without phantom messages', () => {
     expect(event({ event: 'session.status', payload: { status: 'WORKING' } })).toMatchObject({ kind: 'control', control: 'connection', status: 'connected' });
   });

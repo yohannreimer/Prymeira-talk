@@ -94,6 +94,13 @@ describe('Evolution shared event adapter', () => {
     expect(normalize({ state: 'open' }, 'CONNECTION_UPDATE')).toMatchObject({ kind: 'control', control: 'connection', status: 'connected' });
     expect(normalize({ qrcode: { base64: 'qr-value' } }, 'QRCODE_UPDATED')).toMatchObject({ kind: 'control', control: 'qr', qrCode: 'qr-value' });
   });
+  it.each([{ toString: null }, { toString: { nested: true } }, ['connected'], 42, null].map(state => ({ state })))('returns invalid for malformed connection state $state without claiming health', ({ state }) => {
+    expect(normalizeEvolutionWebhook(context, { event: 'CONNECTION_UPDATE', data: { state } })).toEqual({ kind: 'invalid', reason: 'invalid_connection_state' });
+    expect(normalizeEvolutionWebhook(context, { event: 'CONNECTION_UPDATE', data: { status: state } })).toEqual({ kind: 'invalid', reason: 'invalid_connection_state' });
+  });
+  it('rejects object receipt status before reaching the legacy primitive status mapper', () => {
+    expect(normalizeEvolutionWebhook(context, { event: 'MESSAGES_UPDATE', data: { id: 'A_B', status: { toString: null } } })).toEqual({ kind: 'invalid', reason: 'invalid_receipt' });
+  });
   it('retains encrypted edit as deferred control and never a phantom message', () => {
     const result = normalize({ key: { ...key, id: 'ACTION' }, message: { secretEncryptedMessage: { secretEncType: 2, targetMessageKey: key, encIv: Buffer.alloc(12).toString('base64'), encPayload: Buffer.alloc(40).toString('base64') } } });
     expect(result.kind).toBe('encrypted_edit');
