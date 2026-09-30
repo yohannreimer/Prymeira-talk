@@ -549,6 +549,14 @@ export function toCompactMessageDto(record: MessageRecord, publicTalkUrl: string
   return mapMessageDto(record, publicTalkUrl);
 }
 
+function canonicalInlineBase64(source: string, headerLength: number): boolean {
+  const length = source.length - headerLength;
+  if (!length || length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(source.slice(headerLength))) return false;
+  const padding = source.endsWith('==') ? 2 : source.endsWith('=') ? 1 : 0;
+  const last = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.indexOf(source[source.length - padding - 1]);
+  return padding === 0 || last % (padding === 2 ? 16 : 4) === 0;
+}
+
 function mapMessageDto(record: MessageRecord, publicTalkUrl?: string): MessageDto {
   const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
   const metadata = object(record.metadata);
@@ -558,10 +566,12 @@ function mapMessageDto(record: MessageRecord, publicTalkUrl?: string): MessageDt
   const history = object(metadata.historyImport);
   const attachment = object(metadata.attachment);
   const inlineHeader = /^data:([^;,]+);base64,/i.exec(record.mediaUrl ?? '');
-  const storedVisual = record.type === 'image' || record.type === 'file' && /^video\/(mp4|webm|quicktime)$/i.test(inlineHeader?.[1] ?? '');
+  const storedVisual = record.type === 'image' && /^image\/(jpeg|png|webp|gif)$/i.test(inlineHeader?.[1] ?? '') ||
+    record.type === 'file' && /^video\/(mp4|webm|quicktime)$/i.test(inlineHeader?.[1] ?? '');
   // Preserve direct display above the frontend's 64 MiB Blob cache budget.
   const inlineBytes = inlineHeader ? (record.mediaUrl!.length - inlineHeader[0].length) * 3 / 4 - (record.mediaUrl!.endsWith('==') ? 2 : record.mediaUrl!.endsWith('=') ? 1 : 0) : 0;
-  const compactMedia = Boolean(publicTalkUrl && ['image', 'audio', 'file'].includes(record.type) && record.mediaUrl?.startsWith('data:') && inlineHeader && (!storedVisual || inlineBytes <= 64 * 1024 * 1024));
+  const compactMedia = Boolean(publicTalkUrl && ['image', 'audio', 'file'].includes(record.type) && record.mediaUrl?.startsWith('data:') && inlineHeader &&
+    (!storedVisual || inlineBytes <= 64 * 1024 * 1024 && canonicalInlineBase64(record.mediaUrl, inlineHeader[0].length)));
   const sourceMimeType = compactMedia ? /^data:([^;,]{1,120})[;,]/i.exec(record.mediaUrl!)?.[1].trim().toLowerCase() : undefined;
   const inferredMimeType = typeof attachment.mimeType !== 'string' ? sourceMimeType : undefined;
   // The inline URL used to identify video/PDF even with generic provider MIME

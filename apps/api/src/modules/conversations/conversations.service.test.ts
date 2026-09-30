@@ -3108,6 +3108,19 @@ describe("conversation routes", () => {
 });
 
 describe('compact history attachment DTOs', () => {
+  it.each(['YQ', 'YR==', 'YWF=', 'Y Q==', 'YQ%3D%3D'])('preserves browser-decodable direct JPEG base64 %s outside the strict decoder format', async encoded => {
+    const mediaUrl = `data:image/jpeg;base64,${encoded}`;
+    const bytes = Buffer.from(await (await fetch(mediaUrl)).arrayBuffer());
+    expect(bytes.length).toBeGreaterThan(0);
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type: 'image' as const,
+      body: null, mediaUrl, status: 'read' as const, createdAt: new Date() };
+    expect(toCompactMessageDto(record, 'https://talk.example.test')).toEqual(toMessageDto(record));
+  });
+  it.each(['YQ==', 'YWE=', 'YWFh'])('compacts canonical direct visual base64 %s accepted by the decoder', encoded => {
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type: 'file' as const,
+      body: null, mediaUrl: `data:video/mp4;base64,${encoded}`, status: 'read' as const, createdAt: new Date() };
+    expect(toCompactMessageDto(record, 'https://talk.example.test').mediaUrl).toMatch(/^https:/);
+  });
   it('compacts stored visual bytes at the 64 MiB cache boundary and preserves direct display above it', () => {
     // Canonical base64 length/padding represents the boundary without allocating a binary buffer.
     const byteLimit = 64 * 1024 * 1024;
