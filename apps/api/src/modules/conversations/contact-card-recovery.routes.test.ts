@@ -14,9 +14,10 @@ const original = { key: { id: 'provider-1', remoteJid: '556784432788@s.whatsapp.
   message: { contactMessage: { displayName: 'Nelson Tecol', vcard: 'BEGIN:VCARD\nTEL;waid=556784432788:+55 67 8443-2788\nEND:VCARD' } } };
 
 describe('recovering a previously unrecognized contact', () => {
-  async function setup(record: typeof original | null = original) {
-    const findFirst = vi.fn().mockResolvedValue(message);
-    const update = vi.fn().mockImplementation(async ({ data }) => ({ ...message, ...data }));
+  async function setup(record: { key: typeof original.key; message: Record<string, unknown> } | null = original, direction: 'inbound' | 'outbound' = 'inbound') {
+    const stored = { ...message, direction };
+    const findFirst = vi.fn().mockResolvedValue(stored);
+    const update = vi.fn().mockImplementation(async ({ data }) => ({ ...stored, ...data }));
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const findMessage = vi.fn().mockResolvedValue(record);
     const publish = vi.fn();
@@ -38,6 +39,31 @@ describe('recovering a previously unrecognized contact', () => {
         type: 'text', metadata: expect.objectContaining({ historyImport: { source: 'evolution' }, contactCards: expect.any(Array) })
       }) }));
       expect(context.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.updated', workspaceId: 'workspace-a' }));
+    } finally { await context.app.close(); }
+  });
+
+  it.each([false, true])('recovers a previously unrecognized location (fromMe=%s) and preserves import metadata', async fromMe => {
+    const context = await setup({ ...original, key: { ...original.key, fromMe }, message: { locationMessage: {
+      name: 'Grupo Villefer', address: 'R. Landmann, 464, Joinville',
+      degreesLatitude: -26.254, degreesLongitude: -48.875
+    } } }, fromMe ? 'outbound' : 'inbound');
+    try {
+      const response = await context.app.inject({ method: 'POST', url: `/conversations/${conversationId}/messages/${messageId}/recognize-contact` });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ direction: fromMe ? 'outbound' : 'inbound', type: 'text', location: { name: 'Grupo Villefer', latitude: -26.254, longitude: -48.875 } });
+      expect(context.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+        metadata: expect.objectContaining({ historyImport: { source: 'evolution' }, location: expect.any(Object) })
+      }) }));
+      expect(context.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ lastMessageAt: message.createdAt }) }));
+    } finally { await context.app.close(); }
+  });
+
+  it('does not recover a location with a different direction', async () => {
+    const context = await setup({ ...original, key: { ...original.key, fromMe: true }, message: { locationMessage: { degreesLatitude: 0, degreesLongitude: 0 } } });
+    try {
+      const response = await context.app.inject({ method: 'POST', url: `/conversations/${conversationId}/messages/${messageId}/recognize-contact` });
+      expect(response.statusCode).toBe(404);
+      expect(context.update).not.toHaveBeenCalled();
     } finally { await context.app.close(); }
   });
 

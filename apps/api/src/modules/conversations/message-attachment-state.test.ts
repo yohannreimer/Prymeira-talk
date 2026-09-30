@@ -10,6 +10,14 @@ describe('safe attachment state in message DTO', () => {
     expect(toMessageDto({ ...message, type: 'text', metadata: { contactCard: card } }).contactCards).toEqual([card]);
     expect(toMessageDto({ ...message, type: 'text', metadata: { contactCards: [card] } }).contactCards).toEqual([card]);
   });
+  it('exposes location coordinates and presentation without provider thumbnails or secrets', () => {
+    const location = { latitude: -26.254, longitude: -48.875, name: 'Grupo Villefer', address: 'Joinville', isLive: false };
+    const dto = toMessageDto({ ...message, type: 'text', metadata: { location: { ...location, jpegThumbnail: 'private-bytes', url: 'javascript:alert(1)' } } });
+    expect(dto.location).toEqual(location);
+    expect(JSON.stringify(dto)).not.toContain('private-bytes');
+    expect(JSON.stringify(dto)).not.toContain('javascript:');
+    expect(toMessageDto({ ...message, metadata: { location: { ...location, latitude: 91 } } }).location).toBeUndefined();
+  });
   it('exposes only safe attachment presentation fields', () => {
     const dto = toMessageDto({ ...message, metadata: { attachment: { fileName: 'Cotacao.pdf', caption: 'Segue a cotação', durationSeconds: 12, secret: 'hidden' } } });
     expect(dto.attachment).toEqual({ fileName: 'Cotacao.pdf', caption: 'Segue a cotação', durationSeconds: 12 });

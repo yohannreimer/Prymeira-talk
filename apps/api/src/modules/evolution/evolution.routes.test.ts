@@ -57,6 +57,48 @@ const validWebhookBody = {
   }
 };
 
+const locationPayload = { degreesLatitude: -26.254, degreesLongitude: -48.875,
+  name: 'Grupo Villefer', address: 'R. Landmann, 464, Joinville, SC', url: 'https://www.villefer.com.br' };
+const locationDto = { latitude: -26.254, longitude: -48.875, name: 'Grupo Villefer',
+  address: 'R. Landmann, 464, Joinville, SC', isLive: false };
+
+describe('WhatsApp locations', () => {
+  it('recognizes the business place, address and coordinates without using its website as a map', () => {
+    const content = extractMessageContent({ locationMessage: locationPayload });
+    expect(content).toMatchObject({ type: 'text', mediaUrl: null, location: locationDto });
+    expect(content.body).toContain('Grupo Villefer');
+    expect(content.body).toContain(locationPayload.address);
+    expect(content.body).toContain('https://www.google.com/maps/search/?api=1&query=-26.254%2C-48.875');
+    expect(content.body).not.toContain('villefer.com.br');
+  });
+
+  it('recognizes a wrapped location and coordinates at zero', () => {
+    expect(extractMessageContent({ ephemeralMessage: { message: { locationMessage: {
+      degreesLatitude: 0, degreesLongitude: 0
+    } } } })).toMatchObject({ type: 'text', location: { latitude: 0, longitude: 0, name: null, address: null } });
+  });
+
+  it.each([{ liveLocationMessage: { ...locationPayload, caption: 'Entrega' } },
+    { locationMessage: { ...locationPayload, isLive: true } }])('labels a live location as the received position', message => {
+    const content = extractMessageContent(message);
+    expect(content).toMatchObject({ type: 'text', location: { isLive: true } });
+    expect(content.body).toContain('Última posição recebida');
+  });
+
+  it.each([undefined, null, '', ' ', 'oops', 91, NaN, Infinity])('does not invent coordinates for latitude %s', degreesLatitude => {
+    expect(extractMessageContent({ locationMessage: { degreesLatitude, degreesLongitude: -48.875,
+      address: 'R. Landmann, 464, Joinville' } })).toMatchObject({
+      type: 'text', location: { latitude: null, longitude: null }
+    });
+  });
+
+  it('keeps an empty location recognizable without inventing a map', () => {
+    expect(extractMessageContent({ locationMessage: {} })).toMatchObject({
+      type: 'text', body: 'Localização compartilhada', location: { latitude: null, longitude: null }
+    });
+  });
+});
+
 describe('WhatsApp contact cards', () => {
   it('reads a single shared contact and its vCard phone', () => {
     expect(extractMessageContent({ contactMessage: {
@@ -477,6 +519,21 @@ describe("Evolution webhook routes", () => {
       expect(prisma.conversation.upsert).toHaveBeenCalledWith(expect.objectContaining({
         where: { workspaceId_channelId_contactId: { workspaceId: 'workspace_a', channelId: 'channel_1', contactId: linked.id } }
       }));
+    } finally { await app.close(); }
+  });
+
+  it.each([false, true])('stores location metadata from the WhatsApp webhook (fromMe=%s)', async fromMe => {
+    const prisma = createMockPrisma();
+    const { app } = await buildEvolutionApp(prisma);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a',
+        headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: { ...validWebhookBody, data: { ...validWebhookBody.data,
+          key: { ...validWebhookBody.data.key, fromMe }, message: { locationMessage: locationPayload } } } });
+      expect(response.statusCode).toBe(200);
+      expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+        direction: fromMe ? 'outbound' : 'inbound', type: 'text', body: expect.stringContaining('Grupo Villefer'),
+        metadata: expect.objectContaining({ location: locationDto })
+      }) }));
     } finally { await app.close(); }
   });
 

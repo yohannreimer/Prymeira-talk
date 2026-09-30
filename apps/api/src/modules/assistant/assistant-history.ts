@@ -58,6 +58,7 @@ export function createAssistantHistoryImporter(db: PrismaClient, source: Evoluti
       const provenance: Record<string, unknown> = { source: 'evolution', batchId, from: from.toISOString(), to: to.toISOString(), originalType: item.messageType ?? Object.keys(item.message)[0] ?? 'unknown' };
       const metadata: Record<string, unknown> = { historyImport: provenance };
       if (content.contactCards?.length) metadata.contactCards = content.contactCards;
+      if (content.location) metadata.location = content.location;
       let mediaUrl: string | null = null;
       if (['image', 'audio', 'file'].includes(content.type)) {
         try {
