@@ -1,7 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto, ChannelQrResultDto, RealtimeEvent } from "@prymeira-talk/shared";
 import { CheckCircle2, Link2, MessageCircle, PlugZap, QrCode, RefreshCw, Trash2, WifiOff } from "lucide-react";
-import QRCode from "qrcode";
 import type * as React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -15,7 +14,8 @@ import {
   type SettingsDto
 } from "../../app/api";
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
-import { getQrDisplaySource } from "./qr-display";
+import { ChannelConnectionsPanel } from "./ChannelConnectionsPanel";
+import { applyQrUpdate, connectionCount } from "./connection-display";
 import { AssistantChannelSettings } from './AssistantChannelSettings';
 
 const statusLabels: Record<ChannelDto["status"], string> = {
@@ -79,7 +79,8 @@ function getMetaCloudCreateSettings(settings: SettingsDto | null) {
 
 function mergeChannel(channels: ChannelDto[], channel: ChannelDto) {
   const withoutChannel = channels.filter((current) => current.id !== channel.id);
-  return [channel, ...withoutChannel];
+  const previous = channels.find((current) => current.id === channel.id);
+  return [{ ...previous, ...channel }, ...withoutChannel];
 }
 
 function filterDeletedChannels(channels: ChannelDto[], deletedChannelIds: Set<string>) {
@@ -118,6 +119,8 @@ export function ChannelsPage() {
   const channelsRef = useRef<ChannelDto[]>([]);
   const deletedChannelIdsRef = useRef(deletedChannelIds);
   const qrChannelIdRef = useRef<string | null>(null);
+  const primaryGeneration = useRef(0);
+  const [qrEvent, setQrEvent] = useState<Extract<RealtimeEvent, { type: "channel.qr_updated" }> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -130,8 +133,6 @@ export function ChannelsPage() {
   const [metaPhoneNumber, setMetaPhoneNumber] = useState("");
   const [settings, setSettings] = useState<SettingsDto | null>(null);
   const [qrDrawerOpen, setQrDrawerOpen] = useState(false);
-  const [generatedQrImageSrc, setGeneratedQrImageSrc] = useState<string | null>(null);
-  const [qrRenderError, setQrRenderError] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -204,8 +205,8 @@ export function ChannelsPage() {
   }, [deletedChannelIds]);
 
   useEffect(() => {
-    qrChannelIdRef.current = qrResult?.channel.id ?? null;
-  }, [qrResult?.channel.id]);
+    qrChannelIdRef.current = selectedChannelId;
+  }, [selectedChannelId]);
 
   const markChannelDeleted = useCallback((channelId: string) => {
     setDeletedChannelIds((current) => {
@@ -218,19 +219,8 @@ export function ChannelsPage() {
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.type === "channel.qr_updated") {
-      setQrResult((current) =>
-        current?.channel.id === event.payload.channelId
-          ? {
-              ...current,
-              mode: "real",
-              qrCode: event.payload.qrCode,
-              qr: {
-                payload: event.payload.qrCode,
-                expiresAt: event.payload.expiresAt
-              }
-            }
-          : current
-      );
+      setQrEvent(event);
+      setQrResult((current) => applyQrUpdate(current, event.payload));
       return;
     }
 
@@ -238,6 +228,7 @@ export function ChannelsPage() {
       const { channelId } = event.payload;
 
       markChannelDeleted(channelId);
+      if (qrChannelIdRef.current === channelId) primaryGeneration.current++;
       setChannels((current) => current.filter((channel) => channel.id !== channelId));
       setSelectedChannelId((selected) => getSelectedChannelIdAfterDelete(channelsRef.current, channelId, selected));
       setQrResult((current) => {
@@ -260,7 +251,7 @@ export function ChannelsPage() {
     setSelectedChannelId((current) => current ?? event.payload.id);
     setQrResult((current) =>
       current?.channel.id === event.payload.id
-        ? { ...current, channel: event.payload }
+        ? { ...current, channel: { ...current.channel, ...event.payload } }
         : current
     );
   }, [markChannelDeleted]);
@@ -274,50 +265,12 @@ export function ChannelsPage() {
     () => channels.find((channel) => channel.id === selectedChannelId) ?? null,
     [channels, selectedChannelId]
   );
-  const qrDisplaySource = useMemo(() => getQrDisplaySource(qrResult?.qrCode), [qrResult?.qrCode]);
-  const qrPayload = qrDisplaySource?.kind === "payload" ? qrDisplaySource.payload : null;
-
-  useEffect(() => {
-    let isCancelled = false;
-
-    setQrRenderError(null);
-
-    if (!qrPayload) {
-      setGeneratedQrImageSrc(null);
-      return () => {
-        isCancelled = true;
-      };
-    }
-
-    setGeneratedQrImageSrc(null);
-
-    void QRCode.toDataURL(qrPayload, {
-      errorCorrectionLevel: "M",
-      margin: 3,
-      scale: 9,
-      color: {
-        dark: "#13291f",
-        light: "#ffffff"
-      }
-    })
-      .then((dataUrl) => {
-        if (!isCancelled) {
-          setGeneratedQrImageSrc(dataUrl);
-        }
-      })
-      .catch(() => {
-        if (!isCancelled) {
-          setQrRenderError("Não foi possível renderizar o QR recebido.");
-        }
-      });
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [qrPayload]);
-
+  const updatePhysicalChannel = useCallback((channel: ChannelDto) => {
+    if (deletedChannelIdsRef.current.has(channel.id)) return;
+    setChannels((current) => mergeChannel(current, channel));
+    setQrResult((current) => current?.channel.id === channel.id ? { ...current, channel: { ...current.channel, ...channel } } : current);
+  }, []);
   const simulatedModeActive = qrResult?.mode === "simulated";
-  const qrImageSrc = qrDisplaySource?.kind === "image" ? qrDisplaySource.src : generatedQrImageSrc;
   const connectedCount = channels.filter((channel) => channel.status === "connected").length;
   const connectingCount = channels.filter((channel) => channel.status === "connecting").length;
   const metaCreateSettings = useMemo(() => getMetaCloudCreateSettings(settings), [settings]);
@@ -355,6 +308,7 @@ export function ChannelsPage() {
     setNotice(null);
     setQrResult(null);
     setQrDrawerOpen(false);
+    const request = ++primaryGeneration.current;
 
     try {
       if (createProvider === "meta_cloud") {
@@ -388,7 +342,7 @@ export function ChannelsPage() {
       setSelectedChannelId(channel.id);
 
       const result = await apiStartChannelQr(getToken, channel.id);
-      if (deletedChannelIdsRef.current.has(result.channel.id)) {
+      if (primaryGeneration.current !== request || result.channel.id !== channel.id || deletedChannelIdsRef.current.has(result.channel.id) || Date.parse(result.qr.expiresAt) <= Date.now()) {
         return;
       }
 
@@ -411,11 +365,12 @@ export function ChannelsPage() {
     setNotice(null);
     setSelectedChannelId(channel.id);
     setQrResult(null);
-    setQrDrawerOpen(false);
+    setQrDrawerOpen(true);
+    const request = ++primaryGeneration.current;
 
     try {
       const result = await apiStartChannelQr(getToken, channel.id);
-      if (deletedChannelIdsRef.current.has(result.channel.id)) {
+      if (primaryGeneration.current !== request || result.channel.id !== channel.id || deletedChannelIdsRef.current.has(result.channel.id) || Date.parse(result.qr.expiresAt) <= Date.now()) {
         return;
       }
 
@@ -566,6 +521,7 @@ export function ChannelsPage() {
                 <button
                   className="channel-row-main"
                   onClick={() => {
+                    primaryGeneration.current++;
                     setSelectedChannelId(channel.id);
                     setQrResult((current) => (current?.channel.id === channel.id ? current : null));
                   }}
@@ -577,6 +533,7 @@ export function ChannelsPage() {
                   <span className="channel-row-info">
                     <strong>{channelTitle(channel)}</strong>
                     <small>{channelProviderLabel(channel)}</small>
+                    {channel.provider === "evolution" ? <small>{connectionCount(channel)}</small> : null}
                   </span>
                   <span className="channel-row-phone">
                     {channel.phoneNumber ?? "Número ainda não identificado"}
@@ -585,6 +542,12 @@ export function ChannelsPage() {
                 <div className="channel-row-actions">
                   {channel.provider === "evolution" ? (
                     <>
+                      <button className="secondary-button" type="button" onClick={() => {
+                        primaryGeneration.current++;
+                        setSelectedChannelId(channel.id);
+                        setQrResult((current) => current?.channel.id === channel.id ? current : null);
+                        setQrDrawerOpen(true);
+                      }}>Conexões</button>
                       <button
                         className="secondary-button"
                         disabled={isSaving}
@@ -744,30 +707,12 @@ export function ChannelsPage() {
               </button>
             </header>
             <div className="contact-drawer-body">
-              <div className="context-card">
-                <div className="context-card-title">Payload QR</div>
-                <div className="qr-box" aria-label="Payload do QR Code">
-                  {qrImageSrc ? (
-                    <img
-                      alt="QR Code para conectar o WhatsApp"
-                      className="qr-image"
-                      src={qrImageSrc}
-                    />
-                  ) : qrPayload ? (
-                    <>
-                      <QrCode size={36} aria-hidden="true" />
-                      <span className="qr-status-note">
-                        {qrRenderError ?? 'Gerando QR visivel...'}
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <QrCode size={36} aria-hidden="true" />
-                      <code>{qrResult?.qrCode ?? 'Gerando sessão QR...'}</code>
-                    </>
-                  )}
-                </div>
-              </div>
+              {selectedChannel?.provider === "evolution" ? (
+                <ChannelConnectionsPanel key={selectedChannel.id} channel={selectedChannel}
+                  primaryQr={qrResult?.channel.id === selectedChannel.id ? qrResult : null}
+                  qrEvent={qrEvent} getToken={getToken} onChannel={updatePhysicalChannel}
+                  onPrimaryQr={() => void reconnectChannel(selectedChannel)} />
+              ) : null}
               <div className="context-card">
                 <div className="context-card-title">Checklist</div>
                 <div className="setup-checklist" aria-label="Checklist de setup">

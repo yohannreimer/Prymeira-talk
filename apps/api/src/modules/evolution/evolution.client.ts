@@ -164,6 +164,7 @@ export interface CheckWhatsappNumbersAvailabilityResult {
 }
 
 export interface EvolutionClient {
+  getInstanceIdentity?(input: ConnectInstanceInput): Promise<string | null>;
   deleteMessageForEveryone?(input: DeleteMessageInput): Promise<void>;
   getGroupInfo?(input: { instanceName: string; groupJid: string }): Promise<{ subject: string | null }>;
   sendAudio?(input: { instanceName: string; number: string; audio: string }): Promise<SendMediaResult>;
@@ -529,6 +530,16 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
   }
 
   return {
+    async getInstanceIdentity(input) {
+      const raw = await get(`/instance/fetchInstances?instanceName=${encodeURIComponent(input.instanceName)}`, 8000);
+      const entries = Array.isArray(raw) ? raw : [raw];
+      for (const entry of entries) {
+        const nested = getRecord(entry, 'instance');
+        const name = getString(entry, 'name') ?? getString(entry, 'instanceName') ?? getString(nested, 'instanceName');
+        if (name === input.instanceName) return getString(entry, 'ownerJid') ?? getString(nested, 'ownerJid') ?? getString(nested, 'owner') ?? null;
+      }
+      return null;
+    },
     async deleteMessageForEveryone(input) {
       await del(`/chat/deleteMessageForEveryone/${encodeURIComponent(input.instanceName)}`, {
         id: input.id, remoteJid: input.remoteJid, fromMe: input.fromMe

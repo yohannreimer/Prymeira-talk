@@ -10,6 +10,11 @@ import {
   isEvolutionLicenseRequiredError
 } from "../evolution/evolution.client.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import type { WahaRuntime } from '../waha/waha.client.js';
+import { createChannelConnectionsService, type ConnectionPrisma } from './channel-connections.js';
+import type { Channel } from '@prisma/client';
+import { toChannelDto } from './channel-dto.js';
+export { toChannelDto } from './channel-dto.js';
 
 type DateLike = Date | string;
 
@@ -23,6 +28,8 @@ interface ChannelRecord {
   status: ChannelDto["status"];
   createdAt: DateLike;
   updatedAt: DateLike;
+  redundancyEnabled?: boolean;
+  activeConnectionId?: string | null;
 }
 
 interface IntegrationConfigRecord {
@@ -32,6 +39,8 @@ interface IntegrationConfigRecord {
 }
 
 export interface PrismaLike {
+  channelConnection?: ConnectionPrisma['channelConnection'];
+  $transaction?: ConnectionPrisma['$transaction'];
   channel: {
     findMany(args: {
       where: { workspaceId: string };
@@ -48,6 +57,8 @@ export interface PrismaLike {
         displayName: string;
         phoneNumber: string | null;
         status: ChannelDto["status"];
+        activeConnectionId?: string;
+        connections?: { create: { id: string; provider: 'evolution'; sessionName: string; status: ChannelDto['status']; eligible: boolean } };
         historyImportStatus?: string | null;
         historyImportNextAt?: Date | null;
       };
@@ -125,6 +136,7 @@ export interface PrismaLike {
 
 interface ChannelsServiceOptions {
   evolution?: EvolutionRuntime;
+  waha?: WahaRuntime;
   metaEvolutionWebhook?: {
     client: {
       setWebhook(input: {
@@ -161,24 +173,6 @@ export class ChannelsServiceError extends Error {
 
 interface ChannelTestInboundResultDto extends ChannelOperationResultDto {
   messageId: string;
-}
-
-function toIsoString(value: DateLike) {
-  return value instanceof Date ? value.toISOString() : value;
-}
-
-export function toChannelDto(record: ChannelRecord): ChannelDto {
-  return {
-    id: record.id,
-    workspaceId: record.workspaceId,
-    provider: record.provider,
-    providerKey: record.providerKey,
-    phoneNumber: record.phoneNumber,
-    displayName: record.displayName,
-    status: record.status,
-    createdAt: toIsoString(record.createdAt),
-    updatedAt: toIsoString(record.updatedAt)
-  };
 }
 
 function normalizeOptional(value: string | undefined) {
@@ -234,6 +228,18 @@ export function createChannelsService(
   prisma: PrismaLike,
   options: ChannelsServiceOptions = {}
 ) {
+  const physical = prisma?.channelConnection && prisma.$transaction
+    ? createChannelConnectionsService(prisma as unknown as ConnectionPrisma, options)
+    : null;
+  const describe = (record: ChannelRecord) => physical ? physical.describe(record as Channel) : Promise.resolve(toChannelDto(record));
+  const syncPrimary = async (record: ChannelRecord) => {
+    if (!physical || record.provider !== 'evolution') return;
+    const connection = await physical.ensurePrimary(record as Channel);
+    await prisma.channelConnection!.update({ where: { workspaceId_id: { workspaceId: record.workspaceId, id: connection.id } }, data: {
+      status: record.status, eligible: record.status === 'connected', health: 'unknown',
+      ...(record.status === 'disconnected' ? { verifiedPhoneNumber: null, disconnectedAt: new Date() } : {})
+    } });
+  };
   const resolveMode = async (workspaceId: string): Promise<IntegrationMode> => {
     const config = await prisma.integrationConfig.findUnique({
       where: {
@@ -296,7 +302,7 @@ export function createChannelsService(
         orderBy: [{ createdAt: "asc" }]
       });
 
-      return channels.map(toChannelDto);
+      return Promise.all(channels.map(describe));
     },
 
     async createChannel(input: {
@@ -359,6 +365,7 @@ export function createChannelsService(
         (options.evolution?.mode === "real" && options.evolution.client
           ? createInstanceName(input.workspaceId)
           : `demo-evolution-${Date.now().toString(36)}`);
+      const primaryId = randomUUID();
       const channel = await prisma.channel.create({
         data: {
           workspaceId: input.workspaceId,
@@ -367,6 +374,7 @@ export function createChannelsService(
           displayName: input.displayName.trim(),
           phoneNumber: normalizeOptional(input.phoneNumber) ?? null,
           status: "disconnected",
+          ...(physical ? { activeConnectionId: primaryId, connections: { create: { id: primaryId, provider: 'evolution' as const, sessionName: providerKey, status: 'disconnected' as const, eligible: false } } } : {}),
           ...(options.evolution?.mode === "real" ? {
             historyImportStatus: "pending",
             historyImportNextAt: new Date(Date.now() + 30_000)
@@ -374,7 +382,7 @@ export function createChannelsService(
         }
       });
 
-      return toChannelDto(channel);
+      return describe(channel);
     },
 
     async startQrSession(input: {
@@ -461,13 +469,19 @@ export function createChannelsService(
           }
         });
 
+        await syncPrimary(channel);
+        const connectionId = physical ? (await physical.ensurePrimary(channel as Channel)).id : undefined;
+
         return {
           mode: "real",
-          channel: toChannelDto(channel),
+          channel: await describe(channel),
+          connectionId,
+          provider: 'evolution',
           qrCode: instance.qrCode,
           qr: {
             payload: instance.qrCode,
-            expiresAt: realQrExpiresAt()
+            expiresAt: realQrExpiresAt(),
+            issuedAt: new Date().toISOString()
           }
         };
       }
@@ -477,10 +491,14 @@ export function createChannelsService(
         ...input,
         status: "connecting"
       });
+      await syncPrimary(channel);
+      const connectionId = physical ? (await physical.ensurePrimary(channel as Channel)).id : undefined;
 
       return {
         mode,
-        channel: toChannelDto(channel),
+        channel: await describe(channel),
+        connectionId,
+        provider: 'evolution',
         qrCode: demoQrPayload(input),
         qr: {
           payload: demoQrPayload(input),
@@ -499,10 +517,11 @@ export function createChannelsService(
         ...input,
         status: "connecting"
       });
+      await syncPrimary(channel);
 
       return {
         mode,
-        channel: toChannelDto(channel)
+        channel: await describe(channel)
       };
     },
 
@@ -526,10 +545,11 @@ export function createChannelsService(
         ...input,
         status: "disconnected"
       });
+      await syncPrimary(channel);
 
       return {
         mode,
-        channel: toChannelDto(channel)
+        channel: await describe(channel)
       };
     },
 
@@ -537,6 +557,11 @@ export function createChannelsService(
       workspaceId: string;
       channelId: string;
     }): Promise<{ channelId: string }> {
+      if (physical) {
+        const channel = await prisma.channel.findFirst({ where: { workspaceId: input.workspaceId, id: input.channelId } });
+        if (!channel) throw new ChannelsServiceError('CHANNEL_NOT_FOUND', 'Channel not found.');
+        if (channel.provider === 'evolution') await physical.deleteSecondary(channel as Channel);
+      }
       await prisma.channel.delete({
         where: {
           workspaceId_id: {

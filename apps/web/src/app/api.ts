@@ -2254,6 +2254,39 @@ export async function apiReconnectChannel(
   return channelOperationResultSchema.parse(data);
 }
 
+async function connectionRequest(
+  getToken: () => Promise<string | null>,
+  channelId: string,
+  suffix: string,
+  method: 'GET' | 'POST' | 'PATCH',
+  body?: { enabled: boolean }
+) {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/${encodeURIComponent(channelId)}/${suffix}`, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {})
+  });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível atualizar a conexão'));
+  return response.json();
+}
+
+export async function apiSetChannelRedundancy(getToken: () => Promise<string | null>, channelId: string, enabled: boolean): Promise<ChannelOperationResultDto> {
+  return channelOperationResultSchema.parse(await connectionRequest(getToken, channelId, 'redundancy', 'PATCH', { enabled }));
+}
+
+export async function apiStartConnectionQr(getToken: () => Promise<string | null>, channelId: string, connectionId: string): Promise<ChannelQrResultDto> {
+  return channelQrResultSchema.parse(await connectionRequest(getToken, channelId, `connections/${encodeURIComponent(connectionId)}/qr`, 'POST'));
+}
+
+export async function apiGetConnectionState(getToken: () => Promise<string | null>, channelId: string, connectionId: string): Promise<ChannelOperationResultDto> {
+  return channelOperationResultSchema.parse(await connectionRequest(getToken, channelId, `connections/${encodeURIComponent(connectionId)}/state`, 'GET'));
+}
+
+export async function apiDisconnectConnection(getToken: () => Promise<string | null>, channelId: string, connectionId: string): Promise<ChannelOperationResultDto> {
+  return channelOperationResultSchema.parse(await connectionRequest(getToken, channelId, `connections/${encodeURIComponent(connectionId)}/disconnect`, 'POST'));
+}
+
 export async function apiDisconnectChannel(
   getToken: () => Promise<string | null>,
   channelId: string

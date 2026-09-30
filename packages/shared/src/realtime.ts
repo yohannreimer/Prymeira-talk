@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   channelSchema,
+  connectionProviderSchema,
   conversationFollowupSchema,
   contactBoardMembershipSchema,
   contactSchema,
@@ -87,7 +88,10 @@ const channelQrUpdatedEventSchema = z.object({
   payload: z.object({
     channelId: z.string().min(1),
     qrCode: z.string().min(1),
-    expiresAt: z.string().datetime()
+    expiresAt: z.string().datetime(),
+    connectionId: z.string().min(1).optional(),
+    provider: connectionProviderSchema.optional(),
+    issuedAt: z.string().datetime().optional()
   })
 });
 

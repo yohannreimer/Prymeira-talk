@@ -25,6 +25,18 @@ enum ChannelStatus {
   failed
 }
 
+enum ChannelConnectionProvider {
+  evolution
+  waha
+}
+
+enum ChannelConnectionHealth {
+  unknown
+  healthy
+  degraded
+  unhealthy
+}
+
 enum ConversationStatus {
   open
   pending
@@ -263,6 +275,8 @@ model Channel {
   phoneNumber     String?         @map("phone_number")
   displayName     String?         @map("display_name")
   status          ChannelStatus   @default(disconnected)
+  redundancyEnabled Boolean       @default(false) @map("redundancy_enabled")
+  activeConnectionId String?       @map("active_connection_id") @db.Uuid
   encryptedConfig Json            @default("{}") @map("encrypted_config")
   followupConfig  Json            @default("{}") @map("followup_config")
   historyImportStatus String?      @map("history_import_status")
@@ -275,6 +289,7 @@ model Channel {
   updatedAt       DateTime        @updatedAt @map("updated_at")
 
   conversations  Conversation[]
+  connections    ChannelConnection[]
   contactBoards  ContactBoardChannel[]
   departmentRules DepartmentChannelRule[]
   leadWhatsappVerifications LeadWhatsappVerification[]
@@ -284,6 +299,34 @@ model Channel {
   @@index([workspaceId, status])
   @@index([historyImportStatus, historyImportNextAt])
   @@map("channels")
+}
+
+model ChannelConnection {
+  id                  String                    @id @default(uuid()) @db.Uuid
+  workspaceId         String                    @map("workspace_id")
+  channelId           String                    @map("channel_id") @db.Uuid
+  provider            ChannelConnectionProvider
+  sessionName         String                    @map("session_name")
+  status              ChannelStatus             @default(disconnected)
+  health              ChannelConnectionHealth    @default(unknown)
+  verifiedPhoneNumber String?                   @map("verified_phone_number")
+  eligible            Boolean                   @default(false)
+  lastCheckedAt       DateTime?                 @map("last_checked_at")
+  lastHealthyAt       DateTime?                 @map("last_healthy_at")
+  failureStartedAt    DateTime?                 @map("failure_started_at")
+  consecutiveFailures Int                      @default(0) @map("consecutive_failures")
+  lastError           String?                   @map("last_error")
+  connectedAt         DateTime?                 @map("connected_at")
+  disconnectedAt      DateTime?                 @map("disconnected_at")
+  createdAt           DateTime                  @default(now()) @map("created_at")
+  updatedAt           DateTime                  @updatedAt @map("updated_at")
+  channel             Channel                   @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, channelId, provider])
+  @@unique([workspaceId, provider, sessionName])
+  @@index([status, health, lastCheckedAt])
+  @@map("channel_connections")
 }
 
 model Contact {

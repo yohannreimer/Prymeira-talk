@@ -7,6 +7,9 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { ChannelDto, MessageDto, MessageLocation } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { toChannelDto } from "../channels/channels.service.js";
+import type { Channel } from '@prisma/client';
+import { createChannelConnectionsService } from '../channels/channel-connections.js';
+import type { WahaRuntime } from '../waha/waha.client.js';
 import {
   createAutomationRunner,
   type AutomationRunnerAgentRuntime,
@@ -35,6 +38,7 @@ import type { EvolutionHistorySource } from "./evolution-history.js";
 import { decryptEncryptedMessageEdit, extractEncryptedMessageEdit, isEncryptedControlEnvelope } from "./evolution-message-edit.js";
 
 export interface EvolutionRoutesOptions {
+  waha?: WahaRuntime;
   messageHistory?: Pick<EvolutionHistorySource, "findMessage">;
   historyBackfill?: (input: { workspaceId: string; channelId: string; conversationId: string; providerKey: string; remoteJid: string; identity: string; pushName: string | null }) => Promise<void>;
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
@@ -493,6 +497,9 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
   app,
   options
 ) => {
+  const describeChannel = (channel: Channel) => app.prisma.channelConnection
+    ? createChannelConnectionsService(app.prisma, { waha: options.waha }).describe(channel)
+    : Promise.resolve(toChannelDto(channel));
   const automationRunner = createAutomationRunner({
     prisma: app.prisma as unknown as AutomationRunnerPrisma,
     agentRuntime: options.agentRuntime,
@@ -615,10 +622,16 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         return reply.code(404).send({ ok: false, error: "channel_not_found" });
       }
 
+      if (app.prisma.channelConnection) await app.prisma.channelConnection.upsert({
+        where: { workspaceId_channelId_provider: { workspaceId, channelId: channel.id, provider: 'evolution' } },
+        create: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: channel.providerKey, status: channel.status, eligible: channel.status === 'connected' },
+        update: { status: channel.status, eligible: channel.status === 'connected', ...(channel.status === 'connected' ? { connectedAt: new Date() } : { health: 'unknown' as const }) }
+      });
+
       app.realtime.publish({
         type: "channel.updated",
         workspaceId,
-        payload: toChannelDto(channel)
+        payload: await describeChannel(channel)
       });
 
       return { ok: true };
@@ -656,10 +669,16 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         return reply.code(404).send({ ok: false, error: "channel_not_found" });
       }
 
+      const connection = app.prisma.channelConnection ? await app.prisma.channelConnection.upsert({
+        where: { workspaceId_channelId_provider: { workspaceId, channelId: channel.id, provider: 'evolution' } },
+        create: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: channel.providerKey, status: 'connecting' },
+        update: { status: 'connecting', eligible: false, health: 'unknown' }
+      }) : null;
+
       app.realtime.publish({
         type: "channel.updated",
         workspaceId,
-        payload: toChannelDto(channel)
+        payload: await describeChannel(channel)
       });
       app.realtime.publish({
         type: "channel.qr_updated",
@@ -667,7 +686,8 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         payload: {
           channelId: channel.id,
           qrCode,
-          expiresAt: qrExpiresAt()
+          expiresAt: qrExpiresAt(),
+          ...(connection ? { connectionId: connection.id, provider: 'evolution' as const, issuedAt: new Date().toISOString() } : {})
         }
       });
 

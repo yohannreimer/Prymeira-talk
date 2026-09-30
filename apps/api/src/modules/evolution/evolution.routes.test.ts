@@ -669,6 +669,19 @@ describe("Evolution webhook routes", () => {
       await app.close();
     }
   });
+  it('scopes physical Evolution QR events and status to the primary connection', async () => {
+    const { app, prisma, publish } = await buildEvolutionApp();
+    const primary = { id: 'primary-connection', workspaceId: 'workspace_a', channelId: 'channel_1', provider: 'evolution', sessionName: 'client-one', status: 'connecting', health: 'unknown', verifiedPhoneNumber: null, eligible: false };
+    const upsert = vi.fn(async () => primary);
+    (prisma as any).channelConnection = { upsert, findMany: vi.fn(async () => [primary, { ...primary, id: 'secondary-connection', provider: 'waha', status: 'connected', health: 'degraded' }]) };
+    try {
+      const response = await app.inject({ method: 'POST', url: '/webhooks/evolution/workspace_a', headers: { 'x-prymeira-talk-secret': 'top_secret' }, payload: { event: 'QRCODE_UPDATED', instance: 'client-one', data: { qrcode: { code: 'primary-qr' } } } });
+      expect(response.statusCode).toBe(200);
+      expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId_channelId_provider: { workspaceId: 'workspace_a', channelId: 'channel_1', provider: 'evolution' } }, update: expect.objectContaining({ status: 'connecting' }) }));
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'channel.qr_updated', payload: expect.objectContaining({ connectionId: 'primary-connection', provider: 'evolution' }) }));
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'channel.updated', payload: expect.objectContaining({ connectedCount: 1, connectionTotal: 2, connections: expect.arrayContaining([expect.objectContaining({ id: 'primary-connection', status: 'connecting' })]) }) }));
+    } finally { await app.close(); }
+  });
 
   it("updates a channel for lowercase connection updates before parsing message-shaped data", async () => {
     const { app, prisma, publish } = await buildEvolutionApp();
