@@ -452,7 +452,9 @@ function InboxPageContent() {
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [selectedConversationId, setSelectedConversationId] = useSessionState<string | null>('selectedConversation', null);
   const [selectedConversationSnapshot, setSelectedConversationSnapshot] = useSessionState<ConversationDto | null>('selectedSnapshot', null);
-  const [messageError, setMessageError] = useState<string | null>(null);
+  const [messageActionError, setMessageError] = useState<string | null>(null);
+  const [sendFailure, setSendFailure] = useSessionState<string | null>(`sendFailure:${selectedConversationId ?? 'none'}`, null);
+  const messageError = messageActionError ?? sendFailure;
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [draft, setDraft] = useSessionState(`draft:${selectedConversationId ?? 'none'}`, '');
   const [assistantTab, setAssistantTab] = useState<'contact' | 'assistant'>('assistant');
@@ -893,7 +895,8 @@ function InboxPageContent() {
 
     if (pendingFile) {
       const file = pendingFile;
-      try { await sendAttachment(file); setPendingFile(null); }
+      const targetId = selectedConversationId;
+      try { await sendAttachment(file); session.writeUI<File | null>(`draftFile:${targetId}`, current => current === file ? null : current, null); }
       catch { /* sendAttachment displays the error beside the composer. */ }
       return;
     }
@@ -933,6 +936,7 @@ function InboxPageContent() {
 
     setIsSending(true);
     setMessageError(null);
+    session.writeUI(`sendFailure:${targetConversationId}`, null, null);
     setDraft("");
     setMessages((current) =>
       selectedConversationIdRef.current === targetConversationId ? [...current, optimisticMessage] : current
@@ -971,22 +975,25 @@ function InboxPageContent() {
         )
       );
     } catch (sendError) {
-      if (selectedConversationIdRef.current === targetConversationId) {
-        setMessageError(sendError instanceof Error ? sendError.message : "Não foi possível enviar a mensagem.");
-        setMessages((current) =>
-          current.map((message) =>
-            message.id === optimisticMessage.id
-              ? {
-                  ...message,
-                  status: "failed"
-                }
-              : message
-          )
-        );
-        setDraft((current) => (current.trim().length === 0 ? messageBody : current));
-      }
+      recordSendFailure(targetConversationId, optimisticMessage.id, sendError, 'Não foi possível enviar a mensagem.', messageBody);
     } finally {
       setIsSending(false);
+    }
+  }
+
+  function recordSendFailure(targetId: string, optimisticId: string, failure: unknown, fallback: string, text: string, file?: File) {
+    if (!session.isLive) return;
+    session.client.setQueryData<MessageDto[]>(session.key('messages', targetId), current => current?.map(message =>
+      message.id === optimisticId && message.status === 'pending' ? { ...message, status: 'failed' } : message));
+    const error = failure instanceof Error ? failure.message : fallback;
+    session.writeUI(`sendFailure:${targetId}`, `${error} Confira o histórico antes de reenviar.`, null);
+    const hasNewText = session.readUI(`draft:${targetId}`, '').trim().length > 0;
+    const hasNewOrigin = Boolean(session.readUI(`draftOrigin:${targetId}`, null));
+    const currentFile = session.readUI<File | null>(`draftFile:${targetId}`, null);
+    const hasNewFile = Boolean(currentFile && currentFile !== file);
+    if (!hasNewText && !hasNewOrigin && !hasNewFile) {
+      session.writeUI(`draft:${targetId}`, text, '');
+      if (file) session.writeUI<File | null>(`draftFile:${targetId}`, current => current ?? file, null);
     }
   }
 
@@ -1072,6 +1079,7 @@ function InboxPageContent() {
 
     setIsSending(true);
     setMessageError(null);
+    session.writeUI(`sendFailure:${targetConversationId}`, null, null);
     if (!voice) setDraft("");
     setMessages((current) =>
       selectedConversationIdRef.current === targetConversationId ? [...current, optimisticMessage] : current
@@ -1117,19 +1125,7 @@ function InboxPageContent() {
         )
       );
     } catch (sendError) {
-      if (selectedConversationIdRef.current === targetConversationId) {
-        setMessageError(sendError instanceof Error ? sendError.message : "Não foi possível enviar o arquivo.");
-        setMessages((current) =>
-          current.map((message) =>
-            message.id === optimisticMessage.id
-              ? {
-                  ...message,
-                  status: "failed"
-                }
-              : message
-          )
-        );
-      }
+      recordSendFailure(targetConversationId, optimisticMessage.id, sendError, 'Não foi possível enviar o arquivo.', caption, file);
       throw sendError;
     } finally {
       setIsSending(false);
@@ -1596,7 +1592,7 @@ selectedConversation ? (
             {isLoadingMessages && !isThreadTransitioning ? (
               <p className="thread-note">Atualizando mensagens...</p>
             ) : null}
-            {messageError ? <p className="error-note" role="status">{messageError} <button type="button" onClick={() => void messagesQuery.refetch()}>Tentar novamente</button></p> : null}
+            {messageError ? <p className="error-note" role="status">{messageError} <button type="button" onClick={() => void messagesQuery.refetch().then(result => { if (!result.error) setSendFailure(null); })}>{sendFailure ? 'Conferir histórico' : 'Tentar novamente'}</button></p> : null}
             {!messageError && !isLoadingMessages && !isThreadTransitioning && visibleMessages.length === 0 ? (
               <p className="thread-note">Ainda não ha mensagens nesta conversa.</p>
             ) : null}
@@ -1655,7 +1651,7 @@ selectedConversation ? (
           </div>
         )
   ), [selectedConversation, selectedConversationId, visibleMessages, isThreadTransitioning, isLoadingMessages,
-    messageError, newMessagesBelow, deletingMessageId, getToken, session, messagesQuery.refetch]);
+    messageError, sendFailure, setSendFailure, newMessagesBelow, deletingMessageId, getToken, session, messagesQuery.refetch]);
   const sidebarView = useMemo(() => (
 <aside className={`contact-panel assistant-contact-panel${assistantOpen ? ' assistant-drawer-open' : ''}`} aria-label="Contato e IA de apoio">
         {selectedConversation?.isGroup ? <>

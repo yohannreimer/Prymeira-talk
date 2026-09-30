@@ -1389,7 +1389,7 @@ export async function apiGetInboxMedia(conversationId: string, messageId: string
     const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/media`, {
       headers: { Authorization: `Bearer ${token}` }, signal: deadline
   });
-  assertReadAccess(response);
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) throw new Error('Não foi possível carregar o anexo. Tente novamente.');
   return response.blob();
 
@@ -1408,7 +1408,7 @@ export async function apiGetContactPhoto(conversationId: string, getToken: () =>
       headers: { Authorization: `Bearer ${token}` }, signal: deadline
   });
   if (response.status === 204) return null;
-  assertReadAccess(response);
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) throw new Error('Não foi possível carregar a foto do contato.');
   return response.blob();
 
@@ -1422,11 +1422,17 @@ export async function apiGetSavedContactPhoto(contactId: string, getToken: () =>
       headers: { Authorization: `Bearer ${token}` }, signal: deadline
   });
   if (response.status === 204) return null;
-  assertReadAccess(response);
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) throw new Error('Não foi possível carregar a foto do contato.');
   return response.blob();
 
   });
+}
+
+async function assertApiReadAccess(response: Response, token: string, signal?: AbortSignal, identityRead = false) {
+  await assertReadAccess(response, { signal, identityRead, validateAccess: () => fetch(`${apiUrl}/me`, {
+    signal, headers: { Authorization: `Bearer ${token}` }
+  }) });
 }
 
 async function fetchJson<T>(
@@ -1449,10 +1455,10 @@ async function fetchJson<T>(
       }
   });
 
-  if (!options.method || options.method === 'GET') assertReadAccess(response);
+  if (!options.method || options.method === 'GET') await assertApiReadAccess(response, token, signal);
   if (!response.ok) {
     const payload = await readApiErrorPayload(response, errorLabel);
-    throw new ApiRequestError(payload.message, payload.debug);
+    throw new ApiRequestError(payload.message, payload.debug, payload.code);
   }
 
   return parse(await response.json());
@@ -1555,7 +1561,7 @@ export async function apiGetConversations(
       }
   });
 
-  assertReadAccess(response);
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load conversations: ${response.status}`);
   }
@@ -1575,7 +1581,7 @@ export async function apiGetAttentionCount(
     const url = new URL(`${apiUrl}/conversations/attention-count`);
     if (channelId) url.searchParams.set("channelId", channelId);
     const response = await fetch(url, { signal: deadline, headers: { Authorization: `Bearer ${token}` } });
-    assertReadAccess(response);
+    await assertApiReadAccess(response, token, deadline);
     if (!response.ok) throw new Error(await readApiErrorMessage(response, "Failed to load attention count"));
     const data: unknown = await response.json();
     if (!data || typeof data !== "object" || !("count" in data) ||
@@ -2174,7 +2180,7 @@ export async function apiGetChannels(
       }
   });
 
-  assertReadAccess(response);
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load channels: ${response.status}`);
   }
@@ -2351,7 +2357,7 @@ export async function apiGetConversationMessages(
       }
   });
 
-  assertReadAccess(response);
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load messages: ${response.status}`);
   }
@@ -2394,7 +2400,7 @@ export async function apiGetCurrentTalkUser(
       headers: { Authorization: `Bearer ${token}` }
   });
 
-  assertReadAccess(response);
+  await assertApiReadAccess(response, token, deadline, true);
   if (!response.ok) {
     throw new Error(`Failed to load current user: ${response.status}`);
   }
@@ -2458,7 +2464,7 @@ export async function apiGetConversationContext(
       }
   });
 
-  assertReadAccess(response);
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load contact context: ${response.status}`);
   }
@@ -2519,7 +2525,7 @@ export async function apiGetQuickReplies(getToken: () => Promise<string | null>,
       signal: deadline,
       headers: { Authorization: `Bearer ${token}` }
   });
-  assertReadAccess(response);
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load quick replies: ${response.status}`);
   }

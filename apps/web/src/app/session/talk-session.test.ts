@@ -93,6 +93,34 @@ describe('session query cache', () => {
 });
 
 describe('realtime list membership and reconciliation', () => {
+  it('reconciles active attention after reconnect when a handoff event was missed', async () => {
+    const cache = session(); const key = cache.key('attention', 'all'); cache.client.setQueryData(key, 2);
+    const inactive = cache.key('attention', 'other-channel'); cache.client.setQueryData(inactive, 1);
+    const read = vi.fn(async () => 3);
+    const observer = new QueryObserver(cache.client, { queryKey: key, queryFn: () => cache.readAttention('all', read) });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      cache.reconcile(); await vi.waitFor(() => expect(cache.client.getQueryData(key)).toBe(3));
+      expect(read).toHaveBeenCalledOnce(); expect(cache.client.getQueryData(inactive)).toBe(1);
+      expect(cache.client.getQueryState(inactive)?.isInvalidated).toBe(true);
+    } finally { unsubscribe(); }
+  });
+  it('dirties a pending count even with zero DTO delta after a newer list response already includes the event', async () => {
+    vi.useFakeTimers(); const cache = session(); const key = cache.key('attention', 'all');
+    const list = cache.key('conversations', 'all', 'all', ''); cache.client.setQueryData(key, 0);
+    let finish!: (count: number) => void;
+    const read = vi.fn().mockImplementationOnce(() => new Promise<number>(resolve => { finish = resolve; })).mockResolvedValue(1);
+    const observer = new QueryObserver(cache.client, { queryKey: key, queryFn: () => cache.readAttention('all', read) });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      const pending = observer.refetch();
+      const updated = conversation('c1', { activeAgentSessionStatus: 'handoff_requested' });
+      cache.client.setQueryData(list, [updated]); cache.event(event('conversation.updated', updated));
+      finish(0); await pending; await vi.advanceTimersByTimeAsync(200);
+      expect(read).toHaveBeenCalledTimes(2); expect(cache.client.getQueryData(key)).toBe(1);
+      expect(cache.client.getQueryState(list)?.isInvalidated).toBe(false);
+    } finally { unsubscribe(); }
+  });
   it('reconciles a known attention delta when its count HTTP response arrived before the conversation event', async () => {
     vi.useFakeTimers(); const cache = session();
     const key = cache.key('attention', 'all'); const list = cache.key('conversations', 'all', 'all', '');

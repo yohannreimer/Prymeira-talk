@@ -214,6 +214,9 @@ export class TalkSession {
         const channel = query.queryKey[3];
         const matches = (row: ConversationDto) => channel === 'all' || !channel || row.channelId === channel;
         const dirtyRead = () => { for (const fence of this.attentionReads) if (fence.channel === channel) fence.dirty = true; };
+        // A list response can already include this event while a count response
+        // still predates it; a zero DTO delta does not make the count snapshot safe.
+        if (matches(next) || previous && matches(previous)) dirtyRead();
         if (!previous) { if (matches(next)) { dirtyRead(); this.scheduleInvalidation(query.queryHash); } continue; }
         const delta = Number(matches(next) && needsHumanAttention(next)) - Number(matches(previous) && needsHumanAttention(previous));
         if (delta) {
@@ -275,6 +278,7 @@ export class TalkSession {
     void this.client.invalidateQueries({ queryKey: this.key('conversations'), refetchType: 'active' });
     if (this.active) void this.client.invalidateQueries({ queryKey: this.key('messages', this.active) });
     void this.client.invalidateQueries({ queryKey: this.key('context'), refetchType: 'active' });
+    void this.client.invalidateQueries({ queryKey: this.key('attention'), refetchType: 'active' });
   }
   prefetch(id: string, read: (signal: AbortSignal) => Promise<MessageDto[]>) {
     if (this.prefetchTimers.has(id) || id === this.active) return;

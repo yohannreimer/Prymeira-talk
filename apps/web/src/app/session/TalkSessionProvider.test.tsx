@@ -4,7 +4,8 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TalkSessionProvider, useSessionState, useTalkSession } from './TalkSessionProvider';
 import { TalkSession } from './talk-session';
-import { apiGetCurrentTalkUser } from '../api';
+import { apiGetCurrentTalkUser, apiGetAuditLog, apiGetAgentImprovements, apiGetConversationMessages } from '../api';
+import { ReadAccessError } from '../read-request';
 
 const auth = vi.hoisted(() => ({ userId: 'user1', sessionId: 'session1', orgId: null, getToken: vi.fn(async () => 'token') }));
 vi.mock('../auth', () => ({ useTalkAuth: () => auth }));
@@ -61,6 +62,29 @@ describe('authenticated session scope', () => {
     expect(container.textContent).toContain('private draft'); expect(container.textContent).toContain('rede indisponível');
     await act(async () => window.dispatchEvent(new Event('talk:access-revoked'))); await flush();
     expect(container.textContent).not.toContain('private draft'); expect(previous.client.getQueryCache().getAll()).toEqual([]);
+    expect(Socket.instances[0].close).toHaveBeenCalledOnce();
+  });
+  it.each(['SETTINGS_MANAGE_FORBIDDEN', 'AGENT_MANAGE_FORBIDDEN'])('preserves an authenticated agent session after %s', async code => {
+    await render(); const previous = mounted[0];
+    await act(async () => container.querySelector<HTMLButtonElement>('button')!.click());
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ code, error: 'Management permission required.' }), { status: 403 })));
+    await act(async () => {
+      const pending = code === 'SETTINGS_MANAGE_FORBIDDEN' ? apiGetAuditLog(auth.getToken) : apiGetAgentImprovements(auth.getToken, 'agent-id');
+      await expect(pending).rejects.toMatchObject({ code });
+    });
+    await act(async () => window.dispatchEvent(new Event('focus'))); await flush();
+    expect(container.textContent).toContain('private draft'); expect(mounted).toHaveLength(1);
+    expect(previous.client.getQueryData(previous.key('messages', 'c1'))).toEqual(['private history']);
+    expect(previous.readUI('draft:c1', '')).toBe('private draft'); expect(Socket.instances[0].close).not.toHaveBeenCalled();
+    expect(apiGetCurrentTalkUser).toHaveBeenLastCalledWith(expect.any(Function), expect.any(AbortSignal));
+  });
+  it('clears an authenticated session when a read reports actual product revocation', async () => {
+    await render(); const previous = mounted[0];
+    await act(async () => container.querySelector<HTMLButtonElement>('button')!.click());
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ statusCode: 403, error: 'Forbidden', message: 'Product access denied.' }), { status: 403 })));
+    await act(async () => { await expect(apiGetConversationMessages('c1', auth.getToken)).rejects.toBeInstanceOf(ReadAccessError); }); await flush();
+    expect(container.textContent).toContain('Seu acesso mudou'); expect(container.textContent).not.toContain('private draft');
+    expect(previous.client.getQueryCache().getAll()).toEqual([]); expect(previous.readUI('draft:c1', '')).toBe('');
     expect(Socket.instances[0].close).toHaveBeenCalledOnce();
   });
   it('clears the scoped client and session UI on logout/unmount', async () => {

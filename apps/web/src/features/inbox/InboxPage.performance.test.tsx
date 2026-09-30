@@ -60,7 +60,7 @@ describe('Atendimento query/UI integration', () => {
     vi.mocked(apiGetConversationMessages).mockImplementation(async id => [message(id)]);
     vi.mocked(apiGetConversationContext).mockResolvedValue({ tags: [], notes: [], departments: [], boardStages: [], primaryBoardStage: null });
   });
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); session.clear(); vi.useRealTimers(); vi.clearAllMocks(); vi.restoreAllMocks(); });
+  afterEach(async () => { await act(async () => root.unmount()); container.remove(); session.clear(); vi.useRealTimers(); vi.clearAllMocks(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
   it('restores drafts/selection on module return and shows a repeated target synchronously without a read', async () => {
     await render(); expect(container.textContent).toContain('history-c1'); await type('rascunho c1');
@@ -247,6 +247,49 @@ describe('Atendimento query/UI integration', () => {
     const rows = session.client.getQueryData<MessageDto[]>(session.key('messages', 'c1'))!;
     expect(rows.find(row => row.id === 'sent-id')?.status).toBe('read');
     expect(rows.filter(row => row.body === 'outgoing')).toHaveLength(1);
+    expect(apiCreateConversationMessage).toHaveBeenCalledOnce();
+  });
+  it.each(['text', 'attachment'])('records an inactive %s send failure in its target history/draft and shows recovery on return without resending', async kind => {
+    vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:text/plain;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
+    await render(); await select('c2'); await select('c1'); let fail!: (error: Error) => void;
+    vi.mocked(apiCreateConversationMessage).mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+    await type('draft to recover'); const file = new File(['a'], 'document.txt', { type: 'text/plain' });
+    if (kind === 'attachment') {
+      const input = container.querySelector<HTMLInputElement>('.composer-file-input')!; Object.defineProperty(input, 'files', { value: [file], configurable: true });
+      await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
+    }
+    await act(async () => container.querySelector<HTMLFormElement>('.composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); await flush();
+    expect(apiCreateConversationMessage).toHaveBeenCalledOnce();
+    await select('c2'); await act(async () => fail(new Error('Falha de rede'))); await flush();
+    expect(container.querySelector('.message-thread')?.textContent).not.toContain('Falha de rede');
+    expect(session.readUI('draft:c2', '')).toBe('');
+    await select('c1');
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Mensagem"]')?.value).toBe('draft to recover');
+    if (kind === 'attachment') expect(session.readUI('draftFile:c1', null)).toBe(file);
+    const rows = session.client.getQueryData<MessageDto[]>(session.key('messages', 'c1'))!;
+    expect(rows.find(row => row.id.startsWith('optimistic-'))?.status).toBe('failed');
+    expect(container.querySelector('.message-thread')?.textContent).toContain('Falha de rede');
+    expect(container.querySelector('.message-thread')?.textContent).toContain('Confira o histórico antes de reenviar.');
+    expect(apiCreateConversationMessage).toHaveBeenCalledOnce(); expect(apiGetConversationMessages).toHaveBeenCalledTimes(2);
+  });
+  it.each([['text', true], ['text', false], ['attachment', true], ['attachment', false]] as const)('preserves a newer target draft/file when a prior %s send fails after module navigation (new text: %s)', async (kind, newText) => {
+    vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:text/plain;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
+    await render(); await select('c2'); await select('c1'); let fail!: (error: Error) => void;
+    vi.mocked(apiCreateConversationMessage).mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+    await type('old draft'); const oldFile = new File(['old'], 'old.txt', { type: 'text/plain' });
+    if (kind === 'attachment') {
+      const input = container.querySelector<HTMLInputElement>('.composer-file-input')!; Object.defineProperty(input, 'files', { value: [oldFile], configurable: true });
+      await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
+    }
+    await act(async () => container.querySelector<HTMLFormElement>('.composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); await flush();
+    await select('c2'); await render(false); await render(); await select('c1'); if (newText) await type('newer draft');
+    const newFile = new File(['new'], 'new.txt', { type: 'text/plain' });
+    const input = container.querySelector<HTMLInputElement>('.composer-file-input')!; Object.defineProperty(input, 'files', { value: [newFile], configurable: true });
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
+    await select('c2'); await act(async () => fail(new Error('Falha de rede'))); await flush(); await select('c1');
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Mensagem"]')?.value).toBe(newText ? 'newer draft' : '');
+    expect(session.readUI('draftFile:c1', null)).toBe(newFile);
+    expect(container.querySelector('.message-thread')?.textContent).toContain('Falha de rede');
     expect(apiCreateConversationMessage).toHaveBeenCalledOnce();
   });
 });

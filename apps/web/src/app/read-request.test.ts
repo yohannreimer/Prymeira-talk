@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { apiGetConversationMessages, apiGetConversations, apiGetAttentionCount } from './api';
-import { withReadDeadline } from './read-request';
+import { apiGetConversationMessages, apiGetConversations, apiGetAttentionCount, apiGetAuditLog, apiGetAgentImprovements, apiGetCurrentTalkUser } from './api';
+import { ReadAccessError, withReadDeadline } from './read-request';
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('Atendimento reads', () => {
@@ -40,5 +40,58 @@ describe('Atendimento reads', () => {
     const controller = new AbortController(); controller.abort(); const read = vi.fn();
     await expect(withReadDeadline(controller.signal, read)).rejects.toMatchObject({ name: 'AbortError' });
     expect(read).not.toHaveBeenCalled();
+  });
+});
+
+describe('operation refusal and authentication boundaries', () => {
+  const observeRevocation = () => {
+    const target = new EventTarget(); const revoked = vi.fn(); target.addEventListener('talk:access-revoked', revoked);
+    vi.stubGlobal('window', target); return revoked;
+  };
+  it.each(['SETTINGS_MANAGE_FORBIDDEN', 'AGENT_MANAGE_FORBIDDEN'])('keeps %s as a local operation error without an extra authentication read', async code => {
+    const revoked = observeRevocation();
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ code, error: 'Management permission required.' }), { status: 403 })); vi.stubGlobal('fetch', fetch);
+    const read = code === 'SETTINGS_MANAGE_FORBIDDEN' ? apiGetAuditLog : (token: () => Promise<string>) => apiGetAgentImprovements(token, 'agent-id');
+    await expect(read(async () => 'token')).rejects.toMatchObject({ name: 'ApiRequestError', code });
+    expect(revoked).not.toHaveBeenCalled(); expect(fetch).toHaveBeenCalledOnce();
+  });
+  it.each(['Product access denied.', 'Workspace access denied.'])('revokes access for the actual middleware contract: %s', async message => {
+    const revoked = observeRevocation();
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ statusCode: 403, error: 'Forbidden', message }), { status: 403 })); vi.stubGlobal('fetch', fetch);
+    await expect(apiGetConversationMessages('c1', async () => 'token')).rejects.toBeInstanceOf(ReadAccessError);
+    expect(revoked).toHaveBeenCalledOnce(); expect(fetch).toHaveBeenCalledOnce();
+  });
+  it.each([200, 403])('revalidates an ambiguous operation 403 against /me, whose status is %i', async status => {
+    const revoked = observeRevocation();
+    const fetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ error: 'This operation is forbidden.' }), { status: 403 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ workspaceId: 'w', role: 'agent' }), { status })); vi.stubGlobal('fetch', fetch);
+    const pending = apiGetAuditLog(async () => 'token');
+    if (status === 200) { await expect(pending).rejects.toMatchObject({ name: 'ApiRequestError' }); expect(revoked).not.toHaveBeenCalled(); }
+    else { await expect(pending).rejects.toBeInstanceOf(ReadAccessError); expect(revoked).toHaveBeenCalledOnce(); }
+    expect(String(fetch.mock.calls[1][0])).toMatch(/\/me$/);
+    expect(fetch.mock.calls[1][1].signal).toBe(fetch.mock.calls[0][1].signal);
+  });
+  it.each([401, 403])('fails closed when /me itself refuses authentication with %i', async status => {
+    const revoked = observeRevocation(); vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status })));
+    await expect(apiGetCurrentTalkUser(async () => 'token')).rejects.toBeInstanceOf(ReadAccessError); expect(revoked).toHaveBeenCalledOnce();
+  });
+  it('bounds 403 body classification within the token/body deadline and ignores a late body after cancellation', async () => {
+    vi.useFakeTimers(); const revoked = observeRevocation(); let finish!: (body: unknown) => void;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 403, ok: false, clone: () => ({ json: () => new Promise(resolve => { finish = resolve; }) }) }));
+    const pending = apiGetAuditLog(async () => { await new Promise(resolve => setTimeout(resolve, 6_000)); return 'token'; });
+    const rejected = expect(pending).rejects.toMatchObject({ name: 'TimeoutError' });
+    await vi.advanceTimersByTimeAsync(6_000); await vi.advanceTimersByTimeAsync(2_000); await rejected;
+    finish({ message: 'Product access denied.' }); await vi.advanceTimersByTimeAsync(0); expect(revoked).not.toHaveBeenCalled();
+  });
+  it('shares the remaining token/read deadline with ambiguous 403 revalidation and cancels a late auth denial', async () => {
+    vi.useFakeTimers(); const revoked = observeRevocation(); let finish!: (response: Response) => void;
+    const fetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Operation forbidden.' }), { status: 403 }))
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; })); vi.stubGlobal('fetch', fetch);
+    const pending = apiGetAuditLog(async () => { await new Promise(resolve => setTimeout(resolve, 6_000)); return 'token'; });
+    const rejected = expect(pending).rejects.toMatchObject({ name: 'TimeoutError' });
+    await vi.advanceTimersByTimeAsync(6_000); expect(fetch).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2_000); await rejected;
+    expect(fetch.mock.calls[1][1].signal.aborted).toBe(true);
+    finish(new Response('{}', { status: 401 })); await vi.advanceTimersByTimeAsync(0); expect(revoked).not.toHaveBeenCalled();
   });
 });
