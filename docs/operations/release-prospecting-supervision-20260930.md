@@ -22,3 +22,13 @@ Node 22.22.0, pnpm 10.0.0, instalação congelada, Prisma gerado. PostgreSQL 16 
 Construir API/web do mesmo SHA integrado. Conferir digests ativos e publicação concorrente; aplicar as cinco migrations com a imagem nova antes do rollout Talk. Hub aplica sua migration aditiva antes de iniciar a API. Preservar configurações/credenciais da stack e definir VITE_PRYMEIRA_HUB_URL para o Hub real.
 
 Confirmar health/ready, imagens/tasks, rotas e interfaces depois do deploy. Manter prospecção OFF até validar Evolution/IA/JEV e o agente no workspace alvo. Publicar supervisão não cria vínculos nem concede acesso automaticamente. Registrar a identidade e os pares workspace/canal autorizados antes da ativação para o cliente.
+
+## Publicação confirmada
+
+Em 30/09/2026, às 14:38 America/Sao_Paulo, API e Web em produção usam o commit de código `0b7c21391cd961514e28d475ae391f3b2b97ade2`. Digests: API `sha256:68f783d92b5b6c3d85d3ee790a182ed1f65fd788de4e8fb1875cc045d8aa95c2`; Web `sha256:928293b11c02ec0c2b9e80405055fa6d04c504212a2e6fe72baa9fa639ee6ad8`. Build GitHub Actions 36747737705 concluído com sucesso nesse SHA.
+
+As cinco migrations foram aplicadas pela imagem nova antes do rollout. Portainer confirmou a imagem e tarefa running nos dois serviços. `/api/health` e `/api/ready` retornaram 200; `/api/supervision/summary` retornou 401 sem token. O bundle público `/assets/index-BMaJLqqA.js` tem SHA-256 `68269590f9aab97f223c61a8acb1c11b353f0e5e654c53b78b18987661e3da8f`, idêntico ao build local.
+
+Atualizadas imagens de serviços existentes, preservando configurações ativas; editor antigo da stack não foi reaplicado. `VITE_PRYMEIRA_HUB_URL=https://hub.prymeiradigital.com.br` foi definido e confirmado no runtime-config público, com bypass de autenticação desabilitado.
+
+Esta publicação não ativou campanhas nem concedeu acessos. Sessão real de supervisor e agente/provedor do workspace alvo continuam pendentes de configuração e validação. O navegador de verificação estava na tela normal de login. Commits posteriores que alteram somente documentação não exigem reconstruir as imagens; o SHA de código publicado permanece o informado acima.

@@ -10,12 +10,16 @@ O catálogo `GET /supervision/admin/channels?workspaceId=UUID` exige confirmaç�
 
 ## Consultas
 
-- `GET /supervision/summary`: totais completos por vendedor de próximas ações e conversas não lidas na fila ativa e visível, sem limite de 50.
-- `GET /supervision/conversations`: filtros independentes `sellerCustomerId`, `status=active|closed|all`, `nextAction=true|false`, `unread=true|false`, `cursor`. Retorna `conversations` e `nextCursor`, com até 50 registros por página.
+- `GET /supervision/summary?unreadPeriod=all|24h|7d`: totais completos por vendedor de próximas ações e conversas não lidas na fila ativa e visível, sem limite de 50. O período afeta somente não lidas.
+- `GET /supervision/conversations`: filtros independentes `sellerCustomerId`, `status=active|closed|all`, `nextAction=true|false`, `unread=true|false`, `unreadPeriod=all|24h|7d`, `cursor`. Retorna `conversations` e `nextCursor`, com até 50 registros por página. O período só restringe a lista quando `unread=true`.
 - `GET /supervision/workspaces/:workspaceId/conversations/:conversationId/messages`: conversa identificada pelo vendedor e número, com histórico. Não marca leitura, importa histórico, reconhece alertas, agenda IA ou escreve notas.
 - No mesmo caminho, `messages/:messageId/media` e `messages/:messageId/preview?page=N` permitem consulta a anexos e PDF. Cada acesso valida o canal autorizado antes de acessar mídia em cache.
 
 As regras existentes de próxima ação e não lidas são compartilhadas com o atendimento. `handoffActionCompletedAt` representa a conclusão; abrir uma conversa não conclui uma ação. A supervisão não cria um indicador alternativo de mensagens sem resposta nem contadores de follow-up. Reservas internas de follow-up não aparecem no histórico, seguindo a regra existente.
+
+A interface usa **últimas 24 horas** inicialmente para o indicador de não lidas, com opções de últimos 7 dias e todo o período. São janelas móveis de 24 ou 168 horas. Uma conversa precisa continuar não lida pela regra atual e ter recebido uma mensagem do cliente dentro da janela. A data original da mensagem determina o período; importar um histórico antigo ou enviar uma resposta recente não torna a não lida antiga recente. Datas futuras ficam fora das janelas. Sem `unreadPeriod`, os endpoints mantêm a consulta a todo o período para compatibilidade.
+
+Clicar no nome do vendedor abre todas as suas conversas visíveis, incluindo lidas e encerradas, e desativa os filtros de próxima ação e não lidas. O histórico apresenta datas e horários completos das mensagens recebidas e enviadas, sem marcar leitura nem gerar um cálculo novo de tempo de resposta. As próximas ações continuam disponíveis independentemente da idade.
 
 A continuação preserva a chave de ordenação original, incluindo timestamps e ID, e verifica o par workspace/canal nos vínculos atuais. A chegada de uma mensagem ao último item da página anterior não desloca o cursor. Filtros e escopo são aplicados no banco, inclusive quando há canais de vários workspaces.
 
