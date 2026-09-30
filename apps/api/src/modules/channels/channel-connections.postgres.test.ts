@@ -50,6 +50,10 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     try {
       await service.refresh({ workspaceId, channelId, connectionId: secondary.id });
       expect(await prisma.channelConnection.findUnique({ where: { id: secondary.id } })).toMatchObject({ eligible: true, health: 'healthy', lastHealthyAt: expect.any(Date) });
+      evolution.client.getInstanceIdentity.mockResolvedValue(null);
+      const missingOwner = await service.refresh({ workspaceId, channelId, connectionId: secondary.id });
+      expect(missingOwner.channel.connections!.find((record) => record.id === secondary.id)).toMatchObject({ eligible: true, health: 'healthy' });
+      expect(await prisma.channelConnection.findUnique({ where: { id: primary.id } })).toMatchObject({ verifiedPhoneNumber: '5547999990000' });
       evolution.client.getConnectionState.mockResolvedValue('close');
       await service.refresh({ workspaceId, channelId, connectionId: primary.id });
       expect(await prisma.channelConnection.findUnique({ where: { id: primary.id } })).toMatchObject({ status: 'disconnected', verifiedPhoneNumber: '5547999990000' });

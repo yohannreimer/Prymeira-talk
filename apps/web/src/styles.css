@@ -1719,6 +1719,17 @@ select:disabled {
   color: var(--color-text-muted);
 }
 
+.channel-row-connections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+
+.channel-row-connections .channel-connection-writer {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
 .channel-row-phone {
   font-size: 13px;
   color: var(--color-text-secondary);

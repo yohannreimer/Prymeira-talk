@@ -2,11 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChannelDto, ChannelQrResultDto, RealtimeEvent } from '@prymeira-talk/shared';
 import { apiDisconnectConnection, apiGetConnectionState, apiSetChannelRedundancy, apiStartConnectionQr } from '../../app/api';
 import { ChannelQrView } from './ChannelQrView';
-import { applyQrUpdate, connectionCount, qrKey } from './connection-display';
+import { applyQrUpdate, connectionCount, connectionDisplay, qrKey } from './connection-display';
 
 type QrEvent = Extract<RealtimeEvent, { type: 'channel.qr_updated' }>;
-const statuses = { connected: 'Conectado', connecting: 'Conectando', disconnected: 'Desconectado', failed: 'Falhou' };
-const health = { unknown: 'Saúde ainda não verificada', healthy: 'Saudável', degraded: 'Degradada', unhealthy: 'Indisponível' };
 export function ChannelConnectionsPanel({ channel, primaryQr, qrEvent, getToken, onChannel, onPrimaryQr }: { channel: ChannelDto; primaryQr: ChannelQrResultDto | null; qrEvent: QrEvent | null; getToken: () => Promise<string | null>; onChannel: (channel: ChannelDto) => void; onPrimaryQr: () => void }) {
   const [secondaryQr, setSecondaryQr] = useState<ChannelQrResultDto | null>(null);
   const [busy, setBusy] = useState(false);
@@ -82,14 +80,14 @@ export function ChannelConnectionsPanel({ channel, primaryQr, qrEvent, getToken,
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Não foi possível desconectar WAHA.'); }
     finally { busyRef.current = false; setBusy(false); }
   }
-  const primary = channel.connections?.find((c) => c.provider === 'evolution');
-  const secondary = channel.connections?.find((c) => c.provider === 'waha');
   return <div className="channel-connections-panel">
     <p className="status-badge" aria-live="polite">{connectionCount(channel)}</p>
-    {[{ provider: 'Evolution', connection: primary, qr: primaryQr }, { provider: 'WAHA', connection: secondary, qr: secondaryQr }].map(({ provider, connection, qr }) => <section key={provider} className="context-card" aria-label={`Conexão ${provider}`} data-connection-id={connection?.id}>
+    {connectionDisplay(channel).map(({ label: provider, connection, statusLabel, healthLabel, isActiveWriter }) => {
+      const qr = provider === 'Evolution' ? primaryQr : secondaryQr;
+      return <section key={provider} className="context-card" aria-label={`Conexão ${provider}`} data-connection-id={connection?.id}>
       <div className="context-card-title">{provider}</div>
-      <p>{statuses[connection?.status ?? (provider === 'Evolution' ? channel.status : 'disconnected')]} · {health[connection?.health ?? 'unknown']}</p>
-      {connection?.isActiveWriter ? <p>Enviando por esta conexão</p> : null}
+      <p>{statusLabel} · {healthLabel}</p>
+      {isActiveWriter ? <p>Enviando por esta conexão</p> : null}
       {connection?.lastError === 'PHONE_MISMATCH' ? <p className="error-note">Número diferente — conecte o mesmo número da Evolution. Esta conexão não pode enviar.</p> : null}
       {connection?.lastError === 'PRIMARY_PHONE_UNVERIFIED' ? <p>Confirme a conexão Evolution para verificar o número.</p> : null}
       {provider === 'Evolution' ? <>
@@ -104,7 +102,7 @@ export function ChannelConnectionsPanel({ channel, primaryQr, qrEvent, getToken,
           <button className="secondary-button" type="button" disabled={busy} onClick={() => void secondaryAction(true)}>Desativar redundância</button>
         </div> : null}
       </>}
-    </section>)}
+    </section>; })}
     {notice ? <p className="error-note" role="status">{notice}</p> : null}
   </div>;
 }

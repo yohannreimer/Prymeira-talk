@@ -15,7 +15,7 @@ import {
 } from "../../app/api";
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
 import { ChannelConnectionsPanel } from "./ChannelConnectionsPanel";
-import { applyQrUpdate, connectionCount } from "./connection-display";
+import { applyQrUpdate, connectionCount, connectionDisplay } from "./connection-display";
 import { AssistantChannelSettings } from './AssistantChannelSettings';
 
 const statusLabels: Record<ChannelDto["status"], string> = {
@@ -534,6 +534,12 @@ export function ChannelsPage() {
                     <strong>{channelTitle(channel)}</strong>
                     <small>{channelProviderLabel(channel)}</small>
                     {channel.provider === "evolution" ? <small>{connectionCount(channel)}</small> : null}
+                    {channel.provider === 'evolution' ? <span className="channel-row-connections" aria-label="Conexões físicas">
+                      {connectionDisplay(channel).map((connection) => <small key={connection.provider} data-provider={connection.provider} data-health={connection.health}>
+                        {connection.label}: {connection.statusLabel} · {connection.healthLabel}
+                        {connection.isActiveWriter ? <span className="channel-connection-writer"> · Envio ativo</span> : null}
+                      </small>)}
+                    </span> : null}
                   </span>
                   <span className="channel-row-phone">
                     {channel.phoneNumber ?? "Número ainda não identificado"}

@@ -89,6 +89,12 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
   async function markFailure(record: ChannelConnection, error: string) {
     await prisma.channelConnection.update({ where: whereId(record), data: { health: 'unhealthy', eligible: false, lastCheckedAt: new Date(), failureStartedAt: record.failureStartedAt ?? new Date(), consecutiveFailures: { increment: 1 }, lastError: error } });
   }
+  function confirmedPrimaryPhone(primary: ChannelConnection, secondary: ChannelConnection, currentSecondaryPhone: string | null) {
+    const phone = normalizeWhatsappPhone(primary.verifiedPhoneNumber);
+    // Missing owner data is not evidence of a changed identity. Reuse only a positive
+    // pairing proof, matching both persisted identities and WAHA's current owner.
+    return secondary.lastHealthyAt && phone && phone === secondary.verifiedPhoneNumber && phone === currentSecondaryPhone ? phone : null;
+  }
   async function revalidateSecondary(channel: Channel, primaryPhone: string | null) {
     const secondary = await prisma.channelConnection.findFirst({ where: { workspaceId: channel.workspaceId, channelId: channel.id, provider: 'waha' } });
     if (!secondary || secondary.status !== 'connected' || (primaryPhone && primaryPhone === secondary.verifiedPhoneNumber)) return;
@@ -103,8 +109,8 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
         try {
           const state = await client.getConnectionState({ instanceName: connection.sessionName });
           const phone = state === 'open' ? normalizeWhatsappPhone(await client.getInstanceIdentity({ instanceName: connection.sessionName })) : null;
-          await prisma.channelConnection.update({ where: whereId(connection), data: { status: state === 'open' ? 'connected' : state === 'connecting' ? 'connecting' : 'disconnected', health: state === 'open' && phone ? 'healthy' : 'unknown', ...(state === 'open' ? { verifiedPhoneNumber: phone } : {}), eligible: state === 'open', lastCheckedAt: now, ...(phone ? { lastHealthyAt: now, consecutiveFailures: 0, failureStartedAt: null, lastError: null } : {}) } });
-          if (state === 'open') await revalidateSecondary(channel, phone);
+          await prisma.channelConnection.update({ where: whereId(connection), data: { status: state === 'open' ? 'connected' : state === 'connecting' ? 'connecting' : 'disconnected', health: state === 'open' && phone ? 'healthy' : 'unknown', ...(phone ? { verifiedPhoneNumber: phone } : {}), eligible: state === 'open', lastCheckedAt: now, ...(phone ? { lastHealthyAt: now, consecutiveFailures: 0, failureStartedAt: null, lastError: null } : {}) } });
+          if (phone) await revalidateSecondary(channel, phone);
         } catch { await markFailure(connection, 'PROVIDER_UNAVAILABLE'); }
       }
       return result(channel);
@@ -122,13 +128,13 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
       let primaryPhone: string | null = null;
       if (options.evolution?.client?.getInstanceIdentity) {
         try {
-          primaryPhone = normalizeWhatsappPhone(await options.evolution.client.getInstanceIdentity({ instanceName: primary.sessionName }));
-          await prisma.channelConnection.update({ where: whereId(primary), data: { verifiedPhoneNumber: primaryPhone, lastCheckedAt: now } });
+          const observedPhone = normalizeWhatsappPhone(await options.evolution.client.getInstanceIdentity({ instanceName: primary.sessionName }));
+          primaryPhone = observedPhone ?? confirmedPrimaryPhone(primary, connection, phone);
+          await prisma.channelConnection.update({ where: whereId(primary), data: { ...(observedPhone ? { verifiedPhoneNumber: observedPhone } : {}), lastCheckedAt: now } });
         } catch {
           // A failed primary probe must not disable a confirmed alternative. lastHealthyAt
           // is only set for WAHA after both actual identities matched and restrictions passed.
-          const confirmedPhone = normalizeWhatsappPhone(primary.verifiedPhoneNumber);
-          if (connection.lastHealthyAt && confirmedPhone && confirmedPhone === connection.verifiedPhoneNumber) primaryPhone = confirmedPhone;
+          primaryPhone = confirmedPrimaryPhone(primary, connection, phone);
           await markFailure(primary, 'PROVIDER_UNAVAILABLE');
         }
       }
@@ -137,7 +143,7 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
       await prisma.channelConnection.update({ where: whereId(connection), data: {
         status, verifiedPhoneNumber: phone, health: status === 'connected' ? reason ? 'degraded' : 'healthy' : status === 'failed' ? 'unhealthy' : 'unknown',
         eligible: status === 'connected' && reason === null, lastCheckedAt: now, lastError: reason,
-        ...(reason === 'PHONE_MISMATCH' || reason === 'PHONE_UNVERIFIED' ? { lastHealthyAt: null } : {}),
+        ...(reason === 'PHONE_MISMATCH' || reason === 'PHONE_UNVERIFIED' || (status === 'connected' && connection.lastHealthyAt && phone !== connection.verifiedPhoneNumber) ? { lastHealthyAt: null } : {}),
         ...(status === 'connected' ? { connectedAt: connection.connectedAt ?? now } : {}),
         ...(reason === null && status === 'connected' ? { lastHealthyAt: now, consecutiveFailures: 0, failureStartedAt: null } : {})
       } });

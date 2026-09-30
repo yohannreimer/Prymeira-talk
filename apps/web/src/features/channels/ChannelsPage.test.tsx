@@ -28,6 +28,26 @@ describe('same-channel two QR setup', () => {
     mocks.apiGetConnectionState.mockResolvedValue({ mode: 'real', channel: next });
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
+  it.each(['evolution', 'waha'] as const)('shows provider status, %s degradation and the opposite active sender in the channel row', async (degradedProvider) => {
+    const records = [
+      { ...primary, health: degradedProvider === 'evolution' ? 'degraded' : 'healthy', isActiveWriter: degradedProvider !== 'evolution' },
+      { ...secondary, status: 'connected', health: degradedProvider === 'waha' ? 'degraded' : 'healthy', isActiveWriter: degradedProvider !== 'waha' }
+    ];
+    mocks.apiGetChannels.mockResolvedValue([{ ...channel, redundancyEnabled: true, connections: records }]);
+    await act(async () => root.render(<ChannelsPage />));
+    const degraded = container.querySelector<HTMLElement>(`.channel-row-main [data-provider="${degradedProvider}"]`);
+    const sendingProvider = degradedProvider === 'evolution' ? 'waha' : 'evolution';
+    const sender = container.querySelector<HTMLElement>(`.channel-row-main [data-provider="${sendingProvider}"]`);
+    expect(degraded?.textContent).toContain('Conectado');
+    expect(degraded?.textContent).toContain('Degradada');
+    expect(degraded?.textContent).not.toContain('Envio ativo');
+    expect(sender?.textContent).toContain('Saudável');
+    expect(sender?.textContent).toContain('Envio ativo');
+    expect(container.querySelector('.channel-row-main')?.textContent).toContain('2 de 2 conectados');
+    await act(async () => mocks.onEvent({ type: 'channel.updated', workspaceId: 'workspace', payload: { ...channel, redundancyEnabled: true, connections: records.map((record) => ({ ...record, status: record.provider === degradedProvider ? 'disconnected' : 'connected' })) } }));
+    expect(container.querySelector(`.channel-row-main [data-provider="${degradedProvider}"]`)?.textContent).toContain('Desconectado');
+    expect(container.querySelector('.channel-row-main')?.textContent).toContain('1 de 2 conectados');
+  });
   it('renders Evolution first, independently generates WAHA on the same channel and preserves each QR under scoped events', async () => {
     await act(async () => root.render(<ChannelsPage />));
     expect(container.textContent).toContain('1 de 2 conectados');

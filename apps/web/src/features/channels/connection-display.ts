@@ -1,5 +1,27 @@
 import type { ChannelDto, ChannelQrResultDto, RealtimeEvent } from '@prymeira-talk/shared';
 type QrUpdate = Extract<RealtimeEvent, { type: 'channel.qr_updated' }>['payload'];
+const statusLabels = { connected: 'Conectado', connecting: 'Conectando', disconnected: 'Desconectado', failed: 'Falhou' };
+const healthLabels = { unknown: 'Saúde não verificada', healthy: 'Saudável', degraded: 'Degradada', unhealthy: 'Indisponível' };
+
+export function connectionDisplay(channel: Pick<ChannelDto, 'provider' | 'status' | 'connections'>) {
+  if (channel.provider !== 'evolution') return [];
+  return (['evolution', 'waha'] as const).map((provider) => {
+    const connection = channel.connections?.find((record) => record.provider === provider);
+    const status = connection?.status ?? (provider === 'evolution' ? channel.status : 'disconnected');
+    const health = connection?.health ?? 'unknown';
+    return {
+      provider,
+      label: provider === 'evolution' ? 'Evolution' : 'WAHA',
+      connection,
+      status,
+      health,
+      statusLabel: statusLabels[status],
+      healthLabel: healthLabels[health],
+      isActiveWriter: connection?.isActiveWriter === true
+    };
+  });
+}
+
 export function connectionCount(channel: Pick<ChannelDto, 'status' | 'connections'>) {
   const count = channel.connections ? channel.connections.filter((connection) => connection.status === 'connected').length : channel.status === 'connected' ? 1 : 0;
   return `${count} de 2 conectados`;

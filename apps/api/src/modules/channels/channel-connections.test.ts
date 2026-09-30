@@ -92,6 +92,43 @@ describe('physical channel lifecycle', () => {
     expect(refreshed.channel.connections!.find((record) => record.id === wahaId)).toMatchObject({ status: 'connected', health: 'healthy', eligible: true, verifiedPhoneNumber: '5547999990000', lastError: null });
     expect(f.channel().activeConnectionId).toBe(evo);
   });
+  it('preserves a positively confirmed pairing when Evolution responds successfully without owner information', async () => {
+    const f = fixture();
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+    await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    f.evolution.client.getInstanceIdentity.mockResolvedValue(null);
+    const refreshed = await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    expect(refreshed.channel.connections!.find((record) => record.id === wahaId)).toMatchObject({ status: 'connected', health: 'healthy', eligible: true });
+    expect(f.records.find((record) => record.id === evo)).toMatchObject({ verifiedPhoneNumber: '5547999990000' });
+    await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: evo });
+    expect(f.records.find((record) => record.id === evo)).toMatchObject({ verifiedPhoneNumber: '5547999990000' });
+    expect(f.records.find((record) => record.id === wahaId)).toMatchObject({ eligible: true });
+  });
+  it('does not qualify an unpaired secondary from a no-owner response and does not erase cached primary identity', async () => {
+    const f = fixture();
+    f.evolution.client.getInstanceIdentity.mockResolvedValue(null);
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+    for (let probe = 0; probe < 2; probe++) {
+      const refreshed = await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+      expect(refreshed.channel.connections!.find((record) => record.id === wahaId)).toMatchObject({ status: 'connected', health: 'degraded', eligible: false, lastError: 'PRIMARY_PHONE_UNVERIFIED' });
+      expect(f.records.find((record) => record.id === evo)).toMatchObject({ verifiedPhoneNumber: '5547999990000' });
+    }
+  });
+  it('revokes confirmed pairing when current WAHA owner changes while Evolution owner is absent', async () => {
+    const f = fixture();
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+    await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    f.evolution.client.getInstanceIdentity.mockResolvedValue(null);
+    f.client.getMe.mockResolvedValue({ id: '5511888882222@c.us' });
+    const changed = await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    expect(changed.channel.connections!.find((record) => record.id === wahaId)?.eligible).toBe(false);
+    expect(f.records.find((record) => record.id === wahaId).lastHealthyAt).toBeNull();
+    f.client.getMe.mockResolvedValue({ id: '5547999990000@c.us' });
+    for (let probe = 0; probe < 2; probe++) {
+      const refreshed = await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+      expect(refreshed.channel.connections!.find((record) => record.id === wahaId)?.eligible).toBe(false);
+    }
+  });
   it('preserves the last verified primary identity when a status probe reports it offline', async () => {
     const f = fixture();
     const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
@@ -110,14 +147,15 @@ describe('physical channel lifecycle', () => {
     const refreshed = await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
     expect(refreshed.channel.connections!.find((record) => record.id === wahaId)).toMatchObject({ status: 'connected', health: 'degraded', eligible: false, lastError: 'PRIMARY_PHONE_UNVERIFIED' });
   });
-  it('revokes old pairing proof on a fresh secondary QR so repeated probes cannot inherit eligibility', async () => {
+  it.each(['unavailable', 'without-owner'] as const)('revokes old pairing proof on a fresh secondary QR when primary is %s', async (primaryResponse) => {
     const f = fixture();
     const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
     await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
     f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'STOPPED', engine: {}, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
     await service.startQr({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
     f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'WORKING', engine: { engine: 'WPP' }, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
-    f.evolution.client.getInstanceIdentity.mockRejectedValue(new Error('primary unavailable'));
+    if (primaryResponse === 'unavailable') f.evolution.client.getInstanceIdentity.mockRejectedValue(new Error('primary unavailable'));
+    else f.evolution.client.getInstanceIdentity.mockResolvedValue(null);
     for (let probe = 0; probe < 2; probe++) {
       const refreshed = await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
       expect(refreshed.channel.connections!.find((record) => record.id === wahaId)).toMatchObject({ eligible: false, lastError: 'PRIMARY_PHONE_UNVERIFIED' });
