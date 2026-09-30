@@ -102,6 +102,21 @@ describe('Atendimento query/UI integration', () => {
     expect(container.querySelector('.message-thread')?.textContent).toContain('recuperado');
     expect(container.textContent).not.toContain('rede indisponível');
   });
+  it('shows a second actor note/tag after conversation.updated while keeping list/history reads independent', async () => {
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('.assistant-tabs button')!.click()); await flush();
+    const lists = vi.mocked(apiGetConversations).mock.calls.length; const histories = vi.mocked(apiGetConversationMessages).mock.calls.length;
+    vi.mocked(apiGetConversationContext).mockResolvedValue({ tags: [{ id: 'new-tag', name: 'Atualizada por outro agente', color: '#123456' }],
+      notes: [{ id: 'new-note', body: 'Nota adicionada por outro agente', createdAt: '2026-09-30T00:00:00Z', createdByName: 'Outro agente' }],
+      departments: [], boardStages: [], primaryBoardStage: null });
+    // Notes are shared by the contact, including another WhatsApp channel.
+    await act(async () => session.event({ type: 'conversation.updated', workspaceId: 'w', payload: { ...conversation('other-channel'), contactId: 'contact-c1' } }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); }); await flush();
+    expect(container.textContent).toContain('Nota adicionada por outro agente');
+    expect(container.textContent).toContain('Atualizada por outro agente');
+    expect(apiGetConversationContext).toHaveBeenCalledTimes(2);
+    expect(apiGetConversations).toHaveBeenCalledTimes(lists); expect(apiGetConversationMessages).toHaveBeenCalledTimes(histories);
+  });
   it('prefetch only fetches messages and never marks read or invokes assistant processing', async () => {
     await render(); const assistantCalls = vi.mocked(apiGetAssistantConversation).mock.calls.length;
     const button = container.querySelector<HTMLButtonElement>('button[aria-label^="Abrir conversa com c2"]')!;

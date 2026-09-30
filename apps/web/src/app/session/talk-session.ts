@@ -98,6 +98,8 @@ export class TalkSession {
   private ui = new Map<string, unknown>();
   private listeners = new Map<string, Set<() => void>>();
   private fences = new Set<Fence>();
+  private attentionReads = new Set<{ channel: string; dirty: boolean }>();
+  private contextContacts = new Map<string, string>();
   private histories = new Map<string, number>();
   private active: string | null = null;
   private prefetching = 0;
@@ -132,6 +134,7 @@ export class TalkSession {
       this.histories.delete(candidate);
       this.client.removeQueries({ queryKey: this.key('messages', candidate), exact: true });
       this.client.removeQueries({ queryKey: this.key('context', candidate), exact: true });
+      this.contextContacts.delete(candidate);
       // Drafts and scroll positions live in UI memory and survive history eviction.
     }
   }
@@ -140,6 +143,24 @@ export class TalkSession {
     return this.withEvents(read, (messages, event) => patchMessages(messages, event, id), messages => messages.slice(-MAX_MESSAGES));
   }
   readConversations(read: () => Promise<ConversationDto[]>, scope: InboxListScope = {}) { return this.withEvents(read, (rows, event) => patchConversations(rows, event, scope)); }
+  readContext<T>(id: string, read: () => Promise<T>, contactId = this.findConversation(id)?.contactId) {
+    if (contactId) this.contextContacts.set(id, contactId);
+    return read();
+  }
+  async readAttention(channel: string, read: () => Promise<number>) {
+    const fence = { channel, dirty: false }; this.attentionReads.add(fence);
+    const key = this.key('attention', channel);
+    try {
+      const count = await read();
+      if (this.disposed) throw new DOMException('Sessão encerrada.', 'AbortError');
+      if (!fence.dirty) return count;
+      const query = this.client.getQueryCache().find({ queryKey: key, exact: true });
+      if (query) this.scheduleInvalidation(query.queryHash);
+      // The HTTP snapshot may already include the frame. Never replay a delta
+      // over it: keep the patched count, then reconcile once this read settles.
+      return this.client.getQueryData<number>(key) ?? count;
+    } finally { this.attentionReads.delete(fence); }
+  }
   private async withEvents<T>(read: () => Promise<T>, patch: (data: T, event: RealtimeEvent) => T, normalize = (data: T) => data): Promise<T> {
     const fence: Fence = { events: [] }; this.fences.add(fence);
     try {
@@ -156,6 +177,13 @@ export class TalkSession {
     }
     const selected = this.readUI<ConversationDto | null>('selectedSnapshot', null);
     return selected?.id === id ? selected : undefined;
+  }
+  private invalidateContext(contactId: string | null, conversationId?: string) {
+    for (const query of this.client.getQueryCache().findAll({ queryKey: this.key('context') })) {
+      const id = String(query.queryKey[3]);
+      const knownContact = this.contextContacts.get(id) ?? this.findConversation(id)?.contactId;
+      if (id === conversationId || contactId && knownContact === contactId) this.scheduleInvalidation(query.queryHash);
+    }
   }
   event(event: RealtimeEvent) {
     if (event.workspaceId !== this.workspaceId || this.disposed) return;
@@ -185,10 +213,14 @@ export class TalkSession {
       for (const query of this.client.getQueryCache().findAll({ queryKey: this.key('attention') })) {
         const channel = query.queryKey[3];
         const matches = (row: ConversationDto) => channel === 'all' || !channel || row.channelId === channel;
-        if (!previous) { if (matches(next)) this.scheduleInvalidation(query.queryHash); continue; }
+        const dirtyRead = () => { for (const fence of this.attentionReads) if (fence.channel === channel) fence.dirty = true; };
+        if (!previous) { if (matches(next)) { dirtyRead(); this.scheduleInvalidation(query.queryHash); } continue; }
         const delta = Number(matches(next) && needsHumanAttention(next)) - Number(matches(previous) && needsHumanAttention(previous));
-        if (delta) this.client.setQueryData<number>(query.queryKey, count => count === undefined ? count : Math.max(0, count + delta));
+        if (delta) { dirtyRead(); this.client.setQueryData<number>(query.queryKey, count => count === undefined ? count : Math.max(0, count + delta)); }
       }
+      // Notes are contact-scoped while tags are conversation-scoped. Their
+      // writes publish conversation.updated, so reconcile both affected scopes.
+      this.invalidateContext(next.contactId, next.id);
       const selected = this.readUI<ConversationDto | null>('selectedSnapshot', null);
       if (selected?.id === next.id) this.writeUI('selectedSnapshot', next, null);
     }
@@ -199,10 +231,7 @@ export class TalkSession {
       if (event.type === 'contact.updated' && selected?.contactId === contactId) {
         this.writeUI('selectedSnapshot', { ...selected, contactName: event.payload.name, contactPhone: event.payload.phone }, null);
       }
-      for (const query of this.client.getQueryCache().findAll({ queryKey: this.key('context') })) {
-        const conversation = this.findConversation(String(query.queryKey[3]));
-        if (contactId && conversation?.contactId === contactId) this.scheduleInvalidation(query.queryHash);
-      }
+      this.invalidateContext(contactId);
     }
     if (event.type === 'channel.updated' || event.type === 'channel.deleted') {
       this.client.setQueryData<ChannelDto[]>(this.key('channels'), rows => rows ? event.type === 'channel.deleted'
@@ -256,6 +285,6 @@ export class TalkSession {
     this.disposed = true; clearTimeout(this.invalidationTimer); clearTimeout(this.maxInvalidationTimer); this.pendingInvalidations.clear();
     for (const timer of this.prefetchTimers.values()) clearTimeout(timer);
     this.prefetchTimers.clear(); void this.client.cancelQueries(); this.client.clear(); this.blobs.clear();
-    this.ui.clear(); this.histories.clear(); this.fences.clear(); this.listeners.clear();
+    this.ui.clear(); this.histories.clear(); this.fences.clear(); this.attentionReads.clear(); this.contextContacts.clear(); this.listeners.clear();
   }
 }

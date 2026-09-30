@@ -608,7 +608,7 @@ function InboxPageContent() {
   const messagesQuery = useQuery({ queryKey: messagesKey, enabled: Boolean(selectedConversationId),
     queryFn: ({ signal }) => session.readMessages(selectedConversationId!, () => apiGetConversationMessages(selectedConversationId!, getFreshToken, signal)) });
   const contextQuery = useQuery({ queryKey: contextKey, enabled: Boolean(selectedConversationId && !selectedConversationSnapshot?.isGroup),
-    queryFn: ({ signal }) => apiGetConversationContext(selectedConversationId!, getFreshToken, signal) });
+    queryFn: ({ signal }) => session.readContext(selectedConversationId!, () => apiGetConversationContext(selectedConversationId!, getFreshToken, signal)) });
   const channelsQuery = useQuery({ queryKey: session.key('channels'), staleTime: CATALOG_STALE_MS,
     queryFn: ({ signal }) => apiGetChannels(getFreshToken, signal) });
   const tagsQuery = useQuery({ queryKey: session.key('tags'), staleTime: CATALOG_STALE_MS,
@@ -617,7 +617,7 @@ function InboxPageContent() {
   const quickRepliesQuery = useQuery({ queryKey: quickRepliesKey, enabled: showQuickReplies, staleTime: CATALOG_STALE_MS,
     queryFn: ({ signal }) => apiGetQuickReplies(getFreshToken, signal) });
   const attentionQuery = useQuery({ queryKey: session.key('attention', selectedChannelFilter),
-    queryFn: ({ signal }) => apiGetAttentionCount(getFreshToken, selectedChannelFilter === 'all' ? undefined : selectedChannelFilter, signal) });
+    queryFn: ({ signal }) => session.readAttention(selectedChannelFilter, () => apiGetAttentionCount(getFreshToken, selectedChannelFilter === 'all' ? undefined : selectedChannelFilter, signal)) });
   const conversations = listQuery.data ?? EMPTY_CONVERSATIONS;
   const messages = messagesQuery.data ?? EMPTY_MESSAGES;
   const messagesConversationId = messagesQuery.data ? selectedConversationId : null;

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { QueryObserver } from '@tanstack/react-query';
 import type { ConversationDto, MessageDto, RealtimeEvent } from '@prymeira-talk/shared';
 import { TalkSession, conversationMatches, patchConversations } from './talk-session';
 
@@ -92,6 +93,51 @@ describe('session query cache', () => {
 });
 
 describe('realtime list membership and reconciliation', () => {
+  it.each([0, 1])('retains a patched attention count when an in-flight HTTP snapshot returns %i, then reconciles without double counting', async snapshot => {
+    vi.useFakeTimers(); const cache = session();
+    const key = cache.key('attention', 'all');
+    cache.client.setQueryData(cache.key('conversations', 'all', 'all', ''), [conversation('c1')]);
+    cache.client.setQueryData(key, 0);
+    let finish!: (count: number) => void;
+    const read = vi.fn().mockImplementationOnce(() => new Promise<number>(resolve => { finish = resolve; })).mockResolvedValue(1);
+    const observer = new QueryObserver(cache.client, { queryKey: key, queryFn: () => cache.readAttention('all', read) });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      const pending = observer.refetch();
+      cache.event(event('conversation.updated', conversation('c1', { activeAgentSessionStatus: 'handoff_requested' })));
+      expect(cache.client.getQueryData(key)).toBe(1);
+      finish(snapshot); await pending;
+      expect(cache.client.getQueryData(key)).toBe(1);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(read).toHaveBeenCalledTimes(2); expect(cache.client.getQueryData(key)).toBe(1);
+    } finally { unsubscribe(); }
+  });
+  it('reconciles active note/tag context and invalidates inactive contexts for the same contact without rereading lists/messages', async () => {
+    vi.useFakeTimers(); const cache = session(); const contactId = 'shared-contact';
+    const list = cache.key('conversations', 'all', 'all', '');
+    const first = conversation('c1', { contactId }); const second = conversation('c2', { contactId, channelId: 'second-channel' });
+    cache.client.setQueryData(list, [first, second, conversation('c3')]);
+    for (const id of ['c1', 'c2', 'c3']) {
+      await cache.client.fetchQuery({ queryKey: cache.key('context', id), queryFn: () => cache.readContext(id, async () => ({ notes: [], tags: [] })) });
+    }
+    // Its context remains cached even after the second channel drops out of a list.
+    cache.client.setQueryData(list, [first, conversation('c3')]);
+    const messagesKey = cache.key('messages', 'c1'); cache.client.setQueryData(messagesKey, [message('old')]);
+    const messageTime = cache.client.getQueryState(messagesKey)!.dataUpdatedAt;
+    const read = vi.fn(async () => ({ notes: ['second actor note'], tags: ['second actor tag'] }));
+    const observer = new QueryObserver(cache.client, { queryKey: cache.key('context', 'c1'), queryFn: () => cache.readContext('c1', read) });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      cache.event(event('conversation.updated', first)); cache.event(event('conversation.updated', first));
+      await vi.advanceTimersByTimeAsync(200);
+      expect(read).toHaveBeenCalledOnce();
+      expect(cache.client.getQueryData(cache.key('context', 'c1'))).toEqual({ notes: ['second actor note'], tags: ['second actor tag'] });
+      expect(cache.client.getQueryState(cache.key('context', 'c2'))?.isInvalidated).toBe(true);
+      expect(cache.client.getQueryState(cache.key('context', 'c3'))?.isInvalidated).toBe(false);
+      expect(cache.client.getQueryState(list)?.isInvalidated).toBe(false);
+      expect(cache.client.getQueryState(messagesKey)!.dataUpdatedAt).toBe(messageTime);
+    } finally { unsubscribe(); }
+  });
   it('inserts/moves/removes known conversation memberships including hidden search results', () => {
     const row = conversation('new', { manualMarked: true, unreadCount: 1, aiControlStatus: 'human_controlled', contactName: 'Maria', hiddenUntilReply: true });
     expect(patchConversations([], event('conversation.updated', row))).toEqual([]);
