@@ -300,6 +300,11 @@ model Channel {
   @@index([workspaceId, status])
   @@index([historyImportStatus, historyImportNextAt])
   @@map("channels")
+  canonicalAddresses CanonicalAddress[]
+  canonicalChats CanonicalChat[]
+  canonicalObservations CanonicalObservation[]
+  canonicalAliases CanonicalNativeAlias[]
+  @@unique([workspaceId, id, provider])
 }
 
 model ChannelConnection {
@@ -329,6 +334,9 @@ model ChannelConnection {
   @@unique([workspaceId, provider, sessionName])
   @@index([status, health, lastCheckedAt])
   @@map("channel_connections")
+  canonicalObservations CanonicalObservation[]
+  canonicalAliases CanonicalNativeAlias[]
+  @@unique([workspaceId, channelId, provider, id])
 }
 
 model Contact {
@@ -474,6 +482,10 @@ model Conversation {
   @@index([workspaceId, aiControlUpdatedById])
   @@index([workspaceId, activeAgentSessionId])
   @@map("conversations")
+  canonicalMembers CanonicalChatMember[]
+  canonicalOperations CanonicalChat[]
+  canonicalIdentities CanonicalMessageIdentity[]
+  @@unique([workspaceId, channelId, id])
 }
 
 model Message {
@@ -506,6 +518,8 @@ model Message {
   @@index([workspaceId, conversationId, createdAt])
   @@index([workspaceId, conversationId, ingestedAt(sort: Desc), createdAt(sort: Desc)], map: "messages_assistant_context_order_idx")
   @@map("messages")
+  canonicalIdentities CanonicalMessageIdentity[]
+  @@unique([workspaceId, conversationId, id])
 }
 
 model Tag {
@@ -1416,4 +1430,161 @@ model CampaignProspectingReservation {
   @@unique([workspaceId, recipientId])
   @@index([workspaceId, campaignId])
   @@map("campaign_prospecting_reservations")
+}
+
+// Canonical writer is opt-in. Existing writers and global native-ID indexes remain.
+// Unbounded native IDs/tuples are never B-tree keys. Hashes are non-unique buckets;
+// the transactional store compares every complete tuple under its workspace lock.
+model CanonicalAddress {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  redirectId String? @map("redirect_id") @db.Uuid
+  state String @default("active")
+  reviewReason String? @map("review_reason")
+  createdAt DateTime @default(now()) @map("created_at")
+  channel Channel @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  redirect CanonicalAddress? @relation("AddressRedirect", fields: [workspaceId, channelId, redirectId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  redirected CanonicalAddress[] @relation("AddressRedirect")
+  aliases CanonicalAddressAlias[]
+  chats CanonicalChat[]
+  senders CanonicalMessageIdentity[]
+  @@unique([workspaceId, channelId, id])
+  @@map("canonical_addresses")
+}
+model CanonicalAddressAlias {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  addressId String @map("address_id") @db.Uuid
+  address String @db.VarChar(100)
+  addressIdentity CanonicalAddress @relation(fields: [workspaceId, channelId, addressId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  @@unique([workspaceId, channelId, address])
+  @@map("canonical_address_aliases")
+}
+model CanonicalAddressEvidence {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  observationId String @map("observation_id") @db.Uuid
+  lid String @db.VarChar(100)
+  pn String @db.VarChar(100)
+  role String
+  source String
+  observation CanonicalObservation @relation(fields: [workspaceId, channelId, observationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  @@unique([observationId, lid, pn, role, source])
+  @@map("canonical_address_evidence")
+}
+model CanonicalChat {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  addressId String @map("address_id") @db.Uuid
+  state String @default("active")
+  reviewReason String? @map("review_reason")
+  operationConversationId String? @map("operation_conversation_id") @db.Uuid
+  revision Int @default(0)
+  channel Channel @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  address CanonicalAddress @relation(fields: [workspaceId, channelId, addressId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  operationConversation Conversation? @relation(fields: [workspaceId, channelId, operationConversationId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  members CanonicalChatMember[]
+  messages CanonicalMessageIdentity[]
+  @@unique([workspaceId, channelId, id])
+  @@unique([workspaceId, channelId, addressId])
+  @@map("canonical_chats")
+}
+model CanonicalChatMember {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  chatId String @map("chat_id") @db.Uuid
+  conversationId String @map("conversation_id") @db.Uuid
+  source String
+  chat CanonicalChat @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  @@unique([workspaceId, channelId, chatId, conversationId])
+  @@map("canonical_chat_members")
+}
+model CanonicalMessageIdentity {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  chatId String @map("chat_id") @db.Uuid
+  senderAddressId String? @map("sender_address_id") @db.Uuid
+  conversationId String @map("conversation_id") @db.Uuid
+  messageId String @unique @map("message_id") @db.Uuid
+  identityFormat String @map("identity_format")
+  providerScope String @map("provider_scope")
+  rawId String @map("raw_id")
+  direction MessageDirection
+  tupleHash String @map("tuple_hash") @db.VarChar(64)
+  fullTuple Json @map("full_tuple")
+  state String @default("active")
+  currentRevision Json? @map("current_revision")
+  initialMode String @map("initial_mode")
+  chat CanonicalChat @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  sender CanonicalAddress? @relation(fields: [workspaceId, channelId, senderAddressId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  conversation Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  message Message @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: Cascade)
+  aliases CanonicalNativeAlias[]
+  observations CanonicalObservation[]
+  @@unique([workspaceId, channelId, id])
+  @@index([workspaceId, channelId, tupleHash])
+  @@index([workspaceId, channelId, chatId])
+  @@map("canonical_message_identities")
+}
+model CanonicalNativeAlias {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  channelProvider ChannelProvider @map("channel_provider")
+  provider String
+  connectionProvider ChannelConnectionProvider? @map("connection_provider")
+  connectionId String? @map("connection_id") @db.Uuid
+  identityId String? @map("identity_id") @db.Uuid
+  tupleHash String @map("tuple_hash") @db.VarChar(64)
+  fullTuple Json @map("full_tuple")
+  state String @default("unresolved")
+  channel Channel @relation(fields: [workspaceId, channelId, channelProvider], references: [workspaceId, id, provider], onDelete: Cascade)
+  connection ChannelConnection? @relation(fields: [workspaceId, channelId, connectionProvider, connectionId], references: [workspaceId, channelId, provider, id], onDelete: NoAction)
+  identity CanonicalMessageIdentity? @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  observations CanonicalObservation[]
+  @@unique([workspaceId, channelId, id])
+  @@index([workspaceId, channelId, tupleHash])
+  @@map("canonical_native_aliases")
+}
+model CanonicalObservation {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  channelProvider ChannelProvider @map("channel_provider")
+  provider String
+  connectionProvider ChannelConnectionProvider? @map("connection_provider")
+  connectionId String? @map("connection_id") @db.Uuid
+  identityId String? @map("identity_id") @db.Uuid
+  aliasId String? @map("alias_id") @db.Uuid
+  receiptHash String @map("receipt_hash") @db.VarChar(64)
+  receiptTuple Json @map("receipt_tuple")
+  providerEventId String? @map("provider_event_id")
+  kind String
+  eventType String @map("event_type")
+  mode String
+  source String?
+  sessionName String @map("session_name")
+  lifecycleGeneration Int @map("lifecycle_generation")
+  receivedAt DateTime @map("received_at")
+  currentRevision Json? @map("current_revision")
+  sourceOrder Json @map("source_order")
+  payload Json
+  state String @default("held")
+  reason String?
+  channel Channel @relation(fields: [workspaceId, channelId, channelProvider], references: [workspaceId, id, provider], onDelete: Cascade)
+  connection ChannelConnection? @relation(fields: [workspaceId, channelId, connectionProvider, connectionId], references: [workspaceId, channelId, provider, id], onDelete: NoAction)
+  identity CanonicalMessageIdentity? @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  alias CanonicalNativeAlias? @relation(fields: [workspaceId, channelId, aliasId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  evidence CanonicalAddressEvidence[]
+  @@unique([workspaceId, channelId, id])
+  @@index([workspaceId, channelId, receiptHash])
+  @@index([workspaceId, channelId, state])
+  @@map("canonical_observations")
 }
