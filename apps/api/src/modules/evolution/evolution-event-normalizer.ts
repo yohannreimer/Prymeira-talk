@@ -1,6 +1,6 @@
 import type { AddressMappingEvidence, MediaSourceDescriptor, NormalizationResult, SourceOrder, TrustedMessagingContext } from '../messaging/normalized-event.js';
 import { normalizeChatAddress, record, string, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
-import { attachmentPresentation, extractMessageContent, extractMessageEdit, extractPushName, extractQrCode, isEditProtocolType, mapEvolutionMessageStatus, normalizeEvolutionEvent, unwrapMessage } from './evolution-normalizer.js';
+import { attachmentPresentation, extractMessageContent, extractMessageEdit, extractPushName, extractQrCode, hasRecordPath, isEditProtocolType, mapEvolutionMessageStatus, normalizeEvolutionEvent, unwrapMessage } from './evolution-normalizer.js';
 import { extractEncryptedMessageEdit, isEncryptedControlEnvelope } from './evolution-message-edit.js';
 
 function keyOf(value: unknown): WhatsAppMessageKey {
@@ -74,9 +74,21 @@ export function normalizeEvolutionWebhook(context: TrustedMessagingContext, inpu
   if (eventName !== 'messages.upsert') return { kind: 'ignored', reason: 'unsupported_event' };
   if (!key.nativeId || !key.chatAddress || !key.direction) return { kind: 'invalid', reason: 'invalid_message_key' };
   if (key.chatAddress.endsWith('@g.us') && !key.senderParticipant) key.senderParticipant = normalizeChatAddress(data.participant);
-  const content = extractMessageContent(data.message, data.messageType);
+  let content = extractMessageContent(data.message, data.messageType);
   const kinds = { audioMessage: 'audio', imageMessage: 'image', stickerMessage: 'sticker', videoMessage: 'video', documentMessage: 'document' } as const;
-  const kind = Object.entries(kinds).find(([name]) => message[name] !== undefined)?.[1];
+  const mediaField = (Object.keys(kinds) as Array<keyof typeof kinds>).find(name => hasRecordPath(message, [name]))
+    ?? (typeof data.messageType === 'string' && Object.hasOwn(kinds, data.messageType) ? data.messageType as keyof typeof kinds : null);
+  const kind = mediaField ? kinds[mediaField] : undefined;
+  // The legacy helper intentionally requires URL/MIME for several media types.
+  // New canonical observations retain a known media type while download data is pending.
+  if (kind && content.type === 'system' && content.body === 'Mensagem não reconhecida') {
+    const payload = record(message[mediaField!]);
+    const caption = string(payload.caption);
+    const body = kind === 'audio' ? 'Áudio recebido' : kind === 'sticker' ? 'Figurinha recebida'
+      : kind === 'image' ? caption ?? 'Imagem recebida' : kind === 'video' ? caption ?? 'Vídeo recebido'
+      : string(payload.fileName) ?? caption ?? 'Arquivo recebido';
+    content = { ...content, type: kind === 'audio' ? 'audio' : kind === 'image' || kind === 'sticker' ? 'image' : 'file', body, preview: body };
+  }
   const media: MediaSourceDescriptor | null = kind ? { kind, hasMedia: true, url: content.mediaUrl, state: content.mediaUrl ? 'available' : 'pending' } : null;
   return { kind: 'accepted', event: { ...base, kind: 'message', key, content, attachment: attachmentPresentation(data.message), media,
     currentRevision: null, pushName: extractPushName(data), source: null, order: order(data.messageTimestamp, true) } };

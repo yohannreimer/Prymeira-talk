@@ -19,6 +19,39 @@ describe('Evolution shared event adapter', () => {
     expect(result.key).toMatchObject({ rawId: 'A_B', chatAddress: '777@lid', senderParticipant: '' });
     expect(result.content).toMatchObject({ type: 'text', body: 'hello' });
   });
+  it.each([
+    ['audioMessage', { seconds: 0 }, 'audio', 'audio', 'Áudio recebido'],
+    ['audioMessage', { ptt: true, seconds: 3 }, 'audio', 'audio', 'Áudio recebido'],
+    ['imageMessage', { caption: 'Foto pendente' }, 'image', 'image', 'Foto pendente'],
+    ['videoMessage', { caption: 'Vídeo pendente' }, 'video', 'file', 'Vídeo pendente'],
+    ['documentMessage', { fileName: 'report.pdf', caption: 'Legenda' }, 'document', 'file', 'report.pdf'],
+    ['stickerMessage', {}, 'sticker', 'image', 'Figurinha recebida']
+  ])('preserves pending %s content independently of URL and MIME', (field, payload, kind, type, body) => {
+    const result = normalize({ key, message: { [field as string]: payload } });
+    if (result.kind !== 'message') throw new Error('Expected message');
+    expect(result.content).toMatchObject({ type, body, preview: body, mediaUrl: null });
+    expect(result.media).toEqual({ kind, hasMedia: true, url: null, state: 'pending' });
+    expect(result.attachment).not.toHaveProperty('mimeType');
+    if (field === 'audioMessage') expect(result.attachment.durationSeconds).toBe((payload as { seconds: number }).seconds);
+    if (field === 'documentMessage') expect(result.attachment).toMatchObject({ fileName: 'report.pdf', caption: 'Legenda' });
+  });
+  it.each([
+    ['audioMessage', 'audio', 'Áudio recebido'], ['imageMessage', 'image', 'Imagem recebida'],
+    ['videoMessage', 'file', 'Vídeo recebido'], ['documentMessage', 'file', 'Arquivo recebido'],
+    ['stickerMessage', 'image', 'Figurinha recebida']
+  ])('preserves an explicit pending %s type without a media record', (messageType, type, body) => {
+    const result = normalize({ key, messageType });
+    if (result.kind !== 'message') throw new Error('Expected message');
+    expect(result.content).toMatchObject({ type, body, preview: body });
+    expect(result.media).toMatchObject({ hasMedia: true, url: null, state: 'pending' });
+  });
+  it('retains existing available attachment content and metadata', () => {
+    const result = normalize({ key, message: { documentMessage: { url: 'https://media.example/report.pdf', mimetype: 'application/pdf', fileName: 'report.pdf', caption: 'Legenda' } } });
+    if (result.kind !== 'message') throw new Error('Expected message');
+    expect(result.content).toMatchObject({ type: 'file', body: 'report.pdf', mediaUrl: 'https://media.example/report.pdf' });
+    expect(result.attachment).toEqual({ fileName: 'report.pdf', caption: 'Legenda', mimeType: 'application/pdf' });
+    expect(result.media?.state).toBe('available');
+  });
   it('retains Meta bridge native IDs without asserting a WhatsApp stanza', () => {
     const bridge = { ...context, channelProvider: 'meta' as const, connectionId: null };
     const result = normalizeEvolutionWebhook(bridge, { event: 'MESSAGES_UPSERT', data: { key: { ...key, id: 'wamid.opaque' }, message: { conversation: 'hello' } } });

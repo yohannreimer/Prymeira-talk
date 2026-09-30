@@ -45,7 +45,11 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
   }
   if (eventName === 'message.revoked') {
     // WPP before/after are short keys; raw refId/id retain full target/action identity.
-    const action = parseWahaMessageKey(raw.id ?? payload.after ?? payload.id);
+    const actionParticipant = [raw.author, payload.participant].find(value => {
+      const address = normalizeChatAddress(value);
+      return address !== null && !address.endsWith('@g.us');
+    });
+    const action = parseWahaMessageKey(raw.id ?? payload.after ?? payload.id, actionParticipant);
     const target = scopedTarget(raw.refId ?? payload.before ?? payload.revokedMessageId, action.nativeChatAddress);
     if (!target.rawId && !target.nativeId) return { kind: 'invalid', reason: 'invalid_revoke' };
     return { kind: 'accepted', event: { ...base, kind: 'revoke', target, action, order: { ...unknownOrder } } };
@@ -67,7 +71,7 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
   // Always keep the exact native API identifier as an alias, even when a structured key is stronger.
   key.nativeId = string(payload.id) ?? key.nativeId;
   if (!key.chatAddress) {
-    key.nativeChatAddress = serialized(raw.chatId ?? (payload.fromMe === true ? payload.to : payload.from));
+    key.nativeChatAddress = serialized(raw.chatId ?? (payload.fromMe === true ? payload.to : payload.fromMe === false ? payload.from : null));
     key.chatAddress = normalizeChatAddress(key.nativeChatAddress);
     if (key.chatAddress && !key.chatAddress.endsWith('@g.us')) key.senderParticipant = '';
   }

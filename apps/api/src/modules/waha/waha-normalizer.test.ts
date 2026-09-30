@@ -156,6 +156,27 @@ describe('WAHA 2026.9.1 WPP normalization', () => {
   it('rejects WAHA observations for a logical Meta channel', () => {
     expect(normalizeWahaEvent({ ...context, channelProvider: 'meta' }, message()).kind).toBe('invalid');
   });
+  it('does not choose from/to for a raw message id without proven direction', () => {
+    expect(normalizeWahaEvent(context, message({}, { id: 'A_B', fromMe: undefined, from: '5511999990000@c.us', to: '5547999990000@c.us' })).kind).toBe('invalid');
+  });
+  it.each([[false, '551199990000@s.whatsapp.net', 'inbound'], [true, '554799990000@s.whatsapp.net', 'outbound']])('uses only the proven %s direction for raw-id chat fallback', (fromMe, chatAddress, direction) => {
+    const result = content(message({}, { id: 'A_B', fromMe, from: '5511999990000@c.us', to: '5547999990000@c.us' }));
+    expect(result.key).toMatchObject({ rawId: 'A_B', chatAddress, direction });
+  });
+  it('accepts independent raw.chatId evidence while leaving absent direction unresolved', () => {
+    const result = content(message({ chatId: '777@lid' }, { id: 'A_B', fromMe: undefined, from: '5511999990000@c.us' }));
+    expect(result.key).toMatchObject({ chatAddress: '777@lid', direction: null });
+  });
+  it('uses a structured key independently of absent top-level direction', () => {
+    const result = content(message({ id: { id: 'A_B', remote: '777@lid', fromMe: true } }, { id: 'native-observation', fromMe: undefined, from: '5511999990000@c.us' }));
+    expect(result.key).toMatchObject({ rawId: 'A_B', chatAddress: '777@lid', direction: 'outbound' });
+  });
+  it.each([{ author: '777@lid' }, { participant: '777@lid' }])('uses explicit revoke author evidence for the action only: %j', evidence => {
+    const result = event({ event: 'message.revoked', payload: { ...('participant' in evidence ? evidence : {}), _data: { ...('author' in evidence ? evidence : {}), id: 'true_123-456@g.us_REVOKE_2_777@lid', refId: 'A_B' } } });
+    if (result.kind !== 'revoke') throw new Error('Expected revoke');
+    expect(result.action).toMatchObject({ rawId: 'REVOKE_2', direction: 'outbound', senderParticipant: '777@lid' });
+    expect(result.target).toMatchObject({ rawId: 'A_B', direction: null, senderParticipant: null });
+  });
   it('normalizes session control without phantom messages', () => {
     expect(event({ event: 'session.status', payload: { status: 'WORKING' } })).toMatchObject({ kind: 'control', control: 'connection', status: 'connected' });
   });
