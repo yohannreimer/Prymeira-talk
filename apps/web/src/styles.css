@@ -6898,8 +6898,27 @@ select:disabled {
 .chat-drop-overlay { position: absolute; inset: 9px; z-index: 25; display: flex; align-items: center; justify-content: center; gap: 12px; border: 2px dashed var(--color-brand-600); border-radius: 16px; background: rgba(232, 244, 235, .93); color: var(--color-brand-700); font-size: 16px; font-weight: 750; pointer-events: none; }
 
 .chat-header {
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--color-border);
   background: rgba(248, 250, 247, 0.82);
+}
+
+.chat-header .conversation-ai-control {
+  flex-wrap: wrap;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.conversation-ai-control .status-badge {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.conversation-ai-control .conversation-campaign-source {
+  flex: 0 1 auto;
 }
 
 .status-open {

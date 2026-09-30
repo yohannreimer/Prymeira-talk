@@ -1,3 +1,6 @@
+import { lockProspectingConversation } from "../prospecting/prospecting-lock.js";
+import { reserveProspectingOutbound, adoptProspectingOutbound, dispatchProspectingOutbound, confirmProspectingOutbound, cancelProspectingOutbound } from "../prospecting/prospecting-delivery.js";
+import { stopProspectingConversation, autonomousAgentAllowed, releaseEndedProspectingBinding, findProspectingReservation } from "../prospecting/prospecting-policy.js";
 import type { ConversationStatus, Prisma, PrismaClient } from "@prisma/client";
 import { createHash } from 'node:crypto';
 import { prepareVoiceRecording } from './outbound-audio.js';
@@ -86,6 +89,7 @@ function isDefinitiveProviderRejection(error: unknown) {
 }
 
 export interface ConversationRecord {
+  prospectingOrigin?: { campaign: { id: string; name: string } } | null;
   id: string;
   workspaceId: string;
   channelId: string;
@@ -179,6 +183,7 @@ const inboxPrivateReviewWhere: Prisma.ConversationWhereInput = {
 };
 
 const conversationDtoInclude = {
+  prospectingOrigin: { select: { campaign: { select: { id: true, name: true } } } },
   assignedUser: { select: { displayName: true } },
   channel: { select: { displayName: true, phoneNumber: true, provider: true } },
   contact: { select: { name: true, phone: true, isGroup: true } },
@@ -510,6 +515,7 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
     hiddenUntilReply: Boolean(record.hiddenUntilReply),
     priority: record.priority,
     aiControlStatus: record.aiControlStatus ?? "agent_allowed",
+    ...(record.prospectingOrigin !== undefined ? { sourceCampaign: record.prospectingOrigin?.campaign ?? null } : {}),
     activeAgentName: record.activeAgentSession?.agent?.name ?? null,
     activeAgentSessionStatus: record.activeAgentSession?.status ?? null,
     handoffReason: record.activeAgentSession?.handoffReason ?? null,
@@ -707,24 +713,7 @@ export function createConversationsService(
   }): Promise<ConversationRecord> {
     const conversation = await prisma.conversation.findUnique({
       where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
-      include: {
-        assignedUser: { select: { displayName: true } },
-        channel: { select: { displayName: true, phoneNumber: true, provider: true } },
-        contact: { select: { name: true, phone: true } },
-        department: { select: { name: true } },
-        activeAgentSession: {
-          select: {
-            status: true,
-            handoffReason: true,
-            handoffActionCompletedAt: true,
-            agent: { select: { name: true } }
-          }
-        },
-        inboxTriage: {
-          select: { manualMarkedAt: true, decision: true, reason: true, anchorMessageId: true, dismissedMessageId: true }
-        },
-        tags: { include: { tag: true } }
-      }
+      include: conversationDtoInclude
     });
 
     assertConversationRecord(conversation);
@@ -880,14 +869,34 @@ export function createConversationsService(
           : "file"
         : "text";
 
+      const prospecting = input.metadata?.source === 'ai_agent' ? await findProspectingReservation(prisma, input.workspaceId, input.conversationId) : null;
+      const prospectingPending = prospecting ? input.reservedMessageId ? await adoptProspectingOutbound(prisma, {
+        workspaceId: input.workspaceId, conversationId: input.conversationId, messageId: input.reservedMessageId, agentId: prospecting.agentId,
+        generation: typeof input.metadata?.prospectingGeneration === 'string' ? input.metadata.prospectingGeneration : prospecting.generation,
+        type: messageType === 'image' ? 'image' : messageType === 'file' ? 'file' : 'text', body: messageBody, mediaUrl: input.attachment?.mediaUrl, metadata: input.metadata
+      }) : await reserveProspectingOutbound(prisma, {
+        workspaceId: input.workspaceId, conversationId: input.conversationId, agentId: prospecting.agentId,
+        generation: typeof input.metadata?.prospectingGeneration === 'string' ? input.metadata.prospectingGeneration : prospecting.generation,
+        type: messageType === 'image' ? 'image' : messageType === 'file' ? 'file' : 'text', body: messageBody,
+        mediaUrl: input.attachment?.mediaUrl, metadata: input.metadata }) : null;
+      const reservedMessageId = prospectingPending?.id ?? input.reservedMessageId;
       let providerSend: { providerMessageId: string | null; raw: unknown } | null = null;
       let providerStarted = false;
-      const callProvider = async <T>(operation: () => Promise<T>): Promise<T> => {
-        providerStarted = true;
+      let confirmedProspectingMessage: Awaited<ReturnType<typeof dispatchProspectingOutbound>> | null = null;
+      const callProvider = async (operation: () => Promise<{ providerMessageId: string | null; raw: unknown }>) => {
+        if (input.metadata?.source === "ai_agent" && await findProspectingReservation(prisma, input.workspaceId, input.conversationId) && !await autonomousAgentAllowed(prisma, { workspaceId: input.workspaceId, conversationId: input.conversationId, agentId: typeof input.metadata.agentId === "string" ? input.metadata.agentId : undefined, expectedGeneration: typeof input.metadata.prospectingGeneration === "string" ? input.metadata.prospectingGeneration : undefined })) { if (prospectingPending) await cancelProspectingOutbound(prisma, prospectingPending.id); throw new Error("Prospecting authorization changed before delivery."); }
         try {
+          if (prospectingPending) {
+            confirmedProspectingMessage = await dispatchProspectingOutbound(prisma, prospectingPending, async () => {
+              providerStarted = true;
+              return operation();
+            });
+            return { providerMessageId: confirmedProspectingMessage.providerMessageId, raw: null };
+          }
+          providerStarted = true;
           return await operation();
         } catch (error) {
-          if (input.reservedMessageId && !isDefinitiveProviderRejection(error)) {
+          if (reservedMessageId && providerStarted && !isDefinitiveProviderRejection(error)) {
             throw new OutboundDeliveryUncertainError();
           }
           throw error;
@@ -1031,8 +1040,8 @@ export function createConversationsService(
           sentByUserId: input.sentByUserId
       };
       try {
-        const message = input.reservedMessageId
-          ? await prisma.message.update!({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.reservedMessageId } }, data: messageData })
+        const message = prospectingPending ? confirmedProspectingMessage ?? await confirmProspectingOutbound(prisma, prospectingPending.id, providerSend?.providerMessageId) : reservedMessageId
+          ? await prisma.message.update!({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: reservedMessageId } }, data: messageData })
           : await prisma.message.create({ data: messageData });
 
         const updatedConversation = await prisma.conversation.update({
@@ -1099,6 +1108,8 @@ export function createConversationsService(
 
       const aiControlUpdatedAt = new Date();
       const updatedConversation = (await prisma.$transaction(async (tx) => {
+        await lockProspectingConversation(tx, input.workspaceId, input.conversationId);
+        if (input.status === "human_controlled") await stopProspectingConversation(tx, input.workspaceId, input.conversationId, "human_controlled");
         if (input.status === "human_controlled" && conversation.activeAgentSessionId) {
           await tx.aiAgentSession.update({
             where: {
@@ -1222,6 +1233,7 @@ export function createConversationsService(
       }
 
       if (input.action === "assign_current_user") {
+        await stopProspectingConversation(prisma, input.workspaceId, input.conversationId, "human_assignment");
         const user = await resolveCurrentUser(input);
 
         conversation = await prisma.conversation.update({
@@ -1411,6 +1423,7 @@ export function createConversationsService(
       }
 
       if (input.action === "close_conversation") {
+        await stopProspectingConversation(prisma, input.workspaceId, input.conversationId, "conversation_closed");
         conversation = await prisma.conversation.update({
           where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
           data: {
@@ -1454,6 +1467,8 @@ export function createConversationsService(
       }
 
       await prisma.$transaction(async (tx) => {
+        await stopProspectingConversation(tx, input.workspaceId, input.conversationId, "conversation_reset");
+        await releaseEndedProspectingBinding(tx, input);
         await tx.conversation.update({
           where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
           data: {

@@ -91,6 +91,13 @@ function statusLabel(status: ConversationDto["status"]) {
   return labels[status];
 }
 
+export function ConversationCampaignSource({ conversation }: { conversation: Pick<ConversationDto, "sourceCampaign"> }) {
+  return conversation.sourceCampaign ? <a className="status-badge conversation-campaign-source"
+    href={`?module=disparos&campaign=${encodeURIComponent(conversation.sourceCampaign.id)}`}>
+    Campanha: {conversation.sourceCampaign.name}
+  </a> : null;
+}
+
 export function aiControlLabel(
   conversation: Pick<ConversationDto, "aiControlStatus" | "activeAgentName">,
   assistantMode?: 'disabled' | 'automatic' | 'on_demand' | 'automatic_with_agent'
@@ -1801,6 +1808,7 @@ function InboxPageContent() {
                 {aiControlActionLabel(selectedConversation)}
               </button>
               </>}
+              <ConversationCampaignSource conversation={selectedConversation} />
               <span className={`status-badge status-badge--${selectedConversation.status}`}>
                 {statusLabel(selectedConversation.status)}
               </span>

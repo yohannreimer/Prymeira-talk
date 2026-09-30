@@ -1,3 +1,4 @@
+import { findProspectingReservation } from "../prospecting/prospecting-policy.js";
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { createAssistantRepository } from './assistant-repository.js';
 import { createAssistantGeneration, loadAssistantContext } from './assistant-generation.js';
@@ -25,6 +26,8 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
         const token = await repository.claim(state);
         if (!token) return;
         try {
+          const prospecting = await findProspectingReservation(prisma, state.workspaceId, state.conversationId);
+          if (prospecting && prospecting.status !== "stopped") { await repository.fail(state, token, "Conversa reservada para prospecção."); return; }
           await dependencies.prepareContext?.(state.workspaceId, state.conversationId);
           const context = await loadContext(prisma, state.workspaceId, state.conversationId);
           if (!state.requestedById && context.messages.at(-1)?.direction !== 'inbound' && !(context.humanSupport && context.messages.at(-1)?.direction === 'outbound')) {
@@ -34,6 +37,8 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
           const result = await generate(context, state.instruction);
           const published = await repository.publish(state, token, { ...result, actorUserId: state.requestedById, instruction: state.instruction }, async tx => {
             const current = await loadContext(tx, state.workspaceId, state.conversationId);
+            const prospecting = await findProspectingReservation(tx, state.workspaceId, state.conversationId);
+            if (prospecting && prospecting.status !== "stopped") return false;
             return (current.conversation.aiControlStatus === 'agent_allowed' || current.humanSupport) && current.contextKey === context.contextKey;
           });
           if (!published) await repository.fail(state, token, 'A conversa mudou. Solicite uma nova sugestão.');

@@ -25,7 +25,7 @@ export function createCampaignControlsService(prisma: PrismaClient, options: {
       const next = rows.filter((row) => row.status === "pending" && row.scheduledAt)
         .map((row) => row.scheduledAt!).sort((a, b) => a.getTime() - b.getTime())[0];
       return { status: campaign.status, total: rows.length, sent: count("sent"),
-        pending: count("pending", "in_flight"), skipped: count("skipped_no_whatsapp"),
+        pending: count("pending", "in_flight"), skipped: count("skipped_no_whatsapp", "skipped_in_service"), skippedInService: count("skipped_in_service"),
         failed: count("failed"), uncertain: count("uncertain"),
         nextScheduledAt: next?.toISOString() ?? null };
     },

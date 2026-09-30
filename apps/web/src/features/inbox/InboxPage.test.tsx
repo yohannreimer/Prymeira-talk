@@ -1,5 +1,7 @@
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  ConversationCampaignSource,
   audioMessageDisplayText,
   attachmentReadNotice,
   aiControlActionLabel,
@@ -400,5 +402,15 @@ describe("conversation queue ordering", () => {
     const opened = conversationFixture({ id: "opened", unreadCount: 0 });
     expect(resolveSelectedConversation([], "opened", opened)).toEqual(opened);
     expect(resolveSelectedConversation([], "other", opened)).toBeNull();
+  });
+});
+
+describe("campaign source in inbox", () => {
+  it("links the source campaign independently of agent or human control", () => {
+    const conversation = { sourceCampaign: { id: "campaign/id", name: "Oferta setembro" }, aiControlStatus: "human_controlled" as const };
+    const html = renderToStaticMarkup(<ConversationCampaignSource conversation={conversation} />);
+    expect(html).toContain("Campanha: Oferta setembro");
+    expect(html).toContain("?module=disparos&amp;campaign=campaign%2Fid");
+    expect(renderToStaticMarkup(<ConversationCampaignSource conversation={{ sourceCampaign: null }} />)).toBe("");
   });
 });

@@ -1,3 +1,5 @@
+import { lockProspectingConversation } from "../prospecting/prospecting-lock.js";
+import { autonomousAgentAllowed, findProspectingReservation, stopProspectingConversation } from "../prospecting/prospecting-policy.js";
 import {
   aiAgentAllowedActionSchema,
   type AiAgentAllowedAction,
@@ -156,7 +158,9 @@ export async function executeAgentActions(
     return conversation;
   }
 
+  const prospecting = await findProspectingReservation(prisma, input.workspaceId, input.conversationId);
   for (const action of input.actions) {
+    if (prospecting && !await autonomousAgentAllowed(prisma, { workspaceId: input.workspaceId, conversationId: input.conversationId, expectedGeneration: prospecting.generation })) { results.push({ type: "unsupported", status: "skipped", reason: "Prospecting authorization changed." }); continue; }
     const parsedAction = parseActionType(action);
 
     if (!parsedAction.actionType) {
@@ -246,6 +250,7 @@ async function executeNonSendAction(
       return;
     case "assign_user":
       await assignUser(prisma, input, action);
+      await stopProspectingConversation(prisma, input.workspaceId, input.conversationId, "human_assignment");
       return;
     case "assign_department":
       await assignDepartment(prisma, input, action);
@@ -456,6 +461,7 @@ async function requestHandoff(
   const aiControlUpdatedAt = new Date();
 
   await prisma.$transaction(async (tx: AgentToolExecutorTransactionLike) => {
+    await lockProspectingConversation(tx, input.workspaceId, input.conversationId);
     await tx.conversation.update({
       where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
       data: {
@@ -465,6 +471,7 @@ async function requestHandoff(
       }
     });
 
+    await stopProspectingConversation(tx, input.workspaceId, input.conversationId, handoffReason);
     if (conversation.activeAgentSessionId) {
       await tx.aiAgentSession.update({
         where: {

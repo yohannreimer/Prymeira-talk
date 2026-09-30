@@ -22,6 +22,8 @@ import { createSimulatedAgentProvider } from "./provider-gateway.js";
 import { INBOUND_MEDIA_MIME_TYPES, MAX_INBOUND_MEDIA_BYTES } from "./inbound-media.js";
 import { storeWorkspaceAsset } from "../uploads/uploads.routes.js";
 
+import { aiAgentTypeSchema, agentFollowupConfigSchema } from "@prymeira-talk/shared";
+
 const uuidSchema = z.string().uuid();
 
 const agentParamsSchema = z.object({
@@ -49,6 +51,9 @@ const allowedActionSchema = z.enum([
 ]);
 
 const createAgentBodySchema = z.object({
+  type: aiAgentTypeSchema.optional(),
+  prospectingGoal: z.string().trim().min(1).max(2000).optional(),
+  followupConfig: agentFollowupConfigSchema.optional(),
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).nullable().optional(),
   status: z.enum(["active", "inactive"]).optional(),

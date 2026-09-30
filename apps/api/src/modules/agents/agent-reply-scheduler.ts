@@ -1,3 +1,8 @@
+import { replayProspectingFollowupObservations } from "../prospecting/prospecting-followup-observation.js";
+import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
+import { randomUUID } from "node:crypto";
+import { AGENT_REPLY_LEASE_MS, recoverStaleAgentReplyClaim, type AgentReplyClaim } from "./agent-reply-claim.js";
+import { autonomousAgentAllowed, findProspectingReservation } from "../prospecting/prospecting-policy.js";
 import {
   DEFAULT_AGENT_REPLY_WAIT_SECONDS,
   readAgentBehaviorSettings
@@ -26,12 +31,19 @@ type PendingReplyRecord = {
   conversationId: string;
   agentId: string;
   sessionId?: string | null;
+  prospectingGeneration?: string | null;
   lastMessageId: string;
   instruction?: string | null;
   attempts: number;
+  status?: string;
+  claimToken?: string | null;
+  lockedAt?: Date | null;
+  updatedAt?: Date;
+  scheduledAt?: Date;
 };
 
 export interface AgentReplySchedulerPrismaLike {
+  message?: { findMany(args: unknown): Promise<Array<{ metadata?: unknown; status: string }>> };
   workspaceMirror: {
     findUnique(args: unknown): Promise<{ limits?: JsonValue } | null>;
   };
@@ -40,9 +52,10 @@ export interface AgentReplySchedulerPrismaLike {
   };
   aiAgentPendingReply: {
     upsert(args: unknown): Promise<unknown>;
+    findUnique?(args: unknown): Promise<{ lastMessageId: string; status: string; scheduledAt?: Date; prospectingGeneration?: string | null } | null>;
     findMany(args: unknown): Promise<PendingReplyRecord[]>;
     update(args: unknown): Promise<unknown>;
-    updateMany(args: unknown): Promise<unknown>;
+    updateMany(args: unknown): Promise<{ count: number }>;
   };
 }
 
@@ -54,6 +67,8 @@ export interface AgentReplySchedulerRuntime {
     messageId: string;
     trigger: "automation";
     instruction?: string | null;
+    prospectingGeneration?: string | null;
+    replyClaim?: AgentReplyClaim;
   }): Promise<{
     status: "completed" | "handoff_requested" | "skipped" | "failed";
     runId?: string;
@@ -66,6 +81,7 @@ export const DEFAULT_AGENT_REPLY_DEBOUNCE_MS = 40_000;
 export function createAgentReplyScheduler(input: {
   prisma: AgentReplySchedulerPrismaLike;
   agentRuntime: AgentReplySchedulerRuntime;
+  followupService?: ConversationFollowupsObserver;
   debounceMs?: number;
   pollIntervalMs?: number;
   batchSize?: number;
@@ -97,13 +113,25 @@ export function createAgentReplyScheduler(input: {
 
     if (
       !conversation?.activeAgentSession ||
-      blocksAutonomousAgent(conversation.channel?.encryptedConfig) ||
+      !await autonomousAgentAllowed(input.prisma, { workspaceId: scheduleInput.workspaceId, conversationId: scheduleInput.conversationId, agentId: conversation.activeAgentSession?.agentId, sessionId: conversation.activeAgentSession?.id, channelConfig: conversation.channel?.encryptedConfig, aiControlStatus: conversation.aiControlStatus }) ||
       conversation.aiControlStatus === "human_controlled" ||
       conversation.activeAgentSession.status !== "active"
     ) {
       return { scheduled: false as const };
     }
 
+    // A confirmation replay may race a newer live webhook. Debounce against the
+    // latest persisted customer message instead of overwriting it with the first.
+    const reservation = await findProspectingReservation(input.prisma, scheduleInput.workspaceId, scheduleInput.conversationId);
+    const messageId = reservation?.latestInboundMessageId ?? scheduleInput.messageId;
+    if (reservation && input.prisma.aiAgentPendingReply.findUnique) {
+      const existing = await input.prisma.aiAgentPendingReply.findUnique({ where: { workspaceId_conversationId: {
+        workspaceId: scheduleInput.workspaceId, conversationId: scheduleInput.conversationId } } });
+      if (existing?.lastMessageId === messageId && existing.prospectingGeneration === reservation.generation) {
+        if (existing.status === 'pending' && existing.scheduledAt) scheduleWake(existing.scheduledAt, new Date());
+        return { scheduled: false as const };
+      }
+    }
     const now = scheduleInput.now ?? new Date();
     const debounceMs = await resolveDebounceMs(scheduleInput.workspaceId);
     const scheduledAt = new Date(now.getTime() + debounceMs);
@@ -121,20 +149,23 @@ export function createAgentReplyScheduler(input: {
         workspaceId: scheduleInput.workspaceId,
         conversationId: scheduleInput.conversationId,
         agentId: session.agentId,
+        ...(reservation ? { prospectingGeneration: reservation.generation } : {}),
         sessionId: session.id,
-        lastMessageId: scheduleInput.messageId,
+        lastMessageId: messageId,
         instruction,
         scheduledAt,
         status: "pending"
       },
       update: {
         agentId: session.agentId,
+        ...(reservation ? { prospectingGeneration: reservation.generation } : {}),
         sessionId: session.id,
-        lastMessageId: scheduleInput.messageId,
+        lastMessageId: messageId,
         instruction,
         scheduledAt,
         status: "pending",
         lockedAt: null,
+        claimToken: null,
         lastError: null
       }
     });
@@ -168,78 +199,50 @@ export function createAgentReplyScheduler(input: {
     const now = processInput.now ?? new Date();
 
     try {
+      // Stale processing claims are recoverable only before any network dispatch.
+      // A persisted sending/uncertain delivery is never retried automatically.
+      const stale = await input.prisma.aiAgentPendingReply.findMany({ where: { status: "processing",
+        lockedAt: { lte: new Date(now.getTime() - AGENT_REPLY_LEASE_MS) } }, take: batchSize });
+      for (const reply of stale) {
+        if (reply.status !== "processing") continue;
+        await recoverStaleAgentReplyClaim(input.prisma, reply, now);
+      }
+      await replayProspectingFollowupObservations(input.prisma, input.followupService, batchSize);
       const pendingReplies = await input.prisma.aiAgentPendingReply.findMany({
-        where: {
-          status: "pending",
-          scheduledAt: { lte: now }
-        },
-        orderBy: [{ scheduledAt: "asc" }],
-        take: batchSize
+        where: { status: "pending", scheduledAt: { lte: now } }, orderBy: [{ scheduledAt: "asc" }], take: batchSize
       });
       const results: Array<{ id: string; status: string; runId?: string }> = [];
-
       for (const pendingReply of pendingReplies) {
-        await input.prisma.aiAgentPendingReply.update({
-          where: {
-            workspaceId_id: {
-              workspaceId: pendingReply.workspaceId,
-              id: pendingReply.id
-            }
-          },
-          data: {
-            status: "processing",
-            lockedAt: now,
-            attempts: { increment: 1 }
-          }
-        });
-
+        const token = randomUUID();
+        const claimed = await input.prisma.aiAgentPendingReply.updateMany({ where: {
+          workspaceId: pendingReply.workspaceId, id: pendingReply.id, status: "pending",
+          lastMessageId: pendingReply.lastMessageId, agentId: pendingReply.agentId,
+          prospectingGeneration: pendingReply.prospectingGeneration ?? null,
+          ...(pendingReply.updatedAt ? { updatedAt: pendingReply.updatedAt } : {}),
+          ...(pendingReply.scheduledAt ? { scheduledAt: pendingReply.scheduledAt } : {})
+        }, data: { status: "processing", claimToken: token, lockedAt: now, attempts: { increment: 1 } } });
+        if (!claimed.count) continue;
+        const ownership = { workspaceId: pendingReply.workspaceId, id: pendingReply.id, status: "processing", claimToken: token };
+        const heartbeat = setInterval(() => {
+          void input.prisma.aiAgentPendingReply.updateMany({ where: ownership, data: { lockedAt: new Date() } }).catch(() => undefined);
+        }, AGENT_REPLY_LEASE_MS / 3);
+        heartbeat.unref?.();
         try {
-          const run = await input.agentRuntime.runForMessage({
-            workspaceId: pendingReply.workspaceId,
-            agentId: pendingReply.agentId,
-            conversationId: pendingReply.conversationId,
-            messageId: pendingReply.lastMessageId,
-            trigger: "automation",
-            instruction: pendingReply.instruction ?? null
-          });
-          const terminalStatus =
-            run.status === "failed" || run.status === "skipped" ? run.status : "completed";
-          const terminalError =
-            run.status === "failed" || run.status === "skipped"
-              ? run.message ?? `Agent reply ${run.status}.`
-              : null;
-
-          await input.prisma.aiAgentPendingReply.updateMany({
-            where: {
-              workspaceId: pendingReply.workspaceId,
-              id: pendingReply.id,
-              status: "processing",
-              lockedAt: now
-            },
-            data: {
-              status: terminalStatus,
-              lockedAt: null,
-              lastError: terminalError
-            }
-          });
+          const run = await input.agentRuntime.runForMessage({ workspaceId: pendingReply.workspaceId,
+            agentId: pendingReply.agentId, conversationId: pendingReply.conversationId,
+            messageId: pendingReply.lastMessageId, trigger: "automation", replyClaim: { id: pendingReply.id, token },
+            ...(pendingReply.prospectingGeneration ? { prospectingGeneration: pendingReply.prospectingGeneration } : {}),
+            instruction: pendingReply.instruction ?? null });
+          const status = run.status === "failed" || run.status === "skipped" ? run.status : "completed";
+          await input.prisma.aiAgentPendingReply.updateMany({ where: ownership,
+            data: { status, claimToken: null, lockedAt: null,
+              lastError: status === "failed" || status === "skipped" ? run.message ?? `Agent reply ${run.status}.` : null } });
           results.push({ id: pendingReply.id, status: run.status, runId: run.runId });
         } catch (error) {
-          const message = error instanceof Error ? error.message : "Agent reply processing failed.";
-          await input.prisma.aiAgentPendingReply.updateMany({
-            where: {
-              workspaceId: pendingReply.workspaceId,
-              id: pendingReply.id,
-              status: "processing",
-              lockedAt: now
-            },
-            data: {
-              status: "failed",
-              lockedAt: null,
-              lastError: message
-            }
-          });
+          await input.prisma.aiAgentPendingReply.updateMany({ where: ownership, data: { status: "failed", claimToken: null,
+            lockedAt: null, lastError: error instanceof Error ? error.message : "Agent reply processing failed." } });
           results.push({ id: pendingReply.id, status: "failed" });
-        }
+        } finally { clearInterval(heartbeat); }
       }
 
       return results;

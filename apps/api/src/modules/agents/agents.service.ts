@@ -1,6 +1,9 @@
+import { fenceProspectingAgentChange, lockProspectingAgentConversations } from "../prospecting/prospecting-policy.js";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type {
   AiAgentAllowedAction,
+  AiAgentType,
+  AgentFollowupConfig,
   AiAgentDto,
   AiKnowledgeSourceDto
 } from "@prymeira-talk/shared";
@@ -26,6 +29,7 @@ type AiAgentRecord = {
   name: string;
   description: string | null;
   status: AiAgentStatus;
+  type?: AiAgentType;
   providerMode: "prymeira_managed" | "workspace_key";
   provider: string;
   model: string;
@@ -199,6 +203,7 @@ function toAgentDto(record: AiAgentRecord): AiAgentDto {
     name: record.name,
     description: record.description,
     status: record.status,
+    type: record.type ?? "attendance",
     providerMode: record.providerMode,
     provider: record.provider,
     model: record.model,
@@ -390,10 +395,14 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       status?: AiAgentStatus;
       reasoningEffort?: AgentReasoningEffort;
       onlyNewConversations?: boolean;
+      type?: AiAgentType;
+      prospectingGoal?: string;
+      followupConfig?: AgentFollowupConfig;
       systemPrompt: string;
       allowedActions?: AiAgentAllowedAction[];
       allowedTagIds?: string[];
     }): Promise<AiAgentDto> {
+      if (input.type === "prospecting" && !input.prospectingGoal?.trim()) throw new AgentsServiceError("AGENT_INVALID_CONFIG", "Defina o objetivo da prospecção.");
       const allowedActions = input.allowedActions ?? ["send_message"];
       const status = input.status ?? "inactive";
       validateAgentConfig({
@@ -408,16 +417,20 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
           name: input.name.trim(),
           description: nullableTrim(input.description) ?? null,
           status,
+          type: input.type ?? "attendance",
           providerMode: "prymeira_managed",
           provider: "simulated",
           model: "prymeira-simulated",
           systemPrompt: input.systemPrompt.trim(),
           behaviorConfig: {
             reasoningEffort: input.reasoningEffort ?? "none",
-            onlyNewConversations: input.onlyNewConversations === true
+            onlyNewConversations: input.onlyNewConversations === true,
+            ...(input.followupConfig ? { followup: input.followupConfig } : {}),
+            ...(input.type === "prospecting" && !input.followupConfig ? { followup: { timeZone: "America/Sao_Paulo", businessDays: [1,2,3,4,5], businessHours: { start: "08:00", end: "18:00" }, steps: [], closeAfterBusinessMinutes: 0 } } : {})
           },
           handoffConfig: {
-            confidenceThreshold: 0.55
+            confidenceThreshold: 0.55,
+            ...(input.prospectingGoal ? { prospectingGoal: input.prospectingGoal.trim() } : {})
           },
           limitsConfig: {
             maxMessagesPerSession: 12
@@ -467,12 +480,16 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
         status: AiAgentStatus;
         reasoningEffort: AgentReasoningEffort;
         onlyNewConversations: boolean;
+        type: AiAgentType;
+        prospectingGoal: string;
+        followupConfig: AgentFollowupConfig;
         systemPrompt: string;
         allowedActions: AiAgentAllowedAction[];
         allowedTagIds: string[];
       }>;
     }): Promise<AiAgentDto> {
       const existingAgent = await ensureAgent(input);
+      if ((input.data.type ?? existingAgent.type) === "prospecting" && !(input.data.prospectingGoal ?? toRecord(existingAgent.handoffConfig).prospectingGoal)?.toString().trim()) throw new AgentsServiceError("AGENT_INVALID_CONFIG", "Defina o objetivo da prospecção.");
       validateAgentConfig({
         status: input.data.status ?? existingAgent.status,
         allowedActions: input.data.allowedActions ?? readAllowedActions(existingAgent.allowedActions),
@@ -482,9 +499,10 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
 
       const description = nullableTrim(input.data.description);
       const behaviorConfigPatch =
-        input.data.reasoningEffort !== undefined || input.data.onlyNewConversations !== undefined
+        input.data.reasoningEffort !== undefined || input.data.onlyNewConversations !== undefined || input.data.followupConfig !== undefined
           ? {
               ...toRecord(existingAgent.behaviorConfig),
+              ...(input.data.followupConfig ? { followup: input.data.followupConfig } : {}),
               ...(input.data.reasoningEffort !== undefined
                 ? { reasoningEffort: input.data.reasoningEffort }
                 : {}),
@@ -501,6 +519,8 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
           }
         },
         data: {
+          ...(input.data.type !== undefined ? { type: input.data.type } : {}),
+          ...(input.data.prospectingGoal !== undefined ? { handoffConfig: { ...toRecord(existingAgent.handoffConfig), prospectingGoal: input.data.prospectingGoal.trim() } } : {}),
           ...(input.data.name !== undefined ? { name: input.data.name.trim() } : {}),
           ...(description !== undefined ? { description } : {}),
           ...(input.data.status !== undefined ? { status: input.data.status } : {}),
@@ -524,7 +544,9 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
             tagIds: uniqueTagIds
           });
 
+          await lockProspectingAgentConversations(tx, input.workspaceId, input.agentId);
           await tx.aiAgent.update(updateArgs);
+          await fenceProspectingAgentChange(tx, { workspaceId: input.workspaceId, agentId: input.agentId, stop: input.data.status === "inactive" || input.data.type === "attendance" });
           await replaceAllowedTags({
             tx,
             workspaceId: input.workspaceId,
@@ -536,7 +558,12 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
         return toAgentDto(await ensureAgent(input));
       }
 
-      const agent = await prisma.aiAgent.update(updateArgs);
+      const agent = existingAgent.type === "prospecting" || input.data.type === "prospecting" ? await prisma.$transaction(async tx => {
+        await lockProspectingAgentConversations(tx, input.workspaceId, input.agentId);
+        const updated = await tx.aiAgent.update(updateArgs);
+        await fenceProspectingAgentChange(tx, { workspaceId: input.workspaceId, agentId: input.agentId, stop: updated.status === "inactive" || updated.type !== "prospecting" });
+        return updated;
+      }) : await prisma.aiAgent.update(updateArgs);
       return toAgentDto(agent);
     },
 

@@ -693,3 +693,33 @@ describe("agent API helpers", () => {
     );
   });
 });
+
+describe("prospecting API compatibility", () => {
+  it("defaults old settings to module off and persists the module PATCH response", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ workspace: {}, integrations: [] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ workspace: {}, modules: { campaignProspecting: true } })));
+    vi.stubGlobal("fetch", fetchMock);
+    const { apiGetSettings, apiUpdateModules } = await import("./api");
+    const token = async () => "token";
+    expect((await apiGetSettings(token)).modules).toEqual({ campaignProspecting: false });
+    expect((await apiUpdateModules(token, { campaignProspecting: true })).modules).toEqual({ campaignProspecting: true });
+    expect(fetchMock).toHaveBeenLastCalledWith(expect.stringContaining("/settings/modules"), expect.objectContaining({
+      method: "PATCH", body: JSON.stringify({ campaignProspecting: true }) }));
+  });
+  it("retains campaign binding, skip reasons and conversation origin after handoff", async () => {
+    const campaign = { id: "campaign", workspaceId: "workspace", name: "Oferta", status: "draft", messageBody: "Olá", audience: { type: "imported", rows: [] },
+      prospectingAgentId: "agent", prospectingContext: "Oferta especial" };
+    const conversation = { id: "conversation", workspaceId: "workspace", channelId: "channel", contactId: "contact", status: "open",
+      assignedUserId: null, departmentId: null, lastMessageAt: null, lastMessagePreview: null, unreadCount: 0, priority: "normal",
+      aiControlStatus: "human_controlled", activeAgentSessionStatus: "handoff_requested", sourceCampaign: { id: "campaign", name: "Oferta" } };
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify([campaign])))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "recipient", status: "skipped_in_service", errorMessage: "Contato já está em atendimento." }])))
+      .mockResolvedValueOnce(new Response(JSON.stringify([conversation])));
+    vi.stubGlobal("fetch", fetchMock);
+    const { apiGetCampaigns, apiGetCampaignRecipients, apiGetConversations } = await import("./api");
+    const token = async () => "token";
+    expect((await apiGetCampaigns(token))[0]).toMatchObject({ prospectingAgentId: "agent", prospectingContext: "Oferta especial" });
+    expect((await apiGetCampaignRecipients(token, "campaign"))[0].skipReason).toBe("Contato já está em atendimento.");
+    expect((await apiGetConversations(token))[0].sourceCampaign).toEqual({ id: "campaign", name: "Oferta" });
+  });
+});
