@@ -28,8 +28,10 @@ Base: `4524fbb3e834197626d7fc6ad329a7282c562615`. Branch: `codex/talk-waha-rabbi
 
 ## Blocos e acompanhamento
 
-- [ ] 1. Conexões físicas, cliente WAHA, contrato e gestão dos dois QR Codes; UI de canais e migração inicial. Testes de número incorreto, isolamento e compatibilidade.
-- [ ] 2. Normalização, aliases e observações; RabbitMQ/ingresso/consumidor e efeitos duráveis; recuperação e realtime entre processos. Testes de duplicação, falhas e reentrega.
+- [x] 1. Conexões físicas, cliente WAHA, contrato e gestão dos dois QR Codes; UI de canais e migração inicial. Testes de número incorreto, isolamento e compatibilidade. Implementação local aprovada por revisões de especificação e qualidade em `95fb0b8`; homologação real permanece no bloco 5.
+- [ ] 2a. Normalização Evolution/WAHA, identidade canônica, aliases e observações; edições/exclusões/recibos e dois importadores históricos. Testes reais de concorrência, escopo e identidade.
+- [ ] 2a-resolução. Quando PN/LID comprovados já pertencem a duas conversas existentes, preservar UUIDs e configurações, reunir o histórico por membros e resolver explicitamente a autoridade operacional. Quarentena de conflitos é um estágio de segurança, não conclusão do histórico único; incluir autorização das origens, controles humanos, reservas incertas e bloqueio de jobs antigos.
+- [ ] 2b. RabbitMQ/ingresso/consumidor, efeitos duráveis, recuperação com checkpoints e realtime entre processos. Testes de duplicação, falhas e reentrega usando a persistência do bloco 2a.
 - [ ] 3. Armazenamento e serviço comum de mídia; coordenação persistente de transcrição/leitura; integração IA. Testes de player, MIME, autorização, SSRF, retry e concorrência.
 - [ ] 4. Roteador único persistente, todos os remetentes, failover/saúde/reconciliação e cadência. Testes de concorrência, tentativa incerta, eco e sessões degradadas.
 - [ ] 5. Infraestrutura, migrações reais, testes de falhas/carga, homologação visual e real, revisão final, documentação e PR. Publicação depende dos critérios aprovados, não apenas de build.
