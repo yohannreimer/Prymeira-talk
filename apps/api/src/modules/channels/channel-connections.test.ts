@@ -33,23 +33,61 @@ function fixture() {
   return { prisma, client, evolution, channel: () => channel, records };
 }
 describe('physical channel lifecycle', () => {
-  it('rejects a delayed secondary QR after logout without reopening its physical state', async () => {
+  it('rejects logout while secondary QR I/O is pending without mutating that remote session', async () => {
     const f = fixture();
     f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'STOPPED', engine: {}, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
     const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
     let release!: (qr: string) => void; let entered!: () => void;
     const paused = new Promise<void>((resolve) => { entered = resolve; });
     f.client.getQr.mockImplementationOnce(() => { entered(); return new Promise((resolve) => { release = resolve; }); });
-    const pending = service.startQr({ workspaceId: 'ws', channelId: ch, connectionId: wahaId }).then((result) => result, (error) => error);
+    const pending = service.startQr({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
     await paused;
-    await service.disconnect({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
-    const disconnected = { ...f.records.find((r) => r.id === wahaId) };
-    release('late-qr');
-    expect(await pending).toMatchObject({ code: 'LIFECYCLE_SUPERSEDED', statusCode: 409 });
-    expect(f.records.find((r) => r.id === wahaId)).toEqual(disconnected);
+    const connecting = { ...f.records.find((r) => r.id === wahaId) };
+    await expect(service.disconnect({ workspaceId: 'ws', channelId: ch, connectionId: wahaId })).rejects.toMatchObject({ code: 'LIFECYCLE_IN_PROGRESS', statusCode: 409 });
+    expect(f.records.find((r) => r.id === wahaId)).toEqual(connecting);
+    expect(f.client.logoutSession).not.toHaveBeenCalled();
+    expect(f.client.stopSession).not.toHaveBeenCalled();
+    release('current-qr');
+    expect(await pending).toMatchObject({ provider: 'waha', qrCode: 'current-qr' });
     expect(f.evolution.client.logoutInstance).not.toHaveBeenCalled();
   });
-
+  it.each(['changed-owner', 'restricted', 'stopped', 'qualification-failed'] as const)('keeps a newer protective %s observation after releasing an older healthy probe', async (decision) => {
+    const f = fixture();
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+    const scope = { workspaceId: 'ws', channelId: ch, connectionId: wahaId };
+    await service.refresh(scope);
+    let release!: (phone: string) => void; let entered!: () => void;
+    const paused = new Promise<void>((resolve) => { entered = resolve; });
+    f.evolution.client.getInstanceIdentity.mockImplementationOnce(() => { entered(); return new Promise((resolve) => { release = resolve; }); });
+    const older = service.refresh(scope);
+    await paused;
+    const previousGeneration = f.channel().connectionLifecycleGeneration;
+    if (decision === 'changed-owner') {
+      f.evolution.client.getInstanceIdentity.mockResolvedValue(null);
+      f.client.getMe.mockResolvedValue({ id: '5511888882222@c.us' });
+    } else if (decision === 'restricted') f.client.getMe.mockResolvedValue({ id: '5547999990000@c.us', reachoutTimelock: { isActive: true } });
+    else if (decision === 'stopped') f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'STOPPED', engine: {}, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
+    else f.client.getVersion.mockResolvedValue({ version: '2026.7.2', engine: 'NOWEB' });
+    if (decision === 'qualification-failed') await expect(service.refresh(scope)).rejects.toMatchObject({ code: 'WAHA_ENGINE_UNSUPPORTED' });
+    else await service.refresh(scope);
+    const protectedState = f.records.map((r) => ({ ...r }));
+    expect(f.records.find((r) => r.id === wahaId).eligible).toBe(false);
+    release('5547999990000@s.whatsapp.net');
+    const result = await older;
+    expect(f.records).toEqual(protectedState);
+    expect(f.channel().connectionLifecycleGeneration).toBeGreaterThan(previousGeneration);
+    expect(result.channel.connections!.find((r) => r.id === wahaId)?.eligible).toBe(false);
+  });
+  it('never treats an existing odd token as abandoned during an ordinary lifecycle request', async () => {
+    const f = fixture();
+    f.records.find((r) => r.id === wahaId).lifecycleGeneration = 7;
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+    const scope = { workspaceId: 'ws', channelId: ch, connectionId: wahaId };
+    await expect(service.startQr(scope)).rejects.toMatchObject({ code: 'LIFECYCLE_IN_PROGRESS' });
+    await expect(service.disconnect(scope)).rejects.toMatchObject({ code: 'LIFECYCLE_IN_PROGRESS' });
+    expect(f.records.find((r) => r.id === wahaId).lifecycleGeneration).toBe(7);
+    expect(f.client.getVersion).not.toHaveBeenCalled();
+  });
   it('blocks probes completing inside a pending logout and preserves the sending fence', async () => {
     const f = fixture();
     const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });

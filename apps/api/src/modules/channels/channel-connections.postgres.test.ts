@@ -173,6 +173,88 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     await pending;
     expect((await prisma.channelConnection.findUniqueOrThrow({ where: { id: operating.id } })).lifecycleGeneration % 2).toBe(0);
   });
+  it.each(['changed-owner', 'restricted'] as const)('persistently fences an older WAHA probe after a newer %s observation', async (decision) => {
+    const primaryProvider: any = { ...evolution, client: { ...evolution.client, getInstanceIdentity: vi.fn(async () => '5547999990000@s.whatsapp.net') } };
+    const legacy = createChannelsService(prisma as unknown as PrismaLike, { evolution: primaryProvider });
+    const created = await legacy.createChannel({ workspaceId, displayName: 'Protective observation QA' });
+    const scope = { workspaceId, channelId: created.id };
+    const provider: any = { ...remote, getMe: vi.fn(async () => ({ id: '5547999990000@c.us' })), getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'WORKING', engine: { engine: 'WPP' }, config: { metadata: scope } })) };
+    const service = createChannelConnectionsService(prisma, { evolution: primaryProvider, waha: { enabled: true, client: provider } });
+    const enabled = await service.setRedundancy({ ...scope, enabled: true });
+    const secondary = enabled.channel.connections!.find((r) => r.provider === 'waha')!;
+    await service.refresh({ ...scope, connectionId: secondary.id });
+    let release!: (phone: string) => void; let entered!: () => void;
+    const paused = new Promise<void>((resolve) => { entered = resolve; });
+    primaryProvider.client.getInstanceIdentity.mockImplementationOnce(() => { entered(); return new Promise((resolve) => { release = resolve; }); });
+    const oldProbe = service.refresh({ ...scope, connectionId: secondary.id });
+    await paused;
+    if (decision === 'changed-owner') {
+      provider.getMe.mockResolvedValue({ id: '5511888882222@c.us' });
+      primaryProvider.client.getInstanceIdentity.mockResolvedValue(null);
+    } else provider.getMe.mockResolvedValue({ id: '5547999990000@c.us', messageCapping: { cappingStatus: 'CAPPED' } });
+    await service.refresh({ ...scope, connectionId: secondary.id });
+    const protectedRecords = await prisma.channelConnection.findMany({ where: scope, orderBy: { id: 'asc' } });
+    expect(protectedRecords.find((r) => r.provider === 'waha')?.eligible).toBe(false);
+    if (decision === 'changed-owner') expect(protectedRecords.find((r) => r.provider === 'waha')?.lastHealthyAt).toBeNull();
+    release('5547999990000@s.whatsapp.net');
+    const result = await oldProbe;
+    expect(await prisma.channelConnection.findMany({ where: scope, orderBy: { id: 'asc' } })).toEqual(protectedRecords);
+    expect(result.channel.connections!.find((r) => r.id === secondary.id)?.eligible).toBe(false);
+  });
+  it.each(['evolution', 'waha'] as const)('rejects a second lifecycle for %s while its first remote mutation is pending', async (providerName) => {
+    const primaryProvider: any = { ...evolution, client: { ...evolution.client, logoutInstance: vi.fn(), createInstance: vi.fn(async ({ instanceName }: { instanceName: string }) => ({ instanceName, qrCode: 'evo-qr' })) } };
+    const legacy = createChannelsService(prisma as unknown as PrismaLike, { evolution: primaryProvider });
+    const created = await legacy.createChannel({ workspaceId, displayName: 'Exclusive lifecycle QA' });
+    const scope = { workspaceId, channelId: created.id };
+    const provider: any = { ...remote, getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP' }, config: { metadata: scope } })), startSession: vi.fn(), getQr: vi.fn(async () => 'waha-qr'), logoutSession: vi.fn(), stopSession: vi.fn() };
+    const service = createChannelConnectionsService(prisma, { evolution: primaryProvider, waha: { enabled: true, client: provider } });
+    const enabled = await service.setRedundancy({ ...scope, enabled: true });
+    const target = enabled.channel.connections!.find((r) => r.provider === providerName)!;
+    let release!: (state?: unknown) => void; let entered!: () => void;
+    const paused = new Promise<void>((resolve) => { entered = resolve; });
+    const remoteStep = providerName === 'waha' ? provider.getSession : primaryProvider.client.logoutInstance;
+    remoteStep.mockImplementationOnce(() => { entered(); return new Promise((resolve) => { release = resolve; }); });
+    const logout = providerName === 'waha' ? service.disconnect({ ...scope, connectionId: target.id }) : legacy.disconnectChannel(scope);
+    await paused;
+    const current = await prisma.channelConnection.findUniqueOrThrow({ where: { id: target.id } });
+    const nextQr = providerName === 'waha' ? service.startQr({ ...scope, connectionId: target.id }) : legacy.startQrSession(scope);
+    await expect(nextQr).rejects.toMatchObject({ code: 'LIFECYCLE_IN_PROGRESS', statusCode: 409 });
+    expect(await prisma.channelConnection.findUnique({ where: { id: target.id } })).toEqual(current);
+    expect(primaryProvider.client.createInstance).not.toHaveBeenCalled();
+    expect(provider.startSession).not.toHaveBeenCalled();
+    expect(provider.getQr).not.toHaveBeenCalled();
+    if (providerName === 'waha') {
+      const beforeDisable = await prisma.channel.findUniqueOrThrow({ where: { id: created.id } });
+      await expect(service.setRedundancy({ ...scope, enabled: false })).rejects.toMatchObject({ code: 'LIFECYCLE_IN_PROGRESS' });
+      expect(await prisma.channel.findUnique({ where: { id: created.id } })).toEqual(beforeDisable);
+    }
+    release(providerName === 'waha' ? { name: target.sessionName, status: 'SCAN_QR_CODE', engine: { engine: 'WPP' }, config: { metadata: scope } } : undefined);
+    await logout;
+    expect(await prisma.channelConnection.findUnique({ where: { id: target.id } })).toMatchObject({ status: 'disconnected', eligible: false, lifecycleGeneration: current.lifecycleGeneration + 1 });
+  });
+  it('claims the same physical lifecycle only once when both callers read an idle snapshot', async () => {
+    const legacy = createChannelsService(prisma as unknown as PrismaLike, { evolution });
+    const created = await legacy.createChannel({ workspaceId, displayName: 'Concurrent lifecycle QA' });
+    const scope = { workspaceId, channelId: created.id };
+    let release!: (qr: string) => void; let entered!: () => void; let rejected!: () => void;
+    const remotePending = new Promise<void>((resolve) => { entered = resolve; });
+    const rejectedRequest = new Promise<void>((resolve) => { rejected = resolve; });
+    const provider: any = { ...remote, getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP' }, config: { metadata: scope } })), getQr: vi.fn(() => { entered(); return new Promise((resolve) => { release = resolve; }); }) };
+    const service = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: provider } });
+    const enabled = await service.setRedundancy({ ...scope, enabled: true });
+    const secondary = enabled.channel.connections!.find((r) => r.provider === 'waha')!;
+    const request = () => service.startQr({ ...scope, connectionId: secondary.id }).then((result) => ({ result }), (error: unknown) => { rejected(); return { error }; });
+    const first = request(); const second = request();
+    await remotePending; await rejectedRequest;
+    expect(provider.getQr).toHaveBeenCalledTimes(1);
+    release('only-current-qr');
+    const settled = await Promise.all([first, second]);
+    expect(settled).toEqual(expect.arrayContaining([
+      expect.objectContaining({ result: expect.objectContaining({ qrCode: 'only-current-qr' }) }),
+      expect.objectContaining({ error: expect.objectContaining({ code: 'LIFECYCLE_IN_PROGRESS', statusCode: 409 }) })
+    ]));
+    expect((await prisma.channelConnection.findUniqueOrThrow({ where: { id: secondary.id } })).lifecycleGeneration).toBe(2);
+  });
   it('secondary lifecycle leaves primary/history intact and deletion cascades physical identities', async () => {
     const service = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: remote } });
     const secondary = await prisma.channelConnection.findFirstOrThrow({ where: { workspaceId, channelId, provider: 'waha' } });
