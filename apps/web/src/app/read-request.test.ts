@@ -4,6 +4,16 @@ import { ReadAccessError, withReadDeadline } from './read-request';
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('Atendimento reads', () => {
+  it('opts into compact history media while preserving its authenticated cancellable read', async () => {
+    const mediaUrl = 'https://talk.example.test/api/conversations/c1/messages/m1/media?v=source';
+    const dto = { id: 'm1', conversationId: 'c1', workspaceId: 'w', providerMessageId: 'provider-id', direction: 'inbound', type: 'file',
+      body: 'Caption', mediaUrl, status: 'read', sentByUserId: null, createdAt: '2026-09-30T00:00:00Z', attachment: { mimeType: 'application/pdf' } };
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify([dto]))); vi.stubGlobal('fetch', fetch);
+    expect(await apiGetConversationMessages('c1', async () => 'token')).toEqual([dto]);
+    expect(String(fetch.mock.calls[0][0])).toMatch(/\/conversations\/c1\/messages\?compactMedia=1$/);
+    expect(fetch.mock.calls[0][1]).toMatchObject({ headers: { Authorization: 'Bearer token' }, signal: expect.any(AbortSignal) });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
   it('bounds token acquisition within the total eight seconds and never starts fetch after timeout', async () => {
     vi.useFakeTimers(); const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
     let release!: (token: string) => void;

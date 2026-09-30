@@ -21,11 +21,22 @@ function audioTranscript(body: string | null) {
   return text && !pendingAudio.test(text) ? text : null;
 }
 const filename = /^[^\n]{1,240}\.(pdf|docx?|xlsx?|csv|txt|zip|png|jpe?g|webp|mp4|ogg|mp3)$/i;
+function compactPreviewMime(message: MediaMessage) {
+  const source = message.mediaUrl;
+  if (!source || source.length > 1_024 || !/^https?:\/\//i.test(source) || !source.includes('previewMime=')) return undefined;
+  try {
+    const url = new URL(source);
+    if (!/^\/api\/conversations\/[^/]+\/messages\/[^/]+\/media$/.test(url.pathname)) return undefined;
+    const mimeType = url.searchParams.get('previewMime')?.toLowerCase();
+    return mimeType && /^(application\/pdf|video\/[a-z0-9.+-]+)$/.test(mimeType) ? mimeType : undefined;
+  } catch { return undefined; }
+}
 export function mediaFileName(message: MediaMessage) {
   if (message.attachment?.fileName?.trim()) return message.attachment.fileName;
   const body = message.body?.trim();
   if (body && filename.test(body)) return body;
   if (message.attachment?.mimeType?.toLowerCase().startsWith('video/')) return 'Vídeo.mp4';
+  if (message.attachment?.mimeType?.toLowerCase() === 'application/pdf' || compactPreviewMime(message) === 'application/pdf') return 'Documento.pdf';
   return /(?:application\/pdf|\.pdf(?:\?|$))/i.test(message.mediaUrl ?? '') ? 'Documento.pdf' : 'Documento';
 }
 export function mediaCaption(message: MediaMessage) {
@@ -104,7 +115,9 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
   const name = mediaFileName(message);
   const isImage = message.type === 'image';
   const isAudio = message.type === 'audio';
-  const isVideo = message.attachment?.mimeType?.toLowerCase().startsWith('video/') || /^data:video\//i.test(message.mediaUrl ?? '') || /\.(mp4|mov|webm)(\?|$)/i.test(message.mediaUrl ?? '');
+  const previewMime = compactPreviewMime(message);
+  const isVideo = message.attachment?.mimeType?.toLowerCase().startsWith('video/') || previewMime?.startsWith('video/') || /^data:video\//i.test(message.mediaUrl ?? '') || /\.(mp4|mov|webm)(\?|$)/i.test(message.mediaUrl ?? '');
+  const isPdf = message.attachment?.mimeType?.toLowerCase() === 'application/pdf' || previewMime === 'application/pdf' || /pdf/i.test(name + message.mediaUrl?.slice(0, 40));
   useEffect(() => {
     setSrc(initialMediaSource());
     setError(false); setViewer(null); setPlaying(false); setLoading(false);
@@ -257,7 +270,7 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
         </button>}
     </div> : <div className="talk-document-card">
       <button type="button" className="talk-document-open" aria-label="Abrir documento" onClick={() => void open()} disabled={loading}>
-        <span className="talk-document-icon"><FileText size={27} /><small>{isVideo ? 'VÍDEO' : /pdf/i.test(name + message.mediaUrl?.slice(0, 40)) ? 'PDF' : 'ARQ'}</small></span>
+        <span className="talk-document-icon"><FileText size={27} /><small>{isVideo ? 'VÍDEO' : isPdf ? 'PDF' : 'ARQ'}</small></span>
         <span className="talk-document-title"><strong>{name}</strong><small>{loading ? 'Carregando…' : isVideo ? 'Abrir vídeo' : 'Abrir documento'}</small></span>
       </button>
       <button className="talk-document-download" type="button" aria-label="Baixar documento" disabled={loading} onClick={() => void open(true)}><Download size={20} /></button>

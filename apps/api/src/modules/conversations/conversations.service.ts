@@ -442,6 +442,7 @@ export interface PrismaLike {
 }
 
 interface ConversationsServiceOptions {
+  publicTalkUrl?: string;
   evolution?: EvolutionRuntime;
   meta?: {
     phoneNumberId: string | null;
@@ -541,6 +542,14 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
 }
 
 export function toMessageDto(record: MessageRecord): MessageDto {
+  return mapMessageDto(record);
+}
+
+export function toCompactMessageDto(record: MessageRecord, publicTalkUrl: string): MessageDto {
+  return mapMessageDto(record, publicTalkUrl);
+}
+
+function mapMessageDto(record: MessageRecord, publicTalkUrl?: string): MessageDto {
   const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
   const metadata = object(record.metadata);
   const cache = object(metadata.assistantMedia);
@@ -548,6 +557,13 @@ export function toMessageDto(record: MessageRecord): MessageDto {
   const result = cache.sourceHash === sourceHash ? object(cache.result) : {};
   const history = object(metadata.historyImport);
   const attachment = object(metadata.attachment);
+  const compactMedia = Boolean(publicTalkUrl && ['image', 'audio', 'file'].includes(record.type) && record.mediaUrl?.startsWith('data:'));
+  const sourceMimeType = compactMedia ? /^data:([^;,]{1,120})[;,]/i.exec(record.mediaUrl!)?.[1].trim().toLowerCase() : undefined;
+  const inferredMimeType = typeof attachment.mimeType !== 'string' ? sourceMimeType : undefined;
+  // The inline URL used to identify video/PDF even with generic provider MIME
+  // metadata. Keep that presentation hint without replacing existing metadata.
+  const previewMimeType = sourceMimeType && typeof attachment.mimeType === 'string' && attachment.mimeType.toLowerCase() !== sourceMimeType &&
+    (sourceMimeType.startsWith('video/') || sourceMimeType === 'application/pdf') ? sourceMimeType : undefined;
   const groupSender = object(metadata.groupSender);
   const location = messageLocationSchema.safeParse(metadata.location);
   const rawCards = Array.isArray(metadata.contactCards) ? metadata.contactCards : metadata.contactCard ? [metadata.contactCard] : [];
@@ -560,7 +576,7 @@ export function toMessageDto(record: MessageRecord): MessageDto {
   const publicAttachment = {
     ...(typeof attachment.fileName === 'string' ? { fileName: attachment.fileName.slice(0, 240) } : {}),
     ...(typeof attachment.caption === 'string' ? { caption: attachment.caption } : {}),
-    ...(typeof attachment.mimeType === 'string' ? { mimeType: attachment.mimeType } : {}),
+    ...(typeof attachment.mimeType === 'string' ? { mimeType: attachment.mimeType } : inferredMimeType ? { mimeType: inferredMimeType } : {}),
     ...(typeof attachment.durationSeconds === 'number' && Number.isFinite(attachment.durationSeconds) && attachment.durationSeconds >= 0 ? { durationSeconds: attachment.durationSeconds } : {})
   };
   const processed = result.status === 'processed' && typeof result.extractedText === 'string' && result.extractedText.trim().length > 0;
@@ -577,7 +593,7 @@ export function toMessageDto(record: MessageRecord): MessageDto {
       senderName: typeof groupSender.name === 'string' ? groupSender.name.slice(0, 120) : null,
       senderJid: typeof groupSender.jid === 'string' ? groupSender.jid.slice(0, 100) : null
     } : {}),
-    mediaUrl: record.mediaUrl ?? null,
+    mediaUrl: compactMedia ? new URL(`/api/conversations/${encodeURIComponent(record.conversationId)}/messages/${encodeURIComponent(record.id)}/media?v=${sourceHash}${previewMimeType ? `&previewMime=${encodeURIComponent(previewMimeType)}` : ''}`, publicTalkUrl).href : record.mediaUrl ?? null,
     ...(contactCards.length ? { contactCards } : {}),
     ...(location.success ? { location: location.data } : {}),
     ...(Object.keys(publicAttachment).length ? { attachment: publicAttachment } : {}),
@@ -1543,6 +1559,7 @@ export function createConversationsService(
     async listMessages(input: {
       workspaceId: string;
       conversationId: string;
+      compactMedia?: boolean;
     }): Promise<MessageDto[]> {
       const conversation = await prisma.conversation.findUnique({
         where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
@@ -1562,7 +1579,8 @@ export function createConversationsService(
         take: 100
       });
 
-      return measureInboxAssembly(() => withoutInternalFollowupReservations([...messages]).reverse().map(toMessageDto));
+      return measureInboxAssembly(() => withoutInternalFollowupReservations([...messages]).reverse().map(record => input.compactMedia
+        ? toCompactMessageDto(record, options.publicTalkUrl ?? 'https://talk.prymeiradigital.com.br') : toMessageDto(record)));
     }
   };
 }

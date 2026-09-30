@@ -2350,7 +2350,7 @@ export async function apiGetConversationMessages(
   return withReadDeadline(signal, async (deadline) => {
     const token = await getRequiredToken(getToken, deadline);
 
-    const response = await fetch(`${apiUrl}/conversations/${conversationId}/messages`, {
+    const response = await fetch(`${apiUrl}/conversations/${conversationId}/messages?compactMedia=1`, {
       signal: deadline,
       headers: {
         Authorization: `Bearer ${token}`

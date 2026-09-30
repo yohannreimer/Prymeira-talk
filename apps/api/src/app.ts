@@ -476,6 +476,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   });
   await app.register(metaWebhooksRoutes, { assistantScheduler, handoffBriefService, inboxTriage });
   await app.register(conversationsRoutes, {
+    publicTalkUrl: env.PUBLIC_TALK_URL,
     evolution: evolutionRuntime,
     messageHistory: evolutionHistorySource,
     assistantScheduler,

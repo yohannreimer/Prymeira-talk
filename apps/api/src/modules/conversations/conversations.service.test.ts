@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { conversationSchema, messageSchema, realtimeEventSchema } from "@prymeira-talk/shared";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
@@ -9,7 +10,9 @@ import {
   OutboundDeliveryUncertainError,
   OutboundMessageValidationError,
   createConversationsService,
-  toConversationDto
+  toConversationDto,
+  toMessageDto,
+  toCompactMessageDto
 } from "./conversations.service.js";
 import type { PrismaLike } from "./conversations.service.js";
 import { conversationsRoutes, createMessageParamsSchema } from "./conversations.routes.js";
@@ -2656,6 +2659,41 @@ describe("conversation routes", () => {
     }
   });
 
+  it("compacts a 10 MiB inline attachment only when message listing opts in, preserving the default DTO", async () => {
+    const conversationId = '00000000-0000-4000-8000-000000000001';
+    const messageId = '00000000-0000-4000-8000-000000000002';
+    const mediaUrl = 'data:image/png;base64,' + 'A'.repeat(10 * 1024 * 1024);
+    const record = { id: messageId, conversationId, workspaceId: 'workspace_a', providerMessageId: 'provider-id',
+      direction: 'inbound' as const, type: 'image' as const, body: 'Caption kept', mediaUrl, status: 'delivered' as const,
+      createdAt: new Date('2026-09-30T00:00:00Z'), metadata: { attachment: { fileName: 'image.png', caption: 'Original caption', durationSeconds: 12 },
+        historyImport: { source: 'evolution', mediaStatus: 'unread' } } };
+    const prisma = createMockPrisma({ findMessages: vi.fn().mockResolvedValue([record]) });
+    const app = Fastify({ logger: false }); const publish = vi.fn();
+    app.decorate('prisma', prisma as never);
+    app.decorate('realtime', { publish, addClient: vi.fn(), clientCount: vi.fn() });
+    app.addHook('preHandler', async request => { request.talk = { workspaceId: 'workspace_a', role: 'agent' }; });
+    await app.register(conversationsRoutes, { publicTalkUrl: 'https://talk.example.test' });
+    try {
+      const original = await app.inject({ method: 'GET', url: `/conversations/${conversationId}/messages` });
+      const compact = await app.inject({ method: 'GET', url: `/conversations/${conversationId}/messages?compactMedia=1` });
+      expect(original.statusCode).toBe(200); expect(compact.statusCode).toBe(200);
+      expect(Buffer.byteLength(original.body)).toBeGreaterThan(10 * 1024 * 1024);
+      expect(Buffer.byteLength(compact.body)).toBeLessThan(2_048);
+      expect(compact.body).not.toContain(mediaUrl); expect(compact.body).not.toContain('data:image/');
+      const sourceHash = createHash('sha256').update(JSON.stringify([messageId, 'image', mediaUrl])).digest('hex');
+      const normalDto = original.json()[0]; const compactDto = compact.json()[0];
+      expect(compactDto).toEqual({ ...normalDto,
+        mediaUrl: `https://talk.example.test/api/conversations/${conversationId}/messages/${messageId}/media?v=${sourceHash}`,
+        attachment: { ...normalDto.attachment, mimeType: 'image/png' } });
+      expect(messageSchema.parse(compactDto)).toEqual(compactDto);
+      const disabled = await app.inject({ method: 'GET', url: `/conversations/${conversationId}/messages?compactMedia=0` });
+      expect(disabled.json()).toEqual(original.json());
+      const reads = prisma.message.findMany.mock.calls.length;
+      const invalid = await app.inject({ method: 'GET', url: `/conversations/${conversationId}/messages?compactMedia=2` });
+      expect(invalid.statusCode).toBe(400); expect(prisma.message.findMany).toHaveBeenCalledTimes(reads);
+      expect(publish).not.toHaveBeenCalled(); expect(prisma.message.create).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
   it("returns messages for a workspace conversation", async () => {
     const prisma = createMockPrisma();
     const publish = vi.fn();
@@ -3066,6 +3104,44 @@ describe("conversation routes", () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe('compact history attachment DTOs', () => {
+  it.each([['image', 'image/png'], ['audio', 'audio/ogg'], ['file', 'application/pdf'], ['file', 'video/mp4']] as const)('preserves %s presentation/state and infers %s without inline bytes', (type, mimeType) => {
+    const mediaUrl = `data:${mimeType};base64,YQ==`;
+    const sourceHash = createHash('sha256').update(JSON.stringify(['m', type, mediaUrl])).digest('hex');
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', providerMessageId: 'provider-id', direction: 'inbound' as const,
+      type, body: 'Original body', mediaUrl, status: 'read' as const, sentByUserId: 'sender', createdAt: new Date('2026-09-30T00:00:00Z'),
+      metadata: { attachment: { fileName: 'Original name', caption: 'Original caption', durationSeconds: 73 },
+        assistantMedia: { sourceHash, result: { status: 'failed' } }, editedAt: '2026-09-30T00:01:00Z' } };
+    const original = toMessageDto(record); const compact = toCompactMessageDto(record, 'https://talk.example.test');
+    expect(compact).toEqual({ ...original,
+      mediaUrl: `https://talk.example.test/api/conversations/c/messages/m/media?v=${sourceHash}`,
+      attachment: { ...original.attachment, mimeType } });
+    expect(compact.attachmentReadStatus).toBe('unread'); expect(messageSchema.parse(compact)).toEqual(compact);
+    expect(original.mediaUrl).toBe(mediaUrl); expect(original.attachment?.mimeType).toBeUndefined();
+    const changed = toCompactMessageDto({ ...record, mediaUrl: `data:${mimeType};base64,Yg==` }, 'https://talk.example.test');
+    expect(changed.mediaUrl).not.toBe(compact.mediaUrl); expect(changed.attachmentReadStatus).toBeUndefined();
+  });
+  it('keeps existing MIME metadata and leaves remote, absent and non-attachment media unchanged', () => {
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type: 'file' as const,
+      body: 'File', mediaUrl: 'data:application/pdf;base64,YQ==', status: 'delivered' as const, createdAt: new Date(),
+      metadata: { attachment: { mimeType: 'application/custom', fileName: 'Original filename' } } };
+    expect(toCompactMessageDto(record, 'https://talk.example.test').attachment).toEqual(record.metadata.attachment);
+    for (const value of [{ ...record, mediaUrl: 'https://provider.example.test/file.pdf' }, { ...record, mediaUrl: null }, { ...record, type: 'text' as const }, { ...record, mediaUrl: 'DATA:application/pdf;base64,YQ==' }]) {
+      expect(toCompactMessageDto(value, 'https://talk.example.test')).toEqual(toMessageDto(value));
+    }
+  });
+  it.each(['video/mp4', 'application/pdf'])('retains %s preview identity alongside generic provider MIME metadata', mimeType => {
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type: 'file' as const,
+      body: 'Original body', mediaUrl: `data:${mimeType};base64,YQ==`, status: 'delivered' as const, createdAt: new Date(),
+      metadata: { attachment: { mimeType: 'application/octet-stream' } } };
+    const compact = toCompactMessageDto(record, 'https://talk.example.test');
+    expect(compact.attachment).toEqual(record.metadata.attachment);
+    expect(new URL(compact.mediaUrl!).searchParams.get('previewMime')).toBe(mimeType);
+    expect(compact.mediaUrl).not.toContain('base64'); expect(messageSchema.parse(compact)).toEqual(compact);
+    expect(toMessageDto(record).mediaUrl).toBe(record.mediaUrl);
   });
 });
 
