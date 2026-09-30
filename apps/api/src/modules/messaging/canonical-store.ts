@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Prisma, type PrismaClient, type CanonicalChat, type CanonicalMessageIdentity } from '@prisma/client';
+import { Prisma, type PrismaClient, type CanonicalChat, type CanonicalMessageIdentity, type CanonicalNativeAlias } from '@prisma/client';
 import type { NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
 import { normalizeChatAddress, record, type WhatsAppMessageKey } from './whatsapp-identity.js';
 import { buildPhoneLookupCandidates, normalizePhoneForStorage } from '../contacts/phone-normalization.js';
@@ -181,6 +181,27 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       && !!(key.identityFormat === 'provider_native' ? key.nativeId : key.rawId)
       && (key.chatAddress!.endsWith('@g.us') ? !!normalizeChatAddress(key.senderParticipant) && !key.senderParticipant!.endsWith('@g.us') : key.senderParticipant === '');
   }
+  async function persistedGroupSenderMatches(tx: Tx, scope: Scope, senderAddressId: string,
+    metadata: Prisma.JsonValue, legacyAliases: CanonicalNativeAlias[]) {
+    // Both the live metadata and the backfilled snapshot are evidence. Neither may
+    // silently override the other when the UUID is adopted into a canonical key.
+    const knownSenders = [record(record(metadata).groupSender).jid,
+      ...legacyAliases.map(alias => record(record(alias.fullTuple).groupSender).jid)];
+    const g = await graph(tx, scope);
+    for (const known of knownSenders) {
+      // Incomplete history can still use the caller's explicit exact-lookup recovery.
+      if (known === undefined || known === null || known === '') continue;
+      const normalized = normalizeChatAddress(known);
+      if (!normalized || normalized.endsWith('@g.us')) return false;
+      const alias = await tx.canonicalAddressAlias.findUnique({ where: {
+        workspaceId_channelId_address: { ...scope, address: normalized }
+      } });
+      // Normal PN variants share an address. PN/LID roots share an identity only
+      // after accepted explicit mapping evidence; never infer a link from digits.
+      if (!alias || g.root(alias.addressId) !== g.root(senderAddressId)) return false;
+    }
+    return true;
+  }
   async function persistInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions): Promise<CanonicalStoreResult> {
     const c = event.context, scope = scopeOf(c);
     if (!event.providerEventId && !options.receiptKey) throw new Error('Stable ingress receiptKey required');
@@ -252,6 +273,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     }
     if (canonicalChat.state === 'review') return hold('multiple_conversation_authorities');
     let identity: CanonicalMessageIdentity | undefined = matches[0];
+    let adoptionAliases: CanonicalNativeAlias[] = [];
     if (alias.identityId && alias.identityId !== identity?.id) return hold('native_alias_identity_conflict');
     if (!identity) {
       // Before any new contact/history, respect demonstrated existing authorities.
@@ -278,6 +300,11 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
         if (legacy.providerEventId?.startsWith('meta:')) return hold('meta_bridge_correlation_required');
         if (key.identityFormat === 'provider_native' && c.provider !== 'evolution') return hold('provider_native_correlation_required');
         if (await tx.canonicalMessageIdentity.findUnique({ where: { messageId: legacy.id } })) return hold('legacy_message_already_bound');
+        adoptionAliases = await tx.canonicalNativeAlias.findMany({ where: { ...scope,
+          AND: [{ fullTuple: { path: ['origin'], equals: 'legacy' } }, { fullTuple: { path: ['messageId'], equals: legacy.id } }] } });
+        if (sender && !await persistedGroupSenderMatches(tx, scope, sender, legacy.metadata, adoptionAliases)) {
+          return hold('legacy_sender_identity_conflict');
+        }
         messageId = legacy.id; result.outcome = 'enriched'; result.changes.push('legacy_message_adopted');
       } else {
         const message = await tx.message.create({ data: { workspaceId: c.workspaceId, conversationId: result.conversationId, direction: key.direction!,
@@ -314,9 +341,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     }
     Object.assign(result, { identityId: identity.id, messageId: identity.messageId, conversationId: identity.conversationId });
     if (result.changes.includes('legacy_message_adopted')) {
-      const legacyAliases = await tx.canonicalNativeAlias.findMany({ where: { ...scope,
-        AND: [{ fullTuple: { path: ['origin'], equals: 'legacy' } }, { fullTuple: { path: ['messageId'], equals: identity.messageId } }] } });
-      for (const legacyAlias of legacyAliases) {
+      for (const legacyAlias of adoptionAliases) {
         const provenance = record(legacyAlias.fullTuple);
         if (provenance.conversationId === identity.conversationId && provenance.direction === key.direction
           && (provenance.nativeId === key.nativeId || provenance.nativeId === key.rawId)) {

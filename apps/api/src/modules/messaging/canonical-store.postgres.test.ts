@@ -342,4 +342,49 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
     await expect(db.$transaction(tx=>store.persistInTransaction(tx,msg(c),{receiptKey:'snapshot'}),{isolationLevel:'RepeatableRead'})).rejects.toThrow('READ COMMITTED');
   });
 
+  it.each([
+    { name: 'different persisted sender', metadataSender: PN, aliasSender: null, eventSender: '15550002222@s.whatsapp.net', proof: 'none', accepted: false },
+    { name: 'PN/LID without proof', metadataSender: LID, aliasSender: null, eventSender: PN, proof: 'none', accepted: false },
+    { name: 'PN/LID proved in this observation', metadataSender: LID, aliasSender: null, eventSender: PN, proof: 'current', accepted: true },
+    { name: 'PN/LID proved before this observation', metadataSender: LID, aliasSender: null, eventSender: PN, proof: 'previous', accepted: true },
+    { name: 'stored c.us and observed s.whatsapp.net', metadataSender: '15550001111@c.us', aliasSender: null, eventSender: PN, proof: 'none', accepted: true },
+    { name: 'stored s.whatsapp.net and observed c.us', metadataSender: PN, aliasSender: null, eventSender: '15550001111@c.us', proof: 'none', accepted: true },
+    { name: 'conflicting alias with missing metadata', metadataSender: null, aliasSender: PN, eventSender: '15550002222@s.whatsapp.net', proof: 'none', accepted: false },
+    { name: 'conflicting alias after metadata changed to the new sender', metadataSender: '15550002222@s.whatsapp.net', aliasSender: PN, eventSender: '15550002222@s.whatsapp.net', proof: 'none', accepted: false },
+    { name: 'conflicting metadata despite an alias matching the new sender', metadataSender: PN, aliasSender: '15550002222@s.whatsapp.net', eventSender: '15550002222@s.whatsapp.net', proof: 'none', accepted: false },
+    { name: 'matching alias with missing metadata', metadataSender: null, aliasSender: '15550001111@c.us', eventSender: PN, proof: 'none', accepted: true },
+    { name: 'alias PN/LID without proof', metadataSender: null, aliasSender: LID, eventSender: PN, proof: 'none', accepted: false },
+    { name: 'alias PN/LID with explicit proof', metadataSender: null, aliasSender: LID, eventSender: PN, proof: 'current', accepted: true },
+    { name: 'exact recovery when both historical senders are unknown', metadataSender: null, aliasSender: null, eventSender: PN, proof: 'none', accepted: true }
+  ])('checks all persisted group sender evidence before adopting: $name', async scenario => {
+    const c = await context();
+    const contact = await db.contact.create({data:{workspaceId:c.workspaceId,phone:GROUP,isGroup:true}});
+    const conversation = await db.conversation.create({data:{workspaceId:c.workspaceId,channelId:c.channelId,contactId:contact.id,unreadCount:7,aiControlStatus:'human_controlled'}});
+    const original = await db.message.create({data:{workspaceId:c.workspaceId,conversationId:conversation.id,direction:'inbound',type:'audio',body:'prepared legacy transcript',mediaUrl:'https://owned.test/legacy',providerMessageId:'A',metadata:{keep:'unchanged',transcription:{status:'completed'},...(scenario.metadataSender ? {groupSender:{jid:scenario.metadataSender,name:'Legacy'}} : {})}}});
+    const legacyAlias = scenario.aliasSender ? await db.canonicalNativeAlias.create({data:{workspaceId:c.workspaceId,channelId:c.channelId,channelProvider:'evolution',provider:'evolution',tupleHash:'abcd',fullTuple:{origin:'legacy',messageId:original.id,conversationId:conversation.id,nativeId:'A',direction:'inbound',contactAddress:GROUP,groupSender:{jid:scenario.aliasSender,name:'Original sender'}}}}) : null;
+    const mapping = {role:'sender' as const,lid:LID,pn:PN,source:'evolution.participantAlt' as const};
+    if (scenario.proof === 'previous') {
+      const proof = msg(c,'PROOF',GROUP,LID); proof.addressMappings=[mapping]; await persist(proof);
+    }
+    const event = msg(c,'A',GROUP,scenario.eventSender);
+    if (scenario.proof === 'current') event.addressMappings=[mapping];
+    const result = await persist(event,'adopt-group',{adoption:{messageId:original.id,key:event.key,source:'provider_exact_lookup'}});
+    expect(result).toMatchObject({outcome:scenario.accepted?'enriched':'held',allowOperationalEffects:false});
+    expect(await db.message.findUnique({where:{id:original.id}})).toEqual(original);
+    expect(await db.conversation.findUnique({where:{id:conversation.id}})).toEqual(conversation);
+    expect(await db.contact.count({where:{workspaceId:c.workspaceId}})).toBe(1);
+    if (scenario.accepted) {
+      expect(result.messageId).toBe(original.id);
+      expect(await db.canonicalMessageIdentity.findUnique({where:{messageId:original.id}})).toMatchObject({id:result.identityId,messageId:original.id});
+      if (legacyAlias) expect(await db.canonicalNativeAlias.findUnique({where:{id:legacyAlias.id}})).toMatchObject({state:'resolved',identityId:result.identityId,fullTuple:legacyAlias.fullTuple});
+    } else {
+      expect(result.reconciliationReasons).toContain('legacy_sender_identity_conflict');
+      expect(result.identityId).toBeNull();
+      expect(await db.canonicalMessageIdentity.findUnique({where:{messageId:original.id}})).toBeNull();
+      expect(await db.canonicalObservation.findUnique({where:{id:result.observationId}})).toMatchObject({state:'held',reason:'legacy_sender_identity_conflict',identityId:null});
+      expect(await db.canonicalNativeAlias.count({where:{workspaceId:c.workspaceId,identityId:{not:null}}})).toBe(0);
+      if (legacyAlias) expect(await db.canonicalNativeAlias.findUnique({where:{id:legacyAlias.id}})).toEqual(legacyAlias);
+    }
+  });
+
 });
