@@ -1,10 +1,14 @@
+import { abortable, withReadDeadline } from '../../app/read-request';
+import { useTalkPerformance, TalkPerformancePanel } from './talk-performance';
+import { useQuery } from '@tanstack/react-query';
+import { useSessionState, useTalkSession } from '../../app/session/TalkSessionProvider';
+import { CATALOG_STALE_MS, MAX_MESSAGES, receiptStatus } from '../../app/session/talk-session';
 import { LocationMessage } from './LocationMessage';
 import { needsHumanAttention } from "@prymeira-talk/shared";
-import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
 import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
-import type { ChangeEvent, DragEvent, FormEvent } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent, DragEvent, FormEvent, SetStateAction } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   apiCreateQuickReply,
   apiCreateConversationMessage,
@@ -20,7 +24,6 @@ import {
   apiDismissReply,
   apiUndoReply,
   apiGetChannels,
-  apiGetCurrentTalkUser,
   apiGetLeadComposerDraft,
   apiGetTags,
   apiGetQuickReplies,
@@ -49,7 +52,7 @@ import { useRealtimeEvents } from "./useRealtimeEvents";
 import { AssistantPanel } from './AssistantPanel';
 import { useHandoffBrief } from './useHandoffBrief';
 import { ContactIdentityCard } from './ContactIdentityCard';
-import { ContactAvatar, ContactPhotoProvider } from './ContactAvatar';
+import { ContactAvatar } from './ContactAvatar';
 import { InboxMedia, mediaCaption } from './InboxMedia';
 import { RichDraft, type RichDraftHandle } from './RichDraft';
 import { VoiceRecorder } from './VoiceRecorder';
@@ -68,6 +71,12 @@ function ConversationCardTime({ value }: { value: string | null }) {
 }
 
 const CONVERSATION_PAGE_SIZE = 50;
+const EMPTY_CONVERSATIONS: ConversationDto[] = [];
+const EMPTY_MESSAGES: MessageDto[] = [];
+const EMPTY_CHANNELS: ChannelDto[] = [];
+const EMPTY_TAGS: TagDto[] = [];
+const EMPTY_QUICK_REPLIES: QuickReplyDto[] = [];
+const EMPTY_NOTES: ContactContextDto["notes"] = [];
 
 function readConversationIdFromUrl() {
   if (typeof window === "undefined") return null;
@@ -273,7 +282,7 @@ function upsertMessage(list: MessageDto[], message: MessageDto) {
   const existingIndex = list.findIndex((item) => item.id === message.id);
 
   if (existingIndex >= 0) {
-    return list.map((item, index) => (index === existingIndex ? message : item));
+    return list.map((item, index) => (index === existingIndex ? { ...message, status: receiptStatus(item.status, message.status) } : item));
   }
 
   const optimisticIndex = list.findIndex(
@@ -430,79 +439,64 @@ export function messageMediaFallbackLabel(message: Pick<MessageDto, "mediaUrl" |
 }
 
 export function InboxPage() {
-  const { getToken } = useTalkAuth();
-  return <ContactPhotoProvider getToken={getToken}><InboxPageContent /></ContactPhotoProvider>;
+  return <InboxPageContent />;
 }
 
 function InboxPageContent() {
-  const { getToken } = useTalkAuth();
+  const { session, getToken, currentUser } = useTalkSession();
+  const [actionError, setError] = useState<string | null>(null);
+  const [contextActionError, setContextError] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
-  const [conversations, setConversations] = useState<ConversationDto[]>([]);
-  const [channels, setChannels] = useState<ChannelDto[]>([]);
   const [hasMoreConversations, setHasMoreConversations] = useState(false);
   const [isLoadingMoreConversations, setIsLoadingMoreConversations] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
-  const [messages, setMessages] = useState<MessageDto[]>([]);
-  const [messagesConversationId, setMessagesConversationId] = useState<string | null>(null);
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
-  const [selectedConversationSnapshot, setSelectedConversationSnapshot] = useState<ConversationDto | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
-  const [contactContext, setContactContext] = useState<ContactContextDto | null>(null);
-  const [isLoadingContext, setIsLoadingContext] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [selectedConversationId, setSelectedConversationId] = useSessionState<string | null>('selectedConversation', null);
+  const [selectedConversationSnapshot, setSelectedConversationSnapshot] = useSessionState<ConversationDto | null>('selectedSnapshot', null);
   const [messageError, setMessageError] = useState<string | null>(null);
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
-  const [contextError, setContextError] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useSessionState(`draft:${selectedConversationId ?? 'none'}`, '');
   const [assistantTab, setAssistantTab] = useState<'contact' | 'assistant'>('assistant');
   const [assistantOpen, setAssistantOpen] = useState(false);
-  const [composerOrigin, setComposerOrigin] = useState<ComposerSuggestionOrigin | null>(null);
+  const [composerOrigin, setComposerOrigin] = useSessionState<ComposerSuggestionOrigin | null>(`draftOrigin:${selectedConversationId ?? 'none'}`, null);
   const assistantSendBusy = useRef(false);
   const directSendKeys = useRef(new Map<string, string>());
   const assistantTriggerRef = useRef<HTMLButtonElement | null>(null);
   const assistantCloseRef = useRef<HTMLButtonElement | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [notesHistoryOpen, setNotesHistoryOpen] = useState(false);
-  const [tagCatalog, setTagCatalog] = useState<TagDto[]>([]);
   const [selectedTagId, setSelectedTagId] = useState("");
-  const [activeView, setActiveView] = useState<InboxView>("all");
-  const [selectedChannelFilter, setSelectedChannelFilter] = useState("all");
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchDraft, setSearchDraft] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [activeView, setActiveView] = useSessionState<InboxView>('view', 'all');
+  const [selectedChannelFilter, setSelectedChannelFilter] = useSessionState('channelFilter', 'all');
+  const [searchOpen, setSearchOpen] = useSessionState('searchOpen', false);
+  const [searchDraft, setSearchDraft] = useSessionState('searchDraft', '');
+  const [searchQuery, setSearchQuery] = useSessionState('searchQuery', '');
   const [shareContactOpen, setShareContactOpen] = useState(false);
   const [newConversationOpen, setNewConversationOpen] = useState(false);
   const [selectedContactCard, setSelectedContactCard] = useState<NonNullable<MessageDto['contactCards']>[number] | null>(null);
   const [quickSendOpen, setQuickSendOpen] = useState(false);
   const [sendNotice, setSendNotice] = useState<string | null>(null);
-  const [humanAttentionCount, setHumanAttentionCount] = useState(0);
   const [attentionCountReloadKey, setAttentionCountReloadKey] = useState(0);
   const [actionBusyConversationId, setActionBusyConversationId] = useState<string | null>(null);
   const [dismissUndo, setDismissUndo] = useState<{ conversationId: string; anchorMessageId: string } | null>(null);
   const [conversationReloadKey, setConversationReloadKey] = useState(0);
   const [isSending, setIsSending] = useState(false);
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingFile, setPendingFile] = useSessionState<File | null>(`draftFile:${selectedConversationId ?? 'none'}`, null);
   const [pendingFilePreview, setPendingFilePreview] = useState<string | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const dragDepthRef = useRef(0);
   const [isRunningAction, setIsRunningAction] = useState(false);
-  const [currentRole, setCurrentRole] = useState<"owner" | "manager" | "agent">("agent");
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
   const [crmStatus, setCrmStatus] = useState<string | null>(null);
   const [handoffFeedback, setHandoffFeedback] = useState<string | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showQuickReplies, setShowQuickReplies] = useState(false);
-  const [quickReplies, setQuickReplies] = useState<QuickReplyDto[]>([]);
-  const [isQuickRepliesLoading, setIsQuickRepliesLoading] = useState(false);
-  const [quickRepliesError, setQuickRepliesError] = useState<string | null>(null);
   const [newMessagesBelow, setNewMessagesBelow] = useState(0);
   const selectedConversationIdRef = useRef<string | null>(null);
-  const activeViewRef = useRef<InboxView>("all");
-  const conversationsRef = useRef<ConversationDto[]>([]);
   const conversationCursorRef = useRef<string | null>(null);
   const conversationListGenerationRef = useRef(0);
   const loadingMoreConversationsRef = useRef(false);
+  const paginationCompletionRef = useRef<Promise<void> | null>(null);
+  const conversationListRef = useRef<HTMLDivElement | null>(null);
   const messageThreadRef = useRef<HTMLDivElement | null>(null);
   const pendingThreadScrollRef = useRef<ScrollBehavior | null>(null);
   const userReadingHistoryRef = useRef(false);
@@ -515,7 +509,7 @@ function InboxPageContent() {
     setToken(nextToken);
     return nextToken;
   }, [getToken]);
-  useEffect(() => { setComposerOrigin(null); setDraft(''); setPendingFile(null); setAssistantOpen(false); setShareContactOpen(false); setSelectedContactCard(null); setIsDraggingFile(false); dragDepthRef.current = 0; }, [selectedConversationId]);
+  useEffect(() => { setContextError(null); setError(null); setAiSuggestion(null); setCrmStatus(null); setAssistantOpen(false); setShareContactOpen(false); setSelectedContactCard(null); setIsDraggingFile(false); dragDepthRef.current = 0; }, [selectedConversationId]);
   useEffect(() => {
     if (!pendingFile?.type.startsWith('image/')) { setPendingFilePreview(null); return; }
     const url = URL.createObjectURL(pendingFile);
@@ -544,31 +538,6 @@ function InboxPageContent() {
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [assistantOpen]);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    void Promise.all([apiGetTags(getToken), apiGetCurrentTalkUser(getToken)])
-      .then(([tags, currentUser]) => {
-        if (isMounted) {
-          setTagCatalog(tags.filter((tag) => tag.isActive));
-          setCurrentRole(currentUser.role);
-        }
-      })
-      .catch(() => undefined);
-
-    return () => {
-      isMounted = false;
-    };
-  }, [getToken]);
-
-  useEffect(() => {
-    let isMounted = true;
-    void apiGetChannels(getToken)
-      .then((nextChannels) => { if (isMounted) setChannels(nextChannels); })
-      .catch(() => undefined);
-    return () => { isMounted = false; };
-  }, [getToken]);
 
   function isMessageThreadNearBottom() {
     const thread = messageThreadRef.current;
@@ -604,153 +573,172 @@ function InboxPageContent() {
     selectedConversationIdRef.current = selectedConversationId;
   }, [selectedConversationId]);
 
-  useEffect(() => {
-    activeViewRef.current = activeView;
-  }, [activeView]);
 
-  useEffect(() => {
-    conversationsRef.current = conversations;
-  }, [conversations]);
 
-  useEffect(() => {
-    if (!showQuickReplies) return;
-    let isMounted = true;
-    setIsQuickRepliesLoading(true);
-    setQuickRepliesError(null);
-    apiGetQuickReplies(getToken)
-      .then((nextReplies) => {
-        if (isMounted) setQuickReplies(nextReplies);
-      })
-      .catch((loadError: unknown) => {
-        if (isMounted) setQuickRepliesError(loadError instanceof Error ? loadError.message : "Não foi possível carregar mensagens padrão.");
-      })
-      .finally(() => {
-        if (isMounted) setIsQuickRepliesLoading(false);
-      });
-    return () => {
-      isMounted = false;
-    };
-  }, [getToken, showQuickReplies]);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    const refreshToken = () => {
-      void getToken()
-        .then((nextToken) => {
-          if (isMounted) {
-            setToken(nextToken);
-          }
-        })
-        .catch(() => {
-          if (isMounted) {
-            setToken(null);
-          }
-        });
-    };
-
-    refreshToken();
-    const interval = window.setInterval(refreshToken, 45_000);
-
-    return () => {
-      isMounted = false;
-      window.clearInterval(interval);
-    };
-  }, [getToken]);
-
-  useEffect(() => {
-    let isMounted = true;
-    const generation = ++conversationListGenerationRef.current;
-    conversationCursorRef.current = null;
-    loadingMoreConversationsRef.current = false;
-    setConversations([]);
-    setHasMoreConversations(false);
-    setIsLoadingMoreConversations(false);
-    setLoadMoreError(null);
-
-    async function loadConversations() {
-      setIsLoading(true);
-      setError(null);
-
-      try {
-        const nextConversations = await apiGetConversations(getFreshToken, {
-          status: "all",
-          view: activeView,
-          ...(searchQuery ? { search: searchQuery } : {}),
-          ...(selectedChannelFilter !== "all" ? { channelId: selectedChannelFilter } : {})
-        });
-
-        if (!isMounted || generation !== conversationListGenerationRef.current) return;
-
-        setConversations(nextConversations);
-        conversationCursorRef.current = nextConversations.length === CONVERSATION_PAGE_SIZE
-          ? nextConversations.at(-1)!.id
-          : null;
-        setHasMoreConversations(Boolean(conversationCursorRef.current));
-        const requestedConversationId = readConversationIdFromUrl();
-        setSelectedConversationId((current) =>
-          current ??
-          (requestedConversationId &&
-          nextConversations.some((conversation) => conversation.id === requestedConversationId)
-            ? requestedConversationId
-            : nextConversations[0]?.id ?? null)
-        );
-      } catch (loadError) {
-        if (!isMounted || generation !== conversationListGenerationRef.current) return;
-        setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar conversas.");
-      } finally {
-        if (isMounted && generation === conversationListGenerationRef.current) {
-          setIsLoading(false);
-        }
+  const listKey = useMemo(() => session.key('conversations', activeView, selectedChannelFilter, searchQuery), [session, activeView, selectedChannelFilter, searchQuery]);
+  const messagesKey = useMemo(() => session.key('messages', selectedConversationId), [session, selectedConversationId]);
+  const contextKey = useMemo(() => session.key('context', selectedConversationId), [session, selectedConversationId]);
+  const listFilters = useMemo(() => ({ status: 'all' as const, view: activeView,
+    ...(searchQuery ? { search: searchQuery } : {}),
+    ...(selectedChannelFilter !== 'all' ? { channelId: selectedChannelFilter } : {})
+  }), [activeView, selectedChannelFilter, searchQuery]);
+  const paginationKey = `pagination:${JSON.stringify(listKey)}`;
+  const pagesKey = `pages:${JSON.stringify(listKey)}`;
+  const listQuery = useQuery({ queryKey: listKey,
+    queryFn: ({ signal }) => session.readConversations(() => withReadDeadline(signal, async deadline => {
+      // A reconciliation includes every page committed by an already-running pagination.
+      if (paginationCompletionRef.current) await abortable(paginationCompletionRef.current, deadline);
+      const pageCount = session.readUI(pagesKey, 1);
+      const rows = new Map<string, ConversationDto>();
+      let cursor: string | undefined;
+      let nextCursor: string | null = null;
+      let loadedPages = 0;
+      for (let page = 0; page < pageCount; page++) {
+        const raw = await apiGetConversations(getFreshToken, { ...listFilters, ...(cursor ? { cursor } : {}) }, deadline);
+        deadline.throwIfAborted(); loadedPages++;
+        for (const row of raw) rows.set(row.id, row);
+        nextCursor = raw.length === CONVERSATION_PAGE_SIZE ? raw.at(-1)!.id : null;
+        if (!nextCursor) break;
+        cursor = nextCursor;
       }
+      session.writeUI(paginationKey, nextCursor, null);
+      session.writeUI(pagesKey, loadedPages, 1);
+      return [...rows.values()];
+    }), listFilters) });
+  const messagesQuery = useQuery({ queryKey: messagesKey, enabled: Boolean(selectedConversationId),
+    queryFn: ({ signal }) => session.readMessages(selectedConversationId!, () => apiGetConversationMessages(selectedConversationId!, getFreshToken, signal)) });
+  const contextQuery = useQuery({ queryKey: contextKey, enabled: Boolean(selectedConversationId && !selectedConversationSnapshot?.isGroup),
+    queryFn: ({ signal }) => apiGetConversationContext(selectedConversationId!, getFreshToken, signal) });
+  const channelsQuery = useQuery({ queryKey: session.key('channels'), staleTime: CATALOG_STALE_MS,
+    queryFn: ({ signal }) => apiGetChannels(getFreshToken, signal) });
+  const tagsQuery = useQuery({ queryKey: session.key('tags'), staleTime: CATALOG_STALE_MS,
+    queryFn: ({ signal }) => apiGetTags(getFreshToken, signal) });
+  const quickRepliesKey = useMemo(() => session.key('quickReplies'), [session]);
+  const quickRepliesQuery = useQuery({ queryKey: quickRepliesKey, enabled: showQuickReplies, staleTime: CATALOG_STALE_MS,
+    queryFn: ({ signal }) => apiGetQuickReplies(getFreshToken, signal) });
+  const attentionQuery = useQuery({ queryKey: session.key('attention', selectedChannelFilter),
+    queryFn: ({ signal }) => apiGetAttentionCount(getFreshToken, selectedChannelFilter === 'all' ? undefined : selectedChannelFilter, signal) });
+  const conversations = listQuery.data ?? EMPTY_CONVERSATIONS;
+  const messages = messagesQuery.data ?? EMPTY_MESSAGES;
+  const messagesConversationId = messagesQuery.data ? selectedConversationId : null;
+  const contactContext = contextQuery.data ?? null;
+  const channels = channelsQuery.data ?? EMPTY_CHANNELS;
+  const tagCatalog = useMemo(() => (tagsQuery.data ?? EMPTY_TAGS).filter(tag => tag.isActive), [tagsQuery.data]);
+  const quickReplies = quickRepliesQuery.data ?? EMPTY_QUICK_REPLIES;
+  const isLoading = listQuery.isFetching;
+  const isLoadingMessages = messagesQuery.isFetching;
+  const isLoadingContext = contextQuery.isFetching;
+  const isQuickRepliesLoading = quickRepliesQuery.isFetching;
+  const quickRepliesError = quickRepliesQuery.error?.message ?? null;
+  const contextError = contextActionError ?? contextQuery.error?.message ?? null;
+  const error = actionError ?? listQuery.error?.message ?? null;
+  const humanAttentionCount = attentionQuery.data ?? 0;
+  const currentRole = currentUser.role;
+  const setConversations = useCallback((next: SetStateAction<ConversationDto[]>) => {
+    if (!session.isLive) return;
+    session.client.setQueryData<ConversationDto[]>(listKey, current => typeof next === 'function' ? next(current ?? []) : next);
+  }, [session, listKey]);
+  const setMessages = useCallback((next: SetStateAction<MessageDto[]>) => {
+    if (!session.isLive) return;
+    session.client.setQueryData<MessageDto[]>(messagesKey, current => (typeof next === 'function' ? next(current ?? []) : next).slice(-MAX_MESSAGES));
+  }, [session, messagesKey]);
+  const setContactContext = useCallback((next: ContactContextDto | null) => {
+    if (!session.isLive) return;
+    session.client.setQueryData(contextKey, next);
+  }, [session, contextKey]);
+  const setQuickReplies = useCallback((next: SetStateAction<QuickReplyDto[]>) => {
+    if (!session.isLive) return;
+    session.client.setQueryData<QuickReplyDto[]>(quickRepliesKey, current => typeof next === 'function' ? next(current ?? []) : next);
+  }, [session, quickRepliesKey]);
+  useEffect(() => {
+    session.setActive(selectedConversationId);
+    return () => session.setActive(null);
+  }, [session, selectedConversationId]);
+  useEffect(() => {
+    ++conversationListGenerationRef.current;
+    loadingMoreConversationsRef.current = false;
+    setIsLoadingMoreConversations(false); setLoadMoreError(null);
+  }, [listKey]);
+  useEffect(() => {
+    if (!listQuery.data) return;
+    conversationCursorRef.current = session.readUI<string | null>(paginationKey, null);
+    setHasMoreConversations(Boolean(conversationCursorRef.current));
+    const requestedId = readConversationIdFromUrl();
+    setSelectedConversationId(current => current ?? (requestedId && listQuery.data.some(row => row.id === requestedId) ? requestedId : listQuery.data[0]?.id ?? null));
+  }, [listQuery.data, setSelectedConversationId, session, paginationKey]);
+  useEffect(() => {
+    if (conversationReloadKey) void session.client.invalidateQueries({ queryKey: session.key('conversations') });
+  }, [session, conversationReloadKey]);
+  useEffect(() => {
+    if (attentionCountReloadKey) void session.client.invalidateQueries({ queryKey: session.key('attention') });
+  }, [session, attentionCountReloadKey]);
+  useEffect(() => {
+    setMessageError(messagesQuery.error?.message ?? null);
+  }, [messagesQuery.error, selectedConversationId]);
+  const recognizedMessages = useRef(new Set<string>());
+  const listScrollKey = `scroll:list:${activeView}:${selectedChannelFilter}:${searchQuery}`;
+  useLayoutEffect(() => {
+    if (conversationListRef.current && listQuery.data) conversationListRef.current.scrollTop = session.readUI(listScrollKey, 0);
+  }, [session, listScrollKey, Boolean(listQuery.data)]);
+  useEffect(() => {
+    if (!selectedConversationId || !messagesQuery.data) return;
+    let active = true;
+    for (const unknown of messagesQuery.data.filter(message => message.type === 'system' && message.body === 'Mensagem não reconhecida' && message.providerMessageId && !recognizedMessages.current.has(message.id)).slice(0, 3)) {
+      recognizedMessages.current.add(unknown.id);
+      void apiRecognizeContactMessage(selectedConversationId, unknown.id, getFreshToken).then(recognized => {
+        if (!active) return;
+        if ('removedMessageId' in recognized) {
+          setMessages(current => current.filter(message => message.id !== recognized.removedMessageId));
+          setConversationReloadKey(current => current + 1);
+        } else setMessages(current => current.map(message => message.id === recognized.id ? recognized : message));
+      }).catch(() => {});
     }
+    return () => { active = false; };
+  }, [messagesQuery.data, selectedConversationId, getFreshToken, setMessages]);
 
-    void loadConversations();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [conversationReloadKey, getFreshToken, activeView, selectedChannelFilter, searchQuery]);
+  const paginationController = useRef<AbortController | null>(null);
+  useEffect(() => () => paginationController.current?.abort(), [listKey]);
 
   const loadMoreConversations = useCallback(async () => {
     const cursor = conversationCursorRef.current;
-    if (!cursor || loadingMoreConversationsRef.current) return;
+    if (!cursor || loadingMoreConversationsRef.current || session.client.getQueryState(listKey)?.fetchStatus === 'fetching') return;
     const generation = conversationListGenerationRef.current;
     loadingMoreConversationsRef.current = true;
     setIsLoadingMoreConversations(true);
     setLoadMoreError(null);
+    let finishPagination!: () => void;
+    const completion = new Promise<void>(resolve => { finishPagination = resolve; });
+    paginationCompletionRef.current = completion;
 
     try {
-      const page = await apiGetConversations(getFreshToken, {
-        status: "all",
-        view: activeView,
-        ...(searchQuery ? { search: searchQuery } : {}),
-        ...(selectedChannelFilter !== "all" ? { channelId: selectedChannelFilter } : {}),
-        cursor
-      });
+      paginationController.current?.abort();
+      const controller = new AbortController(); paginationController.current = controller;
+      let nextCursor: string | null = null;
+      const page = await session.readConversations(async () => {
+        const raw = await apiGetConversations(getFreshToken, { ...listFilters, cursor }, controller.signal);
+        controller.signal.throwIfAborted();
+        nextCursor = raw.length === CONVERSATION_PAGE_SIZE ? raw.at(-1)!.id : null;
+        return raw;
+      }, listFilters);
       if (generation !== conversationListGenerationRef.current) return;
+      session.writeUI(paginationKey, nextCursor, null);
+      session.writeUI(pagesKey, session.readUI(pagesKey, 1) + 1, 1);
       setConversations((current) => mergeConversationPage(current, page));
-      conversationCursorRef.current = page.length === CONVERSATION_PAGE_SIZE ? page.at(-1)!.id : null;
+      conversationCursorRef.current = nextCursor;
       setHasMoreConversations(Boolean(conversationCursorRef.current));
     } catch (loadError) {
       if (generation === conversationListGenerationRef.current) {
         setLoadMoreError(loadError instanceof Error ? loadError.message : "Não foi possível carregar mais conversas.");
       }
     } finally {
+      finishPagination();
+      if (paginationCompletionRef.current === completion) paginationCompletionRef.current = null;
       if (generation === conversationListGenerationRef.current) {
         loadingMoreConversationsRef.current = false;
         setIsLoadingMoreConversations(false);
       }
     }
-  }, [getFreshToken, activeView, selectedChannelFilter, searchQuery]);
-
-  useEffect(() => {
-    let active = true;
-    void apiGetAttentionCount(getFreshToken, selectedChannelFilter === "all" ? undefined : selectedChannelFilter)
-      .then((count) => { if (active) setHumanAttentionCount(count); })
-      .catch(() => { if (active) setHumanAttentionCount(0); });
-    return () => { active = false; };
-  }, [getFreshToken, selectedChannelFilter, attentionCountReloadKey]);
+  }, [getFreshToken, activeView, selectedChannelFilter, searchQuery, setConversations, session, listFilters, listKey, paginationKey, pagesKey]);
 
   useEffect(() => {
     if (!dismissUndo) return;
@@ -758,226 +746,17 @@ function InboxPageContent() {
     return () => window.clearTimeout(timer);
   }, [dismissUndo]);
 
-  useEffect(() => {
-    let isMounted = true;
-
-    async function loadMessages() {
-      if (!selectedConversationId) {
-        setMessages([]);
-        setMessagesConversationId(null);
-        return;
-      }
-
-      setIsLoadingMessages(true);
-      setMessageError(null);
-
-      try {
-        const nextMessages = await apiGetConversationMessages(selectedConversationId, getFreshToken);
-
-        if (!isMounted) return;
-
-        setMessages(nextMessages);
-        setMessagesConversationId(selectedConversationId);
-        setNewMessagesBelow(0);
-        userReadingHistoryRef.current = false;
-        scheduleMessageThreadScroll("auto");
-        for (const unknown of nextMessages.filter((message) => message.type === 'system' && message.body === 'Mensagem não reconhecida' && message.providerMessageId).slice(0, 3)) {
-          void apiRecognizeContactMessage(selectedConversationId, unknown.id, getFreshToken)
-            .then((recognized) => {
-              if (!isMounted) return;
-              if ('removedMessageId' in recognized) {
-                setMessages((current) => current.filter((message) => message.id !== recognized.removedMessageId));
-                setConversationReloadKey((current) => current + 1);
-                return;
-              }
-              setMessages((current) => current.map((message) => message.id === recognized.id ? recognized : message));
-              setConversations((current) => current.map((conversation) => conversation.id === selectedConversationId && conversation.lastMessagePreview === 'Mensagem não reconhecida' && conversation.lastMessageAt === recognized.createdAt
-                ? { ...conversation, lastMessagePreview: recognized.body } : conversation));
-            }).catch(() => undefined);
-        }
-      } catch (loadError) {
-        if (!isMounted) return;
-        setMessages([]);
-        setMessagesConversationId(selectedConversationId);
-        setMessageError(loadError instanceof Error ? loadError.message : "Não foi possível carregar mensagens.");
-      } finally {
-        if (isMounted) {
-          setIsLoadingMessages(false);
-        }
-      }
-    }
-
-    void loadMessages();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [getFreshToken, selectedConversationId]);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function loadContext() {
-      const target = conversationsRef.current.find((conversation) => conversation.id === selectedConversationId)
-        ?? (selectedConversationSnapshot?.id === selectedConversationId ? selectedConversationSnapshot : null);
-      if (!selectedConversationId || target?.isGroup) {
-        setContactContext(null);
-        return;
-      }
-
-      setIsLoadingContext(true);
-      setContextError(null);
-      setAiSuggestion(null);
-      setCrmStatus(null);
-
-      try {
-        const nextContext = await apiGetConversationContext(selectedConversationId, getFreshToken);
-
-        if (!isMounted) return;
-
-        setContactContext(nextContext);
-      } catch (loadError) {
-        if (!isMounted) return;
-        setContextError(loadError instanceof Error ? loadError.message : "Não foi possível carregar contexto.");
-      } finally {
-        if (isMounted) {
-          setIsLoadingContext(false);
-        }
-      }
-    }
-
-    void loadContext();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [getFreshToken, selectedConversationId, selectedConversationSnapshot?.id, selectedConversationSnapshot?.isGroup]);
-
-  const refreshSelectedContext = useCallback((targetConversationId: string) => {
-    void apiGetConversationContext(targetConversationId, getFreshToken)
-      .then((nextContext) => {
-        if (selectedConversationIdRef.current === targetConversationId) {
-          setContactContext(nextContext);
-        }
-      })
-      .catch(() => undefined);
-  }, [getFreshToken]);
-
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
-    if (event.type === 'message.deleted') {
-      setMessages((current) => current.filter((message) => message.id !== event.payload.messageId));
-      setConversationReloadKey((current) => current + 1);
-      return;
+    if (event.workspaceId !== session.workspaceId) return;
+    if (event.type === 'message.created' && event.payload.conversationId === selectedConversationIdRef.current) {
+      if (isMessageThreadNearBottom() || !userReadingHistoryRef.current || event.payload.direction === 'outbound') scheduleMessageThreadScroll('smooth');
+      else setNewMessagesBelow(current => current + 1);
     }
-    if (event.type === "message.updated") {
-      setMessages((current) => current.map((message) =>
-        message.id === event.payload.id ? event.payload : message
-      ));
-      return;
+    if (event.type === 'conversation.updated' && event.payload.id === selectedConversationIdRef.current) {
+      setSelectedConversationSnapshot(event.payload);
     }
-    if (event.type === "message.status_changed") {
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === event.payload.messageId
-            ? {
-                ...message,
-                status: event.payload.status
-              }
-            : message
-        )
-      );
-      return;
-    }
-
-    if (event.type === "message.created") {
-      const isSelectedConversation = event.payload.conversationId === selectedConversationIdRef.current;
-      const shouldStickToBottom = isMessageThreadNearBottom() || !userReadingHistoryRef.current;
-
-      setMessages((current) => {
-        if (!isSelectedConversation) return current;
-        return upsertMessage(current, event.payload);
-      });
-
-      if (isSelectedConversation) {
-        if (shouldStickToBottom || event.payload.direction === "outbound") {
-          scheduleMessageThreadScroll("smooth");
-        } else if (event.payload.direction === "inbound") {
-          setNewMessagesBelow((current) => current + 1);
-        }
-      }
-      return;
-    }
-
-    if (event.type === "contact.updated") {
-      setConversations((current) =>
-        current.map((conversation) =>
-          conversation.contactId === event.payload.id
-            ? {
-                ...conversation,
-                contactName: event.payload.name,
-                contactPhone: event.payload.phone
-              }
-            : conversation
-        )
-      );
-
-      const selectedConversation = conversationsRef.current.find(
-        (conversation) => conversation.id === selectedConversationIdRef.current
-      );
-      if (selectedConversation?.contactId === event.payload.id && selectedConversationIdRef.current) {
-        refreshSelectedContext(selectedConversationIdRef.current);
-      }
-      return;
-    }
-
-    if (event.type === "board_membership.updated") {
-      const selectedConversation = conversationsRef.current.find(
-        (conversation) => conversation.id === selectedConversationIdRef.current
-      );
-      if (
-        selectedConversation?.contactId === event.payload.contactId &&
-        selectedConversationIdRef.current
-      ) {
-        refreshSelectedContext(selectedConversationIdRef.current);
-      }
-      return;
-    }
-
-    if (event.type !== "conversation.updated") return;
-    setAttentionCountReloadKey((current) => current + 1);
-    if (event.payload.id === selectedConversationIdRef.current) {
-      setSelectedConversationSnapshot((current) => current ? { ...current, ...event.payload } : event.payload);
-      refreshSelectedContext(event.payload.id);
-    }
-    if (selectedChannelFilter !== "all" && event.payload.channelId !== selectedChannelFilter) return;
-    if (activeViewRef.current !== "all" || searchQuery) {
-      setConversationReloadKey((current) => current + 1);
-      return;
-    }
-
-    setConversations((current) => event.payload.hiddenUntilReply
-      ? current.filter((conversation) => conversation.id !== event.payload.id)
-      : upsertConversation(current, event.payload));
-    if (event.payload.id === selectedConversationIdRef.current) {
-      if (needsHumanAttention(event.payload)) {
-        setAcknowledgedHandoffIds((current) => new Set(current).add(event.payload.id));
-      }
-    } else {
-      setAcknowledgedHandoffIds((current) => {
-        const next = new Set(current);
-        if (!needsHumanAttention(event.payload)) {
-          next.delete(event.payload.id);
-        }
-        return next;
-      });
-    }
-
-  }, [refreshSelectedContext, selectedChannelFilter, searchQuery]);
-
-  useRealtimeEvents({
-    token,
-    onEvent: handleRealtimeEvent
-  });
+  }, [session, setSelectedConversationSnapshot]);
+  useRealtimeEvents({ token, onEvent: handleRealtimeEvent });
 
   const channelFilterOptions = useMemo(
     () => getChannelFilterOptions(conversations, channels),
@@ -1004,16 +783,16 @@ function InboxPageContent() {
     () => resolveSelectedConversation(visibleConversations, selectedConversationId, selectedConversationSnapshot),
     [visibleConversations, selectedConversationId, selectedConversationSnapshot]
   );
-  const assistant = useAssistantConversation(selectedConversation?.isGroup ? null : selectedConversationId, getToken);
-  const visibleMessages = messagesConversationId === selectedConversationId ? messages : [];
+  const assistant = useAssistantConversation(selectedConversation?.isGroup ? null : selectedConversationId, getToken, `${selectedConversation?.lastMessageAt ?? ''}:${selectedConversation?.aiControlStatus ?? ''}:${selectedConversation?.handoffActionCompletedAt ?? ''}`);
+  const beginPerformance = useTalkPerformance(selectedConversationId, selectedConversation?.id ?? null, messagesQuery.data);
+  const visibleMessages = messagesConversationId === selectedConversationId ? messages : EMPTY_MESSAGES;
   const handoffEnabled = Boolean(selectedConversation && !selectedConversation.isGroup && needsHumanAttention(selectedConversation));
   const handoff = useHandoffBrief(selectedConversationId, handoffEnabled, selectedConversation?.lastMessageAt, getToken);
-  const handoffBrief = handoffEnabled ? handoff.data ?? {
+  const handoffBrief = useMemo(() => handoffEnabled ? handoff.data ?? {
     status: handoff.error ? 'failed' as const : 'pending' as const,
     nextAction: null, summary: null, contextKey: null, updatedAt: null,
     error: handoff.error
-  } : null;
-  useEffect(() => { assistant.refresh(); }, [selectedConversation?.lastMessageAt, selectedConversation?.aiControlStatus, selectedConversation?.handoffActionCompletedAt, assistant.refresh]);
+  } : null, [handoffEnabled, handoff.data, handoff.error]);
   const originNeedsReview = draftNeedsReview(composerOrigin, assistant.data?.currentContextKey);
   function editSuggestion(suggestion: AssistantSuggestionDto, confirmed: boolean) {
     if (suggestion.conversationId !== selectedConversationId || !canCopySuggestion(draft, confirmed)) return;
@@ -1038,14 +817,14 @@ function InboxPageContent() {
       if (result.conversation) setConversations(current => upsertConversation(current, result.conversation!));
     } finally { assistantSendBusy.current = false; setIsSending(false); }
   }
-  const isThreadTransitioning = Boolean(selectedConversationId) && messagesConversationId !== selectedConversationId;
+  const isThreadTransitioning = Boolean(selectedConversationId) && messagesConversationId !== selectedConversationId && isLoadingMessages;
   async function saveContactName(contactId: string, name: string) {
     const saved = await apiUpdateContact(getToken, contactId, { name });
     setConversations(current => current.map(conversation => conversation.contactId === saved.id
       ? { ...conversation, contactName: saved.name, contactPhone: saved.phone } : conversation));
   }
-  const contextNotes = contactContext?.notes ?? [];
-  const visibleNotes = notesHistoryOpen ? contextNotes : contextNotes.slice(0, 2);
+  const contextNotes = contactContext?.notes ?? EMPTY_NOTES;
+  const visibleNotes = useMemo(() => notesHistoryOpen ? contextNotes : contextNotes.slice(0, 2), [notesHistoryOpen, contextNotes]);
   const hiddenNoteCount = Math.max(0, contextNotes.length - visibleNotes.length);
   const availableTagOptions = useMemo(() => {
     const appliedTagIds = new Set(contactContext?.tags.map((tag) => tag.id) ?? []);
@@ -1064,6 +843,14 @@ function InboxPageContent() {
   }, [availableTagOptions]);
 
   useEffect(() => {
+    if (!selectedConversationId || !messagesQuery.data) return;
+    const saved = session.readUI<number | null>(`scroll:${selectedConversationId}`, null);
+    if (saved !== null && messageThreadRef.current) {
+      messageThreadRef.current.scrollTop = saved;
+      userReadingHistoryRef.current = !isMessageThreadNearBottom();
+    } else scheduleMessageThreadScroll('auto');
+  }, [selectedConversationId, Boolean(messagesQuery.data), session]);
+  useEffect(() => {
     if (!pendingThreadScrollRef.current) return;
 
     const behavior = pendingThreadScrollRef.current;
@@ -1078,22 +865,27 @@ function InboxPageContent() {
     setAcknowledgedHandoffIds((current) => new Set(current).add(selectedConversation.id));
   }, [selectedConversation]);
 
+  const markingRead = useRef(new Set<string>());
   useEffect(() => {
-    if (!selectedConversation || selectedConversation.unreadCount === 0) return;
+    if (!selectedConversation || selectedConversation.unreadCount === 0 || markingRead.current.has(selectedConversation.id)) return;
 
     const targetConversationId = selectedConversation.id;
+    markingRead.current.add(targetConversationId);
 
     void apiMarkConversationRead(getFreshToken, targetConversationId)
       .then((conversation) => {
         setConversations((current) =>
-          current.map((item) => (item.id === conversation.id ? conversation : item))
+          current.map((item) => item.id === conversation.id && item.lastMessageAt === conversation.lastMessageAt
+            ? { ...item, unreadCount: conversation.unreadCount } : item)
         );
         if (selectedConversationIdRef.current === conversation.id) {
-          setSelectedConversationSnapshot((current) => current ? { ...current, ...conversation } : conversation);
+          setSelectedConversationSnapshot(current => current?.id === conversation.id && current.lastMessageAt === conversation.lastMessageAt
+            ? { ...current, unreadCount: conversation.unreadCount } : current);
         }
       })
-      .catch(() => undefined);
-  }, [getFreshToken, selectedConversation]);
+      .catch(() => undefined)
+      .finally(() => markingRead.current.delete(targetConversationId));
+  }, [getFreshToken, selectedConversation?.id, selectedConversation?.unreadCount, setConversations, setSelectedConversationSnapshot]);
 
 
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
@@ -1165,15 +957,8 @@ function InboxPageContent() {
         getFreshToken
       );
 
-      setMessages((current) => {
-        if (
-          selectedConversationIdRef.current !== targetConversationId ||
-          createdMessage.conversationId !== targetConversationId
-        ) {
-          return current;
-        }
-        return upsertMessage(current, createdMessage);
-      });
+      if (session.isLive) session.client.setQueryData<MessageDto[]>(session.key('messages', targetConversationId), current =>
+        upsertMessage((current ?? []).filter(message => message.id !== optimisticMessage.id), createdMessage).slice(-MAX_MESSAGES));
       setConversations((current) =>
         current.map((conversation) =>
           conversation.id === targetConversationId
@@ -1318,9 +1103,8 @@ function InboxPageContent() {
         getFreshToken
       );
 
-      setMessages((current) =>
-        selectedConversationIdRef.current === targetConversationId ? upsertMessage(current, createdMessage) : current
-      );
+      if (session.isLive) session.client.setQueryData<MessageDto[]>(session.key('messages', targetConversationId), current =>
+        upsertMessage((current ?? []).filter(message => message.id !== optimisticMessage.id), createdMessage).slice(-MAX_MESSAGES));
       setConversations((current) =>
         current.map((conversation) =>
           conversation.id === targetConversationId
@@ -1416,7 +1200,6 @@ function InboxPageContent() {
       const result = await apiResetConversation(targetConversationId, getFreshToken);
       applyActionResult(result, targetConversationId);
       setMessages([]);
-      setMessagesConversationId(targetConversationId);
       setNoteDraft("");
       setSelectedTagId("");
       setAiSuggestion(null);
@@ -1429,7 +1212,9 @@ function InboxPageContent() {
   }
 
   function applyActionResult(result: ConversationActionResultDto, targetConversationId: string) {
-    setConversations((current) => upsertConversation(current, result.conversation));
+    if (!session.isLive) return;
+    session.event({ type: 'conversation.updated', workspaceId: session.workspaceId, payload: result.conversation });
+    session.client.setQueryData(session.key('context', targetConversationId), result.context);
     if (
       selectedConversationIdRef.current !== targetConversationId ||
       result.conversation.id !== targetConversationId
@@ -1560,9 +1345,13 @@ function InboxPageContent() {
     }
   }
 
-  return (
-    <section className={`talk-workspace talk-workspace-atendimento${selectedConversationId ? ' has-selected-conversation' : ''}`} aria-label="Atendimento">
-      <section className="conversation-list" aria-label="Atendimento">
+  // Actions read the current composer/context; memoized sections never capture an old draft.
+  const actionsRef = useRef({ handleManualMark, handleDismissReply, handleUndoDismiss, deleteMessageForEveryone,
+    runAction, handleCreateLead, resetSelectedConversation, handleRemoveTag, saveContactName, handleAddTag, handleAddNote, sendSuggestion, editSuggestion });
+  actionsRef.current = { handleManualMark, handleDismissReply, handleUndoDismiss, deleteMessageForEveryone,
+    runAction, handleCreateLead, resetSelectedConversation, handleRemoveTag, saveContactName, handleAddTag, handleAddNote, sendSuggestion, editSuggestion };
+  const conversationListView = useMemo(() => (
+<section className="conversation-list" aria-label="Atendimento">
         <header className="list-header">
           <div>
             <p className="eyebrow">Prymeira Talk</p>
@@ -1628,15 +1417,16 @@ function InboxPageContent() {
         </div>
 
         {isLoading ? <p className="list-note">Carregando conversas...</p> : null}
-        {error ? <p className="error-note">{error}</p> : null}
+        {error ? <p className="error-note" role="status">{error} <button type="button" onClick={() => void listQuery.refetch()}>Tentar novamente</button></p> : null}
         {sendNotice ? <div className="inbox-send-notice" role="status">{sendNotice}<button type="button" aria-label="Fechar aviso" onClick={() => setSendNotice(null)}><X size={14} /></button></div> : null}
         {dismissUndo ? <div className="inbox-undo-toast" role="status">
           Indicação dispensada.
-          <button type="button" onClick={() => void handleUndoDismiss()}>Desfazer</button>
+          <button type="button" onClick={() => void actionsRef.current.handleUndoDismiss()}>Desfazer</button>
         </div> : null}
 
-        <div className="conversation-items" onScroll={(event) => {
+        <div className="conversation-items" ref={conversationListRef} onScroll={(event) => {
           const list = event.currentTarget;
+          session.writeUI(listScrollKey, list.scrollTop, 0);
           if (list.scrollHeight - list.scrollTop - list.clientHeight < 160) {
             void loadMoreConversations();
           }
@@ -1676,7 +1466,12 @@ function InboxPageContent() {
                 type="button"
                 className="conversation-card-main"
                 aria-label={conversationAriaLabel}
+                onPointerEnter={() => session.prefetch(conversation.id, signal => apiGetConversationMessages(conversation.id, getFreshToken, signal))}
+                onFocus={() => session.prefetch(conversation.id, signal => apiGetConversationMessages(conversation.id, getFreshToken, signal))}
+                onPointerLeave={() => session.cancelPrefetch(conversation.id)}
+                onBlur={() => session.cancelPrefetch(conversation.id)}
                 onClick={() => {
+                  beginPerformance(conversation.id, session.client.getQueryData(session.key('messages', conversation.id)) !== undefined);
                   setSelectedConversationId(conversation.id);
                   setSelectedConversationSnapshot(conversation);
                   if (conversationNeedsHuman) {
@@ -1742,7 +1537,7 @@ function InboxPageContent() {
                   aria-pressed={Boolean(conversation.manualMarked)}
                   title={conversation.manualMarked ? "Remover marcação" : "Marcar para cuidar depois"}
                   disabled={actionBusyConversationId === conversation.id}
-                  onClick={() => void handleManualMark(conversation)}
+                  onClick={() => void actionsRef.current.handleManualMark(conversation)}
                 ><Bookmark size={17} fill={conversation.manualMarked ? "currentColor" : "none"} aria-hidden="true" /></button>
                 {showSemanticDismiss ? <button
                   type="button"
@@ -1750,7 +1545,7 @@ function InboxPageContent() {
                   aria-label="Não precisa responder"
                   title="Não precisa responder"
                   disabled={actionBusyConversationId === conversation.id}
-                  onClick={() => void handleDismissReply(conversation)}
+                  onClick={() => void actionsRef.current.handleDismissReply(conversation)}
                 ><MessageCircleX size={17} aria-hidden="true" /></button> : null}
               </div>
             </div>
@@ -1760,7 +1555,7 @@ function InboxPageContent() {
           {hasMoreConversations ? (
             <button
               className="conversation-load-more"
-              disabled={isLoadingMoreConversations}
+              disabled={isLoadingMoreConversations || isLoading}
               onClick={() => void loadMoreConversations()}
               type="button"
             >
@@ -1769,6 +1564,310 @@ function InboxPageContent() {
           ) : null}
         </div>
       </section>
+  ), [token, channelFilterOptions, selectedChannelFilter, activeView, searchOpen, searchDraft, searchQuery,
+    humanAttentionCount, isLoading, error, sendNotice, dismissUndo, hasMoreConversations, visibleConversations,
+    selectedConversationId, acknowledgedHandoffIds, actionBusyConversationId, loadMoreError, isLoadingMoreConversations,
+    loadMoreConversations, session, getFreshToken, setSelectedConversationId, setSelectedConversationSnapshot,
+    setActiveView, setSelectedChannelFilter, setSearchDraft, setSearchQuery, setSearchOpen, listQuery.refetch, beginPerformance, listScrollKey]);
+  const historyView = useMemo(() => (
+selectedConversation ? (
+          <div
+            className="message-thread"
+            aria-label="Histórico da conversa"
+            onScroll={() => {
+              if (selectedConversationId && messageThreadRef.current) session.writeUI(`scroll:${selectedConversationId}`, messageThreadRef.current.scrollTop, 0);
+              if (isMessageThreadNearBottom()) {
+                userReadingHistoryRef.current = false;
+                setNewMessagesBelow(0);
+              } else {
+                userReadingHistoryRef.current = true;
+              }
+            }}
+            ref={messageThreadRef}
+          >
+            {visibleMessages.length >= 100 ? <p className="assistant-caption">Na abertura, são carregadas as 100 mensagens mais recentes.</p> : null}
+            {isThreadTransitioning ? (
+              <div className="message-thread-skeleton" aria-label="Abrindo conversa">
+                <span />
+                <span />
+                <span />
+              </div>
+            ) : null}
+            {isLoadingMessages && !isThreadTransitioning ? (
+              <p className="thread-note">Atualizando mensagens...</p>
+            ) : null}
+            {messageError ? <p className="error-note" role="status">{messageError} <button type="button" onClick={() => void messagesQuery.refetch()}>Tentar novamente</button></p> : null}
+            {!messageError && !isLoadingMessages && !isThreadTransitioning && visibleMessages.length === 0 ? (
+              <p className="thread-note">Ainda não ha mensagens nesta conversa.</p>
+            ) : null}
+            {visibleMessages.map((message) => (
+              <article
+                className={`message-bubble ${message.direction === "outbound" ? "is-outbound" : "is-inbound"}`}
+                key={message.id}
+              >
+                {message.direction === "inbound" ? (
+                  <ContactAvatar conversationId={selectedConversation?.id} name={selectedConversation?.isGroup ? message.senderName ?? message.senderJid : selectedConversation?.contactName} className="msg-avatar" />
+                ) : null}
+                <div className="msg-bubble-body">
+                  {selectedConversation.isGroup && message.direction === "inbound" ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
+                  {['image', 'audio', 'file'].includes(message.type) ? <>
+                    <InboxMedia key={`${message.id}:${message.mediaUrl?.slice(0, 60)}`} message={message} getToken={getToken} />
+                    {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
+                    {attachmentReadNotice(message) ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
+                  </> : message.location ? <LocationMessage location={message.location} /> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} onSelect={setSelectedContactCard} /> : <p><WhatsappText text={messageDisplayText(message)} /></p>}
+                  <div className="message-bubble-meta">
+                    {message.editedAt ? <span className="message-edited-label">Editada</span> : null}
+                    <time>{formatMessageTime(message.createdAt)}</time>
+                    {selectedConversation.channelProvider === 'evolution' && !selectedConversation.isGroup && message.direction === 'outbound' &&
+                      message.providerMessageId && !message.deletedAt && ['sent', 'delivered', 'read'].includes(message.status) ? (
+                        <button type="button" className="message-delete-action" title="Apagar para todos"
+                          aria-label="Apagar mensagem para todos" disabled={Boolean(deletingMessageId)}
+                          onClick={() => { void actionsRef.current.deleteMessageForEveryone(message); }}>
+                          <Trash2 size={13} aria-hidden="true" />
+                        </button>
+                      ) : null}
+                  </div>
+                  {outboundStatusLabel(message) ? (
+                    <span className={`message-send-state message-send-state--${message.status}`}>
+                      {outboundStatusLabel(message)}
+                    </span>
+                  ) : null}
+                </div>
+              </article>
+            ))}
+            {newMessagesBelow > 0 ? (
+              <button
+                className="new-messages-pill"
+                onClick={() => scrollMessageThreadToBottom("smooth")}
+                type="button"
+              >
+                {newMessagesBelow === 1 ? "1 nova mensagem abaixo" : `${newMessagesBelow} novas mensagens abaixo`}
+              </button>
+            ) : null}
+          </div>
+        ) : (
+          <div className="empty-state">
+            <div className="empty-state-icon">
+              <MessageSquare size={28} aria-hidden="true" />
+            </div>
+            <h3>Nenhuma conversa selecionada</h3>
+            <p>Escolha uma conversa na fila para acompanhar o atendimento.</p>
+          </div>
+        )
+  ), [selectedConversation, selectedConversationId, visibleMessages, isThreadTransitioning, isLoadingMessages,
+    messageError, newMessagesBelow, deletingMessageId, getToken, session, messagesQuery.refetch]);
+  const sidebarView = useMemo(() => (
+<aside className={`contact-panel assistant-contact-panel${assistantOpen ? ' assistant-drawer-open' : ''}`} aria-label="Contato e IA de apoio">
+        {selectedConversation?.isGroup ? <>
+          <div className="context-card"><div className="context-card-title">Grupo do WhatsApp</div><strong>{contactDisplayName(selectedConversation)}</strong><p>As respostas neste grupo são enviadas manualmente.</p></div>
+          <div className="context-card"><div className="context-card-title">Atendimento</div><p>{selectedConversation.assignedUserName ?? 'Fila geral'} · {statusLabel(selectedConversation.status)}</p><div className="quick-actions"><button type="button" disabled={isRunningAction} onClick={() => void actionsRef.current.runAction({ action: 'assign_current_user' })}>Assumir</button><button type="button" disabled={isRunningAction} onClick={() => void actionsRef.current.runAction({ action: 'close_conversation' })}>Finalizar</button></div></div>
+        </> : <>
+        <div className="assistant-tabs"><button type="button" aria-pressed={assistantTab === 'contact'} onClick={() => setAssistantTab('contact')}>Contato</button><button type="button" aria-pressed={assistantTab === 'assistant'} onClick={() => setAssistantTab('assistant')}>IA de apoio{handoffBrief ? <span className="assistant-tab-dot is-handoff" /> : assistant.data?.status === 'ready' ? <span className="assistant-tab-dot" /> : null}</button><button ref={assistantCloseRef} className="assistant-drawer-close" aria-label="Fechar apoio" type="button" onClick={() => { setAssistantOpen(false); assistantTriggerRef.current?.focus(); }}><X size={18} /></button></div>
+        {handoff.error ? <p className="error-note" role="status">{handoff.error} <button type="button" onClick={handoff.refresh}>Tentar novamente</button></p> : null}
+        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} handoffBrief={handoffBrief} handoffCompleted={Boolean(selectedConversation?.handoffActionCompletedAt)} handoffFeedback={handoffFeedback} handoffBusy={isRunningAction} onCompleteHandoff={() => { void actionsRef.current.runAction({ action: 'complete_handoff_action' }); }} onReopenHandoff={() => { void actionsRef.current.runAction({ action: 'reopen_handoff_action' }); }} onReanalyzeHandoff={() => { void actionsRef.current.runAction({ action: 'reanalyze_handoff_reply' }); }} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={(...args) => actionsRef.current.sendSuggestion(...args)} onEdit={(...args) => actionsRef.current.editSuggestion(...args)} /> : <>
+        {isLoadingContext ? <p className="thread-note" role="status">Atualizando contato…</p> : null}
+        {/* Card identidade */}
+        {selectedConversation ? <ContactIdentityCard key={selectedConversation.contactId}
+          conversationId={selectedConversation.id}
+          contactId={selectedConversation.contactId} name={selectedConversation.contactName ?? null}
+          phone={selectedConversation.contactPhone ?? null} channelName={selectedConversation.channelName}
+          onSave={(...args) => actionsRef.current.saveContactName(...args)} /> : <div className="context-card">Nenhuma conversa</div>}
+
+        {/* Card detalhes */}
+        <div className="context-card">
+          <div className="context-card-title">Detalhes</div>
+          <dl className="context-rows">
+            <div className="context-row">
+              <dt>Status</dt>
+              <dd>{selectedConversation ? statusLabel(selectedConversation.status) : "—"}</dd>
+            </div>
+            <div className="context-row">
+              <dt>Prioridade</dt>
+              <dd>{selectedConversation ? priorityLabel(selectedConversation.priority) : "—"}</dd>
+            </div>
+            <div className="context-row">
+              <dt>Departamento</dt>
+              <dd>{selectedConversation?.departmentName ?? "Não atribuído"}</dd>
+            </div>
+            <div className="context-row">
+              <dt>Responsável</dt>
+              <dd>{selectedConversation?.assignedUserName ?? "Fila geral"}</dd>
+            </div>
+          </dl>
+        </div>
+
+        {/* Card tags */}
+        <div className="context-card">
+          <div className="context-card-title">Tags</div>
+          <div className="tag-row">
+            {contactContext?.tags.length ? (
+              contactContext.tags.map((tag) => (
+                <span key={tag.id} className="context-tag" style={{ borderColor: tag.color }}>
+                  {tag.name}
+                  <button
+                    aria-label={`Remover tag ${tag.name}`}
+                    disabled={!selectedConversation || isRunningAction}
+                    onClick={() => void actionsRef.current.handleRemoveTag(tag.id)}
+                    type="button"
+                  >
+                    <X size={11} aria-hidden="true" />
+                  </button>
+                </span>
+              ))
+            ) : (
+              <span className="context-empty-label">Sem tags</span>
+            )}
+          </div>
+          <form className="tag-add-form" onSubmit={event => actionsRef.current.handleAddTag(event)}>
+            <select
+              aria-label="Selecionar tag"
+              disabled={!selectedConversation || isRunningAction || availableTagOptions.length === 0}
+              onChange={(event) => setSelectedTagId(event.target.value)}
+              value={selectedTagId}
+            >
+              <option value="">
+                {availableTagOptions.length > 0 ? "Adicionar tag..." : "Todas as tags aplicadas"}
+              </option>
+              {availableTagOptions.map((tag) => (
+                <option key={tag.id} value={tag.id}>
+                  {tag.name}
+                </option>
+              ))}
+            </select>
+            <button
+              disabled={!selectedConversation || !selectedTagId || isRunningAction}
+              type="submit"
+            >
+              Adicionar
+            </button>
+          </form>
+        </div>
+
+        {/* Card notas */}
+        <div className="context-card">
+          <div className="context-card-title-row">
+            <div className="context-card-title">Notas internas</div>
+            {contextNotes.length > 2 ? (
+              <button
+                aria-expanded={notesHistoryOpen}
+                className="context-title-action"
+                onClick={() => setNotesHistoryOpen((current) => !current)}
+                title={notesHistoryOpen ? "Mostrar menos notas" : "Mostrar histórico de notas"}
+                type="button"
+              >
+                <History size={13} aria-hidden="true" />
+                <span>{notesHistoryOpen ? "Recentes" : `${contextNotes.length}`}</span>
+              </button>
+            ) : null}
+          </div>
+          {contextError ? <p className="error-note compact" role="status">{contextError} <button type="button" onClick={() => void contextQuery.refetch()}>Tentar novamente</button></p> : null}
+          {contextNotes.length ? (
+            <div className={`notes-list${notesHistoryOpen ? " notes-list--history" : ""}`}>
+              {visibleNotes.map((note) => (
+                <article className="context-note" key={note.id}>
+                  <p>{note.body}</p>
+                  <time>{formatNoteDate(note.createdAt)}</time>
+                </article>
+              ))}
+              {!notesHistoryOpen && hiddenNoteCount > 0 ? (
+                <button
+                  className="notes-history-button"
+                  onClick={() => setNotesHistoryOpen(true)}
+                  type="button"
+                >
+                  Ver mais {hiddenNoteCount} notas
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <span className="context-empty-label">Sem notas</span>
+          )}
+          <form className="quick-note-form" onSubmit={event => actionsRef.current.handleAddNote(event)}>
+            <input
+              aria-label="Nova nota"
+              disabled={!selectedConversation || isRunningAction}
+              onChange={(event) => setNoteDraft(event.target.value)}
+              placeholder="Adicionar nota..."
+              value={noteDraft}
+            />
+            <button
+              aria-label="Salvar nota"
+              disabled={!selectedConversation || !noteDraft.trim() || isRunningAction}
+              type="submit"
+            >
+              <StickyNote size={15} aria-hidden="true" />
+            </button>
+          </form>
+        </div>
+
+        {/* Card ações */}
+        <div className="context-card">
+          <div className="context-card-title">Ações rápidas</div>
+          <div className="quick-actions">
+            <button
+              disabled={!selectedConversation || isRunningAction}
+              onClick={() => void actionsRef.current.runAction({ action: "assign_current_user" })}
+              type="button"
+            >
+              <UserCheck size={15} aria-hidden="true" />
+              Assumir
+            </button>
+            <button
+              disabled={!selectedConversation || isRunningAction}
+              onClick={() => setAssistantTab('assistant')}
+              type="button"
+            >
+              <Bot size={15} aria-hidden="true" />
+              IA
+            </button>
+            <button
+              disabled={!selectedConversation || isRunningAction}
+              onClick={() => void actionsRef.current.handleCreateLead()}
+              type="button"
+            >
+              <Plus size={15} aria-hidden="true" />
+              Lead
+            </button>
+            <button
+              className="quick-action-danger"
+              disabled={!selectedConversation || isRunningAction}
+              onClick={() => void actionsRef.current.runAction({ action: "close_conversation" })}
+              type="button"
+            >
+              <CheckCircle2 size={15} aria-hidden="true" />
+              Finalizar
+            </button>
+            {canResetConversation(currentRole) ? (
+              <button
+                className="quick-action-danger"
+                disabled={!selectedConversation || isRunningAction}
+                onClick={() => void actionsRef.current.resetSelectedConversation()}
+                type="button"
+              >
+                <RotateCcw size={15} aria-hidden="true" />
+                Reiniciar conversa
+              </button>
+            ) : null}
+          </div>
+          {aiSuggestion ? (
+            <div className="ai-suggestion">{aiSuggestion}</div>
+          ) : null}
+          {crmStatus ? (
+            <p className="crm-status">{crmStatus}</p>
+          ) : null}
+        </div>
+        </>}
+        </>}
+      </aside>
+  ), [selectedConversation, selectedConversationId, assistantOpen, assistantTab, assistant.data, assistant.error,
+    assistant.request, handoffBrief, handoff.error, handoff.refresh, handoffFeedback, isRunningAction, Boolean(draft.trim()), isSending, currentRole,
+    contactContext, availableTagOptions, selectedTagId, notesHistoryOpen, visibleNotes, hiddenNoteCount, noteDraft,
+    contextError, aiSuggestion, crmStatus, contextQuery.refetch, isLoadingContext]);
+
+  return (
+    <section className={`talk-workspace talk-workspace-atendimento${selectedConversationId ? ' has-selected-conversation' : ''}`} aria-label="Atendimento">
+      <TalkPerformancePanel />
+      {conversationListView}
 
       <section className={`chat-panel${isDraggingFile ? ' is-dragging-file' : ''}`} aria-label="Area de atendimento"
         onDragEnter={handleChatDragEnter} onDragLeave={handleChatDragLeave}
@@ -1809,89 +1908,7 @@ function InboxPageContent() {
           ) : null}
         </header>
 
-        {selectedConversation ? (
-          <div
-            className="message-thread"
-            aria-label="Histórico da conversa"
-            onScroll={() => {
-              if (isMessageThreadNearBottom()) {
-                userReadingHistoryRef.current = false;
-                setNewMessagesBelow(0);
-              } else {
-                userReadingHistoryRef.current = true;
-              }
-            }}
-            ref={messageThreadRef}
-          >
-            {visibleMessages.length >= 100 ? <p className="assistant-caption">Na abertura, são carregadas as 100 mensagens mais recentes.</p> : null}
-            {isThreadTransitioning ? (
-              <div className="message-thread-skeleton" aria-label="Abrindo conversa">
-                <span />
-                <span />
-                <span />
-              </div>
-            ) : null}
-            {isLoadingMessages && !isThreadTransitioning ? (
-              <p className="thread-note">Atualizando mensagens...</p>
-            ) : null}
-            {messageError ? <p className="error-note">{messageError}</p> : null}
-            {!isLoadingMessages && !isThreadTransitioning && visibleMessages.length === 0 ? (
-              <p className="thread-note">Ainda não ha mensagens nesta conversa.</p>
-            ) : null}
-            {visibleMessages.map((message) => (
-              <article
-                className={`message-bubble ${message.direction === "outbound" ? "is-outbound" : "is-inbound"}`}
-                key={message.id}
-              >
-                {message.direction === "inbound" ? (
-                  <ContactAvatar conversationId={selectedConversation?.id} name={selectedConversation?.isGroup ? message.senderName ?? message.senderJid : selectedConversation?.contactName} className="msg-avatar" />
-                ) : null}
-                <div className="msg-bubble-body">
-                  {selectedConversation.isGroup && message.direction === "inbound" ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
-                  {['image', 'audio', 'file'].includes(message.type) ? <>
-                    <InboxMedia key={`${message.id}:${message.mediaUrl?.slice(0, 60)}`} message={message} getToken={getToken} />
-                    {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
-                    {attachmentReadNotice(message) ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
-                  </> : message.location ? <LocationMessage location={message.location} /> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} onSelect={setSelectedContactCard} /> : <p><WhatsappText text={messageDisplayText(message)} /></p>}
-                  <div className="message-bubble-meta">
-                    {message.editedAt ? <span className="message-edited-label">Editada</span> : null}
-                    <time>{formatMessageTime(message.createdAt)}</time>
-                    {selectedConversation.channelProvider === 'evolution' && !selectedConversation.isGroup && message.direction === 'outbound' &&
-                      message.providerMessageId && !message.deletedAt && ['sent', 'delivered', 'read'].includes(message.status) ? (
-                        <button type="button" className="message-delete-action" title="Apagar para todos"
-                          aria-label="Apagar mensagem para todos" disabled={Boolean(deletingMessageId)}
-                          onClick={() => { void deleteMessageForEveryone(message); }}>
-                          <Trash2 size={13} aria-hidden="true" />
-                        </button>
-                      ) : null}
-                  </div>
-                  {outboundStatusLabel(message) ? (
-                    <span className={`message-send-state message-send-state--${message.status}`}>
-                      {outboundStatusLabel(message)}
-                    </span>
-                  ) : null}
-                </div>
-              </article>
-            ))}
-            {newMessagesBelow > 0 ? (
-              <button
-                className="new-messages-pill"
-                onClick={() => scrollMessageThreadToBottom("smooth")}
-                type="button"
-              >
-                {newMessagesBelow === 1 ? "1 nova mensagem abaixo" : `${newMessagesBelow} novas mensagens abaixo`}
-              </button>
-            ) : null}
-          </div>
-        ) : (
-          <div className="empty-state">
-            <div className="empty-state-icon">
-              <MessageSquare size={28} aria-hidden="true" />
-            </div>
-            <h3>Nenhuma conversa selecionada</h3>
-            <p>Escolha uma conversa na fila para acompanhar o atendimento.</p>
-          </div>
-        )}
+        {historyView}
 
         <div className="composer-shell">
           {pendingFile ? <div className="composer-attachment-preview" aria-label="Anexo pronto para enviar">
@@ -2020,206 +2037,8 @@ function InboxPageContent() {
         </div>
       </section>
 
-      <aside className={`contact-panel assistant-contact-panel${assistantOpen ? ' assistant-drawer-open' : ''}`} aria-label="Contato e IA de apoio">
-        {selectedConversation?.isGroup ? <>
-          <div className="context-card"><div className="context-card-title">Grupo do WhatsApp</div><strong>{contactDisplayName(selectedConversation)}</strong><p>As respostas neste grupo são enviadas manualmente.</p></div>
-          <div className="context-card"><div className="context-card-title">Atendimento</div><p>{selectedConversation.assignedUserName ?? 'Fila geral'} · {statusLabel(selectedConversation.status)}</p><div className="quick-actions"><button type="button" disabled={isRunningAction} onClick={() => void runAction({ action: 'assign_current_user' })}>Assumir</button><button type="button" disabled={isRunningAction} onClick={() => void runAction({ action: 'close_conversation' })}>Finalizar</button></div></div>
-        </> : <>
-        <div className="assistant-tabs"><button type="button" aria-pressed={assistantTab === 'contact'} onClick={() => setAssistantTab('contact')}>Contato</button><button type="button" aria-pressed={assistantTab === 'assistant'} onClick={() => setAssistantTab('assistant')}>IA de apoio{handoffBrief ? <span className="assistant-tab-dot is-handoff" /> : assistant.data?.status === 'ready' ? <span className="assistant-tab-dot" /> : null}</button><button ref={assistantCloseRef} className="assistant-drawer-close" aria-label="Fechar apoio" type="button" onClick={() => { setAssistantOpen(false); assistantTriggerRef.current?.focus(); }}><X size={18} /></button></div>
-        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} handoffBrief={handoffBrief} handoffCompleted={Boolean(selectedConversation?.handoffActionCompletedAt)} handoffFeedback={handoffFeedback} handoffBusy={isRunningAction} onCompleteHandoff={() => { void runAction({ action: 'complete_handoff_action' }); }} onReopenHandoff={() => { void runAction({ action: 'reopen_handoff_action' }); }} onReanalyzeHandoff={() => { void runAction({ action: 'reanalyze_handoff_reply' }); }} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={sendSuggestion} onEdit={editSuggestion} /> : <>
-        {/* Card identidade */}
-        {selectedConversation ? <ContactIdentityCard key={selectedConversation.contactId}
-          conversationId={selectedConversation.id}
-          contactId={selectedConversation.contactId} name={selectedConversation.contactName ?? null}
-          phone={selectedConversation.contactPhone ?? null} channelName={selectedConversation.channelName}
-          onSave={saveContactName} /> : <div className="context-card">Nenhuma conversa</div>}
+      {sidebarView}
 
-        {/* Card detalhes */}
-        <div className="context-card">
-          <div className="context-card-title">Detalhes</div>
-          <dl className="context-rows">
-            <div className="context-row">
-              <dt>Status</dt>
-              <dd>{selectedConversation ? statusLabel(selectedConversation.status) : "—"}</dd>
-            </div>
-            <div className="context-row">
-              <dt>Prioridade</dt>
-              <dd>{selectedConversation ? priorityLabel(selectedConversation.priority) : "—"}</dd>
-            </div>
-            <div className="context-row">
-              <dt>Departamento</dt>
-              <dd>{selectedConversation?.departmentName ?? "Não atribuído"}</dd>
-            </div>
-            <div className="context-row">
-              <dt>Responsável</dt>
-              <dd>{selectedConversation?.assignedUserName ?? "Fila geral"}</dd>
-            </div>
-          </dl>
-        </div>
-
-        {/* Card tags */}
-        <div className="context-card">
-          <div className="context-card-title">Tags</div>
-          <div className="tag-row">
-            {contactContext?.tags.length ? (
-              contactContext.tags.map((tag) => (
-                <span key={tag.id} className="context-tag" style={{ borderColor: tag.color }}>
-                  {tag.name}
-                  <button
-                    aria-label={`Remover tag ${tag.name}`}
-                    disabled={!selectedConversation || isRunningAction}
-                    onClick={() => void handleRemoveTag(tag.id)}
-                    type="button"
-                  >
-                    <X size={11} aria-hidden="true" />
-                  </button>
-                </span>
-              ))
-            ) : (
-              <span className="context-empty-label">Sem tags</span>
-            )}
-          </div>
-          <form className="tag-add-form" onSubmit={handleAddTag}>
-            <select
-              aria-label="Selecionar tag"
-              disabled={!selectedConversation || isRunningAction || availableTagOptions.length === 0}
-              onChange={(event) => setSelectedTagId(event.target.value)}
-              value={selectedTagId}
-            >
-              <option value="">
-                {availableTagOptions.length > 0 ? "Adicionar tag..." : "Todas as tags aplicadas"}
-              </option>
-              {availableTagOptions.map((tag) => (
-                <option key={tag.id} value={tag.id}>
-                  {tag.name}
-                </option>
-              ))}
-            </select>
-            <button
-              disabled={!selectedConversation || !selectedTagId || isRunningAction}
-              type="submit"
-            >
-              Adicionar
-            </button>
-          </form>
-        </div>
-
-        {/* Card notas */}
-        <div className="context-card">
-          <div className="context-card-title-row">
-            <div className="context-card-title">Notas internas</div>
-            {contextNotes.length > 2 ? (
-              <button
-                aria-expanded={notesHistoryOpen}
-                className="context-title-action"
-                onClick={() => setNotesHistoryOpen((current) => !current)}
-                title={notesHistoryOpen ? "Mostrar menos notas" : "Mostrar histórico de notas"}
-                type="button"
-              >
-                <History size={13} aria-hidden="true" />
-                <span>{notesHistoryOpen ? "Recentes" : `${contextNotes.length}`}</span>
-              </button>
-            ) : null}
-          </div>
-          {contextError ? <p className="error-note compact">{contextError}</p> : null}
-          {contextNotes.length ? (
-            <div className={`notes-list${notesHistoryOpen ? " notes-list--history" : ""}`}>
-              {visibleNotes.map((note) => (
-                <article className="context-note" key={note.id}>
-                  <p>{note.body}</p>
-                  <time>{formatNoteDate(note.createdAt)}</time>
-                </article>
-              ))}
-              {!notesHistoryOpen && hiddenNoteCount > 0 ? (
-                <button
-                  className="notes-history-button"
-                  onClick={() => setNotesHistoryOpen(true)}
-                  type="button"
-                >
-                  Ver mais {hiddenNoteCount} notas
-                </button>
-              ) : null}
-            </div>
-          ) : (
-            <span className="context-empty-label">Sem notas</span>
-          )}
-          <form className="quick-note-form" onSubmit={handleAddNote}>
-            <input
-              aria-label="Nova nota"
-              disabled={!selectedConversation || isRunningAction}
-              onChange={(event) => setNoteDraft(event.target.value)}
-              placeholder="Adicionar nota..."
-              value={noteDraft}
-            />
-            <button
-              aria-label="Salvar nota"
-              disabled={!selectedConversation || !noteDraft.trim() || isRunningAction}
-              type="submit"
-            >
-              <StickyNote size={15} aria-hidden="true" />
-            </button>
-          </form>
-        </div>
-
-        {/* Card ações */}
-        <div className="context-card">
-          <div className="context-card-title">Ações rápidas</div>
-          <div className="quick-actions">
-            <button
-              disabled={!selectedConversation || isRunningAction}
-              onClick={() => void runAction({ action: "assign_current_user" })}
-              type="button"
-            >
-              <UserCheck size={15} aria-hidden="true" />
-              Assumir
-            </button>
-            <button
-              disabled={!selectedConversation || isRunningAction}
-              onClick={() => setAssistantTab('assistant')}
-              type="button"
-            >
-              <Bot size={15} aria-hidden="true" />
-              IA
-            </button>
-            <button
-              disabled={!selectedConversation || isRunningAction}
-              onClick={() => void handleCreateLead()}
-              type="button"
-            >
-              <Plus size={15} aria-hidden="true" />
-              Lead
-            </button>
-            <button
-              className="quick-action-danger"
-              disabled={!selectedConversation || isRunningAction}
-              onClick={() => void runAction({ action: "close_conversation" })}
-              type="button"
-            >
-              <CheckCircle2 size={15} aria-hidden="true" />
-              Finalizar
-            </button>
-            {canResetConversation(currentRole) ? (
-              <button
-                className="quick-action-danger"
-                disabled={!selectedConversation || isRunningAction}
-                onClick={() => void resetSelectedConversation()}
-                type="button"
-              >
-                <RotateCcw size={15} aria-hidden="true" />
-                Reiniciar conversa
-              </button>
-            ) : null}
-          </div>
-          {aiSuggestion ? (
-            <div className="ai-suggestion">{aiSuggestion}</div>
-          ) : null}
-          {crmStatus ? (
-            <p className="crm-status">{crmStatus}</p>
-          ) : null}
-        </div>
-        </>}
-        </>}
-      </aside>
       {shareContactOpen && selectedConversation ? <ShareContactDialog source={selectedConversation} getToken={getToken} onClose={() => setShareContactOpen(false)} onSent={(name, contextImages) => { setShareContactOpen(false); setSendNotice(contextImages ? `Contato e histórico enviados para ${name}.` : `Contato enviado para ${name}; a conversa ainda não tem mensagens para compartilhar.`); setConversationReloadKey((current) => current + 1); }} /> : null}
       {newConversationOpen ? <NewConversationDialog channels={channels} getToken={getToken} onClose={() => setNewConversationOpen(false)} onOpened={(conversation) => {
         setNewConversationOpen(false);

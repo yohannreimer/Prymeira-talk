@@ -1,0 +1,261 @@
+import { QueryClient, type QueryKey } from '@tanstack/react-query';
+import { needsHumanAttention, type ChannelDto, type ConversationDto, type InboxView, type MessageDto, type RealtimeEvent } from '@prymeira-talk/shared';
+import { SessionBlobCache } from './blob-cache';
+
+export const READ_STALE_MS = 15_000;
+export const CATALOG_STALE_MS = 5 * 60_000;
+export const HISTORY_GC_MS = 10 * 60_000;
+export const MAX_HISTORIES = 30;
+export const MAX_MESSAGES = 100;
+type Fence = { events: RealtimeEvent[] };
+
+export function receiptStatus(current: MessageDto['status'], incoming: MessageDto['status']) {
+  const rank = { pending: 0, sent: 1, delivered: 2, read: 3, failed: -1 };
+  // Receipts can arrive late and HTTP can already contain a newer receipt.
+  if (rank[current] >= 1 && rank[incoming] < rank[current]) return current;
+  return incoming;
+}
+
+export function patchMessages(messages: MessageDto[], event: RealtimeEvent, conversationId: string): MessageDto[] {
+  if (event.type === 'message.deleted') return event.payload.conversationId === conversationId && messages.some(message => message.id === event.payload.messageId)
+    ? messages.filter(message => message.id !== event.payload.messageId) : messages;
+  if (event.type === 'message.status_changed') {
+    const index = messages.findIndex(message => message.id === event.payload.messageId);
+    if (index < 0) return messages;
+    const status = receiptStatus(messages[index].status, event.payload.status);
+    if (status === messages[index].status) return messages;
+    const next = [...messages]; next[index] = { ...messages[index], status }; return next;
+  }
+  if (event.type !== 'message.created' && event.type !== 'message.updated') return messages;
+  if (event.payload.conversationId !== conversationId) return messages;
+  const index = messages.findIndex(message => message.id === event.payload.id ||
+    Boolean(event.payload.providerMessageId && message.providerMessageId === event.payload.providerMessageId) ||
+    (message.id.startsWith('optimistic-') && message.status === 'pending' && message.direction === event.payload.direction && message.type === event.payload.type && message.body === event.payload.body));
+  if (index < 0) return event.type === 'message.created' ? [...messages, event.payload].slice(-MAX_MESSAGES) : messages;
+  const next = [...messages]; next[index] = { ...event.payload, status: receiptStatus(messages[index].status, event.payload.status) }; return next;
+}
+
+export type InboxListScope = { view?: InboxView; channelId?: string; search?: string; status?: 'active' | 'closed' | 'all'; assignedUserId?: string };
+/** Private-review channel mode/assistant state are intentionally absent from DTOs.
+ * Only those unresolved memberships need a server reconciliation. */
+export function conversationMatches(row: ConversationDto, scope: InboxListScope): boolean | 'unknown' {
+  if (scope.channelId && row.channelId !== scope.channelId) return false;
+  if (scope.assignedUserId && row.assignedUserId !== scope.assignedUserId) return false;
+  if (scope.status === 'closed' && row.status !== 'closed') return false;
+  if (scope.status === 'active' && row.status === 'closed') return false;
+  if (!scope.search && row.hiddenUntilReply) return false;
+  if (scope.search) {
+    const search = scope.search.trim();
+    let digits = search.replace(/\D/g, '');
+    if (digits.startsWith('55') && digits.length === 13 && digits[4] === '9') digits = digits.slice(0, 4) + digits.slice(5);
+    if (!(row.contactName ?? '').toLocaleLowerCase().includes(search.toLocaleLowerCase()) &&
+      !(row.contactPhone ?? '').includes(digits || search)) return false;
+  }
+  if (scope.view === 'marked') return Boolean(row.manualMarked);
+  if (scope.view === 'handoff') return needsHumanAttention(row);
+  if (scope.view === 'unread') {
+    if (!row.unreadCount) return false;
+    return row.aiControlStatus === 'human_controlled' || needsHumanAttention(row) ? true : 'unknown';
+  }
+  if (scope.view === 'reply') {
+    if (row.status === 'closed') return false;
+    if (needsHumanAttention(row)) return true;
+    if (row.aiControlStatus === 'human_controlled' && !row.replyDismissed && row.replyTriageAnchorMessageId &&
+      ['needs_reply', 'uncertain'].includes(row.replyTriageDecision ?? '')) return true;
+    return 'unknown';
+  }
+  return true;
+}
+function sortRows(rows: ConversationDto[]) {
+  return rows.sort((left, right) => (Date.parse(right.lastMessageAt ?? '') || 0) - (Date.parse(left.lastMessageAt ?? '') || 0));
+}
+export function patchConversations(rows: ConversationDto[], event: RealtimeEvent, scope: InboxListScope = {}): ConversationDto[] {
+  if (event.type === 'contact.updated') {
+    if (!rows.some(row => row.contactId === event.payload.id)) return rows;
+    return rows.flatMap(row => {
+    if (row.contactId !== event.payload.id) return [row];
+    const updated = { ...row, contactName: event.payload.name, contactPhone: event.payload.phone };
+    return conversationMatches(updated, scope) === false ? [] : [updated];
+    });
+  }
+  if (event.type !== 'conversation.updated') return rows;
+  const membership = conversationMatches(event.payload, scope);
+  if (membership === false) return rows.some(row => row.id === event.payload.id) ? rows.filter(row => row.id !== event.payload.id) : rows;
+  const existing = rows.some(row => row.id === event.payload.id);
+  if (membership === 'unknown' && !existing) return rows;
+  return sortRows([...rows.filter(row => row.id !== event.payload.id), event.payload]);
+}
+function scopeFromKey(key: QueryKey): InboxListScope {
+  return { view: key[3] as InboxView, channelId: key[4] === 'all' ? undefined : key[4] as string, search: key[5] as string, status: 'all' };
+}
+
+export class TalkSession {
+  readonly client = new QueryClient({ defaultOptions: {
+    queries: { staleTime: READ_STALE_MS, gcTime: HISTORY_GC_MS, retry: false, refetchOnWindowFocus: true, refetchOnReconnect: true },
+    mutations: { retry: false }
+  } });
+  readonly blobs = new SessionBlobCache();
+  private ui = new Map<string, unknown>();
+  private listeners = new Map<string, Set<() => void>>();
+  private fences = new Set<Fence>();
+  private histories = new Map<string, number>();
+  private active: string | null = null;
+  private prefetching = 0;
+  private prefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private pendingInvalidations = new Set<string>();
+  private maxInvalidationTimer: ReturnType<typeof setTimeout> | undefined;
+  private invalidationTimer: ReturnType<typeof setTimeout> | undefined;
+  private disposed = false;
+  constructor(readonly scope: string, readonly workspaceId: string) {}
+  get isLive() { return !this.disposed; }
+  key(kind: string, ...parts: unknown[]): QueryKey { return ['talk', this.scope, kind, ...parts]; }
+  readUI<T>(key: string, fallback: T): T { return this.ui.has(key) ? this.ui.get(key) as T : fallback; }
+  writeUI<T>(key: string, value: T | ((current: T) => T), fallback: T) {
+    if (this.disposed) return;
+    const next = typeof value === 'function' ? (value as (current: T) => T)(this.readUI(key, fallback)) : value;
+    if (Object.is(this.readUI(key, fallback), next)) return;
+    this.ui.set(key, next); for (const listener of this.listeners.get(key) ?? []) listener();
+  }
+  subscribeUI(key: string, listener: () => void) {
+    const listeners = this.listeners.get(key) ?? new Set(); this.listeners.set(key, listeners); listeners.add(listener);
+    return () => { listeners.delete(listener); };
+  }
+  setActive(id: string | null) { this.active = id; if (id) this.touch(id); }
+  touch(id: string) {
+    this.histories.delete(id); this.histories.set(id, Date.now());
+    this.trim();
+  }
+  private trim() {
+    while (this.histories.size > MAX_HISTORIES) {
+      const candidate = [...this.histories.keys()].find(id => id !== this.active);
+      if (!candidate) break;
+      this.histories.delete(candidate);
+      this.client.removeQueries({ queryKey: this.key('messages', candidate), exact: true });
+      this.client.removeQueries({ queryKey: this.key('context', candidate), exact: true });
+      // Drafts and scroll positions live in UI memory and survive history eviction.
+    }
+  }
+  async readMessages(id: string, read: () => Promise<MessageDto[]>) {
+    this.touch(id);
+    return this.withEvents(read, (messages, event) => patchMessages(messages, event, id), messages => messages.slice(-MAX_MESSAGES));
+  }
+  readConversations(read: () => Promise<ConversationDto[]>, scope: InboxListScope = {}) { return this.withEvents(read, (rows, event) => patchConversations(rows, event, scope)); }
+  private async withEvents<T>(read: () => Promise<T>, patch: (data: T, event: RealtimeEvent) => T, normalize = (data: T) => data): Promise<T> {
+    const fence: Fence = { events: [] }; this.fences.add(fence);
+    try {
+      let result = normalize(await read());
+      for (const event of fence.events) result = patch(result, event);
+      if (this.disposed) throw new DOMException('Sessão encerrada.', 'AbortError');
+      return result;
+    } finally { this.fences.delete(fence); }
+  }
+  private findConversation(id: string) {
+    for (const query of this.client.getQueryCache().findAll({ queryKey: this.key('conversations') })) {
+      const row = (query.state.data as ConversationDto[] | undefined)?.find(row => row.id === id);
+      if (row) return row;
+    }
+    const selected = this.readUI<ConversationDto | null>('selectedSnapshot', null);
+    return selected?.id === id ? selected : undefined;
+  }
+  event(event: RealtimeEvent) {
+    if (event.workspaceId !== this.workspaceId || this.disposed) return;
+    for (const fence of this.fences) fence.events.push(event);
+    const previous = event.type === 'conversation.updated' ? this.findConversation(event.payload.id) : undefined;
+    for (const query of this.client.getQueryCache().findAll({ queryKey: this.key('messages') })) {
+      const id = query.queryKey[3];
+      const rows = query.state.data as MessageDto[] | undefined;
+      if (typeof id === 'string' && rows) {
+        const next = patchMessages(rows, event, id);
+        if (next !== rows) this.client.setQueryData(query.queryKey, next);
+      }
+    }
+    for (const query of this.client.getQueryCache().findAll({ queryKey: this.key('conversations') })) {
+      const scope = scopeFromKey(query.queryKey);
+      const rows = query.state.data as ConversationDto[] | undefined;
+      if (rows) {
+        const next = patchConversations(rows, event, scope);
+        if (next !== rows) this.client.setQueryData(query.queryKey, next);
+      }
+      if (event.type === 'conversation.updated' && conversationMatches(event.payload, scope) === 'unknown' ||
+        event.type === 'contact.updated' && scope.search) this.scheduleInvalidation(query.queryHash);
+    }
+    if (event.type === 'conversation.updated') {
+      const next = event.payload;
+      // Counts can be patched only when a previous membership is known.
+      for (const query of this.client.getQueryCache().findAll({ queryKey: this.key('attention') })) {
+        const channel = query.queryKey[3];
+        const matches = (row: ConversationDto) => channel === 'all' || !channel || row.channelId === channel;
+        if (!previous) { if (matches(next)) this.scheduleInvalidation(query.queryHash); continue; }
+        const delta = Number(matches(next) && needsHumanAttention(next)) - Number(matches(previous) && needsHumanAttention(previous));
+        if (delta) this.client.setQueryData<number>(query.queryKey, count => count === undefined ? count : Math.max(0, count + delta));
+      }
+      const selected = this.readUI<ConversationDto | null>('selectedSnapshot', null);
+      if (selected?.id === next.id) this.writeUI('selectedSnapshot', next, null);
+    }
+    if (event.type === 'contact.updated' || event.type.startsWith('board_membership.')) {
+      const contactId = event.type === 'contact.updated' ? event.payload.id
+        : 'contactId' in event.payload ? event.payload.contactId : null;
+      const selected = this.readUI<ConversationDto | null>('selectedSnapshot', null);
+      if (event.type === 'contact.updated' && selected?.contactId === contactId) {
+        this.writeUI('selectedSnapshot', { ...selected, contactName: event.payload.name, contactPhone: event.payload.phone }, null);
+      }
+      for (const query of this.client.getQueryCache().findAll({ queryKey: this.key('context') })) {
+        const conversation = this.findConversation(String(query.queryKey[3]));
+        if (contactId && conversation?.contactId === contactId) this.scheduleInvalidation(query.queryHash);
+      }
+    }
+    if (event.type === 'channel.updated' || event.type === 'channel.deleted') {
+      this.client.setQueryData<ChannelDto[]>(this.key('channels'), rows => rows ? event.type === 'channel.deleted'
+        ? rows.filter(row => row.id !== event.payload.channelId)
+        : [...rows.filter(row => row.id !== event.payload.id), event.payload] : rows);
+      // Channel private-review settings are unavailable in conversation DTOs.
+      for (const query of this.client.getQueryCache().findAll({ queryKey: this.key('conversations') })) {
+        const scope = scopeFromKey(query.queryKey);
+        if (scope.view === 'unread' || scope.view === 'reply') this.scheduleInvalidation(query.queryHash);
+      }
+    }
+  }
+  private scheduleInvalidation(hash: string) {
+    this.pendingInvalidations.add(hash);
+    clearTimeout(this.invalidationTimer);
+    this.invalidationTimer = setTimeout(() => this.flushInvalidations(), 200);
+    if (!this.maxInvalidationTimer) this.maxInvalidationTimer = setTimeout(() => this.flushInvalidations(), 1_000);
+  }
+  private flushInvalidations() {
+    clearTimeout(this.invalidationTimer); clearTimeout(this.maxInvalidationTimer);
+    this.invalidationTimer = undefined; this.maxInvalidationTimer = undefined;
+    if (this.disposed) return;
+    const pending = new Set(this.pendingInvalidations); this.pendingInvalidations.clear();
+    // An invalidation during HTTP may be overwritten by its stale response. Keep
+    // that reconciliation queued until the existing read has settled.
+    for (const query of this.client.getQueryCache().getAll()) {
+      if (pending.has(query.queryHash) && query.state.fetchStatus === 'fetching') {
+        pending.delete(query.queryHash); this.scheduleInvalidation(query.queryHash);
+      }
+    }
+    void this.client.invalidateQueries({ predicate: query => pending.has(query.queryHash) }, { cancelRefetch: false });
+  }
+  reconcile() {
+    if (this.disposed) return;
+    void this.client.invalidateQueries({ queryKey: this.key('conversations'), refetchType: 'active' });
+    if (this.active) void this.client.invalidateQueries({ queryKey: this.key('messages', this.active) });
+    void this.client.invalidateQueries({ queryKey: this.key('context'), refetchType: 'active' });
+  }
+  prefetch(id: string, read: (signal: AbortSignal) => Promise<MessageDto[]>) {
+    if (this.prefetchTimers.has(id) || id === this.active) return;
+    this.prefetchTimers.set(id, setTimeout(() => {
+      this.prefetchTimers.delete(id);
+      if (this.disposed || this.prefetching >= 2 || id === this.active) return;
+      this.prefetching++;
+      void this.client.prefetchQuery({ queryKey: this.key('messages', id), queryFn: ({ signal }) => this.readMessages(id, () => read(signal)) })
+        .finally(() => { this.prefetching--; this.trim(); });
+    }, 150));
+  }
+  cancelPrefetch(id: string) { clearTimeout(this.prefetchTimers.get(id)); this.prefetchTimers.delete(id); }
+  clear() {
+    this.disposed = true; clearTimeout(this.invalidationTimer); clearTimeout(this.maxInvalidationTimer); this.pendingInvalidations.clear();
+    for (const timer of this.prefetchTimers.values()) clearTimeout(timer);
+    this.prefetchTimers.clear(); void this.client.cancelQueries(); this.client.clear(); this.blobs.clear();
+    this.ui.clear(); this.histories.clear(); this.fences.clear(); this.listeners.clear();
+  }
+}
