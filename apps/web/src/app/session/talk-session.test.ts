@@ -11,6 +11,30 @@ const session = () => { const value = new TalkSession('user:session:w', 'w'); se
 afterEach(() => { for (const value of sessions.splice(0)) value.clear(); vi.useRealTimers(); });
 
 describe('session query cache', () => {
+  it.each(['HTTP', 'commit'])('keeps distinct local sends with identical content when the second arrives during %s', async timing => {
+    const cache = session(); const key = cache.key('messages', 'c1');
+    const first = { ...message('optimistic-first', 'c1', 'same text'), direction: 'outbound' as const, status: 'pending' as const };
+    const second = { ...first, id: 'optimistic-second' };
+    let finish!: (rows: MessageDto[]) => void;
+    const pending = cache.client.fetchQuery({ queryKey: key, queryFn: () => cache.readMessages('c1', () => new Promise(resolve => { finish = resolve; })) });
+    cache.updateMessages('c1', () => [first]);
+    if (timing === 'HTTP') cache.updateMessages('c1', rows => [...rows, second]);
+    finish([]);
+    if (timing === 'commit') queueMicrotask(() => cache.updateMessages('c1', rows => [...rows, second]));
+    await pending;
+    expect(cache.client.getQueryData<MessageDto[]>(key)?.map(row => [row.id, row.body, row.status])).toEqual([
+      ['optimistic-first', 'same text', 'pending'], ['optimistic-second', 'same text', 'pending']
+    ]);
+  });
+  it('replays local exact-id updates/removals without regressing a newer HTTP receipt', async () => {
+    const cache = session(); const key = cache.key('messages', 'c1');
+    cache.client.setQueryData(key, [message('edit'), message('remove')]);
+    let finish!: (rows: MessageDto[]) => void;
+    const pending = cache.client.fetchQuery({ queryKey: key, staleTime: 0, queryFn: () => cache.readMessages('c1', () => new Promise(resolve => { finish = resolve; })) });
+    cache.updateMessages('c1', rows => rows.filter(row => row.id !== 'remove').map(row => ({ ...row, body: 'changed locally' })));
+    finish([{ ...message('edit'), status: 'read' }, message('remove')]); await pending;
+    expect(cache.client.getQueryData<MessageDto[]>(key)?.map(row => [row.id, row.body, row.status])).toEqual([['edit', 'changed locally', 'read']]);
+  });
   it('keeps a local failure arriving between HTTP resolution and the QueryClient commit', async () => {
     const cache = session(); const key = cache.key('messages', 'c1');
     let finish!: (rows: MessageDto[]) => void;

@@ -249,6 +249,31 @@ describe('Atendimento query/UI integration', () => {
     expect(rows.filter(row => row.body === 'outgoing')).toHaveLength(1);
     expect(apiCreateConversationMessage).toHaveBeenCalledOnce();
   });
+  it.each(['text', 'attachment'])('keeps a second identical manual %s send when the first acknowledgement arrives after module navigation', async kind => {
+    vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:text/plain;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
+    await render(); let finishFirst!: (row: MessageDto) => void; let failSecond!: (error: Error) => void;
+    vi.mocked(apiCreateConversationMessage)
+      .mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { failSecond = reject; }));
+    const submit = async () => {
+      await type('same text');
+      if (kind === 'attachment') {
+        const input = container.querySelector<HTMLInputElement>('.composer-file-input')!;
+        Object.defineProperty(input, 'files', { value: [new File(['a'], 'same.txt', { type: 'text/plain' })], configurable: true });
+        await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
+      }
+      await act(async () => container.querySelector<HTMLFormElement>('.composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); await flush();
+    };
+    await submit(); await render(false); await render(); await submit();
+    const second = session.client.getQueryData<MessageDto[]>(session.key('messages', 'c1'))!.filter(row => row.id.startsWith('optimistic-'))[1];
+    expect(second).toBeDefined();
+    await act(async () => finishFirst({ ...message('c1'), id: 'first-ack', providerMessageId: 'first-provider', body: 'same text', type: kind === 'attachment' ? 'file' : 'text', direction: 'outbound', status: 'sent' })); await flush();
+    expect(session.client.getQueryData<MessageDto[]>(session.key('messages', 'c1'))?.filter(row => row.body === 'same text').map(row => [row.id, row.status])).toEqual([['first-ack', 'sent'], [second.id, 'pending']]);
+    await act(async () => failSecond(new Error('Falha segundo envio'))); await flush();
+    const rows = session.client.getQueryData<MessageDto[]>(session.key('messages', 'c1'))!;
+    expect(rows.filter(row => row.body === 'same text').map(row => [row.id, row.status])).toEqual([['first-ack', 'sent'], [second.id, 'failed']]);
+    expect(apiCreateConversationMessage).toHaveBeenCalledTimes(2);
+  });
   it('keeps the source send failure when its history check is canceled by selection of a warm conversation', async () => {
     await render(); await select('c2'); await select('c1');
     vi.mocked(apiCreateConversationMessage).mockRejectedValueOnce(new Error('Falha A'));

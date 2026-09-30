@@ -157,9 +157,15 @@ export class TalkSession {
     return this.withEvents(this.key('messages', id), read, (messages, event) => {
       if (event.type !== 'local.messages') return patchMessages(messages, event, id);
       if (event.conversationId !== id) return messages;
-      let rows = messages.filter(message => !event.removedIds.has(message.id));
-      for (const row of event.rows) rows = patchMessages(rows, { type: 'message.created', workspaceId: this.workspaceId, payload: row }, id);
-      return rows;
+      const rows = messages.filter(message => !event.removedIds.has(message.id));
+      // Local IDs identify distinct manual sends, including identical content.
+      // Content matching belongs only to acknowledgements from the server.
+      for (const row of event.rows) {
+        const index = rows.findIndex(message => message.id === row.id);
+        if (index < 0) rows.push(row);
+        else rows[index] = { ...row, status: receiptStatus(rows[index].status, row.status) };
+      }
+      return rows.slice(-MAX_MESSAGES);
     }, messages => messages.slice(-MAX_MESSAGES), { signal });
   }
   /** Use the source query directly: an observer may have changed targets by the

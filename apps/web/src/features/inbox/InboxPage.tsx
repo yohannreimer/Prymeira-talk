@@ -278,25 +278,22 @@ function isOptimisticMessage(message: Pick<MessageDto, "id">) {
   return message.id.startsWith("optimistic-");
 }
 
-function upsertMessage(list: MessageDto[], message: MessageDto) {
+function upsertMessage(list: MessageDto[], message: MessageDto, optimisticId?: string) {
   const existingIndex = list.findIndex((item) => item.id === message.id);
 
   if (existingIndex >= 0) {
-    return list.map((item, index) => (index === existingIndex ? { ...message, status: receiptStatus(item.status, message.status) } : item));
+    return list.flatMap((item, index) => {
+      if (item.id === optimisticId && index !== existingIndex) return [];
+      return [index === existingIndex ? { ...message, status: receiptStatus(item.status, message.status) } : item];
+    });
   }
 
-  const optimisticIndex = list.findIndex(
-    (item) =>
-      isOptimisticMessage(item) &&
-      item.conversationId === message.conversationId &&
-      item.direction === message.direction &&
-      item.body === message.body &&
-      item.type === message.type &&
-      item.status === "pending"
-  );
+  // A POST acknowledgement knows its exact attempt; identical manual sends
+  // must stay distinct. Realtime frames match content in the session cache.
+  const optimisticIndex = optimisticId ? list.findIndex(item => item.id === optimisticId) : -1;
 
   if (optimisticIndex >= 0) {
-    return list.map((item, index) => (index === optimisticIndex ? message : item));
+    return list.map((item, index) => (index === optimisticIndex ? { ...message, status: receiptStatus(item.status, message.status) } : item));
   }
 
   return [...list, message];
@@ -960,7 +957,7 @@ function InboxPageContent() {
         getFreshToken
       );
 
-      session.updateMessages(targetConversationId, current => upsertMessage(current.filter(message => message.id !== optimisticMessage.id), createdMessage));
+      session.updateMessages(targetConversationId, current => upsertMessage(current, createdMessage, optimisticMessage.id));
       setConversations((current) =>
         current.map((conversation) =>
           conversation.id === targetConversationId
@@ -1107,7 +1104,7 @@ function InboxPageContent() {
         getFreshToken
       );
 
-      session.updateMessages(targetConversationId, current => upsertMessage(current.filter(message => message.id !== optimisticMessage.id), createdMessage));
+      session.updateMessages(targetConversationId, current => upsertMessage(current, createdMessage, optimisticMessage.id));
       setConversations((current) =>
         current.map((conversation) =>
           conversation.id === targetConversationId
