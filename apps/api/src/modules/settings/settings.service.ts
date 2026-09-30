@@ -1,3 +1,4 @@
+import { lockWorkspaceSettings } from "../prospecting/module-settings.js";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   readAgentBehaviorSettings,
@@ -81,7 +82,10 @@ export interface IntegrationConfigDto {
   updatedAt: string;
 }
 
+import { readWorkspaceModules } from "../prospecting/prospecting-policy.js";
+
 export interface SettingsDto {
+  modules: { campaignProspecting: boolean };
   workspace: WorkspaceSettingsDto;
   behavior: AgentBehaviorSettings;
   integrations: IntegrationConfigDto[];
@@ -299,6 +303,7 @@ export function createSettingsService(prisma: PrismaLike) {
       const { workspace, integrations } = await readSettingsParts(input.workspaceId);
 
       return {
+        modules: readWorkspaceModules(workspace?.limits),
         workspace: toWorkspaceDto(input.workspaceId, workspace),
         behavior: readAgentBehaviorSettings(workspace?.limits),
         integrations: integrations.map(toIntegrationDto)
@@ -369,6 +374,7 @@ export function createSettingsService(prisma: PrismaLike) {
         : [updatedConfig, ...integrations];
 
       return {
+        modules: readWorkspaceModules(workspace?.limits),
         workspace: toWorkspaceDto(input.workspaceId, workspace),
         behavior: readAgentBehaviorSettings(workspace?.limits),
         integrations: mergedIntegrations.map(toIntegrationDto)
@@ -379,43 +385,55 @@ export function createSettingsService(prisma: PrismaLike) {
       workspaceId: string;
       agentReplyWaitSeconds: number;
     }): Promise<SettingsDto> {
-      const current = await prisma.workspaceMirror.findUnique({
-        where: { workspaceId: input.workspaceId }
-      });
-      const previous = readAgentBehaviorSettings(current?.limits);
-      const nextLimits = writeAgentBehaviorSettings(current?.limits, {
-        agentReplyWaitSeconds: input.agentReplyWaitSeconds
-      }) as Prisma.InputJsonObject;
-      const workspace = await prisma.workspaceMirror.upsert({
-        where: { workspaceId: input.workspaceId },
-        create: {
-          workspaceId: input.workspaceId,
-          limits: nextLimits
-        },
-        update: {
-          limits: nextLimits
-        }
-      });
-
-      await prisma.auditLog.create({
-        data: {
-          workspaceId: input.workspaceId,
-          actorUserId: null,
-          action: "settings.agent_behavior_updated",
-          targetType: "workspace_mirror",
-          targetId: input.workspaceId,
-          metadata: {
-            previousWaitSeconds: previous.agentReplyWaitSeconds,
-            nextWaitSeconds: input.agentReplyWaitSeconds
+      const write = async (store: PrismaLike) => {
+        const current = await store.workspaceMirror.findUnique({
+          where: { workspaceId: input.workspaceId }
+        });
+        const previous = readAgentBehaviorSettings(current?.limits);
+        const nextLimits = writeAgentBehaviorSettings(current?.limits, {
+          agentReplyWaitSeconds: input.agentReplyWaitSeconds
+        }) as Prisma.InputJsonObject;
+        const workspace = await store.workspaceMirror.upsert({
+          where: { workspaceId: input.workspaceId },
+          create: {
+            workspaceId: input.workspaceId,
+            limits: nextLimits
+          },
+          update: {
+            limits: nextLimits
           }
-        }
-      });
+        });
+
+        await store.auditLog.create({
+          data: {
+            workspaceId: input.workspaceId,
+            actorUserId: null,
+            action: "settings.agent_behavior_updated",
+            targetType: "workspace_mirror",
+            targetId: input.workspaceId,
+            metadata: {
+              previousWaitSeconds: previous.agentReplyWaitSeconds,
+              nextWaitSeconds: input.agentReplyWaitSeconds
+            }
+          }
+        });
+
+        return workspace;
+      };
+      // Prisma production clients always use the serialized transaction; the
+      // interface-only fallback supports existing isolated settings test stores.
+      const client = prisma as unknown as PrismaClient;
+      const workspace = typeof client.$transaction === "function" ? await client.$transaction(async tx => {
+        await lockWorkspaceSettings(tx, input.workspaceId);
+        return write(tx as unknown as PrismaLike);
+      }) : await write(prisma);
 
       const integrations = await prisma.integrationConfig.findMany({
         where: { workspaceId: input.workspaceId },
         orderBy: [{ provider: "asc" }]
       });
       return {
+        modules: readWorkspaceModules(workspace?.limits),
         workspace: toWorkspaceDto(input.workspaceId, workspace),
         behavior: readAgentBehaviorSettings(workspace.limits),
         integrations: integrations.map(toIntegrationDto)

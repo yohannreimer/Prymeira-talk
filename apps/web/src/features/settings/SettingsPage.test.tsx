@@ -13,6 +13,8 @@ vi.mock("../../app/api", () => ({
   apiCreateTag: vi.fn(),
   apiDeleteTag: vi.fn(),
   apiGetAuditLog: vi.fn(async () => []),
+  apiGetCurrentTalkUser: vi.fn(async () => ({ role: "owner" })),
+  apiUpdateModules: vi.fn(),
   apiGetSettings: vi.fn(async () => ({
     workspace: {
       workspaceId: "workspace_a",

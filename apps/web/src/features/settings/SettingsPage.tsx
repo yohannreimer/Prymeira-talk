@@ -6,6 +6,8 @@ import {
   apiDeleteTag,
   apiGetAuditLog,
   apiGetSettings,
+  apiGetCurrentTalkUser,
+  apiUpdateModules,
   apiGetTags,
   apiSyncMetaTemplates,
   apiUpdateAgentBehavior,
@@ -162,6 +164,8 @@ function setTrimmedValue(target: Record<string, unknown>, key: string, value: st
 
 export function SettingsPage() {
   const { getToken } = useTalkAuth();
+  const [isOwner, setIsOwner] = useState(false);
+  const [isSavingModules, setIsSavingModules] = useState(false);
   const [settings, setSettings] = useState<SettingsDto | null>(null);
   const [auditLog, setAuditLog] = useState<AuditLogDto[]>([]);
   const [tags, setTags] = useState<TagDto[]>([]);
@@ -183,12 +187,14 @@ export function SettingsPage() {
     setError(null);
 
     try {
-      const [nextSettings, nextAuditLog, nextTags] = await Promise.all([
+      const [nextSettings, nextAuditLog, nextTags, currentUser] = await Promise.all([
         apiGetSettings(getToken),
         apiGetAuditLog(getToken),
-        apiGetTags(getToken)
+        apiGetTags(getToken),
+        apiGetCurrentTalkUser(getToken)
       ]);
       setSettings(nextSettings);
+      setIsOwner(currentUser.role === "owner");
       setAuditLog(nextAuditLog);
       setTags(sortTags(nextTags));
       setMetaForm(getMetaCloudForm(nextSettings));
@@ -318,7 +324,11 @@ export function SettingsPage() {
         mode: metaForm.enabled ? "real" : "simulated",
         settings: buildMetaSettingsPayload()
       });
-      setSettings(nextSettings);
+      setSettings((current) => current ? {
+        ...current,
+        integrations: [...current.integrations.filter((integration) => integration.provider !== "meta_cloud"),
+          ...nextSettings.integrations.filter((integration) => integration.provider === "meta_cloud")]
+      } : nextSettings);
       setMetaForm(getMetaCloudForm(nextSettings));
       setAuditLog(await apiGetAuditLog(getToken));
       setNotice(metaForm.enabled ? "WhatsApp API Oficial Meta ativada." : "WhatsApp API Oficial Meta desativada.");
@@ -348,7 +358,11 @@ export function SettingsPage() {
         mode: aiProviderForm.enabled ? "real" : "simulated",
         settings: buildAiProviderSettingsPayload()
       });
-      setSettings(nextSettings);
+      setSettings((current) => current ? {
+        ...current,
+        integrations: [...current.integrations.filter((integration) => integration.provider !== "openai_compatible"),
+          ...nextSettings.integrations.filter((integration) => integration.provider === "openai_compatible")]
+      } : nextSettings);
       setAiProviderForm(getAiProviderForm(nextSettings));
       setAuditLog(await apiGetAuditLog(getToken));
       setNotice(aiProviderForm.enabled ? "Provider de IA ativado." : "Provider de IA desativado.");
@@ -376,7 +390,7 @@ export function SettingsPage() {
       const nextSettings = await apiUpdateAgentBehavior(getToken, {
         agentReplyWaitSeconds: value
       });
-      setSettings(nextSettings);
+      setSettings((current) => current ? { ...current, behavior: nextSettings.behavior } : nextSettings);
       setAgentReplyWaitSeconds(getAgentReplyWaitSeconds(nextSettings));
       setAuditLog(await apiGetAuditLog(getToken));
       setNotice(value === 0
@@ -933,6 +947,28 @@ export function SettingsPage() {
               </div>
             ))}
           </div>
+        </div>
+        <div className="module-panel settings-card" id="settings-modules">
+          <div className="panel-title-row"><h2>Módulos opcionais</h2><Bot size={20} /></div>
+          <label className="form-field form-field--checkbox">
+            <input type="checkbox" checked={settings?.modules?.campaignProspecting ?? false}
+              disabled={isLoading || !settings || !isOwner || isSavingModules}
+              onChange={async (event) => {
+                const campaignProspecting = event.target.checked;
+                setIsSavingModules(true); setError(null); setNotice(null);
+                try {
+                  const nextSettings = await apiUpdateModules(getToken, { campaignProspecting });
+                  setSettings((current) => current ? { ...current, modules: nextSettings.modules } : nextSettings);
+                  setNotice(campaignProspecting ? "Prospecção com IA ativada." : "Prospecção com IA desativada. As conversas foram encaminhadas para o time."); }
+                catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível salvar o módulo."); }
+                finally { setIsSavingModules(false); }
+              }} />
+            <span>Ativar módulo IA para disparo</span>
+          </label>
+          <p className="list-note">Use agentes de Prospecção para acompanhar respostas aos seus disparos de WhatsApp. A mensagem inicial continua sendo preparada por você.</p>
+          <p className="list-note">Desativar encaminha as conversas para o time. Reativar não retoma essas conversas automaticamente.</p>
+          {!isLoading && !isOwner && <p className="list-note">Somente o administrador do workspace pode alterar este módulo.</p>}
+          {isSavingModules && <p role="status">Salvando módulo...</p>}
         </div>
         </div>
       </div>

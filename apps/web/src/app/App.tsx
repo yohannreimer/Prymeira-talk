@@ -13,6 +13,12 @@ import { TalkSuiteShell } from "../features/shell/TalkSuiteShell";
 import type { TalkModuleKey } from "../features/shell/moduleRegistry";
 import { TeamPage } from "../features/team/TeamPage";
 import { AuthGate } from "./auth";
+import { useEffect, useState } from "react";
+import { SupervisionPage } from "../features/supervision/SupervisionPage";
+
+function isSupervisionRoute() {
+  return new URLSearchParams(window.location.search).get("module") === "supervisao";
+}
 
 function renderModule(moduleKey: TalkModuleKey) {
   switch (moduleKey) {
@@ -44,9 +50,15 @@ function renderModule(moduleKey: TalkModuleKey) {
 }
 
 export function App() {
+  const [supervision, setSupervision] = useState(isSupervisionRoute);
+  useEffect(() => {
+    const update = () => setSupervision(isSupervisionRoute());
+    window.addEventListener("popstate", update);
+    return () => window.removeEventListener("popstate", update);
+  }, []);
   return (
     <AuthGate>
-      <TalkSuiteShell renderModule={renderModule} />
+      {supervision ? <SupervisionPage /> : <TalkSuiteShell renderModule={renderModule} />}
     </AuthGate>
   );
 }

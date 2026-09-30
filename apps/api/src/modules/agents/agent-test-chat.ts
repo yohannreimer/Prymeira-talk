@@ -1,3 +1,5 @@
+import { buildProspectingInstructions } from "../prospecting/prospecting-instructions.js";
+import { asRecord } from "../prospecting/prospecting-policy.js";
 import {
   resolveOpenAiCompatibleSettings,
   type AiProviderSettingsPrismaLike,
@@ -31,6 +33,7 @@ type AgentRecord = {
   workspaceId: string;
   model: string;
   systemPrompt: string;
+  type?: string;
   behaviorConfig?: JsonValue;
   handoffConfig?: JsonValue;
   allowedActions?: string[];
@@ -285,7 +288,7 @@ knowledgeMatches,
           output = await runProvider.generate({
             reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
             model,
-            systemPrompt: agent.systemPrompt,
+            systemPrompt: agent.type === "prospecting" ? buildProspectingInstructions(agent.systemPrompt, asRecord(agent.handoffConfig).prospectingGoal) : agent.systemPrompt,
             userPrompt: latestUserMessage.content,
             context: {
               ...conversationReasoningContext(agent.behaviorConfig, safety),

@@ -1,3 +1,5 @@
+import { agentFollowupConfigSchema, type AgentFollowupConfig } from "@prymeira-talk/shared";
+import { AgentFollowupConfigEditor, emptyAgentFollowupConfig, validateAgentFollowupConfig } from "./AgentFollowupConfigEditor";
 import { useTalkAuth } from "../../app/auth";
 import {
   apiCreateAgent,
@@ -69,7 +71,12 @@ const allowedActionLabels: Array<{ value: AiAgentAllowedAction; label: string; d
 const defaultSystemPrompt =
   "Atue como um agente de atendimento da Prymeira Talk. Responda com clareza, use a base de conhecimento quando ela for relevante e solicite handoff quando faltar contexto.";
 
+const defaultProspectingPrompt = "Atue como um agente de prospecção da Prymeira Talk. Acompanhe as respostas à abordagem inicial com clareza e respeito, use a base de conhecimento para explicar a oferta, qualifique o interesse e solicite handoff quando o critério de passagem para o humano for atingido.";
+
 type AgentFormState = {
+  type: "attendance" | "prospecting";
+  prospectingGoal: string;
+  followupConfig: AgentFollowupConfig;
   name: string;
   status: AiAgentDto["status"];
   systemPrompt: string;
@@ -116,6 +123,9 @@ const knowledgeUploadCategories: Array<{ value: string; label: string }> = [
 
 function emptyAgentForm(): AgentFormState {
   return {
+    type: "attendance",
+    prospectingGoal: "",
+    followupConfig: emptyAgentFollowupConfig(),
     name: "Agente de atendimento",
     status: "inactive",
     systemPrompt: defaultSystemPrompt,
@@ -128,6 +138,10 @@ function emptyAgentForm(): AgentFormState {
 
 function agentFormFromAgent(agent: AiAgentDto): AgentFormState {
   return {
+    type: agent.type ?? "attendance",
+    prospectingGoal: typeof agent.handoffConfig.prospectingGoal === "string" ? agent.handoffConfig.prospectingGoal : "",
+    followupConfig: agentFollowupConfigSchema.safeParse(agent.behaviorConfig.followup).success
+      ? agentFollowupConfigSchema.parse(agent.behaviorConfig.followup) : emptyAgentFollowupConfig(),
     name: agent.name,
     status: agent.status,
     systemPrompt: agent.systemPrompt,
@@ -433,8 +447,17 @@ export function AgentsPage() {
     setNotice(null);
 
     try {
+      if (agentForm.type === "prospecting") {
+        if (!agentForm.prospectingGoal.trim()) throw new Error("Preencha Quando passar para o humano.");
+        if (agentForm.prospectingGoal.trim().length > 2000) throw new Error("Quando passar para o humano deve ter até 2000 caracteres.");
+        const followupError = validateAgentFollowupConfig(agentForm.followupConfig);
+        if (followupError) throw new Error(followupError);
+      }
+      const prospectingFields = { type: agentForm.type,
+        ...(agentForm.type === "prospecting" ? { prospectingGoal: agentForm.prospectingGoal.trim(), followupConfig: agentForm.followupConfig } : {}) };
       if (selectedAgent) {
         const updatedAgent = await apiUpdateAgent(getToken, selectedAgent.id, {
+          ...prospectingFields,
           name: agentForm.name,
           status: agentForm.status,
           systemPrompt: agentForm.systemPrompt,
@@ -451,6 +474,7 @@ export function AgentsPage() {
       }
 
       const createdAgent = await apiCreateAgent(getToken, {
+        ...prospectingFields,
         name: agentForm.name,
         status: agentForm.status,
         systemPrompt: agentForm.systemPrompt,
@@ -1069,6 +1093,7 @@ export function AgentsPage() {
                     {agentStatusLabel(agent.status)}
                   </span>
                   <span className="status-badge status-badge--bot">{agent.model}</span>
+                  <span className="status-badge">{agent.type === "prospecting" ? "Prospecção" : "Atendimento"}</span>
                 </div>
                 <strong>{agent.name}</strong>
                 <p className="assistant-log-result">{agent.systemPrompt}</p>
@@ -1086,6 +1111,21 @@ export function AgentsPage() {
                 {agentForm.allowedActions.length} ações permitidas
               </span>
             </div>
+            <label className="form-field">Tipo de agente
+              <select value={agentForm.type} onChange={(event) => {
+                const type = event.target.value === "prospecting" ? "prospecting" : "attendance";
+                setAgentForm((current) => ({ ...current, type,
+                  ...(!selectedAgent ? {
+                    name: ["Agente de atendimento", "Agente de prospecção"].includes(current.name)
+                      ? type === "prospecting" ? "Agente de prospecção" : "Agente de atendimento" : current.name,
+                    systemPrompt: [defaultSystemPrompt, defaultProspectingPrompt].includes(current.systemPrompt)
+                      ? type === "prospecting" ? defaultProspectingPrompt : defaultSystemPrompt : current.systemPrompt
+                  } : {}) }));
+              }}>
+                <option value="attendance">Atendimento</option><option value="prospecting">Prospecção</option>
+              </select>
+              <small>{agentForm.type === "prospecting" ? "Acompanha respostas dos disparos associados a este agente. Você pode prepará-lo mesmo com o módulo desativado." : "Responde conversas de atendimento."}</small>
+            </label>
             <label className="form-field">
               Nome
               <input
@@ -1119,7 +1159,17 @@ export function AgentsPage() {
                 rows={7}
               />
             </label>
-<label className="form-field">
+            {agentForm.type === "prospecting" && <>
+              <label className="form-field">Quando passar para o humano
+                <textarea required rows={4} maxLength={2000} value={agentForm.prospectingGoal}
+                  placeholder="Ex.: Quando o contato pedir uma proposta ou confirmar interesse em agendar uma conversa."
+                  onChange={(event) => setAgentForm((current) => ({ ...current, prospectingGoal: event.target.value }))} />
+                <small>Defina o resultado esperado e em quais situações o time deve assumir a conversa.</small>
+              </label>
+              <AgentFollowupConfigEditor value={agentForm.followupConfig}
+                onChange={(followupConfig) => setAgentForm((current) => ({ ...current, followupConfig }))} />
+            </>}
+            <label className="form-field">
               Modo de resposta
               <select aria-label="Modo de resposta" value={agentForm.reasoningEffort} onChange={(event) => setAgentForm((current) => ({ ...current, reasoningEffort: event.target.value === "low" ? "low" : "none" }))}>
                 <option value="none">Rápido</option>

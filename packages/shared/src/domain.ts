@@ -201,6 +201,7 @@ export const conversationSchema = z.object({
   replyTriageDecision: z.enum(["needs_reply", "no_reply", "uncertain"]).nullable().optional(),
   replyTriageReason: z.string().nullable().optional(),
   replyTriageAnchorMessageId: z.string().nullable().optional(),
+  sourceCampaign: z.object({ id: z.string(), name: z.string() }).nullable().optional(),
   replyDismissed: z.boolean().optional()
 });
 export type ConversationDto = z.infer<typeof conversationSchema>;
@@ -230,7 +231,13 @@ export const agentAllowedTagSchema = tagSchema.pick({
 });
 export type AgentAllowedTagDto = z.infer<typeof agentAllowedTagSchema>;
 
+export const aiAgentTypeSchema = z.enum(["attendance", "prospecting"]);
+export type AiAgentType = z.infer<typeof aiAgentTypeSchema>;
+export const workspaceModulesSchema = z.object({ campaignProspecting: z.boolean().default(false) });
+export type WorkspaceModules = z.infer<typeof workspaceModulesSchema>;
+
 export const aiAgentSchema = z.object({
+  type: aiAgentTypeSchema.default("attendance").optional(),
   id: z.string().min(1),
   workspaceId: z.string().min(1),
   name: z.string().min(1),

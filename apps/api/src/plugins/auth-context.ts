@@ -1,6 +1,7 @@
 import fp from "fastify-plugin";
 import type { FastifyRequest } from "fastify";
 import { z } from "zod";
+import { SupervisionError, validateSupervisionAccess, type SupervisionContext } from "../modules/supervision/supervision-access.js";
 
 const workspaceAccessSchema = z.object({
   allowed: z.boolean(),
@@ -18,6 +19,7 @@ const realtimeAuthProtocol = "prymeira-talk-auth";
 
 declare module "fastify" {
   interface FastifyRequest {
+    supervision?: SupervisionContext;
     talk: {
       workspaceId: string;
       role: "owner" | "manager" | "agent";
@@ -173,21 +175,37 @@ async function defaultRequireProductAccess(
 export const authContextPlugin = fp(
   async (app, options: AuthContextPluginOptions) => {
     app.decorateRequest("talk");
+    app.decorateRequest("supervision");
     const fetchAccess = options.fetch ?? fetch;
     const requireAccess =
       options.requireProductAccess ??
       ((productKey: string, input: { accountApiUrl: string; clerkToken: string }) =>
         defaultRequireProductAccess(productKey, input, fetchAccess));
 
-    app.addHook("onRequest", async (request) => {
+    app.addHook("onRequest", async (request, reply) => {
       const pathname = readPathname(request);
-      if (isPublicPath(pathname)) {
+      const supervisionPath = pathname === "/supervision" || pathname.startsWith("/supervision/");
+      if (!supervisionPath && isPublicPath(pathname)) {
         return;
       }
 
       const clerkToken = readBearerToken(request, pathname);
       if (!clerkToken) {
         throw authError(401, "Missing bearer token.");
+      }
+
+      if (supervisionPath) {
+        reply.header("Cache-Control", "private, no-store");
+        if (request.method !== "GET") {
+          throw new SupervisionError(403, "A supervisão permite somente consulta.");
+        }
+        request.supervision = await validateSupervisionAccess({
+          accountApiUrl: options.accountApiUrl,
+          token: clerkToken,
+          admin: pathname.startsWith("/supervision/admin/"),
+          fetch: fetchAccess
+        });
+        return;
       }
 
       if (options.localAuthBypass) {

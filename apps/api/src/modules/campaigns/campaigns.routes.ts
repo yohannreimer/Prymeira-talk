@@ -57,6 +57,8 @@ const createCampaignBodySchema = z.object({
   cadence: cadenceSchema.optional(),
   scheduledAt: z.string().datetime().nullable().optional(),
   timeZone: z.string().min(1).max(100).optional(),
+  prospectingAgentId: uuidParamSchema.nullable().optional(),
+  prospectingContext: z.string().trim().max(6000).nullable().optional(),
   hideFromInboxUntilReply: z.boolean().optional()
 });
 
@@ -120,6 +122,7 @@ function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
 }
 
 function handleCampaignsError(reply: FastifyReply, error: unknown) {
+  if (error instanceof Error && error.message.startsWith("PROSPECTING_UNAVAILABLE:")) return reply.code(400).send({ code: "CAMPAIGN_PROSPECTING_INVALID", error: error.message.split(": ").slice(1).join(": ") });
   if (error instanceof CampaignsServiceError) {
     const statusCode =
       error.code === "CAMPAIGN_AUDIENCE_INVALID"

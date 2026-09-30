@@ -43,4 +43,13 @@ describe('WhatsApp-style attachments', () => {
   it('formats real durations safely', () => {
     expect(audioTime(73)).toBe('1:13'); expect(audioTime(NaN)).toBe('0:00'); expect(audioTime(Infinity)).toBe('0:00');
   });
+  it('offers playback without a transcription write in read-only supervision transport', () => {
+    const html = renderToStaticMarkup(<InboxMedia
+      message={{ ...base, type: 'audio', body: 'Áudio recebido', mediaUrl: null }}
+      getToken={async () => null}
+      transport={{ media: async () => new Blob(), preview: async () => ({ imageUrl: '', pages: 1 }) }} />);
+    expect(html).toContain('Reproduzir áudio');
+    expect(html).not.toContain('Ver transcrição');
+    expect(html).not.toContain('Transcrevendo');
+  });
 });

@@ -21,6 +21,7 @@ type AgentRecord = {
   model: string;
   systemPrompt: string;
   behaviorConfig: Prisma.JsonValue;
+  type?: "attendance" | "prospecting";
   handoffConfig: Prisma.JsonValue;
   limitsConfig: Prisma.JsonValue;
   allowedActions: Prisma.JsonValue;
@@ -113,6 +114,7 @@ export function createAgentPackageService(prisma: AgentPackagePrismaLike) {
               followup: agentPackage.agent.followup,
               deploymentVariables: variables
             },
+            type: agentPackage.agent.type ?? "attendance",
             handoffConfig: agentPackage.agent.handoff,
             limitsConfig: agentPackage.agent.limits,
             allowedActions: agentPackage.agent.allowedActions
@@ -211,6 +213,7 @@ export function createAgentPackageService(prisma: AgentPackagePrismaLike) {
           qualification,
           knowledgeTaxonomy: taxonomy,
           behavior: omitReservedBehaviorConfig(behaviorConfig),
+          type: agent.type ?? "attendance",
           handoff: toRecord(agent.handoffConfig),
           limits: toRecord(agent.limitsConfig),
           followup,
@@ -301,6 +304,7 @@ function toAgentDto(record: AgentRecord): AiAgentDto {
     model: record.model,
     systemPrompt: record.systemPrompt,
     behaviorConfig: toRecord(record.behaviorConfig),
+    type: record.type ?? "attendance",
     handoffConfig: toRecord(record.handoffConfig),
     limitsConfig: toRecord(record.limitsConfig),
     allowedActions: Array.isArray(record.allowedActions)

@@ -5,6 +5,13 @@ import { apiGetAudioTranscription, apiGetInboxMedia, apiGetPdfPreview } from '..
 import { mediaDataUrl } from './media-data-url';
 import './inbox-media.css';
 
+export type InboxMediaTransport = {
+  media: typeof apiGetInboxMedia;
+  preview: typeof apiGetPdfPreview;
+  transcribe?: typeof apiGetAudioTranscription;
+};
+const defaultTransport: InboxMediaTransport = { media: apiGetInboxMedia, preview: apiGetPdfPreview, transcribe: apiGetAudioTranscription };
+
 type MediaMessage = Pick<MessageDto, 'type' | 'body'> & Partial<Pick<MessageDto, 'mediaUrl' | 'attachment'>>;
 const placeholder = /^(Imagem recebida|Figurinha recebida|Arquivo recebido|Áudio recebido|Áudio enviado|Vídeo recebido|Vídeo enviado)$/i;
 const pendingAudio = /^(Áudio recebido|Áudio enviado|Processando áudio\.\.\.|Não foi possível transcrever este áudio\.)$/i;
@@ -31,7 +38,7 @@ export function audioTime(value: number) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-function PdfPages({ message, getToken }: { message: MessageDto; getToken: () => Promise<string | null> }) {
+function PdfPages({ message, getToken, transport }: { message: MessageDto; getToken: () => Promise<string | null>; transport: InboxMediaTransport }) {
   const [page, setPage] = useState(1);
   const [preview, setPreview] = useState<{ imageUrl: string; pages: number } | null>(null);
   const [error, setError] = useState(false);
@@ -39,7 +46,7 @@ function PdfPages({ message, getToken }: { message: MessageDto; getToken: () => 
   const token = useRef(getToken); token.current = getToken;
   useEffect(() => {
     const abort = new AbortController(); setPreview(null); setError(false);
-    void apiGetPdfPreview(message.conversationId, message.id, page, () => token.current(), abort.signal)
+    void transport.preview(message.conversationId, message.id, page, () => token.current(), abort.signal)
       .then(data => { if (!abort.signal.aborted) setPreview(data); }).catch(() => { if (!abort.signal.aborted) setError(true); });
     return () => abort.abort();
   }, [message.id, page, retry]);
@@ -51,21 +58,21 @@ function PdfPages({ message, getToken }: { message: MessageDto; getToken: () => 
   </div>;
 }
 
-function MediaViewer({ src, kind, name, message, getToken, onClose }: { src: string; kind: 'image' | 'pdf' | 'video'; name: string; message: MessageDto; getToken: () => Promise<string | null>; onClose: () => void }) {
+function MediaViewer({ src, kind, name, message, getToken, transport, onClose }: { src: string; kind: 'image' | 'pdf' | 'video'; name: string; message: MessageDto; getToken: () => Promise<string | null>; transport: InboxMediaTransport; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { dialog.current?.showModal(); }, []);
   return <dialog className="talk-media-viewer" ref={dialog} onCancel={onClose} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
     <header><strong>{name}</strong><a href={src} download={name} aria-label="Baixar arquivo"><Download size={20} /></a>
       <button type="button" aria-label="Fechar visualização" onClick={onClose} autoFocus><X size={22} /></button></header>
     <div className="talk-media-viewer-content">
-      {kind === 'image' ? <img src={src} alt={name} /> : kind === 'video' ? <video src={src} controls /> : <PdfPages message={message} getToken={getToken} />}
+      {kind === 'image' ? <img src={src} alt={name} /> : kind === 'video' ? <video src={src} controls /> : <PdfPages message={message} getToken={getToken} transport={transport} />}
     </div>
     {kind === 'pdf' ? <footer>Se a prévia não aparecer, <a href={src} download={name}>baixe o PDF</a> para abrir no seu dispositivo.</footer> : null}
   </dialog>;
 }
 
 /** Fetches privately on demand; local media URLs comply with production CSP. */
-export function InboxMedia({ message, getToken }: { message: MessageDto; getToken: () => Promise<string | null> }) {
+export function InboxMedia({ message, getToken, transport = defaultTransport }: { message: MessageDto; getToken: () => Promise<string | null>; transport?: InboxMediaTransport }) {
   const root = useRef<HTMLDivElement>(null);
   const audio = useRef<HTMLAudioElement>(null);
   const controller = useRef<AbortController | null>(null);
@@ -109,7 +116,7 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
     setLoading(true); setError(false);
     const signal = controller.current.signal;
     const job = (async () => {
-      const blob = await apiGetInboxMedia(message.conversationId, message.id, getToken, signal);
+      const blob = await transport.media(message.conversationId, message.id, getToken, signal);
       const url = await mediaDataUrl(blob);
       signal.throwIfAborted();
       const item = { blob, url };
@@ -158,13 +165,13 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
   async function showTranscript() {
     if (transcriptOpen) { setTranscriptOpen(false); return; }
     setTranscriptOpen(true);
-    if (transcript || transcriptLoading) return;
+    if (transcript || transcriptLoading || !transport.transcribe) return;
     transcriptController.current?.abort();
     const abort = new AbortController();
     transcriptController.current = abort;
     setTranscriptLoading(true); setTranscriptError(false);
     try {
-      const result = await apiGetAudioTranscription(message.conversationId, message.id, getToken, abort.signal);
+      const result = await transport.transcribe(message.conversationId, message.id, getToken, abort.signal);
       if (!abort.signal.aborted) setRequestedTranscript(result.text);
     } catch {
       if (!abort.signal.aborted) setTranscriptError(true);
@@ -193,7 +200,7 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
           onPause={() => setPlaying(false)} onEnded={() => { setPlaying(false); setPosition(0); }} onError={() => { setError(true); setPlaying(false); }} />
       </div>
       <div className="talk-audio-transcript">
-        <button type="button" aria-expanded={transcriptOpen} onClick={() => void showTranscript()}>{transcriptOpen ? 'Ocultar transcrição' : 'Ver transcrição'}</button>
+        {(transcript || transport.transcribe) ? <button type="button" aria-expanded={transcriptOpen} onClick={() => void showTranscript()}>{transcriptOpen ? 'Ocultar transcrição' : 'Ver transcrição'}</button> : null}
         {transcriptOpen ? <p role="status">{transcript ?? (transcriptLoading ? 'Transcrevendo áudio…' : transcriptError ? 'Transcrição indisponível. Feche e tente novamente.' : 'Transcrição indisponível.')}</p> : null}
       </div>
     </> : isImage ? <button className={`talk-image-preview${message.body === 'Figurinha recebida' ? ' is-sticker' : ''}`} type="button" aria-label="Ampliar imagem" onClick={() => void open()}>
@@ -212,6 +219,6 @@ export function InboxMedia({ message, getToken }: { message: MessageDto; getToke
     </div>}
     {error ? <div className="talk-media-error" role="status"><span>Não foi possível carregar {isAudio ? 'o áudio' : 'o arquivo'}.</span>
       <button type="button" onClick={() => { setError(false); if (isAudio) void play(); else void open(); }}><RotateCcw size={13} /> Tentar novamente</button></div> : null}
-    {viewer && src ? <MediaViewer src={src} kind={viewer} message={message} getToken={getToken} name={isImage ? 'Imagem da conversa' : name} onClose={() => setViewer(null)} /> : null}
+    {viewer && src ? <MediaViewer src={src} kind={viewer} message={message} getToken={getToken} transport={transport} name={isImage ? 'Imagem da conversa' : name} onClose={() => setViewer(null)} /> : null}
   </div>;
 }

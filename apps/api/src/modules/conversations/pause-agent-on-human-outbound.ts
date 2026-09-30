@@ -1,3 +1,5 @@
+import { lockProspectingConversation } from "../prospecting/prospecting-lock.js";
+import { stopProspectingConversation } from "../prospecting/prospecting-policy.js";
 import type { Prisma } from "@prisma/client";
 
 type HumanOutboundDb = Pick<
@@ -14,6 +16,7 @@ export async function pauseAgentOnHumanOutbound(
     actorUserId?: string | null;
   }
 ) {
+  await lockProspectingConversation(db, input.workspaceId, input.conversationId);
   const where = {
     workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId }
   };
@@ -55,5 +58,6 @@ export async function pauseAgentOnHumanOutbound(
     },
     data: { status: "cancelled", lockedAt: null, lastError: "human_outbound" }
   });
+  await stopProspectingConversation(db, input.workspaceId, input.conversationId, "human_outbound");
   return true;
 }

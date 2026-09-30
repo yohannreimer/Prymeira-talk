@@ -25,7 +25,7 @@ describe.skipIf(!url)('assistant PostgreSQL integration', () => {
     channelId = (await db.channel.create({ data: { workspaceId, provider: 'evolution', providerKey: 'test', encryptedConfig: { assistant: { mode: 'automatic', agentId } } } })).id;
     const contact = await db.contact.create({ data: { workspaceId, phone: '5500000000000' } });
     conversationId = (await db.conversation.create({ data: { workspaceId, channelId, contactId: contact.id, assignedUserId: userId } })).id;
-    await db.message.create({ data: { workspaceId, conversationId, direction: 'inbound', type: 'text', body: 'Preciso de 10 chapas 2 mm.' } });
+    await db.message.create({ data: { workspaceId, conversationId, direction: 'inbound', type: 'text', status: 'delivered', body: 'Preciso de 10 chapas 2 mm.' } });
   });
   afterAll(async () => {
     await db.assistantConversationState.updateMany({ where: { workspaceId }, data: { status: 'paused', scheduledAt: null, leaseToken: null, leaseUntil: null } });
@@ -112,8 +112,8 @@ describe.skipIf(!url)('assistant PostgreSQL integration', () => {
     await expect(db.assistantSuggestion.create({ data: { workspaceId: 'other-workspace', conversationId, agentId, revision: 999, contextKey: 'x', agentHash: 'x', body: 'Forbidden' } })).rejects.toMatchObject({ code: 'P2003' });
   });
   it('uses arrival order when inbound provider timestamps precede a same-second human reply', async () => {
-    const outbound = await db.message.create({ data: { workspaceId, conversationId, direction: 'outbound', type: 'text', body: 'Resposta humana', createdAt: new Date('2026-09-06T20:00:00.900Z'), ingestedAt: new Date('2026-09-06T20:00:01.000Z') } });
-    const inbound = await db.message.create({ data: { workspaceId, conversationId, direction: 'inbound', type: 'text', body: 'Nova pergunta', createdAt: new Date('2026-09-06T20:00:00.000Z'), ingestedAt: new Date('2099-09-06T20:00:01.100Z') } });
+    const outbound = await db.message.create({ data: { workspaceId, conversationId, direction: 'outbound', type: 'text', status: 'sent', body: 'Resposta humana', createdAt: new Date('2026-09-06T20:00:00.900Z'), ingestedAt: new Date('2026-09-06T20:00:01.000Z') } });
+    const inbound = await db.message.create({ data: { workspaceId, conversationId, direction: 'inbound', type: 'text', status: 'delivered', body: 'Nova pergunta', createdAt: new Date('2026-09-06T20:00:00.000Z'), ingestedAt: new Date('2099-09-06T20:00:01.100Z') } });
     expect(inbound.createdAt.getTime()).toBeLessThan(outbound.createdAt.getTime());
     expect(await repository.schedule({ workspaceId, conversationId, trigger: 'inbound', messageId: inbound.id })).toBe(true);
     const context = await loadAssistantContext(db, workspaceId, conversationId);
