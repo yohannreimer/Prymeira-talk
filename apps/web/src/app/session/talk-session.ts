@@ -7,7 +7,9 @@ export const CATALOG_STALE_MS = 5 * 60_000;
 export const HISTORY_GC_MS = 10 * 60_000;
 export const MAX_HISTORIES = 30;
 export const MAX_MESSAGES = 100;
-type Fence = { events: RealtimeEvent[] };
+type LocalMessageChange = { type: 'local.messages'; conversationId: string; rows: MessageDto[]; removedIds: Set<string> };
+type FenceEvent = RealtimeEvent | LocalMessageChange;
+type Fence = { events: FenceEvent[] };
 
 export function receiptStatus(current: MessageDto['status'], incoming: MessageDto['status']) {
   const rank = { pending: 0, sent: 1, delivered: 2, read: 3, failed: -1 };
@@ -140,9 +142,31 @@ export class TalkSession {
   }
   async readMessages(id: string, read: () => Promise<MessageDto[]>) {
     this.touch(id);
-    return this.withEvents(read, (messages, event) => patchMessages(messages, event, id), messages => messages.slice(-MAX_MESSAGES));
+    return this.withEvents(read, (messages, event) => {
+      if (event.type !== 'local.messages') return patchMessages(messages, event, id);
+      if (event.conversationId !== id) return messages;
+      let rows = messages.filter(message => !event.removedIds.has(message.id));
+      for (const row of event.rows) rows = patchMessages(rows, { type: 'message.created', workspaceId: this.workspaceId, payload: row }, id);
+      return rows;
+    }, messages => messages.slice(-MAX_MESSAGES));
   }
-  readConversations(read: () => Promise<ConversationDto[]>, scope: InboxListScope = {}) { return this.withEvents(read, (rows, event) => patchConversations(rows, event, scope)); }
+  /** Replay only local changes made after each read began. An explicit later
+   * reconciliation can discard earlier failed optimistic messages normally. */
+  updateMessages(id: string, update: (messages: MessageDto[]) => MessageDto[]) {
+    if (this.disposed) return;
+    const key = this.key('messages', id); const previous = this.client.getQueryData<MessageDto[]>(key) ?? [];
+    const next = update(previous).slice(-MAX_MESSAGES);
+    const before = new Map(previous.map(row => [row.id, row])); const ids = new Set(next.map(row => row.id));
+    const rows = next.filter(row => before.get(row.id) !== row);
+    const removedIds = new Set(previous.filter(row => !ids.has(row.id)).map(row => row.id));
+    if (!rows.length && !removedIds.size) return;
+    this.touch(id);
+    for (const fence of this.fences) fence.events.push({ type: 'local.messages', conversationId: id, rows, removedIds });
+    this.client.setQueryData(key, next);
+  }
+  readConversations(read: () => Promise<ConversationDto[]>, scope: InboxListScope = {}) {
+    return this.withEvents(read, (rows, event) => event.type === 'local.messages' ? rows : patchConversations(rows, event, scope));
+  }
   readContext<T>(id: string, read: () => Promise<T>, contactId = this.findConversation(id)?.contactId) {
     if (contactId) this.contextContacts.set(id, contactId);
     return read();
@@ -161,7 +185,7 @@ export class TalkSession {
       return this.client.getQueryData<number>(key) ?? count;
     } finally { this.attentionReads.delete(fence); }
   }
-  private async withEvents<T>(read: () => Promise<T>, patch: (data: T, event: RealtimeEvent) => T, normalize = (data: T) => data): Promise<T> {
+  private async withEvents<T>(read: () => Promise<T>, patch: (data: T, event: FenceEvent) => T, normalize = (data: T) => data): Promise<T> {
     const fence: Fence = { events: [] }; this.fences.add(fence);
     try {
       let result = normalize(await read());

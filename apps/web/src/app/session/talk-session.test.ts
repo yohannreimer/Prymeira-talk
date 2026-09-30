@@ -11,6 +11,27 @@ const session = () => { const value = new TalkSession('user:session:w', 'w'); se
 afterEach(() => { for (const value of sessions.splice(0)) value.clear(); vi.useRealTimers(); });
 
 describe('session query cache', () => {
+  it('replays later local pending/failed changes in ingestion order with websocket events, but can discard earlier failures', async () => {
+    const cache = session(); const old = { ...message('optimistic-old'), status: 'failed' as const };
+    cache.client.setQueryData(cache.key('messages', 'c1'), [old]);
+    let finish!: (rows: MessageDto[]) => void;
+    const pending = cache.readMessages('c1', () => new Promise(resolve => { finish = resolve; }));
+    cache.updateMessages('c1', current => [...current, { ...message('optimistic-new'), status: 'pending' }]);
+    cache.event(event('message.created', { ...message('from-server'), status: 'read' }));
+    cache.updateMessages('c1', current => current.map(row => row.id === 'optimistic-new' ? { ...row, status: 'failed' } : row));
+    cache.updateMessages('c2', current => [...current, { ...message('other-local', 'c2'), status: 'pending' }]);
+    finish([message('initial')]); const rows = await pending;
+    expect(rows.map(row => [row.id, row.status])).toEqual([['initial', 'sent'], ['optimistic-new', 'failed'], ['from-server', 'read']]);
+    cache.client.setQueryData(cache.key('messages', 'c1'), rows);
+    expect(await cache.readMessages('c1', async () => [message('initial')])).toEqual([message('initial')]);
+  });
+  it('materializes a local failure changed after a read began even when its pending row predates that read', async () => {
+    const cache = session(); cache.client.setQueryData(cache.key('messages', 'c1'), [{ ...message('optimistic-old'), status: 'pending' }]);
+    let finish!: (rows: MessageDto[]) => void;
+    const pending = cache.readMessages('c1', () => new Promise(resolve => { finish = resolve; }));
+    cache.updateMessages('c1', current => current.map(row => ({ ...row, status: 'failed' })));
+    finish([]); expect((await pending)[0]?.status).toBe('failed');
+  });
   it('replays create/edit/delete/receipt frames arriving during HTTP without timestamp reordering', async () => {
     const cache = session();
     let finish!: (messages: MessageDto[]) => void;

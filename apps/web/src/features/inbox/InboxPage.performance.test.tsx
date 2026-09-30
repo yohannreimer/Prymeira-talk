@@ -249,6 +249,41 @@ describe('Atendimento query/UI integration', () => {
     expect(rows.filter(row => row.body === 'outgoing')).toHaveLength(1);
     expect(apiCreateConversationMessage).toHaveBeenCalledOnce();
   });
+  it.each([['text', 'failed'], ['text', 'pending'], ['attachment', 'failed'], ['attachment', 'pending']] as const)('keeps a later %s send %s when an older history check finishes and clears only the consulted failure', async (kind, state) => {
+    vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:text/plain;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
+    await render(); let failSecond!: (error: Error) => void;
+    vi.mocked(apiCreateConversationMessage).mockRejectedValueOnce(new Error('Falha A')).mockImplementationOnce(() => new Promise((_resolve, reject) => { failSecond = reject; }));
+    const stage = async (name: string) => {
+      if (kind !== 'attachment') return;
+      const input = container.querySelector<HTMLInputElement>('.composer-file-input')!;
+      Object.defineProperty(input, 'files', { value: [new File(['a'], name, { type: 'text/plain' })], configurable: true });
+      await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
+    };
+    const submit = async () => { await act(async () => container.querySelector<HTMLFormElement>('.composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); await flush(); };
+    await type('first send'); await stage('first.txt'); await submit();
+    expect(container.querySelector('.message-thread')?.textContent).toContain('Falha A');
+    let finishRead!: (rows: MessageDto[]) => void;
+    vi.mocked(apiGetConversationMessages).mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }));
+    await act(async () => container.querySelector<HTMLButtonElement>('.message-thread .error-note button')!.click()); await flush();
+    await type('second send'); await stage('second.txt'); await submit();
+    if (state === 'failed') { await act(async () => failSecond(new Error('Falha B'))); await flush(); }
+    await act(async () => finishRead([message('c1')])); await flush();
+    const rows = session.client.getQueryData<MessageDto[]>(session.key('messages', 'c1'))!;
+    expect(rows.filter(row => row.id.startsWith('optimistic-')).map(row => [row.body, row.status])).toEqual([['second send', state]]);
+    expect(container.querySelector('.message-thread')?.textContent).not.toContain('Falha A');
+    if (state === 'failed') expect(container.querySelector('.message-thread')?.textContent).toContain('Falha B');
+    else {
+      expect(container.querySelector('.message-thread .error-note')).toBeNull();
+      await act(async () => failSecond(new Error('Falha B'))); await flush();
+      expect(container.querySelector('.message-thread')?.textContent).toContain('Falha B');
+    }
+    // A subsequent explicit check owns failure B and can remove its old local row.
+    vi.mocked(apiGetConversationMessages).mockResolvedValueOnce([message('c1')]);
+    await act(async () => container.querySelector<HTMLButtonElement>('.message-thread .error-note button')!.click()); await flush();
+    expect(container.querySelector('.message-thread .error-note')).toBeNull();
+    expect(session.client.getQueryData<MessageDto[]>(session.key('messages', 'c1'))?.some(row => row.id.startsWith('optimistic-'))).toBe(false);
+    expect(apiCreateConversationMessage).toHaveBeenCalledTimes(2);
+  });
   it.each(['text', 'attachment'])('records an inactive %s send failure in its target history/draft and shows recovery on return without resending', async kind => {
     vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:text/plain;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
     await render(); await select('c2'); await select('c1'); let fail!: (error: Error) => void;

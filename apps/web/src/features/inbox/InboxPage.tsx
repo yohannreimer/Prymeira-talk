@@ -453,8 +453,8 @@ function InboxPageContent() {
   const [selectedConversationId, setSelectedConversationId] = useSessionState<string | null>('selectedConversation', null);
   const [selectedConversationSnapshot, setSelectedConversationSnapshot] = useSessionState<ConversationDto | null>('selectedSnapshot', null);
   const [messageActionError, setMessageError] = useState<string | null>(null);
-  const [sendFailure, setSendFailure] = useSessionState<string | null>(`sendFailure:${selectedConversationId ?? 'none'}`, null);
-  const messageError = messageActionError ?? sendFailure;
+  const [sendFailure, setSendFailure] = useSessionState<{ generation: string; message: string } | null>(`sendFailure:${selectedConversationId ?? 'none'}`, null);
+  const messageError = messageActionError ?? sendFailure?.message;
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [draft, setDraft] = useSessionState(`draft:${selectedConversationId ?? 'none'}`, '');
   const [assistantTab, setAssistantTab] = useState<'contact' | 'assistant'>('assistant');
@@ -938,9 +938,7 @@ function InboxPageContent() {
     setMessageError(null);
     session.writeUI(`sendFailure:${targetConversationId}`, null, null);
     setDraft("");
-    setMessages((current) =>
-      selectedConversationIdRef.current === targetConversationId ? [...current, optimisticMessage] : current
-    );
+    session.updateMessages(targetConversationId, current => [...current, optimisticMessage]);
     setConversations((current) =>
       current.map((conversation) =>
         conversation.id === targetConversationId
@@ -961,8 +959,7 @@ function InboxPageContent() {
         getFreshToken
       );
 
-      if (session.isLive) session.client.setQueryData<MessageDto[]>(session.key('messages', targetConversationId), current =>
-        upsertMessage((current ?? []).filter(message => message.id !== optimisticMessage.id), createdMessage).slice(-MAX_MESSAGES));
+      session.updateMessages(targetConversationId, current => upsertMessage(current.filter(message => message.id !== optimisticMessage.id), createdMessage));
       setConversations((current) =>
         current.map((conversation) =>
           conversation.id === targetConversationId
@@ -983,10 +980,10 @@ function InboxPageContent() {
 
   function recordSendFailure(targetId: string, optimisticId: string, failure: unknown, fallback: string, text: string, file?: File) {
     if (!session.isLive) return;
-    session.client.setQueryData<MessageDto[]>(session.key('messages', targetId), current => current?.map(message =>
+    session.updateMessages(targetId, current => current.map(message =>
       message.id === optimisticId && message.status === 'pending' ? { ...message, status: 'failed' } : message));
     const error = failure instanceof Error ? failure.message : fallback;
-    session.writeUI(`sendFailure:${targetId}`, `${error} Confira o histórico antes de reenviar.`, null);
+    session.writeUI(`sendFailure:${targetId}`, { generation: optimisticId, message: `${error} Confira o histórico antes de reenviar.` }, null);
     const hasNewText = session.readUI(`draft:${targetId}`, '').trim().length > 0;
     const hasNewOrigin = Boolean(session.readUI(`draftOrigin:${targetId}`, null));
     const currentFile = session.readUI<File | null>(`draftFile:${targetId}`, null);
@@ -1081,9 +1078,7 @@ function InboxPageContent() {
     setMessageError(null);
     session.writeUI(`sendFailure:${targetConversationId}`, null, null);
     if (!voice) setDraft("");
-    setMessages((current) =>
-      selectedConversationIdRef.current === targetConversationId ? [...current, optimisticMessage] : current
-    );
+    session.updateMessages(targetConversationId, current => [...current, optimisticMessage]);
     setConversations((current) =>
       current.map((conversation) =>
         conversation.id === targetConversationId
@@ -1111,8 +1106,7 @@ function InboxPageContent() {
         getFreshToken
       );
 
-      if (session.isLive) session.client.setQueryData<MessageDto[]>(session.key('messages', targetConversationId), current =>
-        upsertMessage((current ?? []).filter(message => message.id !== optimisticMessage.id), createdMessage).slice(-MAX_MESSAGES));
+      session.updateMessages(targetConversationId, current => upsertMessage(current.filter(message => message.id !== optimisticMessage.id), createdMessage));
       setConversations((current) =>
         current.map((conversation) =>
           conversation.id === targetConversationId
@@ -1592,7 +1586,12 @@ selectedConversation ? (
             {isLoadingMessages && !isThreadTransitioning ? (
               <p className="thread-note">Atualizando mensagens...</p>
             ) : null}
-            {messageError ? <p className="error-note" role="status">{messageError} <button type="button" onClick={() => void messagesQuery.refetch().then(result => { if (!result.error) setSendFailure(null); })}>{sendFailure ? 'Conferir histórico' : 'Tentar novamente'}</button></p> : null}
+            {messageError ? <p className="error-note" role="status">{messageError} <button type="button" onClick={() => {
+              const consultedGeneration = sendFailure?.generation;
+              void messagesQuery.refetch().then(result => {
+                if (!result.error) setSendFailure(current => current?.generation === consultedGeneration ? null : current);
+              });
+            }}>{sendFailure ? 'Conferir histórico' : 'Tentar novamente'}</button></p> : null}
             {!messageError && !isLoadingMessages && !isThreadTransitioning && visibleMessages.length === 0 ? (
               <p className="thread-note">Ainda não ha mensagens nesta conversa.</p>
             ) : null}
