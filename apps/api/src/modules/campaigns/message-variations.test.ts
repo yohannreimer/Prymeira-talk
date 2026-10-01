@@ -26,6 +26,35 @@ describe("validateVariations", () => {
   });
 });
 
+describe("validateVariations preserva links, preços e números", () => {
+  const offer = "Olá {{nome}}, o kit sai por R$ 10 e o frete R$ 1.234,56. Veja https://loja.com/kit?id=7. Dúvidas: (47) 99999-1234.";
+
+  it("rejeita variação que muda o preço", () => {
+    expect(validateVariations(offer, [
+      "Oi {{nome}}! O kit custa R$ 12 e o frete R$ 1.234,56. Link: https://loja.com/kit?id=7 — dúvidas no (47) 99999-1234."
+    ])).toEqual([]);
+  });
+
+  it("rejeita variação que perde ou altera o link", () => {
+    expect(validateVariations(offer, [
+      "Oi {{nome}}! Kit por R$ 10, frete R$ 1.234,56. Dúvidas: (47) 99999-1234.",
+      "Oi {{nome}}! Kit por R$ 10, frete R$ 1.234,56. Veja https://loja.com/kit?id=8 ou (47) 99999-1234."
+    ])).toEqual([]);
+  });
+
+  it("rejeita variação que altera o telefone ou um número grande", () => {
+    expect(validateVariations(offer, [
+      "Oi {{nome}}! Kit por R$ 10, frete R$ 1.234,56. Veja https://loja.com/kit?id=7. Fale no (47) 99999-1235.",
+      "Oi {{nome}}! Kit por R$ 10, frete R$ 1.235,56. Veja https://loja.com/kit?id=7. Fale no (47) 99999-1234."
+    ])).toEqual([]);
+  });
+
+  it("aceita variação que mantém link, preços e telefone", () => {
+    const ok = "Oi {{nome}}! O kit está R$ 10 e o frete fica R$ 1.234,56. Confira em https://loja.com/kit?id=7, e qualquer dúvida chame no (47) 99999-1234!";
+    expect(validateVariations(offer, [ok])).toEqual([ok]);
+  });
+});
+
 describe("message variation service", () => {
   const five = [1, 2, 3, 4, 5].map((n) => `Variação ${n} para {{nome}}: aço carbono, posso enviar a tabela?`);
 
