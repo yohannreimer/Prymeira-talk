@@ -73,10 +73,10 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
   /** Exact APIs share one completeness/consistency check. Top-level sender
    * claims cannot contradict the native key. A distinct PN/LID spelling needs
    * the explicit participantAlt pair; unrelated phone numbers never correlate. */
-  function exactRecordIdentity(item: HistoryRecord): { kind: 'consistent'; key: WhatsAppMessageKey } | { kind: 'incomplete' | 'ambiguous' } {
+  function exactRecordIdentity(item: HistoryRecord): { kind: 'consistent' | 'incomplete' | 'ambiguous'; key: WhatsAppMessageKey } {
     const key = exactRecordKey(item);
-    if (!completeProviderKey(key)) return { kind: 'incomplete' };
-    if (item.participant && !explicitAddressMatch(normalizeChatAddress(item.participant), key.nativeSenderParticipant, item.key.participantAlt)) return { kind: 'ambiguous' };
+    if (!completeProviderKey(key)) return { kind: 'incomplete', key };
+    if (item.participant && !explicitAddressMatch(normalizeChatAddress(item.participant), key.nativeSenderParticipant, item.key.participantAlt)) return { kind: 'ambiguous', key };
     return { kind: 'consistent', key };
   }
   async function findMessageExact(input: { instanceName: string; key: WhatsAppMessageKey }): Promise<
@@ -85,10 +85,15 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
     const result = await page(input.instanceName, nativeKey(input.key), 1);
     // More than one page cannot establish uniqueness from the first page.
     if (result.pages > 1) return { kind: 'ambiguous' };
-    const matches = result.records.map(parse).filter(item => {
-      const identity = exactRecordIdentity(item);
-      return identity.kind === 'consistent' && fullProviderKeyMatches(input.key, identity.key, { chat: item.key.remoteJidAlt, sender: item.key.participantAlt });
-    });
+    const matches: HistoryRecord[] = [];
+    for (const raw of result.records) {
+      const item = parse(raw), identity = exactRecordIdentity(item);
+      if (!fullProviderKeyMatches(input.key, identity.key, { chat: item.key.remoteJidAlt, sender: item.key.participantAlt })) continue;
+      // A contradictory claim for this exact tuple cannot disappear when another
+      // response row is clean. Neither row certifies uniqueness or an I/O anchor.
+      if (identity.kind !== 'consistent') return { kind: 'ambiguous' };
+      matches.push(item);
+    }
     return matches.length > 1 ? { kind: 'ambiguous' } : matches.length ? { kind: 'resolved', record: matches[0]! } : { kind: 'missing' };
   }
   async function mediaData(instanceName: string, message: HistoryRecord, purpose: MediaPurpose) {

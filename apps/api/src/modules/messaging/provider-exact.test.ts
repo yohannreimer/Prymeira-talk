@@ -132,7 +132,7 @@ describe('exact provider I/O contracts', () => {
   it.each([1, 2])('rejects a contradictory group sender on historical page 2, pass %s', async badPass => {
     const conflicting = { ...raw, key: { ...raw.key, id: 'conflict' }, participant: '15550002222@s.whatsapp.net' };
     const exact = evo([conflicting]);
-    expect(await exact.source.findMessageExact({ instanceName: 'fixture', key: { ...key(), nativeId: 'conflict', rawId: 'conflict' } })).toMatchObject({ kind: 'missing' });
+    expect(await exact.source.findMessageExact({ instanceName: 'fixture', key: { ...key(), nativeId: 'conflict', rawId: 'conflict' } })).toMatchObject({ kind: 'ambiguous' });
     let pass = 0;
     const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
       const query = JSON.parse(String(init?.body));
@@ -152,7 +152,7 @@ describe('exact provider I/O contracts', () => {
     const item = { ...raw, key: { ...raw.key, participant: '700001@lid', participantAlt: proven ? PN : undefined }, participant: PN };
     const expected = { ...key(), nativeSenderParticipant: '700001@lid', senderParticipant: '700001@lid' };
     const { source } = evo([item]);
-    expect(await source.findMessageExact({ instanceName: 'fixture', key: expected })).toMatchObject({ kind: proven ? 'resolved' : 'missing' });
+    expect(await source.findMessageExact({ instanceName: 'fixture', key: expected })).toMatchObject({ kind: proven ? 'resolved' : 'ambiguous' });
     // A clean anchor permits exercising page validation even when the item is invalid.
     const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => new Response(JSON.stringify({ messages: { pages: 1,
       records: JSON.parse(String(init?.body)).where.key.id ? [raw] : [item] } })));
@@ -182,6 +182,27 @@ describe('exact provider I/O contracts', () => {
     expect(await source.loadExact({ ...input, instanceName: '' })).toEqual({ kind: 'incomplete' });
     expect(await source.loadExact({ ...input, key: { ...key(), direction: null } })).toEqual({ kind: 'incomplete' });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['find', 'history', 'media'] as const)('preserves conflicting same-key candidates for %s in either order or alone', async operation => {
+    const clean = { ...raw, participant: PN }, corrupt = { ...clean, participant: '15550002222@s.whatsapp.net' };
+    for (const records of [[clean, corrupt], [corrupt, clean], [corrupt]]) {
+      const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+        const query = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify({ messages: { pages: 1, records: query.where?.key.id ? records : [clean] } }));
+      });
+      const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture', fetch });
+      const input = { instanceName: 'fixture', key: key(), from: new Date(1699999999000), to: new Date(1700000002000), purpose: 'serve' as const };
+      const result = operation === 'find' ? await source.findMessageExact(input) : operation === 'history' ? await source.loadExact(input) : await source.mediaExact(input);
+      expect(result).toEqual({ kind: 'ambiguous' });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+  });
+  it.each([
+    { id: 'OTHER' }, { remoteJid: '120000-200@g.us' }, { fromMe: true }, { participant: '15550003333@s.whatsapp.net' }
+  ])('keeps every exact native-key field when evaluating conflicting candidates: %j', async changed => {
+    const clean = { ...raw, participant: PN }, foreign = { ...clean, key: { ...raw.key, ...changed }, participant: '15550002222@s.whatsapp.net' };
+    expect(await evo([clean, foreign]).source.findMessageExact({ instanceName: 'fixture', key: key() })).toEqual({ kind: 'resolved', record: clean });
   });
 
 });
