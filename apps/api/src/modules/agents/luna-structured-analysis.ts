@@ -18,6 +18,8 @@ export function createLunaStructuredAnalysis(input: {
     systemPrompt: string;
     data: unknown;
     schema: z.ZodType<T>;
+    /** Output budget (reasoning tokens count against it). Defaults to 2048. */
+    maxCompletionTokens?: number;
   }): Promise<T> {
     const provider = await resolveOpenAiCompatibleSettings(input.prisma, {
       workspaceId: request.workspaceId
@@ -34,7 +36,7 @@ export function createLunaStructuredAnalysis(input: {
         model: "gpt-6-luna",
         response_format: { type: "json_object" },
         reasoning_effort: "low",
-        max_completion_tokens: 2_048,
+        max_completion_tokens: request.maxCompletionTokens ?? 2_048,
         messages: [
           { role: "system", content: request.systemPrompt },
           { role: "user", content: JSON.stringify(request.data) }

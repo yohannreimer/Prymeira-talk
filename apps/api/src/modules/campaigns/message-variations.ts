@@ -5,10 +5,13 @@ type Analyze = <T>(request: {
   systemPrompt: string;
   data: unknown;
   schema: z.ZodType<T>;
+  maxCompletionTokens?: number;
 }) => Promise<T>;
 
 const TARGET = 5;
 const MAX_LENGTH = 2000;
+// Several rewrites of a message up to 2000 chars plus reasoning tokens do not fit in 2048.
+const MAX_COMPLETION_TOKENS = 8192;
 const responseSchema = z.object({ variations: z.array(z.string()).max(12) });
 
 const SYSTEM_PROMPT = [
@@ -51,12 +54,20 @@ export function createMessageVariationService(deps: { analyze: Analyze }) {
       const accepted: string[] = [];
       for (let attempt = 0; attempt < 2 && accepted.length < TARGET; attempt += 1) {
         const missing = TARGET - accepted.length;
-        const response = await deps.analyze({
-          workspaceId: input.workspaceId,
-          systemPrompt: SYSTEM_PROMPT,
-          data: { message: input.message, count: missing + (attempt === 0 ? 2 : 1), alreadyUsed: accepted },
-          schema: responseSchema
-        });
+        let response: z.infer<typeof responseSchema>;
+        try {
+          response = await deps.analyze({
+            workspaceId: input.workspaceId,
+            systemPrompt: SYSTEM_PROMPT,
+            data: { message: input.message, count: missing + (attempt === 0 ? 2 : 1), alreadyUsed: accepted },
+            schema: responseSchema,
+            maxCompletionTokens: MAX_COMPLETION_TOKENS
+          });
+        } catch (error) {
+          // A failed retry must not throw away variations we already have.
+          if (accepted.length > 0) break;
+          throw error;
+        }
         accepted.push(...validateVariations(input.message, response.variations, accepted));
         accepted.splice(TARGET);
       }

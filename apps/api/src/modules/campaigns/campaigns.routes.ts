@@ -319,6 +319,9 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
       if (error instanceof MessageVariationError) {
         return reply.code(422).send({ error: "A IA não conseguiu gerar variações válidas. Tente novamente." });
       }
+      if (message.includes("LUNA_ANALYSIS_RESPONSE_INVALID")) {
+        return reply.code(422).send({ error: "A IA não conseguiu gerar variações para esta mensagem. Tente uma mensagem menor ou gere novamente." });
+      }
       request.log.warn({ event: "campaign_variations_failed", message }, "message variations failed");
       return reply.code(502).send({ error: "Não foi possível gerar as variações agora." });
     }

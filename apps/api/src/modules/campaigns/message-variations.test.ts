@@ -53,4 +53,26 @@ describe("message variation service", () => {
     await expect(createMessageVariationService({ analyze: none as never }).generate({ workspaceId: "w", message: original }))
       .rejects.toThrow("VARIATIONS_INVALID");
   });
+
+  it("pede mais tokens de saída para mensagens longas", async () => {
+    const analyze = vi.fn(async () => ({ variations: five }));
+    await createMessageVariationService({ analyze: analyze as never }).generate({ workspaceId: "w", message: original });
+    expect(analyze).toHaveBeenCalledWith(expect.objectContaining({ maxCompletionTokens: 8192 }));
+  });
+
+  it("se a segunda tentativa falhar, devolve as já aceitas", async () => {
+    const analyze = vi.fn()
+      .mockResolvedValueOnce({ variations: five.slice(0, 2) })
+      .mockRejectedValueOnce(new Error("LUNA_ANALYSIS_RESPONSE_INVALID"));
+    expect(await createMessageVariationService({ analyze: analyze as never }).generate({ workspaceId: "w", message: original }))
+      .toEqual(five.slice(0, 2));
+  });
+
+  it("se a segunda tentativa falhar sem nenhuma aceita, propaga o erro", async () => {
+    const analyze = vi.fn()
+      .mockResolvedValueOnce({ variations: ["sem campo nenhum"] })
+      .mockRejectedValueOnce(new Error("LUNA_ANALYSIS_RESPONSE_INVALID"));
+    await expect(createMessageVariationService({ analyze: analyze as never }).generate({ workspaceId: "w", message: original }))
+      .rejects.toThrow("LUNA_ANALYSIS_RESPONSE_INVALID");
+  });
 });

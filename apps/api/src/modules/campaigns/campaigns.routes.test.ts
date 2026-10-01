@@ -83,6 +83,20 @@ describe("POST /campaigns/message-variations", () => {
   });
 });
 
+describe("POST /campaigns/message-variations when the AI answer is cut", () => {
+  it("answers 422 with a clear message when the AI response is invalid", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ finish_reason: "length", message: { content: "" } }]
+    }), { status: 200 })));
+    const { app } = await build({ ai: true });
+    try {
+      const response = await app.inject(variationsRequest("Olá {{nome}}"));
+      expect(response.statusCode).toBe(422);
+      expect(response.json().error).toBe("A IA não conseguiu gerar variações para esta mensagem. Tente uma mensagem menor ou gere novamente.");
+    } finally { await app.close(); }
+  });
+});
+
 describe("POST /campaigns/:id/preview-audience", () => {
   it("reports nameCheck unavailable and omits a company-like name when the AI is unavailable", async () => {
     const { app } = await build({ role: "owner" });
