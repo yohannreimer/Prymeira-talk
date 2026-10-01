@@ -106,6 +106,26 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
       for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
       return bytes;
     }
+  /** WAHA 55a7d78e src/core/media/local/MediaLocalStorage.ts and WPP
+   * WPPEngineMediaProcessor: <session>/<full serialized ID>.<actual extension>.
+   * Check the raw path before WHATWG URL normalization, then decode exactly once.
+   * These provider URLs expire; resolve them afresh and never treat them as storage. */
+  function assertExactMediaUrl(value: string, session: string, nativeId: string) {
+    const fail = () => { throw new Error('WAHA media URL does not match the exact session and message'); };
+    if (/[\u0000-\u0020\\?#]/.test(value)) fail();
+    let url: URL;
+    try { url = new URL(value); } catch { return fail(); }
+    if (url.origin !== base.origin || url.username || url.password || url.search || url.hash) fail();
+    const path = /^https?:\/\/[^/?#]+(\/[^?#]*)$/.exec(value)?.[1];
+    if (!path || path !== url.pathname) fail();
+    const segments = path!.split('/');
+    if (segments.length !== 5 || segments[0] !== '' || segments[1] !== 'api' || segments[2] !== 'files') fail();
+    let decoded: string[];
+    try { decoded = segments.slice(3).map(segment => decodeURIComponent(segment)); } catch { return fail(); }
+    if (decoded.some(segment => !segment || segment === '.' || segment === '..' || /[\u0000-\u0020%/\\]/.test(segment))) fail();
+    const filename = decoded[1]!, dot = filename.lastIndexOf('.');
+    if (decoded[0] !== session || dot < 1 || filename.slice(0, dot) !== nativeId || !/^[a-zA-Z0-9]{1,16}$/.test(filename.slice(dot + 1))) fail();
+  }
   async function findMessageExact(input: { session: string; key: WhatsAppMessageKey }, downloadMedia = false): Promise<
     { kind: 'resolved'; message: WahaMessage } | { kind: 'missing' | 'incomplete' | 'ambiguous' }> {
     if (!input.session || !completeProviderKey(input.key)) return { kind: 'incomplete' };
@@ -138,6 +158,7 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
       const found = await findMessageExact(input, true);
       if (found.kind !== 'resolved') return found;
       if (!found.message.media?.url) return { kind: 'missing' as const };
+      assertExactMediaUrl(found.message.media.url, input.session, input.key.nativeId!);
       const bytes = await getMediaBytes({ url: found.message.media.url, maxBytes: exactMediaLimit(input.purpose) });
       return { kind: 'resolved' as const, message: found.message, bytes };
     },

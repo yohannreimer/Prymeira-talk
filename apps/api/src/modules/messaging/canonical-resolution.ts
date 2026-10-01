@@ -1,5 +1,5 @@
 import type { CanonicalMessageIdentity, CanonicalNativeAlias, Prisma } from '@prisma/client';
-import { enterCanonicalTransaction } from './canonical-boundary.js';
+import { enterCanonicalTransaction, enterCanonicalWorkspaceTransaction } from './canonical-boundary.js';
 import { StaleMessagingSourceError, type MessagingProvider } from './canonical-source.js';
 import { equal, nativeLookupTuple, scopeOf, sha, stable } from './canonical-values.js';
 import type { TrustedMessagingContext } from './normalized-event.js';
@@ -97,6 +97,7 @@ export interface ProviderReferenceRequest {
  * Source is recovered from immutable observations, never upgraded from today's session. */
 export async function resolveProviderReferenceInTransaction(tx: Tx, request: ProviderReferenceRequest): Promise<NativeResolution> {
   const { workspaceId, channelId, originConversationId, messageId, requestedProvider } = request;
+  await enterCanonicalWorkspaceTransaction(tx, workspaceId);
   const origin = await tx.message.findFirst({ where: { workspaceId, id: messageId, conversationId: originConversationId,
     conversation: { workspaceId, channelId, id: originConversationId } } });
   if (!origin || !await request.authorizeOrigin({ workspaceId, channelId, conversationId: originConversationId, messageId })) return { kind: 'forbidden_origin' };

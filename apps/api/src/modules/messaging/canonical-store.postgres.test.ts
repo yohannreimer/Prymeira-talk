@@ -270,7 +270,7 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
   it('does not adopt official Meta through an unproven Evolution bridge', async () => {
     const a=await context();const channel=await db.channel.create({data:{workspaceId:a.workspaceId,provider:'meta_cloud',providerKey:randomUUID()}});
     const c:TrustedMessagingContext={...a,channelId:channel.id,channelProvider:'meta',provider:'evolution',connectionId:null};
-    await db.integrationConfig.create({data:{workspaceId:a.workspaceId,provider:'meta_cloud',mode:'real',status:'connected',settings:{enabled:true,connectionMode:'evolution_official',evolutionInstanceName:c.sessionName}}});
+    await db.integrationConfig.create({data:{workspaceId:a.workspaceId,provider:'meta_cloud',mode:'real',status:'connected',settings:{enabled:true,connectionMode:'evolution_official',evolutionInstanceName:c.sessionName,evolutionBaseUrl:'https://evolution.invalid',evolutionApiKey:'synthetic-key'}}});
     const contact=await db.contact.create({data:{workspaceId:c.workspaceId,phone:'15550001111'}});
     const conv=await db.conversation.create({data:{workspaceId:c.workspaceId,channelId:c.channelId,contactId:contact.id}});
     const message=await db.message.create({data:{workspaceId:c.workspaceId,conversationId:conv.id,direction:'inbound',type:'text',providerMessageId:'wamid.A',providerEventId:'meta:phone-id:wamid.A'}});

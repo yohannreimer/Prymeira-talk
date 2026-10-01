@@ -51,9 +51,11 @@ export async function assertCurrentMessagingSource(tx: Prisma.TransactionClient,
     const config = await tx.integrationConfig.findUnique({ where: { workspaceId_provider: { workspaceId: c.workspaceId, provider: 'meta_cloud' } } });
     const settings = record(config?.settings);
     if (config?.mode !== 'real' || settings.enabled !== true) throw new StaleMessagingSourceError('Inactive Meta source');
+    const configured = (key: string) => typeof settings[key] === 'string' ? (settings[key] as string).trim() : '';
     if (c.provider === 'meta_official') {
-      if (settings.connectionMode === 'evolution_official' || !c.phoneNumberId || settings.phoneNumberId !== c.phoneNumberId || channel.providerKey !== c.phoneNumberId || c.sessionName !== c.phoneNumberId) throw new StaleMessagingSourceError('Invalid official Meta source');
-    } else if (c.provider !== 'evolution' || settings.connectionMode !== 'evolution_official' || settings.evolutionInstanceName !== c.sessionName) throw new StaleMessagingSourceError('Invalid Evolution bridge source');
+      if (!configured('wabaId') || !configured('accessToken')) throw new StaleMessagingSourceError('Inactive official Meta source');
+      if (settings.connectionMode === 'evolution_official' || !c.phoneNumberId || configured('phoneNumberId') !== c.phoneNumberId || channel.providerKey !== c.phoneNumberId || c.sessionName !== c.phoneNumberId) throw new StaleMessagingSourceError('Invalid official Meta source');
+    } else if (c.provider !== 'evolution' || settings.connectionMode !== 'evolution_official' || !configured('evolutionBaseUrl') || !configured('evolutionApiKey') || configured('evolutionInstanceName') !== c.sessionName) throw new StaleMessagingSourceError('Invalid Evolution bridge source');
   }
   return channel.provider;
 }

@@ -74,13 +74,13 @@ describe('exact provider I/O contracts', () => {
   });
   it('WAHA exact media enforces process and serving limits plus the configured origin', async () => {
     const id = `false_${GROUP}_A_${PN}`;
-    const payload = { id, fromMe: false, media: { url: 'https://waha.invalid/api/files/fixture' }, _data: { id: { id: 'A', remote: GROUP, fromMe: false, participant: PN } } };
+    const payload = { id, fromMe: false, media: { url: `https://waha.invalid/api/files/fixture/${encodeURIComponent(id)}.jpeg` }, _data: { id: { id: 'A', remote: GROUP, fromMe: false, participant: PN } } };
     const fetch = vi.fn(async (url: unknown) => String(url).includes('/api/files/') ? new Response('x', { headers: { 'content-length': String(9 * 1024 * 1024) } }) : new Response(JSON.stringify(payload)));
     const client = createWahaClient({ baseUrl: 'https://waha.invalid', apiKey: 'fixture', fetch });
     await expect(client.mediaExact({ session: 'fixture', key: { ...key(), nativeId: id }, purpose: 'process' })).rejects.toThrow('size limit');
     expect(await client.mediaExact({ session: 'fixture', key: { ...key(), nativeId: id }, purpose: 'serve' })).toMatchObject({ kind: 'resolved', bytes: new Uint8Array([120]) });
     payload.media.url = 'https://other.invalid/api/files/fixture';
-    await expect(client.mediaExact({ session: 'fixture', key: { ...key(), nativeId: id }, purpose: 'serve' })).rejects.toThrow('configured file origin');
+    await expect(client.mediaExact({ session: 'fixture', key: { ...key(), nativeId: id }, purpose: 'serve' })).rejects.toThrow(/media URL/);
   });
 
   it('Evolution exact media retains separate 8 MiB processing and 25 MiB serving budgets', async () => {
@@ -91,6 +91,42 @@ describe('exact provider I/O contracts', () => {
     const result = await source.mediaExact({ instanceName: 'fixture', key: key(), purpose: 'serve' });
     expect(result.kind).toBe('resolved');
     if (result.kind === 'resolved') expect(result.mediaUrl.length).toBe(base64.length + 'data:image/png;base64,'.length);
+  });
+
+  it.each([
+    '/api/files/unrelated-session/unrelated-message.jpeg',
+    '/api/files/fixture/wrong-native.jpeg',
+    '/api/files/fixture/../fixture/NATIVE.jpeg',
+    '/api/files/fixture/%252e%252e%252fNATIVE.jpeg',
+    '/api/files/fixture/NATIVE.jpeg?api_key=untrusted',
+    '/api/files/fixture/NATIVE.jpeg#fragment',
+    '/api/files/fixture%2fescape/NATIVE.jpeg'
+  ])('rejects unbound exact WAHA media paths before download: %s', async path => {
+    const nativeId = `false_${GROUP}_A_with_underscores_${PN}`;
+    const payload = { id: nativeId, fromMe: false, media: { url: `https://waha.invalid${path.replace('NATIVE', encodeURIComponent(nativeId))}` },
+      _data: { id: { id: 'A_with_underscores', remote: GROUP, fromMe: false, participant: PN } } };
+    const fetch = vi.fn(async (url: unknown) => String(url).includes('/api/files/') ? new Response('foreign-media') : new Response(JSON.stringify(payload)));
+    const client = createWahaClient({ baseUrl: 'https://waha.invalid', apiKey: 'fixture', fetch });
+    await expect(client.mediaExact({ session: 'fixture', key: { ...key(), rawId: 'A_with_underscores', nativeId }, purpose: 'serve' })).rejects.toThrow(/media/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts one decoded full WAHA filename with raw-ID underscores and refuses redirects', async () => {
+    const nativeId = `false_${GROUP}_raw_with_many_underscores_${PN}`;
+    const mediaUrl = `https://waha.invalid/api/files/fixture/${encodeURIComponent(nativeId)}.jpeg`;
+    const payload = { id: nativeId, fromMe: false, media: { url: mediaUrl }, _data: { id: { id: 'raw_with_many_underscores', remote: GROUP, fromMe: false, participant: PN } } };
+    let redirect = false;
+    const fetch = vi.fn(async (url: unknown, _init?: RequestInit) => String(url).includes('/api/files/')
+      ? redirect ? new Response(null, { status: 302, headers: { location: 'https://other.invalid/secret' } }) : new Response('owned-media')
+      : new Response(JSON.stringify(payload)));
+    const client = createWahaClient({ baseUrl: 'https://waha.invalid', apiKey: 'fixture', fetch });
+    const input = { session: 'fixture', key: { ...key(), rawId: 'raw_with_many_underscores', nativeId }, purpose: 'serve' as const };
+    expect(await client.mediaExact(input)).toMatchObject({ kind: 'resolved', bytes: new TextEncoder().encode('owned-media') });
+    expect(fetch.mock.calls[1]?.[0]).toBe(mediaUrl);
+    expect(fetch.mock.calls[1]?.[1]?.redirect).toBe('error');
+    redirect = true;
+    await expect(client.mediaExact(input)).rejects.toMatchObject({ statusCode: 302 });
+    expect(fetch).toHaveBeenCalledTimes(4);
   });
 
 });

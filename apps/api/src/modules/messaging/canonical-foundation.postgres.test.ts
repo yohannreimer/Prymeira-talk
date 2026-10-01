@@ -130,7 +130,7 @@ describe.skipIf(!url)('canonical boundary and exact reads on PostgreSQL', () => 
     const physical = await fixture();
     const phoneNumberId = 'configured-phone-id';
     const channel = await db.channel.create({ data: { workspaceId: physical.workspaceId, provider: 'meta_cloud', providerKey: phoneNumberId } });
-    await db.integrationConfig.create({ data: { workspaceId: physical.workspaceId, provider: 'meta_cloud', mode: 'real', status: 'connected', settings: { enabled: true, connectionMode: 'direct', phoneNumberId } } });
+    await db.integrationConfig.create({ data: { workspaceId: physical.workspaceId, provider: 'meta_cloud', mode: 'real', status: 'connected', settings: { enabled: true, connectionMode: 'direct', phoneNumberId, wabaId: 'synthetic-waba', accessToken: 'synthetic-token' } } });
     const c: TrustedMessagingContext = { ...physical, channelId: channel.id, channelProvider: 'meta', provider: 'meta_official', connectionId: null, phoneNumberId, sessionName: phoneNumberId };
     const event = message(c, 'wamid.A'); event.key.identityFormat = 'provider_native'; event.key.rawId = null;
     const contact = await db.contact.create({ data: { workspaceId: c.workspaceId, phone: '15550001111' } });
@@ -218,11 +218,11 @@ describe.skipIf(!url)('canonical boundary and exact reads on PostgreSQL', () => 
   it('keeps official and bridge wamid namespaces distinct on the same logical channel', async () => {
     const p = await fixture(), phoneNumberId = 'configured-second-phone';
     const channel = await db.channel.create({ data: { workspaceId: p.workspaceId, provider: 'meta_cloud', providerKey: phoneNumberId } });
-    const config = await db.integrationConfig.create({ data: { workspaceId: p.workspaceId, provider: 'meta_cloud', mode: 'real', status: 'connected', settings: { enabled: true, phoneNumberId } } });
+    const config = await db.integrationConfig.create({ data: { workspaceId: p.workspaceId, provider: 'meta_cloud', mode: 'real', status: 'connected', settings: { enabled: true, phoneNumberId, wabaId: 'synthetic-waba', accessToken: 'synthetic-token' } } });
     const official: TrustedMessagingContext = { ...p, channelId: channel.id, provider: 'meta_official', channelProvider: 'meta', connectionId: null, phoneNumberId, sessionName: phoneNumberId };
     const first = message(official, 'wamid.shared'); first.key.identityFormat = 'provider_native'; first.key.rawId = null;
     const saved = await persist(first);
-    await db.integrationConfig.update({ where: { id: config.id }, data: { settings: { enabled: true, connectionMode: 'evolution_official', evolutionInstanceName: 'bridge-fixture' } } });
+    await db.integrationConfig.update({ where: { id: config.id }, data: { settings: { enabled: true, connectionMode: 'evolution_official', evolutionInstanceName: 'bridge-fixture', evolutionBaseUrl: 'https://evolution.invalid', evolutionApiKey: 'synthetic-key' } } });
     const bridge: TrustedMessagingContext = { ...p, channelId: channel.id, provider: 'evolution', channelProvider: 'meta', connectionId: null, sessionName: 'bridge-fixture' };
     const second = await persist({ ...first, context: bridge });
     expect(second.messageId).not.toBe(saved.messageId);
@@ -254,7 +254,7 @@ describe.skipIf(!url)('canonical boundary and exact reads on PostgreSQL', () => 
   it('refuses to relabel a legacy Meta UUID owned by another configured phone ID', async () => {
     const p = await fixture(), phoneNumberId = 'configured-adoption-phone';
     const channel = await db.channel.create({ data: { workspaceId: p.workspaceId, provider: 'meta_cloud', providerKey: phoneNumberId } });
-    await db.integrationConfig.create({ data: { workspaceId: p.workspaceId, provider: 'meta_cloud', mode: 'real', status: 'connected', settings: { enabled: true, phoneNumberId } } });
+    await db.integrationConfig.create({ data: { workspaceId: p.workspaceId, provider: 'meta_cloud', mode: 'real', status: 'connected', settings: { enabled: true, phoneNumberId, wabaId: 'synthetic-waba', accessToken: 'synthetic-token' } } });
     const c: TrustedMessagingContext = { ...p, channelId: channel.id, provider: 'meta_official', channelProvider: 'meta', connectionId: null, phoneNumberId, sessionName: phoneNumberId };
     const contact = await db.contact.create({ data: { workspaceId: c.workspaceId, phone: '15550001111' } });
     const conversation = await db.conversation.create({ data: { workspaceId: c.workspaceId, channelId: c.channelId, contactId: contact.id } });
@@ -268,6 +268,91 @@ describe.skipIf(!url)('canonical boundary and exact reads on PostgreSQL', () => 
     const c = await fixture(), event = message(c), saved = await persist(event);
     await db.message.update({ where: { id: saved.messageId! }, data: { direction: 'outbound' } });
     expect(await lookup(c, event.key)).toMatchObject({ kind: 'review' });
+  });
+
+  it.each(['alias_review', 'identity_review', 'alias_binding'] as const)('waits for workspace lock before all origin reads and authorization: %s', async mutation => {
+    const c = await fixture(), saved = await persist(message(c));
+    let locked!: () => void, release!: () => void;
+    const ready = new Promise<void>(r => { locked = r; }), unblock = new Promise<void>(r => { release = r; });
+    const domainReads: string[] = [];
+    const writer = db.$transaction(async tx => {
+      await enterCanonicalTransaction(tx, c); locked(); await unblock;
+      if (mutation === 'alias_review') await tx.canonicalNativeAlias.updateMany({ where: { workspaceId: c.workspaceId }, data: { state: 'review' } });
+      if (mutation === 'identity_review') await tx.canonicalMessageIdentity.update({ where: { id: saved.identityId! }, data: { state: 'review' } });
+      if (mutation === 'alias_binding') await tx.canonicalNativeAlias.updateMany({ where: { workspaceId: c.workspaceId }, data: { identityId: null, state: 'unresolved' } });
+    });
+    await ready;
+    const resolver = db.$transaction(async tx => {
+      const watched = new Proxy(tx, { get(target, property) {
+        if (['message', 'conversation', 'canonicalMessageIdentity', 'canonicalNativeAlias'].includes(String(property))) domainReads.push(String(property));
+        return Reflect.get(target, property);
+      } });
+      return resolveProviderReferenceInTransaction(watched, { workspaceId: c.workspaceId, channelId: c.channelId,
+        originConversationId: saved.conversationId!, messageId: saved.messageId!, requestedProvider: 'evolution', authorizeOrigin: async () => { domainReads.push('authorizeOrigin'); return true; } });
+    });
+    let blocked = false;
+    try {
+      for (let i = 0; i < 100; i++) {
+        const waiting = await db.$queryRaw<Array<{ n: bigint }>>`SELECT count(*) AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%pg_advisory_xact_lock%'`;
+        if (Number(waiting[0]!.n)) { blocked = true; break; }
+        await new Promise(r => setTimeout(r, 10));
+      }
+      expect(blocked).toBe(true);
+      expect(domainReads).toEqual([]);
+    } finally { release(); await writer; }
+    expect(await resolver).toMatchObject({ kind: mutation === 'alias_binding' ? 'missing' : 'review' });
+  });
+  it.each(['wabaId', 'accessToken'])('rejects inactive official Meta when %s is missing', async missing => {
+    const p = await fixture(), phoneNumberId = 'configured-active-phone';
+    const channel = await db.channel.create({ data: { workspaceId: p.workspaceId, provider: 'meta_cloud', providerKey: phoneNumberId } });
+    const settings: Record<string, unknown> = { enabled: true, connectionMode: 'direct', phoneNumberId, wabaId: 'synthetic-waba', accessToken: 'synthetic-token' };
+    delete settings[missing];
+    await db.integrationConfig.create({ data: { workspaceId: p.workspaceId, provider: 'meta_cloud', mode: 'real', status: 'connected', settings: settings as never } });
+    await expect(db.$transaction(tx => deriveTrustedMessagingContext(tx, { workspaceId: p.workspaceId, channelId: channel.id, mode: 'live', observedAt: p.observedAt,
+      authenticatedSource: { provider: 'meta_official', connectionId: null, phoneNumberId } }))).rejects.toMatchObject({ code: 'stale_source' });
+  });
+  it.each(['evolutionBaseUrl', 'evolutionApiKey'])('rejects inactive Evolution bridge when %s is missing', async missing => {
+    const p = await fixture();
+    const channel = await db.channel.create({ data: { workspaceId: p.workspaceId, provider: 'meta_cloud', providerKey: 'bridge-phone' } });
+    const settings: Record<string, unknown> = { enabled: true, connectionMode: 'evolution_official', evolutionInstanceName: 'fixture-bridge', evolutionBaseUrl: 'https://evolution.invalid', evolutionApiKey: 'synthetic-key' };
+    delete settings[missing];
+    await db.integrationConfig.create({ data: { workspaceId: p.workspaceId, provider: 'meta_cloud', mode: 'real', status: 'connected', settings: settings as never } });
+    await expect(db.$transaction(tx => deriveTrustedMessagingContext(tx, { workspaceId: p.workspaceId, channelId: channel.id, mode: 'live', observedAt: p.observedAt,
+      authenticatedSource: { provider: 'evolution', connectionId: null, sessionName: 'fixture-bridge' } }))).rejects.toMatchObject({ code: 'stale_source' });
+  });
+
+  it.each(['meta_official', 'evolution'] as const)('rechecks active %s configuration after waiting for a concurrent removal', async provider => {
+    const p = await fixture(), phoneNumberId = 'configured-removal-phone', sessionName = provider === 'meta_official' ? phoneNumberId : 'removal-bridge';
+    const channel = await db.channel.create({ data: { workspaceId: p.workspaceId, provider: 'meta_cloud', providerKey: phoneNumberId } });
+    const settings: Record<string, unknown> = provider === 'meta_official'
+      ? { enabled: true, connectionMode: 'direct', phoneNumberId, wabaId: 'synthetic-waba', accessToken: 'synthetic-token' }
+      : { enabled: true, connectionMode: 'evolution_official', evolutionInstanceName: sessionName, evolutionBaseUrl: 'https://evolution.invalid', evolutionApiKey: 'synthetic-key' };
+    const config = await db.integrationConfig.create({ data: { workspaceId: p.workspaceId, provider: 'meta_cloud', mode: 'real', status: 'connected', settings: settings as never } });
+    const context = await db.$transaction(tx => deriveTrustedMessagingContext(tx, { workspaceId: p.workspaceId, channelId: channel.id, mode: 'live', observedAt: p.observedAt,
+      authenticatedSource: provider === 'meta_official' ? { provider, connectionId: null, phoneNumberId } : { provider, connectionId: null, sessionName } }));
+    await expect(db.$transaction(tx => deriveTrustedMessagingContext(tx, { workspaceId: p.workspaceId, channelId: channel.id, mode: 'live', observedAt: p.observedAt,
+      authenticatedSource: provider === 'meta_official' ? { provider, connectionId: null, phoneNumberId: 'wrong-configured-phone' } : { provider, connectionId: null, sessionName: 'wrong-configured-bridge' } }))).rejects.toMatchObject({ code: 'stale_source' });
+    let locked!: () => void, release!: () => void;
+    const ready = new Promise<void>(r => { locked = r; }), unblock = new Promise<void>(r => { release = r; });
+    const configWriter = db.$transaction(async tx => {
+      delete settings[provider === 'meta_official' ? 'accessToken' : 'evolutionApiKey'];
+      await tx.integrationConfig.update({ where: { id: config.id }, data: { settings: settings as never } });
+      locked(); await unblock;
+    });
+    await ready;
+    const event = message(context, 'wamid.removal'); event.key.identityFormat = 'provider_native'; event.key.rawId = null;
+    const writer = persist(event);
+    let blocked = false;
+    try {
+      for (let i = 0; i < 100; i++) {
+        const waiting = await db.$queryRaw<Array<{ n: bigint }>>`SELECT count(*) AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%integration_configs%'`;
+        if (Number(waiting[0]!.n)) { blocked = true; break; }
+        await new Promise(r => setTimeout(r, 10));
+      }
+      expect(blocked).toBe(true);
+    } finally { release(); await configWriter; }
+    await expect(writer).rejects.toMatchObject({ code: 'stale_source' });
+    expect(await db.canonicalObservation.count({ where: { workspaceId: p.workspaceId } })).toBe(0);
   });
 
 });
