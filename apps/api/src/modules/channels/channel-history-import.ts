@@ -7,7 +7,8 @@ import { usableContactName } from '../contacts/contact-name.js';
 
 type ImportChannel = { id: string; workspaceId: string; providerKey: string; historyImportAttempts: number };
 const lid = (value: string) => /^\d+@lid$/.test(value);
-const contactIdentity = (jid: string) => lid(jid) ? jid : normalizePhoneForStorage(jid.split('@')[0]);
+/** A WhatsApp LID stays as-is (it is not a phone number); anything else becomes its canonical stored phone. */
+export const contactIdentity = (jid: string) => lid(jid) ? jid : normalizePhoneForStorage(jid.split('@')[0]);
 
 function preview(record: HistoryRecord) {
   return extractMessageContent(record.message, record.messageType).preview;
