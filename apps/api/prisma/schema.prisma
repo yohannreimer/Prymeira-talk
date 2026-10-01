@@ -305,6 +305,12 @@ model Channel {
   canonicalObservations CanonicalObservation[]
   canonicalAliases CanonicalNativeAlias[]
   @@unique([workspaceId, id, provider])
+  outboundIntents OutboundIntent[]
+  outboundAttempts OutboundAttempt[]
+  outboundResults OutboundResult[]
+  outboundBindings OutboundBinding[]
+  outboundCorrelations OutboundCorrelation[]
+  outboundRecertifications OutboundRecertification[]
 }
 
 model ChannelConnection {
@@ -486,6 +492,8 @@ model Conversation {
   canonicalOperations CanonicalChat[]
   canonicalIdentities CanonicalMessageIdentity[]
   @@unique([workspaceId, channelId, id])
+  outboundIntents OutboundIntent[]
+  outboundCorrelations OutboundCorrelation[]
 }
 
 model Message {
@@ -520,6 +528,8 @@ model Message {
   @@map("messages")
   canonicalIdentities CanonicalMessageIdentity[]
   @@unique([workspaceId, conversationId, id])
+  outboundIntents OutboundIntent[]
+  outboundCorrelations OutboundCorrelation[]
 }
 
 model Tag {
@@ -1492,6 +1502,8 @@ model CanonicalChat {
   @@unique([workspaceId, channelId, id])
   @@unique([workspaceId, channelId, addressId])
   @@map("canonical_chats")
+  outboundIntents OutboundIntent[]
+  outboundRecertifications OutboundRecertification[]
 }
 model CanonicalChatMember {
   id String @id @default(uuid()) @db.Uuid
@@ -1536,6 +1548,7 @@ model CanonicalMessageIdentity {
   @@index([workspaceId, channelId, tupleHash])
   @@index([workspaceId, channelId, chatId])
   @@map("canonical_message_identities")
+  outboundBindings OutboundBinding[]
 }
 model CanonicalNativeAlias {
   id String @id @default(uuid()) @db.Uuid
@@ -1558,6 +1571,7 @@ model CanonicalNativeAlias {
   @@index([workspaceId, channelId, tupleHash])
   @@index([workspaceId, channelId, lookupHash])
   @@map("canonical_native_aliases")
+  outboundBindings OutboundBinding[]
 }
 model CanonicalObservation {
   id String @id @default(uuid()) @db.Uuid
@@ -1643,4 +1657,139 @@ model CanonicalRecipientReceipt {
   identity CanonicalMessageIdentity @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: Cascade)
   @@unique([workspaceId, channelId, identityId, recipient])
   @@map("canonical_recipient_receipts")
+}
+
+
+// Disconnected persistent send frontier. Requests and evidence are immutable;
+// states are operational projections, never proof of transport acceptance.
+model OutboundIntent {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  conversationId String @map("conversation_id") @db.Uuid
+  messageId String @unique @map("message_id") @db.Uuid
+  chatId String @map("chat_id") @db.Uuid
+  ordinal Int @default(autoincrement())
+  originKind String @map("origin_kind") @db.VarChar(40)
+  originId String @map("origin_id") @db.VarChar(256)
+  actionOrdinal Int @map("action_ordinal")
+  requestKey String @map("request_key") @db.VarChar(256)
+  request Json
+  domainFences Json @map("domain_fences")
+  authorityRevision Int @map("authority_revision")
+  state String @default("prepared")
+  reason String?
+  createdAt DateTime @default(now()) @map("created_at")
+  channel Channel @relation(fields: [workspaceId,channelId], references: [workspaceId,id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [workspaceId,channelId,conversationId], references: [workspaceId,channelId,id], onDelete: Cascade)
+  message Message @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: NoAction)
+  chat CanonicalChat @relation(fields: [workspaceId,channelId,chatId], references: [workspaceId,channelId,id], onDelete: NoAction)
+  attempts OutboundAttempt[]
+  bindings OutboundBinding[]
+  @@unique([workspaceId,channelId,id])
+  @@unique([workspaceId,channelId,originKind,originId,actionOrdinal,requestKey])
+  @@index([workspaceId,channelId,chatId,state,ordinal])
+  @@map("outbound_intents")
+  outboundRecertifications OutboundRecertification[]
+}
+model OutboundAttempt {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  intentId String @map("intent_id") @db.Uuid
+  token String @unique @default(uuid()) @db.Uuid
+  source Json
+  domainFences Json @map("domain_fences")
+  chatId String @map("chat_id") @db.Uuid
+  authorityRevision Int @map("authority_revision")
+  phase String @default("dispatching")
+  createdAt DateTime @default(now()) @map("created_at")
+  channel Channel @relation(fields: [workspaceId,channelId], references: [workspaceId,id], onDelete: Cascade)
+  intent OutboundIntent @relation(fields: [workspaceId,channelId,intentId], references: [workspaceId,channelId,id], onDelete: Cascade)
+  results OutboundResult[]
+  bindings OutboundBinding[]
+  @@unique([workspaceId,channelId,id])
+  @@index([workspaceId,channelId,intentId,createdAt])
+  @@map("outbound_attempts")
+  @@unique([workspaceId,channelId,intentId,id])
+}
+model OutboundResult {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  attemptId String @map("attempt_id") @db.Uuid
+  resultKey String @map("result_key") @db.VarChar(256)
+  outcome String
+  evidence Json
+  createdAt DateTime @default(now()) @map("created_at")
+  channel Channel @relation(fields: [workspaceId,channelId], references: [workspaceId,id], onDelete: Cascade)
+  attempt OutboundAttempt @relation(fields: [workspaceId,channelId,attemptId], references: [workspaceId,channelId,id], onDelete: Cascade)
+  bindings OutboundBinding[]
+  @@unique([workspaceId,channelId,id])
+  @@unique([workspaceId,channelId,attemptId,resultKey])
+  @@map("outbound_results")
+  @@unique([workspaceId,channelId,attemptId,id])
+}
+model OutboundBinding {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  intentId String @map("intent_id") @db.Uuid
+  attemptId String @map("attempt_id") @db.Uuid
+  resultId String @map("result_id") @db.Uuid
+  identityId String @map("identity_id") @db.Uuid
+  aliasId String @map("alias_id") @db.Uuid
+  source Json
+  key Json
+  proof Json
+  createdAt DateTime @default(now()) @map("created_at")
+  channel Channel @relation(fields: [workspaceId,channelId], references: [workspaceId,id], onDelete: Cascade)
+  intent OutboundIntent @relation(fields: [workspaceId,channelId,intentId], references: [workspaceId,channelId,id], onDelete: Cascade)
+  attempt OutboundAttempt @relation(fields: [workspaceId,channelId,intentId,attemptId], references: [workspaceId,channelId,intentId,id], onDelete: Cascade)
+  result OutboundResult @relation(fields: [workspaceId,channelId,attemptId,resultId], references: [workspaceId,channelId,attemptId,id], onDelete: NoAction)
+  identity CanonicalMessageIdentity @relation(fields: [workspaceId,channelId,identityId], references: [workspaceId,channelId,id], onDelete: NoAction)
+  alias CanonicalNativeAlias @relation(fields: [workspaceId,channelId,aliasId], references: [workspaceId,channelId,id], onDelete: NoAction)
+  @@unique([workspaceId,channelId,id])
+  @@index([workspaceId,channelId,intentId])
+  @@map("outbound_bindings")
+}
+model OutboundCorrelation {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  conversationId String @map("conversation_id") @db.Uuid
+  messageId String @map("message_id") @db.Uuid
+  tupleHash String @map("tuple_hash") @db.VarChar(64)
+  fullTuple Json @map("full_tuple")
+  proof Json
+  state String
+  createdAt DateTime @default(now()) @map("created_at")
+  channel Channel @relation(fields: [workspaceId,channelId], references: [workspaceId,id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [workspaceId,channelId,conversationId], references: [workspaceId,channelId,id], onDelete: Cascade)
+  message Message @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: NoAction)
+  @@unique([workspaceId,channelId,id])
+  @@index([workspaceId,channelId,tupleHash])
+  @@map("outbound_correlations")
+}
+
+// Explicit pre-I/O recovery preserves the original request and Message UUID.
+// Recertifications are append-only and can never rearm a crossed frontier.
+model OutboundRecertification {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  intentId String @map("intent_id") @db.Uuid
+  chatId String @map("chat_id") @db.Uuid
+  ordinal Int @default(autoincrement())
+  authorityRevision Int @map("authority_revision")
+  source Json
+  domainFences Json @map("domain_fences")
+  proof Json
+  createdAt DateTime @default(now()) @map("created_at")
+  channel Channel @relation(fields: [workspaceId,channelId], references: [workspaceId,id], onDelete: Cascade)
+  intent OutboundIntent @relation(fields: [workspaceId,channelId,intentId], references: [workspaceId,channelId,id], onDelete: Cascade)
+  chat CanonicalChat @relation(fields: [workspaceId,channelId,chatId], references: [workspaceId,channelId,id], onDelete: NoAction)
+  @@unique([workspaceId,channelId,id])
+  @@index([workspaceId,channelId,intentId,ordinal])
+  @@map("outbound_recertifications")
 }

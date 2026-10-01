@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createEvolutionHistorySource } from '../evolution/evolution-history.js';
 import { createWahaClient } from '../waha/waha.client.js';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
+import { parseWahaMessageKey } from './whatsapp-identity.js';
 import type { TrustedMessagingContext } from './normalized-event.js';
 const PN = '15550001111@s.whatsapp.net', GROUP = '120000-100@g.us';
 const context: TrustedMessagingContext = { workspaceId: 'workspace', channelId: 'channel', provider: 'evolution', channelProvider: 'evolution', connectionId: 'physical', sessionName: 'fixture', lifecycleGeneration: 0, mode: 'history', observedAt: '2026-09-30T12:00:00Z' };
@@ -58,6 +59,17 @@ describe('exact provider I/O contracts', () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({ id, fromMe: false, _data: { id: { id: 'A', remote: GROUP, fromMe: false, participant: PN } } })));
     const client = createWahaClient({ baseUrl: 'https://waha.invalid', apiKey: 'fixture', fetch });
     expect(await client.findMessageExact({ session: 'fixture', key: { ...key(), nativeId: id } })).toMatchObject({ kind: 'missing' });
+  });
+  it.each(['data.participant', 'data.author', 'data.id.participant', 'participant', 'author', 'data.fromMe'])('rejects conflicting WAHA identity evidence in %s', async field => {
+    const id = `true_${GROUP}_MSG_777@lid`;
+    const payload: any = { id, fromMe: true, to: GROUP, participant: '777@lid', _data: { id, author: '777@lid' } };
+    if (field === 'data.id.participant') payload._data.id = { _serialized: id, id: 'MSG', remote: GROUP, fromMe: true, participant: '888@lid' };
+    else if (field === 'data.fromMe') payload._data.fromMe = false;
+    else if (field.startsWith('data.')) payload._data[field.slice(5)] = '888@lid';
+    else payload[field] = '888@lid';
+    const fetch = vi.fn(async () => new Response(JSON.stringify(payload)));
+    const client = createWahaClient({ baseUrl: 'https://waha.invalid', apiKey: 'fixture', fetch });
+    expect(await client.findMessageExact({ session: 'fixture', key: parseWahaMessageKey(id, '777@lid') })).toMatchObject({ kind: 'missing' });
   });
   it('does not request media when the exact provider identity is absent', async () => {
     const { source, fetch } = evo([]);

@@ -1,3 +1,4 @@
+import { certifiedCorrelationKeyInTransaction } from './outbound-correlation.js';
 import type { CanonicalMessageIdentity, CanonicalNativeAlias, Prisma } from '@prisma/client';
 import { enterCanonicalTransaction, enterCanonicalWorkspaceTransaction } from './canonical-boundary.js';
 import { StaleMessagingSourceError, type MessagingProvider } from './canonical-source.js';
@@ -57,7 +58,8 @@ async function resolveEstablished(tx: Tx, alias: CanonicalNativeAlias, source: T
   if (!chatAlias || root(chatAlias.addressId) !== chatRoot || (key.chatAddress!.endsWith('@g.us') && (!sender || !senderRoot || root(sender.addressId) !== senderRoot))) return { kind: 'review' };
   const fullTuple = [source.workspaceId, source.channelId, authority.id, key.identityFormat, key.identityFormat === 'provider_native' ? source.provider : '',
     key.identityFormat === 'provider_native' ? key.nativeId : key.rawId, key.direction, senderRoot];
-  if (!equal(identity.fullTuple, fullTuple) || identity.identityFormat !== key.identityFormat || identity.providerScope !== fullTuple[4] || identity.direction !== key.direction || identity.rawId !== fullTuple[5]) return { kind: 'review' };
+  if ((!equal(identity.fullTuple, fullTuple) || identity.identityFormat !== key.identityFormat || identity.providerScope !== fullTuple[4] || identity.direction !== key.direction || identity.rawId !== fullTuple[5])
+    && !await certifiedCorrelationKeyInTransaction(tx, scope, identity.messageId, source, key)) return { kind: 'review' };
   // Alias creation predates lifecycle binding; observations supply immutable provenance.
   // A freshly fetched exact key must be explicitly recertified/persisted by a writer.
   const provenance = await tx.canonicalObservation.findFirst({ where: { ...scope, aliasId: alias.id, identityId: identity.id,

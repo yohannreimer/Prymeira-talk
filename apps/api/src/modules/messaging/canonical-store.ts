@@ -1,5 +1,9 @@
+import { createOutboundObservationGate } from './outbound-observation-gate.js';
+import { enterCanonicalWorkspaceTransaction } from './canonical-boundary.js';
+import type { CanonicalObservation } from '@prisma/client';
 import { createCanonicalReads, resolveProviderReferenceInTransaction } from './canonical-resolution.js';
 import { newCanonicalMessagePresentation, type CanonicalPresentationOptions } from './canonical-history-presentation.js';
+import { StaleMessagingSourceError } from './canonical-source.js';
 import { enterCanonicalTransaction } from './canonical-boundary.js';
 import { createCanonicalReducers, type ActionEvent } from './canonical-reducers.js';
 import { json, stable, equal, sha, scopeOf, nativeLookupTuple } from './canonical-values.js';
@@ -41,6 +45,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     return result;
   }
   const lockAndScope = enterCanonicalTransaction;
+  const outboundGate = createOutboundObservationGate({ hash });
   async function graph(tx: Tx, scope: Scope) {
     const rows = await tx.canonicalAddress.findMany({ where: scope });
     const parents = new Map(rows.map(r => [r.id, r.redirectId]));
@@ -273,11 +278,11 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
   const { reduceAction, recoverForMessage, reconcileRevisionInTransaction, reconcileSnapshotInTransaction, reconciliationFrontierInTransaction, recoverPendingInTransaction } = createCanonicalReducers({
     digest, lockAndScope, resolveActionTarget, revisionTuple, address, graph, pendingTargetWhere
   });
-  async function persistInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions): Promise<CanonicalStoreResult> {
+  async function persistObservationInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions, replay?: { observation: CanonicalObservation; staleFact: boolean; known: boolean }): Promise<CanonicalStoreResult> {
     const c = event.context, scope = scopeOf(c);
     if (c.provider === 'meta_official' && (event.addressMappings.length || (event.kind !== 'control' && (event.kind === 'message' ? event.key : event.target).identityFormat !== 'provider_native'))) throw new Error('Official Meta requires its own native namespace');
     if (!event.providerEventId && !options.receiptKey) throw new Error('Stable ingress receiptKey required');
-    const channelProvider = await lockAndScope(tx, c);
+    const channelProvider = replay?.staleFact ? (await enterCanonicalWorkspaceTransaction(tx, c.workspaceId), c.channelProvider === 'meta' ? 'meta_cloud' as const : 'evolution' as const) : await lockAndScope(tx, c);
     const receiptTuple = [c.provider, c.connectionId, c.sessionName, event.providerEventType,
       event.providerEventId ? 'provider_event_id' : 'ingress', event.providerEventId ?? options.receiptKey];
     const receiptHash = digest(receiptTuple);
@@ -289,7 +294,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     const receiptConflict = sameReceipts.length > 0 && !previous;
     const result: CanonicalStoreResult = { outcome: 'held', observationId: '', messageId: null, conversationId: null, chatId: null, identityId: null,
       allowOperationalEffects: false, reconciliationReasons: [], changes: [] };
-    if (previous) {
+    if (previous && !replay) {
       result.observationId = previous.id;
       if (previous.identityId) {
         const identity = await tx.canonicalMessageIdentity.findUniqueOrThrow({ where: { id: previous.identityId } });
@@ -300,7 +305,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       if (event.kind !== 'message' && event.kind !== 'control' && previous.reason !== 'receipt_key_conflict') return reduceAction(tx, event, previous.id);
       return result;
     }
-    const observation = await tx.canonicalObservation.create({ data: { ...scope, channelProvider, provider: c.provider,
+    const observation = replay?.observation ?? await tx.canonicalObservation.create({ data: { ...scope, channelProvider, provider: c.provider,
       connectionProvider: c.connectionId ? c.provider as 'evolution' | 'waha' : null, connectionId: c.connectionId,
       receiptHash, receiptTuple: json(receiptTuple), providerEventId: event.providerEventId,
       kind: event.kind, eventType: event.providerEventType, mode: c.mode,
@@ -342,7 +347,12 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       return hold('multiple_message_identities');
     }
     if (canonicalChat.state === 'review') return hold('multiple_conversation_authorities');
-    let identity: CanonicalMessageIdentity | undefined = matches[0];
+    const classification = await outboundGate.inspectOutboundObservationInTransaction(tx, c, key);
+    if (classification.kind === 'held') {
+      await tx.canonicalObservation.update({ where: { id: observation.id }, data: { resolutionEvidence: json({ kind: 'outbound_dispatch_ambiguity', intentIds: classification.intentIds, chatId: classification.chatId }) } });
+      return hold(classification.reason);
+    }
+    let identity: CanonicalMessageIdentity | undefined = classification.kind === 'known' ? classification.identity : matches[0];
     let adoptionAliases: CanonicalNativeAlias[] = [];
     if (alias.identityId && alias.identityId !== identity?.id) return hold('native_alias_identity_conflict');
     if (!identity) {
@@ -382,7 +392,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
           type: event.content.type, body: event.content.body, status: key.direction === 'inbound' ? 'delivered' : 'sent',
           ...newCanonicalMessagePresentation(event, options.presentation) } });
         messageId = message.id; result.outcome = 'created'; result.changes.push('message_created');
-        result.allowOperationalEffects = c.mode === 'live' || (c.mode === 'recovered_live' && options.recoveredLiveEligible === true);
+        result.allowOperationalEffects = !replay?.known && !replay?.staleFact && (c.mode === 'live' || (c.mode === 'recovered_live' && options.recoveredLiveEligible === true));
       }
       identity = await tx.canonicalMessageIdentity.create({ data: { ...scope, chatId: canonicalChat.id, senderAddressId: sender,
         conversationId: result.conversationId, messageId, identityFormat: key.identityFormat,
@@ -393,8 +403,13 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       result.outcome = 'duplicate';
       const stored = await tx.message.findUniqueOrThrow({ where: { id: identity.messageId } });
       const metadata = record(stored.metadata);
+      const local = await tx.outboundIntent.findUnique({ where: { messageId: identity.messageId } });
       const revisionMatches = await sameRevision(tx, identity, event);
-      if (!metadata.deletedAt && (!metadata.editedAt || identity.currentRevision !== null) && revisionMatches && stored.type === event.content.type) {
+      if (local && (stored.type !== event.content.type || (stored.type === 'text' && stored.body !== null && event.content.body !== null && stored.body !== event.content.body))) {
+        result.outcome = 'held'; result.reconciliationReasons.push('content_reconciliation_required');
+        await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });
+      }
+      if (!local && !metadata.deletedAt && (!metadata.editedAt || identity.currentRevision !== null) && revisionMatches && stored.type === event.content.type) {
         const { data, conflict } = enrichPresentation(stored, event, equal);
         if (conflict) {
           result.outcome = 'held'; result.reconciliationReasons.push('content_reconciliation_required');
@@ -404,7 +419,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
           result.outcome = 'enriched'; result.changes.push('missing_fields_enriched');
         }
       }
-      if (!metadata.deletedAt && ((!revisionMatches && !(metadata.editedAt && event.currentRevision === null)) || (!metadata.editedAt && stored.type !== event.content.type))) {
+      if (!local && !metadata.deletedAt && ((!revisionMatches && !(metadata.editedAt && event.currentRevision === null)) || (!metadata.editedAt && stored.type !== event.content.type))) {
         result.outcome = 'held';
         result.reconciliationReasons.push('revision_reconciliation_required');
         await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });
@@ -425,6 +440,36 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     await recoverForMessage(tx, event, result);
     return result;
   }
+  async function reprocessHeldMessageObservationInTransaction(tx: Tx, input: Scope & { observationId: string }): Promise<CanonicalStoreResult> {
+    await enterCanonicalWorkspaceTransaction(tx, input.workspaceId);
+    const observation = await tx.canonicalObservation.findFirst({ where: { workspaceId: input.workspaceId, channelId: input.channelId, id: input.observationId, kind: 'message' } });
+    if (!observation) throw new Error('Missing scoped held message observation');
+    const event = observation.payload as unknown as MessageEvent;
+    const result: CanonicalStoreResult = { outcome: observation.state === 'held' ? 'held' : 'duplicate', observationId: observation.id, messageId: null, conversationId: null, chatId: null, identityId: observation.identityId, allowOperationalEffects: false, reconciliationReasons: observation.reason ? [observation.reason] : [], changes: [] };
+    if (observation.identityId) { const identity = await tx.canonicalMessageIdentity.findUniqueOrThrow({ where: { id: observation.identityId } }); Object.assign(result, { messageId: identity.messageId, conversationId: identity.conversationId, chatId: identity.chatId }); }
+    if (observation.state !== 'held' || observation.reason !== 'outbound_dispatch_ambiguity') return result;
+    const classification = await outboundGate.inspectOutboundObservationInTransaction(tx, event.context, event.key);
+    if (classification.kind === 'held') return result;
+    const proof = record(observation.resolutionEvidence), intentIds = proof.intentIds;
+    if (proof.kind !== 'outbound_dispatch_ambiguity' || !Array.isArray(intentIds) || !intentIds.length || intentIds.some(id => typeof id !== 'string')) return result;
+    const resolutions = [];
+    for (const id of intentIds as string[]) {
+      const intent = await tx.outboundIntent.findFirst({ where: { workspaceId: input.workspaceId, channelId: input.channelId, id } });
+      if (!intent || !['bound', 'definitively_rejected'].includes(intent.state)) return result;
+      const binding = await tx.outboundBinding.findFirst({ where: { workspaceId: input.workspaceId, channelId: input.channelId, intentId: id } });
+      const rejection = await tx.outboundResult.findFirst({ where: { workspaceId: input.workspaceId, channelId: input.channelId, attempt: { intentId: id }, outcome: 'definitively_rejected' } });
+      if (intent.state === 'bound' ? !binding : !rejection) return result;
+      resolutions.push({ intentId: id, bindingId: binding?.id ?? null, resultId: rejection?.id ?? null });
+    }
+    // Exact proven matches may conserve old facts without current operational authority.
+    // Unmatched operator facts require the original source still be current.
+    let staleFact = false;
+    try { await lockAndScope(tx, event.context); } catch (error) { if (!(error instanceof StaleMessagingSourceError)) throw error; if (classification.kind !== 'known') return result; staleFact = true; }
+    await tx.canonicalObservation.update({ where: { id: observation.id }, data: { resolutionEvidence: json({ ...proof, resolution: { kind: 'persisted_dispatch_settlement', resolutions } }) } });
+    return persistObservationInTransaction(tx, event, { receiptKey: String(Array.isArray(observation.receiptTuple) ? observation.receiptTuple.at(-1) : '') }, { observation, staleFact, known: classification.kind === 'known' });
+  }
+  async function persistInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) { return persistObservationInTransaction(tx, event, options); }
   return { ...createCanonicalReads({ hash }), resolveProviderReferenceInTransaction, persistInTransaction, reconcileRevisionInTransaction, reconcileSnapshotInTransaction, reconciliationFrontierInTransaction, recoverPendingInTransaction,
+    reprocessHeldMessageObservationInTransaction,
     persist: (db: PrismaClient, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) => db.$transaction(tx => persistInTransaction(tx, event, options), { isolationLevel: 'ReadCommitted' }) };
 }

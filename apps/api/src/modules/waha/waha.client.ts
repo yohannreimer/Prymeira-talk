@@ -1,4 +1,4 @@
-import { completeProviderKey, fullProviderKeyMatches, exactMediaLimit, type MediaPurpose } from '../messaging/provider-exact.js';
+import { completeProviderKey, fullProviderKeyMatches, parseExactWahaResponse, exactMediaLimit, type MediaPurpose } from '../messaging/provider-exact.js';
 import { normalizeChatAddress, parseWahaMessageKey, record, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 /** WAHA 2026.9.1 contracts: https://github.com/devlikeapro/waha/tree/2026.9.1/src/api */
 export class WahaClientError extends Error {
@@ -134,20 +134,8 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
     catch (error) { if (error instanceof WahaClientError && error.statusCode === 404) return { kind: 'missing' }; throw error; }
     if (Array.isArray(message)) return { kind: 'ambiguous' };
     if (!message || typeof message.id !== 'string') return { kind: 'missing' };
-    const raw = record(message._data);
-    const actual = parseWahaMessageKey(raw.id ?? message.id, raw.author ?? message.participant);
-    actual.nativeId = message.id;
-    const serialized = parseWahaMessageKey(message.id, actual.nativeSenderParticipant);
-    if (!completeProviderKey(serialized) || !fullProviderKeyMatches(actual, serialized)) return { kind: 'missing' };
-    const structuredSerialized = record(raw.id)._serialized;
-    if (typeof structuredSerialized === 'string' && structuredSerialized !== message.id) return { kind: 'missing' };
-    const envelopeChat = message.fromMe === true ? message.to : message.fromMe === false ? message.from : undefined;
-    if (envelopeChat !== undefined && normalizeChatAddress(envelopeChat) !== actual.chatAddress) return { kind: 'missing' };
-    for (const participant of [raw.author, message.participant]) {
-      if (participant !== undefined && actual.chatAddress?.endsWith('@g.us') && normalizeChatAddress(participant) !== actual.senderParticipant) return { kind: 'missing' };
-    }
-    if (typeof message.fromMe === 'boolean' && actual.direction !== (message.fromMe ? 'outbound' : 'inbound')) return { kind: 'missing' };
-    if (!fullProviderKeyMatches(input.key, actual)) return { kind: 'missing' };
+    const actual = parseExactWahaResponse(message);
+    if (!actual || !fullProviderKeyMatches(input.key, actual)) return { kind: 'missing' };
     return { kind: 'resolved', message };
   }
   return {
