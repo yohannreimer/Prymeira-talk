@@ -471,17 +471,91 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
     expect(await db.message.findUnique({ where: { id: created.messageId! } })).toMatchObject({ body: 'verified current' });
   });
 
+  // This volume fixture persists 101 ingress events plus several bounded cursor
+  // transactions; its 15s test deadline does not enlarge the 100-action/transaction budget.
   it('clears the recovery budget gate when the final mirrored content action is replayed', async () => {
     const c = await context(), original = msg(c);
     for (let n = 0; n < 101; n++) await persist({ ...original, kind: 'edit', target: original.key, action: msg(c, 'E').key, patch: { field: 'body', body: 'updated' } });
     const created = await persist(original);
     expect(created.reconciliationReasons).toContain('pending_recovery_budget_exhausted');
     expect(created.allowOperationalEffects).toBe(false);
-    const recovery = await db.$transaction(tx => store.recoverPendingInTransaction(tx, c));
-    expect(recovery.results.some(result => result.changes.includes('pending_recovery_completed'))).toBe(true);
-    expect(recovery.results.every(result => !result.allowOperationalEffects)).toBe(true);
+    expect(await db.message.findUnique({ where: { id: created.messageId! } })).toMatchObject({ body: 'hello' });
+    const changes: string[] = []; let afterId: string | undefined, revisit = false;
+    for (let page = 0; page < 4; page++) {
+      const recovery = await db.$transaction(tx => createCanonicalStore().recoverPendingInTransaction(tx, c, { limit: 100, afterId }));
+      changes.push(...recovery.results.flatMap(result => result.changes));
+      expect(recovery.results.every(result => !result.allowOperationalEffects)).toBe(true);
+      revisit ||= recovery.revisitFromStart;
+      if (recovery.hasMore) afterId = recovery.nextCursor!;
+      else if (revisit) { afterId = undefined; revisit = false; }
+      else break;
+    }
+    expect(changes).toContain('pending_recovery_completed');
     expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'ready', revisionVersion: 1 });
     expect(await db.canonicalAction.count({ where: { identityId: created.identityId!, state: 'pending' } })).toBe(0);
+  }, 15000);
+
+  it.each([false, true])('does not gate unrelated originals through raw ID/hash buckets (collision=%s)', async (collision) => {
+    const c = await context(), isolated = createCanonicalStore(collision ? { hash: () => 'a' } : {});
+    const original = msg(c), foreign = msg(c, 'A', '15550009999@s.whatsapp.net');
+    const variants = [foreign.key, { ...original.key, direction: 'outbound' as const }, msg(c, 'OTHER').key,
+      msg(c, 'A', GROUP, PN).key];
+    for (const target of variants) await isolated.persist(db, { ...original, kind: 'revoke', target, action: msg(c, 'DELETE').key }, { receiptKey: randomUUID() });
+    const result = await isolated.persist(db, original, { receiptKey: randomUUID() });
+    expect(result).toMatchObject({ outcome: 'created', allowOperationalEffects: true, reconciliationReasons: [] });
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: result.identityId! } })).toMatchObject({ contentState: 'ready' });
+    expect(await db.message.findUnique({ where: { id: result.messageId! } })).toMatchObject({ body: 'hello' });
+  });
+  it.each([['active_restoration', 1], ['active_restoration', 2], ['late_pn_lid', 1], ['late_pn_lid', 2]] as const)('discovers competing unbound edits across recovery pages after %s with limit %s', async (scenario, limit) => {
+    const c = await context(), original = msg(c), created = await persist(original);
+    if (scenario === 'active_restoration') await db.canonicalMessageIdentity.update({ where: { id: created.identityId! }, data: { state: 'review' } });
+    for (const raw of ['E1', 'E2']) {
+      const target = scenario === 'late_pn_lid' ? msg(c, 'A', LID).key : original.key;
+      await persist({ ...original, kind: 'edit', target, action: msg(c, raw, target.chatAddress!).key, patch: { field: 'body', body: raw } });
+    }
+    expect(await db.canonicalAction.count({ where: { workspaceId: c.workspaceId, identityId: null } })).toBe(2);
+    if (scenario === 'active_restoration') await db.canonicalMessageIdentity.update({ where: { id: created.identityId! }, data: { state: 'active' } });
+    else {
+      const proof = msg(c, 'PROOF'); proof.addressMappings = [{ role: 'chat', lid: LID, pn: PN, source: 'evolution.remoteJidAlt' }]; await persist(proof);
+    }
+    let afterId: string | undefined;
+    for (let page = 0; page < Math.ceil(2 / limit); page++) {
+      const recovered = await db.$transaction(tx => createCanonicalStore().recoverPendingInTransaction(tx, c, { limit, afterId }));
+      expect(recovered.results.every(r => !r.changes.includes('message_edited'))).toBe(true);
+      expect(await db.message.findUnique({ where: { id: created.messageId! } })).toMatchObject({ body: 'hello' });
+      afterId = recovered.nextCursor!;
+    }
+    expect(await db.canonicalAction.count({ where: { identityId: created.identityId!, state: 'pending' } })).toBe(2);
+  });
+  it.each(['width', 'mimeType', 'fileName', 'durationSeconds', 'location', 'contactCards'] as const)('does not certify unresolved snapshot field %s or partially apply its caption', async (field) => {
+    const c = await context(), original = msg(c);
+    original.content = { ...original.content, type: 'image', body: 'old caption', mediaUrl: 'https://owned.test/media', location: { latitude: 1, longitude: 2, name: null, address: null, isLive: false }, contactCards: [{ fullName: 'Name', phoneNumber: '123' }] };
+    original.attachment = { width: 100, mimeType: 'image/png', fileName: 'original.png', durationSeconds: 1, caption: 'old caption' };
+    const created = await persist(original), before = await db.message.findUniqueOrThrow({ where: { id: created.messageId! } });
+    await db.message.update({ where: { id: before.id }, data: { metadata: { ...(before.metadata as object), transcription: { status: 'completed', text: 'prepared' }, assistantMedia: { status: 'completed', playbackUrl: 'https://owned.test/play' } } } });
+    const snapshot = structuredClone(original); snapshot.attachment.caption = 'new caption'; snapshot.content.body = 'new caption';
+    if (field === 'location') snapshot.content.location = { latitude: 9, longitude: 2, name: null, address: null, isLive: false };
+    else if (field === 'contactCards') snapshot.content.contactCards = [{ fullName: 'Name', phoneNumber: '999' }];
+    else Object.assign(snapshot.attachment, { [field]: field === 'width' ? 200 : field === 'durationSeconds' ? 5 : field === 'mimeType' ? 'image/jpeg' : 'changed.jpg' });
+    const held = await persist(snapshot);
+    const result = await db.$transaction(tx => store.reconcileSnapshotInTransaction(tx, c, { observationId: held.observationId, target: original.key, expectedRevisionVersion: 0, pendingObservationIds: [held.observationId], proof: { source: 'provider_current_revision', requestId: 'field-proof' } }));
+    expect(result).toMatchObject({ outcome: 'held', reconciliationReasons: ['snapshot_field_conflict'], changes: [], allowOperationalEffects: false });
+    expect(await db.canonicalObservation.count({ where: { identityId: created.identityId!, kind: 'reconciliation' } })).toBe(0);
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'pending_reconciliation', revisionVersion: 0 });
+    expect(await db.canonicalObservation.findUnique({ where: { id: held.observationId } })).toMatchObject({ state: 'held' });
+    expect(await db.message.findUnique({ where: { id: before.id } })).toMatchObject({ body: 'old caption', mediaUrl: 'https://owned.test/media', metadata: expect.objectContaining({ attachment: original.attachment, transcription: { status: 'completed', text: 'prepared' }, assistantMedia: { status: 'completed', playbackUrl: 'https://owned.test/play' } }) });
+  });
+
+  it('does not gate a group sender or scoped native alias through a colliding target bucket', async () => {
+    const c = await context(undefined, undefined, 'waha'), colliding = createCanonicalStore({ hash: () => 'a' });
+    const original = msg(c, 'SAME', GROUP, PN), wrongSender = msg(c, 'SAME', GROUP, '15550009999@s.whatsapp.net');
+    await colliding.persist(db, { ...wrongSender, kind: 'revoke', target: wrongSender.key, action: msg(c, 'D', GROUP, '15550009999@s.whatsapp.net').key }, { receiptKey: 'wrong-sender' });
+    const partial = { ...original.key, rawId: null, chatAddress: null, direction: null, senderParticipant: null, nativeChatAddress: null, nativeSenderParticipant: null };
+    await colliding.persist(db, { ...original, context: { ...c, sessionName: 'another-session' }, kind: 'revoke', target: partial, action: original.key }, { receiptKey: 'wrong-session' });
+    await colliding.persist(db, { ...original, kind: 'revoke', target: { ...partial, nativeId: 'different-native' }, action: original.key }, { receiptKey: 'wrong-native' });
+    const result = await colliding.persist(db, original, { receiptKey: 'original' });
+    expect(result).toMatchObject({ outcome: 'created', allowOperationalEffects: true, reconciliationReasons: [] });
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: result.identityId! } })).toMatchObject({ contentState: 'ready' });
   });
 
 });

@@ -29,6 +29,7 @@ export interface CanonicalSnapshotEvidence {
 }
 interface IdentityOperations {
   digest(value: unknown): string;
+  pendingTargetWhere(tx: Tx, identity: CanonicalMessageIdentity): Promise<Prisma.CanonicalActionWhereInput>;
   lockAndScope(tx: Tx, context: TrustedMessagingContext): Promise<unknown>;
   resolveActionTarget(tx: Tx, event: ActionEvent): Promise<{ reason?: string; identity?: CanonicalMessageIdentity }>;
   revisionTuple(tx: Tx, event: ActionEvent, identity: CanonicalMessageIdentity, key: WhatsAppMessageKey): Promise<unknown[] | null>;
@@ -37,7 +38,7 @@ interface IdentityOperations {
 }
 /** State reducers share the store's identity graph, hash buckets and lock discipline.
  * No provider I/O belongs here. All evidence must be gathered before opening the transaction. */
-export function createCanonicalReducers({ digest, lockAndScope, resolveActionTarget, revisionTuple, address, graph }: IdentityOperations) {
+export function createCanonicalReducers({ digest, lockAndScope, resolveActionTarget, revisionTuple, address, graph, pendingTargetWhere }: IdentityOperations) {
   function targetHash(event: ActionEvent | MessageEvent) {
     const key = event.kind === 'message' ? event.key : event.target;
     return digest([key.identityFormat, key.identityFormat === 'provider_native' ? event.context.provider : '',
@@ -47,11 +48,10 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     OR: [{ state: 'pending' }, { observation: { reason: 'receipt_key_conflict' } }], kind: { in: ['edit', 'encrypted_edit'] } });
   const contentSnapshots = (scope: Scope, identityId: string): Prisma.CanonicalObservationWhereInput => ({ ...scope, identityId, kind: 'message', state: 'held' });
   async function unboundContent(tx: Tx, identity: CanonicalMessageIdentity) {
-    const scope = { workspaceId: identity.workspaceId, channelId: identity.channelId };
-    const aliases = await tx.canonicalNativeAlias.findMany({ where: { ...scope, identityId: identity.id }, select: { lookupHash: true } });
-    return tx.canonicalAction.count({ where: { ...scope, identityId: null, state: 'pending', kind: { in: ['edit', 'encrypted_edit', 'revoke'] },
-      OR: [{ targetHash: digest([identity.identityFormat, identity.providerScope, identity.rawId]) }, { nativeTargetHash: { in: aliases.flatMap(row => row.lookupHash ? [row.lookupHash] : []) } }] } });
+    return tx.canonicalAction.count({ where: { ...await pendingTargetWhere(tx, identity), identityId: null,
+      state: 'pending', kind: { in: ['edit', 'encrypted_edit', 'revoke'] } } });
   }
+
   async function unfinishedContent(tx: Tx, identity: CanonicalMessageIdentity) {
     const scope = { workspaceId: identity.workspaceId, channelId: identity.channelId };
     return await tx.canonicalAction.count({ where: contentActions(scope, identity.id) })
@@ -181,18 +181,20 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
             return (payload.kind === 'edit' && event.kind === 'edit' && !equal(payload.patch, event.patch))
               || (payload.kind === 'encrypted_edit' && event.kind === 'encrypted_edit' && !equal(payload.encrypted, event.encrypted));
           });
-          const pendingEdits = identity.currentRevision !== null || record(stored.metadata).editedAt ? [] : await tx.canonicalAction.findMany({ where: { ...scope, identityId: identity.id, kind: { in: ['edit', 'encrypted_edit'] }, id: { not: action.id }, state: 'pending' }, take: 101, include: { observation: true } });
-          let unordered = pendingEdits.length > 100;
-          for (const peer of pendingEdits) {
-            const payload = peer.observation.payload as unknown as Extract<ActionEvent, { kind: 'edit' | 'encrypted_edit' }>;
-            const peerRevision = peer.actionTuple;
-            if (payload.kind !== 'edit' || event.kind !== 'edit' || !equal(peerRevision, revision) || !equal(payload.patch, event.patch) || peer.observation.reason === 'receipt_key_conflict') unordered = true;
-          }
+          // Compare the full cached revision and patch in SQL. Counting exact
+          // conflicts is bounded in memory even for hundreds of identical mirrors.
+          const unordered = identity.currentRevision === null && !record(stored.metadata).editedAt && await tx.canonicalAction.count({ where: {
+            ...scope, identityId: identity.id, kind: { in: ['edit', 'encrypted_edit'] }, id: { not: action.id }, state: 'pending',
+            OR: [{ actionTuple: { equals: Prisma.DbNull } }, { NOT: { actionTuple: { equals: json(revision) } } },
+              { observation: { kind: { not: 'edit' } } }, { observation: { reason: 'receipt_key_conflict' } },
+              ...(event.kind === 'edit' ? [{ observation: { NOT: { payload: { path: ['patch'], equals: json(event.patch) } } } }] : [{}])]
+          } }) > 0;
           if (same.some(row => row.identityId !== identity.id)) reason = 'action_target_conflict';
           else if (conflict) reason = 'action_revision_conflict';
           else if (same.some(row => ['applied', 'superseded'].includes(row.state) && (event.kind !== 'encrypted_edit' || (row.observation.kind === 'encrypted_edit' && row.evidence !== null)))) { /* mirror: no second application */ }
           else if (event.kind === 'encrypted_edit') reason = 'decrypt_reconciliation_required';
           else if (identity.currentRevision !== null || record(stored.metadata).editedAt || unordered) reason = 'edit_order_unproven';
+          else if (await unboundContent(tx, identity)) reason = 'edit_frontier_incomplete';
           else {
             reason = await applyPatch(tx, stored, event.patch, event.context.observedAt) ?? undefined;
             if (!reason) {
@@ -212,14 +214,13 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     else result.outcome = result.changes.length ? 'enriched' : 'duplicate';
     return result;
   }
-  async function recoverForMessage(tx: Tx, event: MessageEvent, result: CanonicalStoreResult) {
-    const pending = await tx.canonicalAction.findMany({ where: { ...scopeOf(event.context), OR: [{ targetHash: targetHash(event) }, { nativeTargetHash: digest(nativeLookupTuple(event.context, event.key)) }], state: 'pending' }, orderBy: { id: 'asc' }, take: 100, include: { observation: true } });
+  async function bindPending(tx: Tx, pending: Prisma.CanonicalActionGetPayload<{ include: { observation: true } }>[], identityId?: string) {
     // Bind the entire bounded frontier before choosing any reduction. UUID/arrival
     // order cannot turn one of several pre-original edits into the current revision.
     const matching = [];
     for (const action of pending) {
       const resolved = await resolveActionTarget(tx, action.observation.payload as unknown as ActionEvent);
-      if (resolved.identity?.id === result.identityId) {
+      if (resolved.identity && (!identityId || resolved.identity.id === identityId)) {
         matching.push(action);
         const payload = action.observation.payload as unknown as ActionEvent;
         const revision = payload.kind === 'edit' || payload.kind === 'encrypted_edit' ? await revisionTuple(tx, payload, resolved.identity, payload.action) : null;
@@ -228,6 +229,12 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
         if (action.observation.reason === 'receipt_key_conflict') await tx.canonicalMessageIdentity.update({ where: { id: resolved.identity.id }, data: { contentState: 'pending_reconciliation' } });
       }
     }
+    return matching;
+  }
+  async function recoverForMessage(tx: Tx, event: MessageEvent, result: CanonicalStoreResult) {
+    const targetIdentity = await tx.canonicalMessageIdentity.findUniqueOrThrow({ where: { id: result.identityId! } });
+    const pending = await tx.canonicalAction.findMany({ where: { ...await pendingTargetWhere(tx, targetIdentity), state: 'pending' }, orderBy: { id: 'asc' }, take: 100, include: { observation: true } });
+    const matching = await bindPending(tx, pending, result.identityId!);
     for (const action of matching) {
       const reduced = await reduceAction(tx, action.observation.payload as unknown as ActionEvent, action.observationId);
       if (reduced.identityId === result.identityId) result.changes.push(...reduced.changes);
@@ -249,6 +256,7 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     const limit = options.limit ?? 50;
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Recovery limit must be 1..100');
     const rows = await tx.canonicalAction.findMany({ where: { ...scopeOf(context), state: 'pending', ...(options.afterId ? { id: { gt: options.afterId } } : {}) }, orderBy: { id: 'asc' }, take: limit + 1, include: { observation: true } });
+    await bindPending(tx, rows.slice(0, limit));
     const results: CanonicalStoreResult[] = [];
     for (const row of rows.slice(0, limit)) {
       const result = await reduceAction(tx, row.observation.payload as unknown as ActionEvent, row.observationId);
@@ -265,7 +273,9 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
       }
       results.push(result);
     }
-    return { results, hasMore: rows.length > limit, nextCursor: rows.length ? rows[Math.min(rows.length, limit) - 1]!.id : null };
+    // A newly applied revision/tombstone may settle earlier pages. Finish this
+    // cursor sweep, then revisit from the start when this flag is returned.
+    return { results, revisitFromStart: results.some(result => result.changes.some(change => ['message_edited', 'message_revoked'].includes(change))), hasMore: rows.length > limit, nextCursor: rows.length ? rows[Math.min(rows.length, limit) - 1]!.id : null };
   }
   async function reconcileRevisionInTransaction(tx: Tx, context: TrustedMessagingContext, evidence: CanonicalRevisionEvidence): Promise<CanonicalStoreResult> {
     await lockAndScope(tx, context);
@@ -351,6 +361,13 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     if (stored.type !== snapshot.content.type) throw new Error('Snapshot type conflict');
     const patch: MessageEditPatch | null = stored.type === 'text' && snapshot.content.body !== null ? { field: 'body', body: snapshot.content.body }
       : typeof snapshot.attachment.caption === 'string' ? { field: 'caption', caption: snapshot.attachment.caption } : null;
+    const projected = { ...stored, ...(patch?.field === 'body' ? { body: patch.body } : {}),
+      metadata: patch?.field === 'caption' ? json({ ...record(stored.metadata), attachment: { ...record(record(stored.metadata).attachment), caption: patch.caption } }) as Prisma.JsonValue : stored.metadata };
+    if (enrichPresentation(projected, snapshot, equal).conflict) {
+      await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });
+      await tx.canonicalObservation.update({ where: { id: observation.id }, data: { state: 'held', reason: 'snapshot_field_conflict' } });
+      result.outcome = 'held'; result.reconciliationReasons.push('snapshot_field_conflict'); return result;
+    }
     if (patch) {
       const reason = await applyPatch(tx, stored, patch, snapshot.currentRevision ? context.observedAt : undefined);
       if (reason) throw new Error(reason);

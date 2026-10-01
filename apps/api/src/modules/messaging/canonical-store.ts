@@ -236,6 +236,33 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     if (matches[0]!.state !== 'active') return { reason: 'identity_requires_review' };
     return { identity: matches[0]! };
   }
+  /** Indexed candidate buckets are always intersected with complete target fields.
+   * JSON predicates let recovery count an exact frontier without loading an unbounded
+   * set of payloads. Incomplete targets require an already demonstrated native alias. */
+  async function pendingTargetWhere(tx: Tx, identity: CanonicalMessageIdentity): Promise<Prisma.CanonicalActionWhereInput> {
+    const scope = { workspaceId: identity.workspaceId, channelId: identity.channelId }, g = await graph(tx, scope);
+    const origin = await tx.canonicalChat.findUniqueOrThrow({ where: { id: identity.chatId } });
+    const addresses = await tx.canonicalAddressAlias.findMany({ where: { ...scope, addressId: { in: g.family(origin.addressId) } } });
+    const senders = identity.senderAddressId ? await tx.canonicalAddressAlias.findMany({ where: { ...scope, addressId: { in: g.family(identity.senderAddressId) } } }) : [];
+    const field = (name: string, value: Prisma.JsonValue): Prisma.CanonicalActionWhereInput => ({ target: { path: [name], equals: value === null ? Prisma.JsonNull : value } });
+    const canonical: Prisma.CanonicalActionWhereInput = { targetHash: digest([identity.identityFormat, identity.providerScope, identity.rawId]), AND: [
+      field('identityFormat', identity.identityFormat), field(identity.identityFormat === 'provider_native' ? 'nativeId' : 'rawId', identity.rawId),
+      field('direction', identity.direction), { OR: addresses.map(a => field('chatAddress', a.address)) },
+      identity.senderAddressId ? { OR: senders.map(a => field('senderParticipant', a.address)) } : field('senderParticipant', ''),
+      ...(identity.identityFormat === 'provider_native' ? [{ observation: { provider: identity.providerScope } }] : [])
+    ] };
+    const aliases = await tx.canonicalNativeAlias.findMany({ where: { ...scope, identityId: identity.id, state: 'resolved', provider: 'waha' } });
+    const native: Prisma.CanonicalActionWhereInput[] = [];
+    for (const alias of aliases) {
+      const t = alias.fullTuple;
+      if (!Array.isArray(t) || t.length !== 11 || typeof t[3] !== 'string') continue; // legacy objects are never authority
+      native.push({ nativeTargetHash: digest(t.slice(1, 5)), observation: { provider: 'waha', connectionId: alias.connectionId, sessionName: t[3] }, AND: [
+        field('identityFormat', t[0]!), field('nativeId', t[4]!),
+        ...['rawId', 'nativeChatAddress', 'nativeSenderParticipant', 'chatAddress', 'direction', 'senderParticipant'].map((name, index) => ({ OR: [field(name, null), field(name, t[index + 5]!)] }))
+      ] });
+    }
+    return { ...scope, OR: [canonical, ...native] };
+  }
   async function revisionTuple(tx: Tx, event: ActionEvent, identity: CanonicalMessageIdentity, key: WhatsAppMessageKey) {
     if (!complete(key)) return null;
     const scope = scopeOf(event.context), g = await graph(tx, scope);
@@ -256,7 +283,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     return stored !== null && incoming !== null && equal(stored, incoming);
   }
   const { reduceAction, recoverForMessage, reconcileRevisionInTransaction, reconcileSnapshotInTransaction, reconciliationFrontierInTransaction, recoverPendingInTransaction } = createCanonicalReducers({
-    digest, lockAndScope, resolveActionTarget, revisionTuple, address, graph
+    digest, lockAndScope, resolveActionTarget, revisionTuple, address, graph, pendingTargetWhere
   });
   async function persistInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions): Promise<CanonicalStoreResult> {
     const c = event.context, scope = scopeOf(c);
