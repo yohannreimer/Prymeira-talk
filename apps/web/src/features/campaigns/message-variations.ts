@@ -11,3 +11,8 @@ export function buildTemplates(message: string, variations: string[]) {
   return [message.trim(), ...variations.map((text) => text.trim()).filter(Boolean)]
     .filter(Boolean).slice(0, 6);
 }
+
+export function initialVariations(campaign: { messageBody: string; templates?: string[] } | null | undefined) {
+  const templates = campaign?.templates;
+  return templates && templates[0] === campaign.messageBody ? templates.slice(1) : [];
+}

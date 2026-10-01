@@ -35,6 +35,9 @@ export function CampaignReview(props: {
     {preview.selectedCount === null && <p className="campaign-guidance-note">
       A quantidade originalmente selecionada não está disponível neste rascunho antigo.
     </p>}
+    {preview.nameCheck === "unavailable" && <p role="status" className="campaign-guidance-note">
+      Nomes não verificados pela IA: as mensagens saem sem o nome. Confira a configuração de IA do workspace e verifique novamente.
+    </p>}
     {(Object.entries(counts).length > 0 || notImported > 0) && <div className="campaign-review-exclusions">
       <h3>Por que alguns ficaram de fora?</h3>
       <ul>{notImported > 0 && <li>{notImported} não entraram no rascunho após a importação (telefone inválido ou repetido).</li>}{Object.entries(counts).map(([reason, count]) =>

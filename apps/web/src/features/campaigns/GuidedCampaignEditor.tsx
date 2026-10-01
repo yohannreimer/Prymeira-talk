@@ -1,15 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChannelDto } from "@prymeira-talk/shared";
 import { ArrowLeft, ArrowRight, CheckCircle2, Clock3, ListPlus, Pause, Play, ShieldCheck, Upload, Users } from "lucide-react";
 import {
   apiActivateCampaign, apiControlCampaign, apiCreateCampaign, apiGetCampaignProgress,
   apiGetBroadcastLists, apiGetCampaigns, apiGetCampaignRecipients, apiPreviewCampaignAudience,
   apiResolveUncertainCampaignRecipient, apiUpdateCampaign, apiGetSettings, apiGetAgents,
+  apiGenerateMessageVariations,
   type AiAgentDto,
   type CampaignAudiencePreviewDto, type CampaignCadenceDto, type CampaignDto,
   type CampaignProgressDto, type CampaignRecipientDto, type ContactBoardWithStagesDto, type BroadcastListDto
 } from "../../app/api";
 import { CampaignReview } from "./CampaignReview";
+import { MessageVariations } from "./MessageVariations";
+import { buildTemplates, initialVariations, missingPlaceholders } from "./message-variations";
 import { BroadcastListDialog } from './BroadcastListDialog';
 
 type ImportedRow = { name?: string; phone: string; fields: Record<string, string> };
@@ -79,6 +82,10 @@ export function GuidedCampaignEditor(props: {
   const [audienceChanged, setAudienceChanged] = useState(false);
   const [channelId, setChannelId] = useState(props.channels[0]?.id ?? "");
   const [message, setMessage] = useState(props.campaign?.messageBody ?? "");
+  const messageField = useRef<HTMLTextAreaElement>(null);
+  const [variations, setVariations] = useState<string[]>(() => initialVariations(props.campaign));
+  const [variationsBusy, setVariationsBusy] = useState(false);
+  const [variationsError, setVariationsError] = useState<string | null>(null);
   const [hideFromInboxUntilReply, setHideFromInboxUntilReply] = useState(props.campaign?.hideFromInboxUntilReply ?? false);
   const [startMode, setStartMode] = useState<"now" | "scheduled">(
     props.campaign?.scheduledAt ? "scheduled" : "now");
@@ -155,10 +162,30 @@ export function GuidedCampaignEditor(props: {
     return () => { mounted = false; window.clearInterval(interval); };
   }, [current?.id, current?.status, props.getToken]);
 
+  function insertName() {
+    const field = messageField.current;
+    const start = field?.selectionStart ?? message.length;
+    const end = field?.selectionEnd ?? message.length;
+    setMessage(`${message.slice(0, start)}{{nome}}${message.slice(end)}`);
+    setPreview(null);
+  }
+  async function generateVariations() {
+    setVariationsBusy(true); setVariationsError(null);
+    try {
+      setVariations(await apiGenerateMessageVariations(props.getToken, message.trim()));
+      setPreview(null);
+    } catch (cause) {
+      setVariationsError(cause instanceof Error ? cause.message : "Não foi possível gerar as variações.");
+    } finally { setVariationsBusy(false); }
+  }
+
   async function saveDraft() {
     validateProspecting();
     if (!name.trim()) throw new Error("Dê um nome para este disparo.");
     if (!message.trim()) throw new Error("Escreva a mensagem antes de continuar.");
+    if (variations.some((text) => text.trim() && missingPlaceholders(message, text).length > 0)) {
+      throw new Error("Há variações sem um campo da mensagem original. Corrija ou remova antes de continuar.");
+    }
     const audience = source === 'list' ? { type: 'list' as const, listId }
       : source === "board" ? { type: "board" as const, boardId }
       : { type: "imported" as const, rows };
@@ -168,7 +195,7 @@ export function GuidedCampaignEditor(props: {
     const scheduled = startMode === "scheduled" && scheduledAt
       ? zonedDateTimeToIso(scheduledAt, timeZone) : null;
     const body = { name: name.trim(), messageBody: message.trim(),
-      templates: [message.trim()], cadence, scheduledAt: scheduled, timeZone, hideFromInboxUntilReply,
+      templates: buildTemplates(message, variations), cadence, scheduledAt: scheduled, timeZone, hideFromInboxUntilReply,
       prospectingAgentId: prospectingEnabled ? prospectingAgentId : null,
       prospectingContext: prospectingEnabled ? prospectingContext.trim() || null : null };
     const saved = current
@@ -365,9 +392,17 @@ export function GuidedCampaignEditor(props: {
       </>}
       {stage === 2 && <><div className="guided-campaign-panel-heading"><div><span className="guided-campaign-kicker">ETAPA 2 DE 3</span>
         <h2>O que enviar e quando?</h2><p>Escreva a mensagem e escolha o início.</p></div><Clock3 size={26} /></div>
-        <label className="form-field"><span>Mensagem</span><textarea rows={7} value={message}
+        <label className="form-field"><span>Mensagem</span><textarea rows={7} value={message} ref={messageField}
           onChange={(event) => { setMessage(event.target.value); setPreview(null); }} maxLength={2000}
           placeholder="Olá {{nome}}, tudo bem?" /></label>
+        <div className="message-name-helper">
+          <button type="button" className="secondary-button" onClick={insertName}>Inserir nome</button>
+          <small>O nome só é usado quando o contato é uma pessoa. Empresas ficam sem nome (ex.: "Olá, tudo bem?").</small>
+        </div>
+        <MessageVariations message={message} variations={variations} busy={variationsBusy}
+          error={variationsError} onGenerate={() => void generateVariations()}
+          onChange={(index, value) => { setVariations(variations.map((text, i) => i === index ? value : text)); setPreview(null); }}
+          onRemove={(index) => { setVariations(variations.filter((_, i) => i !== index)); setPreview(null); }} />
         <div className="module-form">
           <label className="guided-campaign-hidden-option"><input type="checkbox" checked={prospectingEnabled}
             disabled={prospectingLoading || !!prospectingError || (!moduleEnabled && !prospectingEnabled)}

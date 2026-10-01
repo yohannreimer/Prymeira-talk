@@ -73,4 +73,15 @@ describe("guided campaign editor", () => {
     expect(zonedDateTimeToIso("2026-09-22T09:00", "America/Manaus"))
       .toBe("2026-09-22T13:00:00.000Z");
   });
+
+  it("avisa quando os nomes não foram verificados pela IA", () => {
+    const html = renderToStaticMarkup(<CampaignReview preview={{ ...preview, nameCheck: "unavailable" }}
+      message="Olá {{nome}}" channelName="Geral" startLabel="Agora"
+      cadence={SAFE_CADENCE} confirmed={false} onConfirmedChange={vi.fn()} />);
+    expect(html).toContain("Nomes não verificados pela IA");
+    const ok = renderToStaticMarkup(<CampaignReview preview={{ ...preview, nameCheck: "ok" }}
+      message="Olá" channelName="Geral" startLabel="Agora"
+      cadence={SAFE_CADENCE} confirmed={false} onConfirmedChange={vi.fn()} />);
+    expect(ok).not.toContain("Nomes não verificados");
+  });
 });
