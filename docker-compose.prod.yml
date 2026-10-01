@@ -67,6 +67,7 @@ services:
       JEV_MODEL: ${JEV_MODEL:-jev-latest}
       INBOX_TRIAGE_ENABLED: ${INBOX_TRIAGE_ENABLED:-false}
       INBOX_TRIAGE_PRIMARY: ${INBOX_TRIAGE_PRIMARY:-jev}
+      CONTACT_NAME_RECOVERY_ENABLED: ${CONTACT_NAME_RECOVERY_ENABLED:-true}
       VINCULA_CRM_API_URL: ${VINCULA_CRM_API_URL:-https://vincula.prymeiradigital.com.br/api}
     networks:
       prymeira_talk_internal:

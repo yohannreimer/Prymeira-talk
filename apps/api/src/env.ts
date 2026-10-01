@@ -58,6 +58,13 @@ export const envSchema = z
     JEV_MODEL: z.string().min(1).default("jev-latest"),
     INBOX_TRIAGE_PRIMARY: z.enum(["luna", "jev"]).default("jev"),
     INBOX_TRIAGE_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+    // Kill switch for the automatic contact name recovery job; on unless explicitly turned off.
+    CONTACT_NAME_RECOVERY_ENABLED: z
+      .preprocess(
+        (value) => (typeof value === "string" ? value.trim().toLowerCase() || undefined : value),
+        z.enum(["true", "1", "on", "false", "0", "off"]).default("true")
+      )
+      .transform((value) => !["false", "0", "off"].includes(value)),
     TALK_UPLOAD_DIR: z.string().min(1).default("storage/uploads"),
     VINCULA_CRM_API_URL: optionalUrl,
     CNPJ_DATABASE_URL: optionalUrlWithProtocols(["postgres:", "postgresql:"]),

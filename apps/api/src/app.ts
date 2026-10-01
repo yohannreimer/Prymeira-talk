@@ -43,6 +43,7 @@ import { broadcastListsRoutes } from './modules/campaigns/broadcast-lists.routes
 import { createCampaignWorker } from "./modules/campaigns/campaign-worker.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
 import { createChannelHistoryImporter, createChannelHistoryImportScheduler } from "./modules/channels/channel-history-import.js";
+import { createContactNameRecoverySchedulerIfEnabled } from "./modules/channels/contact-name-recovery-scheduler.js";
 import { contactsRoutes } from "./modules/contacts/contacts.routes.js";
 import {
   createConversationsService,
@@ -250,6 +251,15 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
       });
   channelHistoryImportScheduler?.start();
   if (channelHistoryImportScheduler) app.addHook("onClose", async () => { await channelHistoryImportScheduler.stop(); });
+  const contactNameRecoveryScheduler = createContactNameRecoverySchedulerIfEnabled({
+    enabled: env.CONTACT_NAME_RECOVERY_ENABLED,
+    prisma: options.prismaEnabled === false ? undefined : app.prisma,
+    source: evolutionHistorySource,
+    onResult(workspaceId, result) { app.log.info({ workspaceId, ...result }, "contact_name_recovery"); },
+    onError(error, workspaceId) { app.log.error({ err: error, workspaceId }, "Contact name recovery failed."); }
+  });
+  contactNameRecoveryScheduler?.start();
+  if (contactNameRecoveryScheduler) app.addHook("onClose", async () => { await contactNameRecoveryScheduler.stop(); });
   const lunaEligibility = options.prismaEnabled === false
     ? undefined
     : createLunaFollowupEligibility({ prisma: app.prisma });

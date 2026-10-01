@@ -33,7 +33,7 @@ function fakePrisma(input: {
 }
 
 const source = (names: Record<string, string>) => ({
-  recentContacts: vi.fn(async () => Object.entries(names).map(([phone, name]) => ({ phoneJid: `${phone}@s.whatsapp.net`, name, profilePicUrl: null })))
+  recentContacts: vi.fn(async (_input: { instanceName: string }) => Object.entries(names).map(([phone, name]) => ({ phoneJid: `${phone}@s.whatsapp.net`, name, profilePicUrl: null })))
 });
 
 describe('contact name recovery scheduler', () => {
