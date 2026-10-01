@@ -3,7 +3,7 @@ import type { CanonicalStoreResult } from './canonical-store.js';
 import type { MessageEditPatch, NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
 import { normalizeChatAddress, record, type WhatsAppMessageKey } from './whatsapp-identity.js';
 import { json, equal, scopeOf, nativeLookupTuple } from './canonical-values.js';
-import { enrichPresentation, snapshotFieldConflict } from './canonical-presentation.js';
+import { enrichPresentation, prepareSnapshotFields, snapshotFieldConflict } from './canonical-presentation.js';
 type Tx = Prisma.TransactionClient;
 type Scope = { workspaceId: string; channelId: string };
 type MessageEvent = Extract<NormalizedMessagingEvent, { kind: 'message' }>;
@@ -357,10 +357,11 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     if (record(stored.metadata).deletedAt) {
       result.outcome = 'held'; result.reconciliationReasons.push('tombstone_dominates'); return result;
     }
-    if (snapshots.some(row => snapshotFieldConflict(stored, row.payload as unknown as MessageEvent, evidence.patch, equal, { supersedeContent: true }))) {
+    const fields = prepareSnapshotFields(stored, snapshots.map(row => row.payload as unknown as MessageEvent), evidence.patch, equal, { supersedeContent: true });
+    if (fields.conflict) {
       result.outcome = 'held'; result.reconciliationReasons.push('snapshot_field_conflict'); return result;
     }
-    const reason = await applyPatch(tx, stored, evidence.patch, context.observedAt);
+    const reason = await applyPatch(tx, fields.message, evidence.patch, context.observedAt);
     if (reason) throw new Error(reason);
     await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { currentRevision: json(evidence.revision), contentState: 'ready', revisionVersion: { increment: 1 } } });
     await tx.canonicalAction.updateMany({ where: { id: { in: pending.map(row => row.id) } }, data: { state: 'superseded', reason: 'certified_current_revision' } });

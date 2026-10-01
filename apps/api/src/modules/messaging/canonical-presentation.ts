@@ -72,14 +72,25 @@ export function enrichPresentation(stored: Message, event: MessageEvent, equal: 
   return { data, conflict };
 }
 
-/** A current patch can supersede an old body/caption, but cannot certify unrelated
- * attachment/contact/location fields. This is a pure preflight: no partial writes. */
-export function snapshotFieldConflict(stored: Message, snapshot: MessageEvent, patch: MessageEditPatch | null,
+/** Build one candidate across the bounded snapshot page before any write. Only
+ * absent metadata is accumulated; body/caption belongs to the certified patch and
+ * media URLs/prepared artifacts stay owned by the existing Message. Persisting the
+ * candidate with that patch makes compatible claims visible to the next page. */
+export function prepareSnapshotFields(stored: Message, snapshots: readonly MessageEvent[], patch: MessageEditPatch | null,
   equal: (a: unknown, b: unknown) => boolean, { supersedeContent = false } = {}) {
-  if (stored.type !== snapshot.content.type) return true;
-  const projected: Message = { ...stored, ...(patch?.field === 'body' ? { body: patch.body } : {}),
+  let candidate: Message = { ...stored, ...(patch?.field === 'body' ? { body: patch.body } : {}),
     metadata: patch?.field === 'caption' ? { ...record(stored.metadata), attachment: { ...record(record(stored.metadata).attachment), caption: patch.caption } } as Prisma.JsonValue : stored.metadata };
-  const compared = supersedeContent && patch?.field === 'body' ? { ...snapshot, content: { ...snapshot.content, body: patch.body } }
-    : supersedeContent && patch?.field === 'caption' ? { ...snapshot, attachment: { ...snapshot.attachment, caption: patch.caption } } : snapshot;
-  return enrichPresentation(projected, compared, equal).conflict;
+  for (const snapshot of snapshots) {
+    if (candidate.type !== snapshot.content.type) return { conflict: true, message: stored };
+    const compared = supersedeContent && patch?.field === 'body' ? { ...snapshot, content: { ...snapshot.content, body: patch.body } }
+      : supersedeContent && patch?.field === 'caption' ? { ...snapshot, attachment: { ...snapshot.attachment, caption: patch.caption } } : snapshot;
+    const { data, conflict } = enrichPresentation(candidate, compared, equal);
+    if (conflict) return { conflict: true, message: stored };
+    if (data.metadata) candidate = { ...candidate, metadata: data.metadata as Prisma.JsonValue };
+  }
+  return { conflict: false, message: candidate };
+}
+export function snapshotFieldConflict(stored: Message, snapshot: MessageEvent, patch: MessageEditPatch | null,
+  equal: (a: unknown, b: unknown) => boolean) {
+  return prepareSnapshotFields(stored, [snapshot], patch, equal).conflict;
 }

@@ -808,4 +808,58 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
     }
   });
 
+  it.each((['width', 'mimeType', 'fileName', 'durationSeconds', 'location', 'contactCards'] as const).flatMap(field =>
+    (['full_conflict', 'partial_conflict', 'compatible', 'partial_compatible'] as const).map(mode => [field, mode] as const)))('accumulates missing %s evidence before resolving snapshots (%s)', async (field, mode) => {
+    const c = await context(), original = msg(c);
+    original.content = { type: 'image', body: 'original caption', preview: 'original caption', mediaUrl: 'https://owned.test/media' };
+    original.attachment = { caption: 'original caption' };
+    const created = await persist(original), stored = await db.message.findUniqueOrThrow({ where: { id: created.messageId! } });
+    await db.message.update({ where: { id: stored.id }, data: { metadata: { ...(stored.metadata as object), transcription: { status: 'completed', text: 'prepared' }, assistantMedia: { status: 'completed', playbackUrl: 'https://owned.test/play' } } } });
+    const values = field === 'width' ? [100, 200] : field === 'mimeType' ? ['image/png', 'image/jpeg'] : field === 'fileName' ? ['one.png', 'two.png'] : field === 'durationSeconds' ? [1, 2]
+      : field === 'location' ? [{ latitude: 1, longitude: 2, name: null, address: null, isLive: false }, { latitude: 9, longitude: 2, name: null, address: null, isLive: false }]
+        : [[{ fullName: 'Name', phoneNumber: '123' }], [{ fullName: 'Name', phoneNumber: '999' }]];
+    const observations: string[] = [];
+    for (let n = 0; n < 2; n++) {
+      const mirror = structuredClone(original); mirror.attachment.caption = `old caption ${n}`;
+      const value = values[mode.includes('compatible') ? 0 : n];
+      Object.assign(field === 'location' || field === 'contactCards' ? mirror.content : mirror.attachment, { [field]: value });
+      observations.push((await persist(mirror)).observationId);
+    }
+    await persist({ ...original, kind: 'edit', target: original.key, action: msg(c, 'E1').key, patch: { field: 'caption', caption: 'first caption' } });
+    const held = await persist({ ...original, kind: 'edit', target: original.key, action: msg(c, 'E2').key, patch: { field: 'caption', caption: 'current caption' } });
+    const before = await db.message.findUniqueOrThrow({ where: { id: stored.id } });
+    const evidence = { actionId: held.actionId!, target: original.key, revision: msg(c, 'E2').key, expectedRevisionVersion: 1, pendingActionIds: [held.actionId!], pendingObservationIds: mode.startsWith('partial_') ? [observations[0]!] : observations, partial: mode.startsWith('partial_'), patch: { field: 'caption' as const, caption: 'current caption' }, proof: { source: 'provider_current_revision' as const, requestId: 'page-one' } };
+    const result = await db.$transaction(tx => store.reconcileRevisionInTransaction(tx, c, evidence));
+    if (mode === 'full_conflict') {
+      expect(result).toMatchObject({ outcome: 'held', changes: [], reconciliationReasons: ['snapshot_field_conflict'] });
+      expect(await db.message.findUnique({ where: { id: stored.id } })).toEqual(before);
+      expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'pending_reconciliation', revisionVersion: 1 });
+      expect(await db.canonicalObservation.count({ where: { id: { in: observations }, state: 'held' } })).toBe(2);
+      expect(await db.canonicalObservation.count({ where: { identityId: created.identityId!, kind: 'reconciliation' } })).toBe(0);
+    } else {
+      const firstPage = await db.message.findUniqueOrThrow({ where: { id: stored.id } });
+      const metadata = firstPage.metadata as Record<string, unknown>;
+      expect((field === 'location' || field === 'contactCards' ? metadata : metadata.attachment as Record<string, unknown>)[field]).toEqual(values[0]);
+      expect(firstPage).toMatchObject({ type: 'image', mediaUrl: 'https://owned.test/media', metadata: expect.objectContaining({ transcription: { status: 'completed', text: 'prepared' }, assistantMedia: { status: 'completed', playbackUrl: 'https://owned.test/play' } }) });
+      if (mode === 'compatible') expect(result.outcome).toBe('enriched');
+      else {
+        expect(result).toMatchObject({ outcome: 'held', reconciliationReasons: ['reconciliation_frontier_remaining'] });
+        expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'pending_reconciliation', revisionVersion: 2 });
+        const second = await db.$transaction(tx => createCanonicalStore().reconcileRevisionInTransaction(tx, c, { ...evidence, expectedRevisionVersion: 2, pendingActionIds: [], pendingObservationIds: [observations[1]!], proof: { ...evidence.proof, requestId: 'fresh-page-two' } }));
+        if (mode === 'partial_compatible') {
+          expect(second.outcome).toBe('enriched');
+          expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'ready', revisionVersion: 3 });
+          expect(await db.canonicalObservation.count({ where: { id: { in: observations }, state: 'held' } })).toBe(0);
+          expect(await db.canonicalObservation.count({ where: { identityId: created.identityId!, kind: 'reconciliation' } })).toBe(2);
+        } else {
+          expect(second).toMatchObject({ outcome: 'held', changes: [], reconciliationReasons: ['snapshot_field_conflict'] });
+          expect(await db.message.findUnique({ where: { id: stored.id } })).toEqual(firstPage);
+          expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'pending_reconciliation', revisionVersion: 2 });
+          expect(await db.canonicalObservation.findUnique({ where: { id: observations[1] } })).toMatchObject({ state: 'held' });
+          expect(await db.canonicalObservation.count({ where: { identityId: created.identityId!, kind: 'reconciliation' } })).toBe(1);
+        }
+      }
+    }
+  });
+
 });
