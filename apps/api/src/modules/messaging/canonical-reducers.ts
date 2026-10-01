@@ -3,7 +3,7 @@ import type { CanonicalStoreResult } from './canonical-store.js';
 import type { MessageEditPatch, NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
 import { normalizeChatAddress, record, type WhatsAppMessageKey } from './whatsapp-identity.js';
 import { json, equal, scopeOf, nativeLookupTuple } from './canonical-values.js';
-import { enrichPresentation } from './canonical-presentation.js';
+import { enrichPresentation, snapshotFieldConflict } from './canonical-presentation.js';
 type Tx = Prisma.TransactionClient;
 type Scope = { workspaceId: string; channelId: string };
 type MessageEvent = Extract<NormalizedMessagingEvent, { kind: 'message' }>;
@@ -62,10 +62,15 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
       state: 'pending', kind: { in: ['edit', 'encrypted_edit', 'revoke'] } } });
   }
 
-  async function unfinishedContent(tx: Tx, identity: CanonicalMessageIdentity) {
+  /** Shared readiness gate for recovery and both certificate APIs. Content proof
+   * never resolves a conflicting ingress receipt, even when it is a status event. */
+  async function unfinishedContent(tx: Tx, identity: CanonicalMessageIdentity, { ignoreRecoveryBudget = false } = {}) {
     const scope = { workspaceId: identity.workspaceId, channelId: identity.channelId };
-    return await tx.canonicalAction.count({ where: contentActions(scope, identity.id) })
-      + await tx.canonicalObservation.count({ where: contentSnapshots(scope, identity.id) }) + await unboundContent(tx, identity);
+    if (await tx.canonicalAction.count({ where: contentActions(scope, identity.id) })) return true;
+    if (await tx.canonicalObservation.count({ where: { ...contentSnapshots(scope, identity.id),
+      ...(ignoreRecoveryBudget ? { OR: [{ reason: null }, { reason: { not: 'pending_recovery_budget_exhausted' } }] } : {}) } })) return true;
+    if (await tx.canonicalObservation.count({ where: { ...scope, identityId: identity.id, reason: 'receipt_key_conflict' } })) return true;
+    return await unboundContent(tx, identity) > 0;
   }
   async function certificate(tx: Tx, context: TrustedMessagingContext, identity: CanonicalMessageIdentity,
     sourceObservationId: string, evidence: CanonicalRevisionEvidence | CanonicalSnapshotEvidence, save = false) {
@@ -297,20 +302,15 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
         const scope = scopeOf(context);
         // Readiness is derived from the actual remaining frontier, regardless of
         // whether the original ever acquired a recovery-budget observation.
-        if (!await tx.canonicalAction.count({ where: contentActions(scope, identity.id) }) && !await unboundContent(tx, identity)) {
-          const otherSnapshots = await tx.canonicalObservation.count({ where: { ...contentSnapshots(scope, identity.id),
-            OR: [{ reason: null }, { reason: { not: 'pending_recovery_budget_exhausted' } }] } });
-          const ingressConflicts = await tx.canonicalObservation.count({ where: { ...scope, identityId: identity.id, reason: 'receipt_key_conflict' } });
-          if (!otherSnapshots && !ingressConflicts) {
-            const cleared = await tx.canonicalObservation.updateMany({ where: { ...contentSnapshots(scope, identity.id), reason: 'pending_recovery_budget_exhausted' }, data: { state: 'resolved', reason: null } });
-            let becameReady = false;
-            if (identity.contentState === 'pending_reconciliation') {
-              const message = await tx.message.findUniqueOrThrow({ where: { id: identity.messageId }, select: { metadata: true } });
-              becameReady = !record(message.metadata).deletedAt;
-              await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: becameReady ? 'ready' : 'deleted' } });
-            }
-            if (becameReady || cleared.count) { result.changes.push('pending_recovery_completed'); result.outcome = 'enriched'; }
+        if (!await unfinishedContent(tx, identity, { ignoreRecoveryBudget: true })) {
+          const cleared = await tx.canonicalObservation.updateMany({ where: { ...contentSnapshots(scope, identity.id), reason: 'pending_recovery_budget_exhausted' }, data: { state: 'resolved', reason: null } });
+          let becameReady = false;
+          if (identity.contentState === 'pending_reconciliation') {
+            const message = await tx.message.findUniqueOrThrow({ where: { id: identity.messageId }, select: { metadata: true } });
+            becameReady = !record(message.metadata).deletedAt;
+            await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: becameReady ? 'ready' : 'deleted' } });
           }
+          if (becameReady || cleared.count) { result.changes.push('pending_recovery_completed'); result.outcome = 'enriched'; }
         }
       }
       results.push(result);
@@ -356,6 +356,9 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     const stored = await tx.message.findUniqueOrThrow({ where: { id: identity.messageId } });
     if (record(stored.metadata).deletedAt) {
       result.outcome = 'held'; result.reconciliationReasons.push('tombstone_dominates'); return result;
+    }
+    if (snapshots.some(row => snapshotFieldConflict(stored, row.payload as unknown as MessageEvent, evidence.patch, equal, { supersedeContent: true }))) {
+      result.outcome = 'held'; result.reconciliationReasons.push('snapshot_field_conflict'); return result;
     }
     const reason = await applyPatch(tx, stored, evidence.patch, context.observedAt);
     if (reason) throw new Error(reason);
@@ -403,9 +406,7 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     if (stored.type !== snapshot.content.type) throw new Error('Snapshot type conflict');
     const patch: MessageEditPatch | null = stored.type === 'text' && snapshot.content.body !== null ? { field: 'body', body: snapshot.content.body }
       : typeof snapshot.attachment.caption === 'string' ? { field: 'caption', caption: snapshot.attachment.caption } : null;
-    const projected = { ...stored, ...(patch?.field === 'body' ? { body: patch.body } : {}),
-      metadata: patch?.field === 'caption' ? json({ ...record(stored.metadata), attachment: { ...record(record(stored.metadata).attachment), caption: patch.caption } }) as Prisma.JsonValue : stored.metadata };
-    if (enrichPresentation(projected, snapshot, equal).conflict) {
+    if (snapshotFieldConflict(stored, snapshot, patch, equal)) {
       await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });
       await tx.canonicalObservation.update({ where: { id: observation.id }, data: { state: 'held', reason: 'snapshot_field_conflict' } });
       result.outcome = 'held'; result.reconciliationReasons.push('snapshot_field_conflict'); return result;

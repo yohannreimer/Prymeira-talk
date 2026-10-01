@@ -761,4 +761,51 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
     expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: gate === 'deleted' ? 'deleted' : 'pending_reconciliation' });
   });
 
+  it.each(['snapshot', 'revision'] as const)('preserves an independent receipt conflict during %s certification', async (api) => {
+    const c = await context(), original = msg(c), created = await persist(original);
+    const receipt: NormalizedMessagingEvent = { ...original, kind: 'receipt', target: original.key, status: 'read', providerStatus: 'read', recipient: PN };
+    const firstReceipt = await persist(receipt, 'receipt-R');
+    await persist({ ...receipt, status: 'delivered', providerStatus: 'delivered' }, 'receipt-R');
+    let result;
+    if (api === 'snapshot') result = await db.$transaction(tx => store.reconcileSnapshotInTransaction(tx, c, { observationId: created.observationId, target: original.key, expectedRevisionVersion: 0, pendingObservationIds: [], proof: { source: 'provider_current_revision', requestId: 'current-original' } }));
+    else {
+      await persist({ ...original, kind: 'edit', target: original.key, action: msg(c, 'E1').key, patch: { field: 'body', body: 'first' } });
+      const held = await persist({ ...original, kind: 'edit', target: original.key, action: msg(c, 'E2').key, patch: { field: 'body', body: 'second' } });
+      result = await db.$transaction(tx => store.reconcileRevisionInTransaction(tx, c, { actionId: held.actionId!, target: original.key, revision: msg(c, 'E2').key, expectedRevisionVersion: 1, pendingActionIds: [held.actionId!], patch: { field: 'body', body: 'second' }, proof: { source: 'provider_current_revision', requestId: 'current-edit' } }));
+    }
+    expect(result).toMatchObject({ outcome: 'held', allowOperationalEffects: false, reconciliationReasons: ['reconciliation_frontier_remaining'] });
+    expect(await db.canonicalObservation.findUnique({ where: { id: firstReceipt.observationId } })).toMatchObject({ state: 'held', reason: 'receipt_key_conflict' });
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'pending_reconciliation' });
+    const other = msg(c, 'OTHER'), otherCreated = await persist(other);
+    expect((await db.$transaction(tx => store.reconcileSnapshotInTransaction(tx, c, { observationId: otherCreated.observationId, target: other.key, expectedRevisionVersion: 0, pendingObservationIds: [], proof: { source: 'provider_current_revision', requestId: 'other-original' } }))).outcome).toBe('enriched');
+  });
+  it.each(['width', 'mimeType', 'fileName', 'durationSeconds', 'location', 'contactCards', 'stale_caption_only'] as const)('keeps unrelated %s snapshot evidence unresolved by a caption-only certificate', async (field) => {
+    const c = await context(), original = msg(c);
+    original.content = { type: 'image', body: 'original caption', preview: 'original caption', mediaUrl: 'https://owned.test/media', location: { latitude: 1, longitude: 2, name: null, address: null, isLive: false }, contactCards: [{ fullName: 'Name', phoneNumber: '123' }] };
+    original.attachment = { caption: 'original caption', width: 100, mimeType: 'image/png', fileName: 'original.png', durationSeconds: 1 };
+    const created = await persist(original), stored = await db.message.findUniqueOrThrow({ where: { id: created.messageId! } });
+    await db.message.update({ where: { id: stored.id }, data: { metadata: { ...(stored.metadata as object), transcription: { status: 'completed', text: 'prepared' }, assistantMedia: { status: 'completed', playbackUrl: 'https://owned.test/play' } } } });
+    const mirror = structuredClone(original); mirror.attachment.caption = 'old disputed caption';
+    if (field === 'location') mirror.content.location!.latitude = 9;
+    else if (field === 'contactCards') mirror.content.contactCards![0]!.phoneNumber = '999';
+    else if (field !== 'stale_caption_only') Object.assign(mirror.attachment, { [field]: field === 'width' ? 200 : field === 'durationSeconds' ? 5 : field === 'mimeType' ? 'image/jpeg' : 'different.jpg' });
+    const snapshot = await persist(mirror);
+    await persist({ ...original, kind: 'edit', target: original.key, action: msg(c, 'E1').key, patch: { field: 'caption', caption: 'first caption' } });
+    const held = await persist({ ...original, kind: 'edit', target: original.key, action: msg(c, 'E2').key, patch: { field: 'caption', caption: 'second caption' } });
+    const before = await db.message.findUniqueOrThrow({ where: { id: stored.id } });
+    const result = await db.$transaction(tx => store.reconcileRevisionInTransaction(tx, c, { actionId: held.actionId!, target: original.key, revision: msg(c, 'E2').key, expectedRevisionVersion: 1, pendingActionIds: [held.actionId!], pendingObservationIds: [snapshot.observationId], patch: { field: 'caption', caption: 'second caption' }, proof: { source: 'provider_current_revision', requestId: 'caption-proof' } }));
+    if (field === 'stale_caption_only') {
+      expect(result.outcome).toBe('enriched');
+      expect(await db.message.findUnique({ where: { id: stored.id } })).toMatchObject({ body: 'second caption' });
+      expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'ready', revisionVersion: 2 });
+    } else {
+      expect(result).toMatchObject({ outcome: 'held', changes: [], reconciliationReasons: ['snapshot_field_conflict'] });
+      expect(await db.message.findUnique({ where: { id: stored.id } })).toEqual(before);
+      expect(await db.canonicalObservation.findUnique({ where: { id: snapshot.observationId } })).toMatchObject({ state: 'held' });
+      expect(await db.canonicalAction.findUnique({ where: { id: held.actionId! } })).toMatchObject({ state: 'pending', evidence: null });
+      expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'pending_reconciliation', revisionVersion: 1 });
+      expect(await db.canonicalObservation.count({ where: { identityId: created.identityId!, kind: 'reconciliation' } })).toBe(0);
+    }
+  });
+
 });

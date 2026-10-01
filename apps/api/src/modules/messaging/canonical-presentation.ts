@@ -1,5 +1,5 @@
 import type { Message, Prisma } from '@prisma/client';
-import type { NormalizedMessagingEvent } from './normalized-event.js';
+import type { MessageEditPatch, NormalizedMessagingEvent } from './normalized-event.js';
 import { record } from './whatsapp-identity.js';
 
 type MessageEvent = Extract<NormalizedMessagingEvent, { kind: 'message' }>;
@@ -70,4 +70,16 @@ export function enrichPresentation(stored: Message, event: MessageEvent, equal: 
   if (!metadata.transcription && !metadata.assistantMedia && ['Imagem recebida', 'Vídeo recebido', 'Arquivo recebido'].includes(stored.body ?? '') && typeof attachment.caption === 'string' && attachment.caption) data.body = attachment.caption;
   if (!equal(metadata, next)) data.metadata = JSON.parse(JSON.stringify(next));
   return { data, conflict };
+}
+
+/** A current patch can supersede an old body/caption, but cannot certify unrelated
+ * attachment/contact/location fields. This is a pure preflight: no partial writes. */
+export function snapshotFieldConflict(stored: Message, snapshot: MessageEvent, patch: MessageEditPatch | null,
+  equal: (a: unknown, b: unknown) => boolean, { supersedeContent = false } = {}) {
+  if (stored.type !== snapshot.content.type) return true;
+  const projected: Message = { ...stored, ...(patch?.field === 'body' ? { body: patch.body } : {}),
+    metadata: patch?.field === 'caption' ? { ...record(stored.metadata), attachment: { ...record(record(stored.metadata).attachment), caption: patch.caption } } as Prisma.JsonValue : stored.metadata };
+  const compared = supersedeContent && patch?.field === 'body' ? { ...snapshot, content: { ...snapshot.content, body: patch.body } }
+    : supersedeContent && patch?.field === 'caption' ? { ...snapshot, attachment: { ...snapshot.attachment, caption: patch.caption } } : snapshot;
+  return enrichPresentation(projected, compared, equal).conflict;
 }
