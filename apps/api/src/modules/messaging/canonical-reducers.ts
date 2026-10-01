@@ -1,3 +1,4 @@
+import { assertCurrentMessagingSource, StaleMessagingSourceError } from './canonical-source.js';
 import { Prisma, type CanonicalMessageIdentity, type Message } from '@prisma/client';
 import type { CanonicalStoreResult } from './canonical-store.js';
 import type { MessageEditPatch, NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
@@ -124,6 +125,10 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     const scope = scopeOf(event.context);
     const result: CanonicalStoreResult = { outcome: 'held', observationId, messageId: null, conversationId: null,
       chatId: null, identityId: null, allowOperationalEffects: false, changes: [], reconciliationReasons: [] };
+    try { await assertCurrentMessagingSource(tx, event.context); } catch (error) {
+      if (!(error instanceof StaleMessagingSourceError)) throw error;
+      result.reconciliationReasons.push('stale_source'); return result;
+    }
     const observation = await tx.canonicalObservation.findUniqueOrThrow({ where: { id: observationId } });
     if (observation.reason === 'receipt_key_conflict') { result.reconciliationReasons.push(observation.reason); return result; }
     const action = await tx.canonicalAction.upsert({ where: { observationId }, create: { ...scope, observationId,
@@ -256,6 +261,10 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     // order cannot turn one of several pre-original edits into the current revision.
     const matching = [];
     for (const action of pending) {
+      try { await assertCurrentMessagingSource(tx, (action.observation.payload as unknown as ActionEvent).context); } catch (error) {
+        if (!(error instanceof StaleMessagingSourceError)) throw error;
+        continue;
+      }
       const resolved = await resolveActionTarget(tx, action.observation.payload as unknown as ActionEvent);
       if (resolved.identity && (!identityId || resolved.identity.id === identityId)) {
         matching.push(action);

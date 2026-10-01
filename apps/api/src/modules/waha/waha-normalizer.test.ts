@@ -178,7 +178,7 @@ describe('WAHA 2026.9.1 WPP normalization', () => {
     for (const key of ['width', 'height', 'sizeBytes', 'pageCount']) expect(result.attachment).not.toHaveProperty(key);
   });
   it('rejects WAHA observations for a logical Meta channel', () => {
-    expect(normalizeWahaEvent({ ...context, channelProvider: 'meta' }, message()).kind).toBe('invalid');
+    expect(normalizeWahaEvent({ ...context, channelProvider: 'meta' } as unknown as TrustedMessagingContext, message()).kind).toBe('invalid');
   });
   it('does not choose from/to for a raw message id without proven direction', () => {
     expect(normalizeWahaEvent(context, message({}, { id: 'A_B', fromMe: undefined, from: '5511999990000@c.us', to: '5547999990000@c.us' })).kind).toBe('invalid');

@@ -20,7 +20,7 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
 }): NormalizationResult {
   const envelope = record(input), payload = record(envelope.payload);
   const eventName = string(envelope.event);
-  if (context.provider !== 'waha' || context.channelProvider === 'meta' || !eventName || !envelope.payload || typeof envelope.payload !== 'object' || Array.isArray(envelope.payload)) return { kind: 'invalid', reason: 'invalid_envelope' };
+  if (context.provider !== 'waha' || String(context.channelProvider) === 'meta' || !eventName || !envelope.payload || typeof envelope.payload !== 'object' || Array.isArray(envelope.payload)) return { kind: 'invalid', reason: 'invalid_envelope' };
   const base = { context: { ...context }, providerEventId: string(envelope.id), providerEventType: eventName, addressMappings: [] as AddressMappingEvidence[] };
   const raw = record(payload._data);
   if (eventName === 'session.status') {

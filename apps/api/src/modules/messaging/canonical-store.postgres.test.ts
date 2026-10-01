@@ -19,7 +19,7 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
   let db: PrismaClient;
   const workspaces: string[] = [];
   const store = createCanonicalStore();
-  async function context(workspaceId: string = randomUUID(), channelId?: string, provider: 'evolution' | 'waha' = 'evolution'): Promise<TrustedMessagingContext> {
+  async function context(workspaceId: string = randomUUID(), channelId?: string, provider: 'evolution' | 'waha' = 'evolution'): Promise<Extract<TrustedMessagingContext, { channelProvider: 'evolution' }>> {
     if (!workspaces.includes(workspaceId)) workspaces.push(workspaceId);
     const channel = channelId ? await db.channel.findUniqueOrThrow({ where: { id: channelId } }) : await db.channel.create({ data: { workspaceId, provider: 'evolution', providerKey: randomUUID() } });
     const connection = await db.channelConnection.upsert({ where: { workspaceId_channelId_provider: { workspaceId, channelId: channel.id, provider } }, create: { workspaceId, channelId: channel.id, provider, sessionName: randomUUID() }, update: {} });
@@ -46,6 +46,7 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
     await db.canonicalAddressAlias.deleteMany({ where });
     await db.canonicalAddress.updateMany({ where, data: { redirectId: null } });
     await db.canonicalAddress.deleteMany({ where });
+    await db.integrationConfig.deleteMany({ where });
     await db.channel.deleteMany({ where });
     await db.contact.deleteMany({ where });
     await db.$disconnect();
@@ -245,7 +246,7 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
     const a=await context();
     const channel=await db.channel.create({data:{workspaceId:a.workspaceId,provider:'meta_cloud',providerKey:randomUUID()}});
     const physical=await db.channelConnection.create({data:{workspaceId:a.workspaceId,channelId:channel.id,provider:'waha',sessionName:randomUUID()}});
-    const c:TrustedMessagingContext={...a,provider:'waha',channelProvider:'meta',channelId:channel.id,connectionId:physical.id};
+    const c={...a,provider:'waha',channelProvider:'meta',channelId:channel.id,connectionId:physical.id} as unknown as TrustedMessagingContext;
     await expect(persist(msg(c))).rejects.toThrow('WAHA scope');
     await expect(db.canonicalNativeAlias.create({data:{workspaceId:c.workspaceId,channelId:c.channelId,channelProvider:'meta_cloud',provider:'waha',connectionProvider:'waha',connectionId:physical.id,tupleHash:'1',fullTuple:[]}})).rejects.toThrow();
   });
@@ -269,6 +270,7 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
   it('does not adopt official Meta through an unproven Evolution bridge', async () => {
     const a=await context();const channel=await db.channel.create({data:{workspaceId:a.workspaceId,provider:'meta_cloud',providerKey:randomUUID()}});
     const c:TrustedMessagingContext={...a,channelId:channel.id,channelProvider:'meta',provider:'evolution',connectionId:null};
+    await db.integrationConfig.create({data:{workspaceId:a.workspaceId,provider:'meta_cloud',mode:'real',status:'connected',settings:{enabled:true,connectionMode:'evolution_official',evolutionInstanceName:c.sessionName}}});
     const contact=await db.contact.create({data:{workspaceId:c.workspaceId,phone:'15550001111'}});
     const conv=await db.conversation.create({data:{workspaceId:c.workspaceId,channelId:c.channelId,contactId:contact.id}});
     const message=await db.message.create({data:{workspaceId:c.workspaceId,conversationId:conv.id,direction:'inbound',type:'text',providerMessageId:'wamid.A',providerEventId:'meta:phone-id:wamid.A'}});
@@ -324,6 +326,7 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
   it('deduplicates a provider event ID across receive-time, lifecycle and mode provenance changes', async () => {
     const c=await context(), first=msg({...c,mode:'history'});first.providerEventId='provider-id';
     const created=await persist(first);
+    await db.channelConnection.update({where:{id:c.connectionId},data:{lifecycleGeneration:2}});
     const retry=msg({...c,observedAt:'2026-10-01T00:00:00Z',lifecycleGeneration:2});retry.providerEventId='provider-id';
     expect(await persist(retry)).toMatchObject({outcome:'duplicate',observationId:created.observationId,messageId:created.messageId,allowOperationalEffects:false});
     expect(await db.canonicalObservation.findUnique({where:{id:created.observationId}})).toMatchObject({mode:'history',lifecycleGeneration:0,receivedAt:new Date(c.observedAt)});

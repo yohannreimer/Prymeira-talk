@@ -1,14 +1,18 @@
 import type { ChannelDto, MessageDto, MessageLocation } from '@prymeira-talk/shared';
 import type { WhatsAppMessageKey } from './whatsapp-identity.js';
 
-/** Constructed by authenticated ingress from DB records, never by webhook metadata.
- * Null physical connection permits the existing Meta-through-Evolution bridge.
- * A lifecycle token is evidence to recheck transactionally, not authorization by itself.
- */
+/** Constructed after authentication from persisted DB/configuration, never webhook metadata.
+ * Physical and channel-owned sources use distinct lifecycle tokens. Official Meta
+ * native IDs never share the Evolution bridge namespace. */
 export type TrustedMessagingContext = Readonly<{
-  workspaceId: string; channelId: string; sessionName: string; channelProvider: 'evolution' | 'meta';
+  workspaceId: string; channelId: string; sessionName: string;
   lifecycleGeneration: number; mode: 'live' | 'history' | 'recovered_live'; observedAt: string;
-} & ({ provider: 'evolution'; connectionId: string | null } | { provider: 'waha'; connectionId: string })>;
+} & (
+  | { provider: 'evolution'; channelProvider: 'evolution'; connectionId: string }
+  | { provider: 'waha'; channelProvider: 'evolution'; connectionId: string }
+  | { provider: 'evolution'; channelProvider: 'meta'; connectionId: null }
+  | { provider: 'meta_official'; channelProvider: 'meta'; connectionId: null; phoneNumberId: string }
+)>;
 
 export interface NormalizedContent {
   type: MessageDto['type']; body: string | null; preview: string | null; mediaUrl: string | null;

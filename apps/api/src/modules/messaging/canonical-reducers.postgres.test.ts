@@ -100,8 +100,7 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
     const receipt: NormalizedMessagingEvent = { ...original, kind: 'receipt', target, status: 'read', providerStatus: 'read', recipient: PN };
     const resolved = await persist(receipt);
     expect(resolved).toMatchObject({ outcome: 'enriched', messageId: created.messageId, allowOperationalEffects: false });
-    const wrongSession = await persist({ ...receipt, context: { ...w, sessionName: 'different-session' } });
-    expect(wrongSession).toMatchObject({ outcome: 'held', messageId: null });
+    await expect(persist({ ...receipt, context: { ...w, sessionName: 'different-session' } })).rejects.toMatchObject({ code: 'stale_source' });
     const wrongDirection = await persist({ ...receipt, target: { ...target, direction: 'inbound' } });
     expect(wrongDirection).toMatchObject({ outcome: 'held', messageId: null });
     const wrongNative = await persist({ ...receipt, target: { ...target, nativeId: 'raw_with_underscores' } });
@@ -552,7 +551,9 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
     const original = msg(c, 'SAME', GROUP, PN), wrongSender = msg(c, 'SAME', GROUP, '15550009999@s.whatsapp.net');
     await colliding.persist(db, { ...wrongSender, kind: 'revoke', target: wrongSender.key, action: msg(c, 'D', GROUP, '15550009999@s.whatsapp.net').key }, { receiptKey: 'wrong-sender' });
     const partial = { ...original.key, rawId: null, chatAddress: null, direction: null, senderParticipant: null, nativeChatAddress: null, nativeSenderParticipant: null };
+    await db.channelConnection.update({ where: { id: c.connectionId! }, data: { sessionName: 'another-session' } });
     await colliding.persist(db, { ...original, context: { ...c, sessionName: 'another-session' }, kind: 'revoke', target: partial, action: original.key }, { receiptKey: 'wrong-session' });
+    await db.channelConnection.update({ where: { id: c.connectionId! }, data: { sessionName: c.sessionName } });
     await colliding.persist(db, { ...original, kind: 'revoke', target: { ...partial, nativeId: 'different-native' }, action: original.key }, { receiptKey: 'wrong-native' });
     const result = await colliding.persist(db, original, { receiptKey: 'original' });
     expect(result).toMatchObject({ outcome: 'created', allowOperationalEffects: true, reconciliationReasons: [] });

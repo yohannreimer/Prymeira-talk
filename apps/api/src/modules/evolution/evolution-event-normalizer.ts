@@ -28,7 +28,7 @@ export function normalizeEvolutionWebhook(context: TrustedMessagingContext, inpu
   const name = string(envelope.event);
   if (context.provider !== 'evolution' || !name) return { kind: 'invalid', reason: 'invalid_envelope' };
   const eventName = normalizeEvolutionEvent(name);
-  const rawKey = record(data.key), key = keyOf(rawKey);
+  const rawKey = record(data.key), key = keyOf({ ...rawKey, participant: rawKey.participant ?? data.participant });
   const base = { context: { ...context }, providerEventId: string(envelope.id), providerEventType: name, addressMappings: [
     ...mapping(rawKey.remoteJid, rawKey.remoteJidAlt, 'chat'),
     ...mapping(rawKey.participant ?? data.participant, rawKey.participantAlt, 'sender')
