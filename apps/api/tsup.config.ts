@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: { server: "src/server.ts", "evaluate-inbox-triage": "scripts/evaluate-inbox-triage.ts" },
+  entry: { ingress: "src/ingress.ts", "ingress-worker": "src/ingress-worker.ts", "ingress-recover": "src/ingress-recover.ts", server: "src/server.ts", "evaluate-inbox-triage": "scripts/evaluate-inbox-triage.ts" },
   tsconfig: "tsconfig.production.json",
   format: ["esm"],
   platform: "node",

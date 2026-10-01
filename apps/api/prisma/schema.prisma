@@ -300,6 +300,7 @@ model Channel {
   @@index([workspaceId, status])
   @@index([historyImportStatus, historyImportNextAt])
   @@map("channels")
+  ingressReceipts IngressReceipt[]
   canonicalAddresses CanonicalAddress[]
   canonicalChats CanonicalChat[]
   canonicalObservations CanonicalObservation[]
@@ -1792,4 +1793,105 @@ model OutboundRecertification {
   @@unique([workspaceId,channelId,id])
   @@index([workspaceId,channelId,intentId,ordinal])
   @@map("outbound_recertifications")
+}
+
+// Stage 1A transport journal. Immutable receipt/source facts do not grant current
+// operational authority. pending_application is an obligation, never completion.
+model IngressReceipt {
+  id String @id @db.Uuid
+  ordinal BigInt @unique @default(autoincrement())
+  workspaceId String @map("workspace_id")
+  channelId String @db.Uuid @map("channel_id")
+  stageVersion Int @map("stage_version")
+  transportNamespace String @map("transport_namespace")
+  source Json
+  authentication String
+  authenticatedDigest String @map("authenticated_digest")
+  rawRef String @map("raw_ref")
+  rawDigest String @map("raw_digest")
+  eventRef String @map("event_ref")
+  eventDigest String @map("event_digest")
+  eventCount Int @map("event_count")
+  createdAt DateTime @default(now()) @map("created_at")
+  channel Channel @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Restrict)
+  delivery IngressDelivery?
+  application IngressApplication?
+  frontier IngressFrontier[]
+  attempts IngressPublishAttempt[]
+  @@unique([workspaceId, channelId, id])
+  @@index([workspaceId, channelId, ordinal])
+  @@map("ingress_receipts")
+}
+
+model IngressDelivery {
+  receiptId String @id @db.Uuid @map("receipt_id")
+  workspaceId String @map("workspace_id")
+  channelId String @db.Uuid @map("channel_id")
+  state String @default("staged")
+  confirmedAt DateTime? @map("confirmed_at")
+  consumedAt DateTime? @map("consumed_at")
+  leaseToken String? @db.Uuid @map("lease_token")
+  leaseUntil DateTime? @map("lease_until")
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at")
+  failures Int @default(0)
+  recoveries Int @default(0)
+  lastError String? @map("last_error")
+  receipt IngressReceipt @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  @@unique([workspaceId, channelId, receiptId])
+  @@index([state, nextAttemptAt, leaseUntil])
+  @@map("ingress_deliveries")
+}
+
+model IngressApplication {
+  receiptId String @id @db.Uuid @map("receipt_id")
+  workspaceId String @map("workspace_id")
+  channelId String @db.Uuid @map("channel_id")
+  state String @default("pending_application")
+  createdAt DateTime @default(now()) @map("created_at")
+  // Filled only by the later canonical transaction, not the transport consumer.
+  appliedAt DateTime? @map("applied_at")
+  receipt IngressReceipt @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  @@unique([workspaceId, channelId, receiptId])
+  @@index([workspaceId, channelId, state, createdAt])
+  @@map("ingress_applications")
+}
+
+model IngressFrontier {
+  id BigInt @id @default(autoincrement())
+  receiptId String @db.Uuid @map("receipt_id")
+  workspaceId String @map("workspace_id")
+  channelId String @db.Uuid @map("channel_id")
+  eventIndex Int @map("event_index")
+  chatAddress String? @map("chat_address")
+  // Exact adapter key only; no text, media, credentials or binary.
+  exactKey Json? @map("exact_key")
+  kind String
+  receipt IngressReceipt @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  @@unique([receiptId, eventIndex])
+  @@index([workspaceId, channelId, chatAddress, id])
+  @@map("ingress_frontiers")
+}
+
+model IngressPublishAttempt {
+  id String @id @db.Uuid
+  receiptId String @db.Uuid @map("receipt_id")
+  workspaceId String @map("workspace_id")
+  channelId String @db.Uuid @map("channel_id")
+  destination String
+  outcome String @default("pending")
+  errorCode String? @map("error_code")
+  createdAt DateTime @default(now()) @map("created_at")
+  settledAt DateTime? @map("settled_at")
+  receipt IngressReceipt @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  @@index([receiptId, createdAt])
+  @@map("ingress_publish_attempts")
+}
+
+model IngressQuarantine {
+  id String @id @db.Uuid
+  rawRef String @map("raw_ref")
+  rawDigest String @map("raw_digest")
+  reason String
+  createdAt DateTime @default(now()) @map("created_at")
+  @@map("ingress_quarantines")
 }
