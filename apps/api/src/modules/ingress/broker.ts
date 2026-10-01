@@ -1,4 +1,5 @@
-import amqp, { type ChannelModel, type ConfirmChannel, type ConsumeMessage } from 'amqplib';
+import type { ChannelModel, ConfirmChannel, ConsumeMessage } from 'amqplib';
+import { setupOwnedAmqpConnection, type SetupStep } from './connection-setup.js';
 import { closeOwnedAmqpConnection } from './connection-close.js';
 import { randomUUID } from 'node:crypto';
 
@@ -11,16 +12,16 @@ export function transportTopology(namespace: string) {
   if (!/^talk\.isolated\.[a-z0-9_-]{1,80}$/.test(namespace)) throw new Error('Stage 1A requires an isolated Talk namespace');
   return { exchange: namespace, incoming: `${namespace}.incoming`, retry: `${namespace}.retry`, dead: `${namespace}.dead` };
 }
-export async function declareTransport(model: ChannelModel, namespace: string) {
-  const topology = transportTopology(namespace), channel = await model.createChannel();
+export async function declareTransport(model: ChannelModel, namespace: string, step: SetupStep) {
+  const topology = transportTopology(namespace), channel = await step(() => model.createChannel());
   channel.on('error', () => {});
   try {
-    await channel.assertExchange(topology.exchange, 'direct', { durable: true });
+    await step(() => channel.assertExchange(topology.exchange, 'direct', { durable: true }));
     for (const destination of ['incoming', 'retry', 'dead'] as const) {
-      await channel.assertQueue(topology[destination], { durable: true, arguments: { 'x-queue-type': 'quorum' } });
-      await channel.bindQueue(topology[destination], topology.exchange, destination);
+      await step(() => channel.assertQueue(topology[destination], { durable: true, arguments: { 'x-queue-type': 'quorum' } }));
+      await step(() => channel.bindQueue(topology[destination], topology.exchange, destination));
     }
-  } finally { await channel.close().catch(() => {}); }
+  } finally { await step(() => channel.close()); }
   return topology;
 }
 interface Pending {
@@ -48,17 +49,15 @@ export class ConfirmedIngressPublisher {
     model.on('close', () => this.retire('connection_closed'));
     model.on('blocked', () => this.retire('broker_blocked'));
   }
-  static async connect(url: string, namespace: string, options: { deadlineMs?: number; maxInflight?: number; declare?: boolean } = {}) {
+  static async connect(url: string, namespace: string, options: { deadlineMs?: number; maxInflight?: number; declare?: boolean; signal?: AbortSignal; setupDeadlineMs?: number } = {}) {
     transportTopology(namespace);
     const deadlineMs = options.deadlineMs ?? 2000, maxInflight = options.maxInflight ?? 128;
     if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 50 || deadlineMs > 30000 || !Number.isSafeInteger(maxInflight) || maxInflight < 1 || maxInflight > 4096) throw new Error('Invalid publisher bounds');
-    const model = await amqp.connect(url, { timeout: deadlineMs });
-    model.on('error', () => {}); // setup failures must not emit an unhandled EventEmitter error
-    try {
-      if (options.declare !== false) await declareTransport(model, namespace);
-      const channel = await model.createConfirmChannel();
+    return setupOwnedAmqpConnection(url, options, async (model, step) => {
+      if (options.declare !== false) await declareTransport(model, namespace, step);
+      const channel = await step(() => model.createConfirmChannel());
       return new ConfirmedIngressPublisher(model, channel, namespace, deadlineMs, maxInflight);
-    } catch (error) { await closeOwnedAmqpConnection(model); throw error; }
+    });
   }
   get ready() { return this.usable && this.writable && this.pending.size < this.maxInflight; }
   get alive() { return this.usable; }

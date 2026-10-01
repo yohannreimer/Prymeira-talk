@@ -1,7 +1,8 @@
-import amqp, { type Channel, type ChannelModel, type ConsumeMessage } from 'amqplib';
+import type { Channel, ChannelModel, ConsumeMessage } from 'amqplib';
+import { setupOwnedAmqpConnection } from './connection-setup.js';
 import { closeOwnedAmqpConnection } from './connection-close.js';
 import { randomUUID } from 'node:crypto';
-import { ConfirmedIngressPublisher, decodeReference, declareTransport } from './broker.js';
+import { ConfirmedIngressPublisher, decodeReference, declareTransport, transportTopology } from './broker.js';
 import { IngressJournal } from './journal.js';
 
 /** Real transport consumer for stage 1A only. ACK means a durable application
@@ -16,25 +17,24 @@ export class IngressTransportConsumer {
     channel.on('error', () => this.stopAccepting()); channel.on('close', () => this.stopAccepting());
     model.on('error', () => this.stopAccepting()); model.on('close', () => this.stopAccepting());
   }
-  static async start(input: { url: string; namespace: string; journal: IngressJournal; publisher: () => ConfirmedIngressPublisher | null; prefetch?: number; maxFailures?: number }) {
+  static async start(input: { url: string; namespace: string; journal: IngressJournal; publisher: () => ConfirmedIngressPublisher | null; prefetch?: number; maxFailures?: number; signal?: AbortSignal; setupDeadlineMs?: number }) {
     const prefetch = input.prefetch ?? 8, maxFailures = input.maxFailures ?? 3;
     if (!Number.isSafeInteger(prefetch) || prefetch < 1 || prefetch > 128 || !Number.isSafeInteger(maxFailures) || maxFailures < 1 || maxFailures > 10) throw new Error('Invalid consumer bounds');
-    const model = await amqp.connect(input.url, { timeout: 2000 });
-    model.on('error', () => {});
-    try {
-      const topology = await declareTransport(model, input.namespace), channel = await model.createChannel();
+    transportTopology(input.namespace);
+    return setupOwnedAmqpConnection(input.url, input, async (model, step) => {
+      const topology = await declareTransport(model, input.namespace, step), channel = await step(() => model.createChannel());
       const consumer = new IngressTransportConsumer(model, channel, input.journal, input.namespace, input.publisher, maxFailures);
-      await channel.prefetch(prefetch);
+      await step(() => channel.prefetch(prefetch));
       for (const queue of [topology.incoming, topology.retry]) {
-        await channel.consume(queue, message => {
+        await step(() => channel.consume(queue, message => {
           if (!message) { consumer.stopAccepting(); return; }
           const work = consumer.deliver(message).catch(() => consumer.stopAccepting());
           consumer.inflight.add(work);
           void work.finally(() => consumer.inflight.delete(work));
-        }, { noAck: false });
+        }, { noAck: false }));
       }
       return consumer;
-    } catch (error) { await closeOwnedAmqpConnection(model); throw error; }
+    });
   }
   get alive() { return this.running; }
   private stopAccepting() {

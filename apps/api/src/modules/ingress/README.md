@@ -97,7 +97,8 @@ the owned loopback endpoints. Build first, then run:
 MESSAGING_TEST_DATABASE_URL=<owned-messaging-test-url> \
 INGRESS_TEST_AMQP_URL=<owned-test-broker-url> \
 pnpm --filter @prymeira-talk/api exec vitest run \
-  src/modules/ingress/transport.postgres.test.ts --maxWorkers=1
+  src/modules/ingress/transport.postgres.test.ts \
+  src/modules/ingress/setup.rabbit.test.ts --maxWorkers=1
 ```
 
 It exercises actual quorum routing/confirms and SQL transactions, fault injection,
@@ -105,3 +106,11 @@ namespace/auth isolation, old-source retention, bounded confirmed retry/DLQ,
 recovery CLI and separately spawned built ingress/worker processes. Controlled
 client injections cover broker block, flow-control and lost callback windows;
 these are not claims of broker power-loss, Rabbit 3.12 or production qualification.
+
+AMQP construction has one 2-second wall-clock budget covering TCP/handshake,
+channel creation, topology and consumer registration. Runtime shutdown cancels
+construction through the owned socket AbortSignal; every setup continuation checks
+cancellation before starting another RPC. Failed or cancelled setup cannot install
+a late session. The runtime retries failed setup after its existing 500ms interval.
+The setup suite withholds actual Rabbit responses through a disposable TCP proxy
+and checks connection release, reconnect and compiled worker SIGTERM.

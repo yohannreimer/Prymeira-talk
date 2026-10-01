@@ -34,13 +34,13 @@ export async function createIngressRuntime(config: ReturnType<typeof readIngress
         if (!publisher?.alive) {
           await publisher?.close();
           if (abort.signal.aborted) break;
-          publisher = await ConfirmedIngressPublisher.connect(config.amqpUrl, config.namespace);
+          publisher = await ConfirmedIngressPublisher.connect(config.amqpUrl, config.namespace, { signal: abort.signal });
         }
         if (abort.signal.aborted) break;
         if (consume && !consumer?.alive) {
           await consumer?.close();
           if (abort.signal.aborted) break;
-          consumer = await IngressTransportConsumer.start({ url: config.amqpUrl, namespace: config.namespace, journal, publisher: () => publisher });
+          consumer = await IngressTransportConsumer.start({ url: config.amqpUrl, namespace: config.namespace, journal, publisher: () => publisher, signal: abort.signal });
         }
         if (consume && !abort.signal.aborted && publisher.ready) await journal.recover(publisher);
       } catch { /* Durable receipts remain pending; requests see explicit 503. */ }
