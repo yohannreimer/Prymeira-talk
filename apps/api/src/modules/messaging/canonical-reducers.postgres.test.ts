@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, type Prisma } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
@@ -556,6 +556,64 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
     const result = await colliding.persist(db, original, { receiptKey: 'original' });
     expect(result).toMatchObject({ outcome: 'created', allowOperationalEffects: true, reconciliationReasons: [] });
     expect(await db.canonicalMessageIdentity.findUnique({ where: { id: result.identityId! } })).toMatchObject({ contentState: 'ready' });
+  });
+
+  it.each([false, true])('bounds action materialization while seeing a conflicting mirror beyond row 100 (conflict=%s)', async (conflict) => {
+    const c = await context(), isolated = createCanonicalStore({ hash: () => 'a' }), original = msg(c);
+    const created = await isolated.persist(db, original, { receiptKey: 'original' });
+    await db.canonicalMessageIdentity.update({ where: { id: created.identityId! }, data: { state: 'review' } });
+    const prefix = randomUUID().slice(0, 24);
+    for (let n = 0; n < 103; n++) {
+      const result = await isolated.persist(db, { ...original, kind: 'edit', target: original.key, action: msg(c, 'SAME_EDIT').key,
+        patch: { field: 'body', body: conflict && n === 102 ? 'conflicting last mirror' : 'identical edit' } }, { receiptKey: `mirror-${n}` });
+      await db.canonicalAction.update({ where: { id: result.actionId! }, data: { id: `${prefix}${String(n).padStart(12, '0')}` } });
+    }
+    await db.canonicalMessageIdentity.update({ where: { id: created.identityId! }, data: { state: 'active' } });
+    const first = await db.$transaction(tx => isolated.recoverPendingInTransaction(tx, c, { limit: 100 }));
+    expect(first.hasMore).toBe(true);
+    expect(first.results.every(result => !result.changes.includes('message_edited'))).toBe(true);
+    const materialized: number[] = [];
+    const measured = db.$extends({ query: { canonicalAction: { async findMany({ args, query }) {
+      const rows = await query(args); materialized.push(rows.length); return rows;
+    } } } });
+    const last = await measured.$transaction(tx => isolated.recoverPendingInTransaction(tx as unknown as Prisma.TransactionClient, c, { limit: 3, afterId: first.nextCursor! }));
+    // The three-row page must not materialize the 102 historical peers per action.
+    expect(materialized.length).toBeGreaterThan(0);
+    expect(Math.max(...materialized)).toBeLessThanOrEqual(4);
+    expect(materialized.reduce((total, size) => total + size, 0)).toBeLessThanOrEqual(12);
+    if (conflict) {
+      expect(last.results.every(result => result.reconciliationReasons.includes('action_revision_conflict'))).toBe(true);
+      expect(await db.message.findUnique({ where: { id: created.messageId! } })).toMatchObject({ body: 'hello' });
+      expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ revisionVersion: 0, contentState: 'pending_reconciliation' });
+    } else {
+      expect(last.results.flatMap(result => result.changes).filter(change => change === 'message_edited')).toHaveLength(1);
+      expect(await db.message.findUnique({ where: { id: created.messageId! } })).toMatchObject({ body: 'identical edit' });
+    }
+  }, 15000);
+
+  it('compares full action tuples when aggregate buckets collide', async () => {
+    const c = await context(), collision = createCanonicalStore({ hash: () => 'a' });
+    const first = msg(c, 'FIRST'), second = msg(c, 'SECOND');
+    await collision.persist(db, first, { receiptKey: 'first' });
+    const created = await collision.persist(db, second, { receiptKey: 'second' });
+    await collision.persist(db, { ...first, kind: 'edit', target: first.key, action: msg(c, 'EDIT_FIRST').key, patch: { field: 'body', body: 'other patch' } }, { receiptKey: 'other-action' });
+    const result = await collision.persist(db, { ...second, kind: 'edit', target: second.key, action: msg(c, 'EDIT_SECOND').key, patch: { field: 'body', body: 'right patch' } }, { receiptKey: 'right-action' });
+    expect(result.changes).toEqual(['message_edited']);
+    expect(await db.message.findUnique({ where: { id: created.messageId! } })).toMatchObject({ body: 'right patch' });
+  });
+  it('does not treat an applied plaintext edit as authenticated decryption of its encrypted mirror', async () => {
+    const c = await context(), original = msg(c), created = await persist(original), revision = msg(c, 'EDIT').key;
+    await persist({ ...original, kind: 'edit', target: original.key, action: revision, patch: { field: 'body', body: 'plain edit' } });
+    const encrypted = { ivBase64: 'aXY=', payloadBase64: 'c2VjcmV0', senderJids: [PN] };
+    const event: NormalizedMessagingEvent = { ...original, kind: 'encrypted_edit', target: original.key, action: revision, encrypted };
+    const held = await persist(event);
+    expect(held.reconciliationReasons).toContain('decrypt_reconciliation_required');
+    await db.$transaction(tx => store.reconcileRevisionInTransaction(tx, c, { actionId: held.actionId!, target: original.key, revision, expectedRevisionVersion: 1, pendingActionIds: [held.actionId!], patch: { field: 'body', body: 'plain edit' }, proof: { source: 'authenticated_decryption', requestId: 'decrypt-same', currentRevisionRequestId: 'current-same', authorAddress: PN, ivBase64: encrypted.ivBase64, payloadBase64: encrypted.payloadBase64 } }));
+    const replay = await persist(event);
+    expect(replay).toMatchObject({ outcome: 'duplicate', changes: [] });
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ revisionVersion: 2 });
+    const cipherConflict = await persist({ ...event, encrypted: { ...encrypted, payloadBase64: 'b3RoZXI=' } });
+    expect(cipherConflict.reconciliationReasons).toContain('action_revision_conflict');
   });
 
 });

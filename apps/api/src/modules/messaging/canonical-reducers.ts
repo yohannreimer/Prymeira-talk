@@ -174,13 +174,21 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
         if (!revision) reason = 'incomplete_edit_authorship';
         else {
           await tx.canonicalAction.update({ where: { id: action.id }, data: { identityId: identity.id, actionHash: digest(revision), actionTuple: json(revision) } });
-          const bucket = await tx.canonicalAction.findMany({ where: { ...scope, actionHash: digest(revision), id: { not: action.id } }, include: { observation: true } });
-          const same = bucket.filter(row => equal(row.actionTuple, revision));
-          const conflict = same.some(row => {
-            const payload = row.observation.payload as unknown as ActionEvent;
-            return (payload.kind === 'edit' && event.kind === 'edit' && !equal(payload.patch, event.patch))
-              || (payload.kind === 'encrypted_edit' && event.kind === 'encrypted_edit' && !equal(payload.encrypted, event.encrypted));
-          });
+          // Hashes select a bucket; full JSON tuples prove the action. Ask the
+          // database for aggregate decisions, never materialize the historical
+          // bucket (which can contain thousands of provider mirror observations).
+          const same: Prisma.CanonicalActionWhereInput = { ...scope, actionHash: digest(revision),
+            actionTuple: { equals: json(revision) }, id: { not: action.id } };
+          const targetConflict = await tx.canonicalAction.count({ where: { ...same,
+            OR: [{ identityId: null }, { identityId: { not: identity.id } }] } }) > 0;
+          const payloadField = event.kind === 'edit' ? 'patch' : 'encrypted';
+          const payloadValue = event.kind === 'edit' ? event.patch : event.encrypted;
+          const conflict = await tx.canonicalAction.count({ where: { ...same, observation: {
+            kind: event.kind, NOT: { payload: { path: [payloadField], equals: json(payloadValue) } }
+          } } }) > 0;
+          const previouslyApplied = await tx.canonicalAction.count({ where: { ...same, state: { in: ['applied', 'superseded'] },
+            ...(event.kind === 'encrypted_edit' ? { observation: { kind: 'encrypted_edit' }, evidence: { not: Prisma.AnyNull } } : {})
+          } }) > 0;
           // Compare the full cached revision and patch in SQL. Counting exact
           // conflicts is bounded in memory even for hundreds of identical mirrors.
           const unordered = identity.currentRevision === null && !record(stored.metadata).editedAt && await tx.canonicalAction.count({ where: {
@@ -189,9 +197,9 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
               { observation: { kind: { not: 'edit' } } }, { observation: { reason: 'receipt_key_conflict' } },
               ...(event.kind === 'edit' ? [{ observation: { NOT: { payload: { path: ['patch'], equals: json(event.patch) } } } }] : [{}])]
           } }) > 0;
-          if (same.some(row => row.identityId !== identity.id)) reason = 'action_target_conflict';
+          if (targetConflict) reason = 'action_target_conflict';
           else if (conflict) reason = 'action_revision_conflict';
-          else if (same.some(row => ['applied', 'superseded'].includes(row.state) && (event.kind !== 'encrypted_edit' || (row.observation.kind === 'encrypted_edit' && row.evidence !== null)))) { /* mirror: no second application */ }
+          else if (previouslyApplied) { /* mirror: no second application */ }
           else if (event.kind === 'encrypted_edit') reason = 'decrypt_reconciliation_required';
           else if (identity.currentRevision !== null || record(stored.metadata).editedAt || unordered) reason = 'edit_order_unproven';
           else if (await unboundContent(tx, identity)) reason = 'edit_frontier_incomplete';
