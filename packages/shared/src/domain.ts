@@ -28,6 +28,24 @@ export type ChannelProvider = z.infer<typeof channelProviderSchema>;
 export const channelStatusSchema = z.enum(["disconnected", "connecting", "connected", "failed"]);
 export type ChannelStatus = z.infer<typeof channelStatusSchema>;
 
+export const connectionProviderSchema = z.enum(['evolution', 'waha']);
+export type ConnectionProvider = z.infer<typeof connectionProviderSchema>;
+export const connectionHealthSchema = z.enum(['unknown', 'healthy', 'degraded', 'unhealthy']);
+export const channelConnectionSchema = z.object({
+  id: z.string().min(1),
+  channelId: z.string().min(1),
+  provider: connectionProviderSchema,
+  sessionName: z.string().min(1),
+  status: channelStatusSchema,
+  health: connectionHealthSchema,
+  verifiedPhoneNumber: z.string().nullable(),
+  eligible: z.boolean(),
+  isActiveWriter: z.boolean(),
+  lastCheckedAt: z.string().datetime().nullable(),
+  lastError: z.string().nullable().optional()
+});
+export type ChannelConnectionDto = z.infer<typeof channelConnectionSchema>;
+
 export const channelSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
@@ -36,6 +54,12 @@ export const channelSchema = z.object({
   phoneNumber: z.string().nullable(),
   displayName: z.string().nullable(),
   status: channelStatusSchema,
+  redundancyEnabled: z.boolean().optional(),
+  redundancyAvailable: z.boolean().optional(),
+  activeConnectionId: z.string().nullable().optional(),
+  connections: channelConnectionSchema.array().optional(),
+  connectedCount: z.number().int().min(0).max(2).optional(),
+  connectionTotal: z.literal(2).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });
@@ -48,10 +72,13 @@ export const channelOperationResultSchema = z.object({
 export type ChannelOperationResultDto = z.infer<typeof channelOperationResultSchema>;
 
 export const channelQrResultSchema = channelOperationResultSchema.extend({
+  connectionId: z.string().min(1).optional(),
+  provider: connectionProviderSchema.optional(),
   qrCode: z.string().min(1),
   qr: z.object({
     payload: z.string().min(1),
-    expiresAt: z.string().datetime()
+    expiresAt: z.string().datetime(),
+    issuedAt: z.string().datetime().optional()
   })
 });
 export type ChannelQrResultDto = z.infer<typeof channelQrResultSchema>;
@@ -361,6 +388,7 @@ export const messageSchema = z.object({
   senderName: z.string().nullable().optional(),
   senderJid: z.string().nullable().optional(),
   mediaUrl: z.string().url().nullable(),
+  mediaSourceHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   contactCards: z.array(z.object({
     fullName: z.string(),
     phoneNumber: z.string().nullable()

@@ -1,0 +1,67 @@
+import { PrismaClient } from '@prisma/client';
+import { setTimeout as delay } from 'node:timers/promises';
+import { ConfirmedIngressPublisher, transportTopology } from './broker.js';
+import { IngressPrivateStore } from './private-store.js';
+import { IngressJournal } from './journal.js';
+import { IngressApplicationService } from './application.js';
+import { IngressTransportConsumer } from './consumer.js';
+
+/** Both milestones remain restricted to owned loopback test infrastructure.
+ * Stage 1B applies messages but its effects have no handlers until stage 1C. */
+export function readIngressEnvironment(env: NodeJS.ProcessEnv = process.env) {
+  if (!['isolated-1a','isolated-1b'].includes(env.INGRESS_TRANSPORT_STAGE ?? '')) throw new Error('Ingress requires an explicit isolated milestone');
+  const databaseUrl = env.DATABASE_URL ?? '', amqpUrl = env.INGRESS_AMQP_URL ?? '';
+  const db = new URL(databaseUrl), broker = new URL(amqpUrl);
+  if (db.hostname !== '127.0.0.1' || db.port !== '55439' || !['/messaging_test','/campaign_test','/assistant_pilot_test','/leads_task2_test'].includes(db.pathname)) throw new Error('Owned isolated PostgreSQL required');
+  if (broker.protocol !== 'amqp:' || broker.hostname !== '127.0.0.1' || broker.port !== '56739' || decodeURIComponent(broker.pathname) !== '/talk_test') throw new Error('Owned isolated RabbitMQ required');
+  const namespace = env.INGRESS_NAMESPACE ?? ''; transportTopology(namespace);
+  const privateRoot = env.INGRESS_PRIVATE_ROOT ?? '';
+  const workspaceAllowlist = new Set((env.INGRESS_WORKSPACE_ALLOWLIST ?? '').split(',').map(v => v.trim()).filter(Boolean));
+  if (!workspaceAllowlist.size) throw new Error('Isolated workspace allowlist required');
+  const port = Number(env.INGRESS_PORT ?? '4011');
+  if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid ingress port');
+  return { stage: env.INGRESS_TRANSPORT_STAGE!, databaseUrl, amqpUrl, namespace, privateRoot, workspaceAllowlist, port,
+    evolutionSecret: env.INGRESS_EVOLUTION_SECRET ?? '', wahaSecret: env.INGRESS_WAHA_SECRET ?? '',
+    evolutionAliases: (env.INGRESS_EVOLUTION_ALIASES ?? '').split(',').filter(Boolean) };
+}
+export async function createIngressRuntime(config: Omit<ReturnType<typeof readIngressEnvironment>, 'stage'> & { stage?: string }, consume: boolean) {
+  const db = new PrismaClient({ datasources: { db: { url: config.databaseUrl } } });
+  const files = new IngressPrivateStore(config.privateRoot); await files.initialize();
+  const journal = new IngressJournal(db, files, config.workspaceAllowlist), abort = new AbortController();
+  let publisher: ConfirmedIngressPublisher | null = null, consumer: IngressTransportConsumer | null = null;
+  const loop = (async () => {
+    while (!abort.signal.aborted) {
+      try {
+        if (!publisher?.alive) {
+          await publisher?.close();
+          if (abort.signal.aborted) break;
+          publisher = await ConfirmedIngressPublisher.connect(config.amqpUrl, config.namespace, { signal: abort.signal });
+        }
+        if (abort.signal.aborted) break;
+        if (consume && !consumer?.alive) {
+          await consumer?.close();
+          if (abort.signal.aborted) break;
+          consumer = await IngressTransportConsumer.start({ url: config.amqpUrl, namespace: config.namespace, journal, publisher: () => publisher, signal: abort.signal, ...(config.stage === 'isolated-1b' ? { application: new IngressApplicationService(journal) } : {}) });
+        }
+        if (consume && !abort.signal.aborted && publisher.ready) await journal.recover(publisher);
+      } catch { /* Durable receipts remain pending; requests see explicit 503. */ }
+      await delay(500, undefined, { signal: abort.signal }).catch(() => {});
+    }
+  })();
+  let closing: Promise<void> | null = null;
+  return { db, files, journal, publisher: () => publisher,
+    close() {
+      if (closing) return closing;
+      abort.abort();
+      closing = (async () => {
+        // Retire current sessions immediately to unblock any loop-owned I/O.
+        await Promise.all([consumer?.close(), publisher?.close()]);
+        await loop;
+        // Setup already in flight when abort arrived may have assigned a session.
+        await Promise.all([consumer?.close(), publisher?.close()]);
+        await db.$disconnect();
+      })();
+      return closing;
+    } };
+
+}

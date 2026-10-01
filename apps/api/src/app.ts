@@ -5,6 +5,7 @@ import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
+import { inboxTimingPlugin } from "./plugins/inbox-timing.js";
 import { cnpjDatabasePlugin } from "./plugins/cnpj-database.js";
 import { createAgentFollowupRuntime } from "./modules/agents/agent-followup-runtime.js";
 import { createAgentRuntime } from "./modules/agents/agent-runtime.js";
@@ -56,6 +57,7 @@ import { inboxTriageRoutes } from "./modules/conversations/inbox-triage.routes.j
 import { createRealtimeOutboundDelivery } from "./modules/conversations/realtime-outbound-delivery.js";
 import { conversationFollowupsRoutes } from "./modules/followups/conversation-followups.routes.js";
 import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js";
+import { createWahaRuntime } from './modules/waha/waha.client.js';
 import { crmRoutes } from "./modules/crm/crm.routes.js";
 import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
 import { resolveMetaRuntime } from "./modules/meta/meta-runtime.js";
@@ -87,6 +89,7 @@ export interface CreateAppOptions {
 
 export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   const app = Fastify({ logger: options.logger ?? true, trustProxy: true });
+  await app.register(inboxTimingPlugin);
   const allowedCorsOrigins = env.CORS_ORIGINS.split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
@@ -183,6 +186,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     apiKey: env.EVOLUTION_API_KEY,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET
   });
+  const wahaRuntime = createWahaRuntime({ enabled: env.WAHA_ENABLED, baseUrl: env.WAHA_API_BASE_URL, apiKey: env.WAHA_API_KEY });
 
   const leadsRepository = options.prismaEnabled === false
     ? undefined
@@ -453,6 +457,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   assistantScheduler?.start();
   app.addHook('onClose', async () => { assistantScheduler?.stop(); handoffBriefService?.stop(); });
   await app.register(evolutionRoutes, {
+    waha: wahaRuntime,
     messageHistory: evolutionHistorySource,
     historyBackfill: options.prismaEnabled === false || !evolutionHistorySource ? undefined : async (input) => {
       const count = await app.prisma.message.count({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
@@ -474,6 +479,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   });
   await app.register(metaWebhooksRoutes, { assistantScheduler, handoffBriefService, inboxTriage });
   await app.register(conversationsRoutes, {
+    publicTalkUrl: env.PUBLIC_TALK_URL,
     evolution: evolutionRuntime,
     messageHistory: evolutionHistorySource,
     assistantScheduler,
@@ -498,7 +504,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   });
   await app.register(contactsRoutes, { evolution: evolutionRuntime });
   await app.register(boardsRoutes);
-  await app.register(channelsRoutes, { evolution: evolutionRuntime });
+  await app.register(channelsRoutes, { evolution: evolutionRuntime, waha: wahaRuntime });
   await app.register(automationsRoutes, { agentRuntime, evolution: evolutionRuntime });
   await app.register(campaignsRoutes, { evolution: evolutionRuntime });
   await app.register(broadcastListsRoutes);

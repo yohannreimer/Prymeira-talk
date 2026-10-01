@@ -54,6 +54,9 @@ export const envSchema = z
     EVOLUTION_API_BASE_URL: optionalUrl,
     EVOLUTION_API_KEY: optionalNonEmptyString,
     EVOLUTION_WEBHOOK_SECRET: z.string().min(1),
+    WAHA_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+    WAHA_API_BASE_URL: optionalUrlWithProtocols(['http:', 'https:']),
+    WAHA_API_KEY: optionalNonEmptyString,
     JEV_API_KEY: optionalNonEmptyString,
     JEV_MODEL: z.string().min(1).default("jev-latest"),
     INBOX_TRIAGE_PRIMARY: z.enum(["luna", "jev"]).default("jev"),
@@ -68,6 +71,19 @@ export const envSchema = z
     LEAD_JOB_POLL_MS: z.coerce.number().int().min(1_000).max(60_000).optional()
   })
   .superRefine((env, ctx) => {
+    if (env.WAHA_ENABLED && (!env.WAHA_API_BASE_URL || !env.WAHA_API_KEY)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['WAHA_ENABLED'], message: 'Enabled WAHA requires WAHA_API_BASE_URL and WAHA_API_KEY.' });
+    }
+    if (env.WAHA_API_BASE_URL) {
+      try {
+        const url = new URL(env.WAHA_API_BASE_URL);
+        if (url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['WAHA_API_BASE_URL'], message: 'WAHA base URL must be an HTTP origin without credentials, path, query or fragment.' });
+        }
+      } catch {
+        // The URL field reports malformed input; do not replace its Zod error with TypeError.
+      }
+    }
     if (env.NODE_ENV === "production" && env.PRYMEIRA_LOCAL_AUTH_BYPASS) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

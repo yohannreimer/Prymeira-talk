@@ -5,6 +5,30 @@ import { InboxMedia, mediaCaption, mediaFileName, audioTime } from './InboxMedia
 import { contactInitials } from './ContactAvatar';
 const base = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound', status: 'delivered', createdAt: '2026-09-14T12:00:00Z', providerMessageId: null, sentByUserId: null } as const;
 describe('WhatsApp-style attachments', () => {
+  it.each(['video/mp4', 'application/pdf'])('preserves raw %s presentation when compact metadata has a generic MIME', mimeType => {
+    const original: MessageDto = { ...base, type: 'file', body: mimeType.startsWith('video/') ? 'Vídeo recebido' : 'Segue a proposta',
+      mediaUrl: `data:${mimeType};base64,YQ==`, attachment: { mimeType: 'application/octet-stream' } };
+    const compact = { ...original, mediaUrl: `https://talk.example.test/api/conversations/c/messages/m/media?v=source&previewMime=${encodeURIComponent(mimeType)}` };
+    const rawHtml = renderToStaticMarkup(<InboxMedia message={original} getToken={async () => null} />);
+    const compactHtml = renderToStaticMarkup(<InboxMedia message={compact} getToken={async () => null} />);
+    if (mimeType.startsWith('video/')) {
+      expect(rawHtml).toContain('talk-video-preview'); expect(compactHtml).toContain('Reproduzir vídeo');
+      expect(compactHtml).not.toContain('Abrir documento');
+    } else {
+      expect(mediaFileName(original)).toBe('Documento.pdf'); expect(mediaFileName(compact)).toBe('Documento.pdf');
+      expect(rawHtml).toContain('PDF'); expect(compactHtml).toContain('PDF');
+    }
+    expect(compact.attachment?.mimeType).toBe('application/octet-stream');
+  });
+  it('identifies compact PDFs by MIME while preserving filenames and captions without a URL extension', () => {
+    const message: MessageDto = { ...base, type: 'file', body: 'Segue a proposta',
+      mediaUrl: 'https://talk.example.test/api/conversations/c/messages/m/media?v=source', attachment: { mimeType: 'application/pdf' } };
+    expect(mediaFileName(message)).toBe('Documento.pdf'); expect(mediaCaption(message)).toBe('Segue a proposta');
+    const named = { ...message, attachment: { ...message.attachment, fileName: 'Proposta', caption: 'Legenda preservada' } };
+    expect(mediaFileName(named)).toBe('Proposta'); expect(mediaCaption(named)).toBe('Legenda preservada');
+    const html = renderToStaticMarkup(<InboxMedia message={named} getToken={async () => null} />);
+    expect(html).toContain('PDF'); expect(html).toContain('Abrir documento'); expect(html).not.toContain('data:');
+  });
   it('preserves a PDF caption separately from its filename', () => {
     const message = { type: 'file' as const, body: 'Cotação.pdf', attachment: { fileName: 'Cotação.pdf', caption: 'Conforme solicitado.' } };
     expect(mediaFileName(message)).toBe('Cotação.pdf'); expect(mediaCaption(message)).toBe('Conforme solicitado.');

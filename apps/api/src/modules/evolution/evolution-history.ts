@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
+import { completeProviderKey, fullProviderKeyMatches, explicitAddressMatch, exactMediaLimit, type MediaPurpose } from '../messaging/provider-exact.js';
+import { normalizeChatAddress, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 
 export type HistoryRecord = {
-  key: { id: string; remoteJid: string; remoteJidAlt?: string; fromMe: boolean };
+  key: { id: string; remoteJid: string; remoteJidAlt?: string; participant?: string; participantAlt?: string; fromMe: boolean };
   messageTimestamp: number;
   message: Record<string, unknown>;
+  participant?: string;
   messageType?: string;
   pushName?: string;
 };
@@ -28,17 +31,17 @@ function activityTime(value: unknown): number | null {
 // This adapter deliberately has no send, mark-read, webhook or instance mutation methods.
 export function createEvolutionHistorySource(options: { baseUrl: string; apiKey: string; fetch?: typeof fetch }) {
   const request = options.fetch ?? fetch;
-  async function post(path: string, body: unknown) {
+  async function post(path: string, body: unknown, maxResponseBytes = 16 * 1024 * 1024) {
     const response = await request(options.baseUrl.replace(/\/$/, '') + path, {
-      method: 'POST', headers: { apikey: options.apiKey, 'Content-Type': 'application/json' },
+      method: 'POST', redirect: 'error', headers: { apikey: options.apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify(body), signal: AbortSignal.timeout(15000)
     });
     if (!response.ok) throw new Error(`HISTORY_HTTP_${response.status}`);
     const text = await response.text();
-    if (text.length > 16 * 1024 * 1024) throw new Error('HISTORY_RESPONSE_LIMIT');
+    if (text.length > maxResponseBytes) throw new Error('HISTORY_RESPONSE_LIMIT');
     return JSON.parse(text) as unknown;
   }
-  async function page(instance: string, key: Record<string, string>, index: number) {
+  async function page(instance: string, key: Record<string, string | boolean>, index: number) {
     const data = await post(`/chat/findMessages/${encodeURIComponent(instance)}`, { where: { key }, page: index, offset: 100 });
     if (!record(data) || !record(data.messages) || !Array.isArray(data.messages.records) || !Number.isInteger(data.messages.pages) || Number(data.messages.pages) < 0) throw new Error('HISTORY_SHAPE');
     const pages = Number(data.messages.pages);
@@ -50,11 +53,99 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
     const timestamp = Number(value.messageTimestamp);
     if (value.messageTimestamp === null || !Number.isFinite(timestamp) || timestamp <= 0 || timestamp > 1e11) throw new Error('HISTORY_RECORD');
     return { key: { id: value.key.id, remoteJid: value.key.remoteJid, fromMe: value.key.fromMe,
-      ...(direct(value.key.remoteJidAlt) ? { remoteJidAlt: value.key.remoteJidAlt } : {}) }, messageTimestamp: timestamp, message: value.message,
+      ...(direct(value.key.remoteJidAlt) ? { remoteJidAlt: value.key.remoteJidAlt } : {}),
+      ...(direct(value.key.participant ?? value.participant) ? { participant: (value.key.participant ?? value.participant) as string } : {}),
+      ...(direct(value.key.participantAlt) ? { participantAlt: value.key.participantAlt } : {}) }, messageTimestamp: timestamp, message: value.message,
+      ...(direct(value.participant) ? { participant: value.participant } : {}),
       ...(typeof value.messageType === 'string' ? { messageType: value.messageType } : {}),
       ...(typeof value.pushName === 'string' && value.pushName.trim() ? { pushName: value.pushName.trim().slice(0, 200) } : {}) };
   }
+  function nativeKey(key: WhatsAppMessageKey) {
+    return { id: key.nativeId!, remoteJid: key.nativeChatAddress!, fromMe: key.direction === 'outbound',
+      ...(key.nativeSenderParticipant ? { participant: key.nativeSenderParticipant } : {}) };
+  }
+  function exactRecordKey(item: HistoryRecord): WhatsAppMessageKey {
+    const k = item.key, chatAddress = normalizeChatAddress(k.remoteJid), providerNative = k.id.startsWith('wamid.');
+    return { identityFormat: providerNative ? 'provider_native' : 'whatsapp_stanza', nativeId: k.id, rawId: providerNative ? null : k.id,
+      nativeChatAddress: k.remoteJid, nativeSenderParticipant: k.participant ?? null, chatAddress,
+      direction: k.fromMe ? 'outbound' : 'inbound', senderParticipant: chatAddress?.endsWith('@g.us') ? normalizeChatAddress(k.participant) : '' };
+  }
+  /** Exact APIs share one completeness/consistency check. Top-level sender
+   * claims cannot contradict the native key. A distinct PN/LID spelling needs
+   * the explicit participantAlt pair; unrelated phone numbers never correlate. */
+  function exactRecordIdentity(item: HistoryRecord): { kind: 'consistent' | 'incomplete' | 'ambiguous'; key: WhatsAppMessageKey } {
+    const key = exactRecordKey(item);
+    if (!completeProviderKey(key)) return { kind: 'incomplete', key };
+    if (item.participant && !explicitAddressMatch(normalizeChatAddress(item.participant), key.nativeSenderParticipant, item.key.participantAlt)) return { kind: 'ambiguous', key };
+    return { kind: 'consistent', key };
+  }
+  async function findMessageExact(input: { instanceName: string; key: WhatsAppMessageKey }): Promise<
+    { kind: 'resolved'; record: HistoryRecord } | { kind: 'missing' | 'incomplete' | 'ambiguous' }> {
+    if (!input.instanceName || !completeProviderKey(input.key)) return { kind: 'incomplete' };
+    const result = await page(input.instanceName, nativeKey(input.key), 1);
+    // More than one page cannot establish uniqueness from the first page.
+    if (result.pages > 1) return { kind: 'ambiguous' };
+    const matches: HistoryRecord[] = [];
+    for (const raw of result.records) {
+      const item = parse(raw), identity = exactRecordIdentity(item);
+      if (!fullProviderKeyMatches(input.key, identity.key, { chat: item.key.remoteJidAlt, sender: item.key.participantAlt })) continue;
+      // A contradictory claim for this exact tuple cannot disappear when another
+      // response row is clean. Neither row certifies uniqueness or an I/O anchor.
+      if (identity.kind !== 'consistent') return { kind: 'ambiguous' };
+      matches.push(item);
+    }
+    return matches.length > 1 ? { kind: 'ambiguous' } : matches.length ? { kind: 'resolved', record: matches[0]! } : { kind: 'missing' };
+  }
+  async function mediaData(instanceName: string, message: HistoryRecord, purpose: MediaPurpose) {
+    const limit = exactMediaLimit(purpose);
+    const data = await post(`/chat/getBase64FromMediaMessage/${encodeURIComponent(instanceName)}`, { message, convertToMp4: false }, Math.ceil(limit * 4 / 3) + 65536);
+    if (!record(data) || typeof data.base64 !== 'string' || typeof data.mimetype !== 'string') throw new Error('HISTORY_MEDIA_SHAPE');
+    const mime = data.mimetype.split(';')[0]!.trim().toLowerCase();
+    if (!/^(image\/(jpeg|png|webp)|audio\/(mpeg|mp3|mp4|m4a|x-m4a|wav|x-wav|ogg|opus|webm)|video\/(mp4|webm)|application\/pdf)$/.test(mime)) throw new Error('HISTORY_MEDIA_TYPE');
+    const base64 = data.base64.replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+    if (!base64 || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) || Buffer.from(base64, 'base64').length > limit) throw new Error('HISTORY_MEDIA_LIMIT');
+    return `data:${mime};base64,${base64}`;
+  }
   return {
+    findMessageExact,
+    /** Network-only API; use a proven canonical source/key outside the DB transaction. */
+    async mediaExact(input: { instanceName: string; key: WhatsAppMessageKey; purpose: MediaPurpose }) {
+      const found = await findMessageExact(input);
+      if (found.kind !== 'resolved') return found;
+      return { kind: 'resolved' as const, record: found.record, mediaUrl: await mediaData(input.instanceName, found.record, input.purpose) };
+    },
+    async loadExact(input: { instanceName: string; key: WhatsAppMessageKey; from: Date; to: Date }) {
+      if (!Number.isFinite(input.from.getTime()) || !Number.isFinite(input.to.getTime()) || input.from > input.to) throw new Error('HISTORY_WINDOW');
+      const anchor = await findMessageExact(input);
+      if (anchor.kind !== 'resolved') return anchor;
+      const identities = [...new Set([anchor.record.key.remoteJid, ...(anchor.record.key.remoteJidAlt && explicitAddressMatch(normalizeChatAddress(anchor.record.key.remoteJidAlt), anchor.record.key.remoteJid, anchor.record.key.remoteJidAlt) ? [anchor.record.key.remoteJidAlt] : [])])];
+      let previous: string | undefined;
+      for (let pass = 0; pass < 3; pass++) {
+        const rows = new Map<string, HistoryRecord>();
+        for (const jid of identities) {
+          let pages = 1;
+          for (let index = 1; index <= pages; index++) {
+            const result = await page(input.instanceName, { remoteJid: jid }, index); pages = Math.max(pages, result.pages);
+            for (const raw of result.records) {
+              const item = parse(raw);
+              if (!identities.includes(item.key.remoteJid)) throw new Error('HISTORY_IDENTITY');
+              const identity = exactRecordIdentity(item);
+              if (identity.kind !== 'consistent') return { kind: identity.kind };
+              const ms = item.messageTimestamp * 1000;
+              if (ms < input.from.getTime() || ms > input.to.getTime()) continue;
+              const tuple = JSON.stringify(identity.key), prior = rows.get(tuple);
+              if (prior && digest(prior) !== digest(item)) return { kind: 'ambiguous' as const };
+              rows.set(tuple, item);
+            }
+          }
+        }
+        const records = [...rows.values()].sort((a, b) => a.messageTimestamp - b.messageTimestamp || JSON.stringify(a.key).localeCompare(JSON.stringify(b.key)));
+        const current = digest(records);
+        if (current === previous) return { kind: 'resolved' as const, records };
+        previous = current;
+      }
+      throw new Error('HISTORY_UNSTABLE');
+    },
     async recentContacts(input: { instanceName: string }): Promise<RecentEvolutionContact[]> {
       const contacts = new Map<string, RecentEvolutionContact>();
       for (let offset = 0; offset < 100000; offset += 1000) {
@@ -140,6 +231,7 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       if (records.some((item) => item.key.remoteJid !== input.remoteJid)) throw new Error('HISTORY_IDENTITY');
       return records.sort((a, b) => a.messageTimestamp - b.messageTimestamp || a.key.id.localeCompare(b.key.id));
     },
+    /** Legacy ID-only API: callers remain legacy until explicit conversion. */
     async findMessage(input: { instanceName: string; id: string }): Promise<HistoryRecord | null> {
       if (!input.id) throw new Error('HISTORY_MESSAGE_ID');
       const data = await post(`/chat/findMessages/${encodeURIComponent(input.instanceName)}`, {
@@ -167,6 +259,7 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
         return timestamp < beforeSeconds;
       });
     },
+    /** Legacy anchor API. Canonical callers must use loadExact. */
     async load(input: { instanceName: string; anchorId: string; from: Date; to: Date }): Promise<HistoryRecord[]> {
       if (!input.anchorId || !Number.isFinite(input.from.getTime()) || !Number.isFinite(input.to.getTime()) || input.from > input.to) throw new Error('HISTORY_WINDOW');
       const anchorPage = await page(input.instanceName, { id: input.anchorId }, 1);
@@ -200,6 +293,7 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       }
       throw new Error('HISTORY_UNSTABLE');
     },
+    /** Legacy media API. Canonical callers must use mediaExact. */
     async media(input: { instanceName: string; id: string }) {
       const data = await post(`/chat/getBase64FromMediaMessage/${encodeURIComponent(input.instanceName)}`, { message: { key: { id: input.id } }, convertToMp4: false });
       if (!record(data) || typeof data.base64 !== 'string' || typeof data.mimetype !== 'string') throw new Error('HISTORY_MEDIA_SHAPE');

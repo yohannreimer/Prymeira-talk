@@ -25,6 +25,7 @@
     "@fastify/websocket": "^11.2.0",
     "@prisma/client": "^6.19.0",
     "@prymeira-talk/shared": "workspace:*",
+    "amqplib": "0.10.9",
     "csv-parse": "^6.1.0",
     "dotenv": "^16.6.1",
     "fastify": "^5.6.2",
@@ -35,6 +36,7 @@
     "zod": "^4.1.12"
   },
   "devDependencies": {
+    "@types/amqplib": "0.10.7",
     "@types/pg": "^8.23.1",
     "dotenv-cli": "^8.0.0",
     "tsup": "^8.5.1",

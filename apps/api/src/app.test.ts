@@ -272,6 +272,7 @@ describe("app", () => {
       });
 
       expect(requireProductAccess).toHaveBeenCalledWith("talk", {
+        signal: expect.any(AbortSignal),
         accountApiUrl: "http://localhost:3001",
         clerkToken: "token_ws"
       });
@@ -347,6 +348,7 @@ describe("app", () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ workspaceId: "workspace_1", role: "owner" });
       expect(fetchAccess).toHaveBeenCalledWith("http://localhost:3001/access-check?product_key=talk", {
+        signal: expect.any(AbortSignal),
         headers: { Authorization: "Bearer clerk-token" }
       });
     } finally {

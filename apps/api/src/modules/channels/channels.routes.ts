@@ -4,9 +4,12 @@ import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { resolveMetaRuntime } from "../meta/meta-runtime.js";
 import { ChannelsServiceError, createChannelsService } from "./channels.service.js";
 import type { PrismaLike } from "./channels.service.js";
+import { ConnectionServiceError, createChannelConnectionsService } from './channel-connections.js';
+import type { WahaRuntime } from '../waha/waha.client.js';
 
 interface ChannelsRoutesOptions {
   evolution?: EvolutionRuntime;
+  waha?: WahaRuntime;
 }
 
 const uuidParamSchema = z.string().uuid();
@@ -39,7 +42,7 @@ function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
 }
 
 function handleChannelsError(reply: FastifyReply, error: unknown) {
-  if (error instanceof ChannelsServiceError) {
+  if (error instanceof ChannelsServiceError || error instanceof ConnectionServiceError) {
     return reply.code(error.statusCode).send({ code: error.code, error: error.message });
   }
 
@@ -62,8 +65,45 @@ function handleChannelsError(reply: FastifyReply, error: unknown) {
 
 export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (app, options) => {
   const service = createChannelsService(app.prisma as unknown as PrismaLike, {
-    evolution: options.evolution
+    evolution: options.evolution,
+    waha: options.waha
   });
+  const physical = createChannelConnectionsService(app.prisma, options);
+  const physicalParams = channelParamsSchema.extend({ connectionId: uuidParamSchema });
+  app.patch('/channels/:channelId/redundancy', async (request, reply) => {
+    const params = channelParamsSchema.safeParse(request.params);
+    const body = z.object({ enabled: z.boolean() }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'Invalid redundancy request.' });
+    try {
+      const result = await physical.setRedundancy({ workspaceId: request.talk.workspaceId, channelId: params.data.channelId, enabled: body.data.enabled });
+      app.realtime.publish({ type: 'channel.updated', workspaceId: request.talk.workspaceId, payload: result.channel });
+      return result;
+    } catch (error) { return handleChannelsError(reply, error); }
+  });
+  app.get('/channels/:channelId/connections/:connectionId/state', async (request, reply) => {
+    const params = physicalParams.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Invalid connection request.' });
+    try {
+      const result = await physical.refresh({ workspaceId: request.talk.workspaceId, ...params.data });
+      app.realtime.publish({ type: 'channel.updated', workspaceId: request.talk.workspaceId, payload: result.channel });
+      return result;
+    } catch (error) { return handleChannelsError(reply, error); }
+  });
+  for (const action of ['qr', 'reconnect', 'disconnect'] as const) {
+    app.post(`/channels/:channelId/connections/:connectionId/${action}`, async (request, reply) => {
+      const params = physicalParams.safeParse(request.params);
+      if (!params.success) return reply.code(400).send({ error: 'Invalid connection request.' });
+      const scope = { workspaceId: request.talk.workspaceId, ...params.data };
+      try {
+        const { connection } = await physical.getConnection(scope);
+        const result = connection.provider === 'evolution'
+          ? action === 'disconnect' ? await service.disconnectChannel(scope) : await service.startQrSession(scope)
+          : action === 'disconnect' ? await physical.disconnect(scope) : await physical.startQr(scope);
+        app.realtime.publish({ type: 'channel.updated', workspaceId: request.talk.workspaceId, payload: result.channel });
+        return result;
+      } catch (error) { return handleChannelsError(reply, error); }
+    });
+  }
 
   app.get("/channels", async (request) =>
     service.listChannels({ workspaceId: request.talk.workspaceId })

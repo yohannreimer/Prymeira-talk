@@ -17,6 +17,7 @@ import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { MetaClientError, type MetaClient } from "../meta/meta.client.js";
 import { canonicalizePhone } from "../contacts/phone-normalization.js";
 import { visibleConversationMessageWhere, withoutInternalFollowupReservations } from "./internal-message.js";
+import { measureInboxAssembly } from "../../plugins/inbox-timing.js";
 
 type DateLike = Date | string;
 
@@ -441,6 +442,7 @@ export interface PrismaLike {
 }
 
 interface ConversationsServiceOptions {
+  publicTalkUrl?: string;
   evolution?: EvolutionRuntime;
   meta?: {
     phoneNumberId: string | null;
@@ -540,6 +542,22 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
 }
 
 export function toMessageDto(record: MessageRecord): MessageDto {
+  return mapMessageDto(record);
+}
+
+export function toCompactMessageDto(record: MessageRecord, publicTalkUrl: string): MessageDto {
+  return mapMessageDto(record, publicTalkUrl);
+}
+
+function canonicalInlineBase64(source: string, headerLength: number): boolean {
+  const length = source.length - headerLength;
+  if (!length || length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(source.slice(headerLength))) return false;
+  const padding = source.endsWith('==') ? 2 : source.endsWith('=') ? 1 : 0;
+  const last = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.indexOf(source[source.length - padding - 1]);
+  return padding === 0 || last % (padding === 2 ? 16 : 4) === 0;
+}
+
+function mapMessageDto(record: MessageRecord, publicTalkUrl?: string): MessageDto {
   const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
   const metadata = object(record.metadata);
   const cache = object(metadata.assistantMedia);
@@ -547,6 +565,19 @@ export function toMessageDto(record: MessageRecord): MessageDto {
   const result = cache.sourceHash === sourceHash ? object(cache.result) : {};
   const history = object(metadata.historyImport);
   const attachment = object(metadata.attachment);
+  const inlineHeader = /^data:([^;,]+);base64,/i.exec(record.mediaUrl ?? '');
+  const storedVisual = record.type === 'image' && /^image\/(jpeg|png|webp|gif)$/i.test(inlineHeader?.[1] ?? '') ||
+    record.type === 'file' && /^video\/(mp4|webm|quicktime)$/i.test(inlineHeader?.[1] ?? '');
+  // Preserve direct display above the frontend's 64 MiB Blob cache budget.
+  const inlineBytes = inlineHeader ? (record.mediaUrl!.length - inlineHeader[0].length) * 3 / 4 - (record.mediaUrl!.endsWith('==') ? 2 : record.mediaUrl!.endsWith('=') ? 1 : 0) : 0;
+  const compactMedia = Boolean(publicTalkUrl && ['image', 'audio', 'file'].includes(record.type) && record.mediaUrl?.startsWith('data:') && inlineHeader &&
+    (!storedVisual || inlineBytes <= 64 * 1024 * 1024 && canonicalInlineBase64(record.mediaUrl, inlineHeader[0].length)));
+  const sourceMimeType = compactMedia ? /^data:([^;,]{1,120})[;,]/i.exec(record.mediaUrl!)?.[1].trim().toLowerCase() : undefined;
+  const inferredMimeType = typeof attachment.mimeType !== 'string' ? sourceMimeType : undefined;
+  // The inline URL used to identify video/PDF even with generic provider MIME
+  // metadata. Keep that presentation hint without replacing existing metadata.
+  const previewMimeType = sourceMimeType && typeof attachment.mimeType === 'string' && attachment.mimeType.toLowerCase() !== sourceMimeType &&
+    (sourceMimeType.startsWith('video/') || sourceMimeType === 'application/pdf') ? sourceMimeType : undefined;
   const groupSender = object(metadata.groupSender);
   const location = messageLocationSchema.safeParse(metadata.location);
   const rawCards = Array.isArray(metadata.contactCards) ? metadata.contactCards : metadata.contactCard ? [metadata.contactCard] : [];
@@ -559,7 +590,7 @@ export function toMessageDto(record: MessageRecord): MessageDto {
   const publicAttachment = {
     ...(typeof attachment.fileName === 'string' ? { fileName: attachment.fileName.slice(0, 240) } : {}),
     ...(typeof attachment.caption === 'string' ? { caption: attachment.caption } : {}),
-    ...(typeof attachment.mimeType === 'string' ? { mimeType: attachment.mimeType } : {}),
+    ...(typeof attachment.mimeType === 'string' ? { mimeType: attachment.mimeType } : inferredMimeType ? { mimeType: inferredMimeType } : {}),
     ...(typeof attachment.durationSeconds === 'number' && Number.isFinite(attachment.durationSeconds) && attachment.durationSeconds >= 0 ? { durationSeconds: attachment.durationSeconds } : {})
   };
   const processed = result.status === 'processed' && typeof result.extractedText === 'string' && result.extractedText.trim().length > 0;
@@ -576,7 +607,8 @@ export function toMessageDto(record: MessageRecord): MessageDto {
       senderName: typeof groupSender.name === 'string' ? groupSender.name.slice(0, 120) : null,
       senderJid: typeof groupSender.jid === 'string' ? groupSender.jid.slice(0, 100) : null
     } : {}),
-    mediaUrl: record.mediaUrl ?? null,
+    mediaUrl: compactMedia ? new URL(`/api/conversations/${encodeURIComponent(record.conversationId)}/messages/${encodeURIComponent(record.id)}/media?v=${sourceHash}${previewMimeType ? `&previewMime=${encodeURIComponent(previewMimeType)}` : ''}`, publicTalkUrl).href : record.mediaUrl ?? null,
+    ...(record.mediaUrl && ['image', 'audio', 'file'].includes(record.type) ? { mediaSourceHash: sourceHash } : {}),
     ...(contactCards.length ? { contactCards } : {}),
     ...(location.success ? { location: location.data } : {}),
     ...(Object.keys(publicAttachment).length ? { attachment: publicAttachment } : {}),
@@ -767,7 +799,7 @@ export function createConversationsService(
       })
     ]);
 
-    return {
+    return measureInboxAssembly(() => ({
       primaryBoardStage: toPrimaryBoardStageDto(primaryMembership),
       tags: conversation.tags?.map((tagLink) => tagLink.tag) ?? [],
       notes: notes.map(toNoteDto),
@@ -776,7 +808,7 @@ export function createConversationsService(
         name: department.name
       })),
       boardStages: boardStages.map(toBoardStageOptionDto)
-    };
+    }));
   }
 
   async function resolveCurrentUser(input: {
@@ -828,7 +860,7 @@ export function createConversationsService(
         take: 50
       });
 
-      return conversations.map(toConversationDto);
+      return measureInboxAssembly(() => conversations.map(toConversationDto));
     },
 
     async createPendingOutboundMessage(input: {
@@ -1542,6 +1574,7 @@ export function createConversationsService(
     async listMessages(input: {
       workspaceId: string;
       conversationId: string;
+      compactMedia?: boolean;
     }): Promise<MessageDto[]> {
       const conversation = await prisma.conversation.findUnique({
         where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
@@ -1561,7 +1594,8 @@ export function createConversationsService(
         take: 100
       });
 
-      return withoutInternalFollowupReservations([...messages]).reverse().map(toMessageDto);
+      return measureInboxAssembly(() => withoutInternalFollowupReservations([...messages]).reverse().map(record => input.compactMedia
+        ? toCompactMessageDto(record, options.publicTalkUrl ?? 'https://talk.prymeiradigital.com.br') : toMessageDto(record)));
     }
   };
 }

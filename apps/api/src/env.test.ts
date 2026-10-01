@@ -13,6 +13,14 @@ const baseProductionEnv = {
 } as const;
 
 describe("readEnv", () => {
+  it('keeps WAHA disabled until qualification and validates enabled runtime credentials', () => {
+    expect(readEnv(baseProductionEnv).WAHA_ENABLED).toBe(false);
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_ENABLED: 'true' })).toThrow(/WAHA/);
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_ENABLED: 'true', WAHA_API_BASE_URL: 'ftp://waha.example', WAHA_API_KEY: 'secret' })).toThrow(/WAHA/);
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_API_BASE_URL: 'invalid-url' })).toThrow(/WAHA/);
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_API_BASE_URL: 'https://user:pass@waha.example' })).toThrow(/WAHA/);
+    expect(readEnv({ ...baseProductionEnv, WAHA_ENABLED: 'true', WAHA_API_BASE_URL: 'https://waha.example', WAHA_API_KEY: 'secret' }).WAHA_ENABLED).toBe(true);
+  });
   it("rejects local auth bypass in production", () => {
     expect(() =>
       readEnv({

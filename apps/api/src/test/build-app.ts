@@ -10,6 +10,7 @@ export async function buildApp(
     {
       API_HOST: "127.0.0.1",
       API_PORT: 0,
+      WAHA_ENABLED: false,
       NODE_ENV: "test",
       CORS_ORIGINS: "http://localhost:5176",
       RATE_LIMIT_MAX: 300,
