@@ -1,12 +1,16 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
+import { canPerform } from "../access/roles.js";
+import type { EvolutionHistorySource } from "../evolution/evolution-history.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { resolveMetaRuntime } from "../meta/meta-runtime.js";
 import { ChannelsServiceError, createChannelsService } from "./channels.service.js";
 import type { PrismaLike } from "./channels.service.js";
+import { createContactNameRecovery } from "./contact-name-recovery.js";
 
 interface ChannelsRoutesOptions {
   evolution?: EvolutionRuntime;
+  evolutionHistorySource?: Pick<EvolutionHistorySource, "recentContacts">;
 }
 
 const uuidParamSchema = z.string().uuid();
@@ -28,6 +32,11 @@ const testInboundBodySchema = z
     body: z.string().trim().min(1).max(1000).optional()
   })
   .optional();
+
+// Safe by default: without an explicit dryRun: false nothing is written.
+const recoverContactNamesBodySchema = z
+  .object({ dryRun: z.boolean().default(true) })
+  .default({ dryRun: true });
 
 function isPrismaKnownRequestErrorCode(error: unknown, code: string) {
   return (
@@ -108,6 +117,34 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
     } catch (error) {
       return handleChannelsError(reply, error);
     }
+  });
+
+  app.post("/channels/recover-contact-names", async (request, reply) => {
+    if (!canPerform(request.talk.role, "workspace.manage")) {
+      return reply.code(403).send({ error: "Sem permissão para corrigir nomes de contatos." });
+    }
+    const body = recoverContactNamesBodySchema.safeParse(request.body ?? undefined);
+    if (!body.success) {
+      return reply.code(400).send({ error: "Pedido inválido." });
+    }
+    if (!options.evolutionHistorySource) {
+      return reply.code(409).send({ code: "EVOLUTION_HISTORY_UNAVAILABLE", error: "Histórico da Evolution indisponível" });
+    }
+    const channels = await app.prisma.channel.findMany({
+      where: { workspaceId: request.talk.workspaceId, provider: "evolution", status: "connected" },
+      select: { id: true, providerKey: true }
+    });
+    if (!channels.length) {
+      return reply.code(409).send({
+        code: "NO_CONNECTED_EVOLUTION_CHANNEL",
+        error: "Nenhum canal da Evolution conectado. Conecte um canal para buscar os nomes dos contatos."
+      });
+    }
+    return createContactNameRecovery({ prisma: app.prisma, source: options.evolutionHistorySource }).recover({
+      workspaceId: request.talk.workspaceId,
+      channels,
+      dryRun: body.data.dryRun
+    });
   });
 
   app.post("/channels/:channelId/qr", async (request, reply) => {

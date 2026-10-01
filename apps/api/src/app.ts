@@ -501,7 +501,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   });
   await app.register(contactsRoutes, { evolution: evolutionRuntime });
   await app.register(boardsRoutes);
-  await app.register(channelsRoutes, { evolution: evolutionRuntime });
+  await app.register(channelsRoutes, { evolution: evolutionRuntime, evolutionHistorySource });
   await app.register(automationsRoutes, { agentRuntime, evolution: evolutionRuntime });
   await app.register(campaignsRoutes, { evolution: evolutionRuntime });
   await app.register(broadcastListsRoutes);
