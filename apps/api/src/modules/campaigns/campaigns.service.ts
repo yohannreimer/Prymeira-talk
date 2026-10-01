@@ -556,12 +556,14 @@ function renderTemplate(input: {
   contact: ResolvedCampaignContact;
   fallbackName: string;
   firstName?: string | null;
+  keepDefaultFallback?: boolean;
 }) {
   return renderCampaignMessage({
     template: input.template,
     contact: { phone: input.contact.phone, fields: input.contact.fields },
     firstName: input.firstName ?? null,
-    explicitFallbackName: input.fallbackName
+    explicitFallbackName: input.fallbackName,
+    keepDefaultFallback: input.keepDefaultFallback
   });
 }
 
@@ -725,7 +727,9 @@ function renderMetaComponentsForContact(input: {
         template: parameter.text ?? "",
         contact: input.contact,
         fallbackName: input.fallbackName,
-        firstName: input.firstName
+        firstName: input.firstName,
+        // Meta template bodies are fixed; an empty parameter is rejected by Meta.
+        keepDefaultFallback: true
       })
     }))
   }) as MetaTemplateComponent);

@@ -30,6 +30,14 @@ describe("renderCampaignMessage", () => {
     expect(renderCampaignMessage({ template: "Olá {{nome}}!", contact, firstName: null, explicitFallbackName: "Cliente" }))
       .toBe("Olá!");
   });
+  it("com keepDefaultFallback (Meta), nunca deixa o nome vazio", () => {
+    const meta = (explicitFallbackName?: string) =>
+      renderCampaignMessage({ template: "{{nome}}", contact, firstName: null, explicitFallbackName, keepDefaultFallback: true });
+    expect(meta()).toBe("cliente");
+    expect(meta("Cliente")).toBe("Cliente");
+    expect(meta("amigo")).toBe("amigo");
+    expect(renderCampaignMessage({ template: "{{nome}}", contact, firstName: "Ana", keepDefaultFallback: true })).toBe("Ana");
+  });
   it("preenche outros campos e telefone", () => {
     expect(renderCampaignMessage({ template: "{{empresa}} {{telefone}}", contact, firstName: null }))
       .toBe("Metalpress 554799999999");

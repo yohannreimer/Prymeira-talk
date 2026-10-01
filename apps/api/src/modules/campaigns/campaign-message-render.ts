@@ -41,8 +41,12 @@ export function renderCampaignMessage(input: {
   contact: RenderContact;
   firstName: string | null;
   explicitFallbackName?: string;
+  /** Meta template parameters can never be empty: fall back to the explicit name or "cliente". */
+  keepDefaultFallback?: boolean;
 }) {
-  const name = input.firstName?.trim() || implicitOrBlank(input.explicitFallbackName);
+  const name = input.firstName?.trim() || (input.keepDefaultFallback
+    ? input.explicitFallbackName?.trim() || "cliente"
+    : implicitOrBlank(input.explicitFallbackName));
   const values: Record<string, string> = {
     ...input.contact.fields,
     name,
