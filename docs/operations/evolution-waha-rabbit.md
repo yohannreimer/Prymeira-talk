@@ -76,6 +76,14 @@ Bloco 2a.2A implementado localmente em `a71390d`: migrações aditivas de endere
 
 ## Critérios de publicação pendentes
 
+Checkpoint canônico integrado aprovado em `117fd9f`: redutores persistentes de edições, exclusões, recibos, certificados e snapshots, com proteção cumulativa dos metadados entre páginas. Conformidade e qualidade independentes encerraram os achados de aliases após união PN/LID, fronteira de recuperação, recibos conflitantes e metadados incompatíveis. Os 164 testes canônicos com PostgreSQL passaram; a última revisão de qualidade executou 33 casos focados e quatro reproduções independentes. As consultas e escritores atuais ainda serão convertidos: essa aprovação não ativa a deduplicação em produção.
+
+A versão de desempenho `72bbb639e34f90e33d1a247c9e6350f3c8c8d30c`, publicada pela outra frente, foi incorporada aditivamente em `e25dfec`. Nesse commit combinado, passaram 1.960 testes da API com todos os testes PostgreSQL condicionais habilitados, 418 da web e 80 compartilhados, além de typecheck, geração/validação Prisma e builds de produção. As correções posteriores de reconciliação não alteraram os arquivos de desempenho nem o schema; tiveram verificação canônica focada e typecheck. Não houve rollout desta integração.
+
+As 50 migrações do checkpoint `11bc675` foram verificadas a partir do Git imutável em dois bancos novos próprios da tarefa: instalação limpa e atualização de fixtures legadas. Checksums e ledger foram conferidos; UUIDs, colunas originais, FKs, configurações, remetente de grupo e namespace Meta foram preservados. Os índices globais antigos permanecem presentes até a conversão completa dos chamadores.
+
+Arquivos sintéticos de imagem, áudio Opus/MP3, vídeo H.264/AAC, PDF, texto e um roteiro foram preparados na pasta de saídas da tarefa. Codecs, duração, hashes e PDF foram inspecionados localmente. Isso prepara a homologação; não comprova recebimento real, mensagem de voz, figurinha nativa ou entendimento pela IA.
+
 - [ ] Migrações aditivas, backfill, isolamento por workspace e compatibilidade dos canais anteriores.
 - [ ] Entradas simultâneas, reentrega, ACK/edição/exclusão fora de ordem, histórico e recuperação com checkpoints.
 - [ ] Interrupção de API, workers, banco e broker; retomada de eventos aceitos e trabalhos pendentes.
