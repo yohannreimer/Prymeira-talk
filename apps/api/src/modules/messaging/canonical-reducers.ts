@@ -186,9 +186,22 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
           const conflict = await tx.canonicalAction.count({ where: { ...same, observation: {
             kind: event.kind, NOT: { payload: { path: [payloadField], equals: json(payloadValue) } }
           } } }) > 0;
-          const previouslyApplied = await tx.canonicalAction.count({ where: { ...same, state: { in: ['applied', 'superseded'] },
-            ...(event.kind === 'encrypted_edit' ? { observation: { kind: 'encrypted_edit' }, evidence: { not: Prisma.AnyNull } } : {})
+          const knownResolvedPayload = await tx.canonicalAction.count({ where: { ...same, state: { in: ['applied', 'superseded'] },
+            observation: { kind: event.kind, payload: { path: [payloadField], equals: json(payloadValue) } }
           } }) > 0;
+          // Superseding an opaque ciphertext proves only that its exact bytes were
+          // already handled. An unseen plaintext mirror needs the authenticated
+          // patch certified for THIS action, never a newer identity revision.
+          let certifiedPatchMatches = false, certifiedPatchConflicts = false, mixedEvidenceMissing = false;
+          if (event.kind === 'edit' && !knownResolvedPayload) {
+            const mixed: Prisma.CanonicalActionWhereInput = { ...same, state: { in: ['applied', 'superseded'] }, observation: { kind: 'encrypted_edit' } };
+            const certified: Prisma.CanonicalActionWhereInput = { ...mixed,
+              evidence: { path: ['request', 'proof', 'source'], equals: 'authenticated_decryption' } };
+            const patch: Prisma.CanonicalActionWhereInput = { evidence: { path: ['request', 'patch'], equals: json(event.patch) } };
+            certifiedPatchMatches = await tx.canonicalAction.count({ where: { ...certified, AND: [patch] } }) > 0;
+            certifiedPatchConflicts = await tx.canonicalAction.count({ where: { ...certified, NOT: patch } }) > 0;
+            mixedEvidenceMissing = !certifiedPatchMatches && await tx.canonicalAction.count({ where: mixed }) > 0;
+          }
           // Compare the full cached revision and patch in SQL. Counting exact
           // conflicts is bounded in memory even for hundreds of identical mirrors.
           const unordered = identity.currentRevision === null && !record(stored.metadata).editedAt && await tx.canonicalAction.count({ where: {
@@ -198,8 +211,10 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
               ...(event.kind === 'edit' ? [{ observation: { NOT: { payload: { path: ['patch'], equals: json(event.patch) } } } }] : [{}])]
           } }) > 0;
           if (targetConflict) reason = 'action_target_conflict';
-          else if (conflict) reason = 'action_revision_conflict';
-          else if (previouslyApplied) { /* mirror: no second application */ }
+          else if (knownResolvedPayload) { /* exact replay stays inert, including superseded actions */ }
+          else if (conflict || certifiedPatchConflicts) reason = 'action_revision_conflict';
+          else if (certifiedPatchMatches) { /* verified mixed-format mirror, no second application */ }
+          else if (mixedEvidenceMissing) reason = 'mixed_revision_evidence_required';
           else if (event.kind === 'encrypted_edit') reason = 'decrypt_reconciliation_required';
           else if (identity.currentRevision !== null || record(stored.metadata).editedAt || unordered) reason = 'edit_order_unproven';
           else if (await unboundContent(tx, identity)) reason = 'edit_frontier_incomplete';

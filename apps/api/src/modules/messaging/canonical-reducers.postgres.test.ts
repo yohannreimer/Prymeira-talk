@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
+import type { MessageEditPatch, NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
 import { normalizeWahaEvent } from '../waha/waha-normalizer.js';
 import { parseWahaMessageKey } from './whatsapp-identity.js';
@@ -614,6 +614,63 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
     expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ revisionVersion: 2 });
     const cipherConflict = await persist({ ...event, encrypted: { ...encrypted, payloadBase64: 'b3RoZXI=' } });
     expect(cipherConflict.reconciliationReasons).toContain('action_revision_conflict');
+  });
+
+  it.each([['text', 'same'], ['text', 'different'], ['image', 'same'], ['image', 'different'], ['image', 'field']] as const)('compares certified decrypted %s patch with plaintext mirror (%s)', async (type, variant) => {
+    const c = await context(), original = msg(c), revision = msg(c, 'EDIT').key;
+    if (type === 'image') { original.content = { type, body: 'original caption', preview: 'original caption', mediaUrl: 'https://owned.test/image' }; original.attachment = { caption: 'original caption', fileName: 'image.png' }; }
+    const created = await persist(original), encrypted = { ivBase64: 'aXY=', payloadBase64: 'c2VjcmV0', senderJids: [PN] };
+    const cipher = await persist({ ...original, kind: 'encrypted_edit', target: original.key, action: revision, encrypted });
+    const patch: MessageEditPatch = type === 'text' ? { field: 'body', body: 'verified decrypted body' } : { field: 'caption', caption: '' };
+    await db.$transaction(tx => store.reconcileRevisionInTransaction(tx, c, { actionId: cipher.actionId!, target: original.key, revision, expectedRevisionVersion: 0, pendingActionIds: [cipher.actionId!], patch, proof: { source: 'authenticated_decryption', requestId: 'decrypt-first', currentRevisionRequestId: 'current-first', authorAddress: PN, ivBase64: encrypted.ivBase64, payloadBase64: encrypted.payloadBase64 } }));
+    const before = await db.message.findUniqueOrThrow({ where: { id: created.messageId! } });
+    const incoming: MessageEditPatch = variant === 'same' ? patch : variant === 'field' ? { field: 'body', body: '' } : type === 'text' ? { field: 'body', body: 'contradictory plaintext body' } : { field: 'caption', caption: 'contradictory caption' };
+    const result = await persist({ ...original, kind: 'edit', target: original.key, action: revision, patch: incoming });
+    expect(result).toMatchObject({ outcome: variant === 'same' ? 'duplicate' : 'held', changes: [], allowOperationalEffects: false });
+    expect(await db.canonicalAction.findUnique({ where: { id: result.actionId! } })).toMatchObject({ state: variant === 'same' ? 'applied' : 'pending' });
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ revisionVersion: 1, contentState: variant === 'same' ? 'ready' : 'pending_reconciliation' });
+    const after = await db.message.findUniqueOrThrow({ where: { id: created.messageId! } });
+    expect({ body: after.body, metadata: after.metadata, mediaUrl: after.mediaUrl, type: after.type }).toEqual({ body: before.body, metadata: before.metadata, mediaUrl: before.mediaUrl, type: before.type });
+  });
+  it('does not use superseding a ciphertext as proof for unseen plaintext of that older action', async () => {
+    const c = await context(), original = msg(c), created = await persist(original), encrypted = { ivBase64: 'aXY=', payloadBase64: 'c2VjcmV0', senderJids: [PN] };
+    const oldEvent: NormalizedMessagingEvent = { ...original, kind: 'encrypted_edit', target: original.key, action: msg(c, 'OLD').key, encrypted };
+    const old = await persist(oldEvent, 'known-old'), currentRevision = msg(c, 'CURRENT').key;
+    const current = await persist({ ...oldEvent, action: currentRevision });
+    await db.$transaction(tx => store.reconcileRevisionInTransaction(tx, c, { actionId: current.actionId!, target: original.key, revision: currentRevision, expectedRevisionVersion: 0, pendingActionIds: [old.actionId!, current.actionId!], patch: { field: 'body', body: 'certified current' }, proof: { source: 'authenticated_decryption', requestId: 'decrypt-current', currentRevisionRequestId: 'current-fetch', authorAddress: PN, ivBase64: encrypted.ivBase64, payloadBase64: encrypted.payloadBase64 } }));
+    expect((await persist(oldEvent, 'known-old')).outcome).toBe('duplicate');
+    expect((await persist(oldEvent, 'known-old-new-ingress')).outcome).toBe('duplicate');
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'ready' });
+    const unseen = await persist({ ...original, kind: 'edit', target: original.key, action: oldEvent.action, patch: { field: 'body', body: 'unverified old bytes' } });
+    expect(unseen.outcome).toBe('held');
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'pending_reconciliation', revisionVersion: 1 });
+    expect(await db.message.findUnique({ where: { id: created.messageId! } })).toMatchObject({ body: 'certified current' });
+  });
+
+  it('keeps an exact resolved plaintext replay inert after verified decryption supersedes its content', async () => {
+    const c = await context(), original = msg(c), created = await persist(original), revision = msg(c, 'EDIT').key;
+    const plain: NormalizedMessagingEvent = { ...original, kind: 'edit', target: original.key, action: revision, patch: { field: 'body', body: 'previous plaintext' } };
+    await persist(plain, 'plain-receipt');
+    const encrypted = { ivBase64: 'aXY=', payloadBase64: 'c2VjcmV0', senderJids: [PN] };
+    const cipher = await persist({ ...original, kind: 'encrypted_edit', target: original.key, action: revision, encrypted });
+    expect(cipher.outcome).toBe('held');
+    await db.$transaction(tx => store.reconcileRevisionInTransaction(tx, c, { actionId: cipher.actionId!, target: original.key, revision, expectedRevisionVersion: 1, pendingActionIds: [cipher.actionId!], patch: { field: 'body', body: 'verified current bytes' }, proof: { source: 'authenticated_decryption', requestId: 'verified-new', currentRevisionRequestId: 'verified-current', authorAddress: PN, ivBase64: encrypted.ivBase64, payloadBase64: encrypted.payloadBase64 } }));
+    expect((await persist(plain, 'plain-receipt')).outcome).toBe('duplicate');
+    expect((await persist(plain, 'new-ingress-known-plain')).outcome).toBe('duplicate');
+    expect(await db.message.findUnique({ where: { id: created.messageId! } })).toMatchObject({ body: 'verified current bytes' });
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'ready', revisionVersion: 2 });
+  });
+  it('checks a mixed mirror against its own certified action after a newer snapshot wins', async () => {
+    const c = await context(), original = msg(c), created = await persist(original), revision = msg(c, 'OLD').key;
+    const encrypted = { ivBase64: 'aXY=', payloadBase64: 'c2VjcmV0', senderJids: [PN] };
+    const cipher = await persist({ ...original, kind: 'encrypted_edit', target: original.key, action: revision, encrypted });
+    await db.$transaction(tx => store.reconcileRevisionInTransaction(tx, c, { actionId: cipher.actionId!, target: original.key, revision, expectedRevisionVersion: 0, pendingActionIds: [cipher.actionId!], patch: { field: 'body', body: 'verified old' }, proof: { source: 'authenticated_decryption', requestId: 'verified-old', currentRevisionRequestId: 'old-current', authorAddress: PN, ivBase64: encrypted.ivBase64, payloadBase64: encrypted.payloadBase64 } }));
+    const snapshot = await persist({ ...original, currentRevision: msg(c, 'NEW').key, content: { ...original.content, body: 'new snapshot body' } });
+    await db.$transaction(tx => store.reconcileSnapshotInTransaction(tx, c, { observationId: snapshot.observationId, target: original.key, expectedRevisionVersion: 1, pendingObservationIds: [snapshot.observationId], proof: { source: 'provider_current_revision', requestId: 'new-snapshot' } }));
+    const oldMirror = await persist({ ...original, kind: 'edit', target: original.key, action: revision, patch: { field: 'body', body: 'verified old' } });
+    expect(oldMirror).toMatchObject({ outcome: 'duplicate', changes: [], reconciliationReasons: [] });
+    expect(await db.message.findUnique({ where: { id: created.messageId! } })).toMatchObject({ body: 'new snapshot body' });
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'ready', revisionVersion: 2 });
   });
 
 });
