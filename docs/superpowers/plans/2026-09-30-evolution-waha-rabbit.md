@@ -36,7 +36,7 @@ Base: `4524fbb3e834197626d7fc6ad329a7282c562615`. Branch: `codex/talk-waha-rabbi
 - [x] 2a.2B. Redutores persistentes de ações pendentes, revisões, recibos e enriquecimento de mídia/histórico, incluindo eventos anteriores ao original e ordem não comprovada. Conformidade e qualidade aprovadas em `11bc675`.
 - [x] 2a.2C. Revisão integrada de A+B e incorporação aditiva do desempenho `72bbb63`, aprovadas em `117fd9f`. Instalação limpa e atualização legada validaram as 50 migrações; verificação completa em `e25dfec` aprovou API 1.960, web 418 e shared 80 testes, types e builds. Correções posteriores restritas à reconciliação aprovaram 164 testes canônicos PostgreSQL e typecheck da API.
 - [ ] 2a.3. Integração dos writers reais Evolution, histórico e campanhas; conversão dos lookups e índices amplos depois dos leitores/escritores compatíveis.
-- [ ] 2a.3A. Boundary transacional, fontes confiáveis, leitores exatos e apresentação histórica reutilizável; sem cutover neste checkpoint.
+- [x] 2a.3A. Boundary transacional, fontes confiáveis, leitores exatos e apresentação histórica reutilizável; SPEC e QUALITY aprovadas em `bd49f12`. A revisão final de qualidade aprovou 360 testes em dez arquivos, typecheck e provas independentes de concorrência, autorização, proveniência e respostas contraditórias. Sem cutover neste checkpoint.
 - [ ] 2a.3B. Intenções e reservas locais, binding da resposta completa, ecos anteriores à resposta e correlação Meta explícita.
 - [ ] 2a.3C. Roteador único e conversão de todos os remetentes, preservando reservas, leases e cadência dos domínios.
 - [ ] 2a.3D. Conversão das entradas, importadores históricos e leitores; obrigações duráveis antes da ativação final.
