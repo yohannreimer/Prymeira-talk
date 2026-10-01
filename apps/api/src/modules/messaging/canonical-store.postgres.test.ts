@@ -35,6 +35,8 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
     if (!db) return;
     // All cleanup is restricted to fixture workspace UUIDs.
     const where = { workspaceId: { in: workspaces } };
+    await db.canonicalAction.deleteMany({ where });
+    await db.canonicalRecipientReceipt.deleteMany({ where });
     await db.canonicalAddressEvidence.deleteMany({ where });
     await db.canonicalObservation.deleteMany({ where });
     await db.canonicalNativeAlias.deleteMany({ where });

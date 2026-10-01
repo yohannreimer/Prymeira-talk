@@ -1520,12 +1520,16 @@ model CanonicalMessageIdentity {
   tupleHash String @map("tuple_hash") @db.VarChar(64)
   fullTuple Json @map("full_tuple")
   state String @default("active")
+  contentState String @default("ready") @map("content_state")
+  revisionVersion Int @default(0) @map("revision_version")
   currentRevision Json? @map("current_revision")
   initialMode String @map("initial_mode")
   chat CanonicalChat @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: Cascade)
   sender CanonicalAddress? @relation(fields: [workspaceId, channelId, senderAddressId], references: [workspaceId, channelId, id], onDelete: NoAction)
   conversation Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
   message Message @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: Cascade)
+  receipts CanonicalRecipientReceipt[]
+  actions CanonicalAction[]
   aliases CanonicalNativeAlias[]
   observations CanonicalObservation[]
   @@unique([workspaceId, channelId, id])
@@ -1542,6 +1546,7 @@ model CanonicalNativeAlias {
   connectionProvider ChannelConnectionProvider? @map("connection_provider")
   connectionId String? @map("connection_id") @db.Uuid
   identityId String? @map("identity_id") @db.Uuid
+  lookupHash String? @map("lookup_hash") @db.VarChar(64)
   tupleHash String @map("tuple_hash") @db.VarChar(64)
   fullTuple Json @map("full_tuple")
   state String @default("unresolved")
@@ -1551,6 +1556,7 @@ model CanonicalNativeAlias {
   observations CanonicalObservation[]
   @@unique([workspaceId, channelId, id])
   @@index([workspaceId, channelId, tupleHash])
+  @@index([workspaceId, channelId, lookupHash])
   @@map("canonical_native_aliases")
 }
 model CanonicalObservation {
@@ -1575,6 +1581,7 @@ model CanonicalObservation {
   receivedAt DateTime @map("received_at")
   currentRevision Json? @map("current_revision")
   sourceOrder Json @map("source_order")
+  resolutionEvidence Json? @map("resolution_evidence")
   payload Json
   state String @default("held")
   reason String?
@@ -1582,9 +1589,56 @@ model CanonicalObservation {
   connection ChannelConnection? @relation(fields: [workspaceId, channelId, connectionProvider, connectionId], references: [workspaceId, channelId, provider, id], onDelete: NoAction)
   identity CanonicalMessageIdentity? @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: NoAction)
   alias CanonicalNativeAlias? @relation(fields: [workspaceId, channelId, aliasId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  actions CanonicalAction[]
   evidence CanonicalAddressEvidence[]
   @@unique([workspaceId, channelId, id])
   @@index([workspaceId, channelId, receiptHash])
   @@index([workspaceId, channelId, state])
+  @@index([workspaceId, channelId, identityId, state, kind, id])
   @@map("canonical_observations")
+}
+
+// Every action owns its ingress observation; payload/provenance remain immutable there.
+model CanonicalAction {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  observationId String @unique @map("observation_id") @db.Uuid
+  identityId String? @map("identity_id") @db.Uuid
+  kind String
+  nativeTargetHash String? @map("native_target_hash") @db.VarChar(64)
+  targetHash String @map("target_hash") @db.VarChar(64)
+  target Json
+  actionKey Json? @map("action_key")
+  actionHash String? @map("action_hash") @db.VarChar(64)
+  actionTuple Json? @map("action_tuple")
+  state String @default("pending")
+  reason String?
+  attempts Int @default(0)
+  appliedAt DateTime? @map("applied_at")
+  evidence Json?
+  observation CanonicalObservation @relation(fields: [workspaceId, channelId, observationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  identity CanonicalMessageIdentity? @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  @@unique([workspaceId, channelId, id])
+  @@index([workspaceId, channelId, targetHash, state, id])
+  @@index([workspaceId, channelId, nativeTargetHash, state, id])
+  @@index([workspaceId, channelId, state, id])
+  @@index([workspaceId, channelId, identityId, kind])
+  @@index([workspaceId, channelId, identityId, actionHash])
+  @@index([workspaceId, channelId, actionHash])
+  @@map("canonical_actions")
+}
+
+// Group receipts never upgrade Message.status: there is no certified member denominator.
+model CanonicalRecipientReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  identityId String @map("identity_id") @db.Uuid
+  recipient String @db.VarChar(100)
+  status MessageStatus
+  played Boolean @default(false)
+  identity CanonicalMessageIdentity @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  @@unique([workspaceId, channelId, identityId, recipient])
+  @@map("canonical_recipient_receipts")
 }

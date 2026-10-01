@@ -1,4 +1,6 @@
-import { createHash } from 'node:crypto';
+import { createCanonicalReducers, type ActionEvent } from './canonical-reducers.js';
+import { json, stable, equal, sha, scopeOf, nativeLookupTuple } from './canonical-values.js';
+import { enrichPresentation, presentationMediaUrl, presentationMetadata } from './canonical-presentation.js';
 import { Prisma, type PrismaClient, type CanonicalChat, type CanonicalMessageIdentity, type CanonicalNativeAlias } from '@prisma/client';
 import type { NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
 import { normalizeChatAddress, record, type WhatsAppMessageKey } from './whatsapp-identity.js';
@@ -16,22 +18,12 @@ export interface CanonicalStoreResult {
   outcome: 'created' | 'duplicate' | 'enriched' | 'held'; observationId: string; messageId: string | null;
   conversationId: string | null; chatId: string | null; identityId: string | null;
   allowOperationalEffects: boolean; reconciliationReasons: string[]; changes: string[];
-  conflictingMessageIds?: string[];
+  conflictingMessageIds?: string[]; actionId?: string;
 }
+export type { CanonicalRevisionEvidence, CanonicalSnapshotEvidence } from './canonical-reducers.js';
 type Tx = Prisma.TransactionClient;
 type Scope = { workspaceId: string; channelId: string };
 type MessageEvent = Extract<NormalizedMessagingEvent, { kind: 'message' }>;
-const json = (value: unknown): Prisma.InputJsonValue => JSON.parse(JSON.stringify(value));
-// Object key order is not identity. Arrays deliberately retain their order.
-function stable(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-  if (value !== null && typeof value === 'object') return `{${Object.entries(value).sort(([a],[b]) => a.localeCompare(b)).map(([k,v]) => `${JSON.stringify(k)}:${stable(v)}`).join(',')}}`;
-  return JSON.stringify(value) ?? 'null';
-}
-const equal = (a: unknown, b: unknown) => stable(a) === stable(b);
-const sha = (value: string) => createHash('sha256').update(value).digest('hex');
-const scopeOf = (context: TrustedMessagingContext): Scope => ({ workspaceId: context.workspaceId, channelId: context.channelId });
-
 /** One event per transaction. Every canonical writer acquires the workspace lock FIRST.
  * This deliberately serializes Contact creation across channels and late identity merges.
  * Call first inside a READ COMMITTED transaction; stronger snapshot isolation is rejected.
@@ -53,6 +45,13 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       if (!physical || channel.provider !== 'evolution') throw new Error('Invalid connection scope');
     }
     return channel.provider;
+  }
+  async function lockAndScope(tx: Tx, c: TrustedMessagingContext) {
+    const isolation = await tx.$queryRaw<Array<{ isolation: string }>>`SELECT current_setting('transaction_isolation') AS isolation`;
+    if (isolation[0]?.isolation !== 'read committed') throw new Error('Canonical store requires READ COMMITTED');
+    // Advisory hash collisions only over-serialize. Logical identity hashes never replace full comparisons.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`canonical-messaging:${c.workspaceId}`}, 0))`;
+    return assertScope(tx, c);
   }
   async function graph(tx: Tx, scope: Scope) {
     const rows = await tx.canonicalAddress.findMany({ where: scope });
@@ -174,7 +173,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     const existing = bucket.find(a => equal(a.fullTuple, fullTuple));
     if (existing) return existing;
     return tx.canonicalNativeAlias.create({ data: { ...scope, channelProvider, provider: c.provider,
-      connectionProvider: c.connectionId ? c.provider : null, connectionId: c.connectionId, tupleHash, fullTuple: json(fullTuple) } });
+      connectionProvider: c.connectionId ? c.provider : null, connectionId: c.connectionId, lookupHash: digest(nativeLookupTuple(c, key)), tupleHash, fullTuple: json(fullTuple) } });
   }
   function complete(key: WhatsAppMessageKey) {
     return !!normalizeChatAddress(key.chatAddress) && !!key.direction
@@ -202,14 +201,67 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     }
     return true;
   }
+  async function resolveActionTarget(tx: Tx, event: ActionEvent) {
+    const scope = scopeOf(event.context), key = event.target;
+    if (!complete(key)) {
+      if (!key.nativeId || event.context.provider !== 'waha') return { reason: 'incomplete_target_identity' };
+      const prefix = nativeLookupTuple(event.context, key);
+      const aliases = await tx.canonicalNativeAlias.findMany({ where: { ...scope, lookupHash: digest(prefix), state: 'resolved', identityId: { not: null } } });
+      const matched = aliases.filter(alias => {
+        const t = alias.fullTuple;
+        if (!Array.isArray(t) || !equal(t.slice(1, 5), prefix) || t[0] !== key.identityFormat) return false;
+        const known = [key.rawId, key.nativeChatAddress, key.nativeSenderParticipant, key.chatAddress, key.direction, key.senderParticipant];
+        return known.every((value, index) => value === null || value === t[index + 5]);
+      });
+      const ids = [...new Set(matched.map(alias => alias.identityId!))];
+      if (ids.length !== 1) return { reason: ids.length ? 'multiple_message_identities' : 'incomplete_target_identity' };
+      const identity = await tx.canonicalMessageIdentity.findUniqueOrThrow({ where: { id: ids[0]! }, include: { chat: true } });
+      const g = await graph(tx, scope);
+      const canonicalChat = await chat(tx, scope, g.root(identity.chat.addressId), false);
+      if (canonicalChat.state !== 'active' || !canonicalChat.operationConversationId) return { reason: 'multiple_conversation_authorities' };
+      const involved = [g.root(identity.chat.addressId), ...(identity.senderAddressId ? [g.root(identity.senderAddressId)] : [])];
+      if (await tx.canonicalAddress.count({ where: { ...scope, id: { in: involved }, state: 'review' } })) return { reason: 'address_mapping_conflict' };
+      if (identity.state !== 'active') return { reason: 'identity_requires_review' };
+      return { identity };
+    }
+    const chatAddress = await address(tx, scope, key.chatAddress!);
+    const sender = key.chatAddress!.endsWith('@g.us') ? await address(tx, scope, key.senderParticipant!) : null;
+    if (await tx.canonicalAddress.count({ where: { ...scope, id: { in: [chatAddress, ...(sender ? [sender] : [])] }, state: 'review' } })) return { reason: 'address_mapping_conflict' };
+    const canonicalChat = await chat(tx, scope, chatAddress, false);
+    if (canonicalChat.state !== 'active' || !canonicalChat.operationConversationId) return { reason: canonicalChat.state === 'review' ? 'multiple_conversation_authorities' : 'target_missing' };
+    const fullTuple = tuple(scope, canonicalChat.id, key, sender, event.context.provider);
+    const candidates = await tx.canonicalMessageIdentity.findMany({ where: { ...scope, tupleHash: digest(fullTuple) } });
+    const matches = candidates.filter(row => equal(row.fullTuple, fullTuple));
+    if (matches.length !== 1) return { reason: matches.length ? 'multiple_message_identities' : 'target_missing' };
+    if (matches[0]!.state !== 'active') return { reason: 'identity_requires_review' };
+    return { identity: matches[0]! };
+  }
+  async function revisionTuple(tx: Tx, event: ActionEvent, identity: CanonicalMessageIdentity, key: WhatsAppMessageKey) {
+    if (!complete(key)) return null;
+    const scope = scopeOf(event.context), g = await graph(tx, scope);
+    const canonicalChat = await tx.canonicalChat.findUniqueOrThrow({ where: { id: identity.chatId } });
+    const chatAddress = await address(tx, scope, key.chatAddress!);
+    const sender = key.senderParticipant ? await address(tx, scope, key.senderParticipant) : null;
+    if (g.root(canonicalChat.addressId) !== (await graph(tx, scope)).root(chatAddress) || key.direction !== identity.direction
+      || (identity.senderAddressId ? !sender || (await graph(tx, scope)).root(sender) !== g.root(identity.senderAddressId) : sender !== null)) return null;
+    const rootChat = await chat(tx, scope, g.root(canonicalChat.addressId), false);
+    return tuple(scope, rootChat.id, key, sender ? (await graph(tx, scope)).root(sender) : null, event.context.provider);
+  }
+  async function sameRevision(tx: Tx, identity: CanonicalMessageIdentity, event: MessageEvent) {
+    if (equal(identity.currentRevision, event.currentRevision)) return true;
+    if (!identity.currentRevision || !event.currentRevision) return false;
+    const probe: ActionEvent = { ...event, kind: 'revoke', target: event.key, action: event.key };
+    const stored = await revisionTuple(tx, probe, identity, identity.currentRevision as unknown as WhatsAppMessageKey);
+    const incoming = await revisionTuple(tx, probe, identity, event.currentRevision);
+    return stored !== null && incoming !== null && equal(stored, incoming);
+  }
+  const { reduceAction, recoverForMessage, reconcileRevisionInTransaction, reconcileSnapshotInTransaction, reconciliationFrontierInTransaction, recoverPendingInTransaction } = createCanonicalReducers({
+    digest, lockAndScope, resolveActionTarget, revisionTuple, address, graph
+  });
   async function persistInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions): Promise<CanonicalStoreResult> {
     const c = event.context, scope = scopeOf(c);
     if (!event.providerEventId && !options.receiptKey) throw new Error('Stable ingress receiptKey required');
-    const isolation = await tx.$queryRaw<Array<{ isolation: string }>>`SELECT current_setting('transaction_isolation') AS isolation`;
-    if (isolation[0]?.isolation !== 'read committed') throw new Error('Canonical store requires READ COMMITTED');
-    // Advisory hash collisions only over-serialize. Logical identity hashes never replace full comparisons.
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`canonical-messaging:${c.workspaceId}`}, 0))`;
-    const channelProvider = await assertScope(tx, c);
+    const channelProvider = await lockAndScope(tx, c);
     const receiptTuple = [c.provider, c.connectionId, c.sessionName, event.providerEventType,
       event.providerEventId ? 'provider_event_id' : 'ingress', event.providerEventId ?? options.receiptKey];
     const receiptHash = digest(receiptTuple);
@@ -229,6 +281,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       }
       result.outcome = previous.state === 'held' ? 'held' : 'duplicate';
       if (previous.reason) result.reconciliationReasons.push(previous.reason);
+      if (event.kind !== 'message' && event.kind !== 'control' && previous.reason !== 'receipt_key_conflict') return reduceAction(tx, event, previous.id);
       return result;
     }
     const observation = await tx.canonicalObservation.create({ data: { ...scope, channelProvider, provider: c.provider,
@@ -247,6 +300,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     }
     if (receiptConflict) {
       await tx.canonicalObservation.updateMany({ where: { id: { in: sameReceipts.map(r => r.id) } }, data: { state: 'held', reason: 'receipt_key_conflict' } });
+      await tx.canonicalMessageIdentity.updateMany({ where: { id: { in: sameReceipts.flatMap(row => row.identityId ? [row.identityId] : []) }, contentState: { not: 'deleted' } }, data: { contentState: 'pending_reconciliation' } });
       return hold('receipt_key_conflict');
     }
     const mappingConflict = await mappings(tx, event, observation.id);
@@ -255,7 +309,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     const key = event.kind === 'message' ? event.key : event.target;
     const alias = await nativeAlias(tx, event, key, channelProvider);
     await tx.canonicalObservation.update({ where: { id: observation.id }, data: { aliasId: alias.id } });
-    if (event.kind !== 'message') return hold(event.kind === 'encrypted_edit' ? 'decrypt_reconciliation_required' : 'action_reconciliation_required');
+    if (event.kind !== 'message') return reduceAction(tx, event, observation.id);
     if (!complete(key)) return hold('incomplete_message_identity');
     const chatAddress = await address(tx, scope, key.chatAddress!);
     const sender = key.chatAddress!.endsWith('@g.us') ? await address(tx, scope, key.senderParticipant!) : null;
@@ -308,8 +362,8 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
         messageId = legacy.id; result.outcome = 'enriched'; result.changes.push('legacy_message_adopted');
       } else {
         const message = await tx.message.create({ data: { workspaceId: c.workspaceId, conversationId: result.conversationId, direction: key.direction!,
-          type: event.content.type, body: event.content.body, mediaUrl: event.content.mediaUrl, status: key.direction === 'inbound' ? 'delivered' : 'sent',
-          metadata: json({ attachment: event.attachment, ...(event.content.contactCards ? { contactCards: event.content.contactCards } : {}), ...(event.content.location ? { location: event.content.location } : {}) }),
+          type: event.content.type, body: event.content.body, mediaUrl: presentationMediaUrl(event), status: key.direction === 'inbound' ? 'delivered' : 'sent',
+          metadata: json(presentationMetadata(event)),
           ...(event.order.timestampMs === null ? {} : { createdAt: new Date(event.order.timestampMs) }) } });
         messageId = message.id; result.outcome = 'created'; result.changes.push('message_created');
         result.allowOperationalEffects = c.mode === 'live' || (c.mode === 'recovered_live' && options.recoveredLiveEligible === true);
@@ -321,22 +375,23 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
         currentRevision: event.currentRevision ? json(event.currentRevision) : Prisma.DbNull } });
     } else {
       result.outcome = 'duplicate';
-      // Safe default for checkpoint A: mirrors preserve content/type/prepared results.
-      // Media sources, order and revision are retained per observation for reducer B.
       const stored = await tx.message.findUniqueOrThrow({ where: { id: identity.messageId } });
       const metadata = record(stored.metadata);
-      if (!metadata.deletedAt && !metadata.editedAt && equal(identity.currentRevision, event.currentRevision) && stored.type === event.content.type) {
-        const data: Prisma.MessageUpdateInput = {};
-        if (stored.mediaUrl === null && event.content.mediaUrl !== null) data.mediaUrl = event.content.mediaUrl;
-        if (stored.body === null && event.content.body !== null) data.body = event.content.body;
-        if (Object.keys(data).length) {
+      const revisionMatches = await sameRevision(tx, identity, event);
+      if (!metadata.deletedAt && (!metadata.editedAt || identity.currentRevision !== null) && revisionMatches && stored.type === event.content.type) {
+        const { data, conflict } = enrichPresentation(stored, event, equal);
+        if (conflict) {
+          result.outcome = 'held'; result.reconciliationReasons.push('content_reconciliation_required');
+          await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });
+        } else if (Object.keys(data).length) {
           await tx.message.update({ where: { id: stored.id }, data });
           result.outcome = 'enriched'; result.changes.push('missing_fields_enriched');
         }
       }
-      if (!equal(identity.currentRevision, event.currentRevision)) {
+      if (!metadata.deletedAt && ((!revisionMatches && !(metadata.editedAt && event.currentRevision === null)) || (!metadata.editedAt && stored.type !== event.content.type))) {
         result.outcome = 'held';
         result.reconciliationReasons.push('revision_reconciliation_required');
+        await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });
       }
     }
     Object.assign(result, { identityId: identity.id, messageId: identity.messageId, conversationId: identity.conversationId });
@@ -351,8 +406,9 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     }
     await tx.canonicalNativeAlias.update({ where: { id: alias.id }, data: { identityId: identity.id, state: 'resolved' } });
     await tx.canonicalObservation.update({ where: { id: observation.id }, data: { identityId: identity.id, state: result.outcome === 'held' ? 'held' : 'resolved', reason: result.reconciliationReasons[0] ?? null } });
+    await recoverForMessage(tx, event, result);
     return result;
   }
-  return { persistInTransaction,
+  return { persistInTransaction, reconcileRevisionInTransaction, reconcileSnapshotInTransaction, reconciliationFrontierInTransaction, recoverPendingInTransaction,
     persist: (db: PrismaClient, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) => db.$transaction(tx => persistInTransaction(tx, event, options), { isolationLevel: 'ReadCommitted' }) };
 }

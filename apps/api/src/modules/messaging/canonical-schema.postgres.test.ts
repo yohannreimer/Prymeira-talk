@@ -22,7 +22,7 @@ describe.skipIf(!url)('canonical messaging schema on PostgreSQL', () => {
     await db.connect();
     try {
       const tables = (await db.query("SELECT tablename FROM pg_tables WHERE schemaname='public'")).rows.map(r => r.tablename);
-      expect(tables).toEqual(expect.arrayContaining(['canonical_addresses', 'canonical_address_aliases', 'canonical_address_evidence', 'canonical_chats', 'canonical_chat_members', 'canonical_message_identities', 'canonical_native_aliases', 'canonical_observations']));
+      expect(tables).toEqual(expect.arrayContaining(['canonical_addresses', 'canonical_address_aliases', 'canonical_address_evidence', 'canonical_chats', 'canonical_chat_members', 'canonical_message_identities', 'canonical_native_aliases', 'canonical_observations', 'canonical_actions', 'canonical_recipient_receipts']));
       const indexes = (await db.query("SELECT indexdef FROM pg_indexes WHERE tablename='messages'")).rows.map(r => r.indexdef).join('\n');
       expect(indexes).toContain('UNIQUE INDEX messages_workspace_id_provider_message_id_key');
       expect(indexes).toContain('UNIQUE INDEX messages_workspace_id_provider_event_id_key');
@@ -56,6 +56,9 @@ describe.skipIf(!url)('canonical additive legacy backfill', () => {
       const before = []; for (const t of ['channels','contacts','conversations','messages']) before.push(await db.query(`SELECT * FROM ${t} ORDER BY id`));
       await db.query(await readFile(new URL('20260930012000_canonical_messaging/migration.sql', migrations), 'utf8'));
       await db.query(await readFile(new URL('20260930013000_canonical_address_review/migration.sql', migrations), 'utf8'));
+      for (const entry of (await readdir(migrations)).sort().filter(n => n.startsWith('20260930') && n >= '20260930014000')) {
+        await db.query(await readFile(new URL(`${entry}/migration.sql`, migrations), 'utf8'));
+      }
       const after = []; for (const t of ['channels','contacts','conversations','messages']) after.push(await db.query(`SELECT * FROM ${t} ORDER BY id`));
       expect(after.map(r => r.rows)).toEqual(before.map(r => r.rows));
       expect((await db.query('SELECT operation_conversation_id,state FROM canonical_chats')).rows).toEqual(expect.arrayContaining([{ operation_conversation_id: conversation, state: 'active' }, { operation_conversation_id: groupConversation, state: 'active' }]));
