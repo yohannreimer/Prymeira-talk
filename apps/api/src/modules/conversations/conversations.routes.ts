@@ -33,6 +33,7 @@ import type { EvolutionHistorySource } from '../evolution/evolution-history.js';
 import { isEncryptedControlEnvelope } from '../evolution/evolution-message-edit.js';
 
 interface ConversationsRoutesOptions {
+  publicTalkUrl?: string;
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
   handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>;
   evolution?: EvolutionRuntime;
@@ -324,6 +325,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     }
   });
   const service = createConversationsService(app.prisma as unknown as PrismaLike, {
+    publicTalkUrl: options.publicTalkUrl,
     evolution: options.evolution
   });
 
@@ -372,14 +374,16 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
 
   app.get("/conversations/:conversationId/messages", async (request, reply) => {
     const params = createMessageParamsSchema.safeParse(request.params);
+    const query = z.object({ compactMedia: z.enum(['0', '1']).optional() }).safeParse(request.query);
 
-    if (!params.success) {
+    if (!params.success || !query.success) {
       return reply.code(400).send({ error: "Invalid conversation message request." });
     }
 
     const messages = await service.listMessages({
       workspaceId: request.talk.workspaceId,
-      conversationId: params.data.conversationId
+      conversationId: params.data.conversationId,
+      compactMedia: query.data.compactMedia === '1'
     }).catch((error: unknown) => {
       if (error instanceof ConversationNotFoundError) {
         return null;

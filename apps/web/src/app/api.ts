@@ -1,3 +1,4 @@
+import { abortable, assertReadAccess, withReadDeadline } from './read-request';
 import {
   agentPackageSchema,
   channelFollowupConfigSchema,
@@ -631,8 +632,9 @@ export interface QuickReplyDto {
   updatedAt: string;
 }
 
-async function getRequiredToken(getToken: () => Promise<string | null>) {
-  const token = await getToken();
+async function getRequiredToken(getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  const token = signal ? await abortable(getToken(), signal) : await getToken();
+  signal?.throwIfAborted();
 
   if (!token && localAuthBypass) {
     return "local-dev-bypass";
@@ -1382,12 +1384,16 @@ export function apiGetPdfPreview(conversationId: string, messageId: string, page
 }
 
 export async function apiGetInboxMedia(conversationId: string, messageId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
-  const token = await getRequiredToken(getToken);
-  const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/media`, {
-    headers: { Authorization: `Bearer ${token}` }, signal
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/media`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: deadline
   });
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) throw new Error('Não foi possível carregar o anexo. Tente novamente.');
   return response.blob();
+
+  });
 }
 
 export function apiGetAudioTranscription(conversationId: string, messageId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
@@ -1396,23 +1402,37 @@ export function apiGetAudioTranscription(conversationId: string, messageId: stri
 }
 
 export async function apiGetContactPhoto(conversationId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
-  const token = await getRequiredToken(getToken);
-  const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/contact-photo`, {
-    headers: { Authorization: `Bearer ${token}` }, signal
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/contact-photo`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: deadline
   });
   if (response.status === 204) return null;
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) throw new Error('Não foi possível carregar a foto do contato.');
   return response.blob();
+
+  });
 }
 
 export async function apiGetSavedContactPhoto(contactId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
-  const token = await getRequiredToken(getToken);
-  const response = await fetch(`${apiUrl}/contacts/${encodeURIComponent(contactId)}/photo`, {
-    headers: { Authorization: `Bearer ${token}` }, signal
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/contacts/${encodeURIComponent(contactId)}/photo`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: deadline
   });
   if (response.status === 204) return null;
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) throw new Error('Não foi possível carregar a foto do contato.');
   return response.blob();
+
+  });
+}
+
+async function assertApiReadAccess(response: Response, token: string, signal?: AbortSignal, identityRead = false) {
+  await assertReadAccess(response, { signal, identityRead, validateAccess: () => fetch(`${apiUrl}/me`, {
+    signal, headers: { Authorization: `Bearer ${token}` }
+  }) });
 }
 
 async function fetchJson<T>(
@@ -1422,23 +1442,30 @@ async function fetchJson<T>(
   parse: (data: unknown) => T,
   errorLabel: string
 ): Promise<T> {
-  const token = await getRequiredToken(getToken);
+  const execute = async (signal?: AbortSignal) => {
+    const token = await getRequiredToken(getToken, signal);
 
-  const response = await fetch(`${apiUrl}${path}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...options.headers
-    }
+    const response = await fetch(`${apiUrl}${path}`, {
+      ...options,
+      signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...options.headers
+      }
   });
 
+  if (!options.method || options.method === 'GET') await assertApiReadAccess(response, token, signal);
   if (!response.ok) {
     const payload = await readApiErrorPayload(response, errorLabel);
-    throw new ApiRequestError(payload.message, payload.debug);
+    throw new ApiRequestError(payload.message, payload.debug, payload.code);
   }
 
   return parse(await response.json());
+  };
+  return !options.method || options.method === 'GET'
+    ? withReadDeadline(options.signal ?? undefined, execute)
+    : execute(options.signal ?? undefined);
 }
 
 export async function readApiErrorMessage(response: Response, fallbackLabel: string) {
@@ -1501,58 +1528,69 @@ export async function apiGetConversations(
     channelId: string;
     search: string;
     cursor: string;
-  }> = {}
+  }> = {},
+  signal?: AbortSignal
 ): Promise<ConversationDto[]> {
-  const token = await getRequiredToken(getToken);
-  const url = new URL(`${apiUrl}/conversations`);
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const url = new URL(`${apiUrl}/conversations`);
 
-  if (filters.status) {
-    url.searchParams.set("status", filters.status);
-  }
-  if (filters.view) {
-    url.searchParams.set("view", filters.view);
-  }
-  if (filters.assignee) {
-    url.searchParams.set("assignee", filters.assignee);
-  }
-  if (filters.channelId) {
-    url.searchParams.set("channelId", filters.channelId);
-  }
-  if (filters.search) {
-    url.searchParams.set("search", filters.search);
-  }
-  if (filters.cursor) {
-    url.searchParams.set("cursor", filters.cursor);
-  }
-
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`
+    if (filters.status) {
+      url.searchParams.set("status", filters.status);
     }
+    if (filters.view) {
+      url.searchParams.set("view", filters.view);
+    }
+    if (filters.assignee) {
+      url.searchParams.set("assignee", filters.assignee);
+    }
+    if (filters.channelId) {
+      url.searchParams.set("channelId", filters.channelId);
+    }
+    if (filters.search) {
+      url.searchParams.set("search", filters.search);
+    }
+    if (filters.cursor) {
+      url.searchParams.set("cursor", filters.cursor);
+    }
+
+    const response = await fetch(url, {
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
   });
 
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load conversations: ${response.status}`);
   }
 
   const data = await response.json();
   return conversationSchema.array().parse(data);
+
+  });
 }
 
 export async function apiGetAttentionCount(
-  getToken: () => Promise<string | null>, channelId?: string
+  getToken: () => Promise<string | null>, channelId?: string,
+  signal?: AbortSignal
 ): Promise<number> {
-  const token = await getRequiredToken(getToken);
-  const url = new URL(`${apiUrl}/conversations/attention-count`);
-  if (channelId) url.searchParams.set("channelId", channelId);
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) throw new Error(await readApiErrorMessage(response, "Failed to load attention count"));
-  const data: unknown = await response.json();
-  if (!data || typeof data !== "object" || !("count" in data) ||
-      typeof data.count !== "number" || !Number.isInteger(data.count) || data.count < 0) {
-    throw new Error("Invalid attention count response");
-  }
-  return data.count;
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const url = new URL(`${apiUrl}/conversations/attention-count`);
+    if (channelId) url.searchParams.set("channelId", channelId);
+    const response = await fetch(url, { signal: deadline, headers: { Authorization: `Bearer ${token}` } });
+    await assertApiReadAccess(response, token, deadline);
+    if (!response.ok) throw new Error(await readApiErrorMessage(response, "Failed to load attention count"));
+    const data: unknown = await response.json();
+    if (!data || typeof data !== "object" || !("count" in data) ||
+        typeof data.count !== "number" || !Number.isInteger(data.count) || data.count < 0) {
+      throw new Error("Invalid attention count response");
+    }
+    return data.count;
+
+  });
 }
 
 async function apiPostInboxTriageAction(
@@ -2129,22 +2167,28 @@ export async function apiMoveBoardMembership(
 }
 
 export async function apiGetChannels(
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
 ): Promise<ChannelDto[]> {
-  const token = await getRequiredToken(getToken);
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
 
-  const response = await fetch(`${apiUrl}/channels`, {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
+    const response = await fetch(`${apiUrl}/channels`, {
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
   });
 
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load channels: ${response.status}`);
   }
 
   const data = await response.json();
   return channelSchema.array().parse(data);
+
+  });
 }
 
 export async function apiCreateChannel(
@@ -2300,22 +2344,28 @@ export async function apiCreateTestInbound(
 
 export async function apiGetConversationMessages(
   conversationId: string,
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
 ): Promise<MessageDto[]> {
-  const token = await getRequiredToken(getToken);
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
 
-  const response = await fetch(`${apiUrl}/conversations/${conversationId}/messages`, {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
+    const response = await fetch(`${apiUrl}/conversations/${conversationId}/messages?compactMedia=1`, {
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
   });
 
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load messages: ${response.status}`);
   }
 
   const data = await response.json();
   return messageSchema.array().parse(data);
+
+  });
 }
 
 export async function apiRecognizeContactMessage(
@@ -2340,13 +2390,17 @@ export async function apiDeleteMessageForEveryone(
 }
 
 export async function apiGetCurrentTalkUser(
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
 ): Promise<CurrentTalkUserDto> {
-  const token = await getRequiredToken(getToken);
-  const response = await fetch(`${apiUrl}/me`, {
-    headers: { Authorization: `Bearer ${token}` }
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/me`, {
+      signal: deadline,
+      headers: { Authorization: `Bearer ${token}` }
   });
 
+  await assertApiReadAccess(response, token, deadline, true);
   if (!response.ok) {
     throw new Error(`Failed to load current user: ${response.status}`);
   }
@@ -2356,6 +2410,8 @@ export async function apiGetCurrentTalkUser(
     workspaceId: String(payload.workspaceId ?? ""),
     role: payload.role === "owner" || payload.role === "manager" ? payload.role : "agent"
   };
+
+  });
 }
 
 export interface CreateConversationMessageInput {
@@ -2395,22 +2451,28 @@ export async function apiCreateConversationMessage(
 
 export async function apiGetConversationContext(
   conversationId: string,
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
 ): Promise<ContactContextDto> {
-  const token = await getRequiredToken(getToken);
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
 
-  const response = await fetch(`${apiUrl}/conversations/${conversationId}/context`, {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
+    const response = await fetch(`${apiUrl}/conversations/${conversationId}/context`, {
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
   });
 
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load contact context: ${response.status}`);
   }
 
   const data = await response.json();
   return parseContactContext(data);
+
+  });
 }
 
 export async function apiRunConversationAction(
@@ -2454,16 +2516,23 @@ export async function apiResetConversation(
   return parseConversationActionResult(await response.json());
 }
 
-export async function apiGetQuickReplies(getToken: () => Promise<string | null>): Promise<QuickReplyDto[]> {
-  const token = await getRequiredToken(getToken);
-  const response = await fetch(`${apiUrl}/quick-replies`, {
-    headers: { Authorization: `Bearer ${token}` }
+export async function apiGetQuickReplies(getToken: () => Promise<string | null>,
+  signal?: AbortSignal
+): Promise<QuickReplyDto[]> {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/quick-replies`, {
+      signal: deadline,
+      headers: { Authorization: `Bearer ${token}` }
   });
+  await assertApiReadAccess(response, token, deadline);
   if (!response.ok) {
     throw new Error(`Failed to load quick replies: ${response.status}`);
   }
   const data = await response.json();
   return Array.isArray(data) ? data.map(parseQuickReply) : [];
+
+  });
 }
 
 export async function apiCreateQuickReply(
@@ -3242,12 +3311,13 @@ export async function apiCreateAssistantAction(
 }
 
 export async function apiGetTags(
-  getToken: () => Promise<string | null>
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
 ): Promise<TagDto[]> {
   return fetchJson(
     getToken,
     "/tags",
-    {},
+    { signal },
     (data) => tagSchema.array().parse(data),
     "Failed to load tags"
   );

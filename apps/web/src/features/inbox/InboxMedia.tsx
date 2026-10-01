@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useContext, useEffect, useRef, useState } from 'react';
 import { Download, FileText, LoaderCircle, Mic, Pause, Play, RotateCcw, Video, X } from 'lucide-react';
 import type { MessageDto } from '@prymeira-talk/shared';
 import { apiGetAudioTranscription, apiGetInboxMedia, apiGetPdfPreview } from '../../app/api';
-import { mediaDataUrl } from './media-data-url';
+import { SessionBlobCache } from '../../app/session/blob-cache';
+import { BlobCacheContext } from '../../app/session/blob-cache-context';
 import './inbox-media.css';
 
 export type InboxMediaTransport = {
@@ -20,11 +21,22 @@ function audioTranscript(body: string | null) {
   return text && !pendingAudio.test(text) ? text : null;
 }
 const filename = /^[^\n]{1,240}\.(pdf|docx?|xlsx?|csv|txt|zip|png|jpe?g|webp|mp4|ogg|mp3)$/i;
+function compactPreviewMime(message: MediaMessage) {
+  const source = message.mediaUrl;
+  if (!source || source.length > 1_024 || !/^https?:\/\//i.test(source) || !source.includes('previewMime=')) return undefined;
+  try {
+    const url = new URL(source);
+    if (!/^\/api\/conversations\/[^/]+\/messages\/[^/]+\/media$/.test(url.pathname)) return undefined;
+    const mimeType = url.searchParams.get('previewMime')?.toLowerCase();
+    return mimeType && /^(application\/pdf|video\/[a-z0-9.+-]+)$/.test(mimeType) ? mimeType : undefined;
+  } catch { return undefined; }
+}
 export function mediaFileName(message: MediaMessage) {
   if (message.attachment?.fileName?.trim()) return message.attachment.fileName;
   const body = message.body?.trim();
   if (body && filename.test(body)) return body;
   if (message.attachment?.mimeType?.toLowerCase().startsWith('video/')) return 'Vídeo.mp4';
+  if (message.attachment?.mimeType?.toLowerCase() === 'application/pdf' || compactPreviewMime(message) === 'application/pdf') return 'Documento.pdf';
   return /(?:application\/pdf|\.pdf(?:\?|$))/i.test(message.mediaUrl ?? '') ? 'Documento.pdf' : 'Documento';
 }
 export function mediaCaption(message: MediaMessage) {
@@ -72,12 +84,19 @@ function MediaViewer({ src, kind, name, message, getToken, transport, onClose }:
 }
 
 /** Fetches privately on demand; local media URLs comply with production CSP. */
-export function InboxMedia({ message, getToken, transport = defaultTransport }: { message: MessageDto; getToken: () => Promise<string | null>; transport?: InboxMediaTransport }) {
+export const InboxMedia = memo(function InboxMedia({ message, getToken, transport = defaultTransport }: { message: MessageDto; getToken: () => Promise<string | null>; transport?: InboxMediaTransport }) {
+  const sharedCache = useContext(BlobCacheContext);
+  const [localCache] = useState(() => new SessionBlobCache());
+  const cache = sharedCache ?? localCache;
+  const mediaIdentity = message.mediaSourceHash ?? message.mediaUrl ?? '';
+  const cacheKey = `media:${message.conversationId}:${message.id}:${mediaIdentity}`;
   const root = useRef<HTMLDivElement>(null);
   const audio = useRef<HTMLAudioElement>(null);
+  const video = useRef<HTMLVideoElement>(null);
+  const videoVisibleRef = useRef(false);
+  const videoPlayingRef = useRef(false);
   const controller = useRef<AbortController | null>(null);
   const transcriptController = useRef<AbortController | null>(null);
-  const resource = useRef<{ url: string; blob: Blob } | null>(null);
   const pending = useRef<Promise<{ url: string; blob: Blob }> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
@@ -85,6 +104,8 @@ export function InboxMedia({ message, getToken, transport = defaultTransport }: 
   const [src, setSrc] = useState<string | null>(initialMediaSource);
   const [viewer, setViewer] = useState<'image' | 'pdf' | 'video' | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [videoPlaying, setVideoPlaying] = useState(false);
+  const [videoVisible, setVideoVisible] = useState(false);
   const [duration, setDuration] = useState(message.attachment?.durationSeconds ?? 0);
   const [position, setPosition] = useState(0);
   const [speed, setSpeed] = useState(1);
@@ -95,49 +116,84 @@ export function InboxMedia({ message, getToken, transport = defaultTransport }: 
   const name = mediaFileName(message);
   const isImage = message.type === 'image';
   const isAudio = message.type === 'audio';
-  const isVideo = message.attachment?.mimeType?.toLowerCase().startsWith('video/') || /^data:video\//i.test(message.mediaUrl ?? '') || /\.(mp4|mov|webm)(\?|$)/i.test(message.mediaUrl ?? '');
+  const previewMime = compactPreviewMime(message);
+  const isVideo = message.attachment?.mimeType?.toLowerCase().startsWith('video/') || previewMime?.startsWith('video/') || /^data:video\//i.test(message.mediaUrl ?? '') || /\.(mp4|mov|webm)(\?|$)/i.test(message.mediaUrl ?? '');
+  const isPdf = message.attachment?.mimeType?.toLowerCase() === 'application/pdf' || previewMime === 'application/pdf' || /pdf/i.test(name + message.mediaUrl?.slice(0, 40));
   useEffect(() => {
     setSrc(initialMediaSource());
     setError(false); setViewer(null); setPlaying(false); setLoading(false);
     setPosition(0); setDuration(message.attachment?.durationSeconds ?? 0);
+    setVideoPlaying(false); videoPlayingRef.current = false;
     setTranscriptOpen(false); setRequestedTranscript(null); setTranscriptLoading(false); setTranscriptError(false);
     return () => {
       controller.current?.abort();
       transcriptController.current?.abort();
       audio.current?.pause();
-      resource.current = null; pending.current = null;
+      video.current?.pause();
+      pending.current = null;
+      if (!sharedCache) localCache.clear();
     };
-  }, [message.id, message.mediaUrl]);
+  }, [message.id, mediaIdentity, cache, cacheKey, sharedCache, localCache]);
+  useEffect(() => {
+    if (!(viewer || playing || videoPlaying || (isVideo && videoVisible && src))) return;
+    cache.retain(cacheKey);
+    return () => cache.release(cacheKey);
+  }, [cache, cacheKey, viewer, playing, videoPlaying, isVideo, videoVisible, src]);
+
+  function releasePausedVideo() {
+    if (videoPlayingRef.current) return;
+    const element = video.current;
+    if (element?.getAttribute('src')) { element.removeAttribute('src'); element.load(); }
+    setSrc(null);
+  }
 
   async function load() {
-    if (resource.current) return resource.current;
+    const cached = cache.get(cacheKey);
+    if (cached) { setSrc(cached.url); return cached; }
     if (pending.current) return pending.current;
     controller.current = new AbortController();
     setLoading(true); setError(false);
     const signal = controller.current.signal;
+    cache.retain(cacheKey);
     const job = (async () => {
-      const blob = await transport.media(message.conversationId, message.id, getToken, signal);
-      const url = await mediaDataUrl(blob);
+      const item = await cache.load(cacheKey, () => transport.media(message.conversationId, message.id, getToken, signal));
       signal.throwIfAborted();
-      const item = { blob, url };
-      resource.current = item; setSrc(item.url);
+      setSrc(item.url);
       return item;
     })();
     pending.current = job;
     try { return await job; }
     catch (e) { if (!signal.aborted) setError(true); throw e; }
-    finally { if (pending.current === job) pending.current = null; if (!signal.aborted) setLoading(false); }
+    finally {
+      if (pending.current === job) pending.current = null;
+      if (!signal.aborted) setLoading(false);
+      // Keep the URL alive until playback/viewer state has committed.
+      requestAnimationFrame(() => cache.release(cacheKey));
+    }
   }
 
   // Only visible remote images load: opening a long history must not fetch every attachment.
   useEffect(() => {
-    if (!isImage || src || !root.current) return;
+    if ((!isImage && !isVideo) || !root.current) return;
+    let visible = false;
     const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => entry.isIntersecting)) { observer.disconnect(); void load().catch(() => {}); }
+      const nextVisible = entries.some(entry => entry.isIntersecting);
+      if (nextVisible === visible) return;
+      visible = nextVisible;
+      if (isVideo) {
+        videoVisibleRef.current = visible; setVideoVisible(visible);
+        if (!visible) releasePausedVideo();
+        return;
+      }
+      if (!visible) { cache.release(cacheKey); return; }
+      cache.retain(cacheKey);
+      if (initialMediaSource()) return;
+      if (!cache.get(cacheKey)) setSrc(null);
+      void load().catch(() => {});
     }, { rootMargin: '100px' });
     observer.observe(root.current);
-    return () => observer.disconnect();
-  }, [message.id, message.mediaUrl, src]);
+    return () => { observer.disconnect(); if (visible && isImage) cache.release(cacheKey); };
+  }, [message.id, mediaIdentity, cache, cacheKey, isVideo, isImage]);
 
   async function play() {
     if (!audio.current || loading) return;
@@ -204,15 +260,18 @@ export function InboxMedia({ message, getToken, transport = defaultTransport }: 
         {transcriptOpen ? <p role="status">{transcript ?? (transcriptLoading ? 'Transcrevendo áudio…' : transcriptError ? 'Transcrição indisponível. Feche e tente novamente.' : 'Transcrição indisponível.')}</p> : null}
       </div>
     </> : isImage ? <button className={`talk-image-preview${message.body === 'Figurinha recebida' ? ' is-sticker' : ''}`} type="button" aria-label="Ampliar imagem" onClick={() => void open()}>
-      {src && !error ? <img src={src} alt={mediaCaption(message) || 'Imagem da conversa'} onError={() => setError(true)} /> : <span>{loading ? 'Carregando imagem…' : 'Abrir imagem'}</span>}
+      {src && !error ? <img src={src} loading="lazy" decoding="async" alt={mediaCaption(message) || 'Imagem da conversa'} onError={() => setError(true)} /> : <span>{loading ? 'Carregando imagem…' : 'Abrir imagem'}</span>}
     </button> : isVideo ? <div className="talk-video-preview">
-      {src ? <video src={src} controls playsInline preload="metadata" aria-label="Vídeo da conversa" /> :
+      {src ? <video ref={video} src={src} controls playsInline preload="none" aria-label="Vídeo da conversa"
+        onPlay={() => { videoPlayingRef.current = true; setVideoPlaying(true); }}
+        onPause={() => { videoPlayingRef.current = false; setVideoPlaying(false); if (!videoVisibleRef.current) releasePausedVideo(); }}
+        onEnded={() => { videoPlayingRef.current = false; setVideoPlaying(false); if (!videoVisibleRef.current) releasePausedVideo(); }} /> :
         <button type="button" aria-label="Reproduzir vídeo" disabled={loading} onClick={() => void load().catch(() => {})}>
           {loading ? <LoaderCircle className="talk-media-loading" size={28} /> : <><Video size={28} /><span>Reproduzir vídeo</span></>}
         </button>}
     </div> : <div className="talk-document-card">
       <button type="button" className="talk-document-open" aria-label="Abrir documento" onClick={() => void open()} disabled={loading}>
-        <span className="talk-document-icon"><FileText size={27} /><small>{isVideo ? 'VÍDEO' : /pdf/i.test(name + message.mediaUrl?.slice(0, 40)) ? 'PDF' : 'ARQ'}</small></span>
+        <span className="talk-document-icon"><FileText size={27} /><small>{isVideo ? 'VÍDEO' : isPdf ? 'PDF' : 'ARQ'}</small></span>
         <span className="talk-document-title"><strong>{name}</strong><small>{loading ? 'Carregando…' : isVideo ? 'Abrir vídeo' : 'Abrir documento'}</small></span>
       </button>
       <button className="talk-document-download" type="button" aria-label="Baixar documento" disabled={loading} onClick={() => void open(true)}><Download size={20} /></button>
@@ -221,4 +280,4 @@ export function InboxMedia({ message, getToken, transport = defaultTransport }: 
       <button type="button" onClick={() => { setError(false); if (isAudio) void play(); else void open(); }}><RotateCcw size={13} /> Tentar novamente</button></div> : null}
     {viewer && src ? <MediaViewer src={src} kind={viewer} message={message} getToken={getToken} transport={transport} name={isImage ? 'Imagem da conversa' : name} onClose={() => setViewer(null)} /> : null}
   </div>;
-}
+});
