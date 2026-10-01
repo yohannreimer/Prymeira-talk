@@ -7070,6 +7070,13 @@ select:disabled {
   background: var(--color-surface-subtle);
 }
 
+.message-thread-content {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 12px;
+}
+
 .message-thread-skeleton {
   display: flex;
   flex: 1;

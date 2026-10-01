@@ -2,6 +2,8 @@ import fp from "fastify-plugin";
 import type { FastifyRequest } from "fastify";
 import { z } from "zod";
 import { SupervisionError, validateSupervisionAccess, type SupervisionContext } from "../modules/supervision/supervision-access.js";
+import { createAccessSingleflight } from "./access-singleflight.js";
+import { measureInboxHub } from "./inbox-timing.js";
 
 const workspaceAccessSchema = z.object({
   allowed: z.boolean(),
@@ -31,7 +33,7 @@ declare module "fastify" {
 
 type RequireProductAccess = (
   productKey: string,
-  options: { accountApiUrl: string; clerkToken: string }
+  options: { accountApiUrl: string; clerkToken: string; signal?: AbortSignal }
 ) => Promise<unknown>;
 type Fetch = typeof fetch;
 
@@ -145,12 +147,13 @@ function readClerkUserIdFromToken(clerkToken: string) {
 
 async function defaultRequireProductAccess(
   productKey: string,
-  options: { accountApiUrl: string; clerkToken: string },
+  options: { accountApiUrl: string; clerkToken: string; signal?: AbortSignal },
   fetchAccess: Fetch = fetch
 ) {
   const response = await fetchAccess(
     `${options.accountApiUrl.replace(/\/$/, "")}/access-check?product_key=${encodeURIComponent(productKey)}`,
     {
+      signal: options.signal,
       headers: {
         Authorization: `Bearer ${options.clerkToken}`
       }
@@ -177,9 +180,10 @@ export const authContextPlugin = fp(
     app.decorateRequest("talk");
     app.decorateRequest("supervision");
     const fetchAccess = options.fetch ?? fetch;
+    const validateAccess = createAccessSingleflight<unknown>();
     const requireAccess =
       options.requireProductAccess ??
-      ((productKey: string, input: { accountApiUrl: string; clerkToken: string }) =>
+      ((productKey: string, input: { accountApiUrl: string; clerkToken: string; signal?: AbortSignal }) =>
         defaultRequireProductAccess(productKey, input, fetchAccess));
 
     app.addHook("onRequest", async (request, reply) => {
@@ -218,10 +222,10 @@ export const authContextPlugin = fp(
         return;
       }
 
-      const access = await requireAccess(options.productKey, {
-        accountApiUrl: options.accountApiUrl,
-        clerkToken
-      }).catch((error: unknown) => {
+      const access = await measureInboxHub(() => validateAccess(options.productKey, options.accountApiUrl, clerkToken,
+        (signal) => requireAccess(options.productKey, {
+          accountApiUrl: options.accountApiUrl, clerkToken, signal
+        }))).catch((error: unknown) => {
         const statusCode = readErrorStatusCode(error);
 
         if (statusCode === null || statusCode >= 500) {

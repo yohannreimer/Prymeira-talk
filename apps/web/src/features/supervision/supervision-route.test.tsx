@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../app/App";
 
 vi.mock("../../app/auth", () => ({ AuthGate: ({ children }: { children: React.ReactNode }) => <div data-auth-gate>{children}</div> }));
+vi.mock("../../app/session/TalkSessionProvider", () => ({ TalkSessionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 vi.mock("../shell/TalkSuiteShell", () => ({ TalkSuiteShell: () => <div data-seller-shell>Seller modules</div> }));
 vi.mock("./SupervisionPage", () => ({ SupervisionPage: () => <div data-supervision>Supervision only</div> }));
 

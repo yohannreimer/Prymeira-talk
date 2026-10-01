@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import fp from "fastify-plugin";
+import { measureInboxDatabase } from "./inbox-timing.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -12,7 +13,7 @@ export interface PrismaPluginOptions {
 }
 
 export const prismaPlugin = fp<PrismaPluginOptions>(async (app, options) => {
-  const prisma = new PrismaClient({
+  const client = new PrismaClient({
     datasources: {
       db: {
         url: options.databaseUrl
@@ -20,7 +21,14 @@ export const prismaPlugin = fp<PrismaPluginOptions>(async (app, options) => {
     }
   });
 
-  app.decorate("prisma", prisma);
+  const prisma = client.$extends({
+    query: {
+      $allModels: {
+        $allOperations({ args, query }) { return measureInboxDatabase(() => query(args)); }
+      }
+    }
+  });
+  app.decorate("prisma", prisma as unknown as PrismaClient);
   app.addHook("onClose", async () => {
     await prisma.$disconnect();
   });

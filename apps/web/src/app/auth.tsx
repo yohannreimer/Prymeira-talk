@@ -14,6 +14,7 @@ const publishableKey = configuredPublishableKey?.endsWith("_replace_me") ? undef
 const localAuthBypass = readConfigValue("VITE_LOCAL_AUTH_BYPASS") === "true";
 const localAuthBypassToken = "local.eyJzdWIiOiJkZW1vX2FnZW50X21hcmluYSJ9.bypass";
 const localAuth = {
+  userId: 'demo_agent_marina', sessionId: 'local-session', orgId: null,
   getToken: async () => localAuthBypassToken
 };
 

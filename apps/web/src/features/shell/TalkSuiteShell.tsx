@@ -1,3 +1,4 @@
+import { useOptionalTalkSession } from '../../app/session/TalkSessionProvider';
 import { Bot } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
@@ -5,6 +6,7 @@ import { isTalkModuleKey, talkModules, type TalkModuleKey } from "./moduleRegist
 
 type TalkSuiteShellProps = {
   renderModule: (moduleKey: TalkModuleKey) => ReactNode;
+  prefetchModule?: (moduleKey: TalkModuleKey) => void;
 };
 
 const defaultModule: TalkModuleKey = "atendimento";
@@ -23,7 +25,8 @@ function buildModuleUrl(moduleKey: TalkModuleKey) {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
+export function TalkSuiteShell({ renderModule, prefetchModule }: TalkSuiteShellProps) {
+  const context = useOptionalTalkSession();
   const [activeModule, setActiveModule] = useState<TalkModuleKey>(readModuleFromUrl);
 
   const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(() => {
@@ -57,6 +60,9 @@ export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
   }, [activeModule]);
 
   function handleModuleClick(moduleKey: TalkModuleKey) {
+    if (moduleKey === 'atendimento' && activeModule !== moduleKey && new URLSearchParams(window.location.search).get('talkPerf') === '1') {
+      context?.session.writeUI('performance:returnStart', performance.now(), null);
+    }
     window.history.pushState({ module: moduleKey }, "", buildModuleUrl(moduleKey));
     setActiveModule(moduleKey);
   }
@@ -90,6 +96,8 @@ export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
                 .join(" ")}
               key={key}
               onClick={() => handleModuleClick(key)}
+              onPointerEnter={() => prefetchModule?.(key)}
+              onFocus={() => prefetchModule?.(key)}
               title={sidebarExpanded ? undefined : label}
               type="button"
             >
