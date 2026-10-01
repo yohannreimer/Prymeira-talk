@@ -83,7 +83,7 @@ describe("POST /channels/recover-contact-names", () => {
     const { app, prisma, source } = await buildApp();
     const response = await app.inject({ method: "POST", url: "/channels/recover-contact-names" });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ dryRun: true, channelsChecked: 1, invalid: 2, recoverable: 1, recovered: 0, cleared: 0, failedChannels: 0 });
+    expect(response.json()).toEqual({ dryRun: true, channelsChecked: 1, failedChannels: 0, candidates: 2, recovered: 1, cleared: 1, skipped: 0 });
     expect(source!.recentContacts).toHaveBeenCalledWith({ instanceName: "instance-1" });
     expect(prisma.contact.updateMany).not.toHaveBeenCalled();
   });
@@ -98,7 +98,7 @@ describe("POST /channels/recover-contact-names", () => {
     const { app, prisma } = await buildApp();
     const response = await app.inject({ method: "POST", url: "/channels/recover-contact-names", payload: { dryRun: false } });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ dryRun: false, channelsChecked: 1, invalid: 2, recoverable: 1, recovered: 1, cleared: 1, failedChannels: 0 });
+    expect(response.json()).toEqual({ dryRun: false, channelsChecked: 1, failedChannels: 0, candidates: 2, recovered: 1, cleared: 1, skipped: 0 });
     expect(prisma.contact.updateMany).toHaveBeenCalledWith({
       where: { id: "c-1", workspaceId, name: "Você" }, data: { name: "Maria Souza", updatedAt }
     });

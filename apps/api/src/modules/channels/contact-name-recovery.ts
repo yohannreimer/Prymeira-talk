@@ -9,17 +9,23 @@ const PAGE_SIZE = 2000;
 export type ContactNameRecoveryResult = {
   dryRun: boolean;
   channelsChecked: number;
-  invalid: number;
-  recoverable: number;
-  recovered: number;
-  cleared: number;
   failedChannels: number;
+  /** Non-group contacts without a usable name (null, "Você", their own number, a raw WhatsApp id). */
+  candidates: number;
+  /** Candidates that got (or, in a dry run, would get) their real WhatsApp name. */
+  recovered: number;
+  /** Invalid names set (or, in a dry run, that would be set) to null because no real name was found. */
+  cleared: number;
+  /** Candidates left as they were: null with no real name, or a write that lost a race or failed. */
+  skipped: number;
 };
 
+type Candidate = { id: string; phone: string; name: string | null; updatedAt: Date };
+
 /**
- * Repairs contacts whose stored name is not a real name ("Você", their own number, a raw WhatsApp id).
- * The real WhatsApp profile name is taken from Evolution's contact list; when none exists the name is
- * cleared, but only when at least one channel answered (never clear without a source of truth).
+ * Repairs contacts whose stored name is not a real name. The real WhatsApp profile name comes from
+ * Evolution's contact list; an invalid name with no real match is cleared so the UI shows the number.
+ * Contacts with a usable name are never written. Nothing is written when no channel answered.
  */
 export function createContactNameRecovery(input: {
   prisma: Pick<PrismaClient, 'contact'>;
@@ -52,7 +58,7 @@ export function createContactNameRecovery(input: {
     return null;
   }
 
-  async function write(workspaceId: string, contact: { id: string; name: string; updatedAt: Date }, name: string | null) {
+  async function write(workspaceId: string, contact: Candidate, name: string | null) {
     try {
       const result = await input.prisma.contact.updateMany({
         // Conditional on the old name so a concurrent rename is never overwritten; updatedAt is kept so
@@ -70,32 +76,40 @@ export function createContactNameRecovery(input: {
     async recover(params: {
       workspaceId: string;
       channels: Array<{ id: string; providerKey: string }>;
-      dryRun: boolean;
+      dryRun?: boolean;
     }): Promise<ContactNameRecoveryResult> {
+      const dryRun = params.dryRun ?? false;
       const { names, failed } = await realNames(params.channels);
-      const canClear = failed < params.channels.length;
       const result: ContactNameRecoveryResult = {
-        dryRun: params.dryRun, channelsChecked: params.channels.length,
-        invalid: 0, recoverable: 0, recovered: 0, cleared: 0, failedChannels: failed
+        dryRun, channelsChecked: params.channels.length, failedChannels: failed,
+        candidates: 0, recovered: 0, cleared: 0, skipped: 0
       };
+      // Without a single answering channel there is no source of truth: never recover or clear.
+      if (failed === params.channels.length) return result;
       let after: string | undefined;
       for (;;) {
+        // Full keyset scan: "usable" folds case, accents and punctuation, which a SQL pre-filter cannot
+        // express exactly. Pages are small and only the columns needed for the check are selected.
         const page = await input.prisma.contact.findMany({
-          where: { workspaceId: params.workspaceId, isGroup: false, name: { not: null }, ...(after ? { id: { gt: after } } : {}) },
+          where: { workspaceId: params.workspaceId, isGroup: false, ...(after ? { id: { gt: after } } : {}) },
           select: { id: true, phone: true, name: true, updatedAt: true },
           orderBy: { id: 'asc' },
           take: PAGE_SIZE
         });
         for (const contact of page) {
-          if (contact.name === null || usableContactName(contact.name)) continue;
-          result.invalid++;
+          if (contact.name !== null && usableContactName(contact.name)) continue;
+          result.candidates++;
           const realName = findRealName(names, contact.phone);
-          if (realName) result.recoverable++;
-          if (params.dryRun || (!realName && !canClear)) continue;
-          if (await write(params.workspaceId, { id: contact.id, name: contact.name, updatedAt: contact.updatedAt }, realName)) {
-            if (realName) result.recovered++;
-            else result.cleared++;
+          if (!realName && contact.name === null) {
+            result.skipped++;
+            continue;
           }
+          if (!dryRun && !(await write(params.workspaceId, contact, realName))) {
+            result.skipped++;
+            continue;
+          }
+          if (realName) result.recovered++;
+          else result.cleared++;
         }
         if (page.length < PAGE_SIZE) break;
         after = page[page.length - 1]!.id;
