@@ -3,6 +3,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import type { EvolutionHistorySource, HistoryRecord, RecentEvolutionChat } from '../evolution/evolution-history.js';
 import { attachmentPresentation, extractMessageContent } from '../evolution/evolution.routes.js';
 import { buildPhoneLookupCandidates, normalizePhoneForStorage } from '../contacts/phone-normalization.js';
+import { usableContactName } from '../contacts/contact-name.js';
 
 type ImportChannel = { id: string; workspaceId: string; providerKey: string; historyImportAttempts: number };
 const lid = (value: string) => /^\d+@lid$/.test(value);
@@ -24,7 +25,8 @@ export function createChannelHistoryImporter(input: {
     const records = await input.source.recentMessages({ instanceName: channel.providerKey, remoteJid: chat.remoteJid, limit });
     if (!records.length) return 0;
     if (since && records.at(-1)!.messageTimestamp * 1000 < since.getTime()) return 0;
-    const name = chat.pushName ?? [...records].reverse().find((record) => !record.key.fromMe && record.pushName)?.pushName ?? null;
+    const name = usableContactName(chat.pushName)
+      ?? usableContactName([...records].reverse().find((record) => !record.key.fromMe && usableContactName(record.pushName))?.pushName);
     const result = await input.prisma.$transaction(async (tx) => {
       const candidates = lid(phone) ? [phone] : buildPhoneLookupCandidates(phone);
       const contact = await tx.contact.findFirst({ where: { workspaceId: channel.workspaceId, phone: { in: candidates } }, orderBy: { updatedAt: 'desc' } })
@@ -90,7 +92,7 @@ export function createChannelHistoryImporter(input: {
       if (!lid(phone) && (phone.length < 8 || phone.length > 15)) continue;
       const previous = contacts.get(phone);
       contacts.set(phone, {
-        name: item.name ?? previous?.name ?? null,
+        name: usableContactName(item.name) ?? previous?.name ?? null,
         avatarUrl: item.profilePicUrl ?? previous?.avatarUrl ?? null
       });
     }
@@ -132,7 +134,7 @@ export function createChannelHistoryImporter(input: {
     let inserted = 0;
     for (const chat of chats) {
       if (shouldStop()) throw new Error('HISTORY_IMPORT_STOPPED');
-      chat.pushName = contacts.get(contactIdentity(chat.phoneJid))?.name ?? chat.pushName;
+      chat.pushName = usableContactName(contacts.get(contactIdentity(chat.phoneJid))?.name) ?? usableContactName(chat.pushName);
       inserted += await importChat(channel, chat, 30, since);
     }
     if (inserted === 0) {
