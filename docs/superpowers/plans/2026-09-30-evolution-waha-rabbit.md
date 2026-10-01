@@ -42,6 +42,10 @@ Base: `4524fbb3e834197626d7fc6ad329a7282c562615`. Branch: `codex/talk-waha-rabbi
 - [ ] 2a.3D. Conversão das entradas, importadores históricos e leitores; obrigações duráveis antes da ativação final.
 - [ ] 2a-resolução. Quando PN/LID comprovados já pertencem a duas conversas existentes, preservar UUIDs e configurações, reunir o histórico por membros e resolver explicitamente a autoridade operacional. Quarentena de conflitos é um estágio de segurança, não conclusão do histórico único; incluir autorização das origens, controles humanos, reservas incertas e bloqueio de jobs antigos.
 - [ ] 2b. RabbitMQ/ingresso/consumidor, efeitos duráveis, recuperação com checkpoints e realtime entre processos. Testes de duplicação, falhas e reentrega usando a persistência do bloco 2a.
+- [x] 2b.1A. Transporte isolado executável: autenticação, journal privado, confirms obrigatórios, consumidor, retry/DLQ e recuperação por namespace. SPEC e QUALITY aprovadas em `464fee3`, ambas com 53 testes PostgreSQL/Rabbit reais; types e build dos cinco entrypoints passaram na SPEC. As 54 migrações de `b134fa3` passaram fresh/upgrade, com Prisma idêntico até o candidato aprovado. ACK neste marco conserva `pending_application`; não representa aplicação canônica nem autoriza ativação produtiva.
+- [ ] 2b.1B. Aplicação canônica de cada receipt, hooks transacionais e obrigações persistentes, com ACK depois da transação completa.
+- [ ] 2b.1C. Handlers duráveis de efeitos e checkpoints de domínio.
+- [ ] 2b.1D. Autoridade PN/LID persistida, lifecycle/recovery, importadores e leitores integrados.
 - [ ] 3. Armazenamento e serviço comum de mídia; coordenação persistente de transcrição/leitura; integração IA. Testes de player, MIME, autorização, SSRF, retry e concorrência.
 - [ ] 4. Roteador único persistente, todos os remetentes, failover/saúde/reconciliação e cadência. Testes de concorrência, tentativa incerta, eco e sessões degradadas.
 - [ ] 5. Infraestrutura, migrações reais, testes de falhas/carga, homologação visual e real, revisão final, documentação e PR. Publicação depende dos critérios aprovados, não apenas de build.
