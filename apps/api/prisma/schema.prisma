@@ -497,6 +497,7 @@ model Conversation {
   outboundCorrelations OutboundCorrelation[]
   ingressProgress IngressEventProgress[]
   ingressEffects IngressEffect[]
+  previewOwner ConversationPreviewOwner?
 }
 
 model Message {
@@ -535,6 +536,7 @@ model Message {
   outboundCorrelations OutboundCorrelation[]
   ingressProgress IngressEventProgress[]
   ingressEffects IngressEffect[]
+  ownedConversationPreviews ConversationPreviewOwner[]
 }
 
 model Tag {
@@ -1954,4 +1956,18 @@ model IngressEffect {
   @@unique([workspaceId,channelId,logicalKey,kind], map: "ingress_effects_scope_logical_kind_key")
   @@index([state,createdAt])
   @@map("ingress_effects")
+}
+
+// Private proof of which Message supplies the existing conversation preview cache.
+// Writers without proof invalidate this row; legacy cache contents are not inferred.
+model ConversationPreviewOwner {
+  conversationId String @id @db.Uuid @map("conversation_id")
+  workspaceId String @map("workspace_id")
+  channelId String @db.Uuid @map("channel_id")
+  messageId String @db.Uuid @map("message_id")
+  conversation Conversation @relation(fields:[workspaceId,channelId,conversationId], references:[workspaceId,channelId,id], onDelete:Cascade, map:"conversation_preview_owners_conversation_fkey")
+  message Message @relation(fields:[workspaceId,conversationId,messageId], references:[workspaceId,conversationId,id], onDelete:Cascade, map:"conversation_preview_owners_message_fkey")
+  @@unique([workspaceId,channelId,conversationId],map:"conversation_preview_owners_scope_key")
+  @@index([workspaceId,conversationId,messageId],map:"conversation_preview_owners_message_idx")
+  @@map("conversation_preview_owners")
 }

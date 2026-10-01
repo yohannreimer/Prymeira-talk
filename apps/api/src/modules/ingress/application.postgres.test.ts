@@ -267,6 +267,58 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
         expect(await db.conversation.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ unreadCount: 1 });
         expect(await db.ingressEffect.count({ where: { receiptId: id, kind: 'human.reply_improvement' } })).toBe(0);
     });
+    it.each(['edit', 'revoke'].flatMap(kind => ['older', 'latest'].flatMap(target => [false, true].map(reversed => ({ kind, target, reversed })))))(`preview UUID ownership survives $kind of $target with reversed arrival $reversed`, async ({ kind, target, reversed }) => {
+        const f = await fixture(), a = { id: 'preview-a', remoteJid: peer, fromMe: false }, b = { ...a, id: 'preview-b' };
+        const receiptA = await f.send('evolution', { key: a, message: { conversation: 'A' }, messageTimestamp: 1700000000 }), receiptB = await f.send('evolution', { key: b, message: { conversation: 'B' }, messageTimestamp: 1700000000 });
+        for (const id of reversed ? [receiptB, receiptA] : [receiptA, receiptB])
+            await service.apply(id);
+        const selected = reversed ? a : b, old = reversed ? b : a;
+        const conversation = await db.conversation.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+        const owner = await db.conversationPreviewOwner.findUniqueOrThrow({ where: { conversationId: conversation.id } });
+        const selectedIdentity = await db.canonicalMessageIdentity.findFirstOrThrow({ where: { workspaceId: f.workspaceId, rawId: selected.id } });
+        expect(owner.messageId).toBe(selectedIdentity.messageId);
+        expect(conversation.lastMessagePreview).toBe(reversed ? 'A' : 'B');
+        const key = target === 'latest' ? selected : old;
+        const action = await stage(f, { event: 'MESSAGES_UPSERT', instance: f.evo.sessionName, data: { key: { ...key, id: 'preview-action' }, message: { protocolMessage: { key, type: kind === 'edit' ? 14 : 'REVOKE', ...(kind === 'edit' ? { editedMessage: { conversation: 'edited' } } : {}) } } } });
+        await journal.publish(action.id, f.publisher);
+        const consumer = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher, application: service, prefetch: 1 });
+        consumers.push(consumer);
+        await until(() => db.ingressApplication.findUnique({ where: { receiptId: action.id } }), v => v?.state === 'applied');
+        await consumer.close();
+        const ch = await admin.createChannel();
+        expect((await ch.checkQueue(transportTopology(f.namespace).incoming)).messageCount).toBe(0);
+        await ch.close();
+        await service.apply(action.id);
+        // An old provider mirror and delayed event cannot reclaim an equal/newer preview.
+        await service.apply(await f.send('waha', { id: `false_${peer}_${old.id}`, body: reversed ? 'B' : 'A' }));
+        await service.apply(await f.send('evolution', { key: { ...a, id: 'preview-delayed' }, message: { conversation: 'delayed' }, messageTimestamp: 1699999999 }));
+        const current = await db.conversation.findUniqueOrThrow({ where: { id: conversation.id } });
+        expect(current).toMatchObject({ lastMessagePreview: target === 'latest' ? (kind === 'edit' ? 'edited' : 'Esta mensagem foi apagada') : (reversed ? 'A' : 'B'), lastMessagePreviewAt: conversation.lastMessagePreviewAt, lastMessageAt: conversation.lastMessageAt, hiddenUntilReply: false, unreadCount: 3 });
+        expect(await db.conversationPreviewOwner.findUnique({ where: { conversationId: conversation.id } })).toEqual(owner);
+        expect(await db.ingressEffect.count({ where: { receiptId: action.id, kind: 'content.reconcile' } })).toBe(1);
+    });
+    it('legacy preview without exact UUID proof stays conservative despite equal timestamp and body', async () => {
+        const f = await fixture(), key = { id: 'legacy-preview', remoteJid: peer, fromMe: false };
+        await service.apply(await f.send('evolution', { key, message: { conversation: 'same' } }));
+        const conversation = await db.conversation.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+        await db.conversation.update({ where: { id: conversation.id }, data: { lastMessagePreview: 'same' } });
+        expect(await db.conversationPreviewOwner.findUnique({ where: { conversationId: conversation.id } })).toBeNull();
+        const action = await stage(f, { event: 'MESSAGES_UPSERT', instance: f.evo.sessionName, data: { key: { ...key, id: 'legacy-edit' }, message: { protocolMessage: { key, type: 14, editedMessage: { conversation: 'edited' } } } } });
+        await service.apply(action.id);
+        await service.apply(await f.send('evolution', { key: { ...key, id: 'same-time-new' }, message: { conversation: 'new tied' } }));
+        expect(await db.conversation.findUnique({ where: { id: conversation.id } })).toMatchObject({ lastMessagePreview: 'same', lastMessagePreviewAt: conversation.lastMessagePreviewAt, unreadCount: 2 });
+        expect(await db.conversationPreviewOwner.findUnique({ where: { conversationId: conversation.id } })).toBeNull();
+    });
+    it('a newer live Message replaces legacy preview without preview clock using activity before it advances', async () => {
+        const f = await fixture(), key = { id: 'legacy-clock', remoteJid: peer, fromMe: false };
+        await service.apply(await f.send('evolution', { key, message: { conversation: 'prior' }, messageTimestamp: 1699999999 }));
+        const conversation = await db.conversation.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+        await db.conversation.update({ where: { id: conversation.id }, data: { lastMessagePreview: 'legacy', lastMessagePreviewAt: null } });
+        await service.apply(await f.send('evolution', { key: { ...key, id: 'newer-clock' }, message: { conversation: 'newer' }, messageTimestamp: 1700000000 }));
+        const latest = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId, body: 'newer' } });
+        expect(await db.conversation.findUnique({ where: { id: conversation.id } })).toMatchObject({ lastMessagePreview: 'newer', lastMessagePreviewAt: latest.createdAt, lastMessageAt: latest.createdAt, unreadCount: 2 });
+        expect(await db.conversationPreviewOwner.findUnique({ where: { conversationId: conversation.id } })).toMatchObject({ messageId: latest.id });
+    });
     it('persists one pending group metadata obligation across providers, deliveries and history without attendance', async () => {
         const f = await fixture(), group = '123-456@g.us', participant = '15550003333@s.whatsapp.net';
         const id = await f.send('evolution', { type: 'append', key: { id: 'group-metadata', remoteJid: group, fromMe: false, participant }, pushName: 'Synthetic participant' });

@@ -1,3 +1,4 @@
+import { refreshOwnedConversationPreviewInTransaction } from './conversation-preview.js';
 import { assertCurrentMessagingSource, StaleMessagingSourceError } from './canonical-source.js';
 import { Prisma, type CanonicalMessageIdentity, type Message } from '@prisma/client';
 import type { CanonicalStoreResult } from './canonical-store.js';
@@ -106,7 +107,7 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
       pendingActionIds: actions.slice(0, 100).map(row => row.id), pendingObservationIds: snapshots.slice(0, 100).map(row => row.id),
       hasMore: actions.length > 100 || snapshots.length > 100 || unresolvedTargets > 0, unresolvedTargets };
   }
-  async function applyPatch(tx: Tx, stored: Message, patch: MessageEditPatch, editedAt?: string) {
+  async function applyPatch(tx: Tx, stored: Message, patch: MessageEditPatch, context: TrustedMessagingContext, editedAt?: string) {
     const metadata = record(stored.metadata), attachment = record(metadata.attachment);
     if (patch.field === 'body' && stored.type !== 'text') return 'edit_type_conflict';
     if (patch.field === 'caption' && !['audio', 'image', 'file'].includes(stored.type)) return 'edit_type_conflict';
@@ -118,7 +119,7 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     }
     await tx.message.update({ where: { id: stored.id }, data: { body,
       metadata: json({ ...metadata, ...(editedAt ? { editedAt } : {}), ...(patch.field === 'caption' ? { attachment: { ...attachment, caption: patch.caption } } : {}) }) } });
-    await tx.conversation.updateMany({ where: { id: stored.conversationId, lastMessageAt: stored.createdAt }, data: { lastMessagePreview: body } });
+    await refreshOwnedConversationPreviewInTransaction(tx, context, { conversationId: stored.conversationId, messageId: stored.id, preview: body });
     return null;
   }
   async function reduceAction(tx: Tx, event: ActionEvent, observationId: string): Promise<CanonicalStoreResult> {
@@ -153,7 +154,7 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
           const body = stored.direction === 'outbound' ? 'Você apagou esta mensagem' : 'Esta mensagem foi apagada';
           await tx.message.update({ where: { id: stored.id }, data: { type: 'system', body, mediaUrl: null,
             metadata: { deletedAt: event.context.observedAt } } });
-          await tx.conversation.updateMany({ where: { id: stored.conversationId, lastMessageAt: stored.createdAt }, data: { lastMessagePreview: body } });
+          await refreshOwnedConversationPreviewInTransaction(tx, event.context, { conversationId: stored.conversationId, messageId: stored.id, preview: body });
           await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'deleted', revisionVersion: { increment: 1 } } });
           result.changes.push('message_revoked');
         }
@@ -238,7 +239,7 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
           else if (identity.currentRevision !== null || record(stored.metadata).editedAt || unordered) reason = 'edit_order_unproven';
           else if (await unboundContent(tx, identity)) reason = 'edit_frontier_incomplete';
           else {
-            reason = await applyPatch(tx, stored, event.patch, event.context.observedAt) ?? undefined;
+            reason = await applyPatch(tx, stored, event.patch, event.context, event.context.observedAt) ?? undefined;
             if (!reason) {
               await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { currentRevision: json(event.action), contentState: identity.contentState === 'pending_reconciliation' ? 'pending_reconciliation' : 'ready', revisionVersion: { increment: 1 } } });
               result.changes.push('message_edited');
@@ -370,7 +371,7 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     if (fields.conflict) {
       result.outcome = 'held'; result.reconciliationReasons.push('snapshot_field_conflict'); return result;
     }
-    const reason = await applyPatch(tx, fields.message, evidence.patch, context.observedAt);
+    const reason = await applyPatch(tx, fields.message, evidence.patch, context, context.observedAt);
     if (reason) throw new Error(reason);
     await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { currentRevision: json(evidence.revision), contentState: 'ready', revisionVersion: { increment: 1 } } });
     await tx.canonicalAction.updateMany({ where: { id: { in: pending.map(row => row.id) } }, data: { state: 'superseded', reason: 'certified_current_revision' } });
@@ -422,7 +423,7 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
       result.outcome = 'held'; result.reconciliationReasons.push('snapshot_field_conflict'); return result;
     }
     if (patch) {
-      const reason = await applyPatch(tx, stored, patch, snapshot.currentRevision ? context.observedAt : undefined);
+      const reason = await applyPatch(tx, stored, patch, context, snapshot.currentRevision ? context.observedAt : undefined);
       if (reason) throw new Error(reason);
     }
     const current = await tx.message.findUniqueOrThrow({ where: { id: stored.id } });

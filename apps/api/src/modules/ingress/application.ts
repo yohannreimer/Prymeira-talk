@@ -1,3 +1,4 @@
+import { refreshOwnedConversationPreviewInTransaction, selectConversationPreviewInTransaction } from '../messaging/conversation-preview.js';
 import { groupFallbackName } from '../evolution/evolution-normalizer.js';
 import { validateEvolutionIdentityDeclarations, validateWahaIdentityDeclarations } from '../messaging/identity-declarations.js';
 import { Prisma, type IngressReceipt } from '@prisma/client';
@@ -110,10 +111,7 @@ export class IngressApplicationService {
                 else if (result.messageId && result.conversationId && result.changes.length) {
                     const current = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
                     if (event.kind === 'edit' || event.kind === 'revoke')
-                        await tx.conversation.updateMany({
-                            where: { workspaceId: source.workspaceId, id: result.conversationId, lastMessagePreviewAt: current.createdAt },
-                            data: { lastMessagePreview: current.body }
-                        });
+                        await refreshOwnedConversationPreviewInTransaction(tx, source, { conversationId: result.conversationId, messageId: current.id, preview: current.body });
                     await this.invalidate(tx, receipt, eventIndex, result, `action:${result.messageId}:${sha(stable([event.kind, event.target, 'action' in event ? event.action : null, 'order' in event ? event.order : null, 'patch' in event ? event.patch : null, 'status' in event ? event.status : null, 'recipient' in event ? event.recipient : null]))}`);
                     if (event.kind === 'edit' || event.kind === 'encrypted_edit' || event.kind === 'revoke') {
                         await this.effect(tx, receipt, eventIndex, 'content.reconcile', `action:${result.actionId}`, result.messageId, result.conversationId, result.observationId, { kind: event.kind, actionId: result.actionId });
@@ -226,7 +224,7 @@ export class IngressApplicationService {
         const inbound = await tx.message.count({ where: { workspaceId, conversationId: conversation.id, direction: 'inbound' } });
         if (!inbound && !conversation.lastMessageAt)
             await tx.conversation.update({ where: { id: conversation.id }, data: { hiddenUntilReply: true } });
-        await tx.conversation.updateMany({ where: { workspaceId, id: conversation.id, OR: [{ lastMessagePreviewAt: null }, { lastMessagePreviewAt: { lte: message.createdAt } }] }, data: { lastMessagePreview: event.content.preview, lastMessagePreviewAt: message.createdAt } });
+        await selectConversationPreviewInTransaction(tx, event.context, { conversationId: conversation.id, messageId: message.id, preview: event.content.preview, selection: 'echo' });
         await this.effect(tx, receipt, index, 'realtime.conversation', key, message.id, conversation.id, result.observationId, { talkEcho: true, hiddenCampaign: true, intentId: intent.id, bindingId: binding.id });
     }
     private async messageHooks(tx: Tx, receipt: IngressReceipt, index: number, event: MessageEvent, result: CanonicalStoreResult) {
@@ -260,7 +258,7 @@ export class IngressApplicationService {
             await tx.conversation.update({ where: { id: conversationId }, data: { hiddenUntilReply: true } });
         // Preview and visibility have separate monotonic clocks; a delayed event cannot
         // move either backwards. A hidden campaign doesn't advance inbox visibility.
-        await tx.conversation.updateMany({ where: { workspaceId, id: conversationId, OR: [{ lastMessagePreviewAt: null }, { lastMessagePreviewAt: { lte: message.createdAt } }] }, data: { lastMessagePreview: result.changes.includes('message_edited') ? message.body : event.content.preview, lastMessagePreviewAt: message.createdAt } });
+        await selectConversationPreviewInTransaction(tx, event.context, { conversationId, messageId: message.id, preview: result.changes.includes('message_edited') ? message.body : event.content.preview, selection: 'new_message' });
         if (!campaign)
             await tx.conversation.updateMany({ where: { workspaceId, id: conversationId, OR: [{ lastMessageAt: null }, { lastMessageAt: { lte: message.createdAt } }] }, data: { lastMessageAt: message.createdAt } });
         if (!isGroup && message.type !== 'system' && !unresolvedLid) {
