@@ -1611,6 +1611,7 @@ model CanonicalAction {
   target Json
   actionKey Json? @map("action_key")
   actionHash String? @map("action_hash") @db.VarChar(64)
+  actionLookupHash String? @map("action_lookup_hash") @db.VarChar(64)
   actionTuple Json? @map("action_tuple")
   state String @default("pending")
   reason String?
@@ -1626,6 +1627,7 @@ model CanonicalAction {
   @@index([workspaceId, channelId, identityId, kind])
   @@index([workspaceId, channelId, identityId, actionHash])
   @@index([workspaceId, channelId, actionHash])
+  @@index([workspaceId, channelId, actionLookupHash])
   @@map("canonical_actions")
 }
 

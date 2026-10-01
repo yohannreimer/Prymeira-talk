@@ -39,6 +39,16 @@ interface IdentityOperations {
 /** State reducers share the store's identity graph, hash buckets and lock discipline.
  * No provider I/O belongs here. All evidence must be gathered before opening the transaction. */
 export function createCanonicalReducers({ digest, lockAndScope, resolveActionTarget, revisionTuple, address, graph, pendingTargetWhere }: IdentityOperations) {
+  const actionLookupHash = (revision: unknown[]) => digest([revision[3], revision[4], revision[5]]);
+  /** A stores current chat/sender roots atomically in identity.fullTuple. Historical
+   * action caches retain their immutable fields; never use their old roots as truth.
+   * This keeps applied/superseded history queryable without rewriting it on a union. */
+  function sameAction(scope: Scope, revision: unknown[]): Prisma.CanonicalActionWhereInput {
+    return { ...scope, actionLookupHash: actionLookupHash(revision), AND: [
+      ...[0, 1, 3, 4, 5, 6].map(index => ({ actionTuple: { path: [String(index)], equals: json(revision[index]) } })),
+      { identity: { AND: [2, 7].map(index => ({ fullTuple: { path: [String(index)], equals: json(revision[index]) } })) } }
+    ] };
+  }
   function targetHash(event: ActionEvent | MessageEvent) {
     const key = event.kind === 'message' ? event.key : event.target;
     return digest([key.identityFormat, key.identityFormat === 'provider_native' ? event.context.provider : '',
@@ -173,12 +183,11 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
         const revision = await revisionTuple(tx, event, identity, event.action);
         if (!revision) reason = 'incomplete_edit_authorship';
         else {
-          await tx.canonicalAction.update({ where: { id: action.id }, data: { identityId: identity.id, actionHash: digest(revision), actionTuple: json(revision) } });
+          await tx.canonicalAction.update({ where: { id: action.id }, data: { identityId: identity.id, actionHash: digest(revision), actionLookupHash: actionLookupHash(revision), actionTuple: json(revision) } });
           // Hashes select a bucket; full JSON tuples prove the action. Ask the
           // database for aggregate decisions, never materialize the historical
           // bucket (which can contain thousands of provider mirror observations).
-          const same: Prisma.CanonicalActionWhereInput = { ...scope, actionHash: digest(revision),
-            actionTuple: { equals: json(revision) }, id: { not: action.id } };
+          const same: Prisma.CanonicalActionWhereInput = { ...sameAction(scope, revision), id: { not: action.id } };
           const targetConflict = await tx.canonicalAction.count({ where: { ...same,
             OR: [{ identityId: null }, { identityId: { not: identity.id } }] } }) > 0;
           const payloadField = event.kind === 'edit' ? 'patch' : 'encrypted';
@@ -198,7 +207,7 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
             const certified: Prisma.CanonicalActionWhereInput = { ...mixed,
               evidence: { path: ['request', 'proof', 'source'], equals: 'authenticated_decryption' } };
             const patch: Prisma.CanonicalActionWhereInput = { evidence: { path: ['request', 'patch'], equals: json(event.patch) } };
-            certifiedPatchMatches = await tx.canonicalAction.count({ where: { ...certified, AND: [patch] } }) > 0;
+            certifiedPatchMatches = await tx.canonicalAction.count({ where: { AND: [certified, patch] } }) > 0;
             certifiedPatchConflicts = await tx.canonicalAction.count({ where: { ...certified, NOT: patch } }) > 0;
             mixedEvidenceMissing = !certifiedPatchMatches && await tx.canonicalAction.count({ where: mixed }) > 0;
           }
@@ -206,7 +215,7 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
           // conflicts is bounded in memory even for hundreds of identical mirrors.
           const unordered = identity.currentRevision === null && !record(stored.metadata).editedAt && await tx.canonicalAction.count({ where: {
             ...scope, identityId: identity.id, kind: { in: ['edit', 'encrypted_edit'] }, id: { not: action.id }, state: 'pending',
-            OR: [{ actionTuple: { equals: Prisma.DbNull } }, { NOT: { actionTuple: { equals: json(revision) } } },
+            OR: [{ actionTuple: { equals: Prisma.DbNull } }, { actionLookupHash: null }, { NOT: sameAction(scope, revision) },
               { observation: { kind: { not: 'edit' } } }, { observation: { reason: 'receipt_key_conflict' } },
               ...(event.kind === 'edit' ? [{ observation: { NOT: { payload: { path: ['patch'], equals: json(event.patch) } } } }] : [{}])]
           } }) > 0;
@@ -248,8 +257,8 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
         const payload = action.observation.payload as unknown as ActionEvent;
         const revision = payload.kind === 'edit' || payload.kind === 'encrypted_edit' ? await revisionTuple(tx, payload, resolved.identity, payload.action) : null;
         await tx.canonicalAction.update({ where: { id: action.id }, data: { identityId: resolved.identity.id,
-          ...(revision ? { actionTuple: json(revision), actionHash: digest(revision) } : {}) } });
-        if (action.observation.reason === 'receipt_key_conflict') await tx.canonicalMessageIdentity.update({ where: { id: resolved.identity.id }, data: { contentState: 'pending_reconciliation' } });
+          ...(revision ? { actionTuple: json(revision), actionHash: digest(revision), actionLookupHash: actionLookupHash(revision) } : {}) } });
+        if (action.observation.reason === 'receipt_key_conflict') await tx.canonicalMessageIdentity.updateMany({ where: { id: resolved.identity.id, contentState: { not: 'deleted' } }, data: { contentState: 'pending_reconciliation' } });
       }
     }
     return matching;
@@ -286,12 +295,22 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
       if (result.identityId) {
         const identity = await tx.canonicalMessageIdentity.findUniqueOrThrow({ where: { id: result.identityId } });
         const scope = scopeOf(context);
-        const budgetGate = await tx.canonicalObservation.count({ where: { ...contentSnapshots(scope, identity.id), reason: 'pending_recovery_budget_exhausted' } });
-        const otherSnapshots = await tx.canonicalObservation.count({ where: { ...contentSnapshots(scope, identity.id), reason: { not: 'pending_recovery_budget_exhausted' } } });
-        if (budgetGate && !otherSnapshots && !await tx.canonicalAction.count({ where: contentActions(scope, identity.id) }) && !await unboundContent(tx, identity)) {
-          await tx.canonicalObservation.updateMany({ where: { ...contentSnapshots(scope, identity.id), reason: 'pending_recovery_budget_exhausted' }, data: { state: 'resolved', reason: null } });
-          if (identity.contentState !== 'deleted') await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'ready' } });
-          result.changes.push('pending_recovery_completed'); result.outcome = 'enriched';
+        // Readiness is derived from the actual remaining frontier, regardless of
+        // whether the original ever acquired a recovery-budget observation.
+        if (!await tx.canonicalAction.count({ where: contentActions(scope, identity.id) }) && !await unboundContent(tx, identity)) {
+          const otherSnapshots = await tx.canonicalObservation.count({ where: { ...contentSnapshots(scope, identity.id),
+            OR: [{ reason: null }, { reason: { not: 'pending_recovery_budget_exhausted' } }] } });
+          const ingressConflicts = await tx.canonicalObservation.count({ where: { ...scope, identityId: identity.id, reason: 'receipt_key_conflict' } });
+          if (!otherSnapshots && !ingressConflicts) {
+            const cleared = await tx.canonicalObservation.updateMany({ where: { ...contentSnapshots(scope, identity.id), reason: 'pending_recovery_budget_exhausted' }, data: { state: 'resolved', reason: null } });
+            let becameReady = false;
+            if (identity.contentState === 'pending_reconciliation') {
+              const message = await tx.message.findUniqueOrThrow({ where: { id: identity.messageId }, select: { metadata: true } });
+              becameReady = !record(message.metadata).deletedAt;
+              await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: becameReady ? 'ready' : 'deleted' } });
+            }
+            if (becameReady || cleared.count) { result.changes.push('pending_recovery_completed'); result.outcome = 'enriched'; }
+          }
         }
       }
       results.push(result);

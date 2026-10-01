@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { MessageEditPatch, NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
@@ -671,6 +672,93 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
     expect(oldMirror).toMatchObject({ outcome: 'duplicate', changes: [], reconciliationReasons: [] });
     expect(await db.message.findUnique({ where: { id: created.messageId! } })).toMatchObject({ body: 'new snapshot body' });
     expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'ready', revisionVersion: 2 });
+  });
+
+  it.each([
+    ['chat', 'applied', 'replay'], ['chat', 'applied', 'reuse'], ['chat', 'superseded', 'replay'], ['chat', 'superseded', 'reuse'],
+    ['sender', 'applied', 'replay'], ['sender', 'applied', 'reuse'], ['sender', 'superseded', 'replay'], ['sender', 'superseded', 'reuse']
+  ] as const)('preserves action identity after deterministic %s root change (%s/%s)', async (root, state, attempt) => {
+    const c = await context(), scoped = { workspaceId: c.workspaceId, channelId: c.channelId }, collision = createCanonicalStore({ hash: () => 'a' });
+    const suffix = randomUUID().slice(8), pnId = `00000000${suffix}`, lidId = `ffffffff${suffix}`;
+    await db.canonicalAddress.createMany({ data: [{ ...scoped, id: pnId }, { ...scoped, id: lidId }] });
+    await db.canonicalAddressAlias.createMany({ data: [{ ...scoped, addressId: pnId, address: PN }, { ...scoped, addressId: lidId, address: LID }] });
+    const original = root === 'chat' ? msg(c, 'A', LID) : msg(c, 'A', GROUP, LID);
+    const created = await collision.persist(db, original, { receiptKey: 'original' });
+    const edit: NormalizedMessagingEvent = { ...original, kind: 'edit', target: original.key, action: (root === 'chat' ? msg(c, 'E', LID) : msg(c, 'E', GROUP, LID)).key, patch: { field: 'body', body: 'edit E' } };
+    if (state === 'superseded') await collision.persist(db, { ...edit, action: { ...edit.action, rawId: 'BASE', nativeId: 'BASE' }, patch: { field: 'body', body: 'base edit' } }, { receiptKey: 'base-edit' });
+    const action = await collision.persist(db, edit, { receiptKey: 'edit' });
+    if (state === 'superseded') {
+      const currentRevision = { ...edit.action, rawId: 'CURRENT', nativeId: 'CURRENT' };
+      const snapshot = await collision.persist(db, { ...original, currentRevision, content: { ...original.content, body: 'certified newer body' } }, { receiptKey: 'snapshot' });
+      await db.$transaction(tx => collision.reconcileSnapshotInTransaction(tx, c, { observationId: snapshot.observationId, target: original.key, expectedRevisionVersion: 1, pendingObservationIds: [snapshot.observationId], pendingActionIds: [action.actionId!], proof: { source: 'provider_current_revision', requestId: 'newer-before-union' } }));
+    }
+    const before = await db.canonicalMessageIdentity.findUniqueOrThrow({ where: { id: created.identityId! } });
+    const provenance = await db.canonicalObservation.findUniqueOrThrow({ where: { id: action.observationId } });
+    const nextOriginal = root === 'chat' ? msg(c, 'A', PN) : msg(c, 'A', GROUP, PN);
+    const proof = root === 'chat' ? msg(c, 'PROOF', PN) : msg(c, 'PROOF', GROUP, PN);
+    proof.addressMappings = [{ role: root, lid: LID, pn: PN, source: root === 'chat' ? 'evolution.remoteJidAlt' : 'evolution.participantAlt' }];
+    await collision.persist(db, proof, { receiptKey: 'proof' });
+    const after = await db.canonicalMessageIdentity.findUniqueOrThrow({ where: { id: created.identityId! } });
+    expect((after.fullTuple as string[])[root === 'chat' ? 2 : 7]).not.toBe((before.fullTuple as string[])[root === 'chat' ? 2 : 7]);
+    const target = attempt === 'replay' ? nextOriginal : root === 'chat' ? msg(c, 'B', PN) : msg(c, 'B', GROUP, PN);
+    let targetId = created.messageId!;
+    if (attempt === 'reuse') targetId = (await collision.persist(db, target, { receiptKey: 'second-original' })).messageId!;
+    const result = await collision.persist(db, { ...edit, target: target.key, action: (root === 'chat' ? msg(c, 'E', PN) : msg(c, 'E', GROUP, PN)).key }, { receiptKey: 'fresh-ingress' });
+    if (attempt === 'replay') expect(result).toMatchObject({ outcome: 'duplicate', changes: [], reconciliationReasons: [] });
+    else expect(result.reconciliationReasons).toContain('action_target_conflict');
+    expect(await db.message.findUnique({ where: { id: targetId } })).toMatchObject({ body: attempt === 'reuse' ? 'hello' : state === 'applied' ? 'edit E' : 'certified newer body' });
+    expect(after.messageId).toBe(created.messageId);
+    expect((await db.canonicalObservation.findUniqueOrThrow({ where: { id: action.observationId } })).payload).toEqual(provenance.payload);
+  });
+  it('becomes ready after restored-authority recovery drains mirrors without an original budget observation', async () => {
+    const c = await context(), original = msg(c), created = await persist(original);
+    await db.canonicalMessageIdentity.update({ where: { id: created.identityId! }, data: { state: 'review' } });
+    for (let n = 0; n < 101; n++) await persist({ ...original, kind: 'edit', target: original.key, action: msg(c, 'EDIT').key, patch: { field: 'body', body: 'one edit' } });
+    await db.canonicalMessageIdentity.update({ where: { id: created.identityId! }, data: { state: 'active' } });
+    expect(await db.canonicalObservation.count({ where: { identityId: created.identityId!, kind: 'message', state: 'held' } })).toBe(0);
+    let afterId: string | undefined, revisit = false; const changes: string[] = [];
+    for (let page = 0; page < 4; page++) {
+      const result = await db.$transaction(tx => createCanonicalStore().recoverPendingInTransaction(tx, c, { limit: 100, afterId }));
+      expect(result.results.every(r => !r.allowOperationalEffects)).toBe(true);
+      changes.push(...result.results.flatMap(r => r.changes)); revisit ||= result.revisitFromStart;
+      if (result.hasMore) afterId = result.nextCursor!;
+      else if (revisit) { afterId = undefined; revisit = false; }
+      else break;
+    }
+    expect(await db.canonicalAction.count({ where: { identityId: created.identityId!, state: 'pending' } })).toBe(0);
+    expect(await db.$transaction(tx => store.reconciliationFrontierInTransaction(tx, c, original.key))).toMatchObject({ pendingActionIds: [], pendingObservationIds: [], unresolvedTargets: 0, hasMore: false });
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'ready', revisionVersion: 1 });
+    expect(changes.filter(change => change === 'message_edited')).toHaveLength(1);
+    expect(changes.filter(change => change === 'pending_recovery_completed')).toHaveLength(1);
+  }, 15000);
+
+  it('backfills stable action lookup with exact Node serialization, including spaces and quotes', async () => {
+    const c = await context(), original = msg(c); await persist(original);
+    const edit: NormalizedMessagingEvent = { ...original, kind: 'edit', target: original.key, action: msg(c, 'EDIT with_space "quote"').key, patch: { field: 'body', body: 'edited' } };
+    const applied = await persist(edit), before = await db.canonicalAction.findUniqueOrThrow({ where: { id: applied.actionId! } });
+    const migration = await readFile(new URL('../../../prisma/migrations/20260930020000_canonical_action_stable_lookup/migration.sql', import.meta.url), 'utf8');
+    const update = migration.slice(migration.indexOf('UPDATE "canonical_actions"')).replace(/;\s*$/, ' AND "workspace_id" = $1;');
+    await db.$transaction(async tx => {
+      await tx.canonicalAction.update({ where: { id: applied.actionId! }, data: { actionLookupHash: null } });
+      await tx.$executeRawUnsafe(update, c.workspaceId);
+      expect((await tx.canonicalAction.findUniqueOrThrow({ where: { id: applied.actionId! } })).actionLookupHash).toBe(before.actionLookupHash);
+    });
+    expect((await persist(edit)).outcome).toBe('duplicate');
+    const second = msg(c, 'SECOND'); await persist(second);
+    expect((await persist({ ...edit, target: second.key })).reconciliationReasons).toContain('action_target_conflict');
+  });
+  it.each(['snapshot', 'receipt_conflict', 'deleted'] as const)('does not clear the %s gate after unrelated pending receipts drain', async (gate) => {
+    const c = await context(), original = msg(c), created = await persist(original);
+    const receipt: NormalizedMessagingEvent = { ...original, kind: 'receipt', target: original.key, status: 'read', providerStatus: 'read', recipient: PN };
+    if (gate === 'snapshot') await persist({ ...original, content: { ...original.content, body: 'disputed snapshot' } });
+    else if (gate === 'receipt_conflict') { await persist(receipt, 'conflicting-receipt'); await persist({ ...receipt, status: 'delivered', providerStatus: 'delivered' }, 'conflicting-receipt'); }
+    else await persist({ ...original, kind: 'revoke', target: original.key, action: msg(c, 'DELETE').key });
+    await db.canonicalMessageIdentity.update({ where: { id: created.identityId! }, data: { state: 'review' } });
+    await persist(receipt, 'pending-receipt');
+    await db.canonicalMessageIdentity.update({ where: { id: created.identityId! }, data: { state: 'active' } });
+    const result = await db.$transaction(tx => createCanonicalStore().recoverPendingInTransaction(tx, c));
+    expect(result.results.every(r => !r.allowOperationalEffects && !r.changes.includes('pending_recovery_completed'))).toBe(true);
+    expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: gate === 'deleted' ? 'deleted' : 'pending_reconciliation' });
   });
 
 });
