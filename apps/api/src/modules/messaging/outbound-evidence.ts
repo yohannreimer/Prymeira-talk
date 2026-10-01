@@ -209,3 +209,137 @@ export function acceptedNativeHints(source: TrustedMessagingContext, value: unkn
         ...new Set(values.map(v => serialized(v)).filter((v): v is string => typeof v === 'string' && v.length > 0))
     ];
 }
+/** Claims survive destination/completeness validation. Missing fields may be
+ * complemented; a supplied incompatible native field remains contrary evidence. */
+export interface SendIdentityClaim {
+    key: Partial<WhatsAppMessageKey>;
+    chatAlternate?: string;
+}
+const nativeFields: (keyof WhatsAppMessageKey)[] = [
+    'identityFormat', 'nativeId', 'nativeChatAddress', 'nativeSenderParticipant',
+    'rawId', 'chatAddress', 'direction', 'senderParticipant'
+];
+export function inspectSendIdentityEvidence(source: TrustedMessagingContext, destination: string, value: unknown) {
+    const raw = record(value), claims: SendIdentityClaim[] = [];
+    let conflicting = false;
+    if (raw._evidenceIncomplete === true)
+        return { claims, conflicting };
+    const present = (v: unknown) => v !== undefined && v !== null;
+    function claim(input: {
+        id?: unknown;
+        rawId?: unknown;
+        chat?: unknown;
+        direction?: unknown;
+        participant?: unknown;
+        alternate?: unknown;
+        format?: WhatsAppMessageKey['identityFormat'];
+    }) {
+        const key: Partial<WhatsAppMessageKey> = {};
+        if (present(input.id)) {
+            const id = serialized(input.id);
+            if (!id)
+                conflicting = true;
+            else {
+                key.nativeId = id;
+                key.identityFormat = input.format ?? 'whatsapp_stanza';
+            }
+        }
+        if (present(input.rawId)) {
+            const id = string(input.rawId);
+            if (!id)
+                conflicting = true;
+            else
+                key.rawId = id;
+        }
+        if (input.format === 'provider_native')
+            key.rawId = null;
+        if (present(input.chat)) {
+            const native = serialized(input.chat), normalized = normalizeChatAddress(input.chat);
+            if (!native || !normalized)
+                conflicting = true;
+            else {
+                key.nativeChatAddress = native;
+                key.chatAddress = explicitAddressMatch(destination, native, string(input.alternate) ?? undefined) ? destination : normalized;
+            }
+        }
+        if (present(input.direction)) {
+            if (typeof input.direction !== 'boolean')
+                conflicting = true;
+            else
+                key.direction = input.direction ? 'outbound' : 'inbound';
+        }
+        if (present(input.participant)) {
+            const native = serialized(input.participant), normalized = normalizeChatAddress(input.participant);
+            if (!native || !normalized || normalized.endsWith('@g.us'))
+                conflicting = true;
+            else {
+                key.nativeSenderParticipant = native;
+                if ((key.chatAddress ?? destination).endsWith('@g.us'))
+                    key.senderParticipant = normalized;
+            }
+        }
+        if (Object.keys(key).length)
+            claims.push({ key, ...(string(input.alternate) ? { chatAlternate: string(input.alternate)! } : {}) });
+    }
+    if (source.provider === 'evolution') {
+        for (const value of [raw.key, record(raw.message).key].filter(v => Object.keys(record(v)).length)) {
+            const k = record(value), id = string(k.id), format = id?.startsWith('wamid.') ? 'provider_native' : 'whatsapp_stanza';
+            claim({
+                id: k.id, rawId: format === 'whatsapp_stanza' ? k.id : undefined, chat: k.remoteJid, direction: k.fromMe, participant: k.participant, alternate: k.remoteJidAlt, format
+            });
+        }
+        for (const id of [raw.id, raw.messageId].filter(present))
+            claim({ id, format: serialized(id)?.startsWith('wamid.') ? 'provider_native' : 'whatsapp_stanza' });
+    }
+    else if (source.provider === 'waha') {
+        const data = record(raw._data), participants = [
+            raw.participant, raw.author, data.participant, data.author, record(raw.id).participant, record(data.id).participant
+        ].filter(present);
+        for (const value of [raw.id, data.id].filter(present)) {
+            const parsed = parseWahaMessageKey(value, participants[0]), k = record(value);
+            claim({
+                id: serialized(value) ?? undefined, rawId: parsed.rawId ?? k.id, chat: parsed.nativeChatAddress ?? k.remote ?? k.remoteJid, direction: parsed.direction === null ? k.fromMe : parsed.direction === 'outbound', participant: k.participant ?? participants[0]
+            });
+        }
+        for (const participant of participants)
+            claim({ participant });
+        for (const direction of [raw.fromMe, data.fromMe].filter(present))
+            claim({ direction });
+        // Envelope chat fields are normalized routing evidence, not another
+        // serialized native representation of the provider key.
+        for (const chat of [raw.to, raw.chatId, data.chatId].filter(present)) {
+            const normalized = normalizeChatAddress(chat);
+            if (!normalized)
+                conflicting = true;
+            else
+                claims.push({ key: { chatAddress: normalized } });
+        }
+    }
+    else {
+        for (const message of Array.isArray(raw.messages) ? raw.messages : [])
+            claim({ id: record(message).id, format: 'provider_native' });
+        for (const recipient of [
+            raw.recipient_id, raw.to, raw.wa_id, ...(Array.isArray(raw.contacts) ? raw.contacts.flatMap(v => [record(v).wa_id, record(v).input]) : [])
+        ].filter(present)) {
+            const normalized = normalizeChatAddress(String(recipient).includes('@') ? recipient : `${recipient}@s.whatsapp.net`);
+            if (!normalized)
+                conflicting = true;
+            else
+                claim({ chat: normalized });
+        }
+    }
+    for (const c of claims) {
+        if ((c.key.chatAddress !== undefined && c.key.chatAddress !== destination) || (c.key.direction !== undefined && c.key.direction !== 'outbound'))
+            conflicting = true;
+    }
+    if (sendIdentityClaimsConflict(claims))
+        conflicting = true;
+    return { claims, conflicting };
+}
+export function sendIdentityClaimsConflict(claims: readonly SendIdentityClaim[]): boolean {
+    return nativeFields.some(field => new Set(claims.map(c => c.key[field]).filter(v => v !== undefined)).size > 1);
+}
+export function sendEvidenceCanCompleteKey(source: TrustedMessagingContext, destination: string, value: unknown, key: WhatsAppMessageKey): boolean {
+    const inspected = inspectSendIdentityEvidence(source, destination, value);
+    return !inspected.conflicting && !sendIdentityClaimsConflict([...inspected.claims, { key }]);
+}

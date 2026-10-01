@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { record } from './whatsapp-identity.js';
-import { captureSendEvidence, classifySendEvidence, parseSendIdentity, parseSendProof, sanitizeSendEvidence } from './outbound-evidence.js';
+import { captureSendEvidence, classifySendEvidence, parseSendIdentity, parseSendProof, sanitizeSendEvidence, inspectSendIdentityEvidence, sendIdentityClaimsConflict, sendEvidenceCanCompleteKey } from './outbound-evidence.js';
 const source: any = { provider: 'evolution', connectionId: 'physical', sessionName: 's', channelProvider: 'evolution' };
 const PN = '15550001111@s.whatsapp.net';
 describe('send evidence contracts', () => {
@@ -78,5 +78,28 @@ describe('send evidence contracts', () => {
             transport: 'local_validation', status: null, bodyState: 'unavailable', raw: null, preIo: { code: 'invalid_destination', frontierCrossed: true }
         };
         expect(classifySendEvidence(sanitizeSendEvidence(input))).toBe('uncertain');
+    });
+    it('retains incompatible WAHA structured full native fields and format for comparison', () => {
+        const w = { ...source, provider: 'waha' }, id = 'true_15550001111@c.us_A';
+        for (const change of [{ remote: PN }, { id: 'B' }, { fromMe: false }]) {
+            const raw = {
+                id, to: '15550001111@c.us', fromMe: true, _data: { id: { _serialized: id, id: 'A', remote: '15550001111@c.us', fromMe: true, ...change } }
+            };
+            expect(inspectSendIdentityEvidence(w, PN, raw).conflicting).toBe(true);
+        }
+        const native = { identityFormat: 'provider_native' as const, nativeId: 'A' };
+        const stanza = { identityFormat: 'whatsapp_stanza' as const, nativeId: 'A' };
+        expect(sendIdentityClaimsConflict([{ key: native }, { key: stanza }])).toBe(true);
+        const inspected = inspectSendIdentityEvidence(source, PN, { key: { id: 'A', remoteJid: '15550002222@s.whatsapp.net', fromMe: true } });
+        expect(inspected.claims[0]!.key).toMatchObject({ nativeId: 'A', nativeChatAddress: '15550002222@s.whatsapp.net' });
+        expect(inspected.conflicting).toBe(true);
+    });
+    it('normalized WAHA envelopes do not replace the native chat representation', () => {
+        const w = { ...source, provider: 'waha' }, id = 'true_15550001111@c.us_A';
+        const raw = { id, to: PN, fromMe: true, _data: { id } };
+        const key = parseSendIdentity(w, PN, raw)!;
+        expect(key).not.toBeNull();
+        expect(inspectSendIdentityEvidence(w, PN, raw).conflicting).toBe(false);
+        expect(sendEvidenceCanCompleteKey(w, PN, raw, key)).toBe(true);
     });
 });

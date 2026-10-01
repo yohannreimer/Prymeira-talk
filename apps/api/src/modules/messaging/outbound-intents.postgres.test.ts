@@ -537,4 +537,115 @@ describe.skipIf(!url)('persistent outbound intents', () => {
             expect(count).toBe(1);
         }
     });
+    const specContradictions = ['nativeChat', 'direction', 'nativeSender', 'representations'] as const;
+    it.each(specContradictions.flatMap(field => ['bad_first', 'good_first', 'after_bind'].map(order => ({ field, order }))))('accepted contradiction $field remains evidence in $order order', async ({ field, order }) => {
+        const f = await fixture();
+        const group = '120000-100@g.us';
+        if (field === 'nativeSender') {
+            await db.contact.update({ where: { id: f.conversation.contactId }, data: { phone: group, isGroup: true } });
+            f.request.destination = group;
+        }
+        const r = await reserve(f), d = await begin(f, r.intent!.id);
+        const good = {
+            key: {
+                id: 'A', remoteJid: f.request.destination, fromMe: true, ...(field === 'nativeSender' ? { participant: '777@lid' } : {})
+            }
+        };
+        const bad: any = JSON.parse(JSON.stringify(good));
+        if (field === 'nativeChat')
+            bad.key.remoteJid = '15550002222@s.whatsapp.net';
+        if (field === 'direction')
+            bad.key.fromMe = false;
+        if (field === 'nativeSender')
+            bad.key.participant = '888@lid';
+        if (field === 'representations')
+            bad.message = { key: { ...bad.key, remoteJid: '15550002222@s.whatsapp.net' } };
+        const recordResult = (raw: unknown, resultKey: string): Promise<any> => tx(t => api.recordDispatchResultInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultKey, evidence: { transport: 'http', status: 200, bodyState: 'json', raw }
+        }));
+        if (order === 'bad_first')
+            await recordResult(bad, 'bad');
+        const a = await recordResult(good, 'good');
+        if (order === 'after_bind')
+            expect((await tx(t => api.bindLocalOutboundInTransaction(t, {
+                workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultId: a.result.id
+            }))).kind).toBe('bound');
+        if (order !== 'bad_first')
+            await recordResult(bad, 'bad');
+        expect((await db.outboundIntent.findUniqueOrThrow({ where: { id: r.intent!.id } })).state).toBe('review');
+        expect((await tx(t => api.bindLocalOutboundInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultId: a.result.id
+        }))).kind).toBe('review');
+        expect(await db.message.count({ where: { workspaceId: f.source.workspaceId } })).toBe(1);
+    });
+    it.each([
+        'bare', 'compatible_partial', 'nativeChat', 'direction', 'nativeSender', 'representations', 'source'
+    ])('exact lookup only completes compatible accepted evidence: %s', async (failure) => {
+        const f = await fixture(), group = '120000-100@g.us';
+        await db.contact.update({ where: { id: f.conversation.contactId }, data: { phone: group, isGroup: true } });
+        f.request.destination = group;
+        const r = await reserve(f), d = await begin(f, r.intent!.id);
+        const raw: any = failure === 'bare' ? { id: 'A' } : { key: { id: 'A', remoteJid: group, participant: '777@lid' } };
+        if (failure === 'nativeChat')
+            raw.key.remoteJid = '120000-200@g.us';
+        if (failure === 'direction')
+            raw.key.fromMe = false;
+        if (failure === 'nativeSender')
+            raw.key.participant = '888@lid';
+        if (failure === 'representations')
+            raw.message = { key: { id: 'A', remoteJid: '120000-200@g.us', fromMe: true, participant: '777@lid' } };
+        const result: any = await tx(t => api.recordDispatchResultInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultKey: 'response', evidence: { transport: 'http', status: 200, bodyState: 'json', raw }
+        }));
+        const key = {
+            ...parseWahaMessageKey({ id: 'A', remote: group, fromMe: true, participant: '777@lid' }), nativeId: 'A'
+        };
+        const context = { ...f.source, ...(failure === 'source' ? { channelProvider: 'meta' } : {}) };
+        const observation = await db.canonicalObservation.create({
+            data: {
+                workspaceId: f.source.workspaceId, channelId: f.source.channelId, channelProvider: 'evolution', provider: 'evolution', connectionProvider: 'evolution', connectionId: f.source.connectionId, receiptHash: '0'.repeat(64), receiptTuple: ['exact-lookup-spec'], kind: 'provider_exact_lookup', eventType: 'exact_lookup', mode: 'live', source: 'authenticated_exact_lookup', sessionName: f.source.sessionName, lifecycleGeneration: 0, receivedAt: new Date(), sourceOrder: {}, payload: JSON.parse(JSON.stringify({
+                    key, context, lookup: {
+                        nativeId: 'A', verifiedKey: key, response: { key: { id: 'A', remoteJid: group, fromMe: true, participant: '777@lid' } }
+                    }
+                })), state: 'certified'
+            }
+        });
+        const bound = await tx(t => api.bindLocalOutboundInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultId: result.result.id, lookupObservationId: observation.id
+        }));
+        if (['bare', 'compatible_partial'].includes(failure))
+            expect(bound.kind).toBe('bound');
+        else
+            expect(bound.kind).not.toBe('bound');
+    });
+    it.each(['audio', 'image'] as const)('local %s echoes reconcile certified captions and revisions without replacing artifacts', async (type) => {
+        const f = await fixture();
+        f.request.message = {
+            type, body: 'local UI label', mediaUrl: 'https://own.invalid/artifact', metadata: {
+                attachment: { caption: 'Approved caption' }, transcript: 'own transcript', player: { reference: 'own:player' }
+            }
+        };
+        const r = await reserve(f), d = await begin(f, r.intent!.id), original = await db.message.findUniqueOrThrow({ where: { id: r.intent!.messageId } });
+        const result: any = await tx(t => api.recordDispatchResultInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultKey: 'response', evidence: {
+                transport: 'http', status: 200, bodyState: 'json', raw: { key: { id: 'A', remoteJid: PN, fromMe: true } }
+            }
+        }));
+        await tx(t => api.bindLocalOutboundInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultId: result.result.id
+        }));
+        const placeholder = echo(f, 'A', type, 'provider placeholder');
+        placeholder.attachment = { caption: 'Approved caption' };
+        expect((await store.persist(db, placeholder, { receiptKey: 'compatible-placeholder' })).outcome).toBe('duplicate');
+        const conflicting = { ...placeholder, attachment: { caption: 'Contradictory caption' } };
+        const held = await store.persist(db, conflicting, { receiptKey: 'conflicting-caption' });
+        expect(held.outcome).toBe('held');
+        expect(held.reconciliationReasons).toContain('content_reconciliation_required');
+        const revision = { ...placeholder, currentRevision: echo(f, 'EDIT').key };
+        const revised = await store.persist(db, revision, { receiptKey: 'conflicting-revision' });
+        expect(revised.outcome).toBe('held');
+        expect(revised.reconciliationReasons).toContain('revision_reconciliation_required');
+        expect(await db.message.findUniqueOrThrow({ where: { id: original.id } })).toEqual(original);
+        expect(await db.canonicalMessageIdentity.findUniqueOrThrow({ where: { messageId: original.id } })).toMatchObject({ contentState: 'pending_reconciliation' });
+    });
 });

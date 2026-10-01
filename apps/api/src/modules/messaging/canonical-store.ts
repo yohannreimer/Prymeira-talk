@@ -405,7 +405,9 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       const metadata = record(stored.metadata);
       const local = await tx.outboundIntent.findUnique({ where: { messageId: identity.messageId } });
       const revisionMatches = await sameRevision(tx, identity, event);
-      if (local && (stored.type !== event.content.type || (stored.type === 'text' && stored.body !== null && event.content.body !== null && stored.body !== event.content.body))) {
+      const localCaption = record(metadata.attachment).caption;
+      const captionConflict = typeof localCaption === 'string' && typeof event.attachment.caption === 'string' && localCaption !== event.attachment.caption;
+      if (local && (captionConflict || stored.type !== event.content.type || (stored.type === 'text' && stored.body !== null && event.content.body !== null && stored.body !== event.content.body))) {
         result.outcome = 'held'; result.reconciliationReasons.push('content_reconciliation_required');
         await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });
       }
@@ -418,6 +420,10 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
           await tx.message.update({ where: { id: stored.id }, data });
           result.outcome = 'enriched'; result.changes.push('missing_fields_enriched');
         }
+      }
+      if (local && !revisionMatches) {
+        result.outcome = 'held'; result.reconciliationReasons.push('revision_reconciliation_required');
+        await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });
       }
       if (!local && !metadata.deletedAt && ((!revisionMatches && !(metadata.editedAt && event.currentRevision === null)) || (!metadata.editedAt && stored.type !== event.content.type))) {
         result.outcome = 'held';

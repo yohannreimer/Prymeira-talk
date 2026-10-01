@@ -10,7 +10,7 @@ import { outboundChatRoot } from './outbound-authority.js';
 import { createOutboundObservationGate } from './outbound-observation-gate.js';
 import { verifyOutboundDomainInTransaction, compatiblePreparedRecertification, type OutboundDomainFence } from './outbound-fences.js';
 export type { OutboundDomainFence } from './outbound-fences.js';
-import { acceptedNativeHints, classifySendEvidence, parseSendIdentity, parseSendProof, sanitizeSendEvidence, type SendEvidence } from './outbound-evidence.js';
+import { inspectSendIdentityEvidence, sendIdentityClaimsConflict, sendEvidenceCanCompleteKey, classifySendEvidence, parseSendIdentity, parseSendProof, sanitizeSendEvidence, type SendEvidence } from './outbound-evidence.js';
 type Tx = Prisma.TransactionClient;
 type Scope = {
     workspaceId: string;
@@ -399,9 +399,8 @@ export function createOutboundIntents({ hash = sha }: {
         });
         const all = await tx.outboundResult.findMany({ where: { ...scope, attemptId: attempt.id } });
         const accepted = all.some(r => r.outcome === 'accepted'), uncertain = all.some(r => r.outcome === 'uncertain');
-        const acceptedKeys = all.filter(r => r.outcome === 'accepted').map(r => parseSendIdentity(attempt.source as unknown as TrustedMessagingContext, outboundRequest(attempt.intent).destination, (r.evidence as unknown as SendEvidence).raw)).filter((key): key is WhatsAppMessageKey => key !== null);
-        const hints = all.filter(r => r.outcome === 'accepted').flatMap(r => acceptedNativeHints(attempt.source as unknown as TrustedMessagingContext, (r.evidence as unknown as SendEvidence).raw));
-        const contradiction = new Set(hints).size > 1 || acceptedKeys.some(key => !equal(key, acceptedKeys[0]));
+        const inspected = all.filter(r => r.outcome === 'accepted').map(r => inspectSendIdentityEvidence(attempt.source as unknown as TrustedMessagingContext, outboundRequest(attempt.intent).destination, (r.evidence as unknown as SendEvidence).raw));
+        const contradiction = inspected.some(value => value.conflicting) || sendIdentityClaimsConflict(inspected.flatMap(value => value.claims));
         if (contradiction)
             await tx.canonicalMessageIdentity.updateMany({ where: { messageId: attempt.intent.messageId }, data: { state: 'review' } });
         const state = contradiction ? 'review' : attempt.intent.state === 'bound' ? 'bound' : accepted ? 'accepted_unbound' : uncertain ? 'uncertain' : 'definitively_rejected';
@@ -454,8 +453,8 @@ export function createOutboundIntents({ hash = sha }: {
             const payload = record(lookup?.payload), candidate = payload.key as WhatsAppMessageKey | undefined, context = payload.context as TrustedMessagingContext | undefined;
             const raw = record(evidence.raw), hint = string(record(raw.key).id) ?? string(record(record(raw.message).key).id) ?? serialized(raw.id) ?? string(raw.messageId);
             const lookupResponseKey = context ? parseSendIdentity(context, request.destination, record(payload.lookup).response) : null;
-            if (lookup && candidate && context && hint && lookupResponseKey && fullProviderKeyMatches(candidate, lookupResponseKey) && completeProviderKey(candidate) && candidate.nativeId === hint && candidate.direction === 'outbound' && candidate.chatAddress === request.destination && equal(record(payload.lookup).verifiedKey, candidate) && record(payload.lookup).nativeId === hint
-                && context.workspaceId === scope.workspaceId && context.channelId === scope.channelId && context.provider === source.provider && context.connectionId === source.connectionId && context.sessionName === source.sessionName && context.lifecycleGeneration === lookup.lifecycleGeneration) {
+            if (lookup && candidate && context && hint && lookupResponseKey && fullProviderKeyMatches(candidate, lookupResponseKey) && completeProviderKey(candidate) && candidate.nativeId === hint && sendEvidenceCanCompleteKey(source, request.destination, evidence.raw, candidate) && candidate.direction === 'outbound' && candidate.chatAddress === request.destination && equal(record(payload.lookup).verifiedKey, candidate) && record(payload.lookup).nativeId === hint
+                && context.workspaceId === scope.workspaceId && context.channelId === scope.channelId && context.provider === source.provider && context.channelProvider === source.channelProvider && (context.provider !== 'meta_official' || source.provider === 'meta_official' && context.phoneNumberId === source.phoneNumberId) && context.connectionId === source.connectionId && context.sessionName === source.sessionName && context.lifecycleGeneration === lookup.lifecycleGeneration) {
                 key = candidate;
                 bindingSource = context;
             }
