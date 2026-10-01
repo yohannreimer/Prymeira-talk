@@ -3,14 +3,32 @@ const NAME_KEYS = new Set(["nome", "name"]);
 
 export type RenderContact = { phone: string; fields: Record<string, string> };
 
-export function tidyRenderedText(text: string) {
-  return text
-    .replace(/,\s*([!?.])/g, "$1")
-    .replace(/[ \t]+([,.!?:;])/g, "$1")
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/^[ \t]+|[ \t]+$/gm, "")
-    .replace(/^[,;:]\s*(\S)/gm, (_, first: string) => first.toUpperCase())
-    .trim();
+// Private marker for a name placeholder that resolved to empty. Cleanup only
+// ever happens around this marker, so the rest of the template is untouched.
+const BLANK = "\u0000";
+
+function capitalizeFirst(text: string) {
+  return text.replace(/^\p{Ll}/u, (letter) => letter.toUpperCase());
+}
+
+function resolveBlankNames(text: string) {
+  let result = text;
+  for (let pass = 0; pass < 3 && result.includes(BLANK); pass += 1) {
+    result = result
+      // (1) "Olá, {{nome}}, tudo bem?" -> "Olá, tudo bem?"
+      .replace(/(\S)[ \t]*,[ \t]*\u0000[ \t]*,/g, "$1,")
+      // (2) "Oi {{nome}}!" / "Olá, {{nome}}!" -> "Oi!" / "Olá!"
+      .replace(/(\S)[ \t]*(?:,[ \t]*)?\u0000[ \t]*([!?.])/g, "$1$2")
+      // (3) "Olá {{nome}}, tudo bem?" -> "Olá, tudo bem?"
+      .replace(/(\S)[ \t]*\u0000[ \t]*,/g, "$1,")
+      // (4) "{{nome}}, tudo bem?" at the start of a line -> "Tudo bem?"
+      .replace(/^([ \t]*)\u0000[ \t]*[,!]?[ \t]*([^\n]*)/gm, (_, indent: string, rest: string) => indent + capitalizeFirst(rest))
+      // (5) "Oi {{nome}}" / "Olá, {{nome}}" at the end of a line -> "Oi" / "Olá"
+      .replace(/(?:[ \t]*,)?[ \t]*\u0000[ \t]*$/gm, "")
+      // (6) between words -> a single space
+      .replace(/[ \t]*\u0000[ \t]*/g, " ");
+  }
+  return result.split(BLANK).join("");
 }
 
 function implicitOrBlank(value: string | undefined) {
@@ -35,10 +53,13 @@ export function renderCampaignMessage(input: {
   let blankedName = false;
   const rendered = input.template.replace(PLACEHOLDER, (_, key: string) => {
     const value = values[key] ?? "";
-    if (NAME_KEYS.has(key) && !value) blankedName = true;
+    if (NAME_KEYS.has(key) && !value) {
+      blankedName = true;
+      return BLANK;
+    }
     return value;
   });
-  return blankedName ? tidyRenderedText(rendered) : rendered;
+  return blankedName ? resolveBlankNames(rendered) : rendered;
 }
 
 export function findUnresolvedVariables(template: string, contact: RenderContact) {

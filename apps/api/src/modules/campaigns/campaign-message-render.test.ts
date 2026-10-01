@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findUnresolvedVariables, renderCampaignMessage, tidyRenderedText } from "./campaign-message-render.js";
+import { findUnresolvedVariables, renderCampaignMessage } from "./campaign-message-render.js";
 
 const contact = { phone: "554799999999", fields: { empresa: "Metalpress" } };
 
@@ -36,9 +36,37 @@ describe("renderCampaignMessage", () => {
   });
 });
 
-describe("tidyRenderedText", () => {
-  it("colapsa espaços e apara as linhas", () => {
-    expect(tidyRenderedText("  Oi   você \n  tudo bem  ")).toBe("Oi você\ntudo bem");
+describe("renderCampaignMessage sem nome: só mexe ao redor do campo", () => {
+  const blank = (template: string) => renderCampaignMessage({ template, contact, firstName: null });
+  it.each([
+    ["Olá, {{nome}}, tudo bem?", "Olá, tudo bem?"],
+    ["Fala, {{nome}}, beleza?", "Fala, beleza?"],
+    ["Olá {{nome}} :) Veja", "Olá :) Veja"],
+    ["Oi {{nome}}", "Oi"],
+    ["{{nome}}", ""],
+    ["{{nome}}, oi\nSegunda linha: ok", "Oi\nSegunda linha: ok"],
+    ["Oi {{nome}}!", "Oi!"],
+    ["Olá, {{nome}}!", "Olá!"],
+    ["Olá {{nome}}, tudo bem?", "Olá, tudo bem?"],
+    ["{{nome}}, tudo bem?", "Tudo bem?"],
+    ["Bom dia {{nome}} e equipe", "Bom dia e equipe"],
+    ["Oi {{nome}}\n\nTchau", "Oi\n\nTchau"]
+  ])("%j -> %j", (template, expected) => {
+    expect(blank(template)).toBe(expected);
+  });
+
+  it("devolve o texto idêntico quando não há nome em branco", () => {
+    const text = ":) começo\nPreço : R$ 10 . 000  hoje\nhttps://x.com/a, b\n, linha\n  recuo  ";
+    expect(renderCampaignMessage({ template: text, contact, firstName: null })).toBe(text);
+    expect(renderCampaignMessage({ template: `Oi {{nome}}\n${text}`, contact, firstName: "Ana" }))
+      .toBe(`Oi Ana\n${text}`);
+  });
+
+  it("com nome em branco, só altera o trecho do campo", () => {
+    expect(blank("Olá {{nome}}!\n:) veja https://x.com/a, b 10 . 000"))
+      .toBe("Olá!\n:) veja https://x.com/a, b 10 . 000");
+    expect(blank(":) oi\n  {{nome}}, tudo bem?  \n, fim"))
+      .toBe(":) oi\n  Tudo bem?  \n, fim");
   });
 });
 
