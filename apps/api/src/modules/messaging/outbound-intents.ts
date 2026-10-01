@@ -8,6 +8,7 @@ import { normalizeChatAddress, record, serialized, string, type WhatsAppMessageK
 import { buildPhoneLookupCandidates } from '../contacts/phone-normalization.js';
 import { outboundChatRoot } from './outbound-authority.js';
 import { createOutboundObservationGate } from './outbound-observation-gate.js';
+import { createCanonicalStore } from './canonical-store.js';
 import { verifyOutboundDomainInTransaction, compatiblePreparedRecertification, type OutboundDomainFence } from './outbound-fences.js';
 export type { OutboundDomainFence } from './outbound-fences.js';
 import { inspectSendIdentityEvidence, sendIdentityClaimsConflict, sendEvidenceCanCompleteKey, classifySendEvidence, parseSendIdentity, parseSendProof, sanitizeSendEvidence, type SendEvidence } from './outbound-evidence.js';
@@ -196,6 +197,7 @@ export function createOutboundIntents({ hash = sha }: {
     hash?: (value: string) => string;
 } = {}) {
     const observationGate = createOutboundObservationGate({ hash });
+    const canonicalStore = createCanonicalStore({ hash });
     async function reserveLocalOutboundInTransaction(tx: Tx, source: TrustedMessagingContext, request: OutboundRequest, authorize: AuthorizeOutboundOrigin) {
         await enterCanonicalTransaction(tx, source);
         validate(request);
@@ -461,24 +463,11 @@ export function createOutboundIntents({ hash = sha }: {
         }
         if (!key)
             return { kind: 'incomplete_proof' as const };
-        for (const mapping of responseProof.addressMappings) {
-            const a = await tx.canonicalAddressAlias.findUnique({ where: { workspaceId_channelId_address: { ...scope, address: mapping.lid } } }), b = await tx.canonicalAddressAlias.findUnique({ where: { workspaceId_channelId_address: { ...scope, address: mapping.pn } } });
-            if (a && b) {
-                const left = await persistedAddress(tx, scope, mapping.lid), right = await persistedAddress(tx, scope, mapping.pn);
-                if (left.id !== right.id) {
-                    await tx.outboundIntent.update({
-                        where: { id: attempt.intent.id }, data: { state: 'review', reason: 'response_mapping_requires_review' }
-                    });
-                    return { kind: 'review' as const };
-                }
-            }
-            else {
-                const address = a?.addressId ?? b?.addressId ?? (await tx.canonicalAddress.create({ data: scope })).id;
-                if (!a)
-                    await tx.canonicalAddressAlias.create({ data: { ...scope, addressId: address, address: mapping.lid } });
-                if (!b)
-                    await tx.canonicalAddressAlias.create({ data: { ...scope, addressId: address, address: mapping.pn } });
-            }
+        const mappingConflict = await canonicalStore.applyDispatchMappingsInTransaction(tx, { ...scope, resultId: result.id, token: attempt.token });
+        if (mappingConflict) {
+            await tx.outboundIntent.update({ where: { id: attempt.intent.id }, data: { state: 'review', reason: mappingConflict } });
+            await tx.canonicalMessageIdentity.updateMany({ where: { ...scope, messageId: attempt.intent.messageId }, data: { state: 'review' } });
+            return { kind: 'review' as const };
         }
         const chat = await outboundChatRoot(tx, scope, attempt.intent.chatId);
         if (!chat || chat.state !== 'active' || !chat.operationConversationId) {
@@ -539,8 +528,6 @@ export function createOutboundIntents({ hash = sha }: {
                     ...scope, channelProvider: source.channelProvider === 'meta' ? 'meta_cloud' : 'evolution', provider: source.provider, connectionProvider: source.connectionId ? source.provider as 'evolution' | 'waha' : null, connectionId: source.connectionId, identityId: identity.id, aliasId: alias.id, receiptHash: hash(stable(receiptTuple)), receiptTuple: json(receiptTuple), kind: 'local_dispatch_binding', eventType: 'send_result', mode: source.mode, source: 'local_dispatch', sessionName: bindingSource.sessionName, lifecycleGeneration: bindingSource.lifecycleGeneration, receivedAt: result.createdAt, sourceOrder: json({}), resolutionEvidence: json({ bindingId: binding.id, resultId: result.id }), payload: json({ key, source: bindingSource, resultId: result.id }), state: 'resolved'
                 }
             });
-            for (const mapping of responseProof.addressMappings)
-                await tx.canonicalAddressEvidence.create({ data: { ...scope, observationId: observation.id, ...mapping } });
         }
         await tx.outboundIntent.update({ where: { id: attempt.intent.id }, data: { state: 'bound', reason: null } });
         return {

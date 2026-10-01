@@ -129,6 +129,8 @@ export function parseSendIdentity(source: TrustedMessagingContext, destination: 
     const dest = normalizeChatAddress(destination);
     if (!dest)
         return null;
+    if (inspectSendIdentityEvidence(source, dest, raw).conflicting)
+        return null;
     let key: WhatsAppMessageKey;
     if (source.provider === 'meta_official') {
         if (source.connectionId !== null || !source.phoneNumberId || dest.endsWith('@g.us') || dest.endsWith('@lid'))
@@ -214,6 +216,7 @@ export function acceptedNativeHints(source: TrustedMessagingContext, value: unkn
 export interface SendIdentityClaim {
     key: Partial<WhatsAppMessageKey>;
     chatAlternate?: string;
+    senderAlternate?: string;
 }
 const nativeFields: (keyof WhatsAppMessageKey)[] = [
     'identityFormat', 'nativeId', 'nativeChatAddress', 'nativeSenderParticipant',
@@ -232,6 +235,7 @@ export function inspectSendIdentityEvidence(source: TrustedMessagingContext, des
         direction?: unknown;
         participant?: unknown;
         alternate?: unknown;
+        senderAlternate?: unknown;
         format?: WhatsAppMessageKey['identityFormat'];
     }) {
         const key: Partial<WhatsAppMessageKey> = {};
@@ -278,14 +282,24 @@ export function inspectSendIdentityEvidence(source: TrustedMessagingContext, des
                     key.senderParticipant = normalized;
             }
         }
-        if (Object.keys(key).length)
-            claims.push({ key, ...(string(input.alternate) ? { chatAlternate: string(input.alternate)! } : {}) });
+        const alternatives: Pick<SendIdentityClaim, 'chatAlternate' | 'senderAlternate'> = {};
+        for (const [field, value] of [['chatAlternate', input.alternate], ['senderAlternate', input.senderAlternate]] as const) {
+            if (!present(value))
+                continue;
+            const normalized = normalizeChatAddress(value);
+            if (!normalized || normalized.endsWith('@g.us'))
+                conflicting = true;
+            else
+                alternatives[field] = normalized;
+        }
+        if (Object.keys(key).length || Object.keys(alternatives).length)
+            claims.push({ key, ...alternatives });
     }
     if (source.provider === 'evolution') {
         for (const value of [raw.key, record(raw.message).key].filter(v => Object.keys(record(v)).length)) {
             const k = record(value), id = string(k.id), format = id?.startsWith('wamid.') ? 'provider_native' : 'whatsapp_stanza';
             claim({
-                id: k.id, rawId: format === 'whatsapp_stanza' ? k.id : undefined, chat: k.remoteJid, direction: k.fromMe, participant: k.participant, alternate: k.remoteJidAlt, format
+                id: k.id, rawId: format === 'whatsapp_stanza' ? k.id : undefined, chat: k.remoteJid, direction: k.fromMe, participant: k.participant, alternate: k.remoteJidAlt, senderAlternate: k.participantAlt, format
             });
         }
         for (const id of [raw.id, raw.messageId].filter(present))
@@ -337,7 +351,8 @@ export function inspectSendIdentityEvidence(source: TrustedMessagingContext, des
     return { claims, conflicting };
 }
 export function sendIdentityClaimsConflict(claims: readonly SendIdentityClaim[]): boolean {
-    return nativeFields.some(field => new Set(claims.map(c => c.key[field]).filter(v => v !== undefined)).size > 1);
+    return nativeFields.some(field => new Set(claims.map(c => c.key[field]).filter(v => v !== undefined)).size > 1)
+        || (['chatAlternate', 'senderAlternate'] as const).some(field => new Set(claims.map(c => c[field]).filter(v => v !== undefined)).size > 1);
 }
 export function sendEvidenceCanCompleteKey(source: TrustedMessagingContext, destination: string, value: unknown, key: WhatsAppMessageKey): boolean {
     const inspected = inspectSendIdentityEvidence(source, destination, value);

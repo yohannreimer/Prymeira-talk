@@ -289,7 +289,13 @@ describe.skipIf(!url)('persistent outbound intents', () => {
             expect.objectContaining({ lid: '700001@lid', pn: PN, role: 'chat', source: 'evolution.remoteJidAlt' })
         ]);
         const lid = await db.canonicalAddressAlias.findFirstOrThrow({ where: { workspaceId: f.source.workspaceId, address: '700001@lid' } }), pn = await db.canonicalAddressAlias.findFirstOrThrow({ where: { workspaceId: f.source.workspaceId, address: PN } });
-        expect(lid.addressId).toBe(pn.addressId);
+        const root = async (id: string) => {
+            let address = await db.canonicalAddress.findUniqueOrThrow({ where: { id } });
+            while (address.redirectId)
+                address = await db.canonicalAddress.findUniqueOrThrow({ where: { id: address.redirectId } });
+            return address.id;
+        };
+        expect(await root(lid.addressId)).toBe(await root(pn.addressId));
         const obs = await store.persist(db, {
             ...echo(f), key: { ...echo(f).key, chatAddress: '700001@lid', nativeChatAddress: '700001@lid' }, addressMappings: [{ role: 'chat', lid: '700001@lid', pn: PN, source: 'evolution.remoteJidAlt' }]
         }, { receiptKey: 'echo-lid' });
@@ -577,6 +583,168 @@ describe.skipIf(!url)('persistent outbound intents', () => {
             workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultId: a.result.id
         }))).kind).toBe('review');
         expect(await db.message.count({ where: { workspaceId: f.source.workspaceId } })).toBe(1);
+    });
+    async function mappingFixture(role: 'chat' | 'sender') {
+        const f = await fixture(), destination = role === 'chat' ? '777@lid' : '120000-100@g.us';
+        await db.contact.update({
+            where: { id: f.conversation.contactId }, data: { phone: destination, isGroup: role === 'sender' }
+        });
+        f.request.destination = destination;
+        return f;
+    }
+    function mappingRaw(f: any, role: 'chat' | 'sender', pn: string, id = 'A') {
+        return {
+            key: {
+                id, remoteJid: f.request.destination, fromMe: true,
+                ...(role === 'chat' ? { remoteJidAlt: pn } : { participant: '777@lid', participantAlt: pn })
+            }
+        };
+    }
+    async function assertMappingFamilies(scope: {
+        workspaceId: string;
+        channelId: string;
+    }) {
+        const addresses = await db.canonicalAddress.findMany({ where: scope }), aliases = await db.canonicalAddressAlias.findMany({ where: scope });
+        const nodes = new Map(addresses.map(a => [a.id, a]));
+        const families = new Map<string, Set<string>>();
+        for (const alias of aliases) {
+            let root = nodes.get(alias.addressId)!;
+            while (root.redirectId)
+                root = nodes.get(root.redirectId)!;
+            const pns = families.get(root.id) ?? new Set<string>();
+            if (alias.address.endsWith('@s.whatsapp.net'))
+                pns.add(alias.address);
+            families.set(root.id, pns);
+        }
+        for (const pns of families.values())
+            expect(pns.size).toBeLessThanOrEqual(1);
+    }
+    it.each((['chat', 'sender'] as const).flatMap(role => [
+        'single', 'single_reverse', 'results', 'results_reverse', 'after_bound', 'after_bound_reverse', 'persisted', 'valid'
+    ].map(order => ({ role, order }))))('PN/LID $role proof requires one compatible PN across $order', async ({ role, order }) => {
+        const f = await mappingFixture(role), first = order.endsWith('_reverse') ? '15550002222@s.whatsapp.net' : PN;
+        const second = first === PN ? '15550002222@s.whatsapp.net' : PN;
+        if (order === 'persisted') {
+            const known = echo(f, 'KNOWN');
+            if (role === 'sender')
+                known.key = parseWahaMessageKey({ id: 'KNOWN', remote: f.request.destination, fromMe: true, participant: '777@lid' });
+            known.addressMappings = [
+                {
+                    role, lid: '777@lid', pn: first, source: role === 'chat' ? 'evolution.remoteJidAlt' : 'evolution.participantAlt'
+                }
+            ];
+            expect((await store.persist(db, known, { receiptKey: 'known-proof' })).outcome).toBe('created');
+        }
+        const r = await reserve(f), d = await begin(f, r.intent!.id);
+        const original = await db.message.findUniqueOrThrow({ where: { id: r.intent!.messageId } });
+        const recordResult = (raw: unknown, resultKey: string): Promise<any> => tx(t => api.recordDispatchResultInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultKey,
+            evidence: { transport: 'http', status: 200, bodyState: 'json', raw }
+        }));
+        const bind = (resultId: string) => tx(t => api.bindLocalOutboundInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultId
+        }));
+        const raw: any = mappingRaw(f, role, order === 'persisted' ? second : first);
+        if (order.startsWith('single'))
+            raw.message = mappingRaw(f, role, second);
+        const result = await recordResult(raw, 'first');
+        if (order.startsWith('after_bound'))
+            expect((await bind(result.result.id)).kind).toBe('bound');
+        if (order.startsWith('results') || order.startsWith('after_bound'))
+            await recordResult(mappingRaw(f, role, second), 'second');
+        const bound = await bind(result.result.id);
+        expect(bound.kind).toBe(order === 'valid' ? 'bound' : 'review');
+        expect((await db.outboundIntent.findUniqueOrThrow({ where: { id: r.intent!.id } })).state).toBe(order === 'valid' ? 'bound' : 'review');
+        await recordResult(raw, 'first');
+        expect((await bind(result.result.id)).kind).toBe(order === 'valid' ? 'bound' : 'review');
+        expect(await db.message.findUniqueOrThrow({ where: { id: original.id } })).toEqual(original);
+        expect(await db.outboundResult.count({ where: { attemptId: d.attempt!.id, outcome: 'accepted' } })).toBe(order.startsWith('results') || order.startsWith('after_bound') ? 2 : 1);
+        await assertMappingFamilies({ workspaceId: f.source.workspaceId, channelId: f.source.channelId });
+    });
+    it.each([false, true])('canonical mapping batch preserves proofs and prior redirects before any partial union (existing=%s)', async (existing) => {
+        const f = await mappingFixture('sender'), event = echo(f, 'KNOWN');
+        event.key = parseWahaMessageKey({ id: 'KNOWN', remote: f.request.destination, fromMe: true, participant: '777@lid' });
+        if (existing) {
+            const prior = {
+                ...event, addressMappings: [{ role: 'sender', lid: '777@lid', pn: PN, source: 'evolution.participantAlt' }]
+            };
+            expect((await store.persist(db, prior, { receiptKey: 'prior-mapping' })).outcome).toBe('created');
+        }
+        const priorRedirects = await db.canonicalAddress.findMany({ where: { workspaceId: f.source.workspaceId, redirectId: { not: null } } });
+        event.addressMappings = [existing ? '15550003333@s.whatsapp.net' : PN, '15550002222@s.whatsapp.net'].map(pn => ({
+            role: 'sender', lid: '777@lid', pn, source: 'evolution.participantAlt'
+        }));
+        const observed = await store.persist(db, event, { receiptKey: 'mapping-batch-conflict' });
+        expect(observed.outcome).toBe('held');
+        expect(observed.reconciliationReasons).toContain('address_mapping_conflict');
+        expect(await db.canonicalAddressEvidence.count({ where: { workspaceId: f.source.workspaceId, observationId: observed.observationId } })).toBe(2);
+        const after = await db.canonicalAddress.findMany({ where: { workspaceId: f.source.workspaceId, redirectId: { not: null } } });
+        expect(after.map(a => [a.id, a.redirectId])).toEqual(priorRedirects.map(a => [a.id, a.redirectId]));
+        await assertMappingFamilies({ workspaceId: f.source.workspaceId, channelId: f.source.channelId });
+    });
+    it('competing bindings on different chat lanes cannot union two PNs into one sender family', async () => {
+        const f = await mappingFixture('sender');
+        const contact = await db.contact.create({ data: { workspaceId: f.source.workspaceId, phone: '120000-200@g.us', isGroup: true } });
+        const conversation = await db.conversation.create({
+            data: { workspaceId: f.source.workspaceId, channelId: f.source.channelId, contactId: contact.id }
+        });
+        const sibling = {
+            ...f, conversation, request: {
+                ...f.request, conversationId: conversation.id, destination: contact.phone,
+                origin: { ...f.request.origin, requestKey: randomUUID() }
+            }
+        };
+        const a = await reserve(f), b = await reserve(sibling), da = await begin(f, a.intent!.id), dbb = await begin(sibling, b.intent!.id);
+        const recorded = [];
+        for (const [fixture, dispatch, pn] of [[f, da, PN], [sibling, dbb, '15550002222@s.whatsapp.net']] as const) {
+            const result: any = await tx(t => api.recordDispatchResultInTransaction(t, {
+                workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: dispatch.attempt!.token, resultKey: 'response',
+                evidence: { transport: 'http', status: 200, bodyState: 'json', raw: mappingRaw(fixture, 'sender', pn) }
+            }));
+            recorded.push({ dispatch, result });
+        }
+        const bindings = await Promise.all(recorded.map(({ dispatch, result }) => tx(t => api.bindLocalOutboundInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: dispatch.attempt!.token, resultId: result.result.id
+        }))));
+        expect(bindings.map(b => b.kind).sort()).toEqual(['bound', 'review']);
+        await assertMappingFamilies({ workspaceId: f.source.workspaceId, channelId: f.source.channelId });
+    });
+    it.each(['workspace', 'channel'])('mapping families remain isolated by %s', async (isolation) => {
+        const f = await mappingFixture('sender');
+        let other: any;
+        if (isolation === 'workspace')
+            other = await mappingFixture('sender');
+        else {
+            const channel = await db.channel.create({ data: { workspaceId: f.source.workspaceId, provider: 'evolution', providerKey: randomUUID() } });
+            const connection = await db.channelConnection.create({
+                data: {
+                    workspaceId: f.source.workspaceId, channelId: channel.id, provider: 'evolution', sessionName: randomUUID()
+                }
+            });
+            const conversation = await db.conversation.create({
+                data: { workspaceId: f.source.workspaceId, channelId: channel.id, contactId: f.conversation.contactId }
+            });
+            other = {
+                ...f, conversation, source: {
+                    ...f.source, channelId: channel.id, connectionId: connection.id, sessionName: connection.sessionName
+                },
+                request: { ...f.request, conversationId: conversation.id }
+            };
+        }
+        const known = echo(other, 'KNOWN');
+        known.key = parseWahaMessageKey({ id: 'KNOWN', remote: other.request.destination, fromMe: true, participant: '777@lid' });
+        known.addressMappings = [{ role: 'sender', lid: '777@lid', pn: PN, source: 'evolution.participantAlt' }];
+        await store.persist(db, known, { receiptKey: 'other-scope-proof' });
+        const r = await reserve(f), d = await begin(f, r.intent!.id);
+        const result: any = await tx(t => api.recordDispatchResultInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultKey: 'response',
+            evidence: {
+                transport: 'http', status: 200, bodyState: 'json', raw: mappingRaw(f, 'sender', '15550002222@s.whatsapp.net')
+            }
+        }));
+        expect((await tx(t => api.bindLocalOutboundInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultId: result.result.id
+        }))).kind).toBe('bound');
     });
     it.each([
         'bare', 'compatible_partial', 'nativeChat', 'direction', 'nativeSender', 'representations', 'source'

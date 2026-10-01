@@ -8,6 +8,7 @@ import { enterCanonicalTransaction } from './canonical-boundary.js';
 import { createCanonicalReducers, type ActionEvent } from './canonical-reducers.js';
 import { json, stable, equal, sha, scopeOf, nativeLookupTuple } from './canonical-values.js';
 import { enrichPresentation, mergeStructuredContent } from './canonical-presentation.js';
+import { parseSendProof, type SendEvidence } from './outbound-evidence.js';
 import { Prisma, type PrismaClient, type CanonicalChat, type CanonicalMessageIdentity, type CanonicalNativeAlias } from '@prisma/client';
 import type { NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
 import { normalizeChatAddress, record, type WhatsAppMessageKey } from './whatsapp-identity.js';
@@ -125,9 +126,10 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       if (!equal(identity.fullTuple, fullTuple)) await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { fullTuple, tupleHash: digest(fullTuple) } });
     }
   }
-  async function mappings(tx: Tx, event: NormalizedMessagingEvent, observationId: string) {
+  async function mappings(tx: Tx, event: Pick<NormalizedMessagingEvent, 'context' | 'addressMappings'>, observationId: string) {
     const scope = scopeOf(event.context);
     const seen = new Set<string>();
+    const pairs: Array<{ a: string; b: string }> = [];
     for (const evidence of event.addressMappings) {
       const proofKey = stable(evidence);
       if (seen.has(proofKey)) continue;
@@ -137,16 +139,47 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
         || (event.context.provider === 'waha' ? evidence.source !== 'waha.lid_lookup'
           : evidence.source !== (evidence.role === 'chat' ? 'evolution.remoteJidAlt' : 'evolution.participantAlt'))) throw new Error('Invalid mapping evidence');
       const a = await address(tx, scope, lid), b = await address(tx, scope, pn);
-      await tx.canonicalAddressEvidence.create({ data: { ...scope, observationId, ...evidence, lid, pn } });
-      const g = await graph(tx, scope);
-      const familyIds = [...new Set([...g.family(a), ...g.family(b)])];
+      await tx.canonicalAddressEvidence.upsert({
+        where: { observationId_lid_pn_role_source: { observationId, lid, pn, role: evidence.role, source: evidence.source } },
+        create: { ...scope, observationId, ...evidence, lid, pn }, update: {}
+      });
+      pairs.push({ a, b });
+    }
+    if (!pairs.length) return;
+    // Plan the whole batch against current persisted families. No redirect is
+    // written until every prospective family satisfies the canonical PN rule.
+    const current = await graph(tx, scope), planned = new Map<string, string>();
+    function plannedRoot(id: string): string {
+      while (planned.has(id)) id = planned.get(id)!;
+      return id;
+    }
+    for (const { a, b } of pairs) {
+      const x = plannedRoot(current.root(a)), y = plannedRoot(current.root(b));
+      if (x !== y) {
+        const [root, other] = [x, y].sort();
+        planned.set(other!, root!);
+      }
+    }
+    const families = new Map<string, Set<string>>();
+    for (const { a, b } of pairs) {
+      const root = plannedRoot(current.root(a)), family = families.get(root) ?? new Set<string>();
+      for (const id of [...current.family(a), ...current.family(b)]) family.add(id);
+      families.set(root, family);
+    }
+    let conflict = false;
+    for (const family of families.values()) {
+      const familyIds = [...family];
       const familyAliases = await tx.canonicalAddressAlias.findMany({ where: { ...scope, addressId: { in: familyIds } } });
       const pnAliases = new Set(familyAliases.filter(r => r.address.endsWith('@s.whatsapp.net')).map(r => r.address));
       const disputed = await tx.canonicalAddress.count({ where: { ...scope, id: { in: familyIds }, state: 'review' } });
       if (pnAliases.size > 1 || disputed) {
         await tx.canonicalAddress.updateMany({ where: { ...scope, id: { in: familyIds } }, data: { state: 'review', reviewReason: 'address_mapping_conflict' } });
-        return 'address_mapping_conflict';
+        conflict = true;
       }
+    }
+    if (conflict) return 'address_mapping_conflict';
+    for (const pair of pairs) {
+      const g = await graph(tx, scope), a = g.root(pair.a), b = g.root(pair.b);
       if (a !== b) {
         // The representative is only an identity root, never a conversation authority.
         const [root, other] = [a, b].sort();
@@ -156,6 +189,35 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
         await rekey(tx, scope, family);
       }
     }
+  }
+  /** The source and PN/LID pairs are derived from an immutable accepted result.
+   * Conservation of dispatch proof uses workspace boundary, including late sources. */
+  async function applyDispatchMappingsInTransaction(tx: Tx, input: Scope & { resultId: string; token: string }) {
+    await enterCanonicalWorkspaceTransaction(tx, input.workspaceId);
+    const scope = { workspaceId: input.workspaceId, channelId: input.channelId };
+    const result = await tx.outboundResult.findFirst({ where: { ...scope, id: input.resultId, outcome: 'accepted', attempt: { token: input.token } },
+      include: { attempt: { include: { intent: true } } } });
+    if (!result) throw new Error('Missing scoped dispatch mapping proof');
+    if (result.attempt.intent.state === 'review') return 'response_mapping_requires_review';
+    const context = result.attempt.source as unknown as TrustedMessagingContext;
+    if (context.workspaceId !== input.workspaceId || context.channelId !== input.channelId) throw new Error('Invalid dispatch mapping source');
+    const destination = record(result.attempt.intent.request).destination;
+    if (typeof destination !== 'string') throw new Error('Invalid dispatch mapping destination');
+    const proof = parseSendProof(context, destination, (result.evidence as unknown as SendEvidence).raw);
+    if (!proof.addressMappings.length) return;
+    const receiptTuple = ['local_dispatch_mapping', result.attempt.token, result.id];
+    const bucket = await tx.canonicalObservation.findMany({ where: { ...scope, receiptHash: digest(receiptTuple) } });
+    const previous = bucket.find(row => equal(row.receiptTuple, receiptTuple));
+    const observation = previous ?? await tx.canonicalObservation.create({ data: { ...scope,
+      channelProvider: context.channelProvider === 'meta' ? 'meta_cloud' : 'evolution', provider: context.provider,
+      connectionProvider: context.connectionId ? context.provider as 'evolution' | 'waha' : null, connectionId: context.connectionId,
+      receiptHash: digest(receiptTuple), receiptTuple: json(receiptTuple), kind: 'local_dispatch_mapping', eventType: 'send_result',
+      mode: context.mode, source: 'authenticated_dispatch_response', sessionName: context.sessionName, lifecycleGeneration: context.lifecycleGeneration,
+      receivedAt: result.createdAt, sourceOrder: json({}), payload: json({ context, resultId: result.id, addressMappings: proof.addressMappings }), state: 'certified'
+    } });
+    const reason = await mappings(tx, { context, addressMappings: proof.addressMappings }, observation.id);
+    await tx.canonicalObservation.update({ where: { id: observation.id }, data: { state: reason ? 'held' : 'certified', reason: reason ?? null } });
+    return reason;
   }
   async function nativeAlias(tx: Tx, event: NormalizedMessagingEvent, key: WhatsAppMessageKey, channelProvider: 'evolution' | 'meta_cloud') {
     const c = event.context, scope = scopeOf(c);
@@ -479,6 +541,6 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
   }
   async function persistInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) { return persistObservationInTransaction(tx, event, options); }
   return { ...createCanonicalReads({ hash }), resolveProviderReferenceInTransaction, persistInTransaction, reconcileRevisionInTransaction, reconcileSnapshotInTransaction, reconciliationFrontierInTransaction, recoverPendingInTransaction,
-    reprocessHeldMessageObservationInTransaction,
+    reprocessHeldMessageObservationInTransaction, applyDispatchMappingsInTransaction,
     persist: (db: PrismaClient, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) => db.$transaction(tx => persistInTransaction(tx, event, options), { isolationLevel: 'ReadCommitted' }) };
 }
