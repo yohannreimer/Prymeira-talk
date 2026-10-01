@@ -23,6 +23,8 @@ type MockPrisma = {
   };
   contact: {
     findFirst: any;
+    findMany?: any;
+    update?: any;
     create: any;
   };
   conversation: {
@@ -189,6 +191,8 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
     },
     contact: {
       findFirst: overrides.contact?.findFirst ?? vi.fn().mockResolvedValue(null),
+      findMany: overrides.contact?.findMany ?? vi.fn().mockResolvedValue([]),
+      update: overrides.contact?.update ?? vi.fn().mockResolvedValue({}),
       create:
         overrides.contact?.create ??
         vi.fn().mockImplementation(async (args) => ({
