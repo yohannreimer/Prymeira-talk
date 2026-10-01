@@ -1,3 +1,5 @@
+import { groupFallbackName } from '../evolution/evolution-normalizer.js';
+import { validateEvolutionIdentityDeclarations, validateWahaIdentityDeclarations } from '../messaging/identity-declarations.js';
 import { Prisma, type IngressReceipt } from '@prisma/client';
 import { enterCanonicalTransaction, enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
 import { StaleMessagingSourceError } from '../messaging/canonical-source.js';
@@ -26,7 +28,7 @@ export class IngressApplicationService {
     constructor(readonly journal: IngressJournal) { this.assistant = createAssistantRepository(journal.db); }
     async apply(receiptId: string) {
         const { receipt, payload } = await this.journal.readPayload(receiptId);
-        await this.journal.files.read(receipt.rawRef, receipt.rawDigest);
+        const raw = JSON.parse((await this.journal.files.read(receipt.rawRef, receipt.rawDigest)).toString('utf8')) as unknown;
         const source = this.source(receipt);
         for (const [eventIndex, item] of payload.events.entries()) {
             await this.journal.db.$transaction(async (tx) => {
@@ -51,6 +53,15 @@ export class IngressApplicationService {
                     // The authenticated private receipt itself certifies conservation, not
                     // current domain authority. No public source check is bypassed.
                     await tx.ingressEventProgress.create({ data: { ...scope, state: 'pending_recertification', reason: 'stale_source', result: json({ kind: item.kind, source, certification: 'immutable_authenticated_receipt', reason: 'stale_source' }) } });
+                    return;
+                }
+                // Revalidate conserved raw declarations as well as new adapter output.
+                // Old queued receipts keep their original blobs/source; contradictions
+                // cannot gain domain authority from a formerly preferred sender field.
+                const contradiction = source.provider === 'evolution' ? validateEvolutionIdentityDeclarations(raw)
+                    : source.provider === 'waha' ? validateWahaIdentityDeclarations(raw, item.kind === 'accepted' ? item.event.addressMappings : []) : null;
+                if (contradiction) {
+                    await tx.ingressEventProgress.create({ data: { ...scope, state: 'held', reason: contradiction, result: json({ kind: 'invalid', reason: contradiction, certification: 'immutable_authenticated_receipt' }) } });
                     return;
                 }
                 if (item.kind !== 'accepted') {
@@ -81,7 +92,7 @@ export class IngressApplicationService {
                 if (result.conversationId)
                     await lockProspectingConversation(tx, source.workspaceId, result.conversationId);
                 if (event.kind === 'message' && result.messageId && result.conversationId && result.outcome !== 'held')
-                    await this.contactAnnotations(tx, event, result.conversationId);
+                    await this.contactAnnotations(tx, receipt, eventIndex, event, result);
                 if (event.kind === 'message' && result.outcome !== 'held' && result.messageId && result.conversationId)
                     await this.preparePresentationMedia(tx, receipt, eventIndex, event, result);
                 if (event.kind === 'message') {
@@ -174,7 +185,8 @@ export class IngressApplicationService {
             mode: event.context.mode, isGroup: event.key.chatAddress?.endsWith('@g.us') === true, dependsOn: []
         });
     }
-    private async contactAnnotations(tx: Tx, event: MessageEvent, conversationId: string) {
+    private async contactAnnotations(tx: Tx, receipt: IngressReceipt, index: number, event: MessageEvent, result: CanonicalStoreResult) {
+        const conversationId = result.conversationId!;
         const workspaceId = event.context.workspaceId;
         const conversation = await tx.conversation.findUniqueOrThrow({ where: { workspaceId_id: { workspaceId, id: conversationId } }, include: { contact: true } });
         const isGroup = event.key.chatAddress?.endsWith('@g.us') === true;
@@ -182,6 +194,11 @@ export class IngressApplicationService {
             await tx.contact.updateMany({ where: { workspaceId, id: conversation.contactId, isGroup: false }, data: { isGroup: true } });
         if (!isGroup && !conversation.contact.name?.trim() && event.key.direction === 'inbound' && event.pushName?.trim())
             await tx.contact.updateMany({ where: { workspaceId, id: conversation.contactId, name: conversation.contact.name }, data: { name: event.pushName.trim().slice(0, 120) } });
+        if (isGroup && (!conversation.contact.name?.trim() || conversation.contact.name === groupFallbackName(event.key.chatAddress!)))
+            await this.effect(tx, receipt, index, 'contact.group_metadata', `contact:${conversation.contactId}:group_metadata`, result.messageId, conversationId, result.observationId, {
+                contactId: conversation.contactId, chatId: result.chatId, chatAddress: event.key.chatAddress, nativeChatAddress: event.key.nativeChatAddress,
+                originalName: conversation.contact.name, mode: event.context.mode, presentationOnly: true, dependsOn: []
+            });
         const lid = event.addressMappings.find(e => e.role === 'chat')?.lid;
         if (lid)
             await tx.contact.update({ where: { workspaceId_id: { workspaceId, id: conversation.contactId } }, data: { customFields: json({ ...record(conversation.contact.customFields), evolutionLid: lid }) } });

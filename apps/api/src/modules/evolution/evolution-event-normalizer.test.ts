@@ -64,7 +64,7 @@ describe('Evolution shared event adapter', () => {
     expect(result.event.key).toMatchObject({ identityFormat: 'whatsapp_stanza', rawId: 'A_B' });
   });
   it('keeps group sender distinct from quoted participant or contact card number', () => {
-    const result = normalize({ key: { ...key, remoteJid: '123-456@g.us', participant: '888@lid', participantAlt: '5547999990000@s.whatsapp.net' }, message: { conversation: 'hello', contextInfo: { participant: '999@lid' } } });
+    const result = normalize({ key: { ...key, remoteJidAlt: undefined, remoteJid: '123-456@g.us', participant: '888@lid', participantAlt: '5547999990000@s.whatsapp.net' }, message: { conversation: 'hello', contextInfo: { participant: '999@lid' } } });
     expect(result.addressMappings).toEqual([{ role: 'sender', lid: '888@lid', pn: '554799990000@s.whatsapp.net', source: 'evolution.participantAlt' }]);
     if (result.kind !== 'message') throw new Error('Expected message');
     expect(result.key.senderParticipant).toBe('888@lid');

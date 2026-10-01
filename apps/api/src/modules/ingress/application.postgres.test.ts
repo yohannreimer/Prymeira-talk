@@ -6,6 +6,7 @@ import amqp, { type ChannelModel } from 'amqplib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createCanonicalStore } from '../messaging/canonical-store.js';
 import { normalizeReceipt } from './normalization.js';
+import type { TrustedMessagingContext } from '../messaging/normalized-event.js';
 import { deriveTrustedMessagingContext } from '../messaging/canonical-source.js';
 import { enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
 import { captureOutboundDomainFenceInTransaction } from '../messaging/outbound-fences.js';
@@ -91,9 +92,9 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
         publishers.push(publisher);
         const app = createIngressHttp({ db, journal, publisher: () => publisher, evolutionSecret: secret, wahaSecret: secret, workspaceAllowlist: new Set([workspaceId]) });
         apps.push(app);
-        async function send(provider: 'evolution' | 'waha' = 'evolution', data: Record<string, unknown> = {}) {
-            const input = provider === 'evolution' ? { event: 'MESSAGES_UPSERT', instance: evo.sessionName, data: { key: { id: 'same-stanza', remoteJid: peer, fromMe: false }, message: { conversation: 'hello' }, messageTimestamp: 1700000000, ...data } }
-                : { id: randomUUID(), event: 'message.any', session: waha.sessionName, payload: { id: `false_${peer}_same-stanza`, from: peer, fromMe: false, body: 'hello', timestamp: 1700000000, ...data } };
+        async function send(provider: 'evolution' | 'waha' = 'evolution', data: Record<string, unknown> = {}, eventName?: string) {
+            const input = provider === 'evolution' ? { event: eventName ?? 'MESSAGES_UPSERT', instance: evo.sessionName, data: { key: { id: 'same-stanza', remoteJid: peer, fromMe: false }, message: { conversation: 'hello' }, messageTimestamp: 1700000000, ...data } }
+                : { id: randomUUID(), event: eventName ?? 'message.any', session: waha.sessionName, payload: { id: `false_${peer}_same-stanza`, from: peer, fromMe: false, body: 'hello', timestamp: 1700000000, ...data } };
             const headers = provider === 'evolution' ? { 'x-prymeira-talk-secret': secret } : { 'x-webhook-hmac': createHmac('sha512', secret).update(JSON.stringify(input)).digest('hex'), 'x-webhook-hmac-algorithm': 'sha512' };
             const result = await app.inject({ method: 'POST', url: `/webhooks/${provider}/${workspaceId}`, headers: { 'content-type': 'application/json', ...headers }, payload: JSON.stringify(input) });
             expect(result.statusCode).toBe(202);
@@ -120,6 +121,100 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             await db.$executeRawUnsafe(`DROP FUNCTION ${name}()`);
         }
     }
+    it.each(['evo-outer', 'evo-alt', 'evo-data-alt', 'waha-author', 'waha-participant', 'waha-key', 'waha-native', 'waha-chat', 'waha-direction', 'waha-stanza', 'waha-ack', 'waha-edit', 'waha-revoke'] as const)('conserves contradictory authenticated declarations without identity/hooks: %s', async (variant) => {
+        const f = await fixture(), group = '123-456@g.us', a = '15550003333@s.whatsapp.net', b = '15550004444@s.whatsapp.net';
+        const provider = variant.startsWith('evo') ? 'evolution' : 'waha';
+        const signal = variant === 'waha-ack' ? 'message.ack.group' : variant === 'waha-edit' ? 'message.edited' : variant === 'waha-revoke' ? 'message.revoked' : undefined;
+        const data = provider === 'evolution' ? { key: { id: 'contradiction', remoteJid: group, fromMe: false, participant: a, ...(variant === 'evo-alt' ? { participantAlt: b } : {}) }, ...(variant === 'evo-outer' ? { participant: b } : variant === 'evo-data-alt' ? { participantAlt: b } : {}), message: { conversation: 'held' } }
+            : { id: `false_${group}_contradiction_${a}`, from: group, participant: a, ack: 3, body: 'held', _data: { author: variant === 'waha-author' || signal ? b : a, ...(variant === 'waha-participant' ? { participant: b } : {}), ...(variant === 'waha-key' || variant === 'waha-native' || variant === 'waha-chat' || variant === 'waha-stanza' ? { id: { id: variant === 'waha-stanza' ? 'OTHER' : 'contradiction', remote: variant === 'waha-chat' ? '888-999@g.us' : group, fromMe: false, participant: variant === 'waha-key' ? b : a, ...(variant === 'waha-native' ? { _serialized: `false_${group}_contradiction_${b}` } : {}) } } : {}), ...(variant === 'waha-direction' ? { fromMe: true } : {}), ...(signal === 'message.revoked' ? { refId: 'original' } : signal === 'message.edited' ? { msg: { body: 'edit' } } : {}) } };
+        const id = await f.send(provider, data, signal);
+        await service.apply(id);
+        await service.apply(id);
+        expect(await db.ingressEventProgress.findFirst({ where: { receiptId: id } })).toMatchObject({ state: 'held', reason: expect.stringMatching(/^contradictory_/), messageId: null, observationId: null, actionId: null });
+        expect(await db.ingressApplication.findUnique({ where: { receiptId: id } })).toMatchObject({ state: 'held', appliedAt: null });
+        expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+        expect(await db.conversation.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+        expect(await db.contact.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+        expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+    });
+    it.each(['evo-status', 'evo-edit', 'evo-delete', 'waha-status', 'waha-edit', 'waha-delete'] as const)('contradictory signal cannot alter an existing canonical message: %s', async (variant) => {
+        const f = await fixture(), group = '123-456@g.us', a = '15550003333@s.whatsapp.net', b = '15550004444@s.whatsapp.net';
+        await service.apply(await f.send('evolution', { key: { id: 'original', remoteJid: group, fromMe: false, participant: a }, message: { conversation: 'original' } }));
+        const original = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } }), effects = await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } });
+        const key = { id: 'original', remoteJid: group, fromMe: false, participant: a }, native = `false_${group}_original_${a}`;
+        const provider = variant.startsWith('evo') ? 'evolution' : 'waha';
+        const name = variant === 'evo-status' ? 'MESSAGES_UPDATE' : variant === 'evo-delete' ? 'MESSAGES_DELETE' : variant === 'evo-edit' ? 'MESSAGES_EDITED' : variant === 'waha-status' ? 'message.ack.group' : variant === 'waha-delete' ? 'message.revoked' : 'message.edited';
+        const data = provider === 'evolution' ? { key, participant: b, status: 'READ', message: { conversation: 'corrupted' } } : { id: native, from: group, participant: a, ack: 3, body: 'corrupted', _data: { id: native, author: b, refId: native, msg: { body: 'corrupted' } } };
+        const id = await f.send(provider, data, name);
+        await service.apply(id);
+        expect(await db.ingressEventProgress.findFirst({ where: { receiptId: id } })).toMatchObject({ state: 'held', reason: 'contradictory_sender_declarations', messageId: null, actionId: null });
+        expect(await db.message.findUniqueOrThrow({ where: { id: original.id } })).toEqual(original);
+        expect(await db.conversation.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ unreadCount: 1, lastMessagePreview: 'original' });
+        expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } })).toBe(effects);
+    });
+    it('valid explicit PN/LID sender proof retains one family and stable UUID across providers', async () => {
+        const f = await fixture(), group = '123-456@g.us', pn = '15550003333@s.whatsapp.net', lid = '777@lid';
+        const evo = await f.send('evolution', { key: { id: 'proven', remoteJid: group, fromMe: false, participant: pn, participantAlt: lid }, participant: lid, pushName: 'Synthetic participant' });
+        await service.apply(evo);
+        const message = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+        const waha = await f.send('waha', { id: `false_${group}_proven_${lid}`, from: group, participant: lid, _data: { author: lid } });
+        await service.apply(waha);
+        await service.apply(evo);
+        expect(await db.message.findMany({ where: { workspaceId: f.workspaceId } })).toHaveLength(1);
+        expect(await db.ingressEventProgress.findFirst({ where: { receiptId: waha } })).toMatchObject({ state: 'applied', messageId: message.id });
+        expect(await db.conversation.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ unreadCount: 1 });
+    });
+    it.each(['evolution', 'waha'] as const)('holds an authenticated old normalized receipt from conserved raw before ACK: %s', async (provider) => {
+        const f = await fixture(), group = '123-456@g.us', a = '15550003333@s.whatsapp.net', b = '15550004444@s.whatsapp.net';
+        const clean = provider === 'evolution' ? { key: { id: 'old-adapter', remoteJid: group, fromMe: false, participant: a }, message: { conversation: 'held' } } : { id: `false_${group}_old-adapter_${a}`, from: group, participant: a, _data: { author: a } };
+        const seedId = await f.send(provider, clean), { receipt: seed, payload: oldPayload } = await journal.readPayload(seedId);
+        expect(oldPayload.events[0]?.kind).toBe('accepted');
+        const raw = provider === 'evolution' ? { event: 'MESSAGES_UPSERT', instance: f.evo.sessionName, data: { ...clean, participant: b } } : { event: 'message.any', session: f.waha.sessionName, payload: { ...clean, _data: { author: b } } };
+        const receipt = await journal.stage({ transportNamespace: f.namespace, source: seed.source as unknown as TrustedMessagingContext, raw: Buffer.from(JSON.stringify(raw)), payload: oldPayload, authentication: provider === 'evolution' ? 'evolution_constant_time_secret' : 'waha_hmac_sha512', reauthenticate: async () => { } });
+        const before = await db.ingressReceipt.findUniqueOrThrow({ where: { id: receipt.id } });
+        // Remove the unconsumed clean seed, so no synthetic original can mask the assertion.
+        const ch = await admin.createChannel();
+        await ch.purgeQueue(transportTopology(f.namespace).incoming);
+        await db.ingressReceipt.delete({ where: { id: seedId } });
+        await journal.publish(receipt.id, f.publisher);
+        const consumer = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher, application: service });
+        consumers.push(consumer);
+        await until(() => db.ingressApplication.findUnique({ where: { receiptId: receipt.id } }), v => v?.state === 'held');
+        await until(() => ch.checkQueue(transportTopology(f.namespace).incoming), v => v.messageCount === 0);
+        await consumer.close();
+        await ch.close();
+        await service.apply(receipt.id);
+        expect(await db.ingressReceipt.findUniqueOrThrow({ where: { id: receipt.id } })).toEqual(before);
+        expect(await db.ingressEventProgress.findFirst({ where: { receiptId: receipt.id } })).toMatchObject({ state: 'held', reason: 'contradictory_sender_declarations', messageId: null });
+        expect(await db.ingressDelivery.findUnique({ where: { receiptId: receipt.id } })).toMatchObject({ failures: 0, lastError: 'application_held', consumedAt: expect.any(Date) });
+        expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+        expect(await db.conversation.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+        expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+    });
+    it('persists one pending group metadata obligation across providers, deliveries and history without attendance', async () => {
+        const f = await fixture(), group = '123-456@g.us', participant = '15550003333@s.whatsapp.net';
+        const id = await f.send('evolution', { type: 'append', key: { id: 'group-metadata', remoteJid: group, fromMe: false, participant }, pushName: 'Synthetic participant' });
+        await service.apply(id);
+        await service.apply(id);
+        const contact = await db.contact.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+        expect(contact).toMatchObject({ name: null, isGroup: true });
+        const obligations = await db.ingressEffect.findMany({ where: { workspaceId: f.workspaceId, kind: 'contact.group_metadata' } });
+        expect(obligations).toHaveLength(1);
+        expect(obligations[0]).toMatchObject({ state: 'pending', frozen: { contactId: contact.id, chatAddress: group, nativeChatAddress: group, originalName: null, presentationOnly: true, mode: 'history' } });
+        const mirror = await f.send('waha', { id: `false_${group}_group-metadata`, from: group, participant, _data: { author: participant } });
+        await service.apply(mirror);
+        const later = await f.send('evolution', { type: 'append', key: { id: 'group-metadata-later', remoteJid: group, fromMe: false, participant } });
+        await service.apply(later);
+        expect(await db.ingressEffect.findMany({ where: { workspaceId: f.workspaceId, kind: 'contact.group_metadata' } })).toEqual(obligations);
+        expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId, kind: { notIn: ['contact.group_metadata', 'realtime.message', 'realtime.conversation'] } } })).toBe(0);
+        expect(await db.conversation.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ unreadCount: 0 });
+        // Existing real group names need no deferred lookup or participant-name overwrite.
+        await db.contact.update({ where: { id: contact.id }, data: { name: 'Synthetic group' } });
+        const named = await f.send('evolution', { type: 'append', key: { id: 'group-named', remoteJid: group, fromMe: false, participant }, pushName: 'Another participant' });
+        await service.apply(named);
+        expect(await db.contact.findUnique({ where: { id: contact.id } })).toMatchObject({ name: 'Synthetic group' });
+        expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId, kind: 'contact.group_metadata' } })).toBe(1);
+    });
     it.each(['evolution', 'waha'] as const)('two providers, %s first, delivery repeats: one UUID, unread and logical effects', async (first) => {
         const f = await fixture();
         const a = await f.send(first), b = await f.send(first === 'evolution' ? 'waha' : 'evolution');

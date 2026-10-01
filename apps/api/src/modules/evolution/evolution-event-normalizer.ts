@@ -1,3 +1,4 @@
+import { validateEvolutionIdentityDeclarations } from '../messaging/identity-declarations.js';
 import type { AddressMappingEvidence, MediaSourceDescriptor, NormalizationResult, SourceOrder, TrustedMessagingContext } from '../messaging/normalized-event.js';
 import { normalizeChatAddress, record, string, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 import { attachmentPresentation, extractMessageContent, extractMessageEdit, extractPushName, extractQrCode, hasRecordPath, isEditProtocolType, mapEvolutionMessageStatus, normalizeEvolutionEvent, unwrapMessage } from './evolution-normalizer.js';
@@ -27,11 +28,14 @@ export function normalizeEvolutionWebhook(context: TrustedMessagingContext, inpu
   const envelope = record(input), data = record(envelope.data);
   const name = string(envelope.event);
   if (context.provider !== 'evolution' || !name) return { kind: 'invalid', reason: 'invalid_envelope' };
+  const contradiction = validateEvolutionIdentityDeclarations(input);
+  if (contradiction) return { kind: 'invalid', reason: contradiction };
   const eventName = normalizeEvolutionEvent(name);
   const rawKey = record(data.key), key = keyOf({ ...rawKey, participant: rawKey.participant ?? data.participant });
   const base = { context: { ...context }, providerEventId: string(envelope.id), providerEventType: name, addressMappings: [
     ...mapping(rawKey.remoteJid, rawKey.remoteJidAlt, 'chat'),
-    ...mapping(rawKey.participant ?? data.participant, rawKey.participantAlt, 'sender')
+    ...mapping(rawKey.participant ?? data.participant, rawKey.participantAlt, 'sender'),
+    ...mapping(data.participant ?? rawKey.participant, data.participantAlt, 'sender')
   ] };
   if (eventName === 'connection.update') {
     const state = data.state ?? data.status;

@@ -131,7 +131,12 @@ a tenant, session or lifecycle. Before domain access, each event locks workspace
 channel and physical source/config. WAHA messages/actions also require persisted
 positive same-number pairing (both verified owners and successful pairing proof),
 independent of health/eligible. The immutable accepted pairing snapshot must still
-match. Current QR/status observations are separate and never certify eligibility.
+match. All declared native/structured and envelope identities must agree, including
+participant/author fields. PN/LID equivalence needs explicit proof with one PN
+per family. Application also checks the conserved digest-verified raw bytes, so
+receipts staged by an older adapter cannot bypass contradiction checks. Invalid
+contradictions stay held with their original source/blobs and no domain effects.
+Current QR/status observations are separate and never certify eligibility.
 QR bytes remain in private receipt blobs; outbox/Rabbit carry only safe references.
 
 `IngressEventProgress` is uniquely keyed by receipt/event index. A committed Meta
@@ -150,7 +155,10 @@ Unread/unhide and domain obligations occur once per Message UUID. Campaign hidin
 requires a bound native campaign intent; body/time/provider-global heuristics are
 absent. Talk echoes preserve UUID/FKs and do not pause the agent. History/append
 and recovered-live without a persisted checkpoint do not trigger attendance.
-Group/history media acquisition remains a presentation obligation without
+Groups with absent/fallback names persist one pending `contact.group_metadata`
+obligation per contact/channel with original contact/chat/source facts. Stage 1C
+will perform the bounded current-source lookup outside the transaction; participant
+names never rename the group. Group/history media acquisition remains a presentation obligation without
 attendance or autonomous effects. Preview and visibility clocks stay monotonic. Edits, revocations and receipts use
 the approved reducers and persist only relevant invalidation/content obligations.
 

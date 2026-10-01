@@ -169,6 +169,12 @@ describe('WAHA 2026.9.1 WPP normalization', () => {
     if (result.kind !== 'accepted') throw new Error('Expected event');
     expect(result.event.addressMappings).toEqual([{ role: 'chat', lid: '777@lid', pn: '554799990000@s.whatsapp.net', source: 'waha.lid_lookup' }]);
   });
+  it('retains a full group stanza when native PN and declared LID agree through verified lookup', () => {
+    const input = message({author:'777@lid'}, {id:'false_123-456@g.us_A_B_15550003333@s.whatsapp.net',from:'123-456@g.us',participant:'777@lid'});
+    expect(normalizeWahaEvent(context,input)).toMatchObject({kind:'invalid',reason:'contradictory_sender_declarations'});
+    const result = normalizeWahaEvent(context,input,{verifiedLidMappings:[{lid:'777@lid',pn:'15550003333@s.whatsapp.net'}]});
+    expect(result).toMatchObject({kind:'accepted',event:{kind:'message',key:{rawId:'A_B',senderParticipant:'777@lid',nativeSenderParticipant:'777@lid'},addressMappings:[{role:'sender',lid:'777@lid',pn:'15550003333@s.whatsapp.net',source:'waha.lid_lookup'}]}});
+  });
   it('does not accept inherited object properties as session states', () => {
     for (const status of ['__proto__', 'constructor', 'toString']) expect(normalizeWahaEvent(context, { event: 'session.status', payload: { status } }).kind).toBe('invalid');
   });
