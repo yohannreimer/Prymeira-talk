@@ -1,0 +1,287 @@
+import { Prisma, type IngressReceipt } from '@prisma/client';
+import { enterCanonicalTransaction, enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
+import { StaleMessagingSourceError } from '../messaging/canonical-source.js';
+import { createCanonicalStore, type CanonicalStoreResult } from '../messaging/canonical-store.js';
+import { equal, json, sha, stable } from '../messaging/canonical-values.js';
+import type { NormalizedMessagingEvent, TrustedMessagingContext } from '../messaging/normalized-event.js';
+import { record } from '../messaging/whatsapp-identity.js';
+import { pauseAgentOnHumanOutbound } from '../conversations/pause-agent-on-human-outbound.js';
+import { lockProspectingConversation } from '../prospecting/prospecting-lock.js';
+import { applyInboundDepartmentRouting } from '../team/team-routing.service.js';
+import { readAssistantSettings } from '../assistant/assistant-policy.js';
+import { createAssistantRepository } from '../assistant/assistant-repository.js';
+import { applyAuthenticatedConnectionObservation, normalizeWhatsappPhone } from '../channels/channel-connections.js';
+import { IngressJournal } from './journal.js';
+type Tx = Prisma.TransactionClient;
+type MessageEvent = Extract<NormalizedMessagingEvent, {
+    kind: 'message';
+}>;
+/** Receipt UUID is the only authority input. No createApp, timers or effect handlers.
+ * Private bytes are verified before TX; immutable SQL receipt is re-read after the
+ * workspace boundary. A batch commits one event at a time and resumes its positions.
+ */
+export class IngressApplicationService {
+    private readonly store = createCanonicalStore();
+    private readonly assistant;
+    constructor(readonly journal: IngressJournal) { this.assistant = createAssistantRepository(journal.db); }
+    async apply(receiptId: string) {
+        const { receipt, payload } = await this.journal.readPayload(receiptId);
+        await this.journal.files.read(receipt.rawRef, receipt.rawDigest);
+        const source = this.source(receipt);
+        for (const [eventIndex, item] of payload.events.entries()) {
+            await this.journal.db.$transaction(async (tx) => {
+                await enterCanonicalWorkspaceTransaction(tx, receipt.workspaceId);
+                const persisted = await tx.ingressReceipt.findUniqueOrThrow({ where: { id: receiptId } });
+                if (!equal(persisted.source, receipt.source) || persisted.eventDigest !== receipt.eventDigest || persisted.rawDigest !== receipt.rawDigest)
+                    throw new Error('Receipt conservation changed');
+                const previous = await tx.ingressEventProgress.findUnique({ where: { receiptId_eventIndex: { receiptId, eventIndex } } });
+                if (previous)
+                    return; // Held is conserved, never implicitly recertified by retry.
+                const scope = { workspaceId: receipt.workspaceId, channelId: receipt.channelId, receiptId, eventIndex };
+                let stale = false;
+                try {
+                    await enterCanonicalTransaction(tx, source);
+                }
+                catch (error) {
+                    if (!(error instanceof StaleMessagingSourceError))
+                        throw error;
+                    stale = true;
+                }
+                if (stale) {
+                    // The authenticated private receipt itself certifies conservation, not
+                    // current domain authority. No public source check is bypassed.
+                    await tx.ingressEventProgress.create({ data: { ...scope, state: 'pending_recertification', reason: 'stale_source', result: json({ kind: item.kind, source, certification: 'immutable_authenticated_receipt', reason: 'stale_source' }) } });
+                    return;
+                }
+                if (item.kind !== 'accepted') {
+                    // Unsupported adapters are held, rather than understood or successful.
+                    await tx.ingressEventProgress.create({ data: { ...scope, state: item.kind === 'ignored' && !item.reason.startsWith('unsupported') && !item.reason.includes('requires_') ? 'ignored' : 'held', reason: item.reason, result: json({ kind: item.kind, reason: item.reason }) } });
+                    return;
+                }
+                // The digest-verified adapter payload supplies content/keys only. Immutable
+                // authenticated source overwrites any embedded caller/context fields.
+                const event = { ...item.event, context: source };
+                if (event.kind === 'control') {
+                    const result = await applyAuthenticatedConnectionObservation(tx, event);
+                    await tx.ingressEventProgress.create({ data: { ...scope, state: result.applied ? 'applied' : 'held', reason: result.reason, result: json(result) } });
+                    if (result.applied)
+                        await this.effect(tx, receipt, eventIndex, 'realtime.connection', `control:${receiptId}:${eventIndex}`, null, null, null, { control: event.control, connectionId: source.connectionId, qr: event.control === 'qr' ? { privateReceiptId: receiptId, eventIndex } : null });
+                    return;
+                }
+                if (source.provider === 'waha') {
+                    const reason = await this.wahaIdentity(tx, receipt, source);
+                    if (reason) {
+                        await tx.ingressEventProgress.create({ data: { ...scope, state: reason === 'waha_pairing_changed' ? 'pending_recertification' : 'held', reason, result: json({ kind: event.kind, certification: 'immutable_authenticated_receipt', reason }) } });
+                        return;
+                    }
+                }
+                const result = await this.store.persistInTransaction(tx, event, { receiptKey: `${receiptId}:${eventIndex}` });
+                await tx.ingressEventProgress.create({ data: { ...scope, state: result.outcome === 'held' ? 'held' : 'applied', reason: result.reconciliationReasons[0] ?? null,
+                        observationId: result.observationId, actionId: result.actionId ?? null, messageId: result.messageId, conversationId: result.conversationId, result: json(result) } });
+                if (result.conversationId)
+                    await lockProspectingConversation(tx, source.workspaceId, result.conversationId);
+                if (event.kind === 'message' && result.messageId && result.conversationId && result.outcome !== 'held')
+                    await this.contactAnnotations(tx, event, result.conversationId);
+                if (event.kind === 'message' && result.outcome !== 'held' && result.messageId && result.conversationId)
+                    await this.preparePresentationMedia(tx, receipt, eventIndex, event, result);
+                if (event.kind === 'message') {
+                    if (result.allowOperationalEffects && result.outcome === 'created')
+                        await this.messageHooks(tx, receipt, eventIndex, event, result);
+                    else if (result.messageId && result.conversationId) {
+                        if (result.outcome !== 'held' && source.mode === 'live')
+                            await this.exactEcho(tx, receipt, eventIndex, event, result);
+                        if (result.changes.length) {
+                            const current = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
+                            await this.invalidate(tx, receipt, eventIndex, result, `content:${result.messageId}:${sha(stable([current.body, current.mediaUrl, current.metadata, current.status]))}`);
+                        }
+                    }
+                }
+                else if (result.messageId && result.conversationId && result.changes.length) {
+                    const current = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
+                    if (event.kind === 'edit' || event.kind === 'revoke')
+                        await tx.conversation.updateMany({
+                            where: { workspaceId: source.workspaceId, id: result.conversationId, lastMessagePreviewAt: current.createdAt },
+                            data: { lastMessagePreview: current.body }
+                        });
+                    await this.invalidate(tx, receipt, eventIndex, result, `action:${result.messageId}:${sha(stable([event.kind, event.target, 'action' in event ? event.action : null, 'order' in event ? event.order : null, 'patch' in event ? event.patch : null, 'status' in event ? event.status : null, 'recipient' in event ? event.recipient : null]))}`);
+                    if (event.kind === 'edit' || event.kind === 'encrypted_edit' || event.kind === 'revoke') {
+                        await this.effect(tx, receipt, eventIndex, 'content.reconcile', `action:${result.actionId}`, result.messageId, result.conversationId, result.observationId, { kind: event.kind, actionId: result.actionId });
+                    }
+                }
+            }, { isolationLevel: 'ReadCommitted', timeout: 15000 });
+        }
+        // No application completion at the start or at timer scheduling. Finalize only
+        // after every conserved event position exists, including explicit held decisions.
+        return this.journal.db.$transaction(async (tx) => {
+            await enterCanonicalWorkspaceTransaction(tx, receipt.workspaceId);
+            const rows = await tx.ingressEventProgress.findMany({ where: { receiptId } });
+            if (rows.length !== receipt.eventCount || rows.some(r => r.eventIndex < 0 || r.eventIndex >= receipt.eventCount))
+                throw new Error('Incomplete receipt application');
+            const held = rows.some(r => r.state === 'held' || r.state === 'pending_recertification');
+            const existing = await tx.ingressApplication.findUnique({ where: { receiptId } });
+            const delivery = await tx.ingressDelivery.findUniqueOrThrow({ where: { receiptId } });
+            const application = await tx.ingressApplication.upsert({ where: { receiptId }, create: { receiptId, workspaceId: receipt.workspaceId, channelId: receipt.channelId, state: held ? 'held' : 'applied', appliedAt: held ? null : new Date() }, update: { state: held ? 'held' : 'applied', appliedAt: held ? null : existing?.appliedAt ?? new Date() } });
+            // Existing transport vocabulary: consumedAt + application/progress distinguish
+            // canonical applied from conserved held. ACK may now follow this commit.
+            await tx.ingressDelivery.update({ where: { receiptId }, data: { state: 'pending_application', consumedAt: delivery.consumedAt ?? new Date(), leaseToken: null, leaseUntil: null, lastError: held ? 'application_held' : null } });
+            return application;
+        }, { isolationLevel: 'ReadCommitted' });
+    }
+    private source(receipt: IngressReceipt): TrustedMessagingContext {
+        const { acceptedFacts: _facts, ...source } = record(receipt.source);
+        if (source.workspaceId !== receipt.workspaceId || source.channelId !== receipt.channelId || !['evolution', 'waha', 'meta_official'].includes(String(source.provider)) || !['live', 'history', 'recovered_live'].includes(String(source.mode)) || typeof source.observedAt !== 'string' || !Number.isFinite(new Date(source.observedAt).getTime()))
+            throw new Error('Invalid authenticated receipt source');
+        return source as unknown as TrustedMessagingContext;
+    }
+    private async wahaIdentity(tx: Tx, receipt: IngressReceipt, source: TrustedMessagingContext) {
+        await tx.$queryRaw `SELECT id FROM channel_connections WHERE workspace_id=${source.workspaceId} AND channel_id=${source.channelId}::uuid AND provider='evolution' FOR SHARE`;
+        const primary = await tx.channelConnection.findFirst({ where: { workspaceId: source.workspaceId, channelId: source.channelId, provider: 'evolution' } });
+        const secondary = await tx.channelConnection.findUniqueOrThrow({ where: { id: source.connectionId! } });
+        const accepted = record(record(receipt.source).acceptedFacts), pairing = record(accepted.pairing);
+        if (!Object.keys(pairing).length)
+            return 'waha_pairing_changed'; // Older accepted receipts require explicit recertification.
+        const primaryPhone = normalizeWhatsappPhone(primary?.verifiedPhoneNumber), secondaryPhone = normalizeWhatsappPhone(secondary.verifiedPhoneNumber);
+        if (pairing.primaryConnectionId !== primary?.id || pairing.primaryLifecycleGeneration !== primary?.lifecycleGeneration || pairing.primaryPhoneNumber !== primaryPhone || pairing.secondaryPhoneNumber !== secondaryPhone)
+            return 'waha_pairing_changed';
+        if (!primaryPhone || !secondaryPhone || !pairing.pairedAt || !secondary.lastHealthyAt || !primary || primary.lifecycleGeneration % 2 !== 0)
+            return 'waha_identity_unverified';
+        if (primaryPhone !== secondaryPhone)
+            return 'waha_identity_mismatch';
+        return null; // Health/eligible/status is deliberately not receive authority.
+    }
+    private async effect(tx: Tx, receipt: IngressReceipt, eventIndex: number, kind: string, logicalKey: string, messageId: string | null, conversationId: string | null, observationId: string | null, frozen: unknown) {
+        const frontier = await tx.ingressFrontier.findUniqueOrThrow({ where: { receiptId_eventIndex: { receiptId: receipt.id, eventIndex } } });
+        const scope = { workspaceId: receipt.workspaceId, channelId: receipt.channelId };
+        await tx.ingressEffect.upsert({ where: { workspaceId_channelId_logicalKey_kind: { ...scope, logicalKey, kind } }, update: {}, create: { ...scope, receiptId: receipt.id, eventIndex, messageId, conversationId, kind, logicalKey,
+                cause: json({ receiptId: receipt.id, eventIndex, frontierId: String(frontier.id), receiptOrdinal: String(receipt.ordinal), observationId, messageId, source: receipt.source, origin: 'authenticated_ingress' }), frozen: json(frozen) } });
+    }
+    private async invalidate(tx: Tx, receipt: IngressReceipt, index: number, result: CanonicalStoreResult, key: string) {
+        for (const kind of ['realtime.message', 'realtime.conversation'])
+            await this.effect(tx, receipt, index, kind, key, result.messageId, result.conversationId, result.observationId, { changes: result.changes, outcome: result.outcome });
+    }
+    private async preparePresentationMedia(tx: Tx, receipt: IngressReceipt, index: number, event: MessageEvent, result: CanonicalStoreResult) {
+        if (!event.media?.hasMedia)
+            return;
+        const message = await tx.message.findUniqueOrThrow({ where: { id: result.messageId! } });
+        if (record(message.metadata).deletedAt || !['audio', 'image', 'file'].includes(message.type))
+            return;
+        // Talk's own prepared attachments retain their UUID and owned asset. An
+        // echo does not reacquire a provider copy or replace the prepared result.
+        if (await tx.outboundIntent.findUnique({ where: { messageId: message.id } }))
+            return;
+        await this.effect(tx, receipt, index, 'media.prepare', `message:${message.id}`, message.id, result.conversationId, result.observationId, {
+            presentationOnly: true, privateReceiptId: receipt.id, eventIndex: index, mediaKind: event.media.kind, type: message.type,
+            mode: event.context.mode, isGroup: event.key.chatAddress?.endsWith('@g.us') === true, dependsOn: []
+        });
+    }
+    private async contactAnnotations(tx: Tx, event: MessageEvent, conversationId: string) {
+        const workspaceId = event.context.workspaceId;
+        const conversation = await tx.conversation.findUniqueOrThrow({ where: { workspaceId_id: { workspaceId, id: conversationId } }, include: { contact: true } });
+        const isGroup = event.key.chatAddress?.endsWith('@g.us') === true;
+        if (isGroup && !conversation.contact.isGroup)
+            await tx.contact.updateMany({ where: { workspaceId, id: conversation.contactId, isGroup: false }, data: { isGroup: true } });
+        if (!isGroup && !conversation.contact.name?.trim() && event.key.direction === 'inbound' && event.pushName?.trim())
+            await tx.contact.updateMany({ where: { workspaceId, id: conversation.contactId, name: conversation.contact.name }, data: { name: event.pushName.trim().slice(0, 120) } });
+        const lid = event.addressMappings.find(e => e.role === 'chat')?.lid;
+        if (lid)
+            await tx.contact.update({ where: { workspaceId_id: { workspaceId, id: conversation.contactId } }, data: { customFields: json({ ...record(conversation.contact.customFields), evolutionLid: lid }) } });
+    }
+    private async exactEcho(tx: Tx, receipt: IngressReceipt, index: number, event: MessageEvent, result: CanonicalStoreResult) {
+        if (event.key.direction !== 'outbound' || event.key.chatAddress?.endsWith('@g.us'))
+            return;
+        const { workspaceId, channelId } = event.context;
+        const intent = await tx.outboundIntent.findUnique({ where: { messageId: result.messageId! } });
+        if (!intent || intent.originKind !== 'campaign_recipient')
+            return;
+        const binding = await tx.outboundBinding.findFirst({ where: { workspaceId, channelId, intentId: intent.id, identityId: result.identityId! } });
+        if (!binding)
+            return;
+        const campaign = await tx.campaignRecipient.findFirst({ where: { workspaceId, channelId, id: intent.originId, campaign: { is: { hideFromInboxUntilReply: true } } }, select: { id: true } });
+        if (!campaign)
+            return;
+        const key = `campaign_echo:${intent.messageId}`;
+        if (await tx.ingressEffect.findUnique({ where: { workspaceId_channelId_logicalKey_kind: { workspaceId, channelId, logicalKey: key, kind: 'realtime.conversation' } } }))
+            return;
+        const conversation = await tx.conversation.findUniqueOrThrow({ where: { id: result.conversationId! } });
+        const message = await tx.message.findUniqueOrThrow({ where: { id: result.messageId! } });
+        // Exact hidden campaign on a new inbox lane. Existing visible conversations
+        // remain visible; an old echo cannot conceal a customer reply.
+        const inbound = await tx.message.count({ where: { workspaceId, conversationId: conversation.id, direction: 'inbound' } });
+        if (!inbound && !conversation.lastMessageAt)
+            await tx.conversation.update({ where: { id: conversation.id }, data: { hiddenUntilReply: true } });
+        await tx.conversation.updateMany({ where: { workspaceId, id: conversation.id, OR: [{ lastMessagePreviewAt: null }, { lastMessagePreviewAt: { lte: message.createdAt } }] }, data: { lastMessagePreview: event.content.preview, lastMessagePreviewAt: message.createdAt } });
+        await this.effect(tx, receipt, index, 'realtime.conversation', key, message.id, conversation.id, result.observationId, { talkEcho: true, hiddenCampaign: true, intentId: intent.id, bindingId: binding.id });
+    }
+    private async messageHooks(tx: Tx, receipt: IngressReceipt, index: number, event: MessageEvent, result: CanonicalStoreResult) {
+        if (!result.messageId || !result.conversationId)
+            throw new Error('Created message lacks domain scope');
+        const { workspaceId, channelId } = event.context, conversationId = result.conversationId;
+        const message = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
+        const conversation = await tx.conversation.findUniqueOrThrow({ where: { workspaceId_id: { workspaceId, id: conversationId } }, include: { contact: true, channel: true } });
+        const isGroup = event.key.chatAddress?.endsWith('@g.us') === true;
+        const unresolvedLid = conversation.contact.phone.endsWith('@lid');
+        if (isGroup || unresolvedLid)
+            await tx.conversation.update({ where: { id: conversationId }, data: { aiControlStatus: 'human_controlled' } });
+        // Only a native binding/intent may classify Talk's own echo or hide campaigns.
+        // Body, time, recipient similarity and provider IDs globally are never evidence.
+        const intent = await tx.outboundIntent.findUnique({ where: { messageId: message.id } });
+        const binding = intent ? await tx.outboundBinding.findFirst({ where: { workspaceId, channelId, intentId: intent.id, identityId: result.identityId! } }) : null;
+        const talkEcho = !!binding;
+        const campaign = intent?.originKind === 'campaign_recipient' && talkEcho ? await tx.campaignRecipient.findFirst({ where: { workspaceId, channelId, id: intent.originId, campaign: { is: { hideFromInboxUntilReply: true } } }, select: { id: true } }) : null;
+        const human = message.direction === 'outbound' && !talkEcho && !isGroup;
+        const humanTookControl = human ? await pauseAgentOnHumanOutbound(tx, { workspaceId, conversationId }) : false;
+        if (message.direction === 'inbound') {
+            await tx.conversation.update({ where: { workspaceId_id: { workspaceId, id: conversationId } }, data: { unreadCount: { increment: 1 }, hiddenUntilReply: false } });
+            if (event.context.channelProvider === 'meta') {
+                const expires = new Date(message.createdAt.getTime() + 24 * 60 * 60 * 1000);
+                await tx.conversation.updateMany({ where: { workspaceId, id: conversationId, OR: [{ customerServiceWindowExpiresAt: null }, { customerServiceWindowExpiresAt: { lt: expires } }] }, data: { customerServiceWindowExpiresAt: expires } });
+            }
+            if (!isGroup)
+                await applyInboundDepartmentRouting(tx, { workspaceId, channelId, conversationId });
+        }
+        if (campaign && !conversation.lastMessageAt)
+            await tx.conversation.update({ where: { id: conversationId }, data: { hiddenUntilReply: true } });
+        // Preview and visibility have separate monotonic clocks; a delayed event cannot
+        // move either backwards. A hidden campaign doesn't advance inbox visibility.
+        await tx.conversation.updateMany({ where: { workspaceId, id: conversationId, OR: [{ lastMessagePreviewAt: null }, { lastMessagePreviewAt: { lte: message.createdAt } }] }, data: { lastMessagePreview: result.changes.includes('message_edited') ? message.body : event.content.preview, lastMessagePreviewAt: message.createdAt } });
+        if (!campaign)
+            await tx.conversation.updateMany({ where: { workspaceId, id: conversationId, OR: [{ lastMessageAt: null }, { lastMessageAt: { lte: message.createdAt } }] }, data: { lastMessageAt: message.createdAt } });
+        if (!isGroup && message.type !== 'system' && !unresolvedLid) {
+            if (humanTookControl)
+                await tx.assistantConversationState.updateMany({ where: { workspaceId, conversationId }, data: { status: 'stale', revision: { increment: 1 }, scheduledAt: null, lastMessageId: null, lastError: null } });
+            else if (message.direction === 'inbound')
+                await this.assistant.schedule({ workspaceId, conversationId, messageId: message.id, trigger: 'inbound' }, tx);
+        }
+        const prospecting = await tx.campaignProspectingReservation.findUnique({ where: { workspaceId_conversationId: { workspaceId, conversationId } }, select: { id: true, status: true, generation: true, campaignId: true, recipientId: true, agentId: true, dispatchIntentAt: true, confirmedAt: true } });
+        const frozen = { direction: message.direction, type: message.type, isGroup, unresolvedLid, talkEcho, humanTookControl, hiddenCampaign: !!campaign, live: true, mode: event.context.mode,
+            observedAt: event.context.observedAt, messageCreatedAt: message.createdAt.toISOString(), ingestedAt: message.ingestedAt?.toISOString() ?? null, prospecting,
+            control: humanTookControl ? 'human_controlled' : conversation.aiControlStatus, activeAgentSessionId: conversation.activeAgentSessionId,
+            requiresContentReady: !!event.media?.hasMedia, assistantSettings: readAssistantSettings(conversation.channel.encryptedConfig) };
+        const key = `message:${message.id}`;
+        await this.invalidate(tx, receipt, index, result, key);
+        const obligation = async (kind: string, extra: unknown = {}) => this.effect(tx, receipt, index, kind, key, message.id, conversationId, result.observationId, { ...frozen, dependsOn: ['assistant.message', 'agent.debounce', 'automation.occurrence', 'triage.message', 'handoff.brief'].includes(kind) && message.direction === 'inbound' ? [...(kind === 'handoff.brief' || kind === 'triage.message' ? [] : ['prospecting.inbound']), ...(event.media?.hasMedia ? ['media.prepare'] : [])] : [], ...record(extra) });
+        if (isGroup || message.type === 'system')
+            return;
+        if (humanTookControl)
+            await obligation('assistant.control');
+        else if (!talkEcho && !unresolvedLid)
+            await obligation('assistant.message');
+        await obligation('handoff.brief');
+        if (!talkEcho)
+            await obligation('triage.message');
+        if (message.direction === 'inbound') {
+            await obligation('prospecting.inbound');
+            await obligation('history.backfill', { chatAddress: event.key.chatAddress });
+            await obligation('followup.activity', { source: 'customer' });
+            if (!unresolvedLid) {
+                const flows = await tx.automationRule.findMany({ where: { workspaceId, status: 'enabled', trigger: 'message.received' }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], select: { id: true, trigger: true, conditions: true, actions: true, updatedAt: true } });
+                await obligation('automation.occurrence', { eventKey: `message.received:${message.id}`, frozenFlows: flows });
+                await obligation('agent.debounce');
+            }
+        }
+        else if (humanTookControl) {
+            await obligation('followup.activity', { source: 'human' });
+            await obligation('human_reply.improvement');
+        }
+    }
+}

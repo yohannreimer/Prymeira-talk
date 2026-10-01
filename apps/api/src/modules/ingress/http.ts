@@ -11,6 +11,7 @@ import type { ConfirmedIngressPublisher } from './broker.js';
 type Provider = 'evolution' | 'waha' | 'meta_official';
 class HttpFailure extends Error { constructor(readonly status: number, message: string) { super(message); } }
 export interface IngressHttpOptions {
+  stage?: 'isolated-1a' | 'isolated-1b' | string;
   db: PrismaClient; journal: IngressJournal; publisher: () => ConfirmedIngressPublisher | null;
   evolutionSecret: string; wahaSecret: string; workspaceAllowlist: ReadonlySet<string>;
   maxInflight?: number;
@@ -64,11 +65,13 @@ export function createIngressHttp(options: IngressHttpOptions) {
       if (!channel) throw new HttpFailure(409, 'unknown_source');
       return deriveTrustedMessagingContext(tx, { workspaceId, channelId: channel.id, authenticatedSource: { provider, connectionId: null, phoneNumberId: phoneNumberId.trim() }, mode: 'live', observedAt });
     }
+    const data = record(envelope.data);
+    const mode = provider === 'evolution' && (data.type === 'append' || data.type === 'history' || data.isHistory === true) ? 'history' as const : 'live' as const;
     const session = provider === 'evolution' ? envelope.instance : envelope.session;
     if (typeof session !== 'string' || !session || session.length > 200 || typeof envelope.event !== 'string' || !envelope.event || envelope.event.length > 100) throw new HttpFailure(400, 'invalid_source_envelope');
     const connection = await tx.channelConnection.findUnique({ where: { workspaceId_provider_sessionName: { workspaceId, provider, sessionName: session } } });
     if (connection && (!connectionId || connection.id === connectionId)) {
-      return deriveTrustedMessagingContext(tx, { workspaceId, channelId: connection.channelId, authenticatedSource: { provider, connectionId: connection.id }, mode: 'live', observedAt });
+      return deriveTrustedMessagingContext(tx, { workspaceId, channelId: connection.channelId, authenticatedSource: { provider, connectionId: connection.id }, mode, observedAt });
     }
     if (provider === 'evolution' && !connectionId && !connection) {
       const config = await tx.integrationConfig.findUnique({ where: { workspaceId_provider: { workspaceId, provider: 'meta_cloud' } } });
@@ -76,7 +79,7 @@ export function createIngressHttp(options: IngressHttpOptions) {
       if (settings.connectionMode === 'evolution_official' && settings.evolutionInstanceName === session) {
         const channels = await tx.channel.findMany({ where: { workspaceId, provider: 'meta_cloud' }, take: 2 });
         if (channels.length === 1) return deriveTrustedMessagingContext(tx, { workspaceId, channelId: channels[0]!.id,
-          authenticatedSource: { provider: 'evolution', connectionId: null, sessionName: session }, mode: 'live', observedAt });
+          authenticatedSource: { provider: 'evolution', connectionId: null, sessionName: session }, mode, observedAt });
       }
     }
     throw new HttpFailure(409, 'unknown_source');
@@ -132,6 +135,6 @@ export function createIngressHttp(options: IngressHttpOptions) {
       || query['hub.mode'] !== 'subscribe' || !query['hub.challenge'] || !secretMatches(query['hub.verify_token'] ?? null, settings.webhookVerifyToken)) return reply.code(403).send({ error: 'invalid_verification' });
     return reply.type('text/plain').send(query['hub.challenge']);
   });
-  app.get('/health', async (_request, reply) => reply.code(options.publisher()?.ready ? 200 : 503).send({ stage: 'isolated-1a', application: 'not_connected' }));
+  app.get('/health', async (_request, reply) => reply.code(options.publisher()?.ready ? 200 : 503).send({ stage: options.stage ?? 'isolated-1a', application: options.stage === 'isolated-1b' ? 'separate_canonical_worker_required' : 'not_connected' }));
   return app;
 }

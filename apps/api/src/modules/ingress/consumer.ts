@@ -5,25 +5,25 @@ import { randomUUID } from 'node:crypto';
 import { ConfirmedIngressPublisher, decodeReference, declareTransport, transportTopology } from './broker.js';
 import { IngressJournal } from './journal.js';
 
-/** Real transport consumer for stage 1A only. ACK means a durable application
- * obligation exists. Stage 1B must move ACK behind its complete canonical TX. */
+/** Original-channel ACK follows the selected milestone sink: stage 1A conserves
+ * transport only; stage 1B commits complete per-event application and obligations. */
 export class IngressTransportConsumer {
   private inflight = new Set<Promise<void>>();
   private running = true;
   private closed: Promise<void> | null = null;
   private drained: Promise<void> | null = null;
   private constructor(readonly model: ChannelModel, readonly channel: Channel,
-    readonly journal: IngressJournal, readonly namespace: string, readonly publisher: () => ConfirmedIngressPublisher | null, readonly maxFailures: number) {
+    readonly journal: IngressJournal, readonly namespace: string, readonly publisher: () => ConfirmedIngressPublisher | null, readonly maxFailures: number, readonly application?: { apply(receiptId: string): Promise<unknown> }) {
     channel.on('error', () => this.stopAccepting()); channel.on('close', () => this.stopAccepting());
     model.on('error', () => this.stopAccepting()); model.on('close', () => this.stopAccepting());
   }
-  static async start(input: { url: string; namespace: string; journal: IngressJournal; publisher: () => ConfirmedIngressPublisher | null; prefetch?: number; maxFailures?: number; signal?: AbortSignal; setupDeadlineMs?: number }) {
+  static async start(input: { url: string; namespace: string; journal: IngressJournal; publisher: () => ConfirmedIngressPublisher | null; prefetch?: number; maxFailures?: number; signal?: AbortSignal; setupDeadlineMs?: number; application?: { apply(receiptId: string): Promise<unknown> } }) {
     const prefetch = input.prefetch ?? 8, maxFailures = input.maxFailures ?? 3;
     if (!Number.isSafeInteger(prefetch) || prefetch < 1 || prefetch > 128 || !Number.isSafeInteger(maxFailures) || maxFailures < 1 || maxFailures > 10) throw new Error('Invalid consumer bounds');
     transportTopology(input.namespace);
     return setupOwnedAmqpConnection(input.url, input, async (model, step) => {
       const topology = await declareTransport(model, input.namespace, step), channel = await step(() => model.createChannel());
-      const consumer = new IngressTransportConsumer(model, channel, input.journal, input.namespace, input.publisher, maxFailures);
+      const consumer = new IngressTransportConsumer(model, channel, input.journal, input.namespace, input.publisher, maxFailures, input.application);
       await step(() => channel.prefetch(prefetch));
       for (const queue of [topology.incoming, topology.retry]) {
         await step(() => channel.consume(queue, message => {
@@ -65,7 +65,8 @@ export class IngressTransportConsumer {
     const state = await this.journal.db.ingressDelivery.findUniqueOrThrow({ where: { receiptId: receipt.id } });
     if (state.state === 'dead_letter') { this.ack(message); return; }
     try {
-      await this.journal.handoff(receipt.id);
+      if (this.application) await this.application.apply(receipt.id);
+      else await this.journal.handoff(receipt.id);
     } catch {
       const failure = await this.journal.db.ingressDelivery.update({ where: { receiptId: receipt.id }, data: { failures: { increment: 1 }, lastError: 'application_handoff_failed' } });
       const publisher = this.publisher();

@@ -419,7 +419,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     if (alias.identityId && alias.identityId !== identity?.id) return hold('native_alias_identity_conflict');
     if (!identity) {
       // Before any new contact/history, respect demonstrated existing authorities.
-      canonicalChat = await chat(tx, scope, chatAddress, true, event.pushName, c.mode === 'history');
+      canonicalChat = await chat(tx, scope, chatAddress, true, key.chatAddress!.endsWith('@g.us') || key.direction === 'outbound' ? null : event.pushName, c.mode === 'history');
       result.conversationId = canonicalChat.operationConversationId;
       if (!result.conversationId) return hold('missing_conversation_authority');
       let messageId: string;

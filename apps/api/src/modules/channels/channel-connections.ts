@@ -364,3 +364,36 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
     }
   };
 }
+
+/** Ingress observation, deliberately separate from lifecycle/probe I/O. The caller
+ * owns workspace -> channel -> physical locks and a current authenticated source.
+ * Connected is a status fact, never a new same-number/eligibility certificate.
+ * QR bytes stay in the private receipt; realtime obligation references that receipt.
+ */
+export async function applyAuthenticatedConnectionObservation(tx: Prisma.TransactionClient, event: Extract<import('../messaging/normalized-event.js').NormalizedMessagingEvent, {
+    kind: 'control';
+}>) {
+    const source = event.context;
+    const { enterCanonicalTransaction } = await import('../messaging/canonical-boundary.js');
+    await enterCanonicalTransaction(tx, source);
+    if (!source.connectionId)
+        return { applied: false, reason: 'channel_control_requires_physical_source' };
+    const connection = await tx.channelConnection.findUniqueOrThrow({ where: { id: source.connectionId } });
+    const channel = await tx.channel.findUniqueOrThrow({ where: { id: source.channelId } });
+    const status = event.control === 'qr' ? 'connecting' : event.status;
+    await tx.channelConnection.update({ where: { workspaceId_id: { workspaceId: source.workspaceId, id: connection.id } }, data: { status,
+            ...(status === 'connected' ? {} : { eligible: false, health: 'unknown', lastHealthyAt: null }),
+            ...(status === 'disconnected' || status === 'failed' ? { disconnectedAt: new Date(source.observedAt) } : {}) } });
+    // Physical secondary QR never hides/replaces primary state. The logical channel
+    // observes connected if any current physical session remains connected.
+    const peers = await tx.channelConnection.findMany({ where: { workspaceId: source.workspaceId, channelId: source.channelId } });
+    const primary = peers.find(p => p.provider === 'evolution');
+    const secondary = peers.find(p => p.provider === 'waha');
+    const primaryPhone = normalizeWhatsappPhone(primary?.verifiedPhoneNumber);
+    const secondaryPhone = normalizeWhatsappPhone(secondary?.verifiedPhoneNumber);
+    const pairedSecondary = Boolean(primary && secondary && primaryPhone && primaryPhone === secondaryPhone && secondary.lastHealthyAt && primary.lifecycleGeneration % 2 === 0 && secondary.lifecycleGeneration % 2 === 0);
+    const logicalStatus = primary?.status === 'connected' || (pairedSecondary && secondary?.status === 'connected') ? 'connected' : primary?.status ?? channel.status;
+    if (channel.status !== logicalStatus)
+        await tx.channel.update({ where: { workspaceId_id: { workspaceId: source.workspaceId, id: source.channelId } }, data: { status: logicalStatus } });
+    return { applied: true, reason: null, connectionId: connection.id, status, qr: event.control === 'qr' ? { private: true, observedAt: source.observedAt } : null };
+}

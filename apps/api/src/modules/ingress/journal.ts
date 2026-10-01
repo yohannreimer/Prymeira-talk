@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from '@prisma/client';
 import type { TrustedMessagingContext } from '../messaging/normalized-event.js';
 import { enterCanonicalTransaction, enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
 import { json } from '../messaging/canonical-values.js';
+import { normalizeWhatsappPhone } from '../channels/channel-connections.js';
 import { IngressPrivateStore } from './private-store.js';
 import { stripEnvelopeCredentials } from './credentials.js';
 import { eventKey, type ReceiptPayload } from './normalization.js';
@@ -30,9 +31,14 @@ export class IngressJournal {
       const channel = await tx.channel.findUniqueOrThrow({ where: { id: source.channelId } });
       const connection = source.connectionId ? await tx.channelConnection.findUniqueOrThrow({ where: { id: source.connectionId } }) : null;
       const config = !source.connectionId ? await tx.integrationConfig.findUnique({ where: { workspaceId_provider: { workspaceId: source.workspaceId, provider: 'meta_cloud' } } }) : null;
+      if (source.provider === 'waha') await tx.$queryRaw`SELECT id FROM channel_connections WHERE workspace_id=${source.workspaceId} AND channel_id=${source.channelId}::uuid AND provider='evolution' FOR SHARE`;
+      const primary = source.provider === 'waha' ? await tx.channelConnection.findFirst({where:{...scope,provider:'evolution'}}) : null;
       const acceptedFacts = { channelProviderKey: channel.providerKey, channelLifecycleGeneration: channel.connectionLifecycleGeneration,
         verifiedPhoneNumber: connection?.verifiedPhoneNumber ?? null, connectionEligible: connection?.eligible ?? null,
-        connectionStatus: connection?.status ?? null, integrationConfigId: config?.id ?? null };
+        connectionStatus: connection?.status ?? null, integrationConfigId: config?.id ?? null,
+        ...(source.provider === 'waha' ? { pairing: { primaryConnectionId:primary?.id??null, primaryLifecycleGeneration:primary?.lifecycleGeneration??null,
+          primaryPhoneNumber:normalizeWhatsappPhone(primary?.verifiedPhoneNumber), secondaryPhoneNumber:normalizeWhatsappPhone(connection?.verifiedPhoneNumber),
+          pairedAt:connection?.lastHealthyAt?.toISOString()??null } } : {}) };
       const receipt = await tx.ingressReceipt.create({ data: { id, ...scope, stageVersion: 1, transportNamespace: input.transportNamespace, source: json({ ...source, acceptedFacts }),
         authentication: input.authentication, authenticatedDigest, rawRef: raw.ref, rawDigest: raw.digest, eventRef: events.ref, eventDigest: events.digest,
         eventCount: input.payload.events.length } });

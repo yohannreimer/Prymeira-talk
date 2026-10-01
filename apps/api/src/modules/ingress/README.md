@@ -1,12 +1,20 @@
-# Isolated transport milestone 1A
+# Isolated ingress milestones 1A and 1B
 
-This runnable ingress is **not the production messaging runtime**. It never imports
-`createApp`, starts business schedulers, writes a `Message`, or executes inbound
-business effects. Its real consumer transaction creates one `IngressApplication`
-with `state=pending_application` per receipt and then ACKs that transport delivery.
-Milestone 1B must replace that ACK boundary with the complete canonical Message,
-observations, hooks, durable effects and checkpoint transaction before activation.
-The existing API webhook writers and production configuration are unchanged.
+This runnable ingress remains isolated from production. It never imports
+`createApp` or starts business schedulers. `isolated-1a` preserves the reviewed
+transport-only sink and ACKs after a durable `pending_application` handoff.
+`isolated-1b` connects the executable worker to `IngressApplicationService`:
+digest-verified private receipts, one READ COMMITTED event transaction, canonical
+Message/observations, concrete transactional hooks, and unique frozen pending
+obligations. ACK follows complete batch conservation and final application commit.
+The existing API webhook writers and production configuration remain unchanged.
+
+Stage 1B effects are **pending**, with no handler or timer execution. Stage 1C
+must add its own migration for leases/completion while preserving captured cause
+and frozen flags; migration 55 deliberately prevents rewriting those facts or
+claiming an unimplemented handler completed. Stage 1D owns recertification,
+checkpoints, authority resolution and recovery of held facts. No partial production
+activation is authorized by either isolated mode.
 
 ## Run the owned local processes
 
@@ -14,7 +22,7 @@ Build with `pnpm --filter @prymeira-talk/api build:prod`. From `apps/api`, run
 `node dist/ingress.js` and `node dist/ingress-worker.js` in separate processes.
 Both require:
 
-- `INGRESS_TRANSPORT_STAGE=isolated-1a`
+- `INGRESS_TRANSPORT_STAGE=isolated-1a` for transport-only, or `isolated-1b` for canonical application (migration 55 required)
 - `DATABASE_URL`: one of the four owned test databases on `127.0.0.1:55439`
 - `INGRESS_AMQP_URL`: owned broker on `127.0.0.1:56739/talk_test`
 - `INGRESS_NAMESPACE=talk.isolated.<unique-local-namespace>`
@@ -114,3 +122,47 @@ cancellation before starting another RPC. Failed or cancelled setup cannot insta
 a late session. The runtime retries failed setup after its existing 500ms interval.
 The setup suite withholds actual Rabbit responses through a disposable TCP proxy
 and checks connection release, reconnect and compiled worker SIGTERM.
+
+
+## Stage 1B application boundary
+
+Receipt UUID is the sole authority input; embedded adapter context never selects
+a tenant, session or lifecycle. Before domain access, each event locks workspace,
+channel and physical source/config. WAHA messages/actions also require persisted
+positive same-number pairing (both verified owners and successful pairing proof),
+independent of health/eligible. The immutable accepted pairing snapshot must still
+match. Current QR/status observations are separate and never certify eligibility.
+QR bytes remain in private receipt blobs; outbox/Rabbit carry only safe references.
+
+`IngressEventProgress` is uniquely keyed by receipt/event index. A committed Meta
+batch position is skipped on retry. `IngressApplication.state=applied` is written
+only after every position has a canonical result or explicit conserved decision.
+Unsupported Meta media/status identities, incomplete action keys and conflicts are
+held, not understood content. An old lifecycle/pairing is
+`pending_recertification`; no operator pause or autonomous effects run for it.
+The delivery's existing `pending_application` vocabulary is retained; read final
+application/progress to distinguish applied from conserved held. `consumedAt`
+records the first transport sink commit; application/progress record canonical
+completion, and stage 1B ACK is permitted only after that commit.
+
+Created live Message hooks reuse real contact/routing/pause/assistant helpers.
+Unread/unhide and domain obligations occur once per Message UUID. Campaign hiding
+requires a bound native campaign intent; body/time/provider-global heuristics are
+absent. Talk echoes preserve UUID/FKs and do not pause the agent. History/append
+and recovered-live without a persisted checkpoint do not trigger attendance.
+Group/history media acquisition remains a presentation obligation without
+attendance or autonomous effects. Preview and visibility clocks stay monotonic. Edits, revocations and receipts use
+the approved reducers and persist only relevant invalidation/content obligations.
+
+The obligation kinds cover assistant control/message, prospecting eligibility,
+handoff brief, realtime invalidation, backfill, triage, follow-up activity, media,
+frozen automation occurrence, agent debounce and human-reply improvement. Frozen
+flags include source/frontier, origin, logical UUID, control/prospecting context,
+content readiness and dependencies. Direct Meta text support is preserved;
+scoped WAMID receipts require demonstrated recipient/chat. Existing unsupported
+Meta media is explicitly held, without inventing bridge or media parity.
+
+Build first and run `application.postgres.test.ts` alongside the two transport
+suites above with `--maxWorkers=1`. The application suite uses synthetic owned
+fixtures, real PostgreSQL/Rabbit, the built worker and a crash-after-commit child.
+All fixture queues, exchanges, children, private blobs and scoped rows are cleaned.

@@ -4,7 +4,7 @@ const config = readIngressEnvironment();
 const runtime = await createIngressRuntime(config, false);
 const app = createIngressHttp({ ...config, ...runtime });
 await app.listen({ host: '127.0.0.1', port: config.port });
-console.info('Isolated stage 1A ingress listening; canonical application is not connected');
+console.info(config.stage === 'isolated-1b' ? 'Isolated stage 1B ingress listening; application requires the separate canonical worker' : 'Isolated stage 1A ingress listening; canonical application is not connected');
 let closing = false;
 async function shutdown() { if (closing) return; closing = true; await app.close(); await runtime.close(); }
 process.once('SIGTERM', () => void shutdown());

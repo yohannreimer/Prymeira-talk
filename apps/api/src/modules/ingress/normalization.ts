@@ -34,7 +34,18 @@ function normalizeMeta(context: TrustedMessagingContext, input: unknown): Receip
           order: { timestampMs: Number.isFinite(timestamp) && timestamp > 0 && timestamp <= 8.64e15 ? timestamp : null, sequence: null }
         } });
       }
-      if (Array.isArray(value.statuses) && value.statuses.length) results.push({ kind: 'ignored', reason: 'meta_status_requires_application_adapter' });
+      for (const item of Array.isArray(value.statuses) ? value.statuses : []) {
+        const status = record(item), id = status.id;
+        const address = typeof status.recipient_id === 'string' ? normalizeChatAddress(`${status.recipient_id}@s.whatsapp.net`) : null;
+        if (typeof id !== 'string' || !id || !address || !['sent','delivered','read','failed'].includes(String(status.status))) {
+          results.push({kind:'ignored',reason:'meta_status_requires_recipient_identity'}); continue;
+        }
+        const timestamp = typeof status.timestamp === 'string' ? Number(status.timestamp)*1000 : NaN;
+        results.push({kind:'accepted',event:{context,providerEventId:null,providerEventType:'statuses',addressMappings:[],kind:'receipt',
+          target:{identityFormat:'provider_native',nativeId:id,rawId:null,nativeChatAddress:address,chatAddress:address,direction:'outbound',senderParticipant:'',nativeSenderParticipant:null},
+          status:status.status as 'sent'|'delivered'|'read'|'failed',providerStatus:String(status.status),recipient:address,
+          order:{timestampMs:Number.isFinite(timestamp)&&timestamp>0&&timestamp<=8.64e15?timestamp:null,sequence:null}}});
+      }
     }
   }
   return results.length ? results : [{ kind: 'ignored', reason: 'unsupported_meta_event' }];

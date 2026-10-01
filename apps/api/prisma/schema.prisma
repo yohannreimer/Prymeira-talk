@@ -495,6 +495,8 @@ model Conversation {
   @@unique([workspaceId, channelId, id])
   outboundIntents OutboundIntent[]
   outboundCorrelations OutboundCorrelation[]
+  ingressProgress IngressEventProgress[]
+  ingressEffects IngressEffect[]
 }
 
 model Message {
@@ -531,6 +533,8 @@ model Message {
   @@unique([workspaceId, conversationId, id])
   outboundIntents OutboundIntent[]
   outboundCorrelations OutboundCorrelation[]
+  ingressProgress IngressEventProgress[]
+  ingressEffects IngressEffect[]
 }
 
 model Tag {
@@ -1611,6 +1615,7 @@ model CanonicalObservation {
   @@index([workspaceId, channelId, state])
   @@index([workspaceId, channelId, identityId, state, kind, id])
   @@map("canonical_observations")
+  ingressProgress IngressEventProgress[]
 }
 
 // Every action owns its ingress observation; payload/provenance remain immutable there.
@@ -1644,6 +1649,7 @@ model CanonicalAction {
   @@index([workspaceId, channelId, actionHash])
   @@index([workspaceId, channelId, actionLookupHash])
   @@map("canonical_actions")
+  ingressProgress IngressEventProgress[]
 }
 
 // Group receipts never upgrade Message.status: there is no certified member denominator.
@@ -1821,6 +1827,7 @@ model IngressReceipt {
   @@unique([workspaceId, channelId, id])
   @@index([workspaceId, channelId, ordinal])
   @@map("ingress_receipts")
+  eventProgress IngressEventProgress[]
 }
 
 model IngressDelivery {
@@ -1870,6 +1877,8 @@ model IngressFrontier {
   @@unique([receiptId, eventIndex])
   @@index([workspaceId, channelId, chatAddress, id])
   @@map("ingress_frontiers")
+  eventProgress IngressEventProgress?
+  @@unique([workspaceId, channelId, receiptId, eventIndex], map: "ingress_frontiers_scope_event_key")
 }
 
 model IngressPublishAttempt {
@@ -1894,4 +1903,55 @@ model IngressQuarantine {
   reason String
   createdAt DateTime @default(now()) @map("created_at")
   @@map("ingress_quarantines")
+}
+
+
+// Private stage 1B progress. Held includes unsupported/incomplete facts; it is not understood content.
+model IngressEventProgress {
+  workspaceId String @map("workspace_id")
+  channelId String @db.Uuid @map("channel_id")
+  receiptId String @db.Uuid @map("receipt_id")
+  eventIndex Int @map("event_index")
+  state String
+  reason String?
+  observationId String? @db.Uuid @map("observation_id")
+  actionId String? @db.Uuid @map("action_id")
+  conversationId String? @db.Uuid @map("conversation_id")
+  messageId String? @db.Uuid @map("message_id")
+  result Json
+  committedAt DateTime @default(now()) @map("committed_at")
+  receipt IngressReceipt @relation(fields: [workspaceId,channelId,receiptId], references: [workspaceId,channelId,id], onDelete: Cascade, map: "ingress_progress_receipt_fkey")
+  frontier IngressFrontier @relation(fields: [workspaceId,channelId,receiptId,eventIndex], references: [workspaceId,channelId,receiptId,eventIndex], onDelete: Cascade, map: "ingress_progress_frontier_fkey")
+  observation CanonicalObservation? @relation(fields: [workspaceId,channelId,observationId], references: [workspaceId,channelId,id], onDelete: NoAction, map: "ingress_progress_observation_fkey")
+  action CanonicalAction? @relation(fields: [workspaceId,channelId,actionId], references: [workspaceId,channelId,id], onDelete: NoAction, map: "ingress_progress_action_fkey")
+  conversation Conversation? @relation(fields: [workspaceId,channelId,conversationId], references: [workspaceId,channelId,id], onDelete: NoAction, map: "ingress_progress_conversation_fkey")
+  message Message? @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: NoAction, map: "ingress_progress_message_fkey")
+  effects IngressEffect[]
+  @@id([receiptId,eventIndex])
+  @@unique([workspaceId,channelId,receiptId,eventIndex], map: "ingress_event_progress_scope_event_key")
+  @@index([workspaceId,channelId,state,committedAt], map: "ingress_event_progress_scope_state_idx")
+  @@map("ingress_event_progress")
+}
+
+// Every row is a real pending obligation. Stage 1C owns handlers and completion.
+model IngressEffect {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @db.Uuid @map("channel_id")
+  receiptId String @db.Uuid @map("receipt_id")
+  eventIndex Int @map("event_index")
+  conversationId String? @db.Uuid @map("conversation_id")
+  messageId String? @db.Uuid @map("message_id")
+  kind String
+  logicalKey String @map("logical_key")
+  cause Json
+  frozen Json
+  state String @default("pending")
+  createdAt DateTime @default(now()) @map("created_at")
+  progress IngressEventProgress @relation(fields: [workspaceId,channelId,receiptId,eventIndex], references: [workspaceId,channelId,receiptId,eventIndex], onDelete: Cascade, map: "ingress_effects_progress_fkey")
+  conversation Conversation? @relation(fields: [workspaceId,channelId,conversationId], references: [workspaceId,channelId,id], onDelete: NoAction, map: "ingress_effects_conversation_fkey")
+  message Message? @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: NoAction, map: "ingress_effects_message_fkey")
+  @@unique([workspaceId,channelId,logicalKey,kind], map: "ingress_effects_scope_logical_kind_key")
+  @@index([state,createdAt])
+  @@map("ingress_effects")
 }
