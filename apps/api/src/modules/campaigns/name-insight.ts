@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
+import { usableContactName } from "../contacts/contact-name.js";
 
 export type NameKind = "person" | "company" | "unknown";
 export type NameInsight = { sourceName: string; kind: NameKind; firstName: string | null; classifiedAt: string };
@@ -71,7 +72,9 @@ function nameWords(name: string) {
 export function acceptFirstName(sourceName: string, aiFirstName: string | null | undefined) {
   const cleaned = cleanFirstName(aiFirstName);
   if (!cleaned) return null;
-  return nameWords(sourceName).includes(foldWord(cleaned)) ? cleaned : null;
+  if (!nameWords(sourceName).includes(foldWord(cleaned))) return null;
+  // A placeholder such as "Você" is never a first name, even inside a longer name.
+  return usableContactName(cleaned) ? cleaned : null;
 }
 
 function readStored(customFields: unknown, name: string): NameInsight | null {
@@ -151,7 +154,9 @@ export function createNameInsightService(deps: {
         seenKeys.add(contact.audienceKey);
         contacts.push(contact);
       }
-      const savedIds = contacts.filter((c) => c.contactId && c.name?.trim()).map((c) => c.contactId!);
+      // Placeholders ("Você"), phone numbers and WhatsApp ids are not names at all.
+      const hasName = (c: NameInsightContact) => usableContactName(c.name) !== null;
+      const savedIds = contacts.filter((c) => c.contactId && hasName(c)).map((c) => c.contactId!);
       const rows = savedIds.length
         ? await deps.prisma.contact.findMany({
             where: { workspaceId: input.workspaceId, id: { in: savedIds } },
@@ -164,7 +169,7 @@ export function createNameInsightService(deps: {
       for (const contact of contacts) {
         const name = contact.name?.trim() ?? "";
         firstNames[contact.audienceKey] = null;
-        if (!name) continue;
+        if (!hasName(contact)) continue;
         const stored = contact.contactId ? readStored(rowById.get(contact.contactId)?.customFields, name) : null;
         if (stored) { firstNames[contact.audienceKey] = firstNameOf(name, stored); continue; }
         const cached = contact.contactId ? null : readCache(`${input.workspaceId}:${name}`, nowMs);

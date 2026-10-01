@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { cleanFirstName, createNameInsightService } from "./name-insight.js";
+import { acceptFirstName, cleanFirstName, createNameInsightService } from "./name-insight.js";
 
 type Row = { id: string; customFields: unknown; updatedAt: Date };
 
@@ -101,6 +101,44 @@ describe("name insight service", () => {
     const result = await service.resolve({ workspaceId: "w", contacts: [{ audienceKey: "a", contactId: null, name: "  " }, { audienceKey: "b", contactId: null, name: null }] });
     expect(result).toEqual({ status: "ok", firstNames: { a: null, b: null } });
     expect(analyze).not.toHaveBeenCalled();
+  });
+
+  describe("nomes sem sentido vindos do WhatsApp", () => {
+    it("tratam como sem nome: não consultam o contato, não chamam a IA e não gravam", async () => {
+      const { service, analyze, prisma, updates } = setup([{ id: "c1", customFields: {}, updatedAt: new Date() }]);
+      const result = await service.resolve({ workspaceId: "w", contacts: [
+        { audienceKey: "a", contactId: "c1", name: "Você" },
+        { audienceKey: "b", contactId: "c2", name: "556392370750" },
+        { audienceKey: "c", contactId: "c3", name: "103547450441825@lid" },
+        { audienceKey: "d", contactId: null, name: "You" }
+      ] });
+      expect(result).toEqual({ status: "ok", firstNames: { a: null, b: null, c: null, d: null } });
+      expect(analyze).not.toHaveBeenCalled();
+      expect(prisma.contact.findMany).not.toHaveBeenCalled();
+      expect(updates).toHaveLength(0);
+    });
+
+    it("só manda para a IA os nomes reais do lote", async () => {
+      const { service, analyze } = setup([]);
+      const result = await service.resolve({ workspaceId: "w", contacts: [
+        { audienceKey: "a", contactId: null, name: "Você" },
+        { audienceKey: "b", contactId: null, name: "Ana Souza" }
+      ] });
+      expect(result.firstNames).toEqual({ a: null, b: "Ana" });
+      expect((analyze.mock.calls[0]![0] as { data: { names: unknown[] } }).data.names).toEqual([{ id: 0, name: "Ana Souza" }]);
+    });
+
+    it("nunca aceita \"Você\" como primeiro nome, nem da IA nem guardado", async () => {
+      expect(acceptFirstName("Você Silva", "Você")).toBeNull();
+      expect(acceptFirstName("Você Silva", "Silva")).toBe("Silva");
+      const stored = { nameInsight: { sourceName: "Você Silva", kind: "person", firstName: "Você", classifiedAt: "x" } };
+      const { service: fromStored } = setup([{ id: "c1", customFields: stored, updatedAt: new Date() }]);
+      expect((await fromStored.resolve({ workspaceId: "w", contacts: [{ audienceKey: "a", contactId: "c1", name: "Você Silva" }] })).firstNames).toEqual({ a: null });
+      const { service: fromAi, updates } = setup([{ id: "c1", customFields: {}, updatedAt: new Date() }],
+        (r) => ({ results: r.data.names.map((n) => ({ id: n.id, kind: "person", firstName: "Você" })) }));
+      expect((await fromAi.resolve({ workspaceId: "w", contacts: [{ audienceKey: "a", contactId: "c1", name: "Você Silva" }] })).firstNames).toEqual({ a: null });
+      expect(updates[0]!.customFields).toMatchObject({ nameInsight: { kind: "unknown", firstName: null } });
+    });
   });
 
   it("quando a IA falha, segue sem nome e marca indisponível", async () => {
