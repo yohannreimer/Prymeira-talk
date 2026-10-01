@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, forwardRef, useImperativeHandle } from 'react';
+import { act, forwardRef, useEffect, useImperativeHandle } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,8 +10,11 @@ import { TalkSession } from '../../app/session/talk-session';
 import { RealtimeConnection } from './realtime-connection';
 import { apiCreateConversationMessage, apiGetConversationMessages, apiGetConversations, apiGetAssistantConversation, apiGetConversationContext, apiMarkConversationRead } from '../../app/api';
 
-const renders = vi.hoisted(() => ({ media: vi.fn(), assistant: vi.fn(), avatar: vi.fn() }));
-vi.mock('./InboxMedia', () => ({ InboxMedia: ({ message }: { message: MessageDto }) => { renders.media(); return <span>{message.body}</span>; }, mediaCaption: () => null }));
+const renders = vi.hoisted(() => ({ media: vi.fn(), mediaMount: vi.fn(), mediaUnmount: vi.fn(), assistant: vi.fn(), avatar: vi.fn() }));
+vi.mock('./InboxMedia', () => ({ InboxMedia: ({ message }: { message: MessageDto }) => {
+  renders.media(); useEffect(() => { renders.mediaMount(); return () => renders.mediaUnmount(); }, []);
+  return <span>{message.body}</span>;
+}, mediaCaption: () => null }));
 vi.mock('./ContactAvatar', () => ({ ContactAvatar: () => { renders.avatar(); return <span />; }, ContactPhotoProvider: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 vi.mock('./AssistantPanel', () => ({ AssistantPanel: () => { renders.assistant(); return <span>Assistente</span>; } }));
 vi.mock('./VoiceRecorder', () => ({ VoiceRecorder: () => null }));
@@ -28,6 +31,13 @@ vi.mock('../../app/api', async importOriginal => ({ ...await importOriginal<type
 
 const conversation = (id: string): ConversationDto => ({ id, workspaceId: 'w', channelId: 'channel', contactId: `contact-${id}`, contactName: id, status: 'open', assignedUserId: null, departmentId: null, lastMessageAt: null, lastMessagePreview: null, unreadCount: 0, priority: 'normal' });
 const message = (id: string): MessageDto => ({ id: `m-${id}`, conversationId: id, workspaceId: 'w', providerMessageId: null, direction: 'inbound', type: 'image', body: `history-${id}`, mediaUrl: 'data:image/png;base64,YQ==', status: 'read', sentByUserId: null, createdAt: '2026-09-30T00:00:00Z' });
+const initialScrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
+class ContentResizeObserver {
+  static instances: ContentResizeObserver[] = [];
+  observe = vi.fn(); disconnect = vi.fn();
+  constructor(readonly callback: () => void) { ContentResizeObserver.instances.push(this); }
+  changed() { this.callback(); }
+}
 
 describe('Atendimento query/UI integration', () => {
   let container: HTMLDivElement; let root: ReturnType<typeof createRoot>; let session: TalkSession;
@@ -60,7 +70,10 @@ describe('Atendimento query/UI integration', () => {
     vi.mocked(apiGetConversationMessages).mockImplementation(async id => [message(id)]);
     vi.mocked(apiGetConversationContext).mockResolvedValue({ tags: [], notes: [], departments: [], boardStages: [], primaryBoardStage: null });
   });
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); session.clear(); vi.useRealTimers(); vi.clearAllMocks(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+  afterEach(async () => {
+    await act(async () => root.unmount()); container.remove(); session.clear(); vi.useRealTimers(); vi.clearAllMocks(); vi.restoreAllMocks(); vi.unstubAllGlobals();
+    if (initialScrollTop) Object.defineProperty(HTMLElement.prototype, 'scrollTop', initialScrollTop); else Reflect.deleteProperty(HTMLElement.prototype, 'scrollTop');
+  });
 
   it('restores drafts/selection on module return and shows a repeated target synchronously without a read', async () => {
     await render(); expect(container.textContent).toContain('history-c1'); await type('rascunho c1');
@@ -80,6 +93,18 @@ describe('Atendimento query/UI integration', () => {
     await type('abc'); await type('abcdef');
     expect([renders.media.mock.calls.length, renders.avatar.mock.calls.length, renders.assistant.mock.calls.length]).toEqual(counts);
     expect(session.readUI('draft:c1', '')).toBe('abcdef');
+  });
+  it('keeps the mounted media component across compact history and raw websocket transcription updates', async () => {
+    const raw = { ...message('c1'), type: 'audio' as const, mediaUrl: 'data:audio/ogg;base64,YQ==', mediaSourceHash: 'a'.repeat(64) };
+    const compact = { ...raw, mediaUrl: 'https://talk.example.test/api/conversations/c1/messages/m-c1/media?v=source' };
+    vi.mocked(apiGetConversationMessages).mockResolvedValue([compact]);
+    await render(); expect(renders.mediaMount).toHaveBeenCalledOnce();
+    await act(async () => session.event({ type: 'message.updated', workspaceId: 'w', payload: { ...raw, body: 'Transcrição atualizada' } })); await flush();
+    expect(container.textContent).toContain('Transcrição atualizada');
+    expect(renders.mediaMount).toHaveBeenCalledOnce(); expect(renders.mediaUnmount).not.toHaveBeenCalled();
+    vi.mocked(apiGetConversationMessages).mockResolvedValue([{ ...compact, body: 'Transcrição atualizada' }]);
+    await act(async () => session.reconcile()); await flush();
+    expect(renders.mediaMount).toHaveBeenCalledOnce(); expect(renders.mediaUnmount).not.toHaveBeenCalled();
   });
   it('aborts replaced histories and cannot paint a late response in another conversation', async () => {
     await render(); let release!: (rows: MessageDto[]) => void; let signal!: AbortSignal;
@@ -154,16 +179,72 @@ describe('Atendimento query/UI integration', () => {
     await render(); expect(session.readUI('draftFile:c1', null)).toBe(file);
     expect(container.querySelector<HTMLImageElement>('.composer-attachment-preview img')?.src).toBe('blob:second-preview');
   });
-  it('restores a tall history after switching to a short one and preserves list position on module return', async () => {
+  it('opens switched conversations at the bottom and preserves the selected history/list position on module return', async () => {
     await render(); const list = container.querySelector<HTMLDivElement>('.conversation-items')!;
     list.scrollTop = 500; await act(async () => list.dispatchEvent(new Event('scroll', { bubbles: true })));
     const thread = container.querySelector<HTMLDivElement>('.message-thread')!;
     thread.scrollTop = 450; await act(async () => thread.dispatchEvent(new Event('scroll', { bubbles: true })));
     await select('c2'); thread.scrollTop = 0; await act(async () => thread.dispatchEvent(new Event('scroll', { bubbles: true })));
-    await select('c1'); expect(container.querySelector<HTMLDivElement>('.message-thread')?.scrollTop).toBe(450);
+    await select('c1'); await act(async () => { await vi.advanceTimersByTimeAsync(40); });
+    expect(container.querySelector<HTMLDivElement>('.message-thread')?.scrollTop).toBe(0);
+    thread.scrollTop = 450; await act(async () => thread.dispatchEvent(new Event('scroll', { bubbles: true })));
     await render(false); await render();
     expect(container.querySelector<HTMLDivElement>('.conversation-items')?.scrollTop).toBe(500);
     expect(container.querySelector<HTMLDivElement>('.message-thread')?.scrollTop).toBe(450);
+  });
+  it('anchors late image/content growth while at the bottom, respects manual upward scroll and restores module position', async () => {
+    vi.stubGlobal('ResizeObserver', ContentResizeObserver); ContentResizeObserver.instances = [];
+    const heights = { c1: 900, c2: 1500 };
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains('message-thread') ? heights[this.textContent?.includes('history-c2') ? 'c2' : 'c1'] : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.classList.contains('message-thread') ? 300 : 0; });
+    const positions = new WeakMap<HTMLElement, number>();
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'get').mockImplementation(function (this: HTMLElement) { return positions.get(this) ?? 0; });
+    vi.spyOn(HTMLElement.prototype, 'scrollTop', 'set').mockImplementation(function (this: HTMLElement, value: number) { positions.set(this, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); });
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(function (this: HTMLElement, options?: ScrollToOptions | number) {
+      if (typeof options === 'object') this.scrollTop = Math.max(0, Math.min(options.top ?? 0, this.scrollHeight - this.clientHeight));
+    });
+    await render(); await act(async () => { await vi.advanceTimersByTimeAsync(40); });
+    const thread = container.querySelector<HTMLDivElement>('.message-thread')!;
+    const content = container.querySelector<HTMLDivElement>('.message-thread-content')!;
+    expect(thread.scrollTop).toBe(600); expect(ContentResizeObserver.instances[0].observe).toHaveBeenCalledWith(content);
+    const count = scroll.mock.calls.length; heights.c1 = 1300;
+    await act(async () => { ContentResizeObserver.instances[0].changed(); ContentResizeObserver.instances[0].changed(); await vi.advanceTimersByTimeAsync(20); });
+    expect(thread.scrollTop).toBe(1000); expect(scroll).toHaveBeenCalledTimes(count + 1);
+    thread.scrollTop = 970; await act(async () => thread.dispatchEvent(new Event('scroll')));
+    expect(session.readUI('scrollFollow:c1', true)).toBe(false);
+    await act(async () => { heights.c1 = 1400; ContentResizeObserver.instances[0].changed(); await vi.advanceTimersByTimeAsync(20); });
+    expect(thread.scrollTop).toBe(970);
+    heights.c1 = 1600; ContentResizeObserver.instances[0].changed();
+    thread.scrollTop = 250; await act(async () => { thread.dispatchEvent(new Event('scroll')); await vi.advanceTimersByTimeAsync(20); });
+    expect(thread.scrollTop).toBe(250);
+    await act(async () => { heights.c1 = 1800; ContentResizeObserver.instances[0].changed(); await vi.advanceTimersByTimeAsync(20); });
+    expect(thread.scrollTop).toBe(250);
+    await act(async () => session.updateMessages('c1', rows => [...rows, { ...message('c1'), id: 'new-background', direction: 'outbound', body: 'Mensagem de outro agente' }])); await flush();
+    await act(async () => { ContentResizeObserver.instances[0].changed(); await vi.advanceTimersByTimeAsync(20); });
+    expect(thread.scrollTop).toBe(250);
+    await select('c2'); expect(thread.scrollTop).toBe(1200);
+    await select('c1'); expect(thread.scrollTop).toBe(1500);
+    thread.scrollTop = 350; await act(async () => thread.dispatchEvent(new Event('scroll')));
+    await render(false); heights.c1 = 450; await render(); await act(async () => { await vi.advanceTimersByTimeAsync(40); });
+    expect(container.querySelector<HTMLDivElement>('.message-thread')?.scrollTop).toBe(150);
+    expect(session.readUI('scroll:c1', 0)).toBe(350);
+    await act(async () => { heights.c1 = 1800; ContentResizeObserver.instances.at(-1)!.changed(); await vi.advanceTimersByTimeAsync(20); });
+    expect(container.querySelector<HTMLDivElement>('.message-thread')?.scrollTop).toBe(350);
+    expect(session.readUI('scroll:c1', 0)).toBe(350);
+  });
+  it('follows captured image loads even when ResizeObserver is unavailable', async () => {
+    let height = 900;
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.classList.contains('message-thread') ? height : 0; });
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.classList.contains('message-thread') ? 300 : 0; });
+    vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(function (this: HTMLElement, options?: ScrollToOptions | number) { if (typeof options === 'object') this.scrollTop = Math.max(0, Math.min(options.top ?? 0, this.scrollHeight - this.clientHeight)); });
+    await render(); await act(async () => { await vi.advanceTimersByTimeAsync(40); });
+    const thread = container.querySelector<HTMLDivElement>('.message-thread')!;
+    const image = document.createElement('img'); thread.querySelector('.message-thread-content')!.appendChild(image);
+    height = 1200;
+    await act(async () => { image.dispatchEvent(new Event('load')); await vi.advanceTimersByTimeAsync(20); });
+    expect(thread.scrollTop).toBe(900);
   });
   it('does not reinsert an unmarked conversation from an older paginated HTTP response', async () => {
     session.writeUI('view', 'marked', 'all');

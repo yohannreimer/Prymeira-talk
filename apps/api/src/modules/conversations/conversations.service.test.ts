@@ -3108,6 +3108,18 @@ describe("conversation routes", () => {
 });
 
 describe('compact history attachment DTOs', () => {
+  it('keeps the same source hash across raw/compact/transcription DTOs and changes it only with the media source', () => {
+    const record = { id: 'm', conversationId: 'c', workspaceId: 'w', direction: 'inbound' as const, type: 'audio' as const,
+      body: 'Áudio recebido', mediaUrl: 'data:audio/ogg;base64,YQ==', status: 'read' as const, createdAt: new Date() };
+    const sourceHash = createHash('sha256').update(JSON.stringify([record.id, record.type, record.mediaUrl])).digest('hex');
+    const original = toMessageDto(record); const compact = toCompactMessageDto(record, 'https://talk.example.test');
+    expect(original.mediaSourceHash).toBe(sourceHash); expect(compact.mediaSourceHash).toBe(sourceHash);
+    expect(toMessageDto({ ...record, body: 'Transcrição recebida', status: 'delivered' }).mediaSourceHash).toBe(sourceHash);
+    expect(toMessageDto({ ...record, mediaUrl: 'data:audio/ogg;base64,Yg==' }).mediaSourceHash).not.toBe(sourceHash);
+    expect(toMessageDto({ ...record, type: 'text', mediaUrl: null }).mediaSourceHash).toBeUndefined();
+    expect(messageSchema.parse(original).mediaSourceHash).toBe(sourceHash);
+    expect(realtimeEventSchema.parse({ type: 'message.updated', workspaceId: 'w', payload: original })).toMatchObject({ payload: { mediaSourceHash: sourceHash } });
+  });
   it.each(['YQ', 'YR==', 'YWF=', 'Y Q==', 'YQ%3D%3D'])('preserves browser-decodable direct JPEG base64 %s outside the strict decoder format', async encoded => {
     const mediaUrl = `data:image/jpeg;base64,${encoded}`;
     const bytes = Buffer.from(await (await fetch(mediaUrl)).arrayBuffer());

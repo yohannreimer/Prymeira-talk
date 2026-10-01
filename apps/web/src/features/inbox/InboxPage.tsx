@@ -497,6 +497,11 @@ function InboxPageContent() {
   const paginationCompletionRef = useRef<Promise<void> | null>(null);
   const conversationListRef = useRef<HTMLDivElement | null>(null);
   const messageThreadRef = useRef<HTMLDivElement | null>(null);
+  const messageContentRef = useRef<HTMLDivElement | null>(null);
+  const openedThreadRef = useRef<string | null>(null);
+  const lastThreadScrollTopRef = useRef(0);
+  const threadFollowFrameRef = useRef<number | null>(null);
+  const pendingThreadRestoreRef = useRef<number | null>(null);
   const pendingThreadScrollRef = useRef<ScrollBehavior | null>(null);
   const userReadingHistoryRef = useRef(false);
   const draftTextAreaRef = useRef<RichDraftHandle | null>(null);
@@ -546,18 +551,43 @@ function InboxPageContent() {
     return thread.scrollHeight - thread.scrollTop - thread.clientHeight < 96;
   }
 
-  function scrollMessageThreadToBottom(behavior: ScrollBehavior = "smooth") {
+  function scrollMessageThreadToBottom(behavior: ScrollBehavior = "smooth", targetId = selectedConversationIdRef.current) {
     const thread = messageThreadRef.current;
 
     if (!thread) return;
 
-    thread.scrollTo({ top: thread.scrollHeight, behavior });
+    const bottom = Math.max(0, thread.scrollHeight - thread.clientHeight);
+    thread.scrollTo({ top: bottom, behavior });
+    if (behavior === 'auto') thread.scrollTop = bottom;
+    lastThreadScrollTopRef.current = thread.scrollTop;
+    pendingThreadRestoreRef.current = null;
+    if (targetId) {
+      session.writeUI(`scroll:${targetId}`, thread.scrollTop, 0);
+      session.writeUI(`scrollFollow:${targetId}`, true, true);
+    }
     userReadingHistoryRef.current = false;
     setNewMessagesBelow(0);
   }
 
   function scheduleMessageThreadScroll(behavior: ScrollBehavior = "smooth") {
+    pendingThreadRestoreRef.current = null;
+    userReadingHistoryRef.current = false;
     pendingThreadScrollRef.current = behavior;
+  }
+
+  function followThreadContent() {
+    if ((userReadingHistoryRef.current && pendingThreadRestoreRef.current === null) || threadFollowFrameRef.current !== null) return;
+    const targetId = selectedConversationIdRef.current;
+    threadFollowFrameRef.current = window.requestAnimationFrame(() => {
+      threadFollowFrameRef.current = null;
+      if (!targetId || targetId !== selectedConversationIdRef.current) return;
+      const restore = pendingThreadRestoreRef.current; const thread = messageThreadRef.current;
+      if (restore !== null && thread) {
+        const bottom = Math.max(0, thread.scrollHeight - thread.clientHeight);
+        thread.scrollTop = Math.min(restore, bottom); lastThreadScrollTopRef.current = thread.scrollTop;
+        if (bottom - restore > 1) pendingThreadRestoreRef.current = null;
+      } else if (!userReadingHistoryRef.current) scrollMessageThreadToBottom('auto');
+    });
   }
 
   function applyDraftMarker(marker: "*" | "_") {
@@ -749,7 +779,7 @@ function InboxPageContent() {
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.workspaceId !== session.workspaceId) return;
     if (event.type === 'message.created' && event.payload.conversationId === selectedConversationIdRef.current) {
-      if (isMessageThreadNearBottom() || !userReadingHistoryRef.current || event.payload.direction === 'outbound') scheduleMessageThreadScroll('smooth');
+      if (!userReadingHistoryRef.current) scheduleMessageThreadScroll('smooth');
       else setNewMessagesBelow(current => current + 1);
     }
     if (event.type === 'conversation.updated' && event.payload.id === selectedConversationIdRef.current) {
@@ -842,21 +872,41 @@ function InboxPageContent() {
     );
   }, [availableTagOptions]);
 
-  useEffect(() => {
-    if (!selectedConversationId || !messagesQuery.data) return;
-    const saved = session.readUI<number | null>(`scroll:${selectedConversationId}`, null);
-    if (saved !== null && messageThreadRef.current) {
+  useLayoutEffect(() => {
+    pendingThreadRestoreRef.current = null;
+    if (!selectedConversationId || !messagesQuery.data || !messageThreadRef.current) return;
+    const saved = openedThreadRef.current === null ? session.readUI<number | null>(`scroll:${selectedConversationId}`, null) : null;
+    const following = session.readUI<boolean | null>(`scrollFollow:${selectedConversationId}`, null);
+    openedThreadRef.current = selectedConversationId;
+    if (saved !== null && following !== true) {
       messageThreadRef.current.scrollTop = saved;
-      userReadingHistoryRef.current = !isMessageThreadNearBottom();
-    } else scheduleMessageThreadScroll('auto');
+      lastThreadScrollTopRef.current = messageThreadRef.current.scrollTop;
+      userReadingHistoryRef.current = following === false || !isMessageThreadNearBottom();
+      if (userReadingHistoryRef.current && messageThreadRef.current.scrollHeight - messageThreadRef.current.clientHeight - saved <= 1) pendingThreadRestoreRef.current = saved;
+    } else scrollMessageThreadToBottom('auto', selectedConversationId);
   }, [selectedConversationId, Boolean(messagesQuery.data), session]);
+  useLayoutEffect(() => {
+    const content = messageContentRef.current;
+    if (!content || !selectedConversationId || !messagesQuery.data) return;
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(followThreadContent) : null;
+    observer?.observe(content);
+    return () => {
+      observer?.disconnect();
+      if (threadFollowFrameRef.current !== null) window.cancelAnimationFrame(threadFollowFrameRef.current);
+      threadFollowFrameRef.current = null;
+    };
+  }, [selectedConversationId, Boolean(messagesQuery.data)]);
   useEffect(() => {
     if (!pendingThreadScrollRef.current) return;
 
     const behavior = pendingThreadScrollRef.current;
     pendingThreadScrollRef.current = null;
 
-    window.requestAnimationFrame(() => scrollMessageThreadToBottom(behavior));
+    const targetId = selectedConversationId;
+    const frame = window.requestAnimationFrame(() => {
+      if (targetId === selectedConversationIdRef.current && !userReadingHistoryRef.current) scrollMessageThreadToBottom(behavior);
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [messages.length, selectedConversationId]);
 
   useEffect(() => {
@@ -1563,16 +1613,28 @@ selectedConversation ? (
             className="message-thread"
             aria-label="Histórico da conversa"
             onScroll={() => {
-              if (selectedConversationId && messageThreadRef.current) session.writeUI(`scroll:${selectedConversationId}`, messageThreadRef.current.scrollTop, 0);
-              if (isMessageThreadNearBottom()) {
+              const thread = messageThreadRef.current;
+              if (!thread || !selectedConversationId || messagesConversationId !== selectedConversationId) return;
+              const restore = pendingThreadRestoreRef.current;
+              if (restore !== null && thread.scrollTop >= lastThreadScrollTopRef.current) {
+                lastThreadScrollTopRef.current = thread.scrollTop; followThreadContent(); return;
+              }
+              pendingThreadRestoreRef.current = null;
+              session.writeUI(`scroll:${selectedConversationId}`, thread.scrollTop, 0);
+              const distanceFromBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight;
+              if (thread.scrollTop < lastThreadScrollTopRef.current && distanceFromBottom > 1) {
+                userReadingHistoryRef.current = true;
+              } else if (distanceFromBottom <= 1) {
                 userReadingHistoryRef.current = false;
                 setNewMessagesBelow(0);
-              } else {
-                userReadingHistoryRef.current = true;
               }
+              lastThreadScrollTopRef.current = thread.scrollTop;
+              session.writeUI(`scrollFollow:${selectedConversationId}`, !userReadingHistoryRef.current, true);
             }}
+            onLoadCapture={followThreadContent}
             ref={messageThreadRef}
           >
+            <div className="message-thread-content" ref={messageContentRef}>
             {visibleMessages.length >= 100 ? <p className="assistant-caption">Na abertura, são carregadas as 100 mensagens mais recentes.</p> : null}
             {isThreadTransitioning ? (
               <div className="message-thread-skeleton" aria-label="Abrindo conversa">
@@ -1605,7 +1667,7 @@ selectedConversation ? (
                 <div className="msg-bubble-body">
                   {selectedConversation.isGroup && message.direction === "inbound" ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
                   {['image', 'audio', 'file'].includes(message.type) ? <>
-                    <InboxMedia key={`${message.id}:${message.mediaUrl?.slice(0, 60)}`} message={message} getToken={getToken} />
+                    <InboxMedia key={message.id} message={message} getToken={getToken} />
                     {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
                     {attachmentReadNotice(message) ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
                   </> : message.location ? <LocationMessage location={message.location} /> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} onSelect={setSelectedContactCard} /> : <p><WhatsappText text={messageDisplayText(message)} /></p>}
@@ -1629,6 +1691,7 @@ selectedConversation ? (
                 </div>
               </article>
             ))}
+            </div>
             {newMessagesBelow > 0 ? (
               <button
                 className="new-messages-pill"

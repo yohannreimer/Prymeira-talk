@@ -361,6 +361,7 @@ export const messageSchema = z.object({
   senderName: z.string().nullable().optional(),
   senderJid: z.string().nullable().optional(),
   mediaUrl: z.string().url().nullable(),
+  mediaSourceHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   contactCards: z.array(z.object({
     fullName: z.string(),
     phoneNumber: z.string().nullable()

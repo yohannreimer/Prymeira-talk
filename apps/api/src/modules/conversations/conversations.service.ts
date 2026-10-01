@@ -608,6 +608,7 @@ function mapMessageDto(record: MessageRecord, publicTalkUrl?: string): MessageDt
       senderJid: typeof groupSender.jid === 'string' ? groupSender.jid.slice(0, 100) : null
     } : {}),
     mediaUrl: compactMedia ? new URL(`/api/conversations/${encodeURIComponent(record.conversationId)}/messages/${encodeURIComponent(record.id)}/media?v=${sourceHash}${previewMimeType ? `&previewMime=${encodeURIComponent(previewMimeType)}` : ''}`, publicTalkUrl).href : record.mediaUrl ?? null,
+    ...(record.mediaUrl && ['image', 'audio', 'file'].includes(record.type) ? { mediaSourceHash: sourceHash } : {}),
     ...(contactCards.length ? { contactCards } : {}),
     ...(location.success ? { location: location.data } : {}),
     ...(Object.keys(publicAttachment).length ? { attachment: publicAttachment } : {}),

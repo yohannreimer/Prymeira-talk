@@ -88,7 +88,8 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
   const sharedCache = useContext(BlobCacheContext);
   const [localCache] = useState(() => new SessionBlobCache());
   const cache = sharedCache ?? localCache;
-  const cacheKey = `media:${message.conversationId}:${message.id}:${message.mediaUrl ?? ''}`;
+  const mediaIdentity = message.mediaSourceHash ?? message.mediaUrl ?? '';
+  const cacheKey = `media:${message.conversationId}:${message.id}:${mediaIdentity}`;
   const root = useRef<HTMLDivElement>(null);
   const audio = useRef<HTMLAudioElement>(null);
   const video = useRef<HTMLVideoElement>(null);
@@ -132,7 +133,7 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
       pending.current = null;
       if (!sharedCache) localCache.clear();
     };
-  }, [message.id, message.mediaUrl, cache, cacheKey, sharedCache, localCache]);
+  }, [message.id, mediaIdentity, cache, cacheKey, sharedCache, localCache]);
   useEffect(() => {
     if (!(viewer || playing || videoPlaying || (isVideo && videoVisible && src))) return;
     cache.retain(cacheKey);
@@ -192,7 +193,7 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
     }, { rootMargin: '100px' });
     observer.observe(root.current);
     return () => { observer.disconnect(); if (visible && isImage) cache.release(cacheKey); };
-  }, [message.id, message.mediaUrl, cache, cacheKey, isVideo, isImage]);
+  }, [message.id, mediaIdentity, cache, cacheKey, isVideo, isImage]);
 
   async function play() {
     if (!audio.current || loading) return;

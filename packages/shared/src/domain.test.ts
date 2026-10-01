@@ -312,6 +312,13 @@ describe("domain schemas", () => {
     expect(parsed.mediaUrl).toBe("data:image/jpeg;base64,aW1hZ2Vt");
   });
 
+  it('accepts an optional stable media source hash while remaining compatible with older DTOs', () => {
+    const mediaSourceHash = 'a'.repeat(64);
+    expect(messageSchema.parse({ ...validMessage, mediaSourceHash }).mediaSourceHash).toBe(mediaSourceHash);
+    expect(messageSchema.parse(validMessage).mediaSourceHash).toBeUndefined();
+    expect(() => messageSchema.parse({ ...validMessage, mediaSourceHash: 'bad' })).toThrow();
+  });
+
   it("rejects a message DTO missing providerMessageId", () => {
     const { providerMessageId: _providerMessageId, ...messageWithoutProviderMessageId } = validMessage;
 
