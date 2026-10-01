@@ -8,7 +8,7 @@ import { enterCanonicalTransaction } from './canonical-boundary.js';
 import { createCanonicalReducers, type ActionEvent } from './canonical-reducers.js';
 import { json, stable, equal, sha, scopeOf, nativeLookupTuple } from './canonical-values.js';
 import { enrichPresentation, mergeStructuredContent } from './canonical-presentation.js';
-import { parseSendProof, type SendEvidence } from './outbound-evidence.js';
+import { collectOutboundProofSetInTransaction } from './outbound-proof-set.js';
 import { Prisma, type PrismaClient, type CanonicalChat, type CanonicalMessageIdentity, type CanonicalNativeAlias } from '@prisma/client';
 import type { NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
 import { normalizeChatAddress, record, type WhatsAppMessageKey } from './whatsapp-identity.js';
@@ -190,9 +190,9 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       }
     }
   }
-  /** The source and PN/LID pairs are derived from an immutable accepted result.
+  /** PN/LID pairs come from the complete set of immutable accepted/lookup facts.
    * Conservation of dispatch proof uses workspace boundary, including late sources. */
-  async function applyDispatchMappingsInTransaction(tx: Tx, input: Scope & { resultId: string; token: string }) {
+  async function applyDispatchMappingsInTransaction(tx: Tx, input: Scope & { resultId: string; token: string; lookupObservationId?: string }) {
     await enterCanonicalWorkspaceTransaction(tx, input.workspaceId);
     const scope = { workspaceId: input.workspaceId, channelId: input.channelId };
     const result = await tx.outboundResult.findFirst({ where: { ...scope, id: input.resultId, outcome: 'accepted', attempt: { token: input.token } },
@@ -201,11 +201,11 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     if (result.attempt.intent.state === 'review') return 'response_mapping_requires_review';
     const context = result.attempt.source as unknown as TrustedMessagingContext;
     if (context.workspaceId !== input.workspaceId || context.channelId !== input.channelId) throw new Error('Invalid dispatch mapping source');
-    const destination = record(result.attempt.intent.request).destination;
-    if (typeof destination !== 'string') throw new Error('Invalid dispatch mapping destination');
-    const proof = parseSendProof(context, destination, (result.evidence as unknown as SendEvidence).raw);
+    const proof = await collectOutboundProofSetInTransaction(tx, input);
+    if (proof.kind === 'review') return 'contradictory_dispatch_proof_set';
+    if (proof.kind !== 'complete') return 'incomplete_dispatch_proof_set';
     if (!proof.addressMappings.length) return;
-    const receiptTuple = ['local_dispatch_mapping', result.attempt.token, result.id];
+    const receiptTuple = ['local_dispatch_mapping', result.attempt.token, proof.proofSet.resultIds, proof.proofSet.lookupObservationIds];
     const bucket = await tx.canonicalObservation.findMany({ where: { ...scope, receiptHash: digest(receiptTuple) } });
     const previous = bucket.find(row => equal(row.receiptTuple, receiptTuple));
     const observation = previous ?? await tx.canonicalObservation.create({ data: { ...scope,
@@ -213,7 +213,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       connectionProvider: context.connectionId ? context.provider as 'evolution' | 'waha' : null, connectionId: context.connectionId,
       receiptHash: digest(receiptTuple), receiptTuple: json(receiptTuple), kind: 'local_dispatch_mapping', eventType: 'send_result',
       mode: context.mode, source: 'authenticated_dispatch_response', sessionName: context.sessionName, lifecycleGeneration: context.lifecycleGeneration,
-      receivedAt: result.createdAt, sourceOrder: json({}), payload: json({ context, resultId: result.id, addressMappings: proof.addressMappings }), state: 'certified'
+      receivedAt: result.createdAt, sourceOrder: json({}), payload: json({ context, proofSet: proof.proofSet, addressMappings: proof.addressMappings }), state: 'certified'
     } });
     const reason = await mappings(tx, { context, addressMappings: proof.addressMappings }, observation.id);
     await tx.canonicalObservation.update({ where: { id: observation.id }, data: { state: reason ? 'held' : 'certified', reason: reason ?? null } });

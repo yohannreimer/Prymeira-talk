@@ -394,7 +394,7 @@ describe.skipIf(!url)('persistent outbound intents', () => {
         });
         expect((await tx(t => api.bindLocalOutboundInTransaction(t, {
             workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultId: result.result!.id, lookupObservationId: observation.id
-        }))).kind).toBe('incomplete_proof');
+        }))).kind).toBe(failure === 'contradictory_response' ? 'review' : 'incomplete_proof');
     });
     it('late operational eligibility also requires a current origin permission check', async () => {
         const f = await fixture(), r = await reserve(f), d = await begin(f, r.intent!.id);
@@ -619,6 +619,135 @@ describe.skipIf(!url)('persistent outbound intents', () => {
         for (const pns of families.values())
             expect(pns.size).toBeLessThanOrEqual(1);
     }
+    it.each((['chat', 'sender'] as const).flatMap(role => [
+        'contrad_original', 'contrad_bare_selected', 'contrad_bare_first', 'contrad_message', 'contrad_lookup_message', 'contrad_full_response',
+        'compatible_original', 'compatible_bare', 'compatible_no_original_pair', 'compatible_foreign_lookup', 'after_bound', 'after_bound_new_lookup', 'before_mapping'
+    ].map(scenario => ({ role, scenario }))))('complete proof set preserves $role alternatives through lookup: $scenario', async ({ role, scenario }) => {
+        const f = await mappingFixture(role), r = await reserve(f), d = await begin(f, r.intent!.id);
+        const original = await db.message.findUniqueOrThrow({ where: { id: r.intent!.messageId } });
+        const recordResult = (raw: unknown, resultKey: string): Promise<any> => tx(t => api.recordDispatchResultInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultKey,
+            evidence: { transport: 'http', status: 200, bodyState: 'json', raw }
+        }));
+        let bare: any;
+        if (scenario === 'contrad_bare_first')
+            bare = await recordResult({ id: 'A' }, 'bare');
+        const partial: any = mappingRaw(f, role, PN);
+        delete partial.key.fromMe;
+        if (scenario === 'contrad_full_response')
+            partial.key.fromMe = true;
+        const raw = scenario === 'contrad_message' ? { message: partial } : ['compatible_no_original_pair', 'after_bound', 'after_bound_new_lookup'].includes(scenario) ? { id: 'A' } : partial;
+        const first = await recordResult(raw, 'original');
+        if (['contrad_bare_selected', 'compatible_bare'].includes(scenario))
+            bare = await recordResult({ id: 'A' }, 'bare');
+        const result = bare ?? first;
+        const compatible = scenario.startsWith('compatible') || scenario.startsWith('after_bound');
+        const response = mappingRaw(f, role, compatible ? PN : '15550002222@s.whatsapp.net');
+        const fullRaw = scenario === 'contrad_lookup_message' ? { message: response } : response;
+        const key = {
+            ...parseWahaMessageKey({
+                id: 'A', remote: f.request.destination, fromMe: true,
+                ...(role === 'sender' ? { participant: '777@lid' } : {})
+            }), nativeId: 'A'
+        };
+        const lookup = await db.canonicalObservation.create({
+            data: {
+                workspaceId: f.source.workspaceId, channelId: f.source.channelId, channelProvider: 'evolution', provider: 'evolution',
+                connectionProvider: 'evolution', connectionId: f.source.connectionId, receiptHash: '0'.repeat(64), receiptTuple: ['proof-set-lookup', scenario],
+                kind: 'provider_exact_lookup', eventType: 'exact_lookup', mode: 'live', source: 'authenticated_exact_lookup', sessionName: f.source.sessionName,
+                lifecycleGeneration: 0, receivedAt: new Date(), sourceOrder: {}, payload: JSON.parse(JSON.stringify({
+                    key, context: f.source, lookup: { nativeId: 'A', verifiedKey: key, response: fullRaw }
+                })), state: 'certified'
+            }
+        });
+        if (scenario === 'before_mapping') {
+            const known = echo(f, 'KNOWN');
+            if (role === 'sender')
+                known.key = parseWahaMessageKey({ id: 'KNOWN', remote: f.request.destination, fromMe: true, participant: '777@lid' });
+            known.addressMappings = [
+                {
+                    role, lid: '777@lid', pn: PN, source: role === 'chat' ? 'evolution.remoteJidAlt' : 'evolution.participantAlt'
+                }
+            ];
+            await store.persist(db, known, { receiptKey: 'prior-mapping' });
+        }
+        if (scenario === 'compatible_foreign_lookup') {
+            const channel = await db.channel.create({ data: { workspaceId: f.source.workspaceId, provider: 'evolution', providerKey: randomUUID() } });
+            const connection = await db.channelConnection.create({
+                data: {
+                    workspaceId: f.source.workspaceId, channelId: channel.id,
+                    provider: 'evolution', sessionName: randomUUID()
+                }
+            });
+            const context = {
+                ...f.source, channelId: channel.id, connectionId: connection.id, sessionName: connection.sessionName
+            };
+            const foreign = await db.canonicalObservation.create({
+                data: {
+                    workspaceId: lookup.workspaceId, channelId: channel.id, channelProvider: lookup.channelProvider, provider: lookup.provider,
+                    connectionProvider: 'evolution', connectionId: connection.id, receiptHash: lookup.receiptHash, receiptTuple: ['foreign-lookup'],
+                    kind: lookup.kind, eventType: lookup.eventType, mode: lookup.mode, source: lookup.source, sessionName: connection.sessionName,
+                    lifecycleGeneration: 0, receivedAt: new Date(), sourceOrder: {}, payload: JSON.parse(JSON.stringify({
+                        key, context, lookup: { nativeId: 'A', verifiedKey: key, response: mappingRaw(f, role, '15550002222@s.whatsapp.net') }
+                    })), state: 'certified'
+                }
+            });
+            expect((await tx(t => api.bindLocalOutboundInTransaction(t, {
+                workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultId: result.result.id, lookupObservationId: foreign.id
+            }))).kind).toBe('incomplete_proof');
+            expect(await db.canonicalObservation.count({ where: { workspaceId: f.source.workspaceId, kind: 'outbound_dispatch_proof_set' } })).toBe(0);
+            expect((await db.outboundIntent.findUniqueOrThrow({ where: { id: r.intent!.id } })).state).toBe('accepted_unbound');
+        }
+        const bind = () => tx(t => api.bindLocalOutboundInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultId: result.result.id, lookupObservationId: lookup.id
+        }));
+        const bound: any = await bind();
+        expect(bound.kind).toBe(compatible ? 'bound' : 'review');
+        if (compatible) {
+            const evidence = await db.canonicalAddressEvidence.findMany({ where: { workspaceId: f.source.workspaceId } });
+            expect(evidence).toContainEqual(expect.objectContaining({ role, lid: '777@lid', pn: PN }));
+            const binding = await db.outboundBinding.findUniqueOrThrow({ where: { id: bound.bindingId } });
+            expect(binding.proof).toMatchObject({
+                proofSet: {
+                    resultIds: expect.arrayContaining([first.result.id, result.result.id]), lookupObservationIds: [lookup.id]
+                }
+            });
+        }
+        else
+            expect(await db.canonicalAddressAlias.count({
+                where: {
+                    workspaceId: f.source.workspaceId, channelId: f.source.channelId, address: '15550002222@s.whatsapp.net'
+                }
+            })).toBe(0);
+        if (scenario === 'after_bound') {
+            const late: any = mappingRaw(f, role, '15550002222@s.whatsapp.net');
+            delete late.key.fromMe;
+            const appended = await recordResult(late, 'late');
+            expect(appended.intent.state).toBe('review');
+            expect((await bind()).kind).toBe('review');
+        }
+        else if (scenario === 'after_bound_new_lookup') {
+            const payload: any = JSON.parse(JSON.stringify(lookup.payload));
+            payload.lookup.response = mappingRaw(f, role, '15550002222@s.whatsapp.net');
+            const lateLookup = await db.canonicalObservation.create({
+                data: {
+                    workspaceId: lookup.workspaceId, channelId: lookup.channelId, channelProvider: lookup.channelProvider, provider: lookup.provider,
+                    connectionProvider: lookup.connectionProvider, connectionId: lookup.connectionId, receiptHash: lookup.receiptHash,
+                    receiptTuple: ['later-lookup'], kind: lookup.kind, eventType: lookup.eventType, mode: lookup.mode, source: lookup.source,
+                    sessionName: lookup.sessionName, lifecycleGeneration: lookup.lifecycleGeneration, receivedAt: new Date(), sourceOrder: {}, payload, state: 'certified'
+                }
+            });
+            expect((await tx(t => api.bindLocalOutboundInTransaction(t, {
+                workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultId: result.result.id, lookupObservationId: lateLookup.id
+            }))).kind).toBe('review');
+            expect(await db.canonicalAddressAlias.count({ where: { workspaceId: f.source.workspaceId, address: '15550002222@s.whatsapp.net' } })).toBe(0);
+        }
+        else
+            expect((await bind()).kind).toBe(compatible ? 'bound' : 'review');
+        expect(await db.message.findUniqueOrThrow({ where: { id: original.id } })).toEqual(original);
+        expect((await db.canonicalObservation.findUniqueOrThrow({ where: { id: lookup.id } })).payload).toEqual(lookup.payload);
+        await assertMappingFamilies({ workspaceId: f.source.workspaceId, channelId: f.source.channelId });
+    });
     it.each((['chat', 'sender'] as const).flatMap(role => [
         'single', 'single_reverse', 'results', 'results_reverse', 'after_bound', 'after_bound_reverse', 'persisted', 'valid'
     ].map(order => ({ role, order }))))('PN/LID $role proof requires one compatible PN across $order', async ({ role, order }) => {

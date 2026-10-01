@@ -3,15 +3,15 @@ import { enterCanonicalTransaction, enterCanonicalWorkspaceTransaction } from '.
 import { StaleMessagingSourceError } from './canonical-source.js';
 import { equal, json, nativeLookupTuple, sha, stable } from './canonical-values.js';
 import type { TrustedMessagingContext } from './normalized-event.js';
-import { completeProviderKey, fullProviderKeyMatches } from './provider-exact.js';
-import { normalizeChatAddress, record, serialized, string, type WhatsAppMessageKey } from './whatsapp-identity.js';
+import { normalizeChatAddress, record } from './whatsapp-identity.js';
 import { buildPhoneLookupCandidates } from '../contacts/phone-normalization.js';
 import { outboundChatRoot } from './outbound-authority.js';
 import { createOutboundObservationGate } from './outbound-observation-gate.js';
 import { createCanonicalStore } from './canonical-store.js';
 import { verifyOutboundDomainInTransaction, compatiblePreparedRecertification, type OutboundDomainFence } from './outbound-fences.js';
 export type { OutboundDomainFence } from './outbound-fences.js';
-import { inspectSendIdentityEvidence, sendIdentityClaimsConflict, sendEvidenceCanCompleteKey, classifySendEvidence, parseSendIdentity, parseSendProof, sanitizeSendEvidence, type SendEvidence } from './outbound-evidence.js';
+import { classifySendEvidence, sanitizeSendEvidence, type SendEvidence } from './outbound-evidence.js';
+import { collectOutboundProofSetInTransaction } from './outbound-proof-set.js';
 type Tx = Prisma.TransactionClient;
 type Scope = {
     workspaceId: string;
@@ -401,8 +401,8 @@ export function createOutboundIntents({ hash = sha }: {
         });
         const all = await tx.outboundResult.findMany({ where: { ...scope, attemptId: attempt.id } });
         const accepted = all.some(r => r.outcome === 'accepted'), uncertain = all.some(r => r.outcome === 'uncertain');
-        const inspected = all.filter(r => r.outcome === 'accepted').map(r => inspectSendIdentityEvidence(attempt.source as unknown as TrustedMessagingContext, outboundRequest(attempt.intent).destination, (r.evidence as unknown as SendEvidence).raw));
-        const contradiction = inspected.some(value => value.conflicting) || sendIdentityClaimsConflict(inspected.flatMap(value => value.claims));
+        const proofSet = await collectOutboundProofSetInTransaction(tx, { ...scope, token: attempt.token });
+        const contradiction = proofSet.kind === 'review';
         if (contradiction)
             await tx.canonicalMessageIdentity.updateMany({ where: { messageId: attempt.intent.messageId }, data: { state: 'review' } });
         const state = contradiction ? 'review' : attempt.intent.state === 'bound' ? 'bound' : accepted ? 'accepted_unbound' : uncertain ? 'uncertain' : 'definitively_rejected';
@@ -443,27 +443,23 @@ export function createOutboundIntents({ hash = sha }: {
         const result = await tx.outboundResult.findFirst({ where: { ...scope, id: input.resultId, attemptId: attempt.id } });
         if (!result || result.outcome !== 'accepted')
             return { kind: 'incomplete_proof' as const };
-        const source = attempt.source as unknown as TrustedMessagingContext, request = outboundRequest(attempt.intent), evidence = result.evidence as unknown as SendEvidence;
-        const responseProof = parseSendProof(source, request.destination, evidence.raw);
-        let key = responseProof.key, bindingSource = source;
-        if (!key && input.lookupObservationId) {
-            const lookup = await tx.canonicalObservation.findFirst({
-                where: {
-                    ...scope, id: input.lookupObservationId, kind: 'provider_exact_lookup', state: 'certified', source: 'authenticated_exact_lookup', provider: source.provider, connectionId: source.connectionId, sessionName: source.sessionName
-                }
+        const source = attempt.source as unknown as TrustedMessagingContext;
+        const proof = await collectOutboundProofSetInTransaction(tx, {
+            ...scope, token: attempt.token, resultId: result.id, lookupObservationId: input.lookupObservationId
+        });
+        if (proof.kind === 'review') {
+            await tx.outboundIntent.update({
+                where: { id: attempt.intent.id }, data: { state: 'review', reason: 'contradictory_dispatch_proof_set' }
             });
-            const payload = record(lookup?.payload), candidate = payload.key as WhatsAppMessageKey | undefined, context = payload.context as TrustedMessagingContext | undefined;
-            const raw = record(evidence.raw), hint = string(record(raw.key).id) ?? string(record(record(raw.message).key).id) ?? serialized(raw.id) ?? string(raw.messageId);
-            const lookupResponseKey = context ? parseSendIdentity(context, request.destination, record(payload.lookup).response) : null;
-            if (lookup && candidate && context && hint && lookupResponseKey && fullProviderKeyMatches(candidate, lookupResponseKey) && completeProviderKey(candidate) && candidate.nativeId === hint && sendEvidenceCanCompleteKey(source, request.destination, evidence.raw, candidate) && candidate.direction === 'outbound' && candidate.chatAddress === request.destination && equal(record(payload.lookup).verifiedKey, candidate) && record(payload.lookup).nativeId === hint
-                && context.workspaceId === scope.workspaceId && context.channelId === scope.channelId && context.provider === source.provider && context.channelProvider === source.channelProvider && (context.provider !== 'meta_official' || source.provider === 'meta_official' && context.phoneNumberId === source.phoneNumberId) && context.connectionId === source.connectionId && context.sessionName === source.sessionName && context.lifecycleGeneration === lookup.lifecycleGeneration) {
-                key = candidate;
-                bindingSource = context;
-            }
+            await tx.canonicalMessageIdentity.updateMany({ where: { ...scope, messageId: attempt.intent.messageId }, data: { state: 'review' } });
+            return { kind: 'review' as const };
         }
-        if (!key)
+        if (proof.kind !== 'complete')
             return { kind: 'incomplete_proof' as const };
-        const mappingConflict = await canonicalStore.applyDispatchMappingsInTransaction(tx, { ...scope, resultId: result.id, token: attempt.token });
+        const key = proof.key, bindingSource = proof.source;
+        const mappingConflict = await canonicalStore.applyDispatchMappingsInTransaction(tx, {
+            ...scope, resultId: result.id, token: attempt.token, lookupObservationId: input.lookupObservationId
+        });
         if (mappingConflict) {
             await tx.outboundIntent.update({ where: { id: attempt.intent.id }, data: { state: 'review', reason: mappingConflict } });
             await tx.canonicalMessageIdentity.updateMany({ where: { ...scope, messageId: attempt.intent.messageId }, data: { state: 'review' } });
@@ -513,12 +509,16 @@ export function createOutboundIntents({ hash = sha }: {
             });
         else if (!alias.identityId)
             alias = await tx.canonicalNativeAlias.update({ where: { id: alias.id }, data: { identityId: identity.id, state: 'resolved' } });
-        let binding = await tx.outboundBinding.findFirst({ where: { ...scope, intentId: attempt.intent.id, resultId: result.id, aliasId: alias.id } });
+        const knownBindings = await tx.outboundBinding.findMany({ where: { ...scope, intentId: attempt.intent.id, resultId: result.id, aliasId: alias.id } });
+        let binding = knownBindings.find(binding => {
+            const refs = record(record(binding.proof).proofSet);
+            return equal(refs.resultIds, proof.proofSet.resultIds) && equal(refs.lookupObservationIds, proof.proofSet.lookupObservationIds);
+        });
         if (!binding) {
             binding = await tx.outboundBinding.create({
                 data: {
                     ...scope, intentId: attempt.intent.id, attemptId: attempt.id, resultId: result.id, identityId: identity.id, aliasId: alias.id, source: json(source), key: json(key), proof: json({
-                        kind: input.lookupObservationId ? 'authenticated_exact_lookup' : 'authenticated_dispatch_response', lookupObservationId: input.lookupObservationId ?? null, lookupSource: input.lookupObservationId ? bindingSource : null, addressMappings: responseProof.addressMappings, token: attempt.token, resultId: result.id, request: attempt.intent.request, domainFences: attempt.domainFences, authorityRevision: attempt.authorityRevision
+                        kind: proof.lookupObservationId ? 'authenticated_exact_lookup' : 'authenticated_dispatch_response', lookupObservationId: proof.lookupObservationId, lookupSource: proof.lookupObservationId ? bindingSource : null, addressMappings: proof.addressMappings, proofSet: proof.proofSet, token: attempt.token, resultId: result.id, request: attempt.intent.request, domainFences: attempt.domainFences, authorityRevision: attempt.authorityRevision
                     })
                 }
             });

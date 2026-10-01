@@ -183,7 +183,7 @@ export function parseSendProof(source: TrustedMessagingContext, destination: str
     addressMappings: AddressMappingEvidence[];
 } {
     const key = parseSendIdentity(source, destination, raw), addressMappings: AddressMappingEvidence[] = [];
-    if (!key || source.provider !== 'evolution')
+    if (source.provider !== 'evolution' || record(raw)._evidenceIncomplete === true)
         return { key, addressMappings };
     const value = record(raw), keys = [value.key, record(value.message).key].filter(v => Object.keys(record(v)).length);
     for (const v of keys) {
@@ -353,8 +353,4 @@ export function inspectSendIdentityEvidence(source: TrustedMessagingContext, des
 export function sendIdentityClaimsConflict(claims: readonly SendIdentityClaim[]): boolean {
     return nativeFields.some(field => new Set(claims.map(c => c.key[field]).filter(v => v !== undefined)).size > 1)
         || (['chatAlternate', 'senderAlternate'] as const).some(field => new Set(claims.map(c => c[field]).filter(v => v !== undefined)).size > 1);
-}
-export function sendEvidenceCanCompleteKey(source: TrustedMessagingContext, destination: string, value: unknown, key: WhatsAppMessageKey): boolean {
-    const inspected = inspectSendIdentityEvidence(source, destination, value);
-    return !inspected.conflicting && !sendIdentityClaimsConflict([...inspected.claims, { key }]);
 }

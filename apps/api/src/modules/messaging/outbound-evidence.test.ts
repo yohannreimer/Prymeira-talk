@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { record } from './whatsapp-identity.js';
-import { captureSendEvidence, classifySendEvidence, parseSendIdentity, parseSendProof, sanitizeSendEvidence, inspectSendIdentityEvidence, sendIdentityClaimsConflict, sendEvidenceCanCompleteKey } from './outbound-evidence.js';
+import { captureSendEvidence, classifySendEvidence, parseSendIdentity, parseSendProof, sanitizeSendEvidence, inspectSendIdentityEvidence, sendIdentityClaimsConflict } from './outbound-evidence.js';
 const source: any = { provider: 'evolution', connectionId: 'physical', sessionName: 's', channelProvider: 'evolution' };
 const PN = '15550001111@s.whatsapp.net';
 describe('send evidence contracts', () => {
@@ -100,6 +100,5 @@ describe('send evidence contracts', () => {
         const key = parseSendIdentity(w, PN, raw)!;
         expect(key).not.toBeNull();
         expect(inspectSendIdentityEvidence(w, PN, raw).conflicting).toBe(false);
-        expect(sendEvidenceCanCompleteKey(w, PN, raw, key)).toBe(true);
     });
 });
