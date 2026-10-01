@@ -60,6 +60,29 @@ describe("guided campaign editor", () => {
     expect(html).not.toContain('checked=""');
   });
 
+  it("lista exemplos distintos do que cada destinatário vai receber", () => {
+    const eligible = Array.from({ length: 8 }, (_, index) => ({ ...preview.eligible[0]!,
+      audienceKey: `k${index}`, name: index === 1 ? "" : `Contato ${index}`,
+      message: `Olá variação ${index === 2 ? 0 : index}` }));
+    const html = renderToStaticMarkup(<CampaignReview preview={{ ...preview, eligible }}
+      message="Olá {{nome}}" channelName="Geral" startLabel="Agora"
+      cadence={SAFE_CADENCE} confirmed={false} onConfirmedChange={vi.fn()} />);
+    expect(html).toContain("Exemplos do que será enviado");
+    const items = [...html.matchAll(/<li class="campaign-review-sample">(.*?)<\/li>/g)].map((match) => match[1]);
+    expect(items).toHaveLength(5);
+    expect(items[0]).toContain("Contato 0");
+    expect(items[1]).toContain("Sem nome");
+    expect(items[0]).toContain("Olá variação 0");
+    expect(items[2]).toContain("Contato 3");
+    expect(items.filter((item) => item?.includes("Olá variação 0"))).toHaveLength(1);
+    expect(html).toContain("e mais 3 destinatários");
+    const single = renderToStaticMarkup(<CampaignReview preview={preview}
+      message="Olá {{nome}}" channelName="Geral" startLabel="Agora"
+      cadence={SAFE_CADENCE} confirmed={false} onConfirmedChange={vi.fn()} />);
+    expect(single).toContain("Exemplos do que será enviado");
+    expect(single).not.toContain("e mais");
+  });
+
   it("does not invent the original selection for older drafts", () => {
     const html = renderToStaticMarkup(<CampaignReview preview={{ ...preview,
       selectedCount: null }} message="Olá" channelName="Geral" startLabel="Agora"
