@@ -1,4 +1,5 @@
 import amqp, { type ChannelModel, type ConfirmChannel, type ConsumeMessage } from 'amqplib';
+import { closeOwnedAmqpConnection } from './connection-close.js';
 import { randomUUID } from 'node:crypto';
 
 export type Destination = 'incoming' | 'retry' | 'dead';
@@ -57,7 +58,7 @@ export class ConfirmedIngressPublisher {
       if (options.declare !== false) await declareTransport(model, namespace);
       const channel = await model.createConfirmChannel();
       return new ConfirmedIngressPublisher(model, channel, namespace, deadlineMs, maxInflight);
-    } catch (error) { await model.close().catch(() => {}); throw error; }
+    } catch (error) { await closeOwnedAmqpConnection(model); throw error; }
   }
   get ready() { return this.usable && this.writable && this.pending.size < this.maxInflight; }
   get alive() { return this.usable; }
@@ -65,7 +66,7 @@ export class ConfirmedIngressPublisher {
     if (!this.usable) return;
     this.usable = false;
     for (const pending of [...this.pending.values()]) pending.finish(new IngressBackpressure(code));
-    this.closed = this.model.close().catch(() => {});
+    this.closed = closeOwnedAmqpConnection(this.model);
   }
   async publish(reference: TransportReference, destination: Destination, publishId = randomUUID()) {
     if (!this.ready) throw new IngressBackpressure(this.usable ? 'publisher_backpressure' : 'publisher_unavailable');

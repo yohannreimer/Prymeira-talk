@@ -1,4 +1,5 @@
 import amqp, { type Channel, type ChannelModel, type ConsumeMessage } from 'amqplib';
+import { closeOwnedAmqpConnection } from './connection-close.js';
 import { randomUUID } from 'node:crypto';
 import { ConfirmedIngressPublisher, decodeReference, declareTransport } from './broker.js';
 import { IngressJournal } from './journal.js';
@@ -7,9 +8,9 @@ import { IngressJournal } from './journal.js';
  * obligation exists. Stage 1B must move ACK behind its complete canonical TX. */
 export class IngressTransportConsumer {
   private inflight = new Set<Promise<void>>();
-  private tags: string[] = [];
   private running = true;
   private closed: Promise<void> | null = null;
+  private drained: Promise<void> | null = null;
   private constructor(readonly model: ChannelModel, readonly channel: Channel,
     readonly journal: IngressJournal, readonly namespace: string, readonly publisher: () => ConfirmedIngressPublisher | null, readonly maxFailures: number) {
     channel.on('error', () => this.stopAccepting()); channel.on('close', () => this.stopAccepting());
@@ -25,16 +26,15 @@ export class IngressTransportConsumer {
       const consumer = new IngressTransportConsumer(model, channel, input.journal, input.namespace, input.publisher, maxFailures);
       await channel.prefetch(prefetch);
       for (const queue of [topology.incoming, topology.retry]) {
-        const { consumerTag } = await channel.consume(queue, message => {
+        await channel.consume(queue, message => {
           if (!message) { consumer.stopAccepting(); return; }
           const work = consumer.deliver(message).catch(() => consumer.stopAccepting());
           consumer.inflight.add(work);
           void work.finally(() => consumer.inflight.delete(work));
         }, { noAck: false });
-        consumer.tags.push(consumerTag);
       }
       return consumer;
-    } catch (error) { await model.close().catch(() => {}); throw error; }
+    } catch (error) { await closeOwnedAmqpConnection(model); throw error; }
   }
   get alive() { return this.running; }
   private stopAccepting() {
@@ -42,7 +42,7 @@ export class IngressTransportConsumer {
     this.running = false;
     // Closing the ORIGINAL channel requeues unacknowledged deliveries. Never ACK
     // those delivery tags on a replacement connection.
-    this.closed = this.model.close().catch(() => {});
+    this.closed = closeOwnedAmqpConnection(this.model);
   }
   private ack(message: ConsumeMessage) {
     if (!this.running) return;
@@ -78,10 +78,19 @@ export class IngressTransportConsumer {
     }
     this.ack(message);
   }
-  async close() {
-    if (this.running) for (const tag of this.tags) await this.channel.cancel(tag).catch(() => {});
-    await Promise.allSettled([...this.inflight]);
+  close(): Promise<void> {
+    if (this.drained) return this.drained;
+    // Do not await basic.cancel: it also needs a response from the silent peer.
+    // Retire first; in-flight commits may finish, but can never ACK a replacement
+    // channel. Their original receipts will be safely redelivered after close.
     this.stopAccepting();
-    await this.closed;
+    this.drained = (async () => {
+      await this.closed;
+      await new Promise<void>(resolve => {
+        const deadline = setTimeout(resolve, 2000);
+        void Promise.allSettled([...this.inflight]).then(() => { clearTimeout(deadline); resolve(); });
+      });
+    })();
+    return this.drained;
   }
 }

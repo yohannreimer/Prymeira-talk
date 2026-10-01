@@ -58,7 +58,10 @@ Both incoming and retry queues use manual ACK; retries and DLQ copies are explic
 published with routed confirms before ACKing the original channel delivery. There
 is no classic-DLX reliability assumption. Repeated handoff failures reach the durable
 DLQ after three failures. Closing a connection requeues its unACKed deliveries;
-reconnections never reuse delivery tags.
+reconnections never reuse delivery tags. Session teardown waits at most 250 ms for
+the close handshake, then destroys only its owned socket and clears its heartbeat.
+Consumer shutdown retires the connection before a bounded two-second drain; late
+commits retain the same receipt and cannot ACK through a replacement channel.
 
 ## Recovery and later application
 

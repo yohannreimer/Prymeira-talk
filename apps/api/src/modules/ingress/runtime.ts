@@ -33,17 +33,34 @@ export async function createIngressRuntime(config: ReturnType<typeof readIngress
       try {
         if (!publisher?.alive) {
           await publisher?.close();
+          if (abort.signal.aborted) break;
           publisher = await ConfirmedIngressPublisher.connect(config.amqpUrl, config.namespace);
         }
+        if (abort.signal.aborted) break;
         if (consume && !consumer?.alive) {
           await consumer?.close();
+          if (abort.signal.aborted) break;
           consumer = await IngressTransportConsumer.start({ url: config.amqpUrl, namespace: config.namespace, journal, publisher: () => publisher });
         }
-        if (consume && publisher.ready) await journal.recover(publisher);
+        if (consume && !abort.signal.aborted && publisher.ready) await journal.recover(publisher);
       } catch { /* Durable receipts remain pending; requests see explicit 503. */ }
       await delay(500, undefined, { signal: abort.signal }).catch(() => {});
     }
   })();
+  let closing: Promise<void> | null = null;
   return { db, files, journal, publisher: () => publisher,
-    async close() { abort.abort(); await loop; await consumer?.close(); await publisher?.close(); await db.$disconnect(); } };
+    close() {
+      if (closing) return closing;
+      abort.abort();
+      closing = (async () => {
+        // Retire current sessions immediately to unblock any loop-owned I/O.
+        await Promise.all([consumer?.close(), publisher?.close()]);
+        await loop;
+        // Setup already in flight when abort arrived may have assigned a session.
+        await Promise.all([consumer?.close(), publisher?.close()]);
+        await db.$disconnect();
+      })();
+      return closing;
+    } };
+
 }

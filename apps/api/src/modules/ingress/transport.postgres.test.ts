@@ -10,7 +10,7 @@ import { IngressPrivateStore } from './private-store.js';
 import { IngressJournal } from './journal.js';
 import { createIngressHttp } from './http.js';
 import { IngressTransportConsumer } from './consumer.js';
-import { readIngressEnvironment } from './runtime.js';
+import { createIngressRuntime, readIngressEnvironment } from './runtime.js';
 
 const databaseUrl = process.env.MESSAGING_TEST_DATABASE_URL;
 const brokerUrl = process.env.INGRESS_TEST_AMQP_URL;
@@ -346,6 +346,83 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated ingress PostgreSQL + actua
     await expect(journal.publish(bId, a.publisher)).rejects.toThrow('namespace mismatch');
     await expect(db.ingressApplication.create({ data: { receiptId: aId, workspaceId: b.workspaceId, channelId: b.channel.id } })).rejects.toMatchObject({ code: 'P2003' });
   });
+
+  function silence(model: ChannelModel) {
+    const stream = (model.connection as unknown as { stream: import('node:net').Socket }).stream;
+    stream.removeAllListeners('readable');
+    return stream;
+  }
+  it('force-closes a silent real publisher and settles close despite a missing AMQP CloseOk', async () => {
+    const f = await fixture({ deadlineMs: 100 }), stream = silence(f.publisher.model);
+    await expect(f.publisher.publish({ version: 1, receiptId: randomUUID() }, 'incoming')).rejects.toMatchObject({ code: 'publish_deadline' });
+    const started = Date.now();
+    await f.publisher.close();
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(stream.destroyed).toBe(true);
+    await until(async () => stream.closed, closed => closed);
+    await f.publisher.close(); // one teardown; repeated close cannot hang either
+  });
+  it('retires a silent consumer before draining and preserves late commits plus redelivery on the new channel', async () => {
+    const f = await fixture(), response = await f.submit(), id = response.json().receiptId;
+    let release!: () => void, arrived!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { arrived = resolve; });
+    const handoff = journal.handoff.bind(journal);
+    const hold = vi.spyOn(journal, 'handoff').mockImplementationOnce(async receiptId => { arrived(); await gate; return handoff(receiptId); });
+    try {
+      const consumer = await f.consume(); await entered;
+      const stream = silence(consumer.model), started = Date.now();
+      await consumer.close();
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(stream.destroyed).toBe(true);
+      const adminChannel = await admin.createChannel();
+      await until(() => adminChannel.checkQueue(transportTopology(f.namespace).incoming), q => q.consumerCount === 0 && q.messageCount === 1);
+      expect(await db.ingressApplication.count({ where: { receiptId: id } })).toBe(0);
+      await f.consume(); await until(() => db.ingressApplication.count({ where: { receiptId: id } }), n => n === 1);
+      release(); await until(async () => hold.mock.settledResults[0]?.type, type => type === 'fulfilled');
+      expect(await db.ingressApplication.count({ where: { receiptId: id } })).toBe(1);
+      await adminChannel.close();
+    } finally { release(); hold.mockRestore(); }
+  }, 10000);
+  it('replaces the actual runtime publisher after silence and bounds shutdown with both sessions silent', async () => {
+    const f = await fixture(), response = await f.submit(), id = response.json().receiptId;
+    const startedConsumers = vi.spyOn(IngressTransportConsumer, 'start');
+    const config = readIngressEnvironment({ INGRESS_TRANSPORT_STAGE: 'isolated-1a', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl,
+      INGRESS_NAMESPACE: f.namespace, INGRESS_PRIVATE_ROOT: root, INGRESS_WORKSPACE_ALLOWLIST: f.workspaceId });
+    const runtime = await createIngressRuntime(config, true);
+    try {
+      await until(async () => runtime.publisher(), publisher => !!publisher?.ready);
+      await until(() => db.ingressApplication.count({ where: { receiptId: id } }), n => n === 1);
+      const previous = runtime.publisher()!, oldSocket = silence(previous.model);
+      await expect(runtime.journal.publish(id, previous)).rejects.toMatchObject({ code: 'publish_deadline' });
+      const replacement = await until(async () => runtime.publisher(), publisher => !!publisher?.ready && publisher !== previous);
+      expect(oldSocket.destroyed).toBe(true);
+      await runtime.journal.publish(id, replacement!);
+      const consumer = await startedConsumers.mock.results[0]!.value;
+      const consumerSocket = silence(consumer.model), publisherSocket = silence(replacement!.model);
+      const start = Date.now(); await runtime.close();
+      expect(Date.now() - start).toBeLessThan(3000);
+      expect(consumerSocket.destroyed).toBe(true); expect(publisherSocket.destroyed).toBe(true);
+      expect(await db.ingressApplication.count({ where: { receiptId: id } })).toBe(1);
+    } finally { await runtime.close(); startedConsumers.mockRestore(); }
+  }, 10000);
+  it('exits the built worker on SIGTERM while both real AMQP connections are silent', async () => {
+    const f = await fixture(), response = await f.submit(), id = response.json().receiptId;
+    const worker = spawn(process.execPath, ['src/modules/ingress/transport-lifecycle-child.fixture.mjs'], { cwd: process.cwd(),
+      env: { ...process.env, INGRESS_TRANSPORT_STAGE: 'isolated-1a', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl,
+        INGRESS_NAMESPACE: f.namespace, INGRESS_PRIVATE_ROOT: root, INGRESS_WORKSPACE_ALLOWLIST: f.workspaceId }, stdio: ['ignore','pipe','pipe','ipc'] });
+    children.push(worker);
+    let ready = false, silenced = 0;
+    worker.on('message', message => { const event = message as { ready?: boolean; silenced?: number }; ready ||= event.ready === true; silenced = event.silenced ?? silenced; });
+    await until(async () => ready, value => value);
+    await until(() => db.ingressApplication.count({ where: { receiptId: id } }), n => n === 1);
+    worker.send('silence'); await until(async () => silenced, n => n === 2);
+    const start = Date.now(); worker.kill('SIGTERM');
+    await until(async () => worker.exitCode, code => code === 0, 3000);
+    expect(Date.now() - start).toBeLessThan(3000);
+    const channel = await admin.createChannel();
+    await until(() => channel.checkQueue(transportTopology(f.namespace).incoming), q => q.consumerCount === 0); await channel.close();
+  }, 10000);
   it('runs independent built ingress and worker processes, survives worker restart, and never starts API schedulers', async () => {
     const f = await fixture();
     const port = 42000 + Math.floor(Math.random() * 10000);
