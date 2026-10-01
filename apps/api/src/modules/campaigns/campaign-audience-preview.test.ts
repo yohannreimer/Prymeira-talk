@@ -107,4 +107,17 @@ describe("previewCampaignAudience com nome inteligente", () => {
     });
     expect(preview.unresolvedVariables).toEqual(["cidade"]);
   });
+
+  it("o audienceHash é estável para os mesmos nomes e muda quando o primeiro nome muda", async () => {
+    const run = (firstNames: Record<string, string | null>) => previewCampaignAudience({
+      campaign: baseCampaign, channelId: "ch",
+      contacts: [{ audienceKey: "a", contactId: null, name: "Agnaldo - Teporti", phone: "5547991309466", fields: {} }],
+      firstNames, verify: verifyAll
+    });
+    const first = await run({ a: "Agnaldo" });
+    const second = await run({ a: "Agnaldo" });
+    const changed = await run({ a: null });
+    expect(second.audienceHash).toBe(first.audienceHash);
+    expect(changed.audienceHash).not.toBe(first.audienceHash);
+  });
 });

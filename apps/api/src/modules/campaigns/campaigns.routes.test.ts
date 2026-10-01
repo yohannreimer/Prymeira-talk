@@ -107,7 +107,7 @@ describe("POST /campaigns/:id/preview-audience", () => {
       const body = response.json();
       expect(body.nameCheck).toBe("unavailable");
       expect(body.eligible).toHaveLength(1);
-      expect(body.eligible[0].message).not.toContain("Metalpress");
+      expect(body.eligible[0].message).toBe("Olá, tudo bem?");
     } finally { await app.close(); }
   });
 
@@ -124,8 +124,7 @@ describe("POST /campaigns/:id/preview-audience", () => {
         payload: { channelId } });
       expect(response.statusCode).toBe(200);
       expect(response.json().nameCheck).toBe("ok");
-      expect(response.json().eligible[0].message).toContain("Agnaldo");
-      expect(response.json().eligible[0].message).not.toContain("Teporti");
+      expect(response.json().eligible[0].message).toBe("Olá Agnaldo, tudo bem?");
     } finally { await app.close(); }
   });
 });
