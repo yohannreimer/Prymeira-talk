@@ -7,7 +7,7 @@ import { StaleMessagingSourceError } from './canonical-source.js';
 import { enterCanonicalTransaction } from './canonical-boundary.js';
 import { createCanonicalReducers, type ActionEvent } from './canonical-reducers.js';
 import { json, stable, equal, sha, scopeOf, nativeLookupTuple } from './canonical-values.js';
-import { enrichPresentation } from './canonical-presentation.js';
+import { enrichPresentation, mergeStructuredContent } from './canonical-presentation.js';
 import { Prisma, type PrismaClient, type CanonicalChat, type CanonicalMessageIdentity, type CanonicalNativeAlias } from '@prisma/client';
 import type { NormalizedMessagingEvent, TrustedMessagingContext } from './normalized-event.js';
 import { normalizeChatAddress, record, type WhatsAppMessageKey } from './whatsapp-identity.js';
@@ -407,7 +407,10 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       const revisionMatches = await sameRevision(tx, identity, event);
       const localCaption = record(metadata.attachment).caption;
       const captionConflict = typeof localCaption === 'string' && typeof event.attachment.caption === 'string' && localCaption !== event.attachment.caption;
-      if (local && (captionConflict || stored.type !== event.content.type || (stored.type === 'text' && stored.body !== null && event.content.body !== null && stored.body !== event.content.body))) {
+      const structuredConflict = local && mergeStructuredContent(metadata, event.content, equal).conflict;
+      const textConflict = stored.type === 'text' && !event.content.contactCards && !event.content.location
+        && stored.body !== null && event.content.body !== null && stored.body !== event.content.body;
+      if (local && (structuredConflict || captionConflict || stored.type !== event.content.type || textConflict)) {
         result.outcome = 'held'; result.reconciliationReasons.push('content_reconciliation_required');
         await tx.canonicalMessageIdentity.update({ where: { id: identity.id }, data: { contentState: 'pending_reconciliation' } });
       }

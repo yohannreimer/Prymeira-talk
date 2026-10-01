@@ -618,6 +618,68 @@ describe.skipIf(!url)('persistent outbound intents', () => {
         else
             expect(bound.kind).not.toBe('bound');
     });
+    it.each([
+        'contact_compatible', 'contact_missing_phone', 'contact_phone', 'contact_name', 'contact_count',
+        'location_compatible', 'location_missing_coordinates', 'location_latitude', 'location_longitude',
+        'location_name', 'location_address', 'location_isLive'
+    ])('local structured echo compares explicit semantic fields and preserves presentation: %s', async (variant) => {
+        const f = await fixture(), contacts = variant.startsWith('contact_');
+        const content = contacts ? {
+            contactCards: [{ fullName: 'Ana', phoneNumber: '15550002222' }, { fullName: 'Bob', phoneNumber: '15550004444' }]
+        } : {
+            location: { latitude: 10, longitude: 20, name: 'Fixture place', address: 'Fixture address', isLive: false }
+        };
+        f.request.message = {
+            type: 'text', body: contacts ? '2 contatos compartilhados' : 'Localização compartilhada', mediaUrl: null,
+            metadata: { ...content, local: true, player: { reference: 'own:player' }, transcript: 'own transcript' }
+        };
+        const r = await reserve(f), d = await begin(f, r.intent!.id);
+        const original = await db.message.findUniqueOrThrow({ where: { id: r.intent!.messageId } });
+        const result: any = await tx(t => api.recordDispatchResultInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultKey: 'response',
+            evidence: {
+                transport: 'http', status: 200, bodyState: 'json', raw: { key: { id: 'A', remoteJid: PN, fromMe: true } }
+            }
+        }));
+        await tx(t => api.bindLocalOutboundInTransaction(t, {
+            workspaceId: f.source.workspaceId, channelId: f.source.channelId, token: d.attempt!.token, resultId: result.result.id
+        }));
+        const event = echo(f, 'A', 'text', f.request.message.body!);
+        Object.assign(event.content, JSON.parse(JSON.stringify(content)));
+        if (variant === 'contact_phone')
+            event.content.contactCards[0].phoneNumber = '15550003333';
+        if (variant === 'contact_name')
+            event.content.contactCards[0].fullName = 'Changed name';
+        if (variant === 'contact_count')
+            event.content.contactCards.pop();
+        if (variant === 'contact_missing_phone')
+            event.content.contactCards[0].phoneNumber = null;
+        if (variant === 'location_latitude')
+            event.content.location.latitude = 11;
+        if (variant === 'location_longitude')
+            event.content.location.longitude = 21;
+        if (variant === 'location_name')
+            event.content.location.name = 'Changed place';
+        if (variant === 'location_address')
+            event.content.location.address = 'Changed address';
+        if (variant === 'location_isLive')
+            event.content.location.isLive = true;
+        if (variant === 'location_missing_coordinates') {
+            event.content.location.latitude = null;
+            event.content.location.longitude = null;
+        }
+        const compatible = variant.endsWith('_compatible') || variant.includes('_missing_');
+        if (variant.endsWith('_compatible'))
+            event.content.body = 'provider summary label';
+        const observed = await store.persist(db, event, { receiptKey: variant });
+        expect(observed.outcome).toBe(compatible ? 'duplicate' : 'held');
+        if (!compatible)
+            expect(observed.reconciliationReasons).toContain('content_reconciliation_required');
+        expect(await db.message.findUniqueOrThrow({ where: { id: original.id } })).toEqual(original);
+        expect(await db.canonicalMessageIdentity.findUniqueOrThrow({ where: { messageId: original.id } })).toMatchObject({
+            contentState: compatible ? 'ready' : 'pending_reconciliation'
+        });
+    });
     it.each(['audio', 'image'] as const)('local %s echoes reconcile certified captions and revisions without replacing artifacts', async (type) => {
         const f = await fixture();
         f.request.message = {

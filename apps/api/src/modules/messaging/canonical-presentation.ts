@@ -30,36 +30,46 @@ export function presentationMetadata(event: MessageEvent) {
     ...(event.content.location ? { location: event.content.location } : {}),
     ...(event.media?.hasMedia ? { canonicalPreparation: { status: 'pending' } } : {}) };
 }
-/** Only missing fields of a proven same revision may enrich presentation. All source
- * descriptors stay in private observations, including failed/pending provider media. */
-export function enrichPresentation(stored: Message, event: MessageEvent, equal: (a: unknown, b: unknown) => boolean) {
-  const metadata = record(stored.metadata), next = { ...metadata }, incoming = presentationMetadata(event);
-  const attachment = { ...record(metadata.attachment) };
+/** Compare factual cards/location independently of summary labels and media.
+ * The returned candidate is optional: reserved local Messages use only conflict. */
+export function mergeStructuredContent(metadata: Record<string, unknown>, incoming: Pick<MessageEvent['content'], 'contactCards' | 'location'>,
+  equal: (a: unknown, b: unknown) => boolean) {
+  const data: Record<string, unknown> = {};
   let conflict = false;
-  for (const [key, value] of Object.entries(incoming.attachment)) {
-    if (missing(attachment[key])) attachment[key] = value;
-    else if (!equal(attachment[key], value)) conflict = true;
-  }
-  next.attachment = attachment;
   if (incoming.location) {
     const location = { ...record(metadata.location) };
     for (const [key, value] of Object.entries(incoming.location)) {
       if (missing(location[key])) location[key] = value;
       else if (!missing(value) && !equal(location[key], value)) conflict = true;
     }
-    next.location = location;
+    data.location = location;
   }
   if (incoming.contactCards) {
-    if (!Array.isArray(metadata.contactCards) || !metadata.contactCards.length) next.contactCards = incoming.contactCards;
+    if (!Array.isArray(metadata.contactCards) || !metadata.contactCards.length) data.contactCards = incoming.contactCards;
     else if (metadata.contactCards.length !== incoming.contactCards.length) conflict = true;
     else {
-      next.contactCards = metadata.contactCards.map((raw, index) => {
+      data.contactCards = metadata.contactCards.map((raw, index) => {
         const card = record(raw), candidate = incoming.contactCards![index]!;
         if (card.fullName !== candidate.fullName || (!missing(card.phoneNumber) && !missing(candidate.phoneNumber) && card.phoneNumber !== candidate.phoneNumber)) { conflict = true; return card; }
         return { ...card, phoneNumber: card.phoneNumber ?? candidate.phoneNumber };
       });
     }
   }
+  return { data, conflict };
+}
+/** Only missing fields of a proven same revision may enrich presentation. All source
+ * descriptors stay in private observations, including failed/pending provider media. */
+export function enrichPresentation(stored: Message, event: MessageEvent, equal: (a: unknown, b: unknown) => boolean) {
+  const metadata = record(stored.metadata), next = { ...metadata }, incoming = presentationMetadata(event);
+  const attachment = { ...record(metadata.attachment) };
+  const structured = mergeStructuredContent(metadata, incoming, equal);
+  let conflict = structured.conflict;
+  for (const [key, value] of Object.entries(incoming.attachment)) {
+    if (missing(attachment[key])) attachment[key] = value;
+    else if (!equal(attachment[key], value)) conflict = true;
+  }
+  next.attachment = attachment;
+  Object.assign(next, structured.data);
   if (incoming.canonicalPreparation && missing(metadata.canonicalPreparation) && !metadata.assistantMedia && !metadata.transcription) next.canonicalPreparation = incoming.canonicalPreparation;
   const data: Prisma.MessageUpdateInput = {};
   const mediaUrl = presentationMediaUrl(event);
