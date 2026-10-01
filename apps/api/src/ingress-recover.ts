@@ -8,6 +8,6 @@ if (!workspaceId || !channelId || !receiptId || !config.workspaceAllowlist.has(w
 const db = new PrismaClient({ datasources: { db: { url: config.databaseUrl } } });
 try {
   const files = new IngressPrivateStore(config.privateRoot); await files.initialize();
-  const result = await new IngressJournal(db, files).recoverDeadLetter({ workspaceId, channelId, receiptId });
+  const result = await new IngressJournal(db, files, config.workspaceAllowlist).recoverDeadLetter({ namespace: config.namespace, workspaceId, channelId, receiptId });
   console.info(JSON.stringify({ transportRecoveryQueued: result.count === 1, applicationCompleted: false }));
 } finally { await db.$disconnect(); }

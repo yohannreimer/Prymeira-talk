@@ -211,14 +211,32 @@ describe.skipIf(!databaseUrl || !brokerUrl)('isolated ingress PostgreSQL + actua
     await until(() => channel.checkQueue(transportTopology(f.namespace).dead), q => q.messageCount === 1);
     await consumer.close();
     await rename(join(root, `${receipt.eventRef}.held`), join(root, receipt.eventRef));
-    expect((await journal.recoverDeadLetter({ workspaceId: 'foreign', channelId: f.channel.id, receiptId: id })).count).toBe(0);
-    const recovery = spawn(process.execPath, ['dist/ingress-recover.js', f.workspaceId, f.channel.id, id], { cwd: process.cwd(),
-      env: { ...process.env, INGRESS_TRANSPORT_STAGE: 'isolated-1a', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl,
-        INGRESS_NAMESPACE: f.namespace, INGRESS_PRIVATE_ROOT: root, INGRESS_WORKSPACE_ALLOWLIST: f.workspaceId }, stdio: 'pipe' });
-    children.push(recovery);
-    let recoveryOutput = ''; recovery.stdout?.on('data', data => { recoveryOutput += data; });
-    await until(async () => recovery.exitCode, code => code !== null);
-    expect(recovery.exitCode).toBe(0); expect(recoveryOutput).toContain('"transportRecoveryQueued":true');
+    expect((await journal.recoverDeadLetter({ namespace: f.namespace, workspaceId: 'foreign', channelId: f.channel.id, receiptId: id })).count).toBe(0);
+    const scope = { workspaceId: f.workspaceId, channelId: f.channel.id, receiptId: id };
+    const otherNamespace = `talk.isolated.other_${randomUUID()}`;
+    const beforeRecovery = await db.ingressDelivery.findUniqueOrThrow({ where: { receiptId: id } });
+    expect((await journal.recoverDeadLetter({ ...scope, namespace: otherNamespace })).count).toBe(0);
+    await expect(journal.recoverDeadLetter({ ...scope, namespace: undefined as unknown as string })).rejects.toThrow('isolated Talk namespace');
+    expect(await db.ingressDelivery.findUniqueOrThrow({ where: { receiptId: id } })).toEqual(beforeRecovery);
+    async function recoverCli(namespace: string) {
+      const recovery = spawn(process.execPath, ['dist/ingress-recover.js', f.workspaceId, f.channel.id, id], { cwd: process.cwd(),
+        env: { ...process.env, INGRESS_TRANSPORT_STAGE: 'isolated-1a', DATABASE_URL: databaseUrl, INGRESS_AMQP_URL: brokerUrl,
+          INGRESS_NAMESPACE: namespace, INGRESS_PRIVATE_ROOT: root, INGRESS_WORKSPACE_ALLOWLIST: f.workspaceId }, stdio: 'pipe' });
+      children.push(recovery);
+      let output = ''; recovery.stdout?.on('data', data => { output += data; });
+      await until(async () => recovery.exitCode, code => code !== null);
+      expect(recovery.exitCode).toBe(0);
+      return JSON.parse(output);
+    }
+    expect(await recoverCli(otherNamespace)).toMatchObject({ transportRecoveryQueued: false });
+    expect(await db.ingressDelivery.findUniqueOrThrow({ where: { receiptId: id } })).toEqual(beforeRecovery);
+    expect(await recoverCli(f.namespace)).toMatchObject({ transportRecoveryQueued: true });
+    const recovered = await db.ingressDelivery.findUniqueOrThrow({ where: { receiptId: id } });
+    expect(recovered).toMatchObject({ state: 'staged', failures: 0, recoveries: beforeRecovery.recoveries + 1 });
+    expect((await journal.recoverDeadLetter({ ...scope, namespace: f.namespace })).count).toBe(0);
+    expect(await recoverCli(f.namespace)).toMatchObject({ transportRecoveryQueued: false });
+    expect(await db.ingressDelivery.findUniqueOrThrow({ where: { receiptId: id } })).toEqual(recovered);
+    expect(await db.ingressReceipt.findUniqueOrThrow({ where: { id } })).toEqual(receipt);
     await journal.recover(f.publisher); await f.consume();
     await until(() => db.ingressApplication.count({ where: { receiptId: id } }), n => n === 1);
     expect(await db.ingressReceipt.count({ where: { workspaceId: f.workspaceId } })).toBe(1);

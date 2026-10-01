@@ -6,7 +6,7 @@ import { json } from '../messaging/canonical-values.js';
 import { IngressPrivateStore } from './private-store.js';
 import { stripEnvelopeCredentials } from './credentials.js';
 import { eventKey, type ReceiptPayload } from './normalization.js';
-import { ConfirmedIngressPublisher, IngressBackpressure, type Destination } from './broker.js';
+import { ConfirmedIngressPublisher, IngressBackpressure, transportTopology, type Destination } from './broker.js';
 
 type Tx = Prisma.TransactionClient;
 export class IngressJournal {
@@ -119,11 +119,13 @@ export class IngressJournal {
     }
     return published;
   }
-  async recoverDeadLetter(scope: { workspaceId: string; channelId: string; receiptId: string }) {
+  async recoverDeadLetter(scope: { namespace: string; workspaceId: string; channelId: string; receiptId: string }) {
     // Explicit scoped operator command resets only transport retry budget. No
     // recertification, current eligibility or application completion is implied.
+    transportTopology(scope.namespace);
     this.assertAllowed(scope.workspaceId);
-    return this.db.ingressDelivery.updateMany({ where: { ...scope, state: 'dead_letter' }, data: {
+    const { namespace, ...receiptScope } = scope;
+    return this.db.ingressDelivery.updateMany({ where: { ...receiptScope, state: 'dead_letter', receipt: { transportNamespace: namespace } }, data: {
       state: 'staged', failures: 0, recoveries: { increment: 1 }, nextAttemptAt: new Date(), lastError: null, leaseToken: null, leaseUntil: null } });
   }
   /** Authorization belongs to the caller and runs before returning any scope/key.
