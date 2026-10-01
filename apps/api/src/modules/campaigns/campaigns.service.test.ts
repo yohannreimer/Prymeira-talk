@@ -350,6 +350,69 @@ describe("campaigns service", () => {
     );
   });
 
+  it("uses the first name from the injected name insight service in the simulated queue", async () => {
+    const prisma = createMockPrisma();
+    const resolve = vi.fn().mockResolvedValue({
+      status: "ok",
+      firstNames: { [firstContactId]: "Ana", [secondContactId]: null }
+    });
+    const service = createCampaignsService(prisma, { nameInsight: { resolve } });
+
+    await service.sendSimulated({ workspaceId: "workspace_a", campaignId });
+
+    expect(resolve).toHaveBeenCalledWith({
+      workspaceId: "workspace_a",
+      contacts: [
+        { audienceKey: firstContactId, contactId: firstContactId, name: "Ana" },
+        { audienceKey: secondContactId, contactId: secondContactId, name: "Bruno" }
+      ]
+    });
+    const upsert = vi.mocked(prisma.campaignRecipient.upsert);
+    expect(upsert.mock.calls[0]?.[0].create).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          messagePreview: "Oi Ana, temos uma novidade para você."
+        })
+      })
+    );
+    expect(upsert.mock.calls[1]?.[0].create).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          messagePreview: "Oi, temos uma novidade para você."
+        })
+      })
+    );
+  });
+
+  it("leaves the name empty for company-like contact names when no name insight is injected", async () => {
+    const prisma = createMockPrisma({
+      contactBoardMembership: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            contactId: firstContactId,
+            contact: {
+              id: firstContactId,
+              workspaceId: "workspace_a",
+              name: "Prymeira",
+              phone: "+5511999990001"
+            }
+          }
+        ])
+      }
+    });
+    const service = createCampaignsService(prisma);
+
+    await service.sendSimulated({ workspaceId: "workspace_a", campaignId });
+
+    expect(vi.mocked(prisma.campaignRecipient.upsert).mock.calls[0]?.[0].create).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          messagePreview: "Oi, temos uma novidade para você."
+        })
+      })
+    );
+  });
+
   it("builds a delayed simulated queue from imported rows with rotating templates and fallback names", async () => {
     const importedCampaign = {
       ...baseCampaign,
@@ -381,6 +444,7 @@ describe("campaigns service", () => {
       }
     });
     const service = createCampaignsService(prisma, {
+      nameInsight: { resolve: async () => ({ status: "ok" as const, firstNames: { "+5511999990002": "Maria" } }) },
       now: () => new Date("2026-05-25T12:00:00.000Z")
     });
 
@@ -398,7 +462,7 @@ describe("campaigns service", () => {
         scheduledAt: new Date("2026-05-25T12:00:00.000Z"),
         status: "queued_simulated",
         result: expect.objectContaining({
-          messagePreview: "Oi cliente, novidade para Prymeira.",
+          messagePreview: "Oi, novidade para Prymeira.",
           templateIndex: 0
         })
       })
@@ -418,7 +482,7 @@ describe("campaigns service", () => {
         audienceKey: "+5511999990003",
         scheduledAt: new Date("2026-05-25T12:07:00.000Z"),
         result: expect.objectContaining({
-          messagePreview: "Oi cliente, novidade para Sem Nome.",
+          messagePreview: "Oi, novidade para Sem Nome.",
           templateIndex: 0
         })
       })
@@ -448,6 +512,7 @@ describe("campaigns service", () => {
         mode: "real",
         client: { sendText }
       },
+      nameInsight: { resolve: async () => ({ status: "ok" as const, firstNames: { [firstContactId]: "Ana", [secondContactId]: "Ana" } }) },
       now: () => new Date("2026-05-25T12:00:00.000Z")
     });
 
@@ -895,6 +960,7 @@ describe("campaigns service", () => {
         instanceName: null,
         client: { sendTemplate }
       },
+      nameInsight: { resolve: async () => ({ status: "ok" as const, firstNames: { [firstContactId]: "Ana", [secondContactId]: "Bruno" } }) },
       now: () => new Date("2026-05-25T12:00:00.000Z")
     });
 
