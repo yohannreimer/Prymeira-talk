@@ -83,7 +83,10 @@ export function GuidedCampaignEditor(props: {
   const [channelId, setChannelId] = useState(props.channels[0]?.id ?? "");
   const [message, setMessage] = useState(props.campaign?.messageBody ?? "");
   const messageField = useRef<HTMLTextAreaElement>(null);
+  const latestMessage = useRef(message);
   const [variations, setVariations] = useState<string[]>(() => initialVariations(props.campaign));
+  const [generatedVariations, setGeneratedVariations] = useState<string[]>(() => initialVariations(props.campaign));
+  const [variationsSource, setVariationsSource] = useState((props.campaign?.messageBody ?? "").trim());
   const [variationsBusy, setVariationsBusy] = useState(false);
   const [variationsError, setVariationsError] = useState<string | null>(null);
   const [hideFromInboxUntilReply, setHideFromInboxUntilReply] = useState(props.campaign?.hideFromInboxUntilReply ?? false);
@@ -162,17 +165,31 @@ export function GuidedCampaignEditor(props: {
     return () => { mounted = false; window.clearInterval(interval); };
   }, [current?.id, current?.status, props.getToken]);
 
+  const variationsStale = variations.length > 0 && message.trim() !== variationsSource;
+
+  function updateMessage(next: string) {
+    latestMessage.current = next;
+    setMessage(next);
+    setPreview(null);
+  }
   function insertName() {
     const field = messageField.current;
     const start = field?.selectionStart ?? message.length;
     const end = field?.selectionEnd ?? message.length;
-    setMessage(`${message.slice(0, start)}{{nome}}${message.slice(end)}`);
-    setPreview(null);
+    updateMessage(`${message.slice(0, start)}{{nome}}${message.slice(end)}`);
   }
   async function generateVariations() {
+    const edited = variations.some((text) => !generatedVariations.includes(text));
+    if (edited && !window.confirm("Regerar vai substituir as variações atuais, incluindo as suas edições. Continuar?")) return;
+    const source = message.trim();
     setVariationsBusy(true); setVariationsError(null);
     try {
-      setVariations(await apiGenerateMessageVariations(props.getToken, message.trim()));
+      const generated = await apiGenerateMessageVariations(props.getToken, source);
+      if (latestMessage.current.trim() !== source) {
+        setVariationsError("A mensagem mudou enquanto as variações eram geradas. Gere novamente.");
+        return;
+      }
+      setVariations(generated); setGeneratedVariations(generated); setVariationsSource(source);
       setPreview(null);
     } catch (cause) {
       setVariationsError(cause instanceof Error ? cause.message : "Não foi possível gerar as variações.");
@@ -183,6 +200,9 @@ export function GuidedCampaignEditor(props: {
     validateProspecting();
     if (!name.trim()) throw new Error("Dê um nome para este disparo.");
     if (!message.trim()) throw new Error("Escreva a mensagem antes de continuar.");
+    if (variationsStale) {
+      throw new Error("As variações foram geradas a partir de outra versão da mensagem. Gere novamente ou remova as variações antes de continuar.");
+    }
     if (variations.some((text) => text.trim() && missingPlaceholders(message, text).length > 0)) {
       throw new Error("Há variações sem um campo da mensagem original. Corrija ou remova antes de continuar.");
     }
@@ -393,14 +413,14 @@ export function GuidedCampaignEditor(props: {
       {stage === 2 && <><div className="guided-campaign-panel-heading"><div><span className="guided-campaign-kicker">ETAPA 2 DE 3</span>
         <h2>O que enviar e quando?</h2><p>Escreva a mensagem e escolha o início.</p></div><Clock3 size={26} /></div>
         <label className="form-field"><span>Mensagem</span><textarea rows={7} value={message} ref={messageField}
-          onChange={(event) => { setMessage(event.target.value); setPreview(null); }} maxLength={2000}
+          onChange={(event) => updateMessage(event.target.value)} maxLength={2000}
           placeholder="Olá {{nome}}, tudo bem?" /></label>
         <div className="message-name-helper">
           <button type="button" className="secondary-button" onClick={insertName}>Inserir nome</button>
           <small>O nome só é usado quando o contato é uma pessoa. Empresas ficam sem nome (ex.: "Olá, tudo bem?").</small>
         </div>
         <MessageVariations message={message} variations={variations} busy={variationsBusy}
-          error={variationsError} onGenerate={() => void generateVariations()}
+          error={variationsError} stale={variationsStale} onGenerate={() => void generateVariations()}
           onChange={(index, value) => { setVariations(variations.map((text, i) => i === index ? value : text)); setPreview(null); }}
           onRemove={(index) => { setVariations(variations.filter((_, i) => i !== index)); setPreview(null); }} />
         <div className="module-form">
