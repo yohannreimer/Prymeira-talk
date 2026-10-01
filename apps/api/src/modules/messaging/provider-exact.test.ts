@@ -129,4 +129,59 @@ describe('exact provider I/O contracts', () => {
     expect(fetch).toHaveBeenCalledTimes(4);
   });
 
+  it.each([1, 2])('rejects a contradictory group sender on historical page 2, pass %s', async badPass => {
+    const conflicting = { ...raw, key: { ...raw.key, id: 'conflict' }, participant: '15550002222@s.whatsapp.net' };
+    const exact = evo([conflicting]);
+    expect(await exact.source.findMessageExact({ instanceName: 'fixture', key: { ...key(), nativeId: 'conflict', rawId: 'conflict' } })).toMatchObject({ kind: 'missing' });
+    let pass = 0;
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const query = JSON.parse(String(init?.body));
+      if (query.where.key.id) return new Response(JSON.stringify({ messages: { pages: 1, records: [raw] } }));
+      if (query.page === 1) pass++;
+      const records = query.page === 1 ? [raw] : [pass === badPass ? conflicting : { ...conflicting, participant: PN }];
+      return new Response(JSON.stringify({ messages: { pages: 2, records } }));
+    });
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture', fetch });
+    const result = await source.loadExact({ instanceName: 'fixture', key: key(), from: new Date(1699999999000), to: new Date(1700000002000) });
+    expect(result).toEqual({ kind: 'ambiguous' });
+    expect(pass).toBe(badPass);
+    // The historical parser remains compatible for explicitly legacy callers.
+    expect(await exact.source.findMessage({ instanceName: 'fixture', id: 'conflict' })).toMatchObject(conflicting);
+  });
+  it.each([true, false])('shares exact participant PN/LID consistency with history: explicit alternate %s', async proven => {
+    const item = { ...raw, key: { ...raw.key, participant: '700001@lid', participantAlt: proven ? PN : undefined }, participant: PN };
+    const expected = { ...key(), nativeSenderParticipant: '700001@lid', senderParticipant: '700001@lid' };
+    const { source } = evo([item]);
+    expect(await source.findMessageExact({ instanceName: 'fixture', key: expected })).toMatchObject({ kind: proven ? 'resolved' : 'missing' });
+    // A clean anchor permits exercising page validation even when the item is invalid.
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => new Response(JSON.stringify({ messages: { pages: 1,
+      records: JSON.parse(String(init?.body)).where.key.id ? [raw] : [item] } })));
+    const history = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture', fetch });
+    const loaded = await history.loadExact({ instanceName: 'fixture', key: key(), from: new Date(1699999999000), to: new Date(1700000002000) });
+    expect(loaded.kind).toBe(proven ? 'resolved' : 'ambiguous');
+    if (proven && loaded.kind === 'resolved') expect(loaded.records).toEqual([item]);
+  });
+  it('retains consistent repeated pages, full sender alternatives and distinct directions', async () => {
+    const incoming = { ...raw, participant: PN }, outgoing = { ...incoming, key: { ...raw.key, fromMe: true } };
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const query = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ messages: { pages: query.where.key.id ? 1 : 2,
+        records: query.where.key.id || query.page === 1 ? [incoming] : [incoming, outgoing] } }));
+    });
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture', fetch });
+    const result = await source.loadExact({ instanceName: 'fixture', key: key(), from: new Date(1699999999000), to: new Date(1700000002000) });
+    expect(result.kind).toBe('resolved');
+    if (result.kind === 'resolved') expect(result.records).toEqual(expect.arrayContaining([incoming, outgoing]));
+    expect(fetch).toHaveBeenCalledTimes(5);
+  });
+  it('rejects invalid exact history parameters before provider I/O', async () => {
+    const { source, fetch } = evo([raw]);
+    const input = { instanceName: 'fixture', key: key(), from: new Date(1699999999000), to: new Date(1700000002000) };
+    await expect(source.loadExact({ ...input, from: new Date(NaN) })).rejects.toThrow('HISTORY_WINDOW');
+    await expect(source.loadExact({ ...input, to: new Date(0) })).rejects.toThrow('HISTORY_WINDOW');
+    expect(await source.loadExact({ ...input, instanceName: '' })).toEqual({ kind: 'incomplete' });
+    expect(await source.loadExact({ ...input, key: { ...key(), direction: null } })).toEqual({ kind: 'incomplete' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
 });

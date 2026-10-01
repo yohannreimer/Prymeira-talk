@@ -70,13 +70,25 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
       nativeChatAddress: k.remoteJid, nativeSenderParticipant: k.participant ?? null, chatAddress,
       direction: k.fromMe ? 'outbound' : 'inbound', senderParticipant: chatAddress?.endsWith('@g.us') ? normalizeChatAddress(k.participant) : '' };
   }
+  /** Exact APIs share one completeness/consistency check. Top-level sender
+   * claims cannot contradict the native key. A distinct PN/LID spelling needs
+   * the explicit participantAlt pair; unrelated phone numbers never correlate. */
+  function exactRecordIdentity(item: HistoryRecord): { kind: 'consistent'; key: WhatsAppMessageKey } | { kind: 'incomplete' | 'ambiguous' } {
+    const key = exactRecordKey(item);
+    if (!completeProviderKey(key)) return { kind: 'incomplete' };
+    if (item.participant && !explicitAddressMatch(normalizeChatAddress(item.participant), key.nativeSenderParticipant, item.key.participantAlt)) return { kind: 'ambiguous' };
+    return { kind: 'consistent', key };
+  }
   async function findMessageExact(input: { instanceName: string; key: WhatsAppMessageKey }): Promise<
     { kind: 'resolved'; record: HistoryRecord } | { kind: 'missing' | 'incomplete' | 'ambiguous' }> {
     if (!input.instanceName || !completeProviderKey(input.key)) return { kind: 'incomplete' };
     const result = await page(input.instanceName, nativeKey(input.key), 1);
     // More than one page cannot establish uniqueness from the first page.
     if (result.pages > 1) return { kind: 'ambiguous' };
-    const matches = result.records.map(parse).filter(item => (!item.participant || normalizeChatAddress(item.participant) === normalizeChatAddress(item.key.participant)) && fullProviderKeyMatches(input.key, exactRecordKey(item), { chat: item.key.remoteJidAlt, sender: item.key.participantAlt }));
+    const matches = result.records.map(parse).filter(item => {
+      const identity = exactRecordIdentity(item);
+      return identity.kind === 'consistent' && fullProviderKeyMatches(input.key, identity.key, { chat: item.key.remoteJidAlt, sender: item.key.participantAlt });
+    });
     return matches.length > 1 ? { kind: 'ambiguous' } : matches.length ? { kind: 'resolved', record: matches[0]! } : { kind: 'missing' };
   }
   async function mediaData(instanceName: string, message: HistoryRecord, purpose: MediaPurpose) {
@@ -112,10 +124,11 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
             for (const raw of result.records) {
               const item = parse(raw);
               if (!identities.includes(item.key.remoteJid)) throw new Error('HISTORY_IDENTITY');
-              if (!completeProviderKey(exactRecordKey(item))) return { kind: 'incomplete' as const };
+              const identity = exactRecordIdentity(item);
+              if (identity.kind !== 'consistent') return { kind: identity.kind };
               const ms = item.messageTimestamp * 1000;
               if (ms < input.from.getTime() || ms > input.to.getTime()) continue;
-              const tuple = JSON.stringify(exactRecordKey(item)), prior = rows.get(tuple);
+              const tuple = JSON.stringify(identity.key), prior = rows.get(tuple);
               if (prior && digest(prior) !== digest(item)) return { kind: 'ambiguous' as const };
               rows.set(tuple, item);
             }
