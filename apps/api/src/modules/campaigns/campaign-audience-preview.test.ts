@@ -72,3 +72,39 @@ describe("campaign audience preview", () => {
     expect(result.selectedCount).toBe(1);
   });
 });
+
+const baseCampaign = { id: "c1", updatedAt: "2026-10-01T00:00:00Z", audience: { type: "imported" }, messageBody: "Olá {{nome}}, tudo bem?", templates: ["Olá {{nome}}, tudo bem?"], fallbackName: "cliente" };
+const verifyAll = async (numbers: string[]) => numbers.map((phone) => ({ phone, available: true }));
+
+describe("previewCampaignAudience com nome inteligente", () => {
+  it("usa o primeiro nome da pessoa e omite o nome de empresas", async () => {
+    const preview = await previewCampaignAudience({
+      campaign: baseCampaign, channelId: "ch",
+      contacts: [
+        { audienceKey: "a", contactId: null, name: "Agnaldo - Teporti", phone: "5547991309466", fields: {} },
+        { audienceKey: "b", contactId: null, name: "Metalpress", phone: "5547933944090", fields: {} }
+      ],
+      firstNames: { a: "Agnaldo", b: null }, verify: verifyAll
+    });
+    expect(preview.eligible.map((row) => row.message)).toEqual(["Olá Agnaldo, tudo bem?", "Olá, tudo bem?"]);
+    expect(preview.unresolvedVariables).toEqual([]);
+  });
+
+  it("sem firstNames, nunca envia o nome salvo nem a palavra cliente", async () => {
+    const preview = await previewCampaignAudience({
+      campaign: baseCampaign, channelId: "ch",
+      contacts: [{ audienceKey: "a", contactId: null, name: "Metalpress", phone: "5547933944090", fields: {} }],
+      verify: verifyAll
+    });
+    expect(preview.eligible[0]!.message).toBe("Olá, tudo bem?");
+  });
+
+  it("continua apontando campos personalizados sem valor", async () => {
+    const preview = await previewCampaignAudience({
+      campaign: { ...baseCampaign, messageBody: "{{cidade}}", templates: ["{{cidade}}"] }, channelId: "ch",
+      contacts: [{ audienceKey: "a", contactId: null, name: null, phone: "5547933944090", fields: {} }],
+      verify: verifyAll
+    });
+    expect(preview.unresolvedVariables).toEqual(["cidade"]);
+  });
+});
