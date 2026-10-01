@@ -69,6 +69,11 @@ describe('Evolution shared event adapter', () => {
     if (result.kind !== 'message') throw new Error('Expected message');
     expect(result.key.senderParticipant).toBe('888@lid');
   });
+  it('retains explicit target PN/LID proof without confusing the control action author', () => {
+    const group='123-456@g.us', targetPn='15550003333@s.whatsapp.net', actorPn='15550004444@s.whatsapp.net', lid='777@lid';
+    const result=normalize({key:{id:'REVOKE',remoteJid:group,fromMe:false,participant:actorPn},message:{protocolMessage:{type:0,key:{id:'ORIGINAL',remoteJid:group,fromMe:false,participant:lid,participantAlt:targetPn}}}});
+    expect(result).toMatchObject({kind:'revoke',target:{senderParticipant:lid},action:{senderParticipant:actorPn},addressMappings:[{role:'sender',lid,pn:targetPn,source:'evolution.participantAlt'}]});
+  });
   it('preserves complete edit target separately from action and explicit source timestamp', () => {
     const result = normalize({ key: { ...key, id: 'EDIT', fromMe: true }, message: { protocolMessage: { type: 14, key, timestampMs: 123456, editedMessage: { conversation: 'edited' } } } });
     if (result.kind !== 'edit') throw new Error('Expected edit');

@@ -50,6 +50,14 @@ export function normalizeEvolutionWebhook(context: TrustedMessagingContext, inpu
   const message = record(unwrapMessage(data.message));
   const protocol = record(message.protocolMessage);
   const encrypted = extractEncryptedMessageEdit(data);
+  // A supported target's explicit alternate is its own proof, never the action author's.
+  const targets = [...(isEditProtocolType(protocol.type) || protocol.type === 0 || protocol.type === 'REVOKE' ? [protocol.key] : []),
+    ...(encrypted ? [record(message.secretEncryptedMessage).targetMessageKey] : [])];
+  for (const target of targets) {
+    const native = record(target);
+    for (const evidence of [...mapping(native.remoteJid, native.remoteJidAlt, 'chat'), ...mapping(native.participant, native.participantAlt, 'sender')])
+      if (!base.addressMappings.some(e => e.role === evidence.role && e.lid === evidence.lid && e.pn === evidence.pn)) base.addressMappings.push(evidence);
+  }
   if (encrypted) {
     const target = keyOf(record(message.secretEncryptedMessage).targetMessageKey);
     return { kind: 'accepted', event: { ...base, kind: 'encrypted_edit', target, action: key,

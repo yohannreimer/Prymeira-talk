@@ -175,6 +175,12 @@ describe('WAHA 2026.9.1 WPP normalization', () => {
     const result = normalizeWahaEvent(context,input,{verifiedLidMappings:[{lid:'777@lid',pn:'15550003333@s.whatsapp.net'}]});
     expect(result).toMatchObject({kind:'accepted',event:{kind:'message',key:{rawId:'A_B',senderParticipant:'777@lid',nativeSenderParticipant:'777@lid'},addressMappings:[{role:'sender',lid:'777@lid',pn:'15550003333@s.whatsapp.net',source:'waha.lid_lookup'}]}});
   });
+  it('retains verified nested edit sender proof for a later raw-guarded receipt', () => {
+    const group='123-456@g.us', pn='15550003333@s.whatsapp.net', lid='777@lid';
+    const input={event:'message.edited',payload:{id:`false_${group}_EDIT_${pn}`,participant:pn,_data:{id:{id:'ORIGINAL',remote:group,fromMe:false,participant:pn},author:pn,msg:{body:'changed',author:pn,participantAlt:lid,latestEditMsgKey:{id:'EDIT',remote:group,fromMe:false,participant:pn}}}}};
+    expect(normalizeWahaEvent(context,input)).toMatchObject({kind:'invalid',reason:'contradictory_sender_declarations'});
+    expect(normalizeWahaEvent(context,input,{verifiedLidMappings:[{lid,pn}]})).toMatchObject({kind:'accepted',event:{kind:'edit',target:{senderParticipant:pn},action:{senderParticipant:pn},addressMappings:[{role:'sender',lid,pn,source:'waha.lid_lookup'}]}});
+  });
   it('does not accept inherited object properties as session states', () => {
     for (const status of ['__proto__', 'constructor', 'toString']) expect(normalizeWahaEvent(context, { event: 'session.status', payload: { status } }).kind).toBe('invalid');
   });

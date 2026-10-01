@@ -41,6 +41,38 @@ describe('authenticated identity declarations', () => {
         short.participant = pn;
         expect(validateWahaIdentityDeclarations(input)).toBeNull();
     });
+    it.each(['msg', 'message', 'tuple'].flatMap(shape => ['author', 'participant', 'participantAlt'].map(field => ({ shape, field }))))('checks every WPP edit sender declaration in $shape / $field', ({ shape, field }) => {
+        const target = { id: 'A_B', remote: group, fromMe: false, participant: pn };
+        const msg = { body: 'changed', author: pn, [field]: other, latestEditMsgKey: { id: 'EDIT', remote: group, fromMe: false, participant: pn } };
+        const input = { event: 'message.edited', payload: { id: `false_${group}_EDIT_${pn}`, participant: pn, _data: shape === 'tuple' ? [group, target, msg] : { id: target, author: pn, [shape]: msg } } };
+        expect(validateWahaIdentityDeclarations(input)).toBe('contradictory_sender_declarations');
+    });
+    it('checks simultaneous WPP msg/message sender variants, preserving their original facts', () => {
+        const target = { id: 'A_B', remote: group, fromMe: false, participant: pn };
+        const msg = { body: 'changed', author: pn, latestEditMsgKey: { id: 'EDIT', remote: group, fromMe: false, participant: pn } };
+        const input = { event: 'message.edited', payload: { id: `false_${group}_EDIT_${pn}`, participant: pn, _data: { id: target, msg, message: { ...msg, participantAlt: other } } } };
+        expect(validateWahaIdentityDeclarations(input)).toBe('contradictory_sender_declarations');
+    });
+    it('requires persisted verified proof for a nested WAHA PN/LID alternate and rejects two PN proof', () => {
+        const msg = { body: 'changed', author: pn, participantAlt: lid, latestEditMsgKey: { id: 'EDIT', remote: group, fromMe: false, participant: pn } };
+        const input = { event: 'message.edited', payload: { id: `false_${group}_EDIT_${pn}`, participant: pn, _data: { id: { id: 'A_B', remote: group, fromMe: false, participant: pn }, msg } } };
+        expect(validateWahaIdentityDeclarations(input)).toBe('contradictory_sender_declarations');
+        const proof = { role: 'sender' as const, lid, pn, source: 'waha.lid_lookup' as const };
+        expect(validateWahaIdentityDeclarations(input, [proof])).toBeNull();
+        expect(validateWahaIdentityDeclarations(input, [proof, { ...proof, pn: other }])).toBe('contradictory_sender_declarations');
+    });
+    it.each(['protocol-key', 'encrypted-target'].flatMap(container => ['author', 'participant', 'participantAlt'].map(field => ({ container, field }))))('checks the recognized Evolution $container / $field declarations', ({ container, field }) => {
+        const key = { id: 'TARGET', remoteJid: group, fromMe: false, author: pn, participant: pn, [field]: other };
+        const message = container === 'protocol-key' ? { protocolMessage: { type: 0, key } } : { secretEncryptedMessage: { targetMessageKey: key } };
+        expect(validateEvolutionIdentityDeclarations(evo({}, { message }))).toBe('contradictory_sender_declarations');
+    });
+    it.each(['upsert', 'edit-action', 'edit-target', 'revoke-action', 'revoke-target', 'ack-target'])('checks alternate contradictions in recognized WAHA %s native keys', container => {
+        const good = { id: 'A_B', remote: group, fromMe: false, participant: pn }, bad = { ...good, participantAlt: other };
+        const input = container === 'upsert' ? waha({ id: bad }) : container === 'ack-target' ? { event: 'message.ack.group', payload: { id: `false_${group}_A_B_${pn}`, participant: pn, _data: [{ id: bad, author: pn, sender: other }, 3] } }
+            : container.startsWith('edit') ? { event: 'message.edited', payload: { id: `false_${group}_A_B_${pn}`, participant: pn, _data: { id: container === 'edit-target' ? bad : good, author: pn, msg: { body: 'changed', latestEditMsgKey: container === 'edit-action' ? bad : good } } } }
+                : { event: 'message.revoked', payload: { id: `false_${group}_A_B_${pn}`, participant: pn, _data: { id: container === 'revoke-action' ? bad : good, author: pn, refId: container === 'revoke-target' ? bad : good } } };
+        expect(validateWahaIdentityDeclarations(input)).toBe('contradictory_sender_declarations');
+    });
     it('keeps ACK recipient and quoted/mentioned/card/contact names outside author identity', () => {
         const input = waha({}, {}, 'message.ack.group');
         input.payload._data = [{ id: { id: 'A_B', remote: group, fromMe: false, participant: pn }, author: pn, sender: other, quotedParticipant: other }] as never;

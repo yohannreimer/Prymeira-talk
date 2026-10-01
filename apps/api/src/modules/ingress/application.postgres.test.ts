@@ -6,6 +6,7 @@ import amqp, { type ChannelModel } from 'amqplib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createCanonicalStore } from '../messaging/canonical-store.js';
 import { normalizeReceipt } from './normalization.js';
+import { normalizeWahaEvent } from '../waha/waha-normalizer.js';
 import type { TrustedMessagingContext } from '../messaging/normalized-event.js';
 import { deriveTrustedMessagingContext } from '../messaging/canonical-source.js';
 import { enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
@@ -190,6 +191,81 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
         expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
         expect(await db.conversation.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
         expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+    });
+    it.each(['msg', 'message', 'tuple', 'both'] as const)('nested WPP %s participantAlt is held without mutating an existing Message', async (shape) => {
+        const f = await fixture(), group = '123-456@g.us', pn = '15550003333@s.whatsapp.net', other = '15550004444@s.whatsapp.net';
+        await service.apply(await f.send('evolution', { key: { id: 'original', remoteJid: group, fromMe: false, participant: pn }, message: { conversation: 'original' } }));
+        const original = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } }), effects = await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } });
+        const target = { id: 'original', remote: group, fromMe: false, participant: pn };
+        const clean = { body: 'mutated', author: pn, latestEditMsgKey: { id: 'EDIT', remote: group, fromMe: false, participant: pn } }, bad = { ...clean, participantAlt: other };
+        const model = shape === 'tuple' ? [group, target, bad] : shape === 'both' ? { id: target, author: pn, msg: clean, message: bad } : { id: target, author: pn, [shape]: bad };
+        const id = await f.send('waha', { id: `false_${group}_EDIT_${pn}`, from: group, participant: pn, _data: model }, 'message.edited');
+        await service.apply(id);
+        await service.apply(id);
+        expect(await db.ingressEventProgress.findFirst({ where: { receiptId: id } })).toMatchObject({ state: 'held', reason: 'contradictory_sender_declarations', messageId: null, actionId: null, observationId: null });
+        expect(await db.message.findUniqueOrThrow({ where: { id: original.id } })).toEqual(original);
+        expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } })).toBe(effects);
+        expect(await db.ingressEffect.count({ where: { receiptId: id } })).toBe(0);
+        expect(await db.conversation.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ unreadCount: 1, lastMessagePreview: 'original' });
+    });
+    it.each(['legacy-alt', 'verified-pn-lid', 'second-pn'] as const)('raw-guarded nested edit receipt preserves facts and completes ACK: %s', async (variant) => {
+        const f = await fixture(), group = '123-456@g.us', pn = '15550003333@s.whatsapp.net', other = '15550004444@s.whatsapp.net', lid = '777@lid';
+        await service.apply(await f.send('evolution', { key: { id: 'original', remoteJid: group, fromMe: false, participant: pn }, message: { conversation: 'original' } }));
+        const original = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } }), effects = await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } });
+        const seed = await f.send('waha'), { receipt: seedReceipt } = await journal.readPayload(seed);
+        const source = seedReceipt.source as unknown as TrustedMessagingContext;
+        const clean = { id: randomUUID(), event: 'message.edited', session: f.waha.sessionName, payload: { id: `false_${group}_EDIT_${pn}`, participant: pn, _data: { id: { id: 'original', remote: group, fromMe: false, participant: pn }, author: pn, msg: { body: 'verified edit', author: pn, ...(variant === 'legacy-alt' ? {} : { participantAlt: lid }), latestEditMsgKey: { id: 'EDIT', remote: group, fromMe: false, participant: pn } } } } };
+        const event = normalizeWahaEvent(source, clean, { verifiedLidMappings: variant === 'legacy-alt' ? [] : [{ lid, pn }] });
+        expect(event.kind).toBe('accepted');
+        if (event.kind !== 'accepted')
+            throw Error('fixture');
+        expect(event.event.addressMappings).toEqual(variant === 'legacy-alt' ? [] : [{ role: 'sender', lid, pn, source: 'waha.lid_lookup' }]);
+        const raw = structuredClone(clean);
+        if (variant !== 'verified-pn-lid')
+            Object.assign(raw.payload._data.msg, { participantAlt: other });
+        const receipt = await journal.stage({ transportNamespace: f.namespace, source, raw: Buffer.from(JSON.stringify(raw)), payload: { version: 1, events: [event] }, authentication: 'waha_hmac_sha512', reauthenticate: async () => { } });
+        const before = await db.ingressReceipt.findUniqueOrThrow({ where: { id: receipt.id } }), conserved = await journal.readPayload(receipt.id);
+        const ch = await admin.createChannel();
+        await ch.purgeQueue(transportTopology(f.namespace).incoming);
+        await db.ingressReceipt.delete({ where: { id: seed } });
+        await journal.publish(receipt.id, f.publisher);
+        const consumer = await IngressTransportConsumer.start({ url: brokerUrl!, namespace: f.namespace, journal, publisher: () => f.publisher, application: service });
+        consumers.push(consumer);
+        const applied = variant === 'verified-pn-lid';
+        await until(() => db.ingressApplication.findUnique({ where: { receiptId: receipt.id } }), v => v?.state === (applied ? 'applied' : 'held'));
+        await consumer.close();
+        for (const queue of [transportTopology(f.namespace).incoming, transportTopology(f.namespace).retry, transportTopology(f.namespace).dead])
+            expect((await ch.checkQueue(queue)).messageCount).toBe(0);
+        await ch.close();
+        await service.apply(receipt.id);
+        expect(await db.ingressReceipt.findUniqueOrThrow({ where: { id: receipt.id } })).toEqual(before);
+        expect((await journal.readPayload(receipt.id)).payload).toEqual(conserved.payload);
+        expect(await db.ingressDelivery.findUnique({ where: { receiptId: receipt.id } })).toMatchObject({ failures: 0, consumedAt: expect.any(Date) });
+        if (applied) {
+            expect(await db.message.findUniqueOrThrow({ where: { id: original.id } })).toMatchObject({ body: 'verified edit' });
+            expect(await db.ingressEventProgress.findFirst({ where: { receiptId: receipt.id } })).toMatchObject({ state: 'applied', messageId: original.id, actionId: expect.any(String) });
+            expect(await db.ingressEffect.count({ where: { receiptId: receipt.id } })).toBe(3);
+        }
+        else {
+            expect(await db.ingressEventProgress.findFirst({ where: { receiptId: receipt.id } })).toMatchObject({ state: 'held', reason: 'contradictory_sender_declarations', messageId: null, actionId: null });
+            expect(await db.message.findUniqueOrThrow({ where: { id: original.id } })).toEqual(original);
+            expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } })).toBe(effects);
+        }
+        expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+        expect(await db.conversation.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ unreadCount: 1 });
+    });
+    it('nested Evolution target PN/LID proof allows a legitimate revoke by a different action author', async () => {
+        const f = await fixture(), group = '123-456@g.us', pn = '15550003333@s.whatsapp.net', actor = '15550004444@s.whatsapp.net', lid = '777@lid';
+        await service.apply(await f.send('evolution', { key: { id: 'original', remoteJid: group, fromMe: false, participant: pn }, message: { conversation: 'original' } }));
+        const original = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+        const id = await f.send('evolution', { key: { id: 'REVOKE', remoteJid: group, fromMe: false, participant: actor }, message: { protocolMessage: { type: 0, key: { id: 'original', remoteJid: group, fromMe: false, participant: lid, participantAlt: pn } } } });
+        await service.apply(id);
+        await service.apply(id);
+        expect(await db.ingressEventProgress.findFirst({ where: { receiptId: id } })).toMatchObject({ state: 'applied', messageId: original.id, actionId: expect.any(String) });
+        expect(await db.message.findUniqueOrThrow({ where: { id: original.id } })).toMatchObject({ metadata: { deletedAt: expect.any(String) } });
+        expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+        expect(await db.conversation.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ unreadCount: 1 });
+        expect(await db.ingressEffect.count({ where: { receiptId: id, kind: 'human.reply_improvement' } })).toBe(0);
     });
     it('persists one pending group metadata obligation across providers, deliveries and history without attendance', async () => {
         const f = await fixture(), group = '123-456@g.us', participant = '15550003333@s.whatsapp.net';

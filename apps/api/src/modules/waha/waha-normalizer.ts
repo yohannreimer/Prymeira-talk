@@ -1,5 +1,5 @@
-import { validateWahaIdentityDeclarations } from '../messaging/identity-declarations.js';
-import type { AddressMappingEvidence, MessageEditPatch, NormalizationResult, SourceOrder, TrustedMessagingContext } from '../messaging/normalized-event.js';
+import { usedWahaAddressMappings, validateWahaIdentityDeclarations } from '../messaging/identity-declarations.js';
+import type { MessageEditPatch, NormalizationResult, SourceOrder, TrustedMessagingContext } from '../messaging/normalized-event.js';
 import { normalizeChatAddress, parseWahaMessageKey, record, serialized, string, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 import { wahaContent } from './waha-content.js';
 
@@ -25,7 +25,7 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
   const verifiedMappings = (enrichment?.verifiedLidMappings ?? []).flatMap(({lid,pn}) => (['chat','sender'] as const).map(role => ({role,lid,pn,source:'waha.lid_lookup' as const})));
   const contradiction = validateWahaIdentityDeclarations(input, verifiedMappings);
   if (contradiction) return { kind: 'invalid', reason: contradiction };
-  const base = { context: { ...context }, providerEventId: string(envelope.id), providerEventType: eventName, addressMappings: [] as AddressMappingEvidence[] };
+  const base = { context: { ...context }, providerEventId: string(envelope.id), providerEventType: eventName, addressMappings: usedWahaAddressMappings(input, verifiedMappings) };
   const raw = record(payload._data);
   const participantOf = (model: Record<string, unknown>) => model.author ?? model.participant ?? payload.participant ?? payload.author ?? record(model.id).participant ?? record(payload.id).participant;
   const parsedKey = (value: unknown, participant?: unknown) => {
@@ -96,13 +96,6 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
   }
   if (!key.direction && typeof payload.fromMe === 'boolean') key.direction = payload.fromMe ? 'outbound' : 'inbound';
   if (!key.chatAddress || (!key.nativeId && !key.rawId)) return { kind: 'invalid', reason: 'invalid_message_key' };
-  for (const entry of enrichment?.verifiedLidMappings ?? []) {
-    const lid = normalizeChatAddress(entry.lid), pn = normalizeChatAddress(entry.pn);
-    if (!lid?.endsWith('@lid') || !pn?.endsWith('@s.whatsapp.net')) continue;
-    for (const [role, address] of [['chat', key.chatAddress], ['sender', key.senderParticipant]] as const) {
-      if (address === lid) base.addressMappings.push({ role, lid, pn, source: 'waha.lid_lookup' });
-    }
-  }
   const sender = record(raw.sender);
   return { kind: 'accepted', event: { ...base, kind: 'message', key, ...wahaContent(payload),
     currentRevision: raw.latestEditMsgKey ? parseWahaMessageKey(raw.latestEditMsgKey) : null,
