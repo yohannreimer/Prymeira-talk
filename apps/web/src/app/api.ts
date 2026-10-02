@@ -10,6 +10,7 @@ import {
   contactBoardStageSchema,
   channelOperationResultSchema,
   channelQrResultSchema,
+  channelHealthSchema,
   channelSchema,
   channelTestInboundResultSchema,
   contactSchema,
@@ -57,6 +58,7 @@ import {
   type ChannelTestInboundResultDto,
   type ContactBoardDto,
   type ContactBoardMembershipDto,
+  type ChannelHealthDto,
   type ContactBoardStageDto,
   type ContactDto,
   type ConversationFollowupDto,
@@ -2189,6 +2191,30 @@ export async function apiGetChannels(
   const data = await response.json();
   return channelSchema.array().parse(data);
 
+  });
+}
+
+export async function apiGetChannelHealth(
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
+): Promise<ChannelHealthDto[]> {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+
+    const response = await fetch(`${apiUrl}/channels/health`, {
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    await assertApiReadAccess(response, token, deadline);
+    if (!response.ok) {
+      throw new Error(`Failed to load channel health: ${response.status}`);
+    }
+
+    const data = await response.json() as { health?: unknown };
+    return channelHealthSchema.array().parse(data.health ?? []);
   });
 }
 

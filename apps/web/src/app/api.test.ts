@@ -90,6 +90,22 @@ describe("apiGetContactPhoto", () => {
   });
 });
 
+describe("apiGetChannelHealth", () => {
+  it("reads the health rows from the authenticated endpoint", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const row = { channelId: "c1", state: "needs_qr", since: null, lastInboundAt: null, attempts: 3 };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ health: [row] }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.resetModules();
+
+    const { apiGetChannelHealth } = await import("./api");
+    await expect(apiGetChannelHealth(async () => null)).resolves.toEqual([row]);
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:3002/channels/health",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer local-dev-bypass" }) })
+    );
+  });
+});
+
 describe("apiDeleteChannel", () => {
   it("sends DELETE to the channel endpoint", async () => {
     vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");

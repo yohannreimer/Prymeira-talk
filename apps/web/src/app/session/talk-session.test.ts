@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QueryObserver } from '@tanstack/react-query';
-import type { ConversationDto, MessageDto, RealtimeEvent } from '@prymeira-talk/shared';
+import type { ChannelHealthDto, ConversationDto, MessageDto, RealtimeEvent } from '@prymeira-talk/shared';
 import { TalkSession, conversationMatches, patchConversations } from './talk-session';
 
 const message = (id: string, conversationId = 'c1', body = id): MessageDto => ({ id, conversationId, workspaceId: 'w', providerMessageId: null, direction: 'inbound', type: 'text', body, mediaUrl: null, status: 'sent', sentByUserId: null, createdAt: '2026-09-30T00:00:00Z' });
@@ -360,5 +360,20 @@ describe('realtime list membership and reconciliation', () => {
     cache.event(event('conversation.updated', conversation('inserted', { manualMarked: true })));
     finish([conversation('removed', { manualMarked: true })]);
     expect((await pending).map(row => row.id)).toEqual(['inserted']);
+  });
+});
+
+describe('channel health realtime', () => {
+  it('replaces the row of the same channel and keeps the others', () => {
+    const cache = session(); const key = cache.key('channelHealth');
+    const row = (channelId: string, state: ChannelHealthDto['state']): ChannelHealthDto => ({ channelId, state, since: null, lastInboundAt: null, attempts: 0 });
+    cache.client.setQueryData(key, [row('a', 'ok'), row('b', 'ok')]);
+    cache.event(event('channel.health', row('a', 'needs_qr')));
+    expect(cache.client.getQueryData<ChannelHealthDto[]>(key)).toEqual([row('b', 'ok'), row('a', 'needs_qr')]);
+  });
+  it('creates the list when none is cached yet', () => {
+    const cache = session(); const key = cache.key('channelHealth');
+    cache.event(event('channel.health', { channelId: 'a', state: 'silent', since: null, lastInboundAt: null, attempts: 0 }));
+    expect(cache.client.getQueryData<ChannelHealthDto[]>(key)).toHaveLength(1);
   });
 });
