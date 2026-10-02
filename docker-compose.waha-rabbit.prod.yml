@@ -5,6 +5,10 @@
 # Deploy AFTER docker-compose.prod.yml (it needs that stack's internal network and media volume):
 #   docker stack deploy --with-registry-auth -c docker-compose.waha-rabbit.prod.yml prymeira_talk_wa
 # Order, checks and rollback: docs/operations/waha-rabbit-rollout.md
+# Names below default to a main stack deployed as `prymeira_talk`. If it has another name (production: `prymeiratalk`), set
+# TALK_POSTGRES_HOST, TALK_INTERNAL_NETWORK and TALK_MEDIA_VOLUME to `<stack>_prymeira_talk_postgres|internal|media`.
+# The database host must be the full service name: these services also join network_swarm_public, where the short
+# alias `postgres` resolves to another stack's PostgreSQL.
 services:
   waha:
     # Pinned by digest (the registry candidate recorded in docs/operations/evolution-waha-rabbit.md). Still to qualify on the VPS.
@@ -31,6 +35,10 @@ services:
     deploy:
       mode: replicated
       replicas: 1
+      placement:
+        constraints:
+          # Same node as the Talk API: the ingress and media volumes are local.
+          - node.role == manager
       resources:
         limits:
           cpus: "1.00"
@@ -49,7 +57,7 @@ services:
     environment:
       NODE_ENV: production
       INGRESS_TRANSPORT_STAGE: production
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${PRYMEIRA_TALK_POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-prymeira_talk}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${PRYMEIRA_TALK_POSTGRES_PASSWORD}@${TALK_POSTGRES_HOST:-prymeira_talk_prymeira_talk_postgres}:5432/${POSTGRES_DB:-prymeira_talk}
       INGRESS_AMQP_URL: ${TALK_AMQP_URL}
       INGRESS_NAMESPACE: talk.prod.v1
       INGRESS_PRIVATE_ROOT: /data/ingress
@@ -78,6 +86,10 @@ services:
     deploy:
       mode: replicated
       replicas: 1
+      placement:
+        constraints:
+          # Same node as the Talk API: the ingress and media volumes are local.
+          - node.role == manager
       resources:
         limits:
           cpus: "0.50"
@@ -107,7 +119,7 @@ services:
     environment:
       NODE_ENV: production
       INGRESS_TRANSPORT_STAGE: production
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${PRYMEIRA_TALK_POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-prymeira_talk}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${PRYMEIRA_TALK_POSTGRES_PASSWORD}@${TALK_POSTGRES_HOST:-prymeira_talk_prymeira_talk_postgres}:5432/${POSTGRES_DB:-prymeira_talk}
       INGRESS_AMQP_URL: ${TALK_AMQP_URL}
       INGRESS_NAMESPACE: talk.prod.v1
       INGRESS_PRIVATE_ROOT: /data/ingress
@@ -131,6 +143,10 @@ services:
     deploy:
       mode: replicated
       replicas: 1
+      placement:
+        constraints:
+          # Same node as the Talk API: the ingress and media volumes are local.
+          - node.role == manager
       resources:
         limits:
           cpus: "0.75"
@@ -144,11 +160,11 @@ volumes:
   prymeira_talk_ingress:
   prymeira_talk_media:
     external: true
-    name: prymeira_talk_prymeira_talk_media
+    name: ${TALK_MEDIA_VOLUME:-prymeira_talk_prymeira_talk_media}
 
 networks:
   network_swarm_public:
     external: true
   prymeira_talk_internal:
     external: true
-    name: prymeira_talk_prymeira_talk_internal
+    name: ${TALK_INTERNAL_NETWORK:-prymeira_talk_prymeira_talk_internal}

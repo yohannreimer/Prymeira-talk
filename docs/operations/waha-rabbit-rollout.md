@@ -39,9 +39,21 @@ Variáveis (Portainer): `WAHA_IMAGE` (já fixada por digest no compose; só troc
 caracteres cada, valores distintos), `TALK_AMQP_URL`, `INGRESS_WORKSPACE_ALLOWLIST=<id do workspace de teste>` (**nunca `*`** no
 primeiro teste), `EVOLUTION_WEBHOOK_SECRET` (o mesmo da stack principal), `INGRESS_EVOLUTION_ROUTE_RULE` vazio.
 
+Se a stack principal não se chama `prymeira_talk` (em produção ela é `prymeiratalk`), definir também
+`TALK_POSTGRES_HOST=<stack>_prymeira_talk_postgres`, `TALK_INTERNAL_NETWORK=<stack>_prymeira_talk_internal` e
+`TALK_MEDIA_VOLUME=<stack>_prymeira_talk_media`. O host do banco é sempre o nome completo do serviço: o ingresso e o worker também
+estão na `network_swarm_public`, onde o apelido curto `postgres` aponta para o PostgreSQL de outra stack (`postgres_postgres`); com
+ele o worker é recusado (`password authentication failed`, 28P01) no banco errado.
+
 ```sh
 docker stack deploy --with-registry-auth -c docker-compose.waha-rabbit.prod.yml prymeira_talk_wa
 ```
+
+Volumes privados: o ingresso exige `/data/ingress` e `/data/media` com dono do processo e modo `0700` e recusa subir
+(`Ingress storage must be owned and private (0700)`) num volume novo, que o Docker cria com `0755`. Na primeira subida, uma vez por
+volume, rodar um serviço temporário com a mesma imagem e o volume montado: `chmod 700 /data/ingress` (volume
+`prymeira_talk_wa_prymeira_talk_ingress`) e `chmod 700 /data/media` (volume de mídia da stack principal); depois removê-lo. O modo fica
+gravado no volume.
 
 Conferir: `ingress` saudável (`/health` responde `separate_canonical_worker_required`), `ingress_worker` sem erro de conexão, WAHA no ar
 (`WHATSAPP_DEFAULT_ENGINE=WPP`; o sistema deve conferir versão/engine reais ao criar sessão). Os nomes das variáveis de ambiente da WAHA no compose seguem a documentação oficial, mas **o container não foi executado**: conferir o log de inicialização na primeira subida. A WAHA do Talk é nova e separada: volumes
