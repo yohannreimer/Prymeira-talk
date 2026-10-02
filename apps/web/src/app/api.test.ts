@@ -122,7 +122,7 @@ describe("apiGetChannelHealth watchdog", () => {
 });
 
 describe("apiDeleteChannel", () => {
-  it("sends DELETE to the channel endpoint", async () => {
+  it("sends DELETE with the typed channel name to the channel endpoint", async () => {
     vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
     vi.stubGlobal(
       "fetch",
@@ -136,7 +136,7 @@ describe("apiDeleteChannel", () => {
     vi.resetModules();
 
     const { apiDeleteChannel } = await import("./api");
-    await expect(apiDeleteChannel(async () => null, "channel-1")).resolves.toEqual({
+    await expect(apiDeleteChannel(async () => null, "channel-1", "Diogo — Villefer")).resolves.toEqual({
       ok: true,
       channelId: "channel-1"
     });
@@ -147,7 +147,8 @@ describe("apiDeleteChannel", () => {
         method: "DELETE",
         headers: expect.objectContaining({
           Authorization: "Bearer local-dev-bypass"
-        })
+        }),
+        body: JSON.stringify({ confirmationName: "Diogo — Villefer" })
       })
     );
   });
@@ -167,7 +168,7 @@ describe("apiDeleteChannel", () => {
 
     const { apiDeleteChannel } = await import("./api");
 
-    await expect(apiDeleteChannel(async () => null, "channel-1")).rejects.toThrow(
+    await expect(apiDeleteChannel(async () => null, "channel-1", "Diogo — Villefer")).rejects.toThrow(
       "Invalid delete channel response."
     );
   });

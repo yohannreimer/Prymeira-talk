@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAgentRuntime } from "./agent-runtime.js";
+import { AgentMediaError } from "./agent-media-resolver.js";
 import type {
   AgentToolExecutorPrismaLike,
   AgentToolExecutorTransactionLike
@@ -685,6 +686,32 @@ describe("createAgentRuntime", () => {
       context: expect.objectContaining({ messageBody: expect.stringContaining("Vocês trabalham com estes itens?") })
     }));
     expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ body: expect.stringContaining("Tubo aço\t12\t50 x 30 x 2 mm"), metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "processed" }) }) }) });
+  });
+
+  it("recovers an encrypted WhatsApp image from Evolution before reading it", async () => {
+    const encryptedUrl = "https://mmg.whatsapp.net/o1/v/t24/f2/m233/imagem.enc?ccb=11-4";
+    const imageMessage = { ...baseMessage, type: "image", body: "Imagem recebida", providerMessageId: "wamid-image", mediaUrl: encryptedUrl, metadata: {} };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(imageMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([imageMessage]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Vejo uma lista de vergalhões.", actions: [], handoff: { required: false, reason: null } });
+    const fetchMedia = vi.fn().mockResolvedValue("data:image/jpeg;base64,aW1hZ2Vt");
+    const mediaResolver = vi.fn(async ({ mediaUrl }: { mediaUrl: string | null | undefined; policy: unknown }) => {
+      if (mediaUrl === encryptedUrl) throw new AgentMediaError("UNSUPPORTED_MEDIA_TYPE", "Inbound media type is unsupported.");
+      return { bytes: Buffer.from("imagem"), mimeType: "image/jpeg", source: "data_url" as const };
+    });
+    const mediaPreparer = vi.fn(async (args: { mediaUrl?: string | null; mediaResolver?: typeof mediaResolver }) => {
+      const media = await args.mediaResolver!({ mediaUrl: args.mediaUrl, policy: { kind: "image", maxBytes: 1_000_000, allowedMimeTypes: new Set(["image/jpeg"]) } });
+      return { kind: "image", status: "processed", extractedText: `Ø 10,0 mm - 215 barras (${media.mimeType})` };
+    });
+    const runtime = createAgentRuntime({ prisma, provider, mediaResolver, mediaPreparer: mediaPreparer as never, evolution: { mode: "real", client: { sendText: vi.fn(), fetchMedia } } });
+
+    await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+
+    expect(fetchMedia).toHaveBeenCalledWith({ instanceName: "instancia", id: "wamid-image" });
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
+      userPrompt: expect.stringContaining("Ø 10,0 mm - 215 barras (image/jpeg)")
+    }));
   });
 
   it("reads images in the customer burst before answering a later text message", async () => {
