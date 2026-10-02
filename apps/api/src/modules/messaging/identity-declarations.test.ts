@@ -85,4 +85,16 @@ describe('authenticated identity declarations', () => {
         const input = evo({}, { message: { protocolMessage: { type: 0, key: { id: 'TARGET', remoteJid: group, fromMe: true, participant: other, participantAlt: pn } } } });
         expect(validateEvolutionIdentityDeclarations(input)).not.toBeNull();
     });
+    it('treats empty sender fields (Evolution 2.4 1:1 chats) as absent, never as a contradiction or a proof', () => {
+        const pn = '5547999990000@s.whatsapp.net', lid = '123456789012345@lid';
+        const oneToOne = { event: 'messages.upsert', data: { key: { id: 'A1', remoteJid: pn, fromMe: false, participant: '' }, participant: '', author: ' ', message: { conversation: 'oi' } } };
+        expect(validateEvolutionIdentityDeclarations(oneToOne)).toBeNull();
+        const lidChat = { event: 'messages.upsert', data: { key: { id: 'A2', remoteJid: lid, remoteJidAlt: pn, fromMe: false, participant: '', participantAlt: '' }, message: { conversation: 'oi' } } };
+        expect(validateEvolutionIdentityDeclarations(lidChat)).toBeNull();
+        // A real but contradictory sender is still refused.
+        const contradictory = { event: 'messages.upsert', data: { key: { id: 'A3', remoteJid: '123-456@g.us', fromMe: false, participant: pn }, participant: '5547888880000@s.whatsapp.net', message: { conversation: 'oi' } } };
+        expect(validateEvolutionIdentityDeclarations(contradictory)).toBe('contradictory_sender_declarations');
+        // Garbage that is not empty is still refused.
+        expect(validateEvolutionIdentityDeclarations({ event: 'messages.upsert', data: { key: { id: 'A4', remoteJid: pn, fromMe: false, participant: 'not-an-address' }, message: { conversation: 'oi' } } })).toBe('contradictory_sender_declarations');
+    });
 });

@@ -15,8 +15,11 @@ import { readAssistantSettings } from '../assistant/assistant-policy.js';
 import { createAssistantRepository } from '../assistant/assistant-repository.js';
 import { applyAuthenticatedConnectionObservation, normalizeWhatsappPhone } from '../channels/channel-connections.js';
 import { autoResolveAuthority } from '../channels/conversation-authority.js';
+import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
+import { normalizeWahaEvent } from '../waha/waha-normalizer.js';
 import { IngressJournal } from './journal.js';
 type Tx = Prisma.TransactionClient;
+const IDENTITY_HOLD_REASONS = ['contradictory_sender_declarations', 'contradictory_chat_declarations', 'contradictory_direction_declarations', 'contradictory_stanza_declarations'];
 type MessageEvent = Extract<NormalizedMessagingEvent, {
     kind: 'message';
 }>;
@@ -126,7 +129,7 @@ export class IngressApplicationService {
      */
     async recertify(receiptId: string, eventIndex: number) {
         const { receipt, payload } = await this.journal.readPayload(receiptId);
-        const item = payload.events[eventIndex];
+        let item = payload.events[eventIndex];
         if (!item)
             return { state: 'missing_event' as const };
         const raw = JSON.parse((await this.journal.files.read(receipt.rawRef, receipt.rawDigest)).toString('utf8')) as unknown;
@@ -136,7 +139,10 @@ export class IngressApplicationService {
         return this.journal.db.$transaction(async (tx) => {
             await enterCanonicalWorkspaceTransaction(tx, receipt.workspaceId);
             const progress = await tx.ingressEventProgress.findUnique({ where: { receiptId_eventIndex: { receiptId, eventIndex } } });
-            if (!progress || progress.state !== 'pending_recertification' || progress.reason !== 'stale_source')
+            const staleSource = progress?.state === 'pending_recertification' && progress.reason === 'stale_source';
+            // Held by an identity rule that may since have been corrected (e.g. Evolution 2.4's empty participant).
+            const identityHeld = progress?.state === 'held' && IDENTITY_HOLD_REASONS.includes(progress.reason ?? '');
+            if (!progress || (!staleSource && !identityHeld))
                 return { state: 'not_pending' as const };
             if (await tx.ingressEventRecertification.findUnique({ where: { receiptId_eventIndex: { receiptId, eventIndex } } }))
                 return { state: 'already_certified' as const };
@@ -168,6 +174,13 @@ export class IngressApplicationService {
                 return { state: 'still_stale' as const };
             if (currentNumber !== acceptedNumber)
                 return record_('held', 'number_changed', {}, { reason: 'number_changed' });
+            if (identityHeld) {
+                // The stored adapter output is the old verdict: read the authenticated raw again with today's rules.
+                const again = original.provider === 'evolution' ? validateEvolutionIdentityDeclarations(raw) : validateWahaIdentityDeclarations(raw, []);
+                if (again)
+                    return { state: 'still_invalid' as const, reason: again }; // Not recorded: a later correction can still recover it.
+                item = original.provider === 'evolution' ? normalizeEvolutionWebhook(current, raw) : normalizeWahaEvent(current, raw);
+            }
             if (item.kind !== 'accepted' || item.event.kind === 'control')
                 return record_('superseded', 'obsolete_connection_event', {}, { kind: item.kind });
             const contradiction = original.provider === 'evolution' ? validateEvolutionIdentityDeclarations(raw) : validateWahaIdentityDeclarations(raw, item.event.addressMappings);
@@ -198,7 +211,8 @@ export class IngressApplicationService {
     }
     /** Certifies every event waiting for a current source on this workspace scope. Returns how many were applied. */
     async recertifyPending(input: { workspaceIds?: readonly string[]; limit?: number }) {
-        const rows = await this.journal.db.ingressEventProgress.findMany({ where: { state: 'pending_recertification', reason: 'stale_source', recertification: { is: null },
+        const rows = await this.journal.db.ingressEventProgress.findMany({ where: { recertification: { is: null },
+            OR: [{ state: 'pending_recertification', reason: 'stale_source' }, { state: 'held', reason: { in: IDENTITY_HOLD_REASONS } }],
             ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}) }, orderBy: { committedAt: 'asc' }, take: input.limit ?? 50, select: { receiptId: true, eventIndex: true } });
         let applied = 0;
         for (const row of rows)

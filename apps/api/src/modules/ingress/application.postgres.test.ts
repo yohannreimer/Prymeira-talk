@@ -425,6 +425,26 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             expect(await db.ingressEventRecertification.findUnique({ where: { receiptId_eventIndex: { receiptId: id, eventIndex: 0 } } })).toMatchObject({ outcome: 'held', reason: 'number_changed' });
             expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
         });
+        it('recovers a message held by the old sender rule (Evolution 2.4 participant: "") once the rule accepts it', async () => {
+            const f = await fixture();
+            await db.channelConnection.update({ where: { id: f.evo.id }, data: { status: 'connected' } });
+            const raw = { event: 'MESSAGES_UPSERT', instance: f.evo.sessionName, data: { key: { id: 'evo24-empty', remoteJid: peer, fromMe: false, participant: '' }, participant: '', message: { conversation: 'chegou retida' }, messageTimestamp: 1700000200 } };
+            const source = await db.$transaction(async (tx) => { await enterCanonicalWorkspaceTransaction(tx, f.workspaceId); return deriveTrustedMessagingContext(tx, { workspaceId: f.workspaceId, channelId: f.channel.id, authenticatedSource: { provider: 'evolution', connectionId: f.evo.id }, mode: 'live', observedAt: new Date().toISOString() }); });
+            // What the previous image stored: the adapter verdict, not a message.
+            const receipt = await journal.stage({ transportNamespace: f.namespace, source, raw: Buffer.from(JSON.stringify(raw)), payload: { version: 1, events: [{ kind: 'invalid', reason: 'contradictory_sender_declarations' }] }, authentication: 'evolution_constant_time_secret', reauthenticate: async () => { } });
+            await service.apply(receipt.id);
+            expect(await db.ingressEventProgress.findFirst({ where: { receiptId: receipt.id } })).toMatchObject({ state: 'held', reason: 'contradictory_sender_declarations' });
+            expect(await service.recertifyPending({ workspaceIds: [f.workspaceId] })).toEqual({ examined: 1, applied: 1 });
+            expect((await db.message.findMany({ where: { workspaceId: f.workspaceId } })).map(m => m.body)).toEqual(['chegou retida']);
+            expect(await db.ingressEventProgress.findFirst({ where: { receiptId: receipt.id } })).toMatchObject({ state: 'held' }); // the old verdict stays on record
+            expect(await db.ingressEventRecertification.findUnique({ where: { receiptId_eventIndex: { receiptId: receipt.id, eventIndex: 0 } } })).toMatchObject({ outcome: 'applied' });
+            // A genuinely contradictory sender is not recovered and stays retryable.
+            const bad = { ...raw, data: { ...raw.data, key: { ...raw.data.key, id: 'evo24-bad', remoteJid: '123-456@g.us', participant: peer }, participant: '15550007777@s.whatsapp.net' } };
+            const badReceipt = await journal.stage({ transportNamespace: f.namespace, source, raw: Buffer.from(JSON.stringify(bad)), payload: { version: 1, events: [{ kind: 'invalid', reason: 'contradictory_sender_declarations' }] }, authentication: 'evolution_constant_time_secret', reauthenticate: async () => { } });
+            await service.apply(badReceipt.id);
+            expect(await service.recertify(badReceipt.id, 0)).toMatchObject({ state: 'still_invalid' });
+            expect(await db.ingressEventRecertification.count({ where: { receiptId: badReceipt.id } })).toBe(0);
+        });
         it('does nothing for events that are not waiting, and the sweep applies what is ready', async () => {
             const f = await fixture(), fresh = await f.send('evolution', { key: { id: 'fresh-one', remoteJid: peer, fromMe: false } });
             await service.apply(fresh);

@@ -5,7 +5,9 @@ type Pair = readonly [
     unknown,
     unknown
 ];
-const supplied = (value: unknown) => value !== undefined && value !== null;
+/** An empty string carries no identity (Evolution 2.4 sends `participant: ""` in 1:1 chats): it is absent, never a
+ * contradiction. Absence still never completes or proves an identity. */
+const supplied = (value: unknown) => value !== undefined && value !== null && !(typeof value === 'string' && value.trim() === '');
 /** Only recognized identity-bearing containers call this collector. Quoted
  * contexts, contact cards, display names and ACK recipients never enter it.
  * Keep the field list in one place for native keys and envelope/model variants.
