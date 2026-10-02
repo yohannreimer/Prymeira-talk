@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useOptionalTalkSession } from "../../app/session/TalkSessionProvider";
 import { apiGetChannelHealth, apiGetChannels } from "../../app/api";
-import { describeChannelProblems, type ChannelProblem } from "./channel-problems";
+import { describeChannelProblems, describeWatchdogProblem, type ChannelProblem } from "./channel-problems";
 
 export function ChannelHealthAlertList(props: { problems: ChannelProblem[]; onOpenChannels: () => void }) {
   if (props.problems.length === 0) return null;
@@ -22,11 +22,14 @@ export function ChannelHealthAlerts(props: { onOpenChannels: () => void }) {
 
 function ChannelHealthAlertsConnected(props: { onOpenChannels: () => void }) {
   const context = useOptionalTalkSession()!;
-  const { session, getToken } = context;
+  const { session, getToken, currentUser } = context;
   const channels = useQuery({ queryKey: session.key("channels"), staleTime: 60_000,
     queryFn: ({ signal }) => apiGetChannels(getToken, signal) });
-  const health = useQuery({ queryKey: session.key("channelHealth"), staleTime: 60_000,
+  const health = useQuery({ queryKey: session.key("channelHealth"), staleTime: 60_000, refetchInterval: 60_000,
     queryFn: ({ signal }) => apiGetChannelHealth(getToken, signal) });
-  const problems = describeChannelProblems(channels.data ?? [], health.data ?? []);
+  const problems = describeChannelProblems(channels.data ?? [], health.data?.health ?? []);
+  const canSeeWatchdog = currentUser.role === "owner" || currentUser.role === "manager";
+  const watchdogProblem = canSeeWatchdog && health.data ? describeWatchdogProblem(health.data.watchdog) : null;
+  if (watchdogProblem) problems.push(watchdogProblem);
   return <ChannelHealthAlertList problems={problems} onOpenChannels={props.onOpenChannels} />;
 }

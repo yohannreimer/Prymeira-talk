@@ -367,13 +367,17 @@ describe('channel health realtime', () => {
   it('replaces the row of the same channel and keeps the others', () => {
     const cache = session(); const key = cache.key('channelHealth');
     const row = (channelId: string, state: ChannelHealthDto['state']): ChannelHealthDto => ({ channelId, state, since: null, lastInboundAt: null, attempts: 0 });
-    cache.client.setQueryData(key, [row('a', 'ok'), row('b', 'ok')]);
+    const watchdog = { enabled: true, lastTickAt: null, lastTickOk: false, lastError: 'x', unreachable: true };
+    cache.client.setQueryData(key, { health: [row('a', 'ok'), row('b', 'ok')], watchdog });
     cache.event(event('channel.health', row('a', 'needs_qr')));
-    expect(cache.client.getQueryData<ChannelHealthDto[]>(key)).toEqual([row('b', 'ok'), row('a', 'needs_qr')]);
+    expect(cache.client.getQueryData(key)).toEqual({ health: [row('b', 'ok'), row('a', 'needs_qr')], watchdog });
   });
   it('creates the list when none is cached yet', () => {
     const cache = session(); const key = cache.key('channelHealth');
     cache.event(event('channel.health', { channelId: 'a', state: 'silent', since: null, lastInboundAt: null, attempts: 0 }));
-    expect(cache.client.getQueryData<ChannelHealthDto[]>(key)).toHaveLength(1);
+    expect(cache.client.getQueryData<{ health: ChannelHealthDto[]; watchdog: unknown }>(key)).toEqual({
+      health: [{ channelId: 'a', state: 'silent', since: null, lastInboundAt: null, attempts: 0 }],
+      watchdog: { enabled: false, lastTickAt: null, lastTickOk: true, lastError: null, unreachable: false }
+    });
   });
 });

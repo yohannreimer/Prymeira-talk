@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ChannelDto, ChannelHealthDto } from "@prymeira-talk/shared";
-import { describeChannelProblems } from "./channel-problems";
+import type { ChannelDto, ChannelHealthDto, ChannelWatchdogStatusDto } from "@prymeira-talk/shared";
+import { describeChannelProblems, describeWatchdogProblem } from "./channel-problems";
 
 const NOW = new Date("2026-10-02T15:00:00.000Z");
 const channel = (over: Partial<ChannelDto> = {}): ChannelDto => ({
@@ -45,5 +45,30 @@ describe("describeChannelProblems", () => {
       [channel({ id: "a", displayName: "A" }), channel({ id: "b", displayName: "B", status: "disconnected" })],
       [health({ channelId: "a", state: "silent", lastInboundAt: new Date(NOW.getTime() - 4 * 3_600_000).toISOString() })], NOW);
     expect(list.map((p) => p.channelId)).toEqual(["b", "a"]);
+  });
+});
+
+describe("describeWatchdogProblem", () => {
+  const status = (over: Partial<ChannelWatchdogStatusDto> = {}): ChannelWatchdogStatusDto =>
+    ({ enabled: true, lastTickAt: null, lastTickOk: true, lastError: null, unreachable: false, ...over });
+  it("returns null when disabled, even if failing", () => {
+    expect(describeWatchdogProblem(status({ enabled: false, unreachable: true, lastTickOk: false }))).toBeNull();
+  });
+  it("returns null when everything is fine", () => {
+    expect(describeWatchdogProblem(status())).toBeNull();
+  });
+  it("reports an unreachable Evolution", () => {
+    expect(describeWatchdogProblem(status({ unreachable: true, lastTickOk: false }))).toEqual({
+      channelId: "watchdog", tone: "warning",
+      title: "O monitoramento dos canais não consegue falar com a Evolution",
+      detail: "Os avisos sobre os canais podem estar desatualizados. Se continuar assim, avise o suporte."
+    });
+  });
+  it("reports a failed last tick", () => {
+    expect(describeWatchdogProblem(status({ lastTickOk: false }))).toEqual({
+      channelId: "watchdog", tone: "warning",
+      title: "O monitoramento dos canais falhou na última verificação",
+      detail: "Os avisos sobre os canais podem estar desatualizados. O Talk tenta de novo automaticamente."
+    });
   });
 });

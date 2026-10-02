@@ -1,4 +1,4 @@
-import type { ChannelDto, ChannelHealthDto } from "@prymeira-talk/shared";
+import type { ChannelDto, ChannelHealthDto, ChannelWatchdogStatusDto } from "@prymeira-talk/shared";
 
 export type ChannelProblem = {
   channelId: string;
@@ -38,4 +38,17 @@ export function describeChannelProblems(channels: ChannelDto[], health: ChannelH
     }
   }
   return problems.sort((a, b) => order[a.tone] - order[b.tone]);
+}
+
+export function describeWatchdogProblem(watchdog: ChannelWatchdogStatusDto): ChannelProblem | null {
+  if (!watchdog.enabled) return null;
+  if (watchdog.unreachable) {
+    return { channelId: "watchdog", tone: "warning", title: "O monitoramento dos canais não consegue falar com a Evolution",
+      detail: "Os avisos sobre os canais podem estar desatualizados. Se continuar assim, avise o suporte." };
+  }
+  if (!watchdog.lastTickOk) {
+    return { channelId: "watchdog", tone: "warning", title: "O monitoramento dos canais falhou na última verificação",
+      detail: "Os avisos sobre os canais podem estar desatualizados. O Talk tenta de novo automaticamente." };
+  }
+  return null;
 }

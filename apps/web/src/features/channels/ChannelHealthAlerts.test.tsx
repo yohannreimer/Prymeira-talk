@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ChannelHealthAlertList } from "./ChannelHealthAlerts";
+import { describeWatchdogProblem } from "./channel-problems";
 
 describe("ChannelHealthAlertList", () => {
   it("não renderiza nada sem problemas", () => {
@@ -29,5 +30,11 @@ describe("ChannelHealthAlertList", () => {
       { channelId: "a", tone: "info", title: "Reconectando", detail: "z" }
     ]} />);
     expect(html).toContain("channel-alert-info");
+  });
+  it("mostra o aviso do monitoramento vindo do helper", () => {
+    const problem = describeWatchdogProblem({ enabled: true, lastTickAt: null, lastTickOk: true, lastError: null, unreachable: true })!;
+    const html = renderToStaticMarkup(<ChannelHealthAlertList onOpenChannels={vi.fn()} problems={[problem]} />);
+    expect(html).toContain("O monitoramento dos canais não consegue falar com a Evolution");
+    expect(html).toContain("channel-alert-warning");
   });
 });
