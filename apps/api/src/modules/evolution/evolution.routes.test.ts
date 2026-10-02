@@ -2256,3 +2256,22 @@ describe("Evolution webhook routes", () => {
     }
   });
 });
+
+describe("legacy webhook delegation to the ingress", () => {
+  const post = (app: Awaited<ReturnType<typeof buildEvolutionApp>>["app"], workspaceId: string) => app.inject({
+    method: "POST", url: `/webhooks/evolution/${workspaceId}`, headers: { "x-prymeira-talk-secret": "top_secret" }, payload: validWebhookBody });
+  it("refuses a delegated workspace without touching the database and keeps serving the others", async () => {
+    const { app, prisma } = await buildEvolutionApp(createMockPrisma(), undefined, { delegatedWorkspaces: new Set(["delegated-ws"]) });
+    const refused = await post(app, "delegated-ws");
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toEqual({ ok: false, error: "delegated_to_ingress" });
+    expect(JSON.stringify(Object.values(prisma).flatMap((v) => (typeof v === "function" ? [(v as { mock?: { calls: unknown[] } }).mock?.calls] : [])))).not.toContain("delegated-ws");
+    expect((await post(app, "other-ws")).statusCode).not.toBe(409);
+  });
+  it("refuses every workspace for '*' and still authenticates first", async () => {
+    const { app } = await buildEvolutionApp(createMockPrisma(), undefined, { delegatedWorkspaces: "*" });
+    expect((await post(app, "any")).statusCode).toBe(409);
+    expect((await app.inject({ method: "POST", url: "/webhooks/evolution/any", headers: { "x-prymeira-talk-secret": "wrong" }, payload: validWebhookBody })).statusCode).toBe(401);
+  });
+});
+

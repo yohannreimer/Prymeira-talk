@@ -54,6 +54,9 @@ export interface EvolutionRoutesOptions {
   agentImprovements?: AgentImprovementObserver;
   inboxTriage?: InboxTriageObserver;
   webhookSecret: string;
+  /** Workspaces whose Evolution webhook now belongs to the independent ingress (ids, or '*' for all). This route refuses
+   * them with 409 instead of writing, so a webhook still pointed here fails loudly rather than being dropped or doubled. */
+  delegatedWorkspaces?: ReadonlySet<string> | '*';
   agentRuntime?: AutomationRunnerAgentRuntime & {
     prepareAudioMessage(input: {
       workspaceId: string;
@@ -178,6 +181,10 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
 
     const normalizedEvent = normalizeEvolutionEvent(envelope.data.event);
     const workspaceId = params.data.workspaceId;
+    if (options.delegatedWorkspaces === '*' || options.delegatedWorkspaces?.has(workspaceId)) {
+      request.log.warn({ event: 'evolution_webhook_delegated_to_ingress', workspaceId }, 'Legacy Evolution webhook refused: this workspace is served by the ingress.');
+      return reply.code(409).send({ ok: false, error: 'delegated_to_ingress' });
+    }
 
     const editData = envelope.data.data;
     const encryptedEdit = extractEncryptedMessageEdit(editData);

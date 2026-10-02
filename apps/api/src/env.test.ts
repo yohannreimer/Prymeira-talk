@@ -171,4 +171,10 @@ describe("readEnv", () => {
     expect(readEnv({ ...baseProductionEnv }).CANONICAL_HISTORY_IMPORT_ENABLED).toBe(false);
     expect(readEnv({ ...baseProductionEnv, CANONICAL_HISTORY_IMPORT_ENABLED: "true" }).CANONICAL_HISTORY_IMPORT_ENABLED).toBe(true);
   });
+
+  it("parses the delegated legacy-webhook workspaces", () => {
+    expect(readEnv({ ...baseProductionEnv }).LEGACY_WEBHOOK_DELEGATED_WORKSPACES).toEqual(new Set());
+    expect(readEnv({ ...baseProductionEnv, LEGACY_WEBHOOK_DELEGATED_WORKSPACES: " a , b ,," }).LEGACY_WEBHOOK_DELEGATED_WORKSPACES).toEqual(new Set(["a", "b"]));
+    expect(readEnv({ ...baseProductionEnv, LEGACY_WEBHOOK_DELEGATED_WORKSPACES: "*" }).LEGACY_WEBHOOK_DELEGATED_WORKSPACES).toBe("*");
+  });
 });

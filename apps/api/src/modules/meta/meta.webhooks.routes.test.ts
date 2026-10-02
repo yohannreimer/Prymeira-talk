@@ -222,14 +222,15 @@ function createMockPrisma(overrides: {
 
 async function buildMetaApp(
   prisma = createMockPrisma(),
-  inboxTriage?: import('../conversations/inbox-triage.service.js').InboxTriageObserver
+  inboxTriage?: import('../conversations/inbox-triage.service.js').InboxTriageObserver,
+  delegatedWorkspaces?: ReadonlySet<string> | '*'
 ) {
   const app = Fastify({ logger: false });
   const publish = vi.fn();
 
   app.decorate("prisma", prisma as never);
   app.decorate("realtime", { publish, addClient: vi.fn(), clientCount: vi.fn() });
-  await app.register(metaWebhooksRoutes, { inboxTriage });
+  await app.register(metaWebhooksRoutes, { inboxTriage, delegatedWorkspaces });
 
   return { app, prisma, publish };
 }
@@ -782,3 +783,20 @@ describe("Meta webhook routes", () => {
     }
   });
 });
+
+describe("Meta legacy webhook delegation to the ingress", () => {
+  const payload = { object: "whatsapp_business_account", entry: [] };
+  it("refuses an authenticated delegated workspace with 409 and still rejects a bad signature first", async () => {
+    const { app } = await buildMetaApp(createMockPrismaWithAppSecret(), undefined, new Set(["local_workspace"]));
+    try {
+      const refused = await app.inject({ method: "POST", url: "/webhooks/meta/local_workspace", ...signedMetaPostPayload(payload) });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json()).toEqual({ ok: false, error: "delegated_to_ingress" });
+      const forged = await app.inject({ method: "POST", url: "/webhooks/meta/local_workspace", ...signedMetaPostPayload(payload, "other-secret") });
+      expect(forged.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+});
+

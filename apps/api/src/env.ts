@@ -72,6 +72,8 @@ export const envSchema = z
     OUTBOUND_ROUTER_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     /** Imports channel history through the canonical store instead of writing messages directly. */
     CANONICAL_HISTORY_IMPORT_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+    /** Workspaces (comma-separated ids, or '*') served by the independent ingress; the legacy webhook refuses them with 409. */
+    LEGACY_WEBHOOK_DELEGATED_WORKSPACES: z.string().default('').transform((value) => value.trim() === '*' ? '*' as const : new Set(value.split(',').map((id) => id.trim()).filter(Boolean))),
     /** Runs the durable ingress effects (assistant, agent, follow-ups, triage, automations, realtime) in this API process. */
     EFFECTS_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     /** Comma-separated workspace ids whose effects this process may run (staged rollout). Empty = all. */

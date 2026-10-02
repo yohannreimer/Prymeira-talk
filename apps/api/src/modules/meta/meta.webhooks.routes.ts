@@ -207,7 +207,7 @@ function hasValidMetaSignature(
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-export const metaWebhooksRoutes: FastifyPluginAsync<{ assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler; handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>; inboxTriage?: import('../conversations/inbox-triage.service.js').InboxTriageObserver }> = async (app, options) => {
+export const metaWebhooksRoutes: FastifyPluginAsync<{ assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler; handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>; inboxTriage?: import('../conversations/inbox-triage.service.js').InboxTriageObserver; delegatedWorkspaces?: ReadonlySet<string> | '*' }> = async (app, options) => {
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {
     const rawBody = Buffer.isBuffer(body) ? body : Buffer.from(body);
@@ -276,6 +276,11 @@ export const metaWebhooksRoutes: FastifyPluginAsync<{ assistantScheduler?: impor
       runtime.appSecret
     )) {
       return reply.code(401).send({ ok: false, error: "invalid_meta_signature" });
+    }
+
+    if (options.delegatedWorkspaces === '*' || options.delegatedWorkspaces?.has(workspaceId)) {
+      request.log.warn({ event: 'meta_webhook_delegated_to_ingress', workspaceId }, 'Legacy Meta webhook refused: this workspace is served by the ingress.');
+      return reply.code(409).send({ ok: false, error: 'delegated_to_ingress' });
     }
 
     const inboundMessages = extractInboundTextMessages(request.body);

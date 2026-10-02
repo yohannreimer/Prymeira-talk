@@ -504,6 +504,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     assistantScheduler,
     handoffBriefService,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,
+    delegatedWorkspaces: env.LEGACY_WEBHOOK_DELEGATED_WORKSPACES,
     followupService,
     inboxTriage,
     agentImprovements,
@@ -539,7 +540,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     const effectsLoop = startEffectLoop(runner, { signal: effectsAbort.signal, onError: (error) => app.log.error({ err: error }, 'Ingress effect loop iteration failed') });
     app.addHook('onClose', async () => { effectsAbort.abort(); await effectsLoop; });
   }
-  await app.register(metaWebhooksRoutes, { assistantScheduler, handoffBriefService, inboxTriage });
+  await app.register(metaWebhooksRoutes, { assistantScheduler, handoffBriefService, inboxTriage, delegatedWorkspaces: env.LEGACY_WEBHOOK_DELEGATED_WORKSPACES });
   await app.register(conversationsRoutes, {
     publicTalkUrl: env.PUBLIC_TALK_URL,
     evolution: evolutionRuntime,
