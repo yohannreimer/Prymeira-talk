@@ -44,7 +44,9 @@ import {
   type AgentOutput,
   type AgentProvider
 } from "./provider-gateway.js";
-import { resolveAgentMedia } from "./agent-media-resolver.js";
+import { AgentMediaError, resolveAgentMedia } from "./agent-media-resolver.js";
+import type { MessageMediaService } from "../conversations/message-media.js";
+import type { MessageTranscriptionService } from "../conversations/message-transcription.js";
 import { prepareInboundMedia, formatProcessedMediaMessage, transcribeInboundAudio, MAX_INBOUND_MEDIA_BYTES, type InboundMediaResult } from "./inbound-media.js";
 import type { AgentAudioTranscriber } from "./audio-transcription.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
@@ -255,6 +257,9 @@ export function createAgentRuntime(input: {
   providerFactory?: (settings: Extract<OpenAiCompatibleSettings, { active: true }>) => AgentProvider;
   mediaResolver?: typeof resolveAgentMedia;
   mediaPreparer?: typeof prepareInboundMedia;
+  /** Durable media copies and the shared transcription job; both optional, legacy behaviour without them. */
+  durableMedia?: Pick<MessageMediaService, "read">;
+  transcriptions?: MessageTranscriptionService;
   replyPreflight?: AgentReplyPreflight;
   audioTranscriberFactory?: (
     settings: Extract<OpenAiCompatibleSettings, { active: true }>
@@ -308,7 +313,22 @@ export function createAgentRuntime(input: {
       return { status: "completed" as const, text: message.body ?? "" };
     }
 
-    try {
+    // Bytes for the transcriber: the durable original when the deployment keeps one (provider-independent,
+    // 25 MiB stored, 8 MiB processed), otherwise the legacy message URL.
+    const loadAudio = async () => {
+      if (input.durableMedia) {
+        const stored = await input.durableMedia
+          .read({ workspaceId: message.workspaceId, conversationId: message.conversationId, messageId: message.id, variant: "original" })
+          .catch(() => null);
+        if (stored) {
+          if (stored.bytes.length > MAX_INBOUND_MEDIA_BYTES) throw new AgentMediaError("MEDIA_TOO_LARGE", "Inbound media exceeds the size limit.");
+          if (!AUDIO_MEDIA_POLICY.allowedMimeTypes.has(stored.mimeType)) throw new AgentMediaError("UNSUPPORTED_MEDIA_TYPE", "Inbound media type is unsupported.");
+          return { bytes: stored.bytes, mimeType: stored.mimeType, source: "durable" as const };
+        }
+      }
+      return (input.mediaResolver ?? resolveAgentMedia)({ mediaUrl: message.mediaUrl, policy: AUDIO_MEDIA_POLICY });
+    };
+    const transcribe = async () => {
       const providerSettings = resolvedProviderSettings ??
         await resolveOpenAiCompatibleSettings(prisma, {
           workspaceId: message.workspaceId
@@ -318,16 +338,59 @@ export function createAgentRuntime(input: {
           code: "TRANSCRIPTION_PROVIDER_UNAVAILABLE"
         });
       }
-      const media = await (input.mediaResolver ?? resolveAgentMedia)({
-        mediaUrl: message.mediaUrl,
-        policy: AUDIO_MEDIA_POLICY
-      });
+      const media = await loadAudio();
       const transcription = await transcribeInboundAudio({
         bytes: media.bytes,
         mimeType: media.mimeType,
         settings: providerSettings,
         audioTranscriberFactory: input.audioTranscriberFactory
       });
+      return { media, transcription };
+    };
+
+    if (input.transcriptions) {
+      // One persistent job per message, shared with the manual button: the first caller transcribes,
+      // the others reuse the text instead of paying for a second transcription.
+      const worked: { value?: Awaited<ReturnType<typeof transcribe>> } = {};
+      const outcome = await input.transcriptions.run({
+        workspaceId: message.workspaceId,
+        conversationId: message.conversationId,
+        messageId: message.id,
+        retryFailed: false,
+        failureBody: AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK,
+        work: async () => {
+          worked.value = await transcribe();
+          const { media, transcription } = worked.value;
+          return {
+            text: transcription.text,
+            // With a durable copy the playback derivative lives in the store, not inline in the message.
+            ...(transcription.playback && media.source !== "durable"
+              ? { extraMessageData: { mediaUrl: toAudioDataUrl(transcription.playback) } }
+              : {})
+          };
+        }
+      });
+      if ("message" in outcome && outcome.message) {
+        input.realtime?.publish({ type: "message.created", workspaceId: message.workspaceId, payload: toMessageDto(outcome.message) });
+      }
+      if (outcome.status === "completed") {
+        await observeProspectingAudioRefusal(prisma, message, outcome.text);
+        return {
+          status: "completed" as const,
+          text: outcome.text,
+          ...(worked.value
+            ? { media: { type: "audio" as const, mimeType: worked.value.media.mimeType, source: worked.value.media.source } }
+            : {})
+        };
+      }
+      return {
+        status: "failed" as const,
+        errorCode: outcome.status === "failed" ? outcome.errorCode : "TRANSCRIPTION_IN_PROGRESS"
+      };
+    }
+
+    try {
+      const { media, transcription } = await transcribe();
       const updatedAudioMessage = await prisma.message.update({
         where: { id: message.id },
         data: {

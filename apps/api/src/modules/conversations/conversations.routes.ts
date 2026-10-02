@@ -39,6 +39,8 @@ interface ConversationsRoutesOptions {
   evolution?: EvolutionRuntime;
   /** Durable private media copies; omitted until the deployment provides a media store. */
   durableMedia?: Pick<import('./message-media.js').MessageMediaService, 'read'>;
+  /** Shared transcription job; omitted until the deployment enables durable media. */
+  transcriptions?: import('./message-transcription.js').MessageTranscriptionService;
   messageHistory?: Pick<EvolutionHistorySource, 'findMessage'>;
   followupService?: ConversationFollowupsObserver;
   agentImprovements?: AgentImprovementObserver;
@@ -295,9 +297,20 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       return reply.send({ text: existing });
     }
     try {
-      const media = await mediaService.media(workspaceId, conversationId, messageId);
-      const settings = await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId });
-      const result = await transcribeInboundAudio({ bytes: media.bytes, mimeType: media.mimeType, settings });
+      const transcribe = async () => {
+        const media = await mediaService.media(workspaceId, conversationId, messageId);
+        const settings = await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId });
+        return transcribeInboundAudio({ bytes: media.bytes, mimeType: media.mimeType, settings });
+      };
+      if (options.transcriptions) {
+        // Same job the automatic path uses: a transcription already running or finished is shared, not repeated.
+        const outcome = await options.transcriptions.run({ workspaceId, conversationId, messageId, retryFailed: true,
+          work: async () => ({ text: (await transcribe()).text }) });
+        if (outcome.status !== 'completed') throw new Error(outcome.status === 'failed' ? outcome.errorCode : 'TRANSCRIPTION_IN_PROGRESS');
+        if (outcome.message) app.realtime.publish({ type: 'message.created', workspaceId, payload: toMessageDto(outcome.message) });
+        return reply.send({ text: outcome.text });
+      }
+      const result = await transcribe();
       const updated = await app.prisma.message.update({ where: { id: messageId }, data: { body: result.text } });
       app.realtime.publish({ type: 'message.created', workspaceId, payload: toMessageDto(updated) });
       return reply.send({ text: result.text });

@@ -62,6 +62,8 @@ export const envSchema = z
     INBOX_TRIAGE_PRIMARY: z.enum(["luna", "jev"]).default("jev"),
     INBOX_TRIAGE_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
     TALK_UPLOAD_DIR: z.string().min(1).default("storage/uploads"),
+    /** Absolute private directory for durable message media. Unset keeps the legacy media path. */
+    TALK_MEDIA_STORE_PATH: z.string().min(1).refine((value) => value.startsWith('/'), 'TALK_MEDIA_STORE_PATH must be an absolute path').optional(),
     VINCULA_CRM_API_URL: optionalUrl,
     CNPJ_DATABASE_URL: optionalUrlWithProtocols(["postgres:", "postgresql:"]),
     GOOGLE_MAPS_SCRAPER_URL: optionalUrlWithProtocols(["http:", "https:"]),

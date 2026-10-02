@@ -1998,6 +1998,12 @@ model MessageMedia {
   playbackSha256 String? @map("playback_sha256")
   errorCode String? @map("error_code")
   attempts Int @default(0)
+  transcriptionState String? @map("transcription_state")
+  transcriptionToken String? @map("transcription_token") @db.Uuid
+  transcriptionLeaseUntil DateTime? @map("transcription_lease_until") @db.Timestamptz
+  transcriptionAttempts Int @default(0) @map("transcription_attempts")
+  transcriptionErrorCode String? @map("transcription_error_code")
+  transcribedAt DateTime? @map("transcribed_at") @db.Timestamptz
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz
   message Message @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: Cascade, map: "message_media_message_fkey")

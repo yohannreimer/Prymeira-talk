@@ -1027,6 +1027,78 @@ describe("createAgentRuntime", () => {
     }));
   });
 
+  describe("audio through the shared transcription job and the durable copy", () => {
+    const audioMessage = { ...baseMessage, type: "audio", body: "Áudio recebido", mediaUrl: "https://provider.invalid/expired.enc" };
+    const settings = { mode: "real", settings: { baseUrl: "https://provider.example/v1", apiKey: "secret", chatModel: "gpt-5.6-luna" } };
+    const provider = () => buildProvider({ confidence: 0.9, reply: "x", actions: [], handoff: { required: false, reason: null } });
+    // The real job lives in PostgreSQL (message-transcription.postgres.test.ts); here it only runs the work.
+    const jobThatRuns = (message: unknown) => ({ run: vi.fn(async (job: { work: () => Promise<{ text: string; extraMessageData?: unknown }>; failureBody?: string; retryFailed?: boolean }) => {
+      try { const result = await job.work(); return { status: "completed" as const, text: result.text, message }; }
+      catch (error) { return { status: "failed" as const, errorCode: (error as { code?: string }).code ?? "TRANSCRIPTION_FAILED", message }; }
+    }) });
+
+    it("transcribes the durable original, never the expired provider URL, and keeps the playback out of mediaUrl", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(audioMessage);
+      vi.mocked(prisma.integrationConfig.findUnique).mockResolvedValue(settings);
+      const transcribe = vi.fn().mockResolvedValue({ text: "Preciso de 42 chapas.", playback: { bytes: Buffer.from("mp3"), mimeType: "audio/mpeg" } });
+      const mediaResolver = vi.fn().mockRejectedValue(new Error("must not be used"));
+      const read = vi.fn().mockResolvedValue({ bytes: Buffer.from("ogg-original"), mimeType: "audio/ogg" });
+      const transcriptions = jobThatRuns({ ...audioMessage, body: "Preciso de 42 chapas." });
+      const publish = vi.fn();
+      const runtime = createAgentRuntime({ prisma, provider: provider(), mediaResolver, audioTranscriberFactory: vi.fn(() => ({ transcribe })),
+        durableMedia: { read }, transcriptions: transcriptions as never, realtime: { publish } });
+
+      const result = await runtime.prepareAudioMessage({ workspaceId: ids.workspace, messageId: ids.message });
+
+      expect(result).toEqual({ status: "completed", text: "Preciso de 42 chapas.", media: { type: "audio", mimeType: "audio/ogg", source: "durable" } });
+      expect(read).toHaveBeenCalledWith({ workspaceId: ids.workspace, conversationId: audioMessage.conversationId, messageId: ids.message, variant: "original" });
+      expect(mediaResolver).not.toHaveBeenCalled();
+      const job = transcriptions.run.mock.calls[0]![0];
+      expect(job).toMatchObject({ retryFailed: false, failureBody: "Não foi possível transcrever este áudio." });
+      expect(prisma.message.update).not.toHaveBeenCalled();
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "message.created" }));
+    });
+
+    it("reuses a transcription another caller already produced without transcribing or publishing", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(audioMessage);
+      vi.mocked(prisma.integrationConfig.findUnique).mockResolvedValue(settings);
+      const transcribe = vi.fn();
+      const transcriptions = { run: vi.fn(async () => ({ status: "completed" as const, text: "texto compartilhado", message: null })) };
+      const publish = vi.fn();
+      const runtime = createAgentRuntime({ prisma, provider: provider(), audioTranscriberFactory: vi.fn(() => ({ transcribe })), transcriptions: transcriptions as never, realtime: { publish } });
+
+      expect(await runtime.prepareAudioMessage({ workspaceId: ids.workspace, messageId: ids.message })).toEqual({ status: "completed", text: "texto compartilhado" });
+      expect(transcribe).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    });
+
+    it("refuses a durable original above the 8 MiB processing limit with an explicit failure", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(audioMessage);
+      vi.mocked(prisma.integrationConfig.findUnique).mockResolvedValue(settings);
+      const read = vi.fn().mockResolvedValue({ bytes: Buffer.alloc(8 * 1024 * 1024 + 1), mimeType: "audio/ogg" });
+      const runtime = createAgentRuntime({ prisma, provider: provider(), durableMedia: { read }, transcriptions: jobThatRuns({ ...audioMessage, body: "Não foi possível transcrever este áudio." }) as never });
+
+      expect(await runtime.prepareAudioMessage({ workspaceId: ids.workspace, messageId: ids.message })).toEqual({ status: "failed", errorCode: "MEDIA_TOO_LARGE" });
+    });
+
+    it("falls back to the legacy resolver when the durable copy does not exist yet", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...audioMessage, mediaUrl: "data:audio/ogg;base64,YXVkaW8=" });
+      vi.mocked(prisma.integrationConfig.findUnique).mockResolvedValue(settings);
+      const transcribe = vi.fn().mockResolvedValue({ text: "ok", playback: { bytes: Buffer.from("mp3"), mimeType: "audio/mpeg" } });
+      const mediaResolver = vi.fn().mockResolvedValue({ bytes: Buffer.from("audio"), mimeType: "audio/ogg", source: "data_url" });
+      const transcriptions = jobThatRuns({ ...audioMessage, body: "ok" });
+      const runtime = createAgentRuntime({ prisma, provider: provider(), mediaResolver, audioTranscriberFactory: vi.fn(() => ({ transcribe })),
+        durableMedia: { read: vi.fn().mockResolvedValue(null) }, transcriptions: transcriptions as never });
+
+      expect(await runtime.prepareAudioMessage({ workspaceId: ids.workspace, messageId: ids.message })).toMatchObject({ status: "completed", text: "ok", media: { source: "data_url" } });
+      expect(mediaResolver).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("reuses a stored audio transcript without transcribing again", async () => {
     const audioMessage = {
       ...baseMessage,

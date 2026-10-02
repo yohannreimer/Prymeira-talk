@@ -58,6 +58,7 @@ import { createRealtimeOutboundDelivery } from "./modules/conversations/realtime
 import { conversationFollowupsRoutes } from "./modules/followups/conversation-followups.routes.js";
 import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js";
 import { createWahaRuntime } from './modules/waha/waha.client.js';
+import { createDurableMedia } from './modules/conversations/durable-media.js';
 import { crmRoutes } from "./modules/crm/crm.routes.js";
 import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
 import { resolveMetaRuntime } from "./modules/meta/meta-runtime.js";
@@ -187,6 +188,10 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET
   });
   const wahaRuntime = createWahaRuntime({ enabled: env.WAHA_ENABLED, baseUrl: env.WAHA_API_BASE_URL, apiKey: env.WAHA_API_KEY });
+  // Opt-in durable media + shared transcription job. Without TALK_MEDIA_STORE_PATH nothing changes.
+  const durableMedia = options.prismaEnabled !== false && env.TALK_MEDIA_STORE_PATH
+    ? await createDurableMedia({ prisma: app.prisma, root: env.TALK_MEDIA_STORE_PATH })
+    : undefined;
 
   const leadsRepository = options.prismaEnabled === false
     ? undefined
@@ -330,7 +335,9 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike),
           followupService,
           inboxTriage,
-          handoffBriefService
+          handoffBriefService,
+          durableMedia: durableMedia?.media,
+          transcriptions: durableMedia?.transcriptions
         });
   const agentReplyScheduler =
     options.prismaEnabled === false || !agentRuntime
@@ -486,7 +493,9 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     handoffBriefService,
     followupService,
     inboxTriage,
-    agentImprovements
+    agentImprovements,
+    durableMedia: durableMedia?.media,
+    transcriptions: durableMedia?.transcriptions
   });
   await app.register(supervisionRoutes, { evolution: evolutionRuntime });
   if (inboxTriage) await app.register(inboxTriageRoutes, { triage: inboxTriage });

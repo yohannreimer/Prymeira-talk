@@ -13,6 +13,11 @@ const baseProductionEnv = {
 } as const;
 
 describe("readEnv", () => {
+  it('keeps durable media off unless an absolute private store path is configured', () => {
+    expect(readEnv(baseProductionEnv).TALK_MEDIA_STORE_PATH).toBeUndefined();
+    expect(readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: '/var/lib/talk/media' }).TALK_MEDIA_STORE_PATH).toBe('/var/lib/talk/media');
+    expect(() => readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: 'relative/media' })).toThrow(/TALK_MEDIA_STORE_PATH/);
+  });
   it('keeps WAHA disabled until qualification and validates enabled runtime credentials', () => {
     expect(readEnv(baseProductionEnv).WAHA_ENABLED).toBe(false);
     expect(() => readEnv({ ...baseProductionEnv, WAHA_ENABLED: 'true' })).toThrow(/WAHA/);
