@@ -126,26 +126,17 @@ export function planFleetSync(input: {
 }): FleetSyncPlan {
   const errors: string[] = [];
   const sourceBehavior = record(input.source.behaviorConfig);
-  const sourceTemplate = typeof sourceBehavior.packagePromptTemplate === "string" ? sourceBehavior.packagePromptTemplate : null;
   const sourceVars = stringVariables(sourceBehavior.deploymentVariables);
-  if (!sourceTemplate) {
-    return { sourceWorkspaceId: input.source.workspaceId, targets: [], errors: ["Source agent has no packagePromptTemplate."] };
+  if (!input.source.systemPrompt.trim()) {
+    return { sourceWorkspaceId: input.source.workspaceId, targets: [], errors: ["Source agent has an empty prompt."] };
   }
-  if (renderTemplate(sourceTemplate, sourceVars).trim() !== input.source.systemPrompt.trim()) {
-    errors.push("Source prompt does not equal its template rendered with its variables; refusing to sync.");
-  }
-  const masterTemplate = templatize(applyFixes(sourceTemplate, input.fixes), sourceVars);
+  // The live prompt is the source of truth: a prompt edited by hand leaves packagePromptTemplate stale.
+  const masterTemplate = templatize(applyFixes(input.source.systemPrompt.trim(), input.fixes), sourceVars);
 
   const masterKnowledge = input.source.knowledge.map((item) => ({
     item,
     key: knowledgeKey(item),
-    template: templatize(
-      applyFixes(
-        typeof item.metadata.packageContentTemplate === "string" ? item.metadata.packageContentTemplate : item.content ?? "",
-        input.fixes
-      ),
-      sourceVars
-    )
+    template: templatize(applyFixes((item.content ?? "").trim(), input.fixes), sourceVars)
   }));
 
   const targets = input.targets.map((target): TargetPlan => {
@@ -154,14 +145,16 @@ export function planFleetSync(input: {
     const currentTemplate = typeof behavior.packagePromptTemplate === "string" ? behavior.packagePromptTemplate : "";
     const vars = stringVariables(behavior.deploymentVariables);
 
-    if (!currentTemplate) targetErrors.push("Target has no packagePromptTemplate.");
-    else if (renderTemplate(currentTemplate, vars).trim() !== target.systemPrompt.trim()) {
-      targetErrors.push("Target prompt does not equal its template rendered with its variables; refusing to touch it.");
-    }
     const missing = templateVariables(masterTemplate).filter((name) => !vars[name]);
     if (missing.length > 0) targetErrors.push(`Target is missing deployment variables: ${missing.join(", ")}.`);
 
     const nextPrompt = renderTemplate(masterTemplate, vars).trim();
+    const removedLines = lineDiff(target.systemPrompt, nextPrompt).removed;
+    if (removedLines.length > 0) {
+      targetErrors.push(
+        `Sync would remove ${removedLines.length} line(s) from this agent's prompt (manual edits?); review before applying: ${removedLines.map((line) => line.slice(0, 60)).join(" | ")}`
+      );
+    }
     const knowledgeUpdates: KnowledgeUpdate[] = [];
     const knowledgeCreates: KnowledgeCreate[] = [];
 

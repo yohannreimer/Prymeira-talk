@@ -1,29 +1,36 @@
 import { describe, expect, it } from "vitest";
 import {
   applyFixes,
-  templatize,
   lineDiff,
   planFleetSync,
   planHasChanges,
   planHasErrors,
   renderTemplate,
+  templatize,
   type FleetAgent,
   type NewKnowledgeEntry,
   type TextFix
 } from "./agent-fleet-sync.js";
 
-const BASE = "Faça o pré-atendimento por WhatsApp e reúna para {{seller_name}} o necessário.\nRegras de produto.\nTom curto.";
+const BASE = "Faça o pré-atendimento da {{company_name}} e reúna para {{seller_name}} o necessário.\nVocê é Acácia.\nRegras de produto.\nTom curto.";
 const EXTRA = "CORREÇÃO DE COTAÇÃO TRAVADA: handoff com resumo completo.";
-const SCOPE = "O agente qualifica o pedido e entrega a conversa para {{seller_name}} preparar a proposta, sem exigir confirmação final.";
-const OLD_SCOPE = "O agente qualifica o pedido e entrega a conversa para {{seller_name}} preparar a proposta, sem exigir confirmação.";
+const SCOPE = "O agente entrega a conversa para {{seller_name}} preparar a proposta, sem exigir confirmação final.";
+const OLD_SCOPE = "O agente entrega a conversa para {{seller_name}} preparar a proposta, sem exigir confirmação.";
 
-function agent(input: { workspaceId: string; seller: string; template: string; scope: string; extraKnowledge?: FleetAgent["knowledge"] }): FleetAgent {
-  const vars = { seller_name: input.seller };
+function agent(input: {
+  workspaceId: string;
+  seller: string;
+  template: string;
+  scope: string;
+  /** What the live prompt contains when it differs from the stored template (edited by hand). */
+  livePrompt?: string;
+}): FleetAgent {
+  const vars = { seller_name: input.seller, company_name: "Villefer" };
   return {
     workspaceId: input.workspaceId,
     id: `agent_${input.workspaceId}`,
     name: `Pré-atendimento — ${input.seller}`,
-    systemPrompt: renderTemplate(input.template, vars),
+    systemPrompt: renderTemplate(input.livePrompt ?? input.template, vars),
     behaviorConfig: { packagePromptTemplate: input.template, deploymentVariables: vars },
     knowledge: [
       {
@@ -32,8 +39,7 @@ function agent(input: { workspaceId: string; seller: string; template: string; s
         title: "Escopo operacional aprovado",
         content: renderTemplate(input.scope, vars),
         metadata: { packageKnowledgeKey: "scope", packageContentTemplate: input.scope }
-      },
-      ...(input.extraKnowledge ?? [])
+      }
     ]
   };
 }
@@ -50,22 +56,32 @@ const entry: NewKnowledgeEntry = {
 };
 const common = { fixes, approvedBy: "Yohann", approvedAt: "2026-10-01T12:00:00.000Z" };
 
-describe("planFleetSync", () => {
-  const source = agent({ workspaceId: "w5", seller: "Junior", template: `${BASE}\n${EXTRA}`, scope: SCOPE });
-  const target = agent({ workspaceId: "w2", seller: "CLEITON PRESTES", template: BASE, scope: OLD_SCOPE });
+// Production reality: the master's prompt was edited by hand (it has EXTRA) while its stored template is stale.
+const source = agent({ workspaceId: "w5", seller: "Junior", template: BASE, livePrompt: `${BASE}\n${EXTRA}`, scope: SCOPE });
+const target = agent({ workspaceId: "w2", seller: "CLEITON PRESTES", template: BASE, scope: OLD_SCOPE });
 
-  it("propagates the new paragraph and keeps each seller's own name", () => {
+describe("planFleetSync", () => {
+  it("uses the master's live prompt (not its stale template) and keeps each seller's own name", () => {
     const plan = planFleetSync({ source, targets: [target], newKnowledge: [], ...common });
     const [t] = plan.targets;
 
     expect(planHasErrors(plan)).toBe(false);
     expect(t.prompt.changed).toBe(true);
     expect(t.prompt.after).toContain("CLEITON PRESTES");
+    expect(t.prompt.after).toContain("Villefer");
     expect(t.prompt.after).not.toContain("Junior");
     expect(lineDiff(t.prompt.before, t.prompt.after)).toEqual({ removed: [], added: [EXTRA] });
     expect(t.template.after).toContain("{{seller_name}}");
+    expect(t.template.after).toContain(EXTRA);
     expect(t.knowledgeUpdates).toHaveLength(1);
     expect(t.knowledgeUpdates[0].after).toContain("CLEITON PRESTES preparar a proposta, sem exigir confirmação final.");
+  });
+
+  it("realigns the master's own stale template without changing its prompt", () => {
+    const [t] = planFleetSync({ source, targets: [source], newKnowledge: [], ...common }).targets;
+
+    expect(t.prompt.changed).toBe(false);
+    expect(t.template.changed).toBe(true);
   });
 
   it("is idempotent: applying the plan and planning again changes nothing", () => {
@@ -99,41 +115,36 @@ describe("planFleetSync", () => {
     });
   });
 
-  it("fixes the 'Juniorr' typo in the master before copying", () => {
-    const typo = agent({ workspaceId: "w5", seller: "Junior", template: `${BASE}\n${EXTRA}`, scope: SCOPE.replace("{{seller_name}} preparar", "Juniorr preparar") });
-    const [t] = planFleetSync({ source: typo, targets: [target, typo], newKnowledge: [], ...common }).targets;
-
-    expect(t.knowledgeUpdates[0].after).not.toContain("Juniorr");
-    expect(applyFixes("Juniorr e Junior", fixes)).toBe("Junior e Junior");
-  });
-
-  it("turns the master's literal seller name into a variable so other sellers keep their own name", () => {
-    const literal = agent({ workspaceId: "w5", seller: "Junior", template: `${BASE}\n${EXTRA}`, scope: "Entrega a conversa para Juniorr preparar a proposta." });
+  it("fixes the 'Juniorr' typo and turns the master's literal seller name into a variable", () => {
+    const literal = agent({ workspaceId: "w5", seller: "Junior", template: BASE, livePrompt: `${BASE}\n${EXTRA}`, scope: "Entrega a conversa para Juniorr preparar a proposta." });
     const [t] = planFleetSync({ source: literal, targets: [target], newKnowledge: [], ...common }).targets;
 
     expect(t.knowledgeUpdates[0].after).toBe("Entrega a conversa para CLEITON PRESTES preparar a proposta.");
-    expect(t.knowledgeUpdates[0].after).not.toContain("Junior");
-    expect(templatize("Fale com Junior hoje. {{seller_name}} e Juniors", { seller_name: "Junior" })).toBe("Fale com {{seller_name}} hoje. {{seller_name}} e {{seller_name}}s");
+    expect(applyFixes("Juniorr e Junior", fixes)).toBe("Junior e Junior");
+    expect(templatize("Fale com Junior hoje. {{seller_name}} e Juniors", { seller_name: "Junior" })).toBe(
+      "Fale com {{seller_name}} hoje. {{seller_name}} e {{seller_name}}s"
+    );
   });
 
-  it("refuses to touch a target whose prompt is not its rendered template", () => {
-    const edited: FleetAgent = { ...target, systemPrompt: `${target.systemPrompt}\nAjuste manual.` };
+  it("refuses when the sync would delete lines the target has (possible manual edits)", () => {
+    const edited: FleetAgent = { ...target, systemPrompt: `${target.systemPrompt}\nAjuste manual importante.` };
     const plan = planFleetSync({ source, targets: [edited], newKnowledge: [], ...common });
 
     expect(planHasErrors(plan)).toBe(true);
-    expect(plan.targets[0].errors[0]).toContain("refusing to touch");
+    expect(plan.targets[0].errors[0]).toContain("would remove 1 line");
+    expect(plan.targets[0].errors[0]).toContain("Ajuste manual importante");
   });
 
   it("refuses when a deployment variable is missing", () => {
-    const broken: FleetAgent = { ...target, behaviorConfig: { ...target.behaviorConfig, deploymentVariables: {} }, systemPrompt: renderTemplate(BASE, {}) };
+    const broken: FleetAgent = { ...target, behaviorConfig: { ...target.behaviorConfig, deploymentVariables: { company_name: "Villefer" } } };
     const plan = planFleetSync({ source, targets: [broken], newKnowledge: [], ...common });
 
     expect(plan.targets[0].errors.join(" ")).toContain("seller_name");
   });
 
-  it("refuses to sync from a source whose prompt was edited outside its template", () => {
-    const plan = planFleetSync({ source: { ...source, systemPrompt: `${source.systemPrompt}\nManual.` }, targets: [target], newKnowledge: [], ...common });
+  it("refuses to sync from a source with an empty prompt", () => {
+    const plan = planFleetSync({ source: { ...source, systemPrompt: "  " }, targets: [target], newKnowledge: [], ...common });
 
-    expect(plan.errors[0]).toContain("Source prompt");
+    expect(plan.errors[0]).toContain("empty prompt");
   });
 });
