@@ -5,6 +5,12 @@ import { IngressPrivateStore } from './private-store.js';
 import { IngressJournal } from './journal.js';
 import { IngressApplicationService } from './application.js';
 import { IngressTransportConsumer } from './consumer.js';
+import { createEffectRunner, startEffectLoop } from './effect-runner.js';
+import { createMediaPrepareHandler } from './media-prepare-handler.js';
+import { createMessageMediaService } from '../conversations/message-media.js';
+import { MAX_SERVE_MEDIA_BYTES } from '../conversations/media-policy.js';
+import { createEvolutionClient } from '../evolution/evolution.client.js';
+import { createWahaClient } from '../waha/waha.client.js';
 
 /** Both milestones remain restricted to owned loopback test infrastructure.
  * Stage 1B applies messages but its effects have no handlers until stage 1C. */
@@ -22,9 +28,15 @@ export function readIngressEnvironment(env: NodeJS.ProcessEnv = process.env) {
   if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid ingress port');
   return { stage: env.INGRESS_TRANSPORT_STAGE!, databaseUrl, amqpUrl, namespace, privateRoot, workspaceAllowlist, port,
     evolutionSecret: env.INGRESS_EVOLUTION_SECRET ?? '', wahaSecret: env.INGRESS_WAHA_SECRET ?? '',
-    evolutionAliases: (env.INGRESS_EVOLUTION_ALIASES ?? '').split(',').filter(Boolean) };
+    evolutionAliases: (env.INGRESS_EVOLUTION_ALIASES ?? '').split(',').filter(Boolean),
+    // Effect handlers (stage 1C). Without a media store path this worker only applies receipts, as before.
+    mediaStorePath: env.TALK_MEDIA_STORE_PATH ?? '',
+    evolutionApi: env.EVOLUTION_API_BASE_URL && env.EVOLUTION_API_KEY ? { baseUrl: env.EVOLUTION_API_BASE_URL, apiKey: env.EVOLUTION_API_KEY } : null,
+    wahaApi: env.WAHA_API_BASE_URL && env.WAHA_API_KEY ? { baseUrl: env.WAHA_API_BASE_URL, apiKey: env.WAHA_API_KEY } : null };
 }
-export async function createIngressRuntime(config: Omit<ReturnType<typeof readIngressEnvironment>, 'stage'> & { stage?: string }, consume: boolean) {
+type RuntimeConfig = Omit<ReturnType<typeof readIngressEnvironment>, 'stage' | 'mediaStorePath' | 'evolutionApi' | 'wahaApi'> & { stage?: string }
+  & Partial<Pick<ReturnType<typeof readIngressEnvironment>, 'mediaStorePath' | 'evolutionApi' | 'wahaApi'>>;
+export async function createIngressRuntime(config: RuntimeConfig, consume: boolean) {
   const db = new PrismaClient({ datasources: { db: { url: config.databaseUrl } } });
   const files = new IngressPrivateStore(config.privateRoot); await files.initialize();
   const journal = new IngressJournal(db, files, config.workspaceAllowlist), abort = new AbortController();
@@ -48,6 +60,17 @@ export async function createIngressRuntime(config: Omit<ReturnType<typeof readIn
       await delay(500, undefined, { signal: abort.signal }).catch(() => {});
     }
   })();
+  // Durable effect handlers: media.prepare today; the others join as their handlers are written.
+  const effects = consume && config.mediaStorePath ? (async () => {
+    const mediaStore = new IngressPrivateStore(config.mediaStorePath!, MAX_SERVE_MEDIA_BYTES + 1024 * 1024); await mediaStore.initialize();
+    const media = createMessageMediaService({ db, store: mediaStore });
+    const handler = createMediaPrepareHandler({ journal, media,
+      waha: config.wahaApi ? createWahaClient(config.wahaApi) : null,
+      evolution: config.evolutionApi ? createEvolutionClient(config.evolutionApi) : null });
+    const runner = createEffectRunner({ db, workerId: `ingress-${process.pid}-${Math.random().toString(36).slice(2, 8)}`, handlers: { 'media.prepare': handler },
+      logger: { warn: (fields, message) => console.warn(message, fields) } });
+    return startEffectLoop(runner, { signal: abort.signal, onError: error => console.warn('Effect loop iteration failed', error) });
+  })() : null;
   let closing: Promise<void> | null = null;
   return { db, files, journal, publisher: () => publisher,
     close() {
@@ -57,6 +80,7 @@ export async function createIngressRuntime(config: Omit<ReturnType<typeof readIn
         // Retire current sessions immediately to unblock any loop-owned I/O.
         await Promise.all([consumer?.close(), publisher?.close()]);
         await loop;
+        await effects;
         // Setup already in flight when abort arrived may have assigned a session.
         await Promise.all([consumer?.close(), publisher?.close()]);
         await db.$disconnect();

@@ -1420,6 +1420,47 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  describe("durable media copy on the legacy webhook", () => {
+    const imageBody = (id: string) => ({ ...validWebhookBody, data: { ...validWebhookBody.data, key: { ...validWebhookBody.data.key, id },
+      message: { base64: "aW1hZ2Vt", imageMessage: { caption: "Comprovante", mimetype: "image/jpeg", url: "https://media.example.com/image.jpg" } } } });
+    const send = (app: Awaited<ReturnType<typeof buildEvolutionApp>>["app"], payload: unknown) =>
+      app.inject({ method: "POST", url: "/webhooks/evolution/workspace_a", headers: { "x-prymeira-talk-secret": "top_secret" }, payload: payload as never });
+
+    it("prepares the saved attachment with an Evolution fetch as the fallback source", async () => {
+      const prisma = createMockPrisma();
+      const prepare = vi.fn().mockResolvedValue({ state: "stored", playback: "not_applicable" });
+      const fetchMedia = vi.fn().mockResolvedValue("data:image/jpeg;base64,aW1hZ2Vt");
+      const { app } = await buildEvolutionApp(prisma, undefined, { durableMedia: { prepare }, evolutionClient: { fetchMedia } });
+      try {
+        expect((await send(app, imageBody("provider_image_durable"))).statusCode).toBe(200);
+        expect(prepare).toHaveBeenCalledTimes(1);
+        const call = prepare.mock.calls[0]![0];
+        expect(call).toMatchObject({ workspaceId: "workspace_a", messageId: expect.any(String) });
+        expect(call.fetchers).toHaveLength(1);
+        await call.fetchers[0].fetch();
+        expect(fetchMedia).toHaveBeenCalledWith({ instanceName: validWebhookBody.instance, id: "provider_image_durable" });
+      } finally { await app.close(); }
+    });
+
+    it("never fails or delays the webhook because the durable copy failed, and ignores text messages", async () => {
+      const prisma = createMockPrisma();
+      const prepare = vi.fn().mockRejectedValue(new Error("disk full"));
+      const { app } = await buildEvolutionApp(prisma, undefined, { durableMedia: { prepare } });
+      try {
+        expect((await send(app, imageBody("provider_image_failing"))).statusCode).toBe(200);
+        expect(prepare).toHaveBeenCalledTimes(1);
+        expect((await send(app, validWebhookBody)).statusCode).toBe(200);
+        expect(prepare).toHaveBeenCalledTimes(1);
+      } finally { await app.close(); }
+    });
+
+    it("keeps the legacy behaviour untouched when no durable store is configured", async () => {
+      const prisma = createMockPrisma();
+      const { app } = await buildEvolutionApp(prisma);
+      try { expect((await send(app, imageBody("provider_image_legacy"))).statusCode).toBe(200); } finally { await app.close(); }
+    });
+  });
+
   it("stores Evolution audio and sticker messages with non-empty previews", async () => {
     const prisma = createMockPrisma();
     const { app } = await buildEvolutionApp(prisma);

@@ -23,6 +23,7 @@ import { createEffectRunner } from './effect-runner.js';
 import { createMediaPrepareHandler } from './media-prepare-handler.js';
 import { createMessageMediaService } from '../conversations/message-media.js';
 import { join } from 'node:path';
+import http from 'node:http';
 const databaseUrl = process.env.MESSAGING_TEST_DATABASE_URL, brokerUrl = process.env.INGRESS_TEST_AMQP_URL;
 const peer = '15550001111@s.whatsapp.net', secret = 'application-fixture-only';
 async function until<T>(read: () => Promise<T>, predicate: (value: T) => boolean) {
@@ -721,6 +722,34 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             const row = await db.messageMedia.findUniqueOrThrow({ where: { messageId: message.id } });
             expect(row).toMatchObject({ state: 'stored', sourceKind: 'waha', mimeType: 'image/png' });
             expect((await media.read({ workspaceId: f.workspaceId, conversationId: message.conversationId, messageId: message.id }))?.bytes.equals(PNG)).toBe(true);
+        });
+        it('the compiled worker executes media.prepare by itself: webhook -> Message -> effect -> stored original', async () => {
+            const f = await fixture();
+            const requests: string[] = [];
+            const evolutionApi = http.createServer((req, res) => {
+                requests.push(`${req.method} ${req.url}`);
+                req.resume();
+                req.on('end', () => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ base64: PNG.toString('base64'), mimetype: 'image/png' })); });
+            });
+            await new Promise<void>(resolve => evolutionApi.listen(0, '127.0.0.1', resolve));
+            const mediaRoot = join(root, `worker-media-${randomUUID()}`);
+            const child = spawn(process.execPath, ['dist/ingress-worker.js'], { cwd: process.cwd(), stdio: 'pipe', env: { ...process.env, DATABASE_URL: databaseUrl, INGRESS_TRANSPORT_STAGE: 'isolated-1b', INGRESS_AMQP_URL: brokerUrl, INGRESS_NAMESPACE: f.namespace,
+                INGRESS_PRIVATE_ROOT: root, INGRESS_WORKSPACE_ALLOWLIST: f.workspaceId, TALK_MEDIA_STORE_PATH: mediaRoot,
+                EVOLUTION_API_BASE_URL: `http://127.0.0.1:${(evolutionApi.address() as { port: number }).port}`, EVOLUTION_API_KEY: 'test-only' } });
+            children.push(child);
+            try {
+                await f.send('evolution', { key: { id: 'worker-media', remoteJid: peer, fromMe: false }, message: { imageMessage: { url: 'https://media.invalid/expired', mimetype: 'image/png' } } });
+                const stored = await until(() => db.messageMedia.findFirst({ where: { workspaceId: f.workspaceId } }), v => v?.state === 'stored');
+                expect(stored).toMatchObject({ mimeType: 'image/png', sourceKind: 'evolution', sizeBytes: PNG.length });
+                expect(await until(() => db.ingressEffect.findFirstOrThrow({ where: { workspaceId: f.workspaceId, kind: 'media.prepare' } }), v => v.state === 'done')).toMatchObject({ attempts: 1 });
+                expect(requests).toEqual([expect.stringMatching(/^POST \/chat\/getBase64FromMediaMessage\//)]);
+                // Effects without a handler yet stay pending obligations, untouched.
+                expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId, state: 'pending' } })).toBeGreaterThan(0);
+            } finally {
+                child.kill('SIGTERM');
+                await until(async () => child.exitCode, v => v !== null);
+                await new Promise<void>(resolve => evolutionApi.close(() => resolve()));
+            }
         });
         it('retries a provider outage, then fails visibly and recovers after an operator requeue without a duplicate effect', async () => {
             const f = await fixture();

@@ -483,7 +483,9 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     agentImprovements,
     agentRuntime,
     agentReplyScheduler,
-    evolution: evolutionRuntime
+    evolution: evolutionRuntime,
+    durableMedia: durableMedia?.media,
+    evolutionClient: evolutionRuntime.client
   });
   await app.register(metaWebhooksRoutes, { assistantScheduler, handoffBriefService, inboxTriage });
   await app.register(conversationsRoutes, {

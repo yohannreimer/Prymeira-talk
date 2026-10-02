@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 /** Durable executor for `ingress_effects`. Rows are created in the same transaction as the Message
@@ -151,4 +152,16 @@ export function createEffectRunner(options: EffectRunnerOptions) {
   }
 
   return { claim, finish, extendLease, runOnce, drain, requeue };
+}
+
+/** Runs the runner until `signal` aborts: drains what is claimable, sleeps when idle, never throws. */
+export function startEffectLoop(runner: { drain(limit?: number, signal?: AbortSignal): Promise<number> },
+  options: { signal: AbortSignal; idleMs?: number; onError?: (error: unknown) => void }) {
+  return (async () => {
+    while (!options.signal.aborted) {
+      let ran = 0;
+      try { ran = await runner.drain(25, options.signal); } catch (error) { options.onError?.(error); }
+      if (ran === 0) await delay(options.idleMs ?? 1_000, undefined, { signal: options.signal }).catch(() => undefined);
+    }
+  })();
 }

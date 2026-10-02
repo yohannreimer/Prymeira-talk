@@ -43,6 +43,9 @@ import { decryptEncryptedMessageEdit, extractEncryptedMessageEdit, isEncryptedCo
 
 export interface EvolutionRoutesOptions {
   waha?: WahaRuntime;
+  /** Durable private copy of attachments, filled best-effort right after the message is saved. */
+  durableMedia?: Pick<import('../conversations/message-media.js').MessageMediaService, 'prepare'>;
+  evolutionClient?: Pick<import('./evolution.client.js').EvolutionClient, 'fetchMedia'> | null;
   messageHistory?: Pick<EvolutionHistorySource, "findMessage">;
   historyBackfill?: (input: { workspaceId: string; channelId: string; conversationId: string; providerKey: string; remoteJid: string; identity: string; pushName: string | null }) => Promise<void>;
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
@@ -723,6 +726,15 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         workspaceId,
         payload: toConversationDto(conversation)
       });
+
+      if (options.durableMedia && ['audio', 'image', 'file'].includes(messageContent.type)) {
+        // Best effort and after realtime: every reader still falls back to the legacy path if this fails.
+        const client = options.evolutionClient;
+        const providerId = payload.data.key.id;
+        await options.durableMedia.prepare({ workspaceId, messageId: message.id,
+          fetchers: client?.fetchMedia ? [{ name: 'evolution', fetch: async () => ({ mediaUrl: await client.fetchMedia!({ instanceName: payload.instance, id: providerId }) }) }] : [] })
+          .catch((error: unknown) => { request.log.warn({ err: error, messageId: message.id }, 'Durable media preparation failed.'); });
+      }
 
       // Historical sync may need several provider requests. Never hold the live
       // webhook or the realtime notification while those older messages load.
