@@ -70,7 +70,9 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     await tx.canonicalAddressAlias.create({ data: { ...scope, addressId: created.id, address: normalized } });
     return created.id;
   }
-  async function chat(tx: Tx, scope: Scope, addressId: string, createConversation: boolean, name: string | null = null, historical = false): Promise<CanonicalChat> {
+  /** Every conversation that claims the chat: contacts whose phone is any alias in the address family plus the
+   * members already recorded. More than one claimant means no conversation may operate it without a decision. */
+  async function claimants(tx: Tx, scope: Scope, addressId: string) {
     const g = await graph(tx, scope), root = g.root(addressId), family = g.family(root);
     let result = await tx.canonicalChat.findUnique({ where: { workspaceId_channelId_addressId: { ...scope, addressId: root } } });
     if (!result) result = await tx.canonicalChat.create({ data: { ...scope, addressId: root } });
@@ -81,6 +83,11 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     const familyChats = await tx.canonicalChat.findMany({ where: { ...scope, addressId: { in: family } } });
     const members = await tx.canonicalChatMember.findMany({ where: { ...scope, chatId: { in: familyChats.map(c => c.id) } } });
     const ids = new Set([...existing.map(c => c.id), ...members.map(m => m.conversationId)]);
+    return { root, family, result, aliases, contacts, familyChats, ids };
+  }
+  async function chat(tx: Tx, scope: Scope, addressId: string, createConversation: boolean, name: string | null = null, historical = false): Promise<CanonicalChat> {
+    const { family, aliases, contacts, familyChats, ids, ...claimed } = await claimants(tx, scope, addressId);
+    let result = claimed.result;
     if (ids.size === 0 && createConversation) {
       const preferred = aliases.find(a => a.address.endsWith('@s.whatsapp.net'))?.address ?? aliases[0]!.address;
       const phone = preferred.endsWith('@s.whatsapp.net') ? normalizePhoneForStorage(preferred.split('@')[0]!) : preferred;
@@ -96,11 +103,16 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     // Preserve all original members and message origin FKs; only the root gets authority.
     await tx.canonicalChat.updateMany({ where: { ...scope, id: { in: familyChats.filter(c => c.id !== result!.id).map(c => c.id) } },
       data: { state: 'redirected', operationConversationId: null, reviewReason: 'address_redirect' } });
-    const state = ids.size > 1 ? 'review' : 'active';
-    const operationConversationId = ids.size === 1 ? [...ids][0]! : null;
+    // An operator's explicit choice holds only while the claimants are exactly those it was made for;
+    // a new claimant puts the chat back under review instead of silently inheriting the decision.
+    const resolution = ids.size > 1 ? await tx.canonicalChatAuthorityResolution.findUnique({ where: { workspaceId_channelId_chatId: { ...scope, chatId: result.id } } }) : null;
+    const resolvedFor = Array.isArray(resolution?.memberConversationIds) ? new Set(resolution!.memberConversationIds as string[]) : new Set<string>();
+    const resolved = !!resolution && ids.has(resolution.conversationId) && [...ids].every(id => resolvedFor.has(id));
+    const state = ids.size > 1 && !resolved ? 'review' : 'active';
+    const operationConversationId = ids.size === 1 ? [...ids][0]! : resolved ? resolution!.conversationId : null;
     if (result.state !== state || result.operationConversationId !== operationConversationId) {
       result = await tx.canonicalChat.update({ where: { id: result.id }, data: { state, operationConversationId,
-        reviewReason: ids.size > 1 ? 'multiple_conversation_authorities' : null, revision: { increment: 1 } } });
+        reviewReason: state === 'review' ? 'multiple_conversation_authorities' : null, revision: { increment: 1 } } });
     }
     return result;
   }
@@ -539,8 +551,47 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     await tx.canonicalObservation.update({ where: { id: observation.id }, data: { resolutionEvidence: json({ ...proof, resolution: { kind: 'persisted_dispatch_settlement', resolutions } }) } });
     return persistObservationInTransaction(tx, event, { receiptKey: String(Array.isArray(observation.receiptTuple) ? observation.receiptTuple.at(-1) : '') }, { observation, staleFact, known: classification.kind === 'known' });
   }
+  const AMBIGUOUS_SEND_STATES = ['dispatching', 'accepted_unbound', 'uncertain', 'review'];
+  /** Explicit, audited choice of the one existing conversation that operates a chat several conversations claim.
+   * Nothing is moved or merged: UUIDs, settings and history stay where they are and the members remain readable
+   * together. Refused while any send for the chat has an unknown outcome or an address mapping is disputed. */
+  async function resolveAuthorityInTransaction(tx: Tx, input: Scope & { chatId: string; conversationId: string; resolvedBy: string }) {
+    await enterCanonicalWorkspaceTransaction(tx, input.workspaceId);
+    const scope = { workspaceId: input.workspaceId, channelId: input.channelId };
+    await tx.$queryRaw`SELECT id FROM channels WHERE workspace_id=${scope.workspaceId} AND id=${scope.channelId}::uuid FOR UPDATE`;
+    const target = await tx.canonicalChat.findFirst({ where: { ...scope, id: input.chatId } });
+    if (!target) return { ok: false as const, reason: 'chat_not_found' };
+    const { family, familyChats, ids, result } = await claimants(tx, scope, target.addressId);
+    if (result.id !== target.id) return { ok: false as const, reason: 'chat_redirected' };
+    if (ids.size < 2) return { ok: false as const, reason: 'no_competing_conversations' };
+    if (!ids.has(input.conversationId)) return { ok: false as const, reason: 'conversation_not_a_member' };
+    if (await tx.canonicalAddress.count({ where: { ...scope, id: { in: family }, state: 'review' } })) return { ok: false as const, reason: 'address_mapping_conflict' };
+    if (await tx.outboundIntent.count({ where: { ...scope, chatId: { in: familyChats.map(c => c.id) }, state: { in: AMBIGUOUS_SEND_STATES } } })) return { ok: false as const, reason: 'send_outcome_unknown' };
+    const memberConversationIds = [...ids].sort();
+    await tx.canonicalChatAuthorityResolution.upsert({ where: { workspaceId_channelId_chatId: { ...scope, chatId: result.id } },
+      create: { ...scope, chatId: result.id, conversationId: input.conversationId, memberConversationIds: json(memberConversationIds), resolvedBy: input.resolvedBy },
+      update: { conversationId: input.conversationId, memberConversationIds: json(memberConversationIds), resolvedBy: input.resolvedBy, createdAt: new Date() } });
+    const resolved = await chat(tx, scope, target.addressId, false);
+    if (resolved.state !== 'active' || resolved.operationConversationId !== input.conversationId) throw new Error('Authority resolution did not take effect');
+    return { ok: true as const, chatId: resolved.id, operationConversationId: input.conversationId, retiredConversationIds: memberConversationIds.filter(id => id !== input.conversationId) };
+  }
+  /** Message observations held only because the chat had no single operating conversation. They are applied now as
+   * conserved history: the content is kept in order, but an old fact never triggers agents, automations or unread. */
+  async function replayAuthorityHeldInTransaction(tx: Tx, input: Scope & { chatId: string }) {
+    await enterCanonicalWorkspaceTransaction(tx, input.workspaceId);
+    const held = await tx.canonicalObservation.findMany({ where: { workspaceId: input.workspaceId, channelId: input.channelId, kind: 'message', state: 'held',
+      reason: { in: ['multiple_conversation_authorities', 'missing_conversation_authority'] } }, orderBy: { receivedAt: 'asc' } });
+    const results: CanonicalStoreResult[] = [];
+    for (const observation of held) {
+      const event = observation.payload as unknown as MessageEvent;
+      const options = { receiptKey: String(Array.isArray(observation.receiptTuple) ? observation.receiptTuple.at(-1) : '') };
+      const outcome = await persistObservationInTransaction(tx, event, options, { observation, staleFact: true, known: false });
+      if (outcome.chatId === input.chatId || outcome.outcome !== 'held') results.push(outcome);
+    }
+    return results;
+  }
   async function persistInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) { return persistObservationInTransaction(tx, event, options); }
   return { ...createCanonicalReads({ hash }), resolveProviderReferenceInTransaction, persistInTransaction, reconcileRevisionInTransaction, reconcileSnapshotInTransaction, reconciliationFrontierInTransaction, recoverPendingInTransaction,
-    reprocessHeldMessageObservationInTransaction, applyDispatchMappingsInTransaction,
+    reprocessHeldMessageObservationInTransaction, applyDispatchMappingsInTransaction, resolveAuthorityInTransaction, replayAuthorityHeldInTransaction,
     persist: (db: PrismaClient, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) => db.$transaction(tx => persistInTransaction(tx, event, options), { isolationLevel: 'ReadCommitted' }) };
 }

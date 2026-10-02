@@ -4028,3 +4028,24 @@ export function apiGetLeadComposerDraft(getToken: TokenProvider, conversationId:
 export async function apiUpdateModules(getToken: () => Promise<string | null>, modules: { campaignProspecting: boolean }): Promise<SettingsDto> {
   return fetchJson(getToken, "/settings/modules", { method: "PATCH", body: JSON.stringify(modules) }, parseSettings, "Não foi possível salvar os módulos.");
 }
+
+export interface AuthorityReviewConversation { id: string; contactName: string | null; contactPhone: string; status: string; assignedTo: string | null; aiControlStatus: string; unreadCount: number; messageCount: number; lastMessageAt: string | null; lastMessagePreview: string | null }
+export interface AuthorityReviewItem { chatId: string; channelId: string; address: string; conversations: AuthorityReviewConversation[] }
+
+/** Chats claimed by more than one conversation. Only owners and managers see them: a 403 means "nothing to show". */
+export async function apiListConversationAuthority(getToken: () => Promise<string | null>): Promise<AuthorityReviewItem[]> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/conversation-authority`, { headers: { Authorization: `Bearer ${token}` } });
+  if (response.status === 403) return [];
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível carregar as conversas duplicadas'));
+  const data = await response.json() as { items?: AuthorityReviewItem[] };
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+export async function apiResolveConversationAuthority(getToken: () => Promise<string | null>, chatId: string, conversationId: string): Promise<void> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/conversation-authority/${encodeURIComponent(chatId)}/resolve`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId })
+  });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível escolher a conversa'));
+}

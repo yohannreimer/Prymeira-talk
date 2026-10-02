@@ -492,6 +492,7 @@ model Conversation {
   @@map("conversations")
   canonicalMembers CanonicalChatMember[]
   canonicalOperations CanonicalChat[]
+  authorityResolutions CanonicalChatAuthorityResolution[]
   canonicalIdentities CanonicalMessageIdentity[]
   @@unique([workspaceId, channelId, id])
   outboundIntents OutboundIntent[]
@@ -1508,11 +1509,28 @@ model CanonicalChat {
   operationConversation Conversation? @relation(fields: [workspaceId, channelId, operationConversationId], references: [workspaceId, channelId, id], onDelete: NoAction)
   members CanonicalChatMember[]
   messages CanonicalMessageIdentity[]
+  authorityResolution CanonicalChatAuthorityResolution?
   @@unique([workspaceId, channelId, id])
   @@unique([workspaceId, channelId, addressId])
   @@map("canonical_chats")
   outboundIntents OutboundIntent[]
   outboundRecertifications OutboundRecertification[]
+}
+/// An operator's explicit choice of which existing conversation operates a chat that several conversations claim.
+/// It holds only while the members are exactly those that existed when it was made.
+model CanonicalChatAuthorityResolution {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  chatId String @map("chat_id") @db.Uuid
+  conversationId String @map("conversation_id") @db.Uuid
+  memberConversationIds Json @map("member_conversation_ids")
+  resolvedBy String @map("resolved_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  chat CanonicalChat @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: Cascade, map: "canonical_chat_authority_resolutions_chat_fkey")
+  conversation Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade, map: "canonical_chat_authority_resolutions_conversation_fkey")
+  @@unique([workspaceId, channelId, chatId])
+  @@map("canonical_chat_authority_resolutions")
 }
 model CanonicalChatMember {
   id String @id @default(uuid()) @db.Uuid

@@ -107,6 +107,18 @@ Decisão: `evolution.routes.ts` (webhook legado da Evolution) e `meta.webhooks.r
 
 Para o cutover não duplicar nem perder eventos, `LEGACY_WEBHOOK_DELEGATED_WORKSPACES` (ids separados por vírgula ou `*`; padrão vazio = nada muda) faz as duas rotas legadas responderem `409 delegated_to_ingress` para esses workspaces, com log de aviso, sem gravar nada. A autenticação continua antes (segredo/assinatura inválida segue 401). 409 em vez de 200 é deliberado: um webhook ainda apontado para a rota antiga falha de forma visível em vez de sumir em silêncio. Ordem de cutover: ingresso e worker no ar com `TALK_MEDIA_STORE_PATH` e `EFFECTS_ENABLED`, webhook do provedor apontado para o ingresso, só então listar o workspace aqui. Testes: `evolution.routes.test.ts`, `meta.webhooks.routes.test.ts`, `env.test.ts`.
 
+### 2a-resolução: autoridade operacional de conversas duplicadas
+
+Quando PN e LID comprovadamente são a mesma pessoa e já existem duas conversas (um contato com telefone, outro com `@lid`), o chat canônico fica em `review` (`multiple_conversation_authorities`) e as mensagens novas ficam retidas. Agora um dono ou gerente resolve explicitamente em Canais > "Conversas duplicadas" (`GET /channels/conversation-authority`, `POST /channels/conversation-authority/:chatId/resolve`).
+
+- **Nada é unido nem apagado**: as duas conversas mantêm UUIDs, configurações e histórico (os membros do chat canônico continuam lendo juntos). A escolhida passa a operar o chat; mensagens novas de qualquer grafia (PN ou LID) entram nela.
+- **Decisão persistida** em `canonical_chat_authority_resolutions` (migração aditiva `20261002150000`), válida apenas enquanto os reivindicantes forem exatamente os do momento da escolha: um terceiro contato do mesmo número devolve o chat para revisão.
+- **Recusas**: conversa que não é membro, envio com resultado desconhecido no chat (`dispatching/accepted_unbound/uncertain/review`), envio de prospecção sem confirmação em outra conversa e mapeamento de endereço em conflito.
+- **A(s) conversa(s) aposentada(s) param de agir sozinhas**: controle humano, sessão de agente fechada, resposta pendente cancelada, follow-ups cancelados e rascunho do assistente obsoleto. Nenhuma linha é removida.
+- **Mensagens retidas por falta de decisão** são reaplicadas na mesma transação como história conservada (sem agentes, automações nem não lidas; prévia e atividade só avançam). As linhas de progresso do ingresso são fatos imutáveis e permanecem como estavam; a observação canônica aplicada é a prova da recuperação.
+
+Cobertura: `conversation-authority.postgres.test.ts` (3 cenários com PostgreSQL), rotas e painel (`conversation-authority.routes.test.ts`, `ConversationAuthorityPanel.test.tsx`).
+
 ## Critérios de publicação pendentes
 
 Checkpoint canônico integrado aprovado em `117fd9f`: redutores persistentes de edições, exclusões, recibos, certificados e snapshots, com proteção cumulativa dos metadados entre páginas. Conformidade e qualidade independentes encerraram os achados de aliases após união PN/LID, fronteira de recuperação, recibos conflitantes e metadados incompatíveis. Os 164 testes canônicos com PostgreSQL passaram; a última revisão de qualidade executou 33 casos focados e quatro reproduções independentes. As consultas e escritores atuais ainda serão convertidos: essa aprovação não ativa a deduplicação em produção.
