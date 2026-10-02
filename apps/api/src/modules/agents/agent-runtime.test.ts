@@ -687,6 +687,65 @@ describe("createAgentRuntime", () => {
     expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ body: expect.stringContaining("Tubo aço\t12\t50 x 30 x 2 mm"), metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "processed" }) }) }) });
   });
 
+  describe("image and document reading through the durable copy", () => {
+    const policy = { kind: "image" as const, maxBytes: 8 * 1024 * 1024, allowedMimeTypes: new Set(["image/png", "image/jpeg"]) };
+    const expired = { ...baseMessage, type: "image", body: "Vocês trabalham com isto?", mediaUrl: "https://mmg.whatsapp.net/expired.enc" };
+    const run = (runtime: ReturnType<typeof createAgentRuntime>) => runtime.runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation"
+    });
+    const generation = () => buildProvider({ confidence: 0.9, reply: "ok", actions: [], handoff: { required: false, reason: null } });
+    const readsThrough = vi.fn(async (args: { mediaResolver: (input: { mediaUrl: string | null | undefined; policy: typeof policy }) => Promise<{ bytes: Buffer; mimeType: string; source: string }> ; mediaUrl?: string | null }) => {
+      const media = await args.mediaResolver({ mediaUrl: args.mediaUrl, policy });
+      return { kind: "image", status: "processed", extractedText: `lido de ${media.source}:${media.bytes.toString()}` };
+    });
+
+    it("hands the preparer a resolver that serves the durable original, so an expired provider URL no longer blocks the read", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(expired);
+      vi.mocked(prisma.message.findMany).mockResolvedValue([expired]);
+      const legacy = vi.fn().mockRejectedValue(new Error("expired"));
+      const read = vi.fn().mockResolvedValue({ bytes: Buffer.from("png-original"), mimeType: "image/png" });
+      const runtime = createAgentRuntime({ prisma, provider: generation(), mediaResolver: legacy, mediaPreparer: readsThrough as never, durableMedia: { read } });
+
+      await run(runtime);
+
+      expect(read).toHaveBeenCalledWith({ workspaceId: ids.workspace, conversationId: expired.conversationId, messageId: ids.message, variant: "original" });
+      expect(legacy).not.toHaveBeenCalled();
+      expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ body: expect.stringContaining("lido de durable:png-original") }) });
+    });
+
+    it("keeps the caller's processing limit and allowed types for the durable original", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(expired);
+      vi.mocked(prisma.message.findMany).mockResolvedValue([expired]);
+      const tooBig = vi.fn().mockResolvedValue({ bytes: Buffer.alloc(8 * 1024 * 1024 + 1), mimeType: "image/png" });
+      const wrongType = vi.fn().mockResolvedValue({ bytes: Buffer.from("x"), mimeType: "image/gif" });
+      for (const [read, code] of [[tooBig, "MEDIA_TOO_LARGE"], [wrongType, "UNSUPPORTED_MEDIA_TYPE"]] as const) {
+        const preparer = vi.fn(async (args: { mediaResolver: (input: { mediaUrl: string | null | undefined; policy: typeof policy }) => Promise<unknown> }) => {
+          try { await args.mediaResolver({ mediaUrl: null, policy }); return { kind: "image", status: "processed", extractedText: "x" }; }
+          catch (error) { return { kind: "image", status: "failed", errorCode: (error as { code: string }).code }; }
+        });
+        const runtime = createAgentRuntime({ prisma, provider: generation(), mediaPreparer: preparer as never, durableMedia: { read } });
+        await run(runtime);
+        expect(preparer).toHaveBeenCalledTimes(1);
+        expect(await preparer.mock.results[0]!.value).toMatchObject({ status: "failed", errorCode: code });
+      }
+    });
+
+    it("falls back to the legacy resolver when no durable copy exists", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(expired);
+      vi.mocked(prisma.message.findMany).mockResolvedValue([expired]);
+      const legacy = vi.fn().mockResolvedValue({ bytes: Buffer.from("via-url"), mimeType: "image/png", source: "remote" });
+      const runtime = createAgentRuntime({ prisma, provider: generation(), mediaResolver: legacy, mediaPreparer: readsThrough as never, durableMedia: { read: vi.fn().mockResolvedValue(null) } });
+
+      await run(runtime);
+
+      expect(legacy).toHaveBeenCalledTimes(1);
+      expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ body: expect.stringContaining("lido de remote:via-url") }) });
+    });
+  });
+
   it("reads images in the customer burst before answering a later text message", async () => {
     const first = { ...baseMessage, id: "image_1", type: "image", body: "Imagem recebida", mediaUrl: "data:image/jpeg;base64,aW1hZ2Vt", createdAt: new Date(now.getTime() - 60_000), metadata: {} };
     const second = { ...first, id: "image_2", createdAt: new Date(now.getTime() - 30_000) };

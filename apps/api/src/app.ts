@@ -30,6 +30,7 @@ import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.
 import { automationsRoutes } from "./modules/automations/automations.routes.js";
 import { assistantRoutes } from "./modules/assistant/assistant.routes.js";
 import { createAssistantScheduler } from './modules/assistant/assistant-scheduler.js';
+import { createAssistantGeneration } from './modules/assistant/assistant-generation.js';
 import { createAssistantHistoryImporter } from './modules/assistant/assistant-history.js';
 import { createEvolutionHistorySource } from './modules/evolution/evolution-history.js';
 import { prepareInboundMedia } from './modules/agents/inbound-media.js';
@@ -460,7 +461,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     : createAssistantHistoryImporter(app.prisma, evolutionHistorySource, {
         prepareMedia: async ({ workspaceId, mediaUrl, kind }) => prepareInboundMedia({ settings: await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId }), mediaUrl, kind })
       });
-  const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { prepareContext: prepareAssistantHistory, onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });
+  const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { generate: createAssistantGeneration(app.prisma, { durableMedia: durableMedia?.media, transcriptions: durableMedia?.transcriptions }), prepareContext: prepareAssistantHistory, onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });
   assistantScheduler?.start();
   app.addHook('onClose', async () => { assistantScheduler?.stop(); handoffBriefService?.stop(); });
   await app.register(evolutionRoutes, {

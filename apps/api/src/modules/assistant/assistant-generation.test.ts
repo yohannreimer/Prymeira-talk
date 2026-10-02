@@ -54,6 +54,55 @@ describe('private read-only generation', () => {
     expect(input.context.conversationHistory).not.toContain(ids[0]);
     expect(result.warnings).toEqual([expect.stringContaining('920ebdb3')]);
   });
+  describe('through the durable copy and the shared transcription job', () => {
+    const audio = { ...context.messages[0], id: 'live-audio', conversationId: 'c', type: 'audio' as const, body: 'Áudio recebido', mediaUrl: 'https://provider.invalid/expired.enc', createdAt: new Date('2026-10-02T12:00:00Z'), metadata: {} };
+    const withJob = (run: ReturnType<typeof vi.fn>, durable?: { read: ReturnType<typeof vi.fn> }) => {
+      const base = setup();
+      return { ...base, run: createAssistantGeneration(base.db, { providerFactory: () => ({ generate: base.generate }), mediaPreparer: base.mediaPreparer,
+        transcriptions: { run } as never, ...(durable ? { durableMedia: durable as never } : {}) }) };
+    };
+
+    it('transcribes through the shared job once, shows the text without duplicating the placeholder, and lets the click retry', async () => {
+      const run = vi.fn(async (job: { work: () => Promise<{ text: string }> }) => ({ status: 'completed' as const, text: 'quero 10 chapas de 2 mm', message: null, job }));
+      const { run: generateDraft, generate, mediaPreparer } = withJob(run);
+      await generateDraft({ ...context, messages: [context.messages[0], audio] });
+      expect(mediaPreparer).not.toHaveBeenCalled();
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'w', conversationId: 'c', messageId: 'live-audio', retryFailed: true }));
+      const history = generate.mock.calls[0][0].context.conversationHistory as string;
+      expect(history).toContain('quero 10 chapas de 2 mm');
+      expect(history).not.toContain('Áudio recebido');
+    });
+
+    it('reuses a transcription that is already finished instead of calling the job or the provider', async () => {
+      const run = vi.fn();
+      const done = { ...audio, body: 'texto já transcrito', metadata: { transcription: { status: 'completed' } } };
+      const { run: generateDraft, generate } = withJob(run);
+      await generateDraft({ ...context, messages: [context.messages[0], done] });
+      expect(run).not.toHaveBeenCalled();
+      expect(generate.mock.calls[0][0].context.conversationHistory).toContain('texto já transcrito');
+    });
+
+    it('marks the audio unread (never guessed) when the job fails or is still running', async () => {
+      for (const outcome of [{ status: 'failed', errorCode: 'MEDIA_TOO_LARGE', message: null }, { status: 'in_progress' }]) {
+        const { run: generateDraft, generate } = withJob(vi.fn(async () => outcome));
+        await generateDraft({ ...context, messages: [context.messages[0], audio] });
+        expect(generate.mock.calls[0][0].context.conversationHistory).toContain('[Anexo não lido; ID A1');
+      }
+    });
+
+    it('hands the media preparer the durable resolver for images and documents', async () => {
+      const read = vi.fn().mockResolvedValue({ bytes: Buffer.from('png'), mimeType: 'image/png' });
+      const image = { ...audio, id: 'live-image', type: 'image' as const, body: 'Imagem recebida' };
+      const { run: generateDraft, mediaPreparer } = withJob(vi.fn(), { read });
+      mediaPreparer.mockImplementation(async (args: { mediaResolver: (i: unknown) => Promise<{ source: string }> }) => {
+        const media = await args.mediaResolver({ mediaUrl: null, policy: { kind: 'image', maxBytes: 8 * 1024 * 1024, allowedMimeTypes: new Set(['image/png']) } });
+        return { kind: 'image', status: 'processed', extractedText: `de ${media.source}` };
+      });
+      await generateDraft({ ...context, messages: [context.messages[0], image] });
+      expect(read).toHaveBeenCalledWith({ workspaceId: 'w', conversationId: 'c', messageId: 'live-image', variant: 'original' });
+      expect(mediaPreparer).toHaveBeenCalledTimes(1);
+    });
+  });
   it('uses extracted historical seller attachments and keeps their dates explicit', async () => {
     const { run, generate, mediaPreparer } = setup();
     const m = { ...context.messages[0], id:'proposal',direction:'outbound' as const,type:'file' as const,mediaUrl:'url',createdAt:new Date('2026-08-20T12:00:00Z'),metadata:{} };

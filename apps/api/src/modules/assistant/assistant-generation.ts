@@ -4,7 +4,10 @@ import { AssistantError, type AssistantDb } from './assistant-access.js';
 import { resolveConversationAssistant } from './assistant-policy.js';
 import { resolveOpenAiCompatibleSettings } from '../agents/ai-provider-settings.js';
 import { createOpenAiCompatibleAgentProvider, readAgentReasoningEffort, type AgentProvider } from '../agents/provider-gateway.js';
-import { prepareInboundMedia, formatProcessedMediaMessage, type InboundMediaResult } from '../agents/inbound-media.js';
+import { prepareInboundMedia, formatProcessedMediaMessage, transcribeInboundAudio, INBOUND_MEDIA_MIME_TYPES, MAX_INBOUND_MEDIA_BYTES, type InboundMediaResult } from '../agents/inbound-media.js';
+import { durableMediaResolverFor } from '../agents/durable-media-resolver.js';
+import type { MessageMediaService } from '../conversations/message-media.js';
+import type { MessageTranscriptionService } from '../conversations/message-transcription.js';
 import { selectRelevantKnowledge } from '../agents/knowledge-retrieval.js';
 import { readKnowledgeTaxonomy } from '../agents/knowledge-taxonomy.js';
 import { evaluateAgentSafety } from '../agents/agent-safety-policy.js';
@@ -39,7 +42,12 @@ export async function loadAssistantContext(db: AssistantDb, workspaceId: string,
 export type AssistantContext = Awaited<ReturnType<typeof loadAssistantContext>>;
 
 // Intentionally has no transport, action executor, CRM or prompt-write dependency.
-export function createAssistantGeneration(db: AssistantDb, dependencies: { providerFactory?: typeof createOpenAiCompatibleAgentProvider; mediaPreparer?: typeof prepareInboundMedia } = {}) {
+export function createAssistantGeneration(db: AssistantDb, dependencies: { providerFactory?: typeof createOpenAiCompatibleAgentProvider; mediaPreparer?: typeof prepareInboundMedia;
+    /** Durable media copies and the shared transcription job; legacy behaviour when absent. */
+    durableMedia?: Pick<MessageMediaService, 'read'>; transcriptions?: MessageTranscriptionService } = {}) {
+  const resolverFor = durableMediaResolverFor(dependencies.durableMedia);
+  const audioPolicy = { kind: 'audio' as const, maxBytes: MAX_INBOUND_MEDIA_BYTES,
+    allowedMimeTypes: new Set<string>(INBOUND_MEDIA_MIME_TYPES.filter(type => type.startsWith('audio/') || type === 'video/webm')) };
   return async (context: AssistantContext, instruction?: string | null) => {
     if (context.conversation.aiControlStatus !== 'agent_allowed' && !context.humanSupport) throw new AssistantError('ASSISTANT_PAUSED', 'A IA de apoio não está disponível nesta conversa.');
     if ((instruction?.length ?? 0) > 2000) throw new AssistantError('ASSISTANT_INSTRUCTION_LIMIT', 'Use até 2.000 caracteres.', 400);
@@ -61,8 +69,27 @@ export function createAssistantGeneration(db: AssistantDb, dependencies: { provi
           /\[(Texto do PDF|Leitura da imagem|Transcrição do áudio) — conteúdo enviado pelo cliente\]/.test(content);
         if (retainedExtraction) media = { kind: message.type === 'file' ? 'document' : message.type as 'image' | 'audio', status: 'processed' };
         else if (cache.sourceHash === sourceHash && record(cache.result).status === 'processed' && typeof record(cache.result).extractedText === 'string') media = cache.result as InboundMediaResult;
+        else if (message.type === 'audio' && dependencies.transcriptions && record(record(message.metadata).transcription).status === 'completed' && message.body?.trim()) {
+          // Already transcribed by the shared job (automatic path or manual button): reuse, never pay twice.
+          media = { kind: 'audio', status: 'processed', extractedText: message.body };
+          content = '';
+        }
         else if (recentAttachments.includes(message.id)) {
-          media = await (dependencies.mediaPreparer ?? prepareInboundMedia)({ settings, mediaUrl: message.mediaUrl, kind: message.type === 'file' ? 'document' : message.type as 'image' | 'audio' });
+          const mediaResolver = resolverFor({ id: message.id, workspaceId: message.workspaceId, conversationId: message.conversationId });
+          if (message.type === 'audio' && dependencies.transcriptions) {
+            // Same persistent job as the agent and the manual button; whoever wins transcribes once.
+            const outcome = await dependencies.transcriptions.run({ workspaceId: message.workspaceId, conversationId: message.conversationId, messageId: message.id, retryFailed: true,
+              work: async () => {
+                const audio = await mediaResolver({ mediaUrl: message.mediaUrl, policy: audioPolicy });
+                return { text: (await transcribeInboundAudio({ bytes: audio.bytes, mimeType: audio.mimeType, settings })).text };
+              } });
+            media = outcome.status === 'completed' ? { kind: 'audio', status: 'processed', extractedText: outcome.text }
+              : { kind: 'audio', status: 'failed', errorCode: outcome.status === 'failed' ? outcome.errorCode : 'TRANSCRIPTION_IN_PROGRESS' };
+            if (outcome.status === 'completed') content = '';
+          } else {
+            media = await (dependencies.mediaPreparer ?? prepareInboundMedia)({ settings, mediaUrl: message.mediaUrl, kind: message.type === 'file' ? 'document' : message.type as 'image' | 'audio',
+              ...(dependencies.durableMedia ? { mediaResolver } : {}) });
+          }
           if (message.metadata !== null) {
             await db.message.updateMany({ where: { workspaceId: message.workspaceId, id: message.id, metadata: { equals: message.metadata as Prisma.InputJsonValue } }, data: { metadata: { ...record(message.metadata), assistantMedia: { sourceHash, result: media } } as Prisma.InputJsonValue } });
           }

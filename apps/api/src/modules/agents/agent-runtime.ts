@@ -45,6 +45,7 @@ import {
   type AgentProvider
 } from "./provider-gateway.js";
 import { AgentMediaError, resolveAgentMedia } from "./agent-media-resolver.js";
+import { durableMediaResolverFor } from "./durable-media-resolver.js";
 import type { MessageMediaService } from "../conversations/message-media.js";
 import type { MessageTranscriptionService } from "../conversations/message-transcription.js";
 import { prepareInboundMedia, formatProcessedMediaMessage, transcribeInboundAudio, MAX_INBOUND_MEDIA_BYTES, type InboundMediaResult } from "./inbound-media.js";
@@ -856,7 +857,7 @@ export function createAgentRuntime(input: {
             agentId: agent.id, expectedGeneration: prospectingGeneration })) return { status: "skipped", message: "Prospecting authorization changed." };
         }
 
-        const mediaResolver = input.mediaResolver ?? resolveAgentMedia;
+        const mediaResolverFor = durableMediaResolverFor(input.durableMedia, input.mediaResolver ?? resolveAgentMedia);
         let effectiveText = message.body ?? "";
         let mediaFallback: string | null = null;
         let mediaProcessingError: string | null = null;
@@ -898,7 +899,7 @@ export function createAgentRuntime(input: {
             mediaUrl: attachment.mediaUrl,
             kind: attachment.type === "file" ? "document" : "image",
             settings: providerSettings,
-            mediaResolver
+            mediaResolver: mediaResolverFor(attachment)
           });
           const handled = attachment.type === "image" && prepared.status === "failed"
             ? { ...prepared, fallback: IMAGE_PROCESSING_FALLBACK }
@@ -930,7 +931,7 @@ export function createAgentRuntime(input: {
                 mediaUrl: message.mediaUrl,
                 kind: message.type === "file" ? "document" : "image",
                 settings: providerSettings,
-                mediaResolver
+                mediaResolver: mediaResolverFor(message)
               });
           const handledMedia = message.type === "image" && media.status === "failed"
             ? { ...media, fallback: IMAGE_PROCESSING_FALLBACK }

@@ -26,7 +26,7 @@ export class AgentMediaError extends Error {
 export type ResolvedAgentMedia = {
   bytes: Buffer;
   mimeType: string;
-  source: "data_url" | "remote";
+  source: "data_url" | "remote" | "durable";
 };
 
 type ResolveHost = (hostname: string) => Promise<string[]>;
