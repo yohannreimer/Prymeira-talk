@@ -523,6 +523,7 @@ model Message {
   assistantSends AssistantSuggestionSend[]
   anchoredFollowups ConversationFollowup[] @relation("ConversationFollowupAnchorMessage")
   improvementSuggestions AiAgentImprovement[] @relation("AiAgentImprovementSourceMessage")
+  media MessageMedia?
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, providerEventId])
@@ -1950,11 +1951,19 @@ model IngressEffect {
   frozen Json
   state String @default("pending")
   createdAt DateTime @default(now()) @map("created_at")
+  attempts Int @default(0)
+  lockedBy String? @map("locked_by")
+  leaseUntil DateTime? @map("lease_until") @db.Timestamptz
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at") @db.Timestamptz
+  lastErrorCode String? @map("last_error_code")
+  completedAt DateTime? @map("completed_at") @db.Timestamptz
+  result Json?
   progress IngressEventProgress @relation(fields: [workspaceId,channelId,receiptId,eventIndex], references: [workspaceId,channelId,receiptId,eventIndex], onDelete: Cascade, map: "ingress_effects_progress_fkey")
   conversation Conversation? @relation(fields: [workspaceId,channelId,conversationId], references: [workspaceId,channelId,id], onDelete: NoAction, map: "ingress_effects_conversation_fkey")
   message Message? @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: NoAction, map: "ingress_effects_message_fkey")
   @@unique([workspaceId,channelId,logicalKey,kind], map: "ingress_effects_scope_logical_kind_key")
   @@index([state,createdAt])
+  @@index([state,nextAttemptAt,createdAt], map: "ingress_effects_claim_idx")
   @@map("ingress_effects")
 }
 
@@ -1970,4 +1979,29 @@ model ConversationPreviewOwner {
   @@unique([workspaceId,channelId,conversationId],map:"conversation_preview_owners_scope_key")
   @@index([workspaceId,conversationId,messageId],map:"conversation_preview_owners_message_idx")
   @@map("conversation_preview_owners")
+}
+
+// Prepared attachment of one message. Original bytes and the playback derivative live in
+// the private media store; only references and integrity digests are persisted here.
+model MessageMedia {
+  messageId String @id @map("message_id") @db.Uuid
+  workspaceId String @map("workspace_id")
+  conversationId String @map("conversation_id") @db.Uuid
+  state String @default("pending")
+  sourceKind String? @map("source_kind")
+  mimeType String? @map("mime_type")
+  sizeBytes Int? @map("size_bytes")
+  sha256 String?
+  originalRef String? @map("original_ref")
+  playbackRef String? @map("playback_ref")
+  playbackMimeType String? @map("playback_mime_type")
+  playbackSha256 String? @map("playback_sha256")
+  errorCode String? @map("error_code")
+  attempts Int @default(0)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  message Message @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: Cascade, map: "message_media_message_fkey")
+  @@unique([workspaceId,conversationId,messageId], map: "message_media_scope_key")
+  @@index([workspaceId,conversationId,state], map: "message_media_scope_idx")
+  @@map("message_media")
 }
