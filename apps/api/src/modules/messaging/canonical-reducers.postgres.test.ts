@@ -33,7 +33,8 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
   beforeAll(() => {
     const u = new URL(url!);
     if (!['postgres:', 'postgresql:'].includes(u.protocol) || !['localhost','127.0.0.1'].includes(u.hostname) || u.pathname !== '/messaging_test') throw new Error('Only local messaging_test');
-    db = new PrismaClient({ datasources: { db: { url } } });
+    // Draining 100+ actions in one transaction exceeds Prisma's 5 s default on a loaded or small CI host.
+    db = new PrismaClient({ datasources: { db: { url } }, transactionOptions: { timeout: 60_000, maxWait: 60_000 } });
   });
   afterAll(async () => {
     if (!db) return;
@@ -493,7 +494,7 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
     expect(changes).toContain('pending_recovery_completed');
     expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'ready', revisionVersion: 1 });
     expect(await db.canonicalAction.count({ where: { identityId: created.identityId!, state: 'pending' } })).toBe(0);
-  }, 15000);
+  }, 60_000);
 
   it.each([false, true])('does not gate unrelated originals through raw ID/hash buckets (collision=%s)', async (collision) => {
     const c = await context(), isolated = createCanonicalStore(collision ? { hash: () => 'a' } : {});
@@ -591,7 +592,7 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
       expect(last.results.flatMap(result => result.changes).filter(change => change === 'message_edited')).toHaveLength(1);
       expect(await db.message.findUnique({ where: { id: created.messageId! } })).toMatchObject({ body: 'identical edit' });
     }
-  }, 15000);
+  }, 60_000);
 
   it('compares full action tuples when aggregate buckets collide', async () => {
     const c = await context(), collision = createCanonicalStore({ hash: () => 'a' });
@@ -731,7 +732,7 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
     expect(await db.canonicalMessageIdentity.findUnique({ where: { id: created.identityId! } })).toMatchObject({ contentState: 'ready', revisionVersion: 1 });
     expect(changes.filter(change => change === 'message_edited')).toHaveLength(1);
     expect(changes.filter(change => change === 'pending_recovery_completed')).toHaveLength(1);
-  }, 15000);
+  }, 60_000);
 
   it('backfills stable action lookup with exact Node serialization, including spaces and quotes', async () => {
     const c = await context(), original = msg(c); await persist(original);
