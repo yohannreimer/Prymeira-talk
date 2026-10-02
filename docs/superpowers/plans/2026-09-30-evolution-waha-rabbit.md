@@ -46,8 +46,8 @@ Base: `4524fbb3e834197626d7fc6ad329a7282c562615`. Branch: `codex/talk-waha-rabbi
 - [x] 2b.1B. Aplicação canônica executável isolada, hooks/obrigações na mesma transação e ACK após gravação completa, aprovada em `2bfb0be`. SPEC independente: 260 testes/8 arquivos; QUALITY: 250/7, types/build/Prisma. Guard de raw original conserva declarações conflitantes e receipts antigos; prévia usa UUID exato com invalidação de writers legados. As 56 migrações passaram instalação limpa/upgrade com dados/checksums preservados. Efeitos continuam pendentes até seus handlers; não autoriza cutover produtivo.
 - [ ] 2b.1C. Handlers duráveis de efeitos e checkpoints de domínio.
 - [ ] 2b.1D. Autoridade PN/LID persistida, lifecycle/recovery, importadores e leitores integrados.
-- [ ] 3. Armazenamento e serviço comum de mídia; coordenação persistente de transcrição/leitura; integração IA. Testes de player, MIME, autorização, SSRF, retry e concorrência.
-- [ ] 3A. Próxima fatia funcional: originais privados, derivados de playback e jobs compartilhados auto/manual/assistente com callers reais, antes dos handlers que dependem da mídia. Reordenação por dependência; escopo integral preservado.
+- [~] 3. (parcial, `d7d6295`: armazenamento durável, serviço de mídia, job único de transcrição, leitura pela IA; falta homologação real e os handlers dependentes) Armazenamento e serviço comum de mídia; coordenação persistente de transcrição/leitura; integração IA. Testes de player, MIME, autorização, SSRF, retry e concorrência.
+- [x] 3A. (feito em `d7d6295`) Próxima fatia funcional: originais privados, derivados de playback e jobs compartilhados auto/manual/assistente com callers reais, antes dos handlers que dependem da mídia. Reordenação por dependência; escopo integral preservado.
 - [ ] 4. Roteador único persistente, todos os remetentes, failover/saúde/reconciliação e cadência. Testes de concorrência, tentativa incerta, eco e sessões degradadas.
 - [ ] 5. Infraestrutura, migrações reais, testes de falhas/carga, homologação visual e real, revisão final, documentação e PR. Publicação depende dos critérios aprovados, não apenas de build.
 
