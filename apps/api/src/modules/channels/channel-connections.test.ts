@@ -229,6 +229,16 @@ describe('physical channel lifecycle', () => {
       expect(f.client.createSession).toHaveBeenCalledWith({ session: 'talk-waha', workspaceId: 'ws', channelId: ch });
     } finally { vi.useRealTimers(); }
   });
+  it('registers the signed ingress webhook of this exact connection when it provisions the session', async () => {
+    const f = fixture();
+    const stopped = { name: 'talk-waha', status: 'STOPPED', engine: {}, config: { metadata: { workspaceId: 'ws', channelId: ch } } };
+    f.client.getSession.mockRejectedValueOnce(new WahaClientError(404)).mockResolvedValue(stopped);
+    const webhook = { baseUrl: 'http://ingress:4011', hmacKey: 'shared-hmac-key-1234567' };
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client, webhook }, evolution: f.evolution });
+    await service.startQr({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    expect(f.client.createSession).toHaveBeenCalledWith({ session: 'talk-waha', workspaceId: 'ws', channelId: ch,
+      webhook: { url: `http://ingress:4011/webhooks/waha/ws/${wahaId}`, hmacKey: 'shared-hmac-key-1234567' } });
+  });
   it('exposes physical connection management', async () => expect((await load()).createChannelConnectionsService).toBeTypeOf('function'));
   it('verifies both provider phones without replacing logical provider, writer or channel phone', async () => {
     const f = fixture(); const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });

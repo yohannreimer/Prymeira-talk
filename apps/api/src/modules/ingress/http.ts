@@ -135,6 +135,6 @@ export function createIngressHttp(options: IngressHttpOptions) {
       || query['hub.mode'] !== 'subscribe' || !query['hub.challenge'] || !secretMatches(query['hub.verify_token'] ?? null, settings.webhookVerifyToken)) return reply.code(403).send({ error: 'invalid_verification' });
     return reply.type('text/plain').send(query['hub.challenge']);
   });
-  app.get('/health', async (_request, reply) => reply.code(options.publisher()?.ready ? 200 : 503).send({ stage: options.stage ?? 'isolated-1a', application: options.stage === 'isolated-1b' ? 'separate_canonical_worker_required' : 'not_connected' }));
+  app.get('/health', async (_request, reply) => reply.code(options.publisher()?.ready ? 200 : 503).send({ stage: options.stage ?? 'isolated-1a', application: options.stage === 'isolated-1b' || options.stage === 'production' ? 'separate_canonical_worker_required' : 'not_connected' }));
   return app;
 }

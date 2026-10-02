@@ -327,7 +327,8 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
         try { session = await client.getSession({ session: connection.sessionName }); }
         catch (error) {
           if (!(error instanceof WahaClientError && error.statusCode === 404)) throw error;
-          await client.createSession({ session: connection.sessionName, workspaceId: input.workspaceId, channelId: input.channelId });
+          await client.createSession({ session: connection.sessionName, workspaceId: input.workspaceId, channelId: input.channelId,
+            ...(options.waha?.webhook ? { webhook: { url: `${options.waha.webhook.baseUrl}/webhooks/waha/${encodeURIComponent(input.workspaceId)}/${connection.id}`, hmacKey: options.waha.webhook.hmacKey } } : {}) });
           session = await client.getSession({ session: connection.sessionName });
         }
         assertWahaOwnership(session, connection);

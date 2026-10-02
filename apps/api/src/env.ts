@@ -57,6 +57,10 @@ export const envSchema = z
     WAHA_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     WAHA_API_BASE_URL: optionalUrlWithProtocols(['http:', 'https:']),
     WAHA_API_KEY: optionalNonEmptyString,
+    /** Internal base URL of Talk's ingress as WAHA reaches it (for example http://ingress:4011). */
+    WAHA_WEBHOOK_BASE_URL: optionalUrlWithProtocols(['http:', 'https:']),
+    /** HMAC key WAHA signs its webhooks with; must equal the ingress INGRESS_WAHA_SECRET. */
+    WAHA_WEBHOOK_HMAC_KEY: z.string().min(16).optional(),
     JEV_API_KEY: optionalNonEmptyString,
     JEV_MODEL: z.string().min(1).default("jev-latest"),
     INBOX_TRIAGE_PRIMARY: z.enum(["luna", "jev"]).default("jev"),
@@ -83,6 +87,9 @@ export const envSchema = z
     LEAD_JOB_POLL_MS: z.coerce.number().int().min(1_000).max(60_000).optional()
   })
   .superRefine((env, ctx) => {
+    if (env.WAHA_WEBHOOK_BASE_URL && !env.WAHA_WEBHOOK_HMAC_KEY) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['WAHA_WEBHOOK_HMAC_KEY'], message: 'WAHA_WEBHOOK_BASE_URL requires WAHA_WEBHOOK_HMAC_KEY (at least 16 characters).' });
+    }
     if (env.EFFECTS_ENABLED && !env.REALTIME_BRIDGE_ENABLED) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['EFFECTS_ENABLED'], message: 'EFFECTS_ENABLED requires REALTIME_BRIDGE_ENABLED=true: connection and QR events are published by the ingress worker.' });
     }

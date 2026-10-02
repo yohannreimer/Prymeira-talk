@@ -13,6 +13,13 @@ const baseProductionEnv = {
 } as const;
 
 describe("readEnv", () => {
+  it('needs the HMAC key whenever WAHA is told where Talk\'s ingress is', () => {
+    expect(readEnv(baseProductionEnv).WAHA_WEBHOOK_BASE_URL).toBeUndefined();
+    expect(readEnv(baseProductionEnv).WAHA_WEBHOOK_HMAC_KEY).toBeUndefined();
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_WEBHOOK_BASE_URL: 'http://ingress:4011' })).toThrow(/WAHA_WEBHOOK_HMAC_KEY/);
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_WEBHOOK_BASE_URL: 'http://ingress:4011', WAHA_WEBHOOK_HMAC_KEY: 'short' })).toThrow();
+    expect(readEnv({ ...baseProductionEnv, WAHA_WEBHOOK_BASE_URL: 'http://ingress:4011', WAHA_WEBHOOK_HMAC_KEY: 'shared-hmac-key-1234567' })).toMatchObject({ WAHA_WEBHOOK_BASE_URL: 'http://ingress:4011' });
+  });
   it('runs durable effects only with the realtime bridge, and scopes them to an allowlist when given', () => {
     expect(readEnv(baseProductionEnv)).toMatchObject({ EFFECTS_ENABLED: false, REALTIME_BRIDGE_ENABLED: false, EFFECTS_WORKSPACE_ALLOWLIST: [] });
     expect(() => readEnv({ ...baseProductionEnv, EFFECTS_ENABLED: 'true' })).toThrow(/REALTIME_BRIDGE_ENABLED/);

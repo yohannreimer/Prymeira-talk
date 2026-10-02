@@ -9,7 +9,7 @@ export class IngressBackpressure extends Error {
   constructor(readonly code: string) { super(code); this.name = 'IngressBackpressure'; }
 }
 export function transportTopology(namespace: string) {
-  if (!/^talk\.isolated\.[a-z0-9_-]{1,80}$/.test(namespace)) throw new Error('Stage 1A requires an isolated Talk namespace');
+  if (!/^talk\.(isolated|prod)\.[a-z0-9_-]{1,80}$/.test(namespace)) throw new Error('Stage 1A requires an isolated Talk namespace');
   return { exchange: namespace, incoming: `${namespace}.incoming`, retry: `${namespace}.retry`, dead: `${namespace}.dead` };
 }
 export async function declareTransport(model: ChannelModel, namespace: string, step: SetupStep) {

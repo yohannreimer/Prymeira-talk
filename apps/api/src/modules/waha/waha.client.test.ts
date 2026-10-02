@@ -49,6 +49,16 @@ describe('WAHA HTTP contracts', () => {
     expect(await client.getVersion()).toMatchObject({ version: '2026.9.1', engine: 'WPP' });
   });
 
+  it('asks WAHA to deliver every event Talk understands to the ingress, signed with the shared HMAC key and retried', async () => {
+    const fetch = vi.fn().mockImplementation(async () => json({ name: 'talk-a', status: 'STOPPED' }));
+    const { createWahaClient, WAHA_WEBHOOK_EVENTS } = await load();
+    const client = createWahaClient({ baseUrl: 'https://waha.example', apiKey: 'test-secret', fetch });
+    await client.createSession({ session: 'talk-a', workspaceId: 'ws', channelId: 'ch', webhook: { url: 'http://ingress:4011/webhooks/waha/ws/conn', hmacKey: 'shared-hmac-key-1234567' } });
+    expect(JSON.parse(fetch.mock.calls[0][1].body).config).toEqual({ metadata: { workspaceId: 'ws', channelId: 'ch' },
+      webhooks: [{ url: 'http://ingress:4011/webhooks/waha/ws/conn', events: WAHA_WEBHOOK_EVENTS, hmac: { key: 'shared-hmac-key-1234567' }, retries: { policy: 'exponential', delaySeconds: 2, attempts: 15 } }] });
+    expect(WAHA_WEBHOOK_EVENTS).toEqual(expect.arrayContaining(['message.any', 'message.edited', 'message.revoked', 'message.ack', 'message.ack.group', 'session.status']));
+  });
+
   it('provisions a stopped named session and uses independent start, raw QR, state, me and stop endpoints', async () => {
     const fetch = vi.fn().mockImplementation(async () => json({ name: 'talk-a', status: 'STOPPED' }));
     const client = (await load()).createWahaClient({ baseUrl: 'https://waha.example', apiKey: 'test-secret', fetch });

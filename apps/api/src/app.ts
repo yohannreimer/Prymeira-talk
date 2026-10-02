@@ -198,7 +198,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     apiKey: env.EVOLUTION_API_KEY,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET
   });
-  const wahaRuntime = createWahaRuntime({ enabled: env.WAHA_ENABLED, baseUrl: env.WAHA_API_BASE_URL, apiKey: env.WAHA_API_KEY });
+  const wahaRuntime = createWahaRuntime({ enabled: env.WAHA_ENABLED, baseUrl: env.WAHA_API_BASE_URL, apiKey: env.WAHA_API_KEY, webhookBaseUrl: env.WAHA_WEBHOOK_BASE_URL, webhookHmacKey: env.WAHA_WEBHOOK_HMAC_KEY });
   // Opt-in single outbound router: every sender already sends through evolutionRuntime.client, so wrapping it here
   // routes human, AI, automation, follow-up and campaign sends through one journal and one failover policy.
   let outboundJournal: ReturnType<typeof createOutboundDispatchJournal> | undefined;
