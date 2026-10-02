@@ -136,10 +136,10 @@ export function createMessageMediaService(options: {
     const row = await db.messageMedia.findFirst({ where: { messageId: input.messageId, workspaceId: input.workspaceId, conversationId: input.conversationId, state: 'stored' } });
     if (!row?.originalRef || !row.sha256 || !row.mimeType) return null;
     if (input.variant !== 'original' && row.playbackRef && row.playbackSha256) {
-      return { bytes: await store.read(row.playbackRef, row.playbackSha256), mimeType: row.playbackMimeType ?? 'audio/mpeg' };
+      return { bytes: await store.read(row.playbackRef, row.playbackSha256), mimeType: row.playbackMimeType ?? 'audio/mpeg', variant: 'playback' as const };
     }
     const bytes = await store.read(row.originalRef, row.sha256);
-    return { bytes, mimeType: row.mimeType === 'application/octet-stream' && sniffMime(bytes) === 'application/pdf' ? 'application/pdf' : row.mimeType };
+    return { bytes, mimeType: row.mimeType === 'application/octet-stream' && sniffMime(bytes) === 'application/pdf' ? 'application/pdf' : row.mimeType, variant: 'original' as const };
   }
 
   return { prepare, read };

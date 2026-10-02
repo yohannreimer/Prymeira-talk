@@ -109,7 +109,9 @@ export function createInboxMediaService(options: {
       if (options.durable) {
         try {
           const stored = await options.durable.read({ workspaceId, conversationId, messageId });
-          if (stored) return { bytes: stored.bytes, mimeType: stored.mimeType };
+          // An audio without a playback derivative (conversion failed earlier) is converted on demand.
+          if (stored && !(message.type === 'audio' && stored.variant === 'original')) return { bytes: stored.bytes, mimeType: stored.mimeType };
+          if (stored) return (await cached(`durable-audio:${workspaceId}:${conversationId}:${messageId}`, async () => convert({ bytes: stored.bytes, mimeType: stored.mimeType })))!;
         } catch { /* corrupted or missing blob: serve through the legacy path instead */ }
       }
       const fingerprint = createHash('sha256').update(message.mediaUrl ?? '').digest('hex');

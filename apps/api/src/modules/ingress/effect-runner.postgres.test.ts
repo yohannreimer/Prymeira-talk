@@ -132,6 +132,17 @@ describe.skipIf(!databaseUrl)('effect runner on PostgreSQL', () => {
     expect(await stateOf(other!)).toMatchObject({ state: 'pending', attempts: 0 });
   });
 
+  it('claims only effects of the workspaces it is scoped to', async () => {
+    const mine = `runner-${randomUUID()}`, theirs = `runner-${randomUUID()}`;
+    const [own] = await seed(mine, [{ kind: 'test.scoped' }]);
+    const [foreign] = await seed(theirs, [{ kind: 'test.scoped' }]);
+    const handlers = { 'test.scoped': async () => ({ status: 'done' as const }) };
+    expect(await createEffectRunner({ db, workerId: 'w', handlers, workspaceIds: [] }).drain()).toBe(0);
+    expect(await createEffectRunner({ db, workerId: 'w', handlers, workspaceIds: [mine] }).drain()).toBe(1);
+    expect((await stateOf(own!)).state).toBe('done');
+    expect((await stateOf(foreign!)).state).toBe('pending');
+  });
+
   it('keeps identity and frozen inputs immutable and a completed effect final', async () => {
     const ws = `runner-${randomUUID()}`;
     const [id] = await seed(ws, [{ kind: 'test.guard' }]);

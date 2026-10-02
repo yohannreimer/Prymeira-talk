@@ -62,6 +62,12 @@ export const envSchema = z
     INBOX_TRIAGE_PRIMARY: z.enum(["luna", "jev"]).default("jev"),
     INBOX_TRIAGE_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
     TALK_UPLOAD_DIR: z.string().min(1).default("storage/uploads"),
+    /** Runs the durable ingress effects (assistant, agent, follow-ups, triage, automations, realtime) in this API process. */
+    EFFECTS_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+    /** Comma-separated workspace ids whose effects this process may run (staged rollout). Empty = all. */
+    EFFECTS_WORKSPACE_ALLOWLIST: z.string().default('').transform((value) => value.split(',').map((item) => item.trim()).filter(Boolean)),
+    /** Fan realtime events out across API processes (PostgreSQL LISTEN/NOTIFY). Off keeps one-process behaviour. */
+    REALTIME_BRIDGE_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     /** Absolute private directory for durable message media. Unset keeps the legacy media path. */
     TALK_MEDIA_STORE_PATH: z.string().min(1).refine((value) => value.startsWith('/'), 'TALK_MEDIA_STORE_PATH must be an absolute path').optional(),
     VINCULA_CRM_API_URL: optionalUrl,
@@ -73,6 +79,9 @@ export const envSchema = z
     LEAD_JOB_POLL_MS: z.coerce.number().int().min(1_000).max(60_000).optional()
   })
   .superRefine((env, ctx) => {
+    if (env.EFFECTS_ENABLED && !env.REALTIME_BRIDGE_ENABLED) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['EFFECTS_ENABLED'], message: 'EFFECTS_ENABLED requires REALTIME_BRIDGE_ENABLED=true: connection and QR events are published by the ingress worker.' });
+    }
     if (env.WAHA_ENABLED && (!env.WAHA_API_BASE_URL || !env.WAHA_API_KEY)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['WAHA_ENABLED'], message: 'Enabled WAHA requires WAHA_API_BASE_URL and WAHA_API_KEY.' });
     }

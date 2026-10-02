@@ -21,6 +21,8 @@ import { readIngressEnvironment } from './runtime.js';
 import { IngressTransportConsumer } from './consumer.js';
 import { createEffectRunner } from './effect-runner.js';
 import { createMediaPrepareHandler } from './media-prepare-handler.js';
+import { createEffectHandlers } from './effect-handlers.js';
+import { buildApp } from '../../test/build-app.js';
 import { createMessageMediaService } from '../conversations/message-media.js';
 import { join } from 'node:path';
 import http from 'node:http';
@@ -689,18 +691,18 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
 
     describe('media.prepare executed by the durable runner', () => {
         const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
-        async function harness(deps: { waha?: any; evolution?: any }) {
+        async function harness(deps: { waha?: any; evolution?: any; withoutJournal?: boolean }, scope: string[]) {
             const store = new IngressPrivateStore(join(root, `media-${randomUUID()}`));
             await store.initialize();
             const media = createMessageMediaService({ db, store });
-            const handler = createMediaPrepareHandler({ journal, media, waha: deps.waha ?? null, evolution: deps.evolution ?? null });
-            const runner = createEffectRunner({ db, workerId: 'media-test', handlers: { 'media.prepare': handler }, baseBackoffMs: 1, maxAttempts: 3 });
+            const handler = createMediaPrepareHandler({ ...(deps.withoutJournal ? {} : { journal }), media, waha: deps.waha ?? null, evolution: deps.evolution ?? null });
+            const runner = createEffectRunner({ db, workerId: 'media-test', handlers: { 'media.prepare': handler }, workspaceIds: scope, baseBackoffMs: 1, maxAttempts: 3 });
             return { media, runner };
         }
         it('stores an Evolution image through the provider fallback and marks the effect done', async () => {
             const f = await fixture();
             const fetchMedia = async () => `data:image/png;base64,${PNG.toString('base64')}`;
-            const { media, runner } = await harness({ evolution: { fetchMedia } });
+            const { media, runner } = await harness({ evolution: { fetchMedia } }, [f.workspaceId]);
             await service.apply(await f.send('evolution', { key: { id: 'evo-media', remoteJid: peer, fromMe: false }, message: { imageMessage: { url: 'https://media.invalid/expired', mimetype: 'image/png' } } }));
             await runner.drain();
             const effect = await db.ingressEffect.findFirstOrThrow({ where: { workspaceId: f.workspaceId, kind: 'media.prepare' } });
@@ -712,7 +714,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
         it('stores a WAHA-only image with an authenticated scoped fetch and never uses the provider URL', async () => {
             const f = await fixture();
             const mediaExact = vi.fn(async (_input: Record<string, unknown>) => ({ kind: 'resolved' as const, message: { id: 'x', media: { url: 'http://waha.internal/api/files/s/f.png', mimetype: 'image/png' } }, bytes: new Uint8Array(PNG) }));
-            const { media, runner } = await harness({ waha: { mediaExact } });
+            const { media, runner } = await harness({ waha: { mediaExact } }, [f.workspaceId]);
             const id = `false_${peer}_waha-media`;
             await service.apply(await f.send('waha', { id, hasMedia: true, media: { url: 'http://waha.internal/api/files/s/f.png', mimetype: 'image/png' }, _data: { type: 'image', mimetype: 'image/png' } }));
             await runner.drain();
@@ -721,6 +723,18 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             const message = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
             const row = await db.messageMedia.findUniqueOrThrow({ where: { messageId: message.id } });
             expect(row).toMatchObject({ state: 'stored', sourceKind: 'waha', mimeType: 'image/png' });
+            expect((await media.read({ workspaceId: f.workspaceId, conversationId: message.conversationId, messageId: message.id }))?.bytes.equals(PNG)).toBe(true);
+        });
+        it('a process without the private receipt store prepares media from the identifiers frozen in the effect', async () => {
+            const f = await fixture();
+            const mediaExact = vi.fn(async (_input: Record<string, unknown>) => ({ kind: 'resolved' as const, message: { id: 'x', media: { url: 'http://waha.internal/api/files/s/f.png', mimetype: 'image/png' } }, bytes: new Uint8Array(PNG) }));
+            const { media, runner } = await harness({ waha: { mediaExact }, withoutJournal: true }, [f.workspaceId]);
+            await service.apply(await f.send('waha', { id: `false_${peer}_frozen-source`, hasMedia: true, media: { url: 'http://waha.internal/api/files/s/f.png', mimetype: 'image/png' }, _data: { type: 'image', mimetype: 'image/png' } }));
+            const effect = await db.ingressEffect.findFirstOrThrow({ where: { workspaceId: f.workspaceId, kind: 'media.prepare' } });
+            expect(effect.frozen).toMatchObject({ mediaSource: { provider: 'waha', sessionName: f.waha.sessionName, mimeType: 'image/png' } });
+            await runner.drain();
+            expect(mediaExact.mock.calls[0]![0]).toMatchObject({ session: f.waha.sessionName, purpose: 'serve' });
+            const message = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
             expect((await media.read({ workspaceId: f.workspaceId, conversationId: message.conversationId, messageId: message.id }))?.bytes.equals(PNG)).toBe(true);
         });
         it('the compiled worker executes media.prepare by itself: webhook -> Message -> effect -> stored original', async () => {
@@ -755,7 +769,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             const f = await fixture();
             let up = false;
             const fetchMedia = vi.fn(async () => { if (!up) throw new Error('provider down'); return `data:image/png;base64,${PNG.toString('base64')}`; });
-            const { runner } = await harness({ evolution: { fetchMedia } });
+            const { runner } = await harness({ evolution: { fetchMedia } }, [f.workspaceId]);
             await service.apply(await f.send('evolution', { key: { id: 'evo-outage', remoteJid: peer, fromMe: false }, message: { imageMessage: { url: 'https://media.invalid/gone', mimetype: 'image/png' } } }));
             for (let i = 0; i < 5; i++) { await runner.drain(); await new Promise(r => setTimeout(r, 15)); }
             const failed = await db.ingressEffect.findFirstOrThrow({ where: { workspaceId: f.workspaceId, kind: 'media.prepare' } });
@@ -767,6 +781,113 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId, kind: 'media.prepare' } })).toBe(1);
             expect(await db.ingressEffect.findUniqueOrThrow({ where: { id: failed.id } })).toMatchObject({ state: 'done' });
             expect(await db.messageMedia.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ state: 'stored' });
+        });
+    });
+
+    describe('every effect executed by the durable runner', () => {
+        function wiring(workspaceId: string, extra: Record<string, unknown> = {}) {
+            const log: string[] = [];
+            const call = (name: string) => vi.fn(async (..._args: unknown[]) => { log.push(name); return undefined; });
+            const published: any[] = [];
+            const services = {
+                db, realtime: { publish: (event: unknown) => { published.push(event); log.push(`realtime:${(event as { type: string }).type}`); } },
+                assistantScheduler: { message: call('assistant.message'), control: call('assistant.control'), isAssisted: vi.fn(async () => false) },
+                handoffBriefService: { schedule: vi.fn(() => { log.push('handoff.brief'); }) },
+                inboxTriage: { observeMessage: call('triage.message') },
+                followupService: { observeConversationActivity: call('followup.activity') },
+                agentImprovements: { observeHumanReply: vi.fn(async () => { log.push('human_reply.improvement'); return { created: true }; }) },
+                agentRuntime: { prepareAudioMessage: vi.fn(async () => { log.push('prepareAudioMessage'); return { status: 'completed' }; }) },
+                agentReplyScheduler: { scheduleActiveSessionForMessage: call('agent.schedule') },
+                automationRunner: { runForInboundMessage: call('automation.occurrence') },
+                historyBackfill: call('history.backfill'),
+                ...extra
+            };
+            const runner = createEffectRunner({ db, workerId: 'handlers-test', handlers: createEffectHandlers(services as never), workspaceIds: [workspaceId], baseBackoffMs: 1 });
+            return { services, runner, log, published };
+        }
+        const effectsOf = (workspaceId: string) => db.ingressEffect.findMany({ where: { workspaceId }, orderBy: { createdAt: 'asc' } });
+
+        it('a customer message runs each consequence exactly once, in dependency order, from the frozen inputs', async () => {
+            const f = await fixture();
+            const { services, runner, log, published } = wiring(f.workspaceId);
+            await service.apply(await f.send('evolution', { key: { id: 'handler-text', remoteJid: peer, fromMe: false }, pushName: 'Maria', message: { conversation: 'preciso de 10 chapas' } }));
+            await runner.drain();
+            const effects = await effectsOf(f.workspaceId);
+            expect(effects.every(e => e.state === 'done')).toBe(true);
+            const message = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+            const conversationId = message.conversationId;
+            expect(published.find(e => e.type === 'message.created')?.payload).toMatchObject({ id: message.id, body: 'preciso de 10 chapas' });
+            expect(published.find(e => e.type === 'conversation.updated')?.payload).toMatchObject({ id: conversationId });
+            expect(services.assistantScheduler.message).toHaveBeenCalledWith({ workspaceId: f.workspaceId, conversationId, messageId: message.id, direction: 'inbound' });
+            expect(services.handoffBriefService.schedule).toHaveBeenCalledWith({ workspaceId: f.workspaceId, conversationId });
+            expect(services.inboxTriage.observeMessage).toHaveBeenCalledWith(expect.objectContaining({ messageId: message.id, direction: 'inbound' }));
+            expect(services.followupService.observeConversationActivity).toHaveBeenCalledWith({ workspaceId: f.workspaceId, conversationId, messageId: message.id, direction: 'inbound', source: 'customer' });
+            expect(services.automationRunner.runForInboundMessage).toHaveBeenCalledWith({ workspaceId: f.workspaceId, messageId: message.id, eventKey: `message.received:${message.id}` });
+            expect(services.agentReplyScheduler.scheduleActiveSessionForMessage).toHaveBeenCalledWith({ workspaceId: f.workspaceId, conversationId, messageId: message.id });
+            expect(services.historyBackfill).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: f.workspaceId, conversationId, providerKey: f.channel.providerKey, identity: '15550001111', pushName: 'Maria' }));
+            expect(log.indexOf('agent.schedule')).toBeGreaterThan(log.indexOf('assistant.message') < 0 ? 0 : -1);
+            const prospecting = effects.find(e => e.kind === 'prospecting.inbound')!;
+            expect(prospecting.result).toEqual({ reserved: false, activated: false, liveEligible: false });
+            expect(prospecting.completedAt!.getTime()).toBeLessThanOrEqual(effects.find(e => e.kind === 'agent.debounce')!.completedAt!.getTime());
+            const before = log.length;
+            await runner.drain();
+            expect(log).toHaveLength(before);
+        });
+
+        it('a human operator message pauses the assistant, records the follow-up and improvement, and never wakes the agent', async () => {
+            const f = await fixture();
+            const { services, runner } = wiring(f.workspaceId);
+            await service.apply(await f.send('evolution', { key: { id: 'handler-operator', remoteJid: peer, fromMe: true }, message: { conversation: 'já te respondo' } }));
+            await runner.drain();
+            const message = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+            expect(services.assistantScheduler.control).toHaveBeenCalledWith(f.workspaceId, message.conversationId, true);
+            expect(services.followupService.observeConversationActivity).toHaveBeenCalledWith(expect.objectContaining({ direction: 'outbound', source: 'human' }));
+            expect(services.agentImprovements.observeHumanReply).toHaveBeenCalledWith({ workspaceId: f.workspaceId, conversationId: message.conversationId, messageId: message.id });
+            expect(services.agentReplyScheduler.scheduleActiveSessionForMessage).not.toHaveBeenCalled();
+            expect(services.assistantScheduler.message).not.toHaveBeenCalled();
+        });
+
+        it('an inbound audio is transcribed only after its media was prepared, so the agent reads the durable original', async () => {
+            const f = await fixture();
+            const store = new IngressPrivateStore(join(root, `handlers-media-${randomUUID()}`)); await store.initialize();
+            const media = createMessageMediaService({ db, store });
+            const fetchMedia = vi.fn(async () => `data:audio/ogg;base64,${Buffer.from('OggS-synthetic').toString('base64')}`);
+            const mediaHandler = createMediaPrepareHandler({ media, waha: null, evolution: { fetchMedia } as never });
+            const { services, log } = wiring(f.workspaceId);
+            let mediaWasStored = false;
+            services.agentRuntime.prepareAudioMessage = vi.fn(async () => { log.push('prepareAudioMessage'); mediaWasStored = (await db.messageMedia.findFirst({ where: { workspaceId: f.workspaceId } }))?.state === 'stored'; return { status: 'completed' }; });
+            const runner = createEffectRunner({ db, workerId: 'audio-test', baseBackoffMs: 1, workspaceIds: [f.workspaceId], handlers: { ...createEffectHandlers(services as never), 'media.prepare': mediaHandler } });
+            await service.apply(await f.send('evolution', { key: { id: 'handler-audio', remoteJid: peer, fromMe: false }, message: { audioMessage: { url: 'https://media.invalid/expired.enc', mimetype: 'audio/ogg; codecs=opus', ptt: true } } }));
+            await runner.drain();
+            expect(mediaWasStored).toBe(true);
+            expect(services.agentRuntime.prepareAudioMessage).toHaveBeenCalledTimes(1);
+            expect(log.indexOf('prepareAudioMessage')).toBeLessThan(log.indexOf('agent.schedule'));
+            expect((await effectsOf(f.workspaceId)).every(e => e.state === 'done')).toBe(true);
+        });
+
+        it('the real API process, with its real services and the realtime bridge, drains every effect of an accepted message', async () => {
+            const f = await fixture();
+            const app = await buildApp({ DATABASE_URL: databaseUrl!, EFFECTS_ENABLED: true, REALTIME_BRIDGE_ENABLED: true, EFFECTS_WORKSPACE_ALLOWLIST: [f.workspaceId],
+                TALK_MEDIA_STORE_PATH: join(root, `api-media-${randomUUID()}`) }, { prismaEnabled: true });
+            try {
+                await service.apply(await f.send('evolution', { key: { id: 'real-api-text', remoteJid: peer, fromMe: false }, pushName: 'Maria', message: { conversation: 'preciso de 10 chapas' } }));
+                const effects = await until(() => effectsOf(f.workspaceId), v => v.length > 0 && v.every(e => e.state === 'done' || e.state === 'failed'));
+                expect(effects.map(e => [e.kind, e.state, e.lastErrorCode]).filter(([, state]) => state !== 'done')).toEqual([]);
+                expect(new Set(effects.map(e => e.kind))).toEqual(new Set(['realtime.message', 'realtime.conversation', 'assistant.message', 'handoff.brief', 'triage.message', 'prospecting.inbound', 'history.backfill', 'followup.activity', 'automation.occurrence', 'agent.debounce']));
+            } finally { await app.close(); }
+        });
+
+        it('publishes a connection change and the QR from the private receipt, which never reaches SQL', async () => {
+            const f = await fixture(false);
+            const describeChannel = vi.fn(async (channel: { id: string }) => ({ id: channel.id, status: 'connecting' }));
+            const { runner, published } = wiring(f.workspaceId, { journal, describeChannel });
+            const qr = await stage(f, { event: 'QRCODE_UPDATED', instance: f.evo.sessionName, data: { base64: 'synthetic-private-qr' } });
+            await service.apply(qr.id);
+            await runner.drain();
+            expect(published.map(e => e.type)).toEqual(['channel.updated', 'channel.qr_updated']);
+            expect(published[1].payload).toMatchObject({ channelId: f.channel.id, connectionId: f.evo.id, provider: 'evolution' });
+            expect(JSON.stringify(published[1].payload)).toContain('synthetic-private-qr');
+            expect(JSON.stringify(await db.ingressEffect.findMany({ where: { workspaceId: f.workspaceId } }))).not.toContain('synthetic-private-qr');
         });
     });
 });

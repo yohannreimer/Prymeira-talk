@@ -60,6 +60,10 @@ import { conversationFollowupsRoutes } from "./modules/followups/conversation-fo
 import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js";
 import { createWahaRuntime } from './modules/waha/waha.client.js';
 import { createDurableMedia } from './modules/conversations/durable-media.js';
+import { createEffectRunner, startEffectLoop } from './modules/ingress/effect-runner.js';
+import { createEffectHandlers } from './modules/ingress/effect-handlers.js';
+import { createMediaPrepareHandler } from './modules/ingress/media-prepare-handler.js';
+import { createAutomationRunner, type AutomationRunnerPrisma } from './modules/automations/automation-runner.js';
 import { crmRoutes } from "./modules/crm/crm.routes.js";
 import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
 import { resolveMetaRuntime } from "./modules/meta/meta-runtime.js";
@@ -174,7 +178,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     role: request.talk.role
   }));
 
-  await app.register(realtimeRoutes);
+  await app.register(realtimeRoutes, { bridgeDatabaseUrl: env.REALTIME_BRIDGE_ENABLED ? env.DATABASE_URL : undefined });
   const followupPublisher = createConversationFollowupRealtimePublisher(app.realtime);
   if (!env.JEV_API_KEY) {
     app.log.warn("JEV_API_KEY is unavailable; contextual follow-up selection and delivery are disabled.");
@@ -464,17 +468,18 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   const assistantScheduler = options.prismaEnabled === false ? undefined : createAssistantScheduler(app.prisma, { generate: createAssistantGeneration(app.prisma, { durableMedia: durableMedia?.media, transcriptions: durableMedia?.transcriptions }), prepareContext: prepareAssistantHistory, onError: () => app.log.error('Assistant scheduler failed; drafts remain private.') });
   assistantScheduler?.start();
   app.addHook('onClose', async () => { assistantScheduler?.stop(); handoffBriefService?.stop(); });
+  const historyBackfill = options.prismaEnabled === false || !evolutionHistorySource ? undefined : async (input: { workspaceId: string; channelId: string; conversationId: string; providerKey: string; remoteJid: string; identity: string; pushName: string | null }) => {
+    const count = await app.prisma.message.count({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
+    if (count >= 30) return;
+    const importer = createChannelHistoryImporter({ prisma: app.prisma, source: evolutionHistorySource });
+    await importer.importChat({ id: input.channelId, workspaceId: input.workspaceId,
+      providerKey: input.providerKey, historyImportAttempts: 0 },
+    { remoteJid: input.remoteJid, phoneJid: input.identity, pushName: input.pushName, profilePicUrl: null }, 30);
+  };
   await app.register(evolutionRoutes, {
     waha: wahaRuntime,
     messageHistory: evolutionHistorySource,
-    historyBackfill: options.prismaEnabled === false || !evolutionHistorySource ? undefined : async (input) => {
-      const count = await app.prisma.message.count({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
-      if (count >= 30) return;
-      const importer = createChannelHistoryImporter({ prisma: app.prisma, source: evolutionHistorySource });
-      await importer.importChat({ id: input.channelId, workspaceId: input.workspaceId,
-        providerKey: input.providerKey, historyImportAttempts: 0 },
-      { remoteJid: input.remoteJid, phoneJid: input.identity, pushName: input.pushName, profilePicUrl: null }, 30);
-    },
+    historyBackfill,
     assistantScheduler,
     handoffBriefService,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET,
@@ -487,6 +492,32 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     durableMedia: durableMedia?.media,
     evolutionClient: evolutionRuntime.client
   });
+  // Durable ingress effects: the observable consequences of a message accepted by the new ingress (assistant,
+  // agent, follow-ups, triage, automations, realtime). Off by default; the legacy webhook does them inline.
+  if (options.prismaEnabled !== false && env.EFFECTS_ENABLED) {
+    const automationRunner = createAutomationRunner({
+      prisma: app.prisma as unknown as AutomationRunnerPrisma,
+      agentRuntime, agentReplyScheduler, evolution: evolutionRuntime, realtime: app.realtime,
+      boardRules: createBoardRulesService(app.prisma as unknown as BoardRulesPrismaLike)
+    });
+    const handlers = createEffectHandlers({
+      db: app.prisma, realtime: app.realtime, assistantScheduler, handoffBriefService, inboxTriage, followupService,
+      agentImprovements, agentRuntime, agentReplyScheduler, automationRunner, historyBackfill,
+      groupSubject: async ({ provider, sessionName, groupJid }) => provider === 'waha'
+        ? (await wahaRuntime.client?.getGroup({ session: sessionName, groupId: groupJid }))?.subject ?? null
+        : (await evolutionRuntime.client?.getGroupInfo?.({ instanceName: sessionName, groupJid }))?.subject ?? null,
+      logger: app.log
+    });
+    if (durableMedia) {
+      // Any process can prepare media: the effect carries the provider identifiers it needs.
+      handlers['media.prepare'] = createMediaPrepareHandler({ media: durableMedia.media, waha: wahaRuntime.client, evolution: evolutionRuntime.client ?? null });
+    }
+    const runner = createEffectRunner({ db: app.prisma, workerId: `api-${process.pid}-${Math.random().toString(36).slice(2, 8)}`, handlers,
+      ...(env.EFFECTS_WORKSPACE_ALLOWLIST.length ? { workspaceIds: env.EFFECTS_WORKSPACE_ALLOWLIST } : {}), logger: app.log });
+    const effectsAbort = new AbortController();
+    const effectsLoop = startEffectLoop(runner, { signal: effectsAbort.signal, onError: (error) => app.log.error({ err: error }, 'Ingress effect loop iteration failed') });
+    app.addHook('onClose', async () => { effectsAbort.abort(); await effectsLoop; });
+  }
   await app.register(metaWebhooksRoutes, { assistantScheduler, handoffBriefService, inboxTriage });
   await app.register(conversationsRoutes, {
     publicTalkUrl: env.PUBLIC_TALK_URL,

@@ -32,6 +32,8 @@ export type EffectRunnerOptions = {
   db: Pick<PrismaClient, '$queryRaw' | '$executeRaw'>;
   workerId: string;
   handlers: Record<string, EffectHandler>;
+  /** Only claim effects of these workspaces (staged rollouts, tests). Omitted = every workspace. */
+  workspaceIds?: readonly string[];
   leaseMs?: number;
   maxAttempts?: number;
   baseBackoffMs?: number;
@@ -60,17 +62,20 @@ export function createEffectRunner(options: EffectRunnerOptions) {
   const maxBackoffMs = options.maxBackoffMs ?? 15 * 60_000;
   const now = options.now ?? (() => new Date());
   const kinds = Object.keys(handlers);
+  const scoped = options.workspaceIds !== undefined;
+  const workspaceIds = [...(options.workspaceIds ?? [])];
 
   /** Claims one effect. A dependency (`frozen.dependsOn`, effect kinds of the same message) blocks the
    * effect until that dependency reached a terminal state; a missing dependency never blocks. A
    * `running` row whose lease expired is claimable again, so a crashed worker loses nothing. */
   async function claim(): Promise<ClaimedEffect | null> {
-    if (!kinds.length) return null;
+    if (!kinds.length || (scoped && !workspaceIds.length)) return null;
     const at = now();
     const rows = await db.$queryRaw<Row[]>`
       WITH next AS (
         SELECT e.id FROM ingress_effects e
         WHERE e.kind = ANY(${kinds}::text[])
+          AND (NOT ${scoped} OR e.workspace_id = ANY(${workspaceIds}::text[]))
           AND ((e.state = 'pending' AND e.next_attempt_at <= ${at})
             OR (e.state = 'running' AND e.lease_until < ${at}))
           AND NOT EXISTS (

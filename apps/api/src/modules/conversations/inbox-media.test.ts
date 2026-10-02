@@ -35,6 +35,17 @@ describe('inbox media with a durable private copy', () => {
   });
 });
 
+describe('inbox media: audio whose playback derivative is missing', () => {
+  it('converts the durable original on demand instead of serving a format browsers may not play', async () => {
+    const { prisma, resolve, convert, fetchMedia } = setup();
+    const read = vi.fn().mockResolvedValue({ bytes: Buffer.from('ogg-original'), mimeType: 'audio/ogg', variant: 'original' });
+    const service = createInboxMediaService({ prisma: prisma as unknown as PrismaClient, client: { fetchMedia, fetchProfilePicture: vi.fn() }, resolve, convert, durable: { read } });
+    expect(await service.media('w', 'c', 'm-audio')).toEqual({ bytes: Buffer.from('mp3'), mimeType: 'audio/mpeg' });
+    expect(convert).toHaveBeenCalledWith({ bytes: Buffer.from('ogg-original'), mimeType: 'audio/ogg' });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+});
+
 describe('inbox media without AI or sending', () => {
   it.each([['image', 'image/png'], ['file', 'video/mp4']] as const)('serves an already stored 26 MiB inline %s through the authenticated media route', async (type, mimeType) => {
     const bytes = Buffer.alloc(26 * 1024 * 1024, 97);

@@ -10,7 +10,11 @@ import { createMediaPrepareHandler } from './media-prepare-handler.js';
 import { createMessageMediaService } from '../conversations/message-media.js';
 import { MAX_SERVE_MEDIA_BYTES } from '../conversations/media-policy.js';
 import { createEvolutionClient } from '../evolution/evolution.client.js';
-import { createWahaClient } from '../waha/waha.client.js';
+import { createWahaClient, createWahaRuntime } from '../waha/waha.client.js';
+import { createEffectHandlers } from './effect-handlers.js';
+import { createRealtimeBridge } from '../realtime/realtime-bridge.js';
+import { createRealtimeHub } from '../realtime/realtime-hub.js';
+import { createChannelConnectionsService } from '../channels/channel-connections.js';
 
 /** Both milestones remain restricted to owned loopback test infrastructure.
  * Stage 1B applies messages but its effects have no handlers until stage 1C. */
@@ -60,14 +64,23 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
       await delay(500, undefined, { signal: abort.signal }).catch(() => {});
     }
   })();
-  // Durable effect handlers: media.prepare today; the others join as their handlers are written.
-  const effects = consume && config.mediaStorePath ? (async () => {
-    const mediaStore = new IngressPrivateStore(config.mediaStorePath!, MAX_SERVE_MEDIA_BYTES + 1024 * 1024); await mediaStore.initialize();
-    const media = createMessageMediaService({ db, store: mediaStore });
-    const handler = createMediaPrepareHandler({ journal, media,
-      waha: config.wahaApi ? createWahaClient(config.wahaApi) : null,
-      evolution: config.evolutionApi ? createEvolutionClient(config.evolutionApi) : null });
-    const runner = createEffectRunner({ db, workerId: `ingress-${process.pid}-${Math.random().toString(36).slice(2, 8)}`, handlers: { 'media.prepare': handler },
+  // Durable effects this process can run on its own: realtime.connection (the QR code only exists in the
+  // private receipt this process owns, so it publishes to the API processes through the bridge) and,
+  // with a media store configured, media.prepare. Every other effect runs in the API process.
+  let bridge: ReturnType<typeof createRealtimeBridge> | null = null;
+  const effects = consume && config.stage === 'isolated-1b' ? (async () => {
+    bridge = createRealtimeBridge({ databaseUrl: config.databaseUrl, hub: createRealtimeHub(), logger: { warn: (fields, message) => console.warn(message, fields) } });
+    await bridge.start();
+    const wahaRuntime = createWahaRuntime({ enabled: !!config.wahaApi, baseUrl: config.wahaApi?.baseUrl, apiKey: config.wahaApi?.apiKey });
+    const connections = createChannelConnectionsService(db, { waha: wahaRuntime });
+    const handlers = createEffectHandlers({ db, realtime: bridge, journal, describeChannel: channel => connections.describe(channel as never) });
+    const only: Record<string, typeof handlers[string]> = { 'realtime.connection': handlers['realtime.connection']! };
+    if (config.mediaStorePath) {
+      const mediaStore = new IngressPrivateStore(config.mediaStorePath, MAX_SERVE_MEDIA_BYTES + 1024 * 1024); await mediaStore.initialize();
+      only['media.prepare'] = createMediaPrepareHandler({ journal, media: createMessageMediaService({ db, store: mediaStore }),
+        waha: wahaRuntime.client, evolution: config.evolutionApi ? createEvolutionClient(config.evolutionApi) : null });
+    }
+    const runner = createEffectRunner({ db, workerId: `ingress-${process.pid}-${Math.random().toString(36).slice(2, 8)}`, handlers: only, workspaceIds: [...config.workspaceAllowlist],
       logger: { warn: (fields, message) => console.warn(message, fields) } });
     return startEffectLoop(runner, { signal: abort.signal, onError: error => console.warn('Effect loop iteration failed', error) });
   })() : null;
@@ -81,6 +94,7 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
         await Promise.all([consumer?.close(), publisher?.close()]);
         await loop;
         await effects;
+        await bridge?.stop();
         // Setup already in flight when abort arrived may have assigned a session.
         await Promise.all([consumer?.close(), publisher?.close()]);
         await db.$disconnect();

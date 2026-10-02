@@ -180,7 +180,11 @@ export class IngressApplicationService {
             return;
         await this.effect(tx, receipt, index, 'media.prepare', `message:${message.id}`, message.id, result.conversationId, result.observationId, {
             presentationOnly: true, privateReceiptId: receipt.id, eventIndex: index, mediaKind: event.media.kind, type: message.type,
-            mode: event.context.mode, isGroup: event.key.chatAddress?.endsWith('@g.us') === true, dependsOn: []
+            mode: event.context.mode, isGroup: event.key.chatAddress?.endsWith('@g.us') === true, dependsOn: [],
+            // Identifiers only (no content): lets any process fetch the bytes from the provider that received
+            // the message without access to the private receipt store.
+            mediaSource: { provider: event.context.provider, channelProvider: event.context.channelProvider, sessionName: event.context.sessionName,
+                key: event.key, mimeType: event.attachment.mimeType ?? null }
         });
     }
     private async contactAnnotations(tx: Tx, receipt: IngressReceipt, index: number, event: MessageEvent, result: CanonicalStoreResult) {
@@ -195,7 +199,7 @@ export class IngressApplicationService {
         if (isGroup && (!conversation.contact.name?.trim() || conversation.contact.name === groupFallbackName(event.key.chatAddress!)))
             await this.effect(tx, receipt, index, 'contact.group_metadata', `contact:${conversation.contactId}:group_metadata`, result.messageId, conversationId, result.observationId, {
                 contactId: conversation.contactId, chatId: result.chatId, chatAddress: event.key.chatAddress, nativeChatAddress: event.key.nativeChatAddress,
-                originalName: conversation.contact.name, mode: event.context.mode, presentationOnly: true, dependsOn: []
+                originalName: conversation.contact.name, provider: event.context.provider, mode: event.context.mode, presentationOnly: true, dependsOn: []
             });
         const lid = event.addressMappings.find(e => e.role === 'chat')?.lid;
         if (lid)
@@ -286,7 +290,7 @@ export class IngressApplicationService {
             await obligation('triage.message');
         if (message.direction === 'inbound') {
             await obligation('prospecting.inbound');
-            await obligation('history.backfill', { chatAddress: event.key.chatAddress });
+            await obligation('history.backfill', { chatAddress: event.key.chatAddress, pushName: event.pushName });
             await obligation('followup.activity', { source: 'customer' });
             if (!unresolvedLid) {
                 const flows = await tx.automationRule.findMany({ where: { workspaceId, status: 'enabled', trigger: 'message.received' }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], select: { id: true, trigger: true, conditions: true, actions: true, updatedAt: true } });

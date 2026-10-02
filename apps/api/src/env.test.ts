@@ -13,6 +13,11 @@ const baseProductionEnv = {
 } as const;
 
 describe("readEnv", () => {
+  it('runs durable effects only with the realtime bridge, and scopes them to an allowlist when given', () => {
+    expect(readEnv(baseProductionEnv)).toMatchObject({ EFFECTS_ENABLED: false, REALTIME_BRIDGE_ENABLED: false, EFFECTS_WORKSPACE_ALLOWLIST: [] });
+    expect(() => readEnv({ ...baseProductionEnv, EFFECTS_ENABLED: 'true' })).toThrow(/REALTIME_BRIDGE_ENABLED/);
+    expect(readEnv({ ...baseProductionEnv, EFFECTS_ENABLED: 'true', REALTIME_BRIDGE_ENABLED: 'true', EFFECTS_WORKSPACE_ALLOWLIST: ' a, b ,' })).toMatchObject({ EFFECTS_ENABLED: true, EFFECTS_WORKSPACE_ALLOWLIST: ['a', 'b'] });
+  });
   it('keeps durable media off unless an absolute private store path is configured', () => {
     expect(readEnv(baseProductionEnv).TALK_MEDIA_STORE_PATH).toBeUndefined();
     expect(readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: '/var/lib/talk/media' }).TALK_MEDIA_STORE_PATH).toBe('/var/lib/talk/media');
