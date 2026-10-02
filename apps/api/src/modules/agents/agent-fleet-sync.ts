@@ -53,6 +53,7 @@ export type TargetPlan = {
   agentName: string;
   prompt: { changed: boolean; before: string; after: string };
   template: { changed: boolean; before: string; after: string };
+  variables: { changed: boolean; after: Record<string, string> };
   knowledgeUpdates: KnowledgeUpdate[];
   knowledgeCreates: KnowledgeCreate[];
   errors: string[];
@@ -81,6 +82,10 @@ export function templatize(value: string, variables: Record<string, string>) {
     const escaped = literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return text.replace(new RegExp(`(?<!\\{\\{)${escaped}(?![a-zA-Z0-9_]*\\}\\})`, "g"), `{{${key}}}`);
   }, value);
+}
+
+export function fixVariables(variables: Record<string, string>, fixes: TextFix[]) {
+  return Object.fromEntries(Object.entries(variables).map(([key, value]) => [key, applyFixes(value, fixes)]));
 }
 
 export function lineDiff(before: string, after: string) {
@@ -126,7 +131,8 @@ export function planFleetSync(input: {
 }): FleetSyncPlan {
   const errors: string[] = [];
   const sourceBehavior = record(input.source.behaviorConfig);
-  const sourceVars = stringVariables(sourceBehavior.deploymentVariables);
+  // A typo can live in the variable itself (e.g. seller_name "Juniorr"), so fix variables too.
+  const sourceVars = fixVariables(stringVariables(sourceBehavior.deploymentVariables), input.fixes);
   if (!input.source.systemPrompt.trim()) {
     return { sourceWorkspaceId: input.source.workspaceId, targets: [], errors: ["Source agent has an empty prompt."] };
   }
@@ -143,7 +149,8 @@ export function planFleetSync(input: {
     const targetErrors: string[] = [];
     const behavior = record(target.behaviorConfig);
     const currentTemplate = typeof behavior.packagePromptTemplate === "string" ? behavior.packagePromptTemplate : "";
-    const vars = stringVariables(behavior.deploymentVariables);
+    const originalVars = stringVariables(behavior.deploymentVariables);
+    const vars = fixVariables(originalVars, input.fixes);
 
     const missing = templateVariables(masterTemplate).filter((name) => !vars[name]);
     if (missing.length > 0) targetErrors.push(`Target is missing deployment variables: ${missing.join(", ")}.`);
@@ -212,6 +219,7 @@ export function planFleetSync(input: {
       agentName: target.name,
       prompt: { changed: nextPrompt !== target.systemPrompt.trim(), before: target.systemPrompt, after: nextPrompt },
       template: { changed: masterTemplate !== currentTemplate, before: currentTemplate, after: masterTemplate },
+      variables: { changed: JSON.stringify(vars) !== JSON.stringify(originalVars), after: vars },
       knowledgeUpdates,
       knowledgeCreates,
       errors: targetErrors
@@ -223,7 +231,7 @@ export function planFleetSync(input: {
 
 export function planHasChanges(plan: FleetSyncPlan) {
   return plan.targets.some(
-    (target) => target.prompt.changed || target.template.changed || target.knowledgeUpdates.length > 0 || target.knowledgeCreates.length > 0
+    (target) => target.prompt.changed || target.template.changed || target.variables.changed || target.knowledgeUpdates.length > 0 || target.knowledgeCreates.length > 0
   );
 }
 

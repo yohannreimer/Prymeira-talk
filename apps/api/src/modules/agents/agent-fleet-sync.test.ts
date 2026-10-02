@@ -126,6 +126,26 @@ describe("planFleetSync", () => {
     );
   });
 
+  it("fixes a typo that lives in the master's seller_name variable (prompt says Junior, variable says Juniorr)", () => {
+    const vars = { seller_name: "Juniorr", company_name: "Villefer" };
+    const typoSource: FleetAgent = {
+      ...source,
+      systemPrompt: renderTemplate(`${BASE}\n${EXTRA}`, { seller_name: "Junior", company_name: "Villefer" }),
+      behaviorConfig: { packagePromptTemplate: BASE, deploymentVariables: vars },
+      knowledge: [{ ...source.knowledge[0], content: renderTemplate(SCOPE, vars) }]
+    };
+    const plan = planFleetSync({ source: typoSource, targets: [typoSource, target], newKnowledge: [], ...common });
+    const [master, other] = plan.targets;
+
+    expect(planHasErrors(plan)).toBe(false);
+    expect(master.variables).toEqual({ changed: true, after: { seller_name: "Junior", company_name: "Villefer" } });
+    expect(master.prompt.changed).toBe(false);
+    expect(other.prompt.after).toContain("CLEITON PRESTES");
+    expect(other.prompt.after).not.toContain("Junior");
+    expect(other.variables.changed).toBe(false);
+    expect(other.knowledgeUpdates[0].after).not.toMatch(/Junior/);
+  });
+
   it("refuses when the sync would delete lines the target has (possible manual edits)", () => {
     const edited: FleetAgent = { ...target, systemPrompt: `${target.systemPrompt}\nAjuste manual importante.` };
     const plan = planFleetSync({ source, targets: [edited], newKnowledge: [], ...common });

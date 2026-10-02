@@ -125,7 +125,7 @@ async function runSync() {
     const label = labels.get(target.workspaceId) ?? target.workspaceId;
     const diff = lineDiff(target.prompt.before, target.prompt.after);
     console.log(
-      `[${label}] prompt ${target.prompt.changed ? `+${diff.added.length}/-${diff.removed.length}` : "igual"} | modelo ${target.template.changed ? "muda" : "igual"} | conhecimento: atualiza ${target.knowledgeUpdates.length}, cria ${target.knowledgeCreates.length}`
+      `[${label}] prompt ${target.prompt.changed ? `+${diff.added.length}/-${diff.removed.length}` : "igual"} | modelo ${target.template.changed ? "muda" : "igual"} | variaveis ${target.variables.changed ? "corrige" : "iguais"} | conhecimento: atualiza ${target.knowledgeUpdates.length}, cria ${target.knowledgeCreates.length}`
     );
     for (const message of target.errors) console.log(`   ERRO: ${short(message, 130)}`);
     for (const line of diff.added) console.log(`   + prompt: ${short(line, verbose ? 400 : 95)}`);
@@ -156,7 +156,7 @@ async function runSync() {
   }
 
   for (const target of plan.targets) {
-    if (!target.prompt.changed && !target.template.changed && target.knowledgeUpdates.length === 0 && target.knowledgeCreates.length === 0) continue;
+    if (!target.prompt.changed && !target.template.changed && !target.variables.changed && target.knowledgeUpdates.length === 0 && target.knowledgeCreates.length === 0) continue;
     await prisma.$transaction(async (tx) => {
       const agent = await tx.aiAgent.findUniqueOrThrow({ where: { workspaceId_id: { workspaceId: target.workspaceId, id: target.agentId } } });
       const previousKnowledge = await tx.aiKnowledgeSource.findMany({
@@ -171,17 +171,22 @@ async function runSync() {
             agentId: target.agentId,
             systemPrompt: agent.systemPrompt,
             packagePromptTemplate: asRecord(agent.behaviorConfig).packagePromptTemplate ?? null,
+            deploymentVariables: asRecord(agent.behaviorConfig).deploymentVariables ?? null,
             knowledge: previousKnowledge.map((item) => ({ id: item.id, content: item.content, metadata: item.metadata }))
           } as Prisma.InputJsonValue
         }
       });
 
-      if (target.prompt.changed || target.template.changed) {
+      if (target.prompt.changed || target.template.changed || target.variables.changed) {
         await tx.aiAgent.update({
           where: { workspaceId_id: { workspaceId: target.workspaceId, id: target.agentId } },
           data: {
             systemPrompt: target.prompt.after,
-            behaviorConfig: { ...asRecord(agent.behaviorConfig), packagePromptTemplate: target.template.after } as Prisma.InputJsonValue
+            behaviorConfig: {
+              ...asRecord(agent.behaviorConfig),
+              packagePromptTemplate: target.template.after,
+              deploymentVariables: target.variables.after
+            } as Prisma.InputJsonValue
           }
         });
       }
@@ -237,7 +242,11 @@ async function runRollback() {
         where: { workspaceId_id: { workspaceId: target.workspaceId, id: agentId } },
         data: {
           systemPrompt: String(backup.systemPrompt),
-          behaviorConfig: { ...asRecord(agent.behaviorConfig), packagePromptTemplate: backup.packagePromptTemplate ?? null } as Prisma.InputJsonValue
+          behaviorConfig: {
+            ...asRecord(agent.behaviorConfig),
+            packagePromptTemplate: backup.packagePromptTemplate ?? null,
+            ...(backup.deploymentVariables ? { deploymentVariables: backup.deploymentVariables } : {})
+          } as Prisma.InputJsonValue
         }
       });
       for (const item of (Array.isArray(backup.knowledge) ? backup.knowledge : []) as Record<string, unknown>[]) {
