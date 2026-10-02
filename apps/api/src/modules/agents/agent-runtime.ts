@@ -210,7 +210,7 @@ type AgentRuntimeEvolution = {
   mode: EvolutionRuntime["mode"];
   client?:
     | (Pick<NonNullable<EvolutionRuntime["client"]>, "sendText"> &
-        Partial<Pick<NonNullable<EvolutionRuntime["client"]>, "sendMedia">>)
+        Partial<Pick<NonNullable<EvolutionRuntime["client"]>, "sendMedia" | "fetchMedia">>)
     | null;
 };
 
@@ -800,6 +800,19 @@ export function createAgentRuntime(input: {
         }
 
         const mediaResolver = input.mediaResolver ?? resolveAgentMedia;
+        // Evolution webhooks no longer carry base64, so WhatsApp media arrives as an
+        // encrypted CDN URL. Like the inbox media route, recover a readable copy from Evolution.
+        const mediaResolverFor = (entry: MessageRecord): typeof resolveAgentMedia => async (args) => {
+          try {
+            return await mediaResolver(args);
+          } catch (error) {
+            const fetchMedia = input.evolution?.mode === "real" ? input.evolution.client?.fetchMedia : undefined;
+            const instanceName = conversation.channel?.provider === "evolution" ? conversation.channel.providerKey : null;
+            if (!fetchMedia || !instanceName || !entry.providerMessageId) throw error;
+            const mediaUrl = await fetchMedia({ instanceName, id: entry.providerMessageId });
+            return await mediaResolver({ ...args, mediaUrl });
+          }
+        };
         let effectiveText = message.body ?? "";
         let mediaFallback: string | null = null;
         let mediaProcessingError: string | null = null;
@@ -855,7 +868,7 @@ export function createAgentRuntime(input: {
             mediaUrl: attachment.mediaUrl,
             kind: attachment.type === "file" ? "document" : "image",
             settings: providerSettings,
-            mediaResolver
+            mediaResolver: mediaResolverFor(attachment)
           });
           const handled = attachment.type === "image" && prepared.status === "failed"
             ? { ...prepared, fallback: IMAGE_PROCESSING_FALLBACK }
@@ -887,7 +900,7 @@ export function createAgentRuntime(input: {
                 mediaUrl: message.mediaUrl,
                 kind: message.type === "file" ? "document" : "image",
                 settings: providerSettings,
-                mediaResolver
+                mediaResolver: mediaResolverFor(message)
               });
           const handledMedia = message.type === "image" && media.status === "failed"
             ? { ...media, fallback: IMAGE_PROCESSING_FALLBACK }
