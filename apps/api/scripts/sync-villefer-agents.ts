@@ -117,37 +117,41 @@ async function runSync() {
   });
 
   const labels = new Map([[SOURCE.workspaceId, SOURCE.label], ...OTHER_TARGETS.map((target) => [target.workspaceId, target.label] as const)]);
-  console.log(`\nMODO: ${apply ? "APLICAR" : "ENSAIO (nada será gravado)"}   origem: ${SOURCE.label}\n`);
-  for (const message of plan.errors) console.log(`ERRO (origem): ${message}`);
+  const verbose = args.has("--verbose");
+  console.log(`MODO: ${apply ? "APLICAR" : "ENSAIO (nada sera gravado)"} | origem: ${SOURCE.label} | ${plan.targets.length} agentes`);
+  for (const message of plan.errors) console.log(`ERRO (origem): ${short(message, 150)}`);
+  // Compact by default: the Portainer terminal only shows the last ~25 lines.
   for (const target of plan.targets) {
     const label = labels.get(target.workspaceId) ?? target.workspaceId;
-    console.log(`── ${label} — ${target.agentName}`);
-    for (const message of target.errors) console.log(`   ERRO: ${message}`);
     const diff = lineDiff(target.prompt.before, target.prompt.after);
-    console.log(`   prompt: ${target.prompt.changed ? `muda (+${diff.added.length} / -${diff.removed.length} linhas)` : "sem mudança"}`);
-    for (const line of diff.added) console.log(`     + ${short(line)}`);
-    for (const line of diff.removed) console.log(`     - ${short(line)}`);
-    console.log(`   modelo do prompt (packagePromptTemplate): ${target.template.changed ? "muda" : "sem mudança"}`);
+    console.log(
+      `[${label}] prompt ${target.prompt.changed ? `+${diff.added.length}/-${diff.removed.length}` : "igual"} | modelo ${target.template.changed ? "muda" : "igual"} | conhecimento: atualiza ${target.knowledgeUpdates.length}, cria ${target.knowledgeCreates.length}`
+    );
+    for (const message of target.errors) console.log(`   ERRO: ${short(message, 130)}`);
+    for (const line of diff.added) console.log(`   + prompt: ${short(line, verbose ? 400 : 95)}`);
+    for (const line of diff.removed) console.log(`   - prompt: ${short(line, verbose ? 400 : 95)}`);
     for (const update of target.knowledgeUpdates) {
       const changes = lineDiff(update.before, update.after);
-      console.log(`   conhecimento ATUALIZA "${update.title}" (+${changes.added.length} / -${changes.removed.length} linhas)`);
-      for (const line of changes.added) console.log(`     + ${short(line)}`);
-      for (const line of changes.removed) console.log(`     - ${short(line)}`);
+      console.log(`   ~ "${short(update.title, 40)}": +${changes.added.length}/-${changes.removed.length}`);
+      if (verbose) {
+        for (const line of changes.added) console.log(`       + ${short(line, 300)}`);
+        for (const line of changes.removed) console.log(`       - ${short(line, 300)}`);
+      }
     }
-    for (const create of target.knowledgeCreates) console.log(`   conhecimento CRIA "${create.title}"`);
+    if (verbose) for (const create of target.knowledgeCreates) console.log(`   cria "${create.title}"`);
   }
 
   if (planHasErrors(plan)) {
-    console.log("\nHá erros acima. Nada foi gravado.");
+    console.log("HA ERROS acima. Nada foi gravado.");
     process.exitCode = 1;
     return;
   }
   if (!planHasChanges(plan)) {
-    console.log("\nTudo já está sincronizado. Nada a fazer.");
+    console.log("Tudo ja esta sincronizado. Nada a fazer.");
     return;
   }
   if (!apply) {
-    console.log("\nEnsaio concluído. Para gravar, rode de novo com --apply.");
+    console.log("Ensaio concluido. Para gravar: --apply (use --verbose para ver tudo).");
     return;
   }
 
