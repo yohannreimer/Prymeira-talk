@@ -48,6 +48,8 @@ export function createOutboundRouter(options: {
   onNotDelivered?: (connection: ConnectionRef, error: unknown) => void;
   now?: () => Date;
   logger?: { warn(fields: Record<string, unknown>, message: string): void };
+  /** Staged rollout: workspaces this router handles. Every other workspace sends exactly as before (no journal). */
+  routes?: (workspaceId: string) => boolean;
 }): EvolutionClient {
   const { base, waha, db, journal } = options;
   const now = options.now ?? (() => new Date());
@@ -123,6 +125,7 @@ export function createOutboundRouter(options: {
     try { channel = await loadChannel(instanceName); }
     catch (error) { options.logger?.warn({ err: error }, 'Outbound router could not load the channel; sending directly'); return legacy(); }
     if (!channel) return legacy();
+    if (options.routes && !options.routes(channel.workspaceId)) return legacy();
 
     let dispatchId: string | null = null;
     try { dispatchId = await journal.begin({ workspaceId: channel.workspaceId, channelId: channel.id, kind: command.kind, destination: command.destination, text: command.text }); }

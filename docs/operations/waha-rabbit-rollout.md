@@ -47,6 +47,19 @@ Conferir: `ingress` saudável (`/health` responde `separate_canonical_worker_req
 (`WHATSAPP_DEFAULT_ENGINE=WPP`; o sistema deve conferir versão/engine reais ao criar sessão). Os nomes das variáveis de ambiente da WAHA no compose seguem a documentação oficial, mas **o container não foi executado**: conferir o log de inicialização na primeira subida. A WAHA do Talk é nova e separada: volumes
 `waha_sessions`/`waha_media` próprios, a `deskcomm_waha` não é tocada.
 
+## Antes do passo 4: só o workspace de teste
+
+Use **o mesmo id do workspace de teste** em todas estas variáveis. Workspaces fora delas ficam exatamente como hoje, mesmo com as
+chaves `true`: sem botão da WAHA, envios pelo caminho antigo, histórico antigo, sem cópia de mídia e transcrição como antes.
+
+| Onde | Variável | Valor no teste |
+|---|---|---|
+| stack principal | `WAHA_ROLLOUT_WORKSPACES` | `<id do workspace de teste>` |
+| stack principal | `EFFECTS_WORKSPACE_ALLOWLIST` | `<id do workspace de teste>` (vazio significaria todos) |
+| stack principal | `LEGACY_WEBHOOK_DELEGATED_WORKSPACES` | `<id do workspace de teste>` (no corte do passo 4) |
+| stack WAHA | `INGRESS_WORKSPACE_ALLOWLIST` | `<id do workspace de teste>` |
+| stack WAHA | `INGRESS_EVOLUTION_ROUTE_RULE` | regra com o id do workspace de teste (passo 4) |
+
 ## 4. Entrada da Evolution pelo ingresso (só o workspace de teste)
 
 **Antes de ligar a WAHA.** Enquanto a rota legada grava as mensagens da Evolution, uma mensagem que também chegasse pela WAHA (ou
@@ -104,9 +117,20 @@ Marcar apenas depois de observado (não há homologação real registrada até a
 - [ ] Reiniciar API, worker, ingresso e banco no meio do tráfego: nada aceito se perde nem duplica.
 - [ ] Carga: pelo menos 8 mensagens/s canônicas (16 envelopes/s), ingresso p95 < 500 ms; registrar CPU/RAM por sessão WPP.
 
+## Durante o teste (fim de semana)
+
+- **Diagnóstico** (só leitura, donos e gerentes): `GET /api/channels/rollout-diagnostics?hours=24`, com o token da sessão. Mostra conexões
+  (número mascarado), recibos aceitos/aplicados/retidos e motivos, recertificações, fila ainda não aplicada, tempo aceite→aplicado (p50/p95/máx),
+  efeitos por tipo e os travados/falhos, envios por estado e conexão, conversas duplicadas e mensagens por origem (ao vivo, histórico, recuperada).
+  Sem texto de mensagens. É o que colar para análise.
+- **Em Canais**: estado "N de 2 conectados", "Envios em revisão", "Conversas duplicadas" (só casos que o Talk não decidiu) e "Comparar histórico".
+- **Logs**: `docker service logs prymeira_talk_wa_ingress`, `..._ingress_worker` e `prymeira_talk_prymeira_talk_api`.
+- **Sinais de problema**: `notYetApplied` crescendo, `stuckOrFailed` com itens, envios `uncertain`, conexão WAHA `degraded`, p95 aceite→aplicado acima
+  de 2 s com tráfego baixo. Qualquer um: parar e analisar antes de seguir.
+
 ## 7. Para todos
 
-Somente depois de a lista acima passar: `INGRESS_WORKSPACE_ALLOWLIST=*`, `EFFECTS_WORKSPACE_ALLOWLIST` vazio (todos),
+Somente depois de a lista acima passar: `WAHA_ROLLOUT_WORKSPACES=*` (ou a lista crescente de workspaces), `INGRESS_WORKSPACE_ALLOWLIST=*`, `EFFECTS_WORKSPACE_ALLOWLIST` vazio (todos),
 `LEGACY_WEBHOOK_DELEGATED_WORKSPACES=*` e a regra do Traefik sem o id do workspace:
 
 ```text

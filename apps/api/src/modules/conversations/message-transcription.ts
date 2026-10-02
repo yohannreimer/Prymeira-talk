@@ -118,4 +118,5 @@ export function createMessageTranscriptionService(options: {
   return { run };
 }
 
-export type MessageTranscriptionService = ReturnType<typeof createMessageTranscriptionService>;
+/** `appliesTo`: staged rollout. A workspace it rejects keeps each caller's previous transcription path. Absent = all. */
+export type MessageTranscriptionService = ReturnType<typeof createMessageTranscriptionService> & { appliesTo?: (workspaceId: string) => boolean };

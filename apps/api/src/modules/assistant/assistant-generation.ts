@@ -70,14 +70,14 @@ export function createAssistantGeneration(db: AssistantDb, dependencies: { provi
           /\[(Texto do PDF|Leitura da imagem|Transcrição do áudio) — conteúdo enviado pelo cliente\]/.test(content);
         if (retainedExtraction) media = { kind: message.type === 'file' ? 'document' : message.type as 'image' | 'audio', status: 'processed' };
         else if (cache.sourceHash === sourceHash && record(cache.result).status === 'processed' && typeof record(cache.result).extractedText === 'string') media = cache.result as InboundMediaResult;
-        else if (message.type === 'audio' && dependencies.transcriptions && record(record(message.metadata).transcription).status === 'completed' && message.body?.trim()) {
+        else if (message.type === 'audio' && dependencies.transcriptions && (dependencies.transcriptions.appliesTo?.(message.workspaceId) ?? true) && record(record(message.metadata).transcription).status === 'completed' && message.body?.trim()) {
           // Already transcribed by the shared job (automatic path or manual button): reuse, never pay twice.
           media = { kind: 'audio', status: 'processed', extractedText: message.body };
           content = '';
         }
         else if (recentAttachments.includes(message.id)) {
           const mediaResolver = resolverFor({ id: message.id, workspaceId: message.workspaceId, conversationId: message.conversationId });
-          if (message.type === 'audio' && dependencies.transcriptions) {
+          if (message.type === 'audio' && dependencies.transcriptions && (dependencies.transcriptions.appliesTo?.(message.workspaceId) ?? true)) {
             // Same persistent job as the agent and the manual button; whoever wins transcribes once.
             const outcome = await dependencies.transcriptions.run({ workspaceId: message.workspaceId, conversationId: message.conversationId, messageId: message.id, retryFailed: true,
               work: async () => {

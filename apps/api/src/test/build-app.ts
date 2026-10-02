@@ -16,6 +16,7 @@ export async function buildApp(
       OUTBOUND_ROUTER_ENABLED: false,
       CANONICAL_HISTORY_IMPORT_ENABLED: false,
       LEGACY_WEBHOOK_DELEGATED_WORKSPACES: new Set<string>(),
+      WAHA_ROLLOUT_WORKSPACES: "*" as const,
       EFFECTS_ENABLED: false,
       EFFECTS_WORKSPACE_ALLOWLIST: [],
       NODE_ENV: "test",

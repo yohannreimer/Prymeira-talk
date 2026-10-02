@@ -1454,6 +1454,16 @@ describe("Evolution webhook routes", () => {
       } finally { await app.close(); }
     });
 
+    it("a workspace outside the staged rollout gets no durable copy", async () => {
+      const prisma = createMockPrisma();
+      const prepare = vi.fn().mockResolvedValue({ state: "stored", playback: "not_applicable" });
+      const { app } = await buildEvolutionApp(prisma, undefined, { durableMedia: { prepare }, durableMediaWorkspaces: (workspaceId) => workspaceId === "someone_else" });
+      try {
+        expect((await send(app, imageBody("provider_image_outside"))).statusCode).toBe(200);
+        expect(prepare).not.toHaveBeenCalled();
+      } finally { await app.close(); }
+    });
+
     it("keeps the legacy behaviour untouched when no durable store is configured", async () => {
       const prisma = createMockPrisma();
       const { app } = await buildEvolutionApp(prisma);

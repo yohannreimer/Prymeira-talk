@@ -349,7 +349,7 @@ export function createAgentRuntime(input: {
       return { media, transcription };
     };
 
-    if (input.transcriptions) {
+    if (input.transcriptions && (input.transcriptions.appliesTo?.(message.workspaceId) ?? true)) {
       // One persistent job per message, shared with the manual button: the first caller transcribes,
       // the others reuse the text instead of paying for a second transcription.
       const worked: { value?: Awaited<ReturnType<typeof transcribe>> } = {};

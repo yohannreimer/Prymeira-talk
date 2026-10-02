@@ -80,7 +80,7 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
     const writer = records.find((record) => record.id === channel.activeConnectionId && (record.provider === 'evolution' || channel.redundancyEnabled))?.id ?? null;
     return {
       ...toChannelDto(channel), redundancyEnabled: channel.redundancyEnabled ?? false,
-      redundancyAvailable: options.waha?.enabled === true && options.waha.client !== null,
+      redundancyAvailable: options.waha?.enabled === true && options.waha.client !== null && (options.waha.allows?.(channel.workspaceId) ?? true),
       activeConnectionId: writer, connectionTotal: 2,
       connectedCount: records.filter((record) => record.status === 'connected').length,
       connections: records.map((record) => ({
@@ -294,6 +294,8 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
     async setRedundancy(input: Scope & { enabled: boolean }): Promise<ChannelOperationResultDto> {
       const channel = await getChannel(input);
       if (input.enabled) wahaClient();
+      // Staged rollout: a workspace outside the list keeps Evolution only, exactly as before.
+      if (input.enabled && options.waha?.allows && !options.waha.allows(input.workspaceId)) throw new ConnectionServiceError('WAHA_DISABLED', 'A segunda conexão (WAHA) ainda não está liberada para este espaço de trabalho.', 503);
       if (input.enabled) {
         await beginLifecycle(channel, async (tx, current) => {
           const secondary = await tx.channelConnection.findFirst({ where: { workspaceId: input.workspaceId, channelId: input.channelId, provider: 'waha' } });

@@ -202,7 +202,10 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     apiKey: env.EVOLUTION_API_KEY,
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET
   });
-  const wahaRuntime = createWahaRuntime({ enabled: env.WAHA_ENABLED, baseUrl: env.WAHA_API_BASE_URL, apiKey: env.WAHA_API_KEY, webhookBaseUrl: env.WAHA_WEBHOOK_BASE_URL, webhookHmacKey: env.WAHA_WEBHOOK_HMAC_KEY });
+  // Staged rollout: only these workspaces see WAHA, the new router, canonical history and durable media copies.
+  const rollout = env.WAHA_ROLLOUT_WORKSPACES;
+  const inRollout = (workspaceId: string) => rollout === '*' || rollout.has(workspaceId);
+  const wahaRuntime = createWahaRuntime({ enabled: env.WAHA_ENABLED, baseUrl: env.WAHA_API_BASE_URL, apiKey: env.WAHA_API_KEY, webhookBaseUrl: env.WAHA_WEBHOOK_BASE_URL, webhookHmacKey: env.WAHA_WEBHOOK_HMAC_KEY, allows: inRollout });
   // Opt-in single outbound router: every sender already sends through evolutionRuntime.client, so wrapping it here
   // routes human, AI, automation, follow-up and campaign sends through one journal and one failover policy.
   let outboundJournal: ReturnType<typeof createOutboundDispatchJournal> | undefined;
@@ -211,7 +214,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     evolutionRuntime.client = createOutboundRouter({
       base: evolutionRuntime.client, waha: wahaRuntime.client, db: app.prisma, journal: outboundJournal,
       probe: createDeliveryProbe({ waha: wahaRuntime.client, history: { recentMessages: (input) => { if (!evolutionHistorySource) throw new Error('HISTORY_UNAVAILABLE'); return evolutionHistorySource.recentMessages(input); } } }),
-      logger: app.log
+      logger: app.log,
+      routes: inRollout
     });
     const sweeper = setInterval(() => { void outboundJournal!.sweepStale().catch((error: unknown) => app.log.warn({ err: error }, 'Outbound journal sweep failed')); }, 60_000);
     sweeper.unref();
@@ -219,7 +223,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   }
   // Opt-in durable media + shared transcription job. Without TALK_MEDIA_STORE_PATH nothing changes.
   const durableMedia = options.prismaEnabled !== false && env.TALK_MEDIA_STORE_PATH
-    ? await createDurableMedia({ prisma: app.prisma, root: env.TALK_MEDIA_STORE_PATH })
+    ? await createDurableMedia({ prisma: app.prisma, root: env.TALK_MEDIA_STORE_PATH, appliesTo: inRollout })
     : undefined;
 
   const leadsRepository = options.prismaEnabled === false
@@ -281,7 +285,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     : createChannelHistoryImportScheduler({
         prisma: app.prisma,
         source: evolutionHistorySource,
-        canonical: env.CANONICAL_HISTORY_IMPORT_ENABLED,
+        canonical: env.CANONICAL_HISTORY_IMPORT_ENABLED ? inRollout : false,
         after: historyAfter,
         async onConversation(workspaceId, conversationId) {
           const conversation = await createConversationsService(app.prisma as unknown as ConversationsPrismaLike)
@@ -502,7 +506,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   const historyBackfill = options.prismaEnabled === false || !evolutionHistorySource ? undefined : async (input: { workspaceId: string; channelId: string; conversationId: string; providerKey: string; remoteJid: string; identity: string; pushName: string | null }) => {
     const count = await app.prisma.message.count({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
     if (count >= 30) return;
-    const importer = createChannelHistoryImporter({ prisma: app.prisma, source: evolutionHistorySource, canonical: env.CANONICAL_HISTORY_IMPORT_ENABLED, after: historyAfter });
+    const importer = createChannelHistoryImporter({ prisma: app.prisma, source: evolutionHistorySource, canonical: env.CANONICAL_HISTORY_IMPORT_ENABLED ? inRollout : false, after: historyAfter });
     await importer.importChat({ id: input.channelId, workspaceId: input.workspaceId,
       providerKey: input.providerKey, historyImportAttempts: 0 },
     { remoteJid: input.remoteJid, phoneJid: input.identity, pushName: input.pushName, profilePicUrl: null }, 30);
@@ -522,6 +526,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     agentReplyScheduler,
     evolution: evolutionRuntime,
     durableMedia: durableMedia?.media,
+    durableMediaWorkspaces: inRollout,
     evolutionClient: evolutionRuntime.client
   });
   // Durable ingress effects: the observable consequences of a message accepted by the new ingress (assistant,

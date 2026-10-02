@@ -58,6 +58,15 @@ describe.skipIf(!databaseUrl)('outbound router on PostgreSQL', () => {
   const send = (r: EvolutionClient, f: { channel: { providerKey: string } }, text = 'olá, tudo bem?') => r.sendText({ instanceName: f.channel.providerKey, number: '5547888880000', text });
   const rows = (workspaceId: string) => db.outboundDispatch.findMany({ where: { workspaceId }, orderBy: { createdAt: 'asc' } });
 
+  it('a workspace outside the staged rollout sends exactly as before: the legacy call, no journal', async () => {
+    const f = await fixture();
+    const c = clients();
+    const result = await send(router(c, { routes: () => false }), f);
+    expect(result).toMatchObject({ providerMessageId: 'EVO-TEXT-1' });
+    expect(c.base.sendText).toHaveBeenCalledTimes(1);
+    expect(c.waha.sendText).not.toHaveBeenCalled();
+    expect(await rows(f.workspaceId)).toHaveLength(0);
+  });
   it('sends through the active writer and journals which physical connection carried it', async () => {
     const f = await fixture(), c = clients();
     expect(await send(router(c), f)).toMatchObject({ providerMessageId: 'EVO-TEXT-1' });

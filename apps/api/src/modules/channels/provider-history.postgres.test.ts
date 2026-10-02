@@ -5,6 +5,7 @@ import type { HistoryRecord } from '../evolution/evolution-history.js';
 import type { WahaMessage } from '../waha/waha.client.js';
 import { importChatCanonical } from './channel-history-canonical.js';
 import { normalizeChatAddress } from '../messaging/whatsapp-identity.js';
+import { rolloutDiagnostics } from './rollout-diagnostics.js';
 import { compareProviderHistories, importConnectionHistory, recoverConnectionGap, wahaChatAddress, wahaHistorySweep, type ProviderHistoryDeps } from './provider-history.js';
 
 const databaseUrl = process.env.MESSAGING_TEST_DATABASE_URL;
@@ -141,5 +142,17 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
     expect(proven.inserted).toBe(1);
     expect(await db.conversation.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
     expect((await db.message.findMany({ where: { workspaceId: f.workspaceId }, orderBy: { createdAt: 'asc' } })).map(m => m.body)).toEqual(['pelo telefone', 'pelo lid']);
+  });
+
+  it('summarises the workspace for the rollout without message text or full numbers', async () => {
+    const f = await fixture();
+    await importChatCanonical({ prisma: db, channel: f.target, connectionId: f.evolution.id, chat: { remoteJid: PN, phoneJid: PN, pushName: null, profilePicUrl: null },
+      records: [evo('DIAG', 'conteudo privado', NOW - 60_000)], batchId: randomUUID() });
+    const report = await rolloutDiagnostics(db, { workspaceId: f.workspaceId, hours: 1 });
+    expect(report.channels[0]!.connections.map(c => c.provider).sort()).toEqual(['evolution', 'waha']);
+    expect(report.channels[0]!.connections.find(c => c.provider === 'evolution')!.number).toBe('…8888');
+    expect(report.messagesByOrigin).toEqual([{ mode: 'history', messages: 1 }]);
+    expect(JSON.stringify(report)).not.toContain('conteudo privado');
+    expect(JSON.stringify(report)).not.toContain('5547999998888');
   });
 });

@@ -302,7 +302,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
         const settings = await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId });
         return transcribeInboundAudio({ bytes: media.bytes, mimeType: media.mimeType, settings });
       };
-      if (options.transcriptions) {
+      if (options.transcriptions && (options.transcriptions.appliesTo?.(workspaceId) ?? true)) {
         // Same job the automatic path uses: a transcription already running or finished is shared, not repeated.
         const outcome = await options.transcriptions.run({ workspaceId, conversationId, messageId, retryFailed: true,
           work: async () => ({ text: (await transcribe()).text }) });

@@ -19,7 +19,7 @@ export function createChannelHistoryImporter(input: {
   source: EvolutionHistorySource;
   /** Writes through the canonical store (exact identity, PN/LID aliases, dedupe with live events). Chats whose
    * channel has no eligible Evolution connection keep the legacy writer. */
-  canonical?: boolean;
+  canonical?: boolean | ((workspaceId: string) => boolean);
   /** Canonical path only: durable media and live updates for the imported messages. */
   after?: AfterPersist;
   onConversation?: (workspaceId: string, conversationId: string) => Promise<void> | void;
@@ -30,7 +30,7 @@ export function createChannelHistoryImporter(input: {
     const records = await input.source.recentMessages({ instanceName: channel.providerKey, remoteJid: chat.remoteJid, limit });
     if (!records.length) return 0;
     if (since && records.at(-1)!.messageTimestamp * 1000 < since.getTime()) return 0;
-    if (input.canonical) {
+    if (typeof input.canonical === 'function' ? input.canonical(channel.workspaceId) : input.canonical) {
       const connection = await canonicalHistoryConnection(input.prisma, channel);
       if (connection) {
         const imported = await importChatCanonical({ prisma: input.prisma, channel, connectionId: connection.id,
@@ -167,7 +167,7 @@ export function createChannelHistoryImporter(input: {
 export function createChannelHistoryImportScheduler(input: {
   prisma: PrismaClient;
   source: EvolutionHistorySource;
-  canonical?: boolean;
+  canonical?: boolean | ((workspaceId: string) => boolean);
   after?: AfterPersist;
   onConversation?: (workspaceId: string, conversationId: string) => Promise<void> | void;
   onError?: (error: unknown, channelId?: string) => void;

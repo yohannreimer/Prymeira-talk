@@ -70,6 +70,8 @@ services:
       VINCULA_CRM_API_URL: ${VINCULA_CRM_API_URL:-https://vincula.prymeiradigital.com.br/api}
       # Evolution + WAHA + RabbitMQ integration. Every switch is off (or empty) by default: deploying this file
       # changes nothing until the values are set. See docs/operations/waha-rabbit-rollout.md for the order.
+      # Only these workspaces (comma-separated ids, or *) get the new integration; everyone else stays as today.
+      WAHA_ROLLOUT_WORKSPACES: ${WAHA_ROLLOUT_WORKSPACES:-}
       WAHA_ENABLED: ${WAHA_ENABLED:-false}
       WAHA_API_BASE_URL: ${WAHA_API_BASE_URL:-}
       WAHA_API_KEY: ${WAHA_API_KEY:-}

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ compare: vi.fn(), failing: false }));
 // A plain function (not the spy) produces the rejection, so the spy never holds an unawaited rejected result.
+vi.mock('./rollout-diagnostics.js', () => ({ rolloutDiagnostics: async (_db: unknown, input: unknown) => ({ diagnostics: input }) }));
 vi.mock('./provider-history.js', () => ({ compareProviderHistories: async (...args: unknown[]) => { mocks.compare(...args); if (mocks.failing) throw new Error('down'); return mocks.compare.mock.results.at(-1)?.value; } }));
 const { historyComparisonRoutes } = await import('./history-comparison.routes.js');
 
@@ -37,5 +38,11 @@ describe('history comparison route', () => {
     mocks.failing = true;
     const failing = await (await build('owner', both)).app.inject({ method: 'GET', url: `/channels/${channelId}/history-comparison` });
     expect({ status: failing.statusCode, body: failing.json() }).toEqual({ status: 502, body: { error: expect.stringContaining('não respondeu') } });
+  });
+  it('serves the read-only rollout diagnostics of the caller workspace to owners and managers', async () => {
+    const { app } = await build('owner', both);
+    expect((await app.inject({ method: 'GET', url: '/channels/rollout-diagnostics?hours=48' })).json()).toEqual({ diagnostics: { workspaceId: 'w', hours: 48 } });
+    expect((await app.inject({ method: 'GET', url: '/channels/rollout-diagnostics?hours=9999' })).statusCode).toBe(400);
+    expect((await (await build('agent', both)).app.inject({ method: 'GET', url: '/channels/rollout-diagnostics' })).statusCode).toBe(403);
   });
 });

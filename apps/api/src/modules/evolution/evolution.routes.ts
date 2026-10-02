@@ -45,6 +45,8 @@ export interface EvolutionRoutesOptions {
   waha?: WahaRuntime;
   /** Durable private copy of attachments, filled best-effort right after the message is saved. */
   durableMedia?: Pick<import('../conversations/message-media.js').MessageMediaService, 'prepare'>;
+  /** Staged rollout: workspaces whose legacy-webhook attachments also get the durable copy. Absent = all. */
+  durableMediaWorkspaces?: (workspaceId: string) => boolean;
   evolutionClient?: Pick<import('./evolution.client.js').EvolutionClient, 'fetchMedia'> | null;
   messageHistory?: Pick<EvolutionHistorySource, "findMessage">;
   historyBackfill?: (input: { workspaceId: string; channelId: string; conversationId: string; providerKey: string; remoteJid: string; identity: string; pushName: string | null }) => Promise<void>;
@@ -734,7 +736,7 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         payload: toConversationDto(conversation)
       });
 
-      if (options.durableMedia && ['audio', 'image', 'file'].includes(messageContent.type)) {
+      if (options.durableMedia && (options.durableMediaWorkspaces?.(workspaceId) ?? true) && ['audio', 'image', 'file'].includes(messageContent.type)) {
         // Best effort and after realtime: every reader still falls back to the legacy path if this fails.
         const client = options.evolutionClient;
         const providerId = payload.data.key.id;

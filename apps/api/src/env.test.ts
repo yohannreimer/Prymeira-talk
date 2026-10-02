@@ -194,4 +194,10 @@ describe("readEnv", () => {
     expect(env.TALK_MEDIA_STORE_PATH).toBeUndefined();
     expect(() => readEnv({ ...baseProductionEnv, WAHA_WEBHOOK_HMAC_KEY: "short" })).toThrow();
   });
+
+  it("rolls the integration out to nobody by default, to listed workspaces, or to everyone with *", () => {
+    expect(readEnv({ ...baseProductionEnv }).WAHA_ROLLOUT_WORKSPACES).toEqual(new Set());
+    expect(readEnv({ ...baseProductionEnv, WAHA_ROLLOUT_WORKSPACES: "ws-yohann" }).WAHA_ROLLOUT_WORKSPACES).toEqual(new Set(["ws-yohann"]));
+    expect(readEnv({ ...baseProductionEnv, WAHA_ROLLOUT_WORKSPACES: "*" }).WAHA_ROLLOUT_WORKSPACES).toBe("*");
+  });
 });

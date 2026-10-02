@@ -2,10 +2,18 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { compareProviderHistories, type ProviderHistoryDeps } from './provider-history.js';
+import { rolloutDiagnostics } from './rollout-diagnostics.js';
 
 /** Read-only comparison of what Evolution and WAHA return for the same recent chats, matched by exact message id.
  * Used during homologation to decide whether one engine should lead history. Owners and managers only. */
 export const historyComparisonRoutes: FastifyPluginAsync<{ db: PrismaClient; deps: ProviderHistoryDeps }> = async (app, options) => {
+  /** Read-only health summary of the integration for this workspace (counts, states, timings; no message text). */
+  app.get('/channels/rollout-diagnostics', async (request, reply) => {
+    if (request.talk.role !== 'owner' && request.talk.role !== 'manager') return reply.code(403).send({ error: 'Forbidden.' });
+    const query = z.object({ hours: z.coerce.number().int().min(1).max(336).default(24) }).safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: 'Invalid request.' });
+    return rolloutDiagnostics(options.db, { workspaceId: request.talk.workspaceId, hours: query.data.hours });
+  });
   app.get('/channels/:channelId/history-comparison', async (request, reply) => {
     if (request.talk.role !== 'owner' && request.talk.role !== 'manager') return reply.code(403).send({ error: 'Forbidden.' });
     const params = z.object({ channelId: z.string().uuid() }).safeParse(request.params);

@@ -30,6 +30,14 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     await service.disconnectChannel({ workspaceId, channelId });
     expect(await prisma.channelConnection.findUnique({ where: { id: primaryId } })).toMatchObject({ status: 'disconnected', eligible: false });
   });
+  it('a workspace outside the staged rollout sees no WAHA option and cannot enable it', async () => {
+    const service = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: remote, allows: (id: string) => id !== workspaceId } });
+    const channel = await prisma.channel.findFirstOrThrow({ where: { workspaceId, id: channelId } });
+    expect((await service.describe(channel)).redundancyAvailable).toBe(false);
+    await expect(service.setRedundancy({ workspaceId, channelId, enabled: true })).rejects.toMatchObject({ code: 'WAHA_DISABLED' });
+    expect((await prisma.channel.findFirstOrThrow({ where: { id: channelId } })).redundancyEnabled).toBe(false);
+    expect(await prisma.channelConnection.count({ where: { channelId, provider: 'waha' } })).toBe(0);
+  });
   it('allows concurrent idempotent enable and rejects cross-tenant physical records', async () => {
     const service = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: remote } });
     await Promise.all(Array.from({ length: 4 }, () => service.setRedundancy({ workspaceId, channelId, enabled: true })));

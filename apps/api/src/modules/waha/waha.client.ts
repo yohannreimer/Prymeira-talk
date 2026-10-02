@@ -194,8 +194,9 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
 }
 
 export type WahaClient = ReturnType<typeof createWahaClient>;
-export interface WahaRuntime { enabled: boolean; client: WahaClient | null; /** Where WAHA must deliver events: Talk's ingress base URL and the shared HMAC key. */ webhook?: { baseUrl: string; hmacKey: string } | null }
-export function createWahaRuntime(input: { enabled?: boolean; baseUrl?: string; apiKey?: string; fetch?: typeof fetch; webhookBaseUrl?: string; webhookHmacKey?: string }): WahaRuntime {
+export interface WahaRuntime { enabled: boolean; client: WahaClient | null; /** Workspaces allowed to use WAHA (staged rollout). Absent = all. */ allows?: (workspaceId: string) => boolean; /** Where WAHA must deliver events: Talk's ingress base URL and the shared HMAC key. */ webhook?: { baseUrl: string; hmacKey: string } | null }
+export function createWahaRuntime(input: { enabled?: boolean; baseUrl?: string; apiKey?: string; fetch?: typeof fetch; webhookBaseUrl?: string; webhookHmacKey?: string; allows?: (workspaceId: string) => boolean }): WahaRuntime {
   return { enabled: input.enabled === true, client: input.enabled && input.baseUrl && input.apiKey ? createWahaClient({ baseUrl: input.baseUrl, apiKey: input.apiKey, fetch: input.fetch }) : null,
-    webhook: input.webhookBaseUrl && input.webhookHmacKey ? { baseUrl: input.webhookBaseUrl.replace(/\/$/, ''), hmacKey: input.webhookHmacKey } : null };
+    webhook: input.webhookBaseUrl && input.webhookHmacKey ? { baseUrl: input.webhookBaseUrl.replace(/\/$/, ''), hmacKey: input.webhookHmacKey } : null,
+    ...(input.allows ? { allows: input.allows } : {}) };
 }

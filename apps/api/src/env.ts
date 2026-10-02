@@ -70,6 +70,9 @@ export const envSchema = z
     CHANNEL_HEALTH_MONITOR_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     /** Routes every outbound send through the single router (journal, failover, uncertain-send handling). */
     OUTBOUND_ROUTER_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+    /** Staged rollout of the whole Evolution+WAHA integration: workspace ids (comma-separated) or '*'. Workspaces outside
+     * the list keep today's behaviour even with the switches below on (no WAHA button, legacy sends, legacy history). */
+    WAHA_ROLLOUT_WORKSPACES: z.string().default('').transform((value) => value.trim() === '*' ? '*' as const : new Set(value.split(',').map((id) => id.trim()).filter(Boolean))),
     /** Imports channel history through the canonical store instead of writing messages directly. */
     CANONICAL_HISTORY_IMPORT_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     /** Workspaces (comma-separated ids, or '*') served by the independent ingress; the legacy webhook refuses them with 409. */

@@ -153,4 +153,20 @@ describe('new channel history import', () => {
     await expect(importer({ ...channel, historyImportAttempts: 3 })).resolves.toEqual({ conversations: 0, messages: 0 });
     expect(createMany).toHaveBeenCalledWith({ data: [{ workspaceId: 'workspace-1', phone: '551199998888', name: 'Cliente antigo', avatarUrl: null }], skipDuplicates: true });
   });
+
+describe('staged rollout of the canonical history import', () => {
+  it('a workspace outside the rollout keeps the legacy writer even with the canonical import on', async () => {
+    const findFirst = vi.fn().mockResolvedValue(null), connection = vi.fn();
+    const tx = { contact: { findFirst, upsert: vi.fn().mockResolvedValue({ id: 'c1', name: null, avatarUrl: null }), updateMany: vi.fn() },
+      conversation: { upsert: vi.fn().mockResolvedValue({ id: 'conv-1' }), updateMany: vi.fn() },
+      message: { findMany: vi.fn().mockResolvedValue([]), createMany: vi.fn().mockResolvedValue({ count: 2 }) } };
+    const prisma = { $transaction: vi.fn(async (fn: (client: unknown) => Promise<unknown>) => fn(tx)), channelConnection: { findFirst: connection } } as unknown as PrismaClient;
+    const source = { recentMessages: vi.fn().mockResolvedValue(records) } as unknown as EvolutionHistorySource;
+    const imported = await createChannelHistoryImporter({ prisma, source, canonical: (workspaceId) => workspaceId === 'another-workspace' })
+      .importChat(channel, { remoteJid, phoneJid: remoteJid, pushName: null, profilePicUrl: null }, 30);
+    expect(imported).toBe(2);
+    expect(tx.message.createMany).toHaveBeenCalledTimes(1);
+    expect(connection).not.toHaveBeenCalled();
+  });
+});
 });
