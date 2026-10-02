@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
+import type { ChannelHealthDto } from "@prymeira-talk/shared";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { resolveMetaRuntime } from "../meta/meta-runtime.js";
 import { ChannelsServiceError, createChannelsService } from "./channels.service.js";
@@ -7,6 +8,11 @@ import type { PrismaLike } from "./channels.service.js";
 
 interface ChannelsRoutesOptions {
   evolution?: EvolutionRuntime;
+  channelHealth?: {
+    getHealth(workspaceId: string): ChannelHealthDto[];
+    markManualDisconnect(channelId: string): void;
+    clearManualDisconnect(channelId: string): void;
+  };
 }
 
 const uuidParamSchema = z.string().uuid();
@@ -69,6 +75,10 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
     service.listChannels({ workspaceId: request.talk.workspaceId })
   );
 
+  app.get("/channels/health", async (request) => ({
+    health: options.channelHealth?.getHealth(request.talk.workspaceId) ?? []
+  }));
+
   app.post("/channels", async (request, reply) => {
     const body = createChannelBodySchema.safeParse(request.body);
 
@@ -129,6 +139,8 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
         payload: result.channel
       });
 
+      options.channelHealth?.clearManualDisconnect(params.data.channelId);
+
       return result;
     } catch (error) {
       return handleChannelsError(reply, error);
@@ -154,6 +166,8 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
         payload: result.channel
       });
 
+      options.channelHealth?.clearManualDisconnect(params.data.channelId);
+
       return result;
     } catch (error) {
       return handleChannelsError(reply, error);
@@ -178,6 +192,8 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
         workspaceId: request.talk.workspaceId,
         payload: result.channel
       });
+
+      options.channelHealth?.markManualDisconnect(params.data.channelId);
 
       return result;
     } catch (error) {

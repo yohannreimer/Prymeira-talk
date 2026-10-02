@@ -42,6 +42,7 @@ import { campaignsRoutes } from "./modules/campaigns/campaigns.routes.js";
 import { broadcastListsRoutes } from './modules/campaigns/broadcast-lists.routes.js';
 import { createCampaignWorker } from "./modules/campaigns/campaign-worker.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
+import { createChannelWatchdog, type ChannelWatchdogPrisma } from "./modules/channels/channel-watchdog.js";
 import { createChannelHistoryImporter, createChannelHistoryImportScheduler } from "./modules/channels/channel-history-import.js";
 import { createContactNameRecoverySchedulerIfEnabled } from "./modules/channels/contact-name-recovery-scheduler.js";
 import { contactsRoutes } from "./modules/contacts/contacts.routes.js";
@@ -260,6 +261,22 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   });
   contactNameRecoveryScheduler?.start();
   if (contactNameRecoveryScheduler) app.addHook("onClose", async () => { await contactNameRecoveryScheduler.stop(); });
+  const channelWatchdog = env.CHANNEL_WATCHDOG_ENABLED && options.prismaEnabled !== false &&
+    evolutionRuntime.mode === "real" && evolutionRuntime.client
+    ? createChannelWatchdog({
+        prisma: app.prisma as unknown as ChannelWatchdogPrisma,
+        evolution: {
+          client: evolutionRuntime.client,
+          webhookSecret: evolutionRuntime.webhookSecret,
+          publicWebhookUrl: evolutionRuntime.publicWebhookUrl
+        },
+        publish: (event) => app.realtime.publish(event),
+        intervalMs: env.CHANNEL_WATCHDOG_INTERVAL_SECONDS * 1000,
+        log: app.log
+      })
+    : undefined;
+  channelWatchdog?.start();
+  if (channelWatchdog) app.addHook("onClose", async () => { await channelWatchdog.stop(); });
   const lunaEligibility = options.prismaEnabled === false
     ? undefined
     : createLunaFollowupEligibility({ prisma: app.prisma });
@@ -511,7 +528,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   });
   await app.register(contactsRoutes, { evolution: evolutionRuntime });
   await app.register(boardsRoutes);
-  await app.register(channelsRoutes, { evolution: evolutionRuntime });
+  await app.register(channelsRoutes, { evolution: evolutionRuntime, channelHealth: channelWatchdog });
   await app.register(automationsRoutes, { agentRuntime, evolution: evolutionRuntime });
   await app.register(campaignsRoutes, { evolution: evolutionRuntime });
   await app.register(broadcastListsRoutes);
