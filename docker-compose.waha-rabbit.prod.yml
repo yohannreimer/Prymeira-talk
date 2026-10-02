@@ -7,8 +7,8 @@
 # Order, checks and rollback: docs/operations/waha-rabbit-rollout.md
 services:
   waha:
-    # Pin by digest in the stack environment once the candidate is homologated (see the rollout document).
-    image: ${WAHA_IMAGE:-devlikeapro/waha:chrome-2026.9.1}
+    # Pinned by digest (the registry candidate recorded in docs/operations/evolution-waha-rabbit.md). Still to qualify on the VPS.
+    image: ${WAHA_IMAGE:-devlikeapro/waha:chrome-2026.9.1@sha256:23d0344ea7dd3a1190d9ee5c78efebd27eb8bb41bdc6cdc10c2e2ce186ce70d5}
     logging:
       driver: json-file
       options:
@@ -114,6 +114,9 @@ services:
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
       WAHA_API_BASE_URL: http://waha:3000
       WAHA_API_KEY: ${WAHA_API_KEY}
+      # Off until the Evolution cutover (see the rollout document): gap recovery every 5 min and WAHA history after Evolution's.
+      INGRESS_RECOVERY_ENABLED: ${INGRESS_RECOVERY_ENABLED:-false}
+      WAHA_HISTORY_IMPORT_ENABLED: ${WAHA_HISTORY_IMPORT_ENABLED:-false}
     volumes:
       - prymeira_talk_ingress:/data/ingress
       - prymeira_talk_media:/data/media

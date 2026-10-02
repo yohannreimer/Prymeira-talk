@@ -67,6 +67,7 @@ import { createOutboundDispatchJournal } from './modules/channels/outbound-dispa
 import { createDeliveryProbe } from './modules/channels/outbound-probes.js';
 import { outboundReviewRoutes } from './modules/channels/outbound-review.routes.js';
 import { conversationAuthorityRoutes } from './modules/channels/conversation-authority.routes.js';
+import { historyComparisonRoutes } from './modules/channels/history-comparison.routes.js';
 import { createEffectRunner, startEffectLoop } from './modules/ingress/effect-runner.js';
 import { createEffectHandlers } from './modules/ingress/effect-handlers.js';
 import { createMediaPrepareHandler } from './modules/ingress/media-prepare-handler.js';
@@ -572,6 +573,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(boardsRoutes);
   await app.register(channelsRoutes, { evolution: evolutionRuntime, waha: wahaRuntime });
   if (outboundJournal) await app.register(outboundReviewRoutes, { journal: outboundJournal });
+  if (options.prismaEnabled !== false) await app.register(historyComparisonRoutes, { db: app.prisma, deps: { evolution: evolutionHistorySource ?? null, waha: wahaRuntime.client } });
   if (options.prismaEnabled !== false) await app.register(conversationAuthorityRoutes, { db: app.prisma, async onResolved(workspaceId, conversationIds) {
     for (const conversationId of conversationIds) {
       const conversation = await createConversationsService(app.prisma as unknown as ConversationsPrismaLike).getConversationDto({ workspaceId, conversationId });

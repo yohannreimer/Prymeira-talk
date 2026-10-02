@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChannelDto, ChannelQrResultDto, RealtimeEvent } from '@prymeira-talk/shared';
 import { apiDisconnectConnection, apiGetConnectionState, apiSetChannelRedundancy, apiStartConnectionQr } from '../../app/api';
 import { ChannelQrView } from './ChannelQrView';
+import { HistoryComparisonPanel } from './HistoryComparisonPanel';
 import { applyQrUpdate, connectionCount, connectionDisplay, qrKey } from './connection-display';
 
 type QrEvent = Extract<RealtimeEvent, { type: 'channel.qr_updated' }>;
@@ -103,6 +104,7 @@ export function ChannelConnectionsPanel({ channel, primaryQr, qrEvent, getToken,
         </div> : null}
       </>}
     </section>; })}
+    {channel.connections?.filter((c) => c.status === 'connected').length === 2 ? <HistoryComparisonPanel channelId={channel.id} getToken={getToken} /> : null}
     {notice ? <p className="error-note" role="status">{notice}</p> : null}
   </div>;
 }

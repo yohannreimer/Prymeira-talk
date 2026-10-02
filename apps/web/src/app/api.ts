@@ -4049,3 +4049,14 @@ export async function apiResolveConversationAuthority(getToken: () => Promise<st
   });
   if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível escolher a conversa'));
 }
+
+export interface HistoryComparisonRow { chatAddress: string; evolution: number; waha: number; onlyEvolution: number; onlyWaha: number; both: number }
+export interface HistoryComparison { chats: HistoryComparisonRow[]; skippedLidChats: number; totals: Omit<HistoryComparisonRow, 'chatAddress'> }
+
+/** Read-only: what Evolution and WAHA each return for the same recent chats. */
+export async function apiCompareChannelHistory(getToken: () => Promise<string | null>, channelId: string): Promise<HistoryComparison> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/${encodeURIComponent(channelId)}/history-comparison`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível comparar o histórico'));
+  return await response.json() as HistoryComparison;
+}

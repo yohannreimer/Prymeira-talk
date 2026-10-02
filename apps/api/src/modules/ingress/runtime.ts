@@ -5,6 +5,8 @@ import { IngressPrivateStore } from './private-store.js';
 import { IngressJournal } from './journal.js';
 import { IngressApplicationService } from './application.js';
 import { autoResolvePending } from '../channels/conversation-authority.js';
+import { recoverGapsSweep, wahaHistorySweep } from '../channels/provider-history.js';
+import { createEvolutionHistorySource } from '../evolution/evolution-history.js';
 import { IngressTransportConsumer } from './consumer.js';
 import { createEffectRunner, startEffectLoop } from './effect-runner.js';
 import { createMediaPrepareHandler } from './media-prepare-handler.js';
@@ -67,10 +69,14 @@ export function readIngressEnvironment(env: NodeJS.ProcessEnv = process.env) {
     // Effect handlers. Without a media store path this worker only applies receipts and runs realtime.connection.
     mediaStorePath: env.TALK_MEDIA_STORE_PATH ?? '',
     evolutionApi: env.EVOLUTION_API_BASE_URL && env.EVOLUTION_API_KEY ? { baseUrl: env.EVOLUTION_API_BASE_URL, apiKey: env.EVOLUTION_API_KEY } : null,
-    wahaApi: env.WAHA_API_BASE_URL && env.WAHA_API_KEY ? { baseUrl: env.WAHA_API_BASE_URL, apiKey: env.WAHA_API_KEY } : null };
+    wahaApi: env.WAHA_API_BASE_URL && env.WAHA_API_KEY ? { baseUrl: env.WAHA_API_BASE_URL, apiKey: env.WAHA_API_KEY } : null,
+    // Off by default. Enable only once this workspace's Evolution webhook goes to the ingress (rollout step "corte"):
+    // while the legacy route still writes, a recovered copy could duplicate what it writes later.
+    gapRecovery: env.INGRESS_RECOVERY_ENABLED === 'true',
+    wahaHistoryImport: env.WAHA_HISTORY_IMPORT_ENABLED === 'true' };
 }
-type RuntimeConfig = Omit<ReturnType<typeof readIngressEnvironment>, 'stage' | 'mediaStorePath' | 'evolutionApi' | 'wahaApi' | 'allowAllWorkspaces'> & { stage?: string; allowAllWorkspaces?: boolean }
-  & Partial<Pick<ReturnType<typeof readIngressEnvironment>, 'mediaStorePath' | 'evolutionApi' | 'wahaApi'>>;
+type RuntimeConfig = Omit<ReturnType<typeof readIngressEnvironment>, 'stage' | 'mediaStorePath' | 'evolutionApi' | 'wahaApi' | 'allowAllWorkspaces' | 'gapRecovery' | 'wahaHistoryImport'> & { stage?: string; allowAllWorkspaces?: boolean }
+  & Partial<Pick<ReturnType<typeof readIngressEnvironment>, 'mediaStorePath' | 'evolutionApi' | 'wahaApi' | 'gapRecovery' | 'wahaHistoryImport'>>;
 export async function createIngressRuntime(config: RuntimeConfig, consume: boolean) {
   const db = new PrismaClient({ datasources: { db: { url: config.databaseUrl } } });
   const files = new IngressPrivateStore(config.privateRoot); await files.initialize();
@@ -119,6 +125,10 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
   // connection is current again. Nothing is lost while it is not: the receipt and the held decision stay on record.
   const recertifier = consume && stageAppliesReceipts(config.stage) ? (async () => {
     const application = new IngressApplicationService(journal);
+    const history = { evolution: config.evolutionApi ? createEvolutionHistorySource(config.evolutionApi) : null,
+      waha: config.wahaApi ? createWahaClient(config.wahaApi) : null };
+    const warn = (error: unknown, connectionId: string) => console.warn('Provider history step failed', { connectionId, error: error instanceof Error ? error.message : String(error) });
+    let lastRecovery = 0;
     while (!abort.signal.aborted) {
       await delay(30_000, undefined, { signal: abort.signal }).catch(() => {});
       if (abort.signal.aborted) break;
@@ -126,6 +136,8 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
         const scope = config.allowAllWorkspaces ? {} : { workspaceIds: [...config.workspaceAllowlist] };
         await application.recertifyPending(scope);
         await autoResolvePending(db, scope); // Old duplicate conversations: the phone-number default decides.
+        if (config.wahaHistoryImport) await wahaHistorySweep(db, history, { ...scope, onError: warn });
+        if (config.gapRecovery && Date.now() - lastRecovery >= 5 * 60_000) { lastRecovery = Date.now(); await recoverGapsSweep(db, history, { ...scope, onError: warn }); }
       }
       catch (error) { console.warn('Recertification sweep failed', error); }
     }

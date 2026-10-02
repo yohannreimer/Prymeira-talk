@@ -143,6 +143,18 @@ Pedido do Yohann: ninguém precisa escolher; vale o número de telefone, não o 
 
 Testes: `conversation-authority.postgres.test.ts` (seis cenários, inclusive lista do inbox e histórico unido), testes do inbox/relatórios/supervisão atualizados. Durante a verificação, o RabbitMQ local esgotou descritores por filas sobradas de execuções interrompidas; após limpar os vhosts de teste, a API passou inteira (2.521 testes).
 
+### Histórico pelas duas engines, recuperação de lacunas com checkpoint e digest da WAHA
+
+- **Como cada uma busca histórico** (pelo código): Evolution lê do próprio banco (`findChats`/`findMessages`/`findContacts`), com o par telefone↔LID na mensagem (`remoteJidAlt`); WAHA lê `chats`, `chats/{id}/messages` e `contacts/all`, com ID serializado (`false_<chat>_<stanza>`, reduzido ao stanza antes de comparar) e sem o par telefone↔LID. O conteúdo da WAHA WPP depende do que a sessão do WhatsApp Web carregou (entendimento, não verificado nesta versão).
+- **Escrita única** (`persistProviderMessages`): as duas alimentam o mesmo store canônico, uma transação por mensagem; o que já existe é duplicata exata, mensagens que a rota legada possui são puladas.
+- **Histórico complementar da WAHA** (`WAHA_HISTORY_IMPORT_ENABLED`, worker): uma vez por conexão WAHA, depois que a Evolution terminou o primeiro histórico e a WAHA foi comprovada no mesmo número; mesma janela (15 dias, 30 por conversa). Conversas que a WAHA só conhece por LID são puladas.
+- **Recuperação de lacunas** (`INGRESS_RECOVERY_ENABLED`, worker, a cada 5 min): por conexão, relê do checkpoint persistente (`channel_connections.recovered_through_at`, migração `20261002180000`) menos 10 min de sobreposição até 30 s atrás; o que faltou entra como `recovered_live` (não lida, sem agente/automação, distinto de histórico); o checkpoint avança por compare-and-set só depois da janela inteira.
+- **Comparar histórico** (Canais, com as duas conexões conectadas; `GET /channels/:id/history-comparison`): por conversa recente, quantas mensagens cada engine devolve, nas duas, só Evolution, só WAHA. Só lê.
+- **Ordem do rollout corrigida**: a Evolution passa a entrar pelo ingresso antes de ligar a WAHA; antes disso, a mesma mensagem poderia entrar pela WAHA (caminho novo) e pela Evolution (rota legada).
+- **WAHA fixada por digest** no compose (`chrome-2026.9.1@sha256:23d0344e…`), ainda sem qualificação na VPS.
+
+Limites: a mídia de mensagens históricas/recuperadas fica com o estado "pendente" do provedor (sem `media.prepare`, que só existe para recibos do ingresso), como já acontecia com o histórico da Evolution; mensagens recuperadas não publicam tempo real (aparecem ao recarregar o inbox); a consulta de LID da WAHA não foi implementada. Testes: `provider-history.postgres.test.ts` (quatro cenários com PostgreSQL), rota e painel de comparação, flags no `runtime.test.ts`. Verificação: API 2.529, web 427, shared 80, typecheck.
+
 ## Critérios de publicação pendentes
 
 Checkpoint canônico integrado aprovado em `117fd9f`: redutores persistentes de edições, exclusões, recibos, certificados e snapshots, com proteção cumulativa dos metadados entre páginas. Conformidade e qualidade independentes encerraram os achados de aliases após união PN/LID, fronteira de recuperação, recibos conflitantes e metadados incompatíveis. Os 164 testes canônicos com PostgreSQL passaram; a última revisão de qualidade executou 33 casos focados e quatro reproduções independentes. As consultas e escritores atuais ainda serão convertidos: essa aprovação não ativa a deduplicação em produção.

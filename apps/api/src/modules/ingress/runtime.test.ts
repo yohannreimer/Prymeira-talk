@@ -54,4 +54,9 @@ describe('ingress environment', () => {
     expect(read({ INGRESS_WORKSPACE_ALLOWLIST: 'ws1,*' }).allowAllWorkspaces).toBe(false);
     expect(ALL_WORKSPACES.has('anything')).toBe(true);
   });
+  it('keeps gap recovery and the WAHA history complement off unless explicitly enabled', () => {
+    expect(read()).toMatchObject({ gapRecovery: false, wahaHistoryImport: false });
+    expect(read({ INGRESS_RECOVERY_ENABLED: 'true', WAHA_HISTORY_IMPORT_ENABLED: 'true' })).toMatchObject({ gapRecovery: true, wahaHistoryImport: true });
+    expect(read({ INGRESS_RECOVERY_ENABLED: 'yes' })).toMatchObject({ gapRecovery: false });
+  });
 });

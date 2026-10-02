@@ -333,6 +333,10 @@ model ChannelConnection {
   lastError           String?                   @map("last_error")
   connectedAt         DateTime?                 @map("connected_at")
   disconnectedAt      DateTime?                 @map("disconnected_at")
+  /// Gap recovery checkpoint: provider messages up to this instant were read back and reconciled (next run overlaps it).
+  recoveredThroughAt  DateTime?                 @map("recovered_through_at")
+  /// When this connection's own history was imported to complement the other connection's (WAHA after Evolution).
+  historyImportedAt   DateTime?                 @map("history_imported_at")
   createdAt           DateTime                  @default(now()) @map("created_at")
   updatedAt           DateTime                  @updatedAt @map("updated_at")
   channel             Channel                   @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)

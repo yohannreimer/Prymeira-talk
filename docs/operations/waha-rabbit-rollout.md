@@ -35,7 +35,7 @@ ou `false`). Verificar `/api/health` e que a conversa, o envio e a Evolution con
 
 ## 3. Stack WAHA + ingresso + worker
 
-Variáveis (Portainer): `WAHA_IMAGE` (fixar por digest depois de homologar), `WAHA_API_KEY`, `WAHA_WEBHOOK_HMAC_KEY` (>= 16
+Variáveis (Portainer): `WAHA_IMAGE` (já fixada por digest no compose; só trocar depois de qualificar outra versão), `WAHA_API_KEY`, `WAHA_WEBHOOK_HMAC_KEY` (>= 16
 caracteres cada, valores distintos), `TALK_AMQP_URL`, `INGRESS_WORKSPACE_ALLOWLIST=<id do workspace de teste>` (**nunca `*`** no
 primeiro teste), `EVOLUTION_WEBHOOK_SECRET` (o mesmo da stack principal), `INGRESS_EVOLUTION_ROUTE_RULE` vazio.
 
@@ -47,31 +47,45 @@ Conferir: `ingress` saudável (`/health` responde `separate_canonical_worker_req
 (`WHATSAPP_DEFAULT_ENGINE=WPP`; o sistema deve conferir versão/engine reais ao criar sessão). Os nomes das variáveis de ambiente da WAHA no compose seguem a documentação oficial, mas **o container não foi executado**: conferir o log de inicialização na primeira subida. A WAHA do Talk é nova e separada: volumes
 `waha_sessions`/`waha_media` próprios, a `deskcomm_waha` não é tocada.
 
-## 4. Ligar a API para o workspace de teste
+## 4. Entrada da Evolution pelo ingresso (só o workspace de teste)
+
+**Antes de ligar a WAHA.** Enquanto a rota legada grava as mensagens da Evolution, uma mensagem que também chegasse pela WAHA (ou
+por recuperação de lacunas) entraria pelo caminho novo e de novo pelo antigo: duas cópias. Por isso a Evolution passa primeiro
+para o ingresso.
 
 Na stack principal, nesta ordem (cada linha, um redeploy e uma conferência):
 
 1. `REALTIME_BRIDGE_ENABLED=true` e `TALK_MEDIA_STORE_PATH=/data/media`.
-2. `WAHA_ENABLED=true`, `WAHA_API_BASE_URL=http://waha:3000`, `WAHA_API_KEY`, `WAHA_WEBHOOK_BASE_URL=http://ingress:4011`,
-   `WAHA_WEBHOOK_HMAC_KEY` (igual ao da stack WAHA). A tela de Canais passa a oferecer "Gerar outro QR Code — WAHA".
-3. `EFFECTS_ENABLED=true` com `EFFECTS_WORKSPACE_ALLOWLIST=<id do workspace de teste>`: a API passa a executar os efeitos duráveis
+2. `EFFECTS_ENABLED=true` com `EFFECTS_WORKSPACE_ALLOWLIST=<id do workspace de teste>`: a API passa a executar os efeitos duráveis
    (agente, assistente, follow-ups, triagem, automações, tempo real) **só** para esse workspace.
-4. `OUTBOUND_ROUTER_ENABLED=true` (roteador único de saída, journal, failover e envio incerto em revisão).
-5. `CHANNEL_HEALTH_MONITOR_ENABLED=true` (probes de 15 s, detecção de "conectado mas sem receber", troca de conexão de envio).
-6. `CANONICAL_HISTORY_IMPORT_ENABLED=true` (histórico pelo store canônico). Opcional no primeiro teste.
+3. `CANONICAL_HISTORY_IMPORT_ENABLED=true`: o primeiro histórico (contatos e últimas conversas pela Evolution) passa pelo store canônico.
 
-## 5. Corte da entrada Evolution (só o workspace de teste)
+Depois, o corte. O webhook da Evolution continua apontando para a mesma URL pública `/webhooks/evolution/<workspace>`; o que muda é a
+rota do Traefik. Definir a variável abaixo e fazer redeploy da stack WAHA. Só esse caminho vai ao ingresso (prioridade 1000); os outros
+workspaces seguem na rota legada.
 
-O webhook da Evolution continua apontando para a mesma URL pública `/webhooks/evolution/<workspace>`. O corte é a rota do Traefik:
+```text
+INGRESS_EVOLUTION_ROUTE_RULE=Host(`talk.prymeiradigital.com.br`) && PathPrefix(`/webhooks/evolution/<id do workspace de teste>`)
+```
 
-1. Com o ingresso e o worker no ar e a API com `EFFECTS_ENABLED` para o workspace, definir a variável abaixo e fazer redeploy da
-   stack WAHA. Só esse caminho vai ao ingresso (prioridade 1000); os outros workspaces seguem na rota legada.
+Na stack principal, `LEGACY_WEBHOOK_DELEGATED_WORKSPACES=<id do workspace de teste>`: se algum webhook ainda chegar à rota legada para esse
+workspace, ela responde 409 e registra aviso, em vez de gravar em duplicidade ou sumir em silêncio. Conferir que mensagens continuam
+chegando no Talk.
 
-   ```text
-   INGRESS_EVOLUTION_ROUTE_RULE=Host(`talk.prymeiradigital.com.br`) && PathPrefix(`/webhooks/evolution/<id do workspace de teste>`)
-   ```
-2. Na stack principal, `LEGACY_WEBHOOK_DELEGATED_WORKSPACES=<id do workspace de teste>`: se algum webhook ainda chegar à rota legada
-   para esse workspace, ela responde 409 e registra aviso, em vez de gravar em duplicidade ou sumir em silêncio.
+## 5. WAHA, roteador, saúde e recuperação
+
+1. Stack principal: `WAHA_ENABLED=true`, `WAHA_API_BASE_URL=http://waha:3000`, `WAHA_API_KEY`, `WAHA_WEBHOOK_BASE_URL=http://ingress:4011`,
+   `WAHA_WEBHOOK_HMAC_KEY` (igual ao da stack WAHA). A tela de Canais passa a oferecer "Gerar outro QR Code — WAHA".
+2. Stack principal: `OUTBOUND_ROUTER_ENABLED=true` (roteador único de saída, journal, failover e envio incerto em revisão).
+3. Stack principal: `CHANNEL_HEALTH_MONITOR_ENABLED=true` (probes de 15 s, "conectado mas sem receber", troca de conexão de envio).
+4. Stack WAHA: `WAHA_HISTORY_IMPORT_ENABLED=true`. Depois que a Evolution termina o primeiro histórico e a WAHA é comprovada no mesmo
+   número, a WAHA lê os mesmos 15 dias (30 mensagens por conversa) e acrescenta só o que a Evolution não trouxe. Conversas que a WAHA
+   conhece só pelo LID ficam de fora (sem prova do telefone, criariam conversa duplicada).
+5. Stack WAHA: `INGRESS_RECOVERY_ENABLED=true`. A cada 5 min, cada conexão relê o que o provedor tem desde o último checkpoint (com 10 min
+   de sobreposição, deixando de fora os últimos 30 s) e reconcilia: o que já chegou é duplicata; o que faltou entra como não lida, sem
+   agente nem automação. O checkpoint só avança depois de a janela inteira ser reconciliada.
+6. Com as duas conexões conectadas, usar Canais > "Comparar histórico" para ver, nas conversas recentes, o que cada engine devolve
+   (nas duas, só Evolution, só WAHA). Só lê. Se uma for claramente mais completa, a ordem pode ser invertida.
 
 ## 6. Teste com o número do Yohann
 
@@ -83,7 +97,9 @@ Marcar apenas depois de observado (não há homologação real registrada até a
 - [ ] Texto, áudio (player, velocidade, transcrição), imagem (legenda/ampliação), figurinha, vídeo, PDF, contato e localização, nas duas entradas.
 - [ ] Enviar do Talk: sai por uma conexão só; voz sai como voz; eco da outra conexão não duplica.
 - [ ] Derrubar a sessão ativa: o envio troca de conexão sozinho; envio sem confirmação aparece em Canais > "Envios em revisão" e **não** é reenviado.
-- [ ] Contato que existe como telefone e como LID: aparece em Canais > "Conversas duplicadas"; escolher a conversa operadora; mensagens retidas entram como histórico.
+- [ ] Contato que existe como telefone e como LID: fica uma só conversa (a do telefone), com o histórico das duas; mensagens retidas entram. O painel "Conversas duplicadas" só aparece para casos que o Talk não decidiu sozinho.
+- [ ] Primeiro histórico: contatos e últimas conversas pela Evolution; a WAHA completa sem duplicar. Comparar histórico e anotar o resultado.
+- [ ] Desligar o webhook por alguns minutos (ou parar o ingresso) e religar: a recuperação de lacunas traz o que faltou, sem duplicar.
 - [ ] Editar e apagar mensagens, recibos de leitura, histórico importado sem acionar IA.
 - [ ] Reiniciar API, worker, ingresso e banco no meio do tráfego: nada aceito se perde nem duplica.
 - [ ] Carga: pelo menos 8 mensagens/s canônicas (16 envelopes/s), ingresso p95 < 500 ms; registrar CPU/RAM por sessão WPP.
@@ -97,12 +113,13 @@ Somente depois de a lista acima passar: `INGRESS_WORKSPACE_ALLOWLIST=*`, `EFFECT
 INGRESS_EVOLUTION_ROUTE_RULE=Host(`talk.prymeiradigital.com.br`) && PathPrefix(`/webhooks/evolution`)
 ```
 
-Um workspace de cada vez é preferível a "todos" de uma vez.
+Um workspace de cada vez é preferível a "todos" de uma vez. Para cada workspace, entrar na `INGRESS_WORKSPACE_ALLOWLIST` **no mesmo redeploy** em que a regra do Traefik passa a levá-lo ao ingresso e ele entra em `LEGACY_WEBHOOK_DELEGATED_WORKSPACES`: com a recuperação e o histórico da WAHA ligados, um workspace na allowlist cuja Evolution ainda grava pela rota legada poderia receber cópias.
 
 ## Reversão
 
 - Corte da entrada: esvaziar `INGRESS_EVOLUTION_ROUTE_RULE` e `LEGACY_WEBHOOK_DELEGATED_WORKSPACES` e redeploy; a rota legada volta a gravar.
   Eventos já aceitos pelo ingresso continuam no banco; mensagens que a rota legada já possui não são duplicadas (o store segura como "requer adoção").
 - Desligar `OUTBOUND_ROUTER_ENABLED`, `CHANNEL_HEALTH_MONITOR_ENABLED`, `EFFECTS_ENABLED` e `CANONICAL_HISTORY_IMPORT_ENABLED` devolve cada parte ao comportamento anterior.
+- **Antes** de esvaziar a regra do Traefik, desligar `INGRESS_RECOVERY_ENABLED` e `WAHA_HISTORY_IMPORT_ENABLED` (e, se for voltar só para a Evolution, desconectar a WAHA): com a rota legada gravando de novo, cópias recuperadas pelo caminho novo poderiam duplicar.
 - Não executar migrações destrutivas. Envios incertos permanecem em revisão e não são reenviados pelo rollback.
 - Voltar a imagem da API anterior exige qualificação própria (os lookups antigos não conhecem os novos contratos); ver a seção de reversão em `evolution-waha-rabbit.md`.
