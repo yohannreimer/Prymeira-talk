@@ -231,6 +231,27 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     await tx.canonicalObservation.update({ where: { id: observation.id }, data: { state: reason ? 'held' : 'certified', reason: reason ?? null } });
     return reason;
   }
+  /** WAHA's own answer to "which phone is this LID" (GET /lids/{lid}), recorded as its own certified observation and
+   * applied like any accepted mapping: the LID and phone addresses become one family, so the chat they name is one
+   * chat; when each already had its conversation, the chat goes to review for the phone-number default to decide. */
+  async function applyLidLookupMappingInTransaction(tx: Tx, context: TrustedMessagingContext, input: { lid: string; pn: string }) {
+    if (context.provider !== 'waha' || !context.connectionId) throw new Error('LID lookups come from an authenticated WAHA connection');
+    const channelProvider = await lockAndScope(tx, context), scope = scopeOf(context);
+    const lid = normalizeChatAddress(input.lid), pn = normalizeChatAddress(input.pn);
+    if (!lid?.endsWith('@lid') || !pn?.endsWith('@s.whatsapp.net')) throw new Error('Invalid LID lookup');
+    const receiptTuple = ['waha_lid_lookup', context.connectionId, context.sessionName, lid, pn];
+    const bucket = await tx.canonicalObservation.findMany({ where: { ...scope, receiptHash: digest(receiptTuple) } });
+    const previous = bucket.find(row => equal(row.receiptTuple, receiptTuple));
+    if (previous) return { reason: previous.reason ?? null, chatId: (await chat(tx, scope, await address(tx, scope, pn), false)).id };
+    const addressMappings = (['chat', 'sender'] as const).map(role => ({ role, lid, pn, source: 'waha.lid_lookup' as const }));
+    const observation = await tx.canonicalObservation.create({ data: { ...scope, channelProvider, provider: 'waha', connectionProvider: 'waha', connectionId: context.connectionId,
+      receiptHash: digest(receiptTuple), receiptTuple: json(receiptTuple), kind: 'lid_lookup_mapping', eventType: 'lid_lookup', mode: context.mode,
+      source: 'waha.lid_lookup', sessionName: context.sessionName, lifecycleGeneration: context.lifecycleGeneration, receivedAt: new Date(context.observedAt),
+      sourceOrder: json({}), payload: json({ context, addressMappings }), state: 'certified' } });
+    const reason = await mappings(tx, { context, addressMappings }, observation.id);
+    if (reason) await tx.canonicalObservation.update({ where: { id: observation.id }, data: { state: 'held', reason } });
+    return { reason: reason ?? null, chatId: (await chat(tx, scope, await address(tx, scope, pn), false)).id };
+  }
   async function nativeAlias(tx: Tx, event: NormalizedMessagingEvent, key: WhatsAppMessageKey, channelProvider: 'evolution' | 'meta_cloud') {
     const c = event.context, scope = scopeOf(c);
     const fullTuple = [key.identityFormat, c.provider, c.connectionId, c.sessionName, key.nativeId, key.rawId,
@@ -592,6 +613,6 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
   }
   async function persistInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) { return persistObservationInTransaction(tx, event, options); }
   return { ...createCanonicalReads({ hash }), resolveProviderReferenceInTransaction, persistInTransaction, reconcileRevisionInTransaction, reconcileSnapshotInTransaction, reconciliationFrontierInTransaction, recoverPendingInTransaction,
-    reprocessHeldMessageObservationInTransaction, applyDispatchMappingsInTransaction, resolveAuthorityInTransaction, replayAuthorityHeldInTransaction,
+    reprocessHeldMessageObservationInTransaction, applyDispatchMappingsInTransaction, applyLidLookupMappingInTransaction, resolveAuthorityInTransaction, replayAuthorityHeldInTransaction,
     persist: (db: PrismaClient, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) => db.$transaction(tx => persistInTransaction(tx, event, options), { isolationLevel: 'ReadCommitted' }) };
 }

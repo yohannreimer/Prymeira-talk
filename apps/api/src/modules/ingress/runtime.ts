@@ -6,6 +6,7 @@ import { IngressJournal } from './journal.js';
 import { IngressApplicationService } from './application.js';
 import { autoResolvePending } from '../channels/conversation-authority.js';
 import { recoverGapsSweep, wahaHistorySweep } from '../channels/provider-history.js';
+import { resolveLidConversationsSweep } from '../channels/lid-resolution.js';
 import { createEvolutionHistorySource } from '../evolution/evolution-history.js';
 import { createWahaLidResolver } from '../waha/waha-lid-resolver.js';
 import { IngressTransportConsumer } from './consumer.js';
@@ -151,6 +152,8 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
         await application.recertifyPending(scope);
         await autoResolvePending(db, scope); // Old duplicate conversations: the phone-number default decides.
         if (config.wahaHistoryImport) await wahaHistorySweep(db, history, { ...scope, onError: warn });
+        // Conversations known only by a LID (Evolution history without a phone) get their number from WAHA.
+        if (config.wahaHistoryImport && history.wahaLids) await resolveLidConversationsSweep(db, { lids: history.wahaLids }, { ...scope, onError: warn });
         if (config.gapRecovery && Date.now() - lastRecovery >= 5 * 60_000) { lastRecovery = Date.now(); await recoverGapsSweep(db, history, { ...scope, onError: warn }); }
       }
       catch (error) { console.warn('Recertification sweep failed', error); }

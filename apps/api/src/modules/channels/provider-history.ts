@@ -144,7 +144,7 @@ export async function recoverConnectionGap(prisma: PrismaClient, deps: ProviderH
 }
 
 /** A WAHA connection may only read history for a channel when it is proven to be the same number as Evolution. */
-async function pairedConnections(prisma: PrismaClient, input: { workspaceIds?: readonly string[] }) {
+export async function pairedConnections(prisma: PrismaClient, input: { workspaceIds?: readonly string[] }) {
   const connections = await prisma.channelConnection.findMany({ where: { status: 'connected', ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}) } });
   const byChannel = new Map<string, ChannelConnection[]>();
   for (const connection of connections) byChannel.set(connection.channelId, [...(byChannel.get(connection.channelId) ?? []), connection]);

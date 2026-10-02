@@ -105,7 +105,11 @@ chegando no Talk.
 3. Stack principal: `CHANNEL_HEALTH_MONITOR_ENABLED=true` (probes de 15 s, "conectado mas sem receber", troca de conexão de envio).
 4. Stack WAHA: `WAHA_HISTORY_IMPORT_ENABLED=true`. Depois que a Evolution termina o primeiro histórico e a WAHA é comprovada no mesmo
    número, a WAHA lê os mesmos 15 dias (30 mensagens por conversa) e acrescenta só o que a Evolution não trouxe. Conversas que a WAHA
-   conhece só pelo LID ficam de fora (sem prova do telefone, criariam conversa duplicada).
+   conhece só pelo LID entram só quando a própria WAHA responde o telefone (`GET /api/{session}/lids/{lid}`).
+   Avisos do WhatsApp (criptografia, "aguardando mensagem", ligações) nunca entram. Com a mesma variável, a cada 30 s até 20
+   conversas que o Talk só conhece pelo LID (em geral do histórico da Evolution sem telefone) são perguntadas à WAHA: com
+   resposta, a conversa passa a mostrar o número e, se já havia conversa pelo número, as duas viram uma (fica a do número). LID que
+   a WAHA não conhece é perguntado de novo depois de 6 h.
 5. Stack WAHA: `INGRESS_RECOVERY_ENABLED=true`. A cada 5 min, cada conexão relê o que o provedor tem desde o último checkpoint (com 10 min
    de sobreposição, deixando de fora os últimos 30 s) e reconcilia: o que já chegou é duplicata; o que faltou entra como não lida, sem
    agente nem automação. O checkpoint só avança depois de a janela inteira ser reconciliada.
