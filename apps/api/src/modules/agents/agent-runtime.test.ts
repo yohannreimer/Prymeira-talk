@@ -789,6 +789,43 @@ describe("createAgentRuntime", () => {
     expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "failed", errorCode: "MEDIA_UNAVAILABLE" }) }) }) });
   });
 
+  it("ignores a lone sticker without reading it, replying or handing off", async () => {
+    const stickerMessage = { ...baseMessage, type: "image", body: "Figurinha recebida", mediaUrl: "https://mmg.whatsapp.net/sticker.enc" };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(stickerMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([stickerMessage]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Não deveria ser chamada.", actions: [], handoff: { required: false, reason: null } });
+    const mediaResolver = vi.fn();
+    const runtime = createAgentRuntime({ prisma, provider, mediaResolver });
+
+    const result = await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+
+    expect(result.status).toBe("skipped");
+    expect(mediaResolver).not.toHaveBeenCalled();
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ aiControlStatus: "human_controlled" }) }));
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({ data: expect.objectContaining({ status: "skipped", errorMessage: "Sticker ignored." }) });
+  });
+
+  it("answers the customer's text when a sticker follows it, without reading the sticker", async () => {
+    const text = { ...baseMessage, id: "text_before", type: "text", body: "Bom dia, vocês têm tubo schedule 80?", createdAt: new Date(now.getTime() - 60_000) };
+    const sticker = { ...baseMessage, type: "image", body: "Figurinha recebida", mediaUrl: "https://mmg.whatsapp.net/sticker.enc", createdAt: now };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(sticker);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([sticker, text]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Temos sob encomenda.", actions: [], handoff: { required: false, reason: null } });
+    const mediaResolver = vi.fn();
+    const runtime = createAgentRuntime({ prisma, provider, mediaResolver });
+
+    const result = await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+
+    expect(result.status).not.toBe("skipped");
+    expect(result.status).not.toBe("handoff_requested");
+    expect(mediaResolver).not.toHaveBeenCalled();
+    expect(provider.generate).toHaveBeenCalled();
+  });
+
   it("hands an unreadable image to a human without messaging the customer", async () => {
     const imageMessage = {
       ...baseMessage,
