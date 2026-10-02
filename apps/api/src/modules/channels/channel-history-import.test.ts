@@ -143,6 +143,97 @@ describe('new channel history import', () => {
     expect(updateMany.mock.calls[0]?.[0]).toMatchObject({ where: { id: 'old', name: null }, data: { name: 'Nome salvo' } });
   });
 
+  describe('meaningless WhatsApp names', () => {
+    function chatTx(existing: { id: string; name: string | null; avatarUrl: string | null } | null) {
+      return {
+        contact: {
+          findFirst: vi.fn().mockResolvedValue(existing),
+          upsert: vi.fn().mockResolvedValue({ id: 'contact-1', name: null, avatarUrl: null }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 })
+        },
+        conversation: { upsert: vi.fn().mockResolvedValue({ id: 'conversation-1' }), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        message: { findMany: vi.fn().mockResolvedValue([]), createMany: vi.fn().mockResolvedValue({ count: 1 }) }
+      };
+    }
+    const prismaFor = (tx: unknown) => ({ $transaction: vi.fn().mockImplementation(async (fn: (client: unknown) => Promise<unknown>) => fn(tx)) } as unknown as PrismaClient);
+    const ownLast = { key: { id: 'own', remoteJid, fromMe: true }, messageTimestamp: 1_790_000_060, message: { conversation: 'Até mais' }, pushName: 'Você' };
+
+    it('creates the contact without a name when the only name comes from our own last message', async () => {
+      const tx = chatTx(null);
+      const source = { recentMessages: vi.fn().mockResolvedValue([ownLast]) } as unknown as EvolutionHistorySource;
+      await createChannelHistoryImporter({ prisma: prismaFor(tx), source }).importChat(channel,
+        { remoteJid, phoneJid: remoteJid, pushName: 'Você', profilePicUrl: null }, 30);
+      expect(tx.contact.upsert.mock.calls[0]?.[0].create).toMatchObject({ name: null });
+      expect(tx.contact.updateMany).not.toHaveBeenCalled();
+    });
+
+    it.each(['Você', '556392370750', '103547450441825@lid'])('never patches an unnamed contact with %j', async (pushName) => {
+      const tx = chatTx({ id: 'contact-1', name: null, avatarUrl: null });
+      const source = { recentMessages: vi.fn().mockResolvedValue([{ ...records[0], pushName }, ownLast]) } as unknown as EvolutionHistorySource;
+      await createChannelHistoryImporter({ prisma: prismaFor(tx), source }).importChat(channel,
+        { remoteJid, phoneJid: remoteJid, pushName, profilePicUrl: null }, 30);
+      expect(tx.contact.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the last inbound real name when the chat name is a placeholder', async () => {
+      const tx = chatTx({ id: 'contact-1', name: null, avatarUrl: null });
+      const source = { recentMessages: vi.fn().mockResolvedValue([records[0], { ...records[0], key: { ...records[0]!.key, id: 'm3' }, pushName: 'Você' }, ownLast]) } as unknown as EvolutionHistorySource;
+      await createChannelHistoryImporter({ prisma: prismaFor(tx), source }).importChat(channel,
+        { remoteJid, phoneJid: remoteJid, pushName: 'Você', profilePicUrl: null }, 30);
+      expect(tx.contact.updateMany).toHaveBeenCalledWith({ where: { workspaceId: 'workspace-1', id: 'contact-1' }, data: { name: 'Cliente' } });
+    });
+
+    it('stores a real chat name', async () => {
+      const tx = chatTx(null);
+      const source = { recentMessages: vi.fn().mockResolvedValue([ownLast]) } as unknown as EvolutionHistorySource;
+      await createChannelHistoryImporter({ prisma: prismaFor(tx), source }).importChat(channel,
+        { remoteJid, phoneJid: remoteJid, pushName: 'Juliana - Metal MIB', profilePicUrl: null }, 30);
+      expect(tx.contact.upsert.mock.calls[0]?.[0].create).toMatchObject({ name: 'Juliana - Metal MIB' });
+    });
+
+    it('never creates or updates contact names from placeholder, phone or WhatsApp-id names', async () => {
+      const createMany = vi.fn().mockResolvedValue({ count: 3 });
+      const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+      const prisma = { contact: {
+        findMany: vi.fn().mockResolvedValue([{ id: 'old', phone: '551199998888', name: null, avatarUrl: null }]),
+        createMany, updateMany
+      } } as unknown as PrismaClient;
+      const source = { recentContacts: vi.fn().mockResolvedValue([
+        { phoneJid: remoteJid, name: 'Você', profilePicUrl: null },
+        { phoneJid: '556392370750@s.whatsapp.net', name: '556392370750', profilePicUrl: null },
+        { phoneJid: '103547450441825@lid', name: '103547450441825@lid', profilePicUrl: null },
+        { phoneJid: '551188887777@s.whatsapp.net', name: 'You', profilePicUrl: null },
+        { phoneJid: '551177776666@s.whatsapp.net', name: 'Ana', profilePicUrl: null }
+      ]), recentChats: vi.fn().mockResolvedValue({ chats: [], unresolvedLids: 0 }) } as unknown as EvolutionHistorySource;
+      await expect(createChannelHistoryImporter({ prisma, source })(channel)).rejects.toThrow('HISTORY_CHATS_NOT_READY');
+      expect(createMany.mock.calls[0]?.[0].data).toEqual([
+        { workspaceId: 'workspace-1', phone: '556392370750', name: null, avatarUrl: null },
+        { workspaceId: 'workspace-1', phone: '103547450441825@lid', name: null, avatarUrl: null },
+        { workspaceId: 'workspace-1', phone: '551188887777', name: null, avatarUrl: null },
+        { workspaceId: 'workspace-1', phone: '551177776666', name: 'Ana', avatarUrl: null }
+      ]);
+      expect(updateMany).not.toHaveBeenCalled();
+    });
+
+    it('keeps a real chat name over a placeholder from the contact book during a channel import', async () => {
+      const tx = chatTx(null);
+      const prisma = { ...prismaFor(tx),
+        contact: { findMany: vi.fn().mockResolvedValue([]), createMany: vi.fn().mockResolvedValue({ count: 2 }), updateMany: vi.fn() },
+        message: { count: vi.fn().mockResolvedValue(1) } } as unknown as PrismaClient;
+      const otherJid = '551188887777@s.whatsapp.net';
+      const source = {
+        recentContacts: vi.fn().mockResolvedValue([{ phoneJid: remoteJid, name: 'Você', profilePicUrl: null }]),
+        recentChats: vi.fn().mockImplementation(async () => ({ chats: [
+          { remoteJid, phoneJid: remoteJid, pushName: 'Cliente', profilePicUrl: null },
+          { remoteJid: otherJid, phoneJid: otherJid, pushName: 'Você', profilePicUrl: null }
+        ], unresolvedLids: 0 })),
+        recentMessages: vi.fn().mockResolvedValue([ownLast])
+      } as unknown as EvolutionHistorySource;
+      await createChannelHistoryImporter({ prisma, source })({ ...channel, historyImportAttempts: 3 }).catch(() => undefined);
+      expect(tx.contact.upsert.mock.calls.map((call) => call[0].create.name)).toEqual(['Cliente', null]);
+    });
+  });
+
   it('keeps older chat identities available as contacts without importing their conversations', async () => {
     const createMany = vi.fn().mockResolvedValue({ count: 1 });
     const prisma = { contact: { findMany: vi.fn().mockResolvedValue([]), createMany, updateMany: vi.fn() } } as unknown as PrismaClient;

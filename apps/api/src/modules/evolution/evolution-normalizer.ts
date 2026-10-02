@@ -1,3 +1,4 @@
+import { usableContactName } from "../contacts/contact-name.js";
 import { parseContactCard } from "../messaging/contact-card.js";
 import type { MessageDto, MessageLocation } from "@prymeira-talk/shared";
 import { normalizePhoneForStorage } from "../contacts/phone-normalization.js";
@@ -330,7 +331,11 @@ export function extractPushName(data: unknown) {
     readStringPath(data, ["data", "key", "pushName"])
   ];
 
-  return candidates.find((value) => value && value.trim().length > 0)?.trim() ?? null;
+  for (const value of candidates) {
+    const name = usableContactName(value);
+    if (name) return name;
+  }
+  return null;
 }
 
 export function extractQrCode(data: unknown) {

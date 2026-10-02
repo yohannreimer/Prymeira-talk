@@ -90,6 +90,37 @@ describe("apiGetContactPhoto", () => {
   });
 });
 
+describe("apiGetChannelHealth", () => {
+  it("reads the health rows from the authenticated endpoint", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const row = { channelId: "c1", state: "needs_qr", since: null, lastInboundAt: null, attempts: 3 };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ health: [row] }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.resetModules();
+
+    const { apiGetChannelHealth } = await import("./api");
+    await expect(apiGetChannelHealth(async () => null)).resolves.toEqual({
+      health: [row],
+      watchdog: { enabled: false, lastTickAt: null, lastTickOk: true, lastError: null, unreachable: false }
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:3002/channels/health",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer local-dev-bypass" }) })
+    );
+  });
+});
+
+describe("apiGetChannelHealth watchdog", () => {
+  it("returns the watchdog status sent by the API", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const watchdog = { enabled: true, lastTickAt: "2026-10-02T15:00:00.000Z", lastTickOk: false, lastError: "boom", unreachable: true };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ health: [], watchdog }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.resetModules();
+
+    const { apiGetChannelHealth } = await import("./api");
+    await expect(apiGetChannelHealth(async () => null)).resolves.toEqual({ health: [], watchdog });
+  });
+});
+
 describe("apiDeleteChannel", () => {
   it("sends DELETE to the channel endpoint", async () => {
     vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");

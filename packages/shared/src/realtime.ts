@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  channelHealthSchema,
   channelSchema,
   connectionProviderSchema,
   conversationFollowupSchema,
@@ -95,6 +96,12 @@ const channelQrUpdatedEventSchema = z.object({
   })
 });
 
+const channelHealthEventSchema = z.object({
+  type: z.literal("channel.health"),
+  workspaceId: z.string().min(1),
+  payload: channelHealthSchema
+});
+
 const automationRunSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
@@ -165,6 +172,7 @@ export const realtimeEventSchema = z
     channelUpdatedEventSchema,
     channelDeletedEventSchema,
     channelQrUpdatedEventSchema,
+    channelHealthEventSchema,
     automationRunCreatedEventSchema,
     campaignUpdatedEventSchema,
     conversationFollowupUpdatedEventSchema,

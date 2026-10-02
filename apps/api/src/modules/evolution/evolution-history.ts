@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { completeProviderKey, fullProviderKeyMatches, explicitAddressMatch, exactMediaLimit, type MediaPurpose } from '../messaging/provider-exact.js';
 import { normalizeChatAddress, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
+import { usableContactName } from '../contacts/contact-name.js';
 
 export type HistoryRecord = {
   key: { id: string; remoteJid: string; remoteJidAlt?: string; participant?: string; participantAlt?: string; fromMe: boolean };
@@ -52,13 +53,14 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
     if (!record(value) || !record(value.key) || typeof value.key.id !== 'string' || !value.key.id || !historyAddress(value.key.remoteJid) || typeof value.key.fromMe !== 'boolean' || !record(value.message)) throw new Error('HISTORY_RECORD');
     const timestamp = Number(value.messageTimestamp);
     if (value.messageTimestamp === null || !Number.isFinite(timestamp) || timestamp <= 0 || timestamp > 1e11) throw new Error('HISTORY_RECORD');
+    const pushName = typeof value.pushName === 'string' ? usableContactName(value.pushName) : null;
     return { key: { id: value.key.id, remoteJid: value.key.remoteJid, fromMe: value.key.fromMe,
       ...(direct(value.key.remoteJidAlt) ? { remoteJidAlt: value.key.remoteJidAlt } : {}),
       ...(direct(value.key.participant ?? value.participant) ? { participant: (value.key.participant ?? value.participant) as string } : {}),
       ...(direct(value.key.participantAlt) ? { participantAlt: value.key.participantAlt } : {}) }, messageTimestamp: timestamp, message: value.message,
       ...(direct(value.participant) ? { participant: value.participant } : {}),
       ...(typeof value.messageType === 'string' ? { messageType: value.messageType } : {}),
-      ...(typeof value.pushName === 'string' && value.pushName.trim() ? { pushName: value.pushName.trim().slice(0, 200) } : {}) };
+      ...(pushName ? { pushName } : {}) };
   }
   function nativeKey(key: WhatsAppMessageKey) {
     return { id: key.nativeId!, remoteJid: key.nativeChatAddress!, fromMe: key.direction === 'outbound',
@@ -157,7 +159,7 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
           const previous = contacts.get(raw.remoteJid);
           contacts.set(raw.remoteJid, {
             phoneJid: raw.remoteJid,
-            name: typeof raw.pushName === 'string' && raw.pushName.trim() ? raw.pushName.trim().slice(0, 200) : previous?.name ?? null,
+            name: (typeof raw.pushName === 'string' ? usableContactName(raw.pushName) : null) ?? previous?.name ?? null,
             profilePicUrl: typeof raw.profilePicUrl === 'string' && /^https:\/\//i.test(raw.profilePicUrl) ? raw.profilePicUrl : previous?.profilePicUrl ?? null
           });
         }
@@ -193,8 +195,10 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
           chats.push({
             remoteJid: raw.remoteJid,
             phoneJid: identity,
-            pushName: typeof raw.pushName === 'string' && raw.pushName.trim() ? raw.pushName.trim().slice(0, 200)
-              : last && typeof last.pushName === 'string' && last.pushName.trim() ? last.pushName.trim().slice(0, 200) : null,
+            // The last message's pushName only names the contact when they sent it;
+            // on our own messages it is this side's label (e.g. "Você").
+            pushName: (typeof raw.pushName === 'string' ? usableContactName(raw.pushName) : null)
+              ?? (last && record(last.key) && last.key.fromMe === false && typeof last.pushName === 'string' ? usableContactName(last.pushName) : null),
             profilePicUrl: typeof raw.profilePicUrl === 'string' && /^https:\/\//i.test(raw.profilePicUrl) ? raw.profilePicUrl : null
           });
           if (chats.length === input.limit) break;

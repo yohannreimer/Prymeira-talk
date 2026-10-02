@@ -169,6 +169,58 @@ describe('new channel history', () => {
     ]);
   });
 
+  it('never proposes placeholder, phone or WhatsApp-id contact names but keeps real ones', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => new Response(JSON.stringify(String(url).includes('findContacts')
+      ? [
+          { remoteJid: '1001@s.whatsapp.net', pushName: 'Você' },
+          { remoteJid: '1002@s.whatsapp.net', pushName: '556392370750' },
+          { remoteJid: '1003@s.whatsapp.net', pushName: '103547450441825@lid' },
+          { remoteJid: '1004@s.whatsapp.net', pushName: '  Ana   Souza ' }
+        ]
+      : [])));
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
+    expect(await source.recentContacts({ instanceName: 'New' })).toEqual([
+      { phoneJid: '1001@s.whatsapp.net', name: null, profilePicUrl: null },
+      { phoneJid: '1002@s.whatsapp.net', name: null, profilePicUrl: null },
+      { phoneJid: '1003@s.whatsapp.net', name: null, profilePicUrl: null },
+      { phoneJid: '1004@s.whatsapp.net', name: 'Ana Souza', profilePicUrl: null }
+    ]);
+  });
+
+  it('keeps an earlier real contact name when a later row only has a placeholder', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([
+      { remoteJid: jid, pushName: 'Nome salvo' }, { remoteJid: jid, pushName: 'You' }
+    ])));
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
+    expect(await source.recentContacts({ instanceName: 'New' })).toEqual([{ phoneJid: jid, name: 'Nome salvo', profilePicUrl: null }]);
+  });
+
+  it('does not take a chat name from our own last message', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([
+      { remoteJid: '2001@s.whatsapp.net', lastMessage: { key: { fromMe: true }, pushName: 'Você' } },
+      { remoteJid: '2002@s.whatsapp.net', lastMessage: { key: { fromMe: true }, pushName: 'Marcos' } },
+      { remoteJid: '2003@s.whatsapp.net', lastMessage: { pushName: 'Sem chave' } },
+      { remoteJid: '2004@s.whatsapp.net', lastMessage: { key: { fromMe: false }, pushName: 'Cliente Real' } },
+      { remoteJid: '2005@s.whatsapp.net', pushName: 'Você', lastMessage: { key: { fromMe: false }, pushName: 'Cliente Inbound' } },
+      { remoteJid: '2006@s.whatsapp.net', pushName: '556392370750' },
+      { remoteJid: '2007@s.whatsapp.net', pushName: '103547450441825@lid' },
+      { remoteJid: '2008@s.whatsapp.net', lastMessage: { key: { fromMe: false }, pushName: 'Voce' } }
+    ])));
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
+    const { chats } = await source.recentChats({ instanceName: 'New', limit: 50 });
+    expect(chats.map((chat) => chat.pushName)).toEqual([null, null, null, 'Cliente Real', 'Cliente Inbound', null, null, null]);
+  });
+
+  it('drops placeholder push names from message records', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messages: { records: [
+      { ...row('a', end.getTime() - 2000), pushName: 'Você' }, { ...row('b'), pushName: ' Ana ' }
+    ] } })));
+    const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });
+    const messages = await source.recentMessages({ instanceName: 'New', remoteJid: jid, limit: 20 });
+    expect(messages[0]).not.toHaveProperty('pushName');
+    expect(messages[1]?.pushName).toBe('Ana');
+  });
+
   it('retains unresolved LID identities without mistaking them for telephone numbers', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([{ remoteJid: '987654@lid' }])));
     const source = createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test', fetch: fetchMock });

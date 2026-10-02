@@ -10,6 +10,8 @@ import {
   contactBoardStageSchema,
   channelOperationResultSchema,
   channelQrResultSchema,
+  channelHealthSchema,
+  channelWatchdogStatusSchema,
   channelSchema,
   channelTestInboundResultSchema,
   contactSchema,
@@ -65,6 +67,7 @@ import {
   type TagDto
 } from "@prymeira-talk/shared";
 import { readConfigValue } from "./runtime-config";
+import { defaultWatchdogStatus, type ChannelHealthSnapshot } from "./channel-health-snapshot";
 import type { AssistantConversationDto, AssistantChannelSettings, AssistantSendInput } from '@prymeira-talk/shared';
 import { handoffBriefDtoSchema } from '../../../../packages/shared/src/assistant';
 
@@ -375,6 +378,7 @@ export interface CampaignAudiencePreviewDto {
   revision: string;
   unresolvedVariables: string[];
   effectiveStartAt?: string;
+  nameCheck?: "ok" | "unavailable";
 }
 
 export interface CampaignProgressDto {
@@ -2191,6 +2195,33 @@ export async function apiGetChannels(
   });
 }
 
+export async function apiGetChannelHealth(
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
+): Promise<ChannelHealthSnapshot> {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+
+    const response = await fetch(`${apiUrl}/channels/health`, {
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    await assertApiReadAccess(response, token, deadline);
+    if (!response.ok) {
+      throw new Error(`Failed to load channel health: ${response.status}`);
+    }
+
+    const data = await response.json() as { health?: unknown; watchdog?: unknown };
+    return {
+      health: channelHealthSchema.array().parse(data.health ?? []),
+      watchdog: data.watchdog === undefined ? defaultWatchdogStatus : channelWatchdogStatusSchema.parse(data.watchdog)
+    };
+  });
+}
+
 export async function apiCreateChannel(
   getToken: () => Promise<string | null>,
   body: {
@@ -2987,6 +3018,26 @@ export function apiPreviewCampaignAudience(getToken: TokenProvider, campaignId: 
   channelId: string, schedule?: { startMode: "now" | "scheduled"; scheduledAt: string | null;
     timeZone: string }): Promise<CampaignAudiencePreviewDto> {
   return campaignAction(getToken, campaignId, "preview-audience", { channelId, ...schedule });
+}
+
+export async function apiGenerateMessageVariations(
+  getToken: () => Promise<string | null>,
+  message: string
+): Promise<string[]> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/campaigns/message-variations`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ message })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(payload?.error ?? `Failed to generate variations: ${response.status}`);
+  }
+  const data = await response.json() as { variations?: unknown };
+  return Array.isArray(data.variations)
+    ? data.variations.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 export function apiActivateCampaign(getToken: TokenProvider, campaignId: string, body: {

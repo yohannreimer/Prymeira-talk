@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAgentRuntime } from "./agent-runtime.js";
+import { AgentMediaError } from "./agent-media-resolver.js";
 import type {
   AgentToolExecutorPrismaLike,
   AgentToolExecutorTransactionLike
@@ -746,6 +747,32 @@ describe("createAgentRuntime", () => {
     });
   });
 
+  it("recovers an encrypted WhatsApp image from Evolution before reading it", async () => {
+    const encryptedUrl = "https://mmg.whatsapp.net/o1/v/t24/f2/m233/imagem.enc?ccb=11-4";
+    const imageMessage = { ...baseMessage, type: "image", body: "Imagem recebida", providerMessageId: "wamid-image", mediaUrl: encryptedUrl, metadata: {} };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(imageMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([imageMessage]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Vejo uma lista de vergalhões.", actions: [], handoff: { required: false, reason: null } });
+    const fetchMedia = vi.fn().mockResolvedValue("data:image/jpeg;base64,aW1hZ2Vt");
+    const mediaResolver = vi.fn(async ({ mediaUrl }: { mediaUrl: string | null | undefined; policy: unknown }) => {
+      if (mediaUrl === encryptedUrl) throw new AgentMediaError("UNSUPPORTED_MEDIA_TYPE", "Inbound media type is unsupported.");
+      return { bytes: Buffer.from("imagem"), mimeType: "image/jpeg", source: "data_url" as const };
+    });
+    const mediaPreparer = vi.fn(async (args: { mediaUrl?: string | null; mediaResolver?: typeof mediaResolver }) => {
+      const media = await args.mediaResolver!({ mediaUrl: args.mediaUrl, policy: { kind: "image", maxBytes: 1_000_000, allowedMimeTypes: new Set(["image/jpeg"]) } });
+      return { kind: "image", status: "processed", extractedText: `Ø 10,0 mm - 215 barras (${media.mimeType})` };
+    });
+    const runtime = createAgentRuntime({ prisma, provider, mediaResolver, mediaPreparer: mediaPreparer as never, evolution: { mode: "real", client: { sendText: vi.fn(), fetchMedia } } });
+
+    await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+
+    expect(fetchMedia).toHaveBeenCalledWith({ instanceName: "instancia", id: "wamid-image" });
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
+      userPrompt: expect.stringContaining("Ø 10,0 mm - 215 barras (image/jpeg)")
+    }));
+  });
+
   it("reads images in the customer burst before answering a later text message", async () => {
     const first = { ...baseMessage, id: "image_1", type: "image", body: "Imagem recebida", mediaUrl: "data:image/jpeg;base64,aW1hZ2Vt", createdAt: new Date(now.getTime() - 60_000), metadata: {} };
     const second = { ...first, id: "image_2", createdAt: new Date(now.getTime() - 30_000) };
@@ -846,6 +873,43 @@ describe("createAgentRuntime", () => {
     expect(provider.generate).not.toHaveBeenCalled();
     expect(prisma.message.create).toHaveBeenCalledWith({ data: expect.objectContaining({ body: expect.stringContaining("Não consegui ler esse PDF inteiro") }) });
     expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "failed", errorCode: "MEDIA_UNAVAILABLE" }) }) }) });
+  });
+
+  it("ignores a lone sticker without reading it, replying or handing off", async () => {
+    const stickerMessage = { ...baseMessage, type: "image", body: "Figurinha recebida", mediaUrl: "https://mmg.whatsapp.net/sticker.enc" };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(stickerMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([stickerMessage]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Não deveria ser chamada.", actions: [], handoff: { required: false, reason: null } });
+    const mediaResolver = vi.fn();
+    const runtime = createAgentRuntime({ prisma, provider, mediaResolver });
+
+    const result = await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+
+    expect(result.status).toBe("skipped");
+    expect(mediaResolver).not.toHaveBeenCalled();
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ aiControlStatus: "human_controlled" }) }));
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({ data: expect.objectContaining({ status: "skipped", errorMessage: "Sticker ignored." }) });
+  });
+
+  it("answers the customer's text when a sticker follows it, without reading the sticker", async () => {
+    const text = { ...baseMessage, id: "text_before", type: "text", body: "Bom dia, vocês têm tubo schedule 80?", createdAt: new Date(now.getTime() - 60_000) };
+    const sticker = { ...baseMessage, type: "image", body: "Figurinha recebida", mediaUrl: "https://mmg.whatsapp.net/sticker.enc", createdAt: now };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(sticker);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([sticker, text]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Temos sob encomenda.", actions: [], handoff: { required: false, reason: null } });
+    const mediaResolver = vi.fn();
+    const runtime = createAgentRuntime({ prisma, provider, mediaResolver });
+
+    const result = await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+
+    expect(result.status).not.toBe("skipped");
+    expect(result.status).not.toBe("handoff_requested");
+    expect(mediaResolver).not.toHaveBeenCalled();
+    expect(provider.generate).toHaveBeenCalled();
   });
 
   it("hands an unreadable image to a human without messaging the customer", async () => {

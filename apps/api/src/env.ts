@@ -65,6 +65,17 @@ export const envSchema = z
     JEV_MODEL: z.string().min(1).default("jev-latest"),
     INBOX_TRIAGE_PRIMARY: z.enum(["luna", "jev"]).default("jev"),
     INBOX_TRIAGE_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+    // Kill switch for the automatic contact name recovery job; on unless explicitly turned off.
+    CONTACT_NAME_RECOVERY_ENABLED: z
+      .preprocess(
+        (value) => (typeof value === "string" ? value.trim().toLowerCase() || undefined : value),
+        z.enum(["true", "1", "on", "false", "0", "off"]).default("true")
+      )
+      .transform((value) => !["false", "0", "off"].includes(value)),
+    CHANNEL_WATCHDOG_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
+    CHANNEL_WATCHDOG_INTERVAL_SECONDS: z.coerce.number().int().min(30).max(3600).default(120),
+    // true = reads and logs only; set false to let the watchdog act
+    CHANNEL_WATCHDOG_DRY_RUN: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
     TALK_UPLOAD_DIR: z.string().min(1).default("storage/uploads"),
     /** Probes redundant channels every 15 s, detects receive loss and moves the writer between connections. */
     CHANNEL_HEALTH_MONITOR_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),

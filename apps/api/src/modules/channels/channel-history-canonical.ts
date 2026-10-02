@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import { autoResolveAuthority } from './conversation-authority.js';
+import { usableContactName } from '../contacts/contact-name.js';
 import { enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
 import { deriveTrustedMessagingContext, StaleMessagingSourceError } from '../messaging/canonical-source.js';
 import { selectConversationPreviewInTransaction } from '../messaging/conversation-preview.js';
@@ -105,7 +106,9 @@ export async function persistProviderMessages(input: {
 export async function fillContactDetails(prisma: PrismaClient, workspaceId: string, conversationId: string, details: { name: string | null; avatarUrl: string | null }) {
   const conversation = await prisma.conversation.findFirst({ where: { workspaceId, id: conversationId }, include: { contact: true } });
   if (!conversation) return;
-  const patch = { ...(details.name && !conversation.contact.name ? { name: details.name } : {}),
+  // Placeholder, phone-number or WhatsApp-id "names" are never stored.
+  const name = usableContactName(details.name);
+  const patch = { ...(name && !usableContactName(conversation.contact.name) ? { name } : {}),
     ...(details.avatarUrl && !conversation.contact.avatarUrl ? { avatarUrl: details.avatarUrl } : {}) };
   if (Object.keys(patch).length) await prisma.contact.updateMany({ where: { workspaceId, id: conversation.contactId }, data: patch });
 }

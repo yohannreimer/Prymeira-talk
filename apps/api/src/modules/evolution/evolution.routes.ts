@@ -25,6 +25,7 @@ import { createBoardRulesService, type BoardRulesPrismaLike } from "../boards/bo
 import {
   buildPhoneLookupCandidates
 } from "../contacts/phone-normalization.js";
+import { usableContactName } from "../contacts/contact-name.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import { pauseAgentOnHumanOutbound } from "../conversations/pause-agent-on-human-outbound.js";
 import { applyInboundDepartmentRouting, supportsDepartmentRouting } from "../team/team-routing.service.js";

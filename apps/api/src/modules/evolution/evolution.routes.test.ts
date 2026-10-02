@@ -1983,6 +1983,50 @@ describe("Evolution webhook routes", () => {
     }
   });
 
+  it.each(["Você", "556392370750", "103547450441825@lid"])("does not use the inbound push name %j as a contact name", async (pushName) => {
+    const contactCreateMock = vi.fn().mockResolvedValue({
+      id: "contact_1",
+      workspaceId: "workspace_a",
+      phone: "554799990000"
+    });
+    const prisma = createMockPrisma({
+      contact: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: contactCreateMock
+      }
+    });
+    const { app } = await buildEvolutionApp(prisma);
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/webhooks/evolution/workspace_a",
+        headers: { "x-prymeira-talk-secret": "top_secret" },
+        payload: {
+          event: "MESSAGES_UPSERT",
+          instance: "client-one",
+          data: {
+            key: { id: "provider_msg_placeholder", remoteJid: "5547999990000@s.whatsapp.net", fromMe: false },
+            pushName,
+            message: { conversation: "Oi" },
+            messageTimestamp: 1779300000
+          }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(contactCreateMock).toHaveBeenCalledWith({
+        data: {
+          workspaceId: "workspace_a",
+          phone: "554799990000"
+        }
+      });
+      expect(prisma.contact.updateMany).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("ingests a new inbound text event and publishes a workspace-consistent message", async () => {
     const observeConversationActivity = vi.fn().mockResolvedValue({ status: "cancelled" });
     const observeMessage = vi.fn().mockResolvedValue(undefined);

@@ -6,6 +6,8 @@ import {
 } from "../contacts/phone-normalization.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import type { MetaTemplateComponent } from "../meta/meta.client.js";
+import { renderCampaignMessage } from "./campaign-message-render.js";
+import type { NameInsightContact, NameInsightResult } from "./name-insight.js";
 
 type DateLike = Date | string;
 type CampaignStatus = "draft" | "scheduled" | "sending" | "paused" | "completed" | "failed" | "canceled" | "needs_attention";
@@ -553,19 +555,16 @@ function renderTemplate(input: {
   template: string;
   contact: ResolvedCampaignContact;
   fallbackName: string;
+  firstName?: string | null;
+  keepDefaultFallback?: boolean;
 }) {
-  const name = input.contact.name?.trim() || input.fallbackName;
-  const variables: Record<string, string> = {
-    ...input.contact.fields,
-    name,
-    nome: name,
-    phone: input.contact.phone,
-    telefone: input.contact.phone
-  };
-
-  return input.template.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_, key: string) =>
-    variables[key] ?? ""
-  );
+  return renderCampaignMessage({
+    template: input.template,
+    contact: { phone: input.contact.phone, fields: input.contact.fields },
+    firstName: input.firstName ?? null,
+    explicitFallbackName: input.fallbackName,
+    keepDefaultFallback: input.keepDefaultFallback
+  });
 }
 
 function planScheduledAt(input: {
@@ -714,6 +713,7 @@ function renderMetaComponentsForContact(input: {
   components?: MetaTemplateComponent[];
   contact: ResolvedCampaignContact;
   fallbackName: string;
+  firstName?: string | null;
 }) {
   if (!input.components) {
     return undefined;
@@ -726,13 +726,19 @@ function renderMetaComponentsForContact(input: {
       text: renderTemplate({
         template: parameter.text ?? "",
         contact: input.contact,
-        fallbackName: input.fallbackName
+        fallbackName: input.fallbackName,
+        firstName: input.firstName,
+        // Meta template bodies are fixed; an empty parameter is rejected by Meta.
+        keepDefaultFallback: true
       })
     }))
   }) as MetaTemplateComponent);
 }
 
 export interface CampaignsServiceOptions {
+  nameInsight?: {
+    resolve(input: { workspaceId: string; contacts: NameInsightContact[] }): Promise<NameInsightResult>;
+  };
   evolution?: {
     mode: EvolutionRuntime["mode"];
     client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText"> | null;
@@ -897,6 +903,16 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
 
   const buildRecipientPlans = async (campaign: CampaignRecord) => {
     const contacts = await resolveCampaignAudience(campaign);
+    const insight = options.nameInsight
+      ? await options.nameInsight.resolve({
+          workspaceId: campaign.workspaceId,
+          contacts: contacts.map((contact) => ({
+            audienceKey: contact.audienceKey,
+            contactId: contact.contactId,
+            name: contact.name
+          }))
+        })
+      : null;
     const templates = normalizeTemplates(campaign.templates, campaign.messageBody);
     const fallbackName = normalizeFallbackName(campaign.fallbackName);
     const cadence = normalizeCadence(campaign.cadence);
@@ -905,10 +921,12 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
     return contacts.map((contact, index) => {
       const templateIndex = templates.length > 0 ? index % templates.length : 0;
       const template = templates[templateIndex] ?? campaign.messageBody;
-      const messagePreview = renderTemplate({ template, contact, fallbackName });
+      const firstName = insight?.firstNames[contact.audienceKey] ?? null;
+      const messagePreview = renderTemplate({ template, contact, fallbackName, firstName });
 
       return {
         contact,
+        firstName,
         templateIndex,
         messagePreview,
         scheduledAt: planScheduledAt({ index, now: startedAt, cadence }),
@@ -1416,7 +1434,8 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
         const renderedComponents = renderMetaComponentsForContact({
           components,
           contact: plan.contact,
-          fallbackName
+          fallbackName,
+          firstName: plan.firstName
         });
         const baseData = {
           workspaceId: input.workspaceId,

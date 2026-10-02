@@ -213,7 +213,7 @@ type AgentRuntimeEvolution = {
   mode: EvolutionRuntime["mode"];
   client?:
     | (Pick<NonNullable<EvolutionRuntime["client"]>, "sendText"> &
-        Partial<Pick<NonNullable<EvolutionRuntime["client"]>, "sendMedia">>)
+        Partial<Pick<NonNullable<EvolutionRuntime["client"]>, "sendMedia" | "fetchMedia">>)
     | null;
 };
 
@@ -231,6 +231,12 @@ type AgentRuntimeBoardRules = {
 
 export const IMAGE_PROCESSING_FALLBACK =
   "Não foi possível ler automaticamente esta imagem. Atendimento humano necessário.";
+// WhatsApp stickers are stored as images with this placeholder body. They carry no
+// business content, so they must never be read as an attachment or trigger a handoff.
+const STICKER_BODY = /^figurinha recebida/i;
+export function isStickerMessage(message: { type?: string | null; body?: string | null }) {
+  return message.type === "image" && STICKER_BODY.test((message.body ?? "").trim());
+}
 export const AUDIO_PROCESSING_FALLBACK =
   "Não consegui entender esse áudio. Pode reenviar ou escrever a mensagem?";
 export const AUDIO_TRANSCRIPTION_DISPLAY_FALLBACK =
@@ -857,7 +863,22 @@ export function createAgentRuntime(input: {
             agentId: agent.id, expectedGeneration: prospectingGeneration })) return { status: "skipped", message: "Prospecting authorization changed." };
         }
 
-        const mediaResolverFor = durableMediaResolverFor(input.durableMedia, input.mediaResolver ?? resolveAgentMedia);
+        const mediaResolver = input.mediaResolver ?? resolveAgentMedia;
+        // Evolution webhooks no longer carry base64, so WhatsApp media arrives as an
+        // encrypted CDN URL. Like the inbox media route, recover a readable copy from Evolution.
+        const evolutionFallback = (entry: MessageRecord): typeof resolveAgentMedia => async (args) => {
+          try {
+            return await mediaResolver(args);
+          } catch (error) {
+            const fetchMedia = input.evolution?.mode === "real" ? input.evolution.client?.fetchMedia : undefined;
+            const instanceName = conversation.channel?.provider === "evolution" ? conversation.channel.providerKey : null;
+            if (!fetchMedia || !instanceName || !entry.providerMessageId) throw error;
+            const mediaUrl = await fetchMedia({ instanceName, id: entry.providerMessageId });
+            return await mediaResolver({ ...args, mediaUrl });
+          }
+        };
+        // A durable copy, when the message has one, is read first; otherwise the provider path with that fallback.
+        const mediaResolverFor = (entry: MessageRecord) => durableMediaResolverFor(input.durableMedia, evolutionFallback(entry))(entry);
         let effectiveText = message.body ?? "";
         let mediaFallback: string | null = null;
         let mediaProcessingError: string | null = null;
@@ -879,8 +900,22 @@ export function createAgentRuntime(input: {
         for (let index = throughCurrent.length - 1; index >= 0; index -= 1) {
           if (throughCurrent[index].direction === "outbound") { lastOutbound = index; break; }
         }
+        if (isStickerMessage(message) && !throughCurrent.slice(lastOutbound + 1).some((entry) => entry.direction === "inbound" && !isStickerMessage(entry))) {
+          const errorMessage = "Sticker ignored.";
+          const run = await createRun({
+            workspaceId: runInput.workspaceId,
+            agentId: agent.id,
+            conversationId: conversation.id,
+            trigger: runInput.trigger,
+            input: runInput,
+            model: agent.model,
+            status: "skipped",
+            errorMessage
+          });
+          return { status: "skipped", runId: run.id, message: errorMessage };
+        }
         const customerBurstAttachments = throughCurrent.slice(lastOutbound + 1).filter((entry) =>
-          entry.id !== message.id && entry.direction === "inbound" && (entry.type === "image" || entry.type === "file")
+          entry.id !== message.id && entry.direction === "inbound" && (entry.type === "image" || entry.type === "file") && !isStickerMessage(entry)
         );
         if (customerBurstAttachments.length > 5) {
           unreadableImageRequiresHandoff = true;
@@ -922,7 +957,7 @@ export function createAgentRuntime(input: {
           }
         }
 
-        if (message.type === "image" || message.type === "file") {
+        if ((message.type === "image" || message.type === "file") && !isStickerMessage(message)) {
           const metadata = isRecord(message.metadata) ? message.metadata : {};
           const stored = isRecord(metadata.inboundMedia) ? metadata.inboundMedia : null;
           const media = stored?.status === "processed" && typeof stored.extractedText === "string"

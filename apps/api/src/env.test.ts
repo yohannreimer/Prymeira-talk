@@ -82,6 +82,31 @@ describe("readEnv", () => {
     expect(() => readEnv({ ...baseProductionEnv, INBOX_TRIAGE_PRIMARY: "unknown" })).toThrow(/INBOX_TRIAGE_PRIMARY/);
   });
 
+  it("enables contact name recovery by default and accepts a kill switch", () => {
+    expect(readEnv(baseProductionEnv).CONTACT_NAME_RECOVERY_ENABLED).toBe(true);
+    expect(readEnv({ ...baseProductionEnv, CONTACT_NAME_RECOVERY_ENABLED: "" }).CONTACT_NAME_RECOVERY_ENABLED).toBe(true);
+    for (const value of ["true", "1", "on", "TRUE", " On "]) {
+      expect(readEnv({ ...baseProductionEnv, CONTACT_NAME_RECOVERY_ENABLED: value }).CONTACT_NAME_RECOVERY_ENABLED).toBe(true);
+    }
+    for (const value of ["false", "0", "off", "FALSE", " Off "]) {
+      expect(readEnv({ ...baseProductionEnv, CONTACT_NAME_RECOVERY_ENABLED: value }).CONTACT_NAME_RECOVERY_ENABLED).toBe(false);
+    }
+    expect(() => readEnv({ ...baseProductionEnv, CONTACT_NAME_RECOVERY_ENABLED: "maybe" })).toThrow(/CONTACT_NAME_RECOVERY_ENABLED/);
+  });
+
+  it("configures the channel watchdog with safe defaults and bounds", () => {
+    const defaults = readEnv(baseProductionEnv);
+    expect(defaults.CHANNEL_WATCHDOG_ENABLED).toBe(true);
+    expect(defaults.CHANNEL_WATCHDOG_INTERVAL_SECONDS).toBe(120);
+    expect(defaults.CHANNEL_WATCHDOG_DRY_RUN).toBe(true);
+    expect(readEnv({ ...baseProductionEnv, CHANNEL_WATCHDOG_DRY_RUN: "false" }).CHANNEL_WATCHDOG_DRY_RUN).toBe(false);
+    expect(() => readEnv({ ...baseProductionEnv, CHANNEL_WATCHDOG_DRY_RUN: "maybe" })).toThrow(/CHANNEL_WATCHDOG_DRY_RUN/);
+    expect(readEnv({ ...baseProductionEnv, CHANNEL_WATCHDOG_ENABLED: "false" }).CHANNEL_WATCHDOG_ENABLED).toBe(false);
+    expect(readEnv({ ...baseProductionEnv, CHANNEL_WATCHDOG_INTERVAL_SECONDS: "30" }).CHANNEL_WATCHDOG_INTERVAL_SECONDS).toBe(30);
+    expect(() => readEnv({ ...baseProductionEnv, CHANNEL_WATCHDOG_INTERVAL_SECONDS: "29" })).toThrow(/CHANNEL_WATCHDOG_INTERVAL_SECONDS/);
+    expect(() => readEnv({ ...baseProductionEnv, CHANNEL_WATCHDOG_ENABLED: "maybe" })).toThrow(/CHANNEL_WATCHDOG_ENABLED/);
+  });
+
   it("loads the conservative Leads defaults without source services", () => {
     const env = readEnv(baseProductionEnv);
 

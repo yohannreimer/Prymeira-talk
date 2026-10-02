@@ -10,6 +10,10 @@ import { CampaignActivationError, createCampaignActivationService } from "./camp
 import { CampaignControlError, createCampaignControlsService } from "./campaign-controls.service.js";
 import { nextCampaignInstant, DEFAULT_CAMPAIGN_CADENCE } from "./campaign-cadence.js";
 import { createInboxQuickSendService, InboxQuickSendError } from "./inbox-quick-send.service.js";
+import { createLunaStructuredAnalysis } from "../agents/luna-structured-analysis.js";
+import type { AiProviderSettingsPrismaLike } from "../agents/ai-provider-settings.js";
+import { createNameInsightService, type NameInsightPrisma } from "./name-insight.js";
+import { createMessageVariationService, MessageVariationError } from "./message-variations.js";
 
 const uuidParamSchema = z.string().uuid();
 
@@ -178,12 +182,16 @@ export interface CampaignsRoutesOptions {
 }
 
 export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async (app, options) => {
-  const service = createCampaignsService(app.prisma as unknown as PrismaLike, {
-    evolution: options.evolution
-  });
   const activation = createCampaignActivationService(app.prisma);
   const controls = createCampaignControlsService(app.prisma);
   const inboxQuickSend = createInboxQuickSendService(app.prisma);
+  const analyze = createLunaStructuredAnalysis({ prisma: app.prisma as unknown as AiProviderSettingsPrismaLike });
+  const nameInsight = createNameInsightService({ prisma: app.prisma as unknown as NameInsightPrisma, analyze });
+  const variations = createMessageVariationService({ analyze });
+  const service = createCampaignsService(app.prisma as unknown as PrismaLike, {
+    evolution: options.evolution,
+    nameInsight
+  });
 
   app.post('/inbox/quick-sends', async (request, reply) => {
     if (!canPerform(request.talk.role, 'conversation.reply')) return reply.code(403).send({ error: 'Sem permissão para enviar mensagens.' });
@@ -274,10 +282,14 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
       "Canal Evolution conectado não encontrado.");
     const campaign = await service.getCampaign({ workspaceId, campaignId });
     const contacts = await service.resolveAudience({ workspaceId, campaignId });
-    const preview = await previewCampaignAudience({ campaign, channelId, contacts,
+    const insight = await nameInsight.resolve({ workspaceId, contacts: contacts.map((contact) => ({
+      audienceKey: contact.audienceKey, contactId: contact.contactId, name: contact.name })) });
+    const basePreview = await previewCampaignAudience({ campaign, channelId, contacts,
+      firstNames: insight.firstNames,
       verify: async (numbers) => (await options.evolution!.client!.checkWhatsappNumbersAvailability!({
         instanceName: channel.providerKey, numbers
       })).numbers });
+    const preview = { ...basePreview, nameCheck: insight.status };
     if (!schedule) return preview;
     const start = schedule.startMode === "scheduled" ? new Date(schedule.scheduledAt ?? "") : new Date();
     if (!Number.isFinite(start.getTime())) throw new CampaignsServiceError("CAMPAIGN_AUDIENCE_INVALID",
@@ -292,6 +304,28 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
     }
     return { ...preview, effectiveStartAt };
   }
+
+  app.post("/campaigns/message-variations", async (request, reply) => {
+    if (!requireCampaignManage(request.talk.role, reply)) return reply;
+    const body = z.object({ message: z.string().trim().min(1).max(2000) }).safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "Escreva a mensagem antes de gerar variações." });
+    try {
+      return { variations: await variations.generate({ workspaceId: request.talk.workspaceId, message: body.data.message }) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (message.startsWith("LUNA_ANALYSIS_UNAVAILABLE")) {
+        return reply.code(409).send({ error: "A IA não está configurada para este workspace." });
+      }
+      if (error instanceof MessageVariationError) {
+        return reply.code(422).send({ error: "A IA não conseguiu gerar variações válidas. Tente novamente." });
+      }
+      if (message.includes("LUNA_ANALYSIS_RESPONSE_INVALID")) {
+        return reply.code(422).send({ error: "A IA não conseguiu gerar variações para esta mensagem. Tente uma mensagem menor ou gere novamente." });
+      }
+      request.log.warn({ event: "campaign_variations_failed", message }, "message variations failed");
+      return reply.code(502).send({ error: "Não foi possível gerar as variações agora." });
+    }
+  });
 
   app.get("/campaigns", async (request) =>
     service.listCampaigns({ workspaceId: request.talk.workspaceId })
@@ -570,6 +604,7 @@ export const campaignsRoutes: FastifyPluginAsync<CampaignsRoutesOptions> = async
       });
       const metaService = createCampaignsService(app.prisma as unknown as PrismaLike, {
         evolution: options.evolution,
+        nameInsight,
         meta: {
           phoneNumberId: runtime.phoneNumberId,
           wabaId: runtime.wabaId,

@@ -102,7 +102,86 @@ describe("createJevReplyPreflight", () => {
     expect(payload.questions.nextAction.criteria.answer_current_request).toContain("não substitui handoff quando a variante está fora da faixa aprovada");
     expect(payload.questions.nextAction.criteria.handoff).toContain("variante fora da faixa ou especificação não confirmada");
     expect(payload.questions.nextAction.instructions).toContain("Se a variante está fora da faixa aprovada");
-    expect(payload.questions.nextAction.criteria.handoff).toContain("não para repetir uma negativa aprovada");
+    expect(payload.questions.nextAction.criteria.handoff).toContain("nem para repetir uma negativa aprovada");
+  });
+
+  it("tells JEV that a greeting is answered and never handed off", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      shouldReply: { type: "noul", noul: 0.95 },
+      conversationStage: choice("general_support"),
+      commercialPath: choice("not_applicable"),
+      nextAction: choice("answer_current_request")
+    } })));
+
+    await createJevReplyPreflight({ apiKey: "jev-test", fetchImpl }).evaluate({
+      currentMessage: { id: "greeting-2", body: "Tudo bem?", type: "text" },
+      conversationMessages: [
+        { id: "greeting-1", label: "cliente", body: "Bom dia!", type: "text", createdAt: null },
+        { id: "greeting-2", label: "cliente", body: "Tudo bem?", type: "text", createdAt: null }
+      ],
+      selectedKnowledge: []
+    });
+
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(payload.questions.nextAction.instructions).toContain("sem pedido concreto: escolha answer_current_request");
+    expect(payload.questions.nextAction.criteria.answer_current_request).toContain("saudação ou abertura sem pedido");
+    expect(payload.questions.nextAction.criteria.handoff).toContain("nunca para saudação ou abertura sem pedido");
+  });
+
+  it("tells JEV to follow the agent's made-to-order offer and collect handoff data before a regular handoff", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      shouldReply: { type: "noul", noul: 0.98 },
+      conversationStage: choice("new_quote"),
+      commercialPath: choice("made_to_order"),
+      nextAction: choice("offer_catalog_or_seller")
+    } })));
+
+    await createJevReplyPreflight({ apiKey: "jev-test", fetchImpl }).evaluate({
+      ...baseInput,
+      agentRules: "Encomenda: U enrijecido/estrutural. Cadastro vem depois: empresa e CNPJ para PJ ou nome para PF, antes do repasse comum."
+    });
+
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(payload.questions.commercialPath.criteria.made_to_order).toContain("as regras do agente identificam o item ou sua família como sob encomenda");
+    expect(payload.questions.nextAction.instructions).toContain("Na primeira menção de um item sob encomenda em pedido novo");
+    expect(payload.questions.nextAction.instructions).toContain("empresa e CNPJ ou nome");
+    expect(payload.questions.nextAction.criteria.ask_missing_technical).toContain("logística e cadastro");
+    expect(payload.questions.nextAction.criteria.handoff).toContain("dados de repasse exigidos pelas regras do agente");
+  });
+
+  it("sends a greeting instead of the generic handoff notice when JEV planned a handoff", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
+      disposition: "send",
+      followsPlan: 0.05,
+      assertsUnsupportedCommercialFact: 0.01
+    }));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.audit!({
+      currentMessage: { id: "greeting-2", body: "Tudo bem?", type: "text" },
+      conversationMessages: [
+        { id: "greeting-1", label: "cliente", body: "Bom dia!", type: "text", createdAt: null },
+        { id: "greeting-2", label: "cliente", body: "Tudo bem?", type: "text", createdAt: null }
+      ],
+      selectedKnowledge: [],
+      candidateReply: "Bom dia! Tudo bem, e com você? Como posso ajudar?",
+      plan: { conversationStage: "general_support", commercialPath: "not_applicable", nextAction: "handoff" }
+    })).resolves.toEqual({ outcome: "send" });
+  });
+
+  it("still blocks a reply that departs from a planned handoff with an unsupported commercial fact", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
+      disposition: "send",
+      followsPlan: 0.05,
+      assertsUnsupportedCommercialFact: 0.9
+    }));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.audit!({
+      ...baseInput,
+      candidateReply: "Temos em estoque e entrego amanhã.",
+      plan: { conversationStage: "new_quote", commercialPath: "ambiguous", nextAction: "handoff" }
+    })).resolves.toEqual({ outcome: "handoff", reason: "commercial_policy_risk" });
   });
 
   it("sends the full prompt, latest 20 complete messages, and selected evidence", async () => {

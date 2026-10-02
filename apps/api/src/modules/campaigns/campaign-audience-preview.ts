@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { whatsappPhoneCandidates } from "../leads/lead-whatsapp-numbers.js";
+import { findUnresolvedVariables, renderCampaignMessage } from "./campaign-message-render.js";
 
 export type PreviewContact = {
   audienceKey: string;
@@ -48,6 +49,7 @@ export async function previewCampaignAudience(input: {
   };
   channelId: string;
   contacts: PreviewContact[];
+  firstNames?: Record<string, string | null>;
   verify: (numbers: string[]) => Promise<Availability[]>;
   now?: () => Date;
 }): Promise<AudiencePreview> {
@@ -93,7 +95,6 @@ export async function previewCampaignAudience(input: {
   const templates = Array.isArray(input.campaign.templates)
     ? input.campaign.templates.filter((value): value is string => typeof value === "string" && !!value.trim())
     : [];
-  const fallback = input.campaign.fallbackName?.trim() || "cliente";
   for (const [index, { candidate, contact }] of entries.entries()) {
     const found = byPhone.get(candidate!.key);
     const reason = failedKeys.has(candidate!.key) || !found ? "verification_error" :
@@ -105,14 +106,14 @@ export async function previewCampaignAudience(input: {
       continue;
     }
     const template = templates[index % templates.length] ?? input.campaign.messageBody;
-    const name = contact.name?.trim() || fallback;
-    const values: Record<string, string> = { ...contact.fields, name, nome: name,
-      phone: contact.phone, telefone: contact.phone };
-    for (const match of template.matchAll(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g)) {
-      if (!values[match[1]!]?.trim()) unresolvedVariables.add(match[1]!);
-    }
-    const message = template.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g,
-      (_, key: string) => values[key] ?? "");
+    const renderContact = { phone: contact.phone, fields: contact.fields };
+    for (const key of findUnresolvedVariables(template, renderContact)) unresolvedVariables.add(key);
+    const message = renderCampaignMessage({
+      template,
+      contact: renderContact,
+      firstName: input.firstNames?.[contact.audienceKey] ?? null,
+      explicitFallbackName: input.campaign.fallbackName
+    });
     eligible.push({ ...contact, normalizedPhone: candidate!.primary, message });
   }
 

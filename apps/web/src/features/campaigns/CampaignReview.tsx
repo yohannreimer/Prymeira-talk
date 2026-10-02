@@ -24,6 +24,8 @@ export function CampaignReview(props: {
     result[item.reason] = (result[item.reason] ?? 0) + 1;
     return result;
   }, {});
+  const samples = preview.eligible.filter((row, index, rows) =>
+    rows.findIndex((other) => other.message === row.message) === index).slice(0, 5);
   const notImported = preview.selectedCount === null ? 0 : Math.max(0,
     preview.selectedCount - preview.eligible.length - preview.excluded.length);
   return <div className="campaign-review">
@@ -34,6 +36,9 @@ export function CampaignReview(props: {
     </div>
     {preview.selectedCount === null && <p className="campaign-guidance-note">
       A quantidade originalmente selecionada não está disponível neste rascunho antigo.
+    </p>}
+    {preview.nameCheck === "unavailable" && <p role="status" className="campaign-guidance-note">
+      Nomes não verificados pela IA: as mensagens saem sem o nome. Confira a configuração de IA do workspace e verifique novamente.
     </p>}
     {(Object.entries(counts).length > 0 || notImported > 0) && <div className="campaign-review-exclusions">
       <h3>Por que alguns ficaram de fora?</h3>
@@ -52,6 +57,12 @@ export function CampaignReview(props: {
     <div className="campaign-review-message"><span>Mensagem que será enviada</span><p>{props.message}</p>
       {preview.eligible[0] && <><span>Exemplo preenchido para {preview.eligible[0].name || "um contato"}</span>
         <p>{preview.eligible[0].message}</p></>}</div>
+    {samples.length > 0 && <div className="campaign-review-message campaign-review-samples">
+      <span>Exemplos do que será enviado</span>
+      <ul>{samples.map((row) => <li className="campaign-review-sample" key={row.audienceKey}>
+        <strong>{row.name || "Sem nome"}</strong><p>{row.message}</p></li>)}</ul>
+      {preview.eligible.length > samples.length && <small>e mais {preview.eligible.length - samples.length} destinatários</small>}
+    </div>}
     <label className="campaign-review-confirmation">
       <input type="checkbox" checked={props.confirmed}
         onChange={(event) => props.onConfirmedChange(event.target.checked)} />

@@ -1,4 +1,5 @@
 import { useOptionalTalkSession } from '../../app/session/TalkSessionProvider';
+import { ChannelHealthAlerts } from "../channels/ChannelHealthAlerts";
 import { Bot } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
@@ -109,6 +110,7 @@ export function TalkSuiteShell({ renderModule, prefetchModule }: TalkSuiteShellP
       </aside>
 
       {renderModule(activeModule)}
+      <ChannelHealthAlerts onOpenChannels={() => handleModuleClick("canais")} />
     </main>
   );
 }
