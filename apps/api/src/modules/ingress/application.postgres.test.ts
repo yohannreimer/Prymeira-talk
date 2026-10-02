@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { PrismaClient } from '@prisma/client';
 import amqp, { type ChannelModel } from 'amqplib';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createCanonicalStore } from '../messaging/canonical-store.js';
 import { normalizeReceipt } from './normalization.js';
 import { normalizeWahaEvent } from '../waha/waha-normalizer.js';
@@ -19,6 +19,10 @@ import { ConfirmedIngressPublisher, transportTopology } from './broker.js';
 import { createIngressHttp } from './http.js';
 import { readIngressEnvironment } from './runtime.js';
 import { IngressTransportConsumer } from './consumer.js';
+import { createEffectRunner } from './effect-runner.js';
+import { createMediaPrepareHandler } from './media-prepare-handler.js';
+import { createMessageMediaService } from '../conversations/message-media.js';
+import { join } from 'node:path';
 const databaseUrl = process.env.MESSAGING_TEST_DATABASE_URL, brokerUrl = process.env.INGRESS_TEST_AMQP_URL;
 const peer = '15550001111@s.whatsapp.net', secret = 'application-fixture-only';
 async function until<T>(read: () => Promise<T>, predicate: (value: T) => boolean) {
@@ -680,5 +684,60 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
         await service.apply(await f.send('evolution', { pushName: 'Synthetic Customer' }));
         expect(await db.contact.findFirst({ where: { workspaceId: f.workspaceId, phone: '123456789012@g.us' } })).toMatchObject({ isGroup: true, name: 'Synthetic group' });
         expect(await db.contact.findFirst({ where: { workspaceId: f.workspaceId, phone: '15550001111' } })).toMatchObject({ name: 'Synthetic Customer' });
+    });
+
+    describe('media.prepare executed by the durable runner', () => {
+        const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+        async function harness(deps: { waha?: any; evolution?: any }) {
+            const store = new IngressPrivateStore(join(root, `media-${randomUUID()}`));
+            await store.initialize();
+            const media = createMessageMediaService({ db, store });
+            const handler = createMediaPrepareHandler({ journal, media, waha: deps.waha ?? null, evolution: deps.evolution ?? null });
+            const runner = createEffectRunner({ db, workerId: 'media-test', handlers: { 'media.prepare': handler }, baseBackoffMs: 1, maxAttempts: 3 });
+            return { media, runner };
+        }
+        it('stores an Evolution image through the provider fallback and marks the effect done', async () => {
+            const f = await fixture();
+            const fetchMedia = async () => `data:image/png;base64,${PNG.toString('base64')}`;
+            const { media, runner } = await harness({ evolution: { fetchMedia } });
+            await service.apply(await f.send('evolution', { key: { id: 'evo-media', remoteJid: peer, fromMe: false }, message: { imageMessage: { url: 'https://media.invalid/expired', mimetype: 'image/png' } } }));
+            await runner.drain();
+            const effect = await db.ingressEffect.findFirstOrThrow({ where: { workspaceId: f.workspaceId, kind: 'media.prepare' } });
+            expect(effect).toMatchObject({ state: 'done', result: { state: 'stored', playback: 'not_applicable' } });
+            const message = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+            const served = await media.read({ workspaceId: f.workspaceId, conversationId: message.conversationId, messageId: message.id });
+            expect(served?.bytes.equals(PNG)).toBe(true);
+        });
+        it('stores a WAHA-only image with an authenticated scoped fetch and never uses the provider URL', async () => {
+            const f = await fixture();
+            const mediaExact = vi.fn(async (_input: Record<string, unknown>) => ({ kind: 'resolved' as const, message: { id: 'x', media: { url: 'http://waha.internal/api/files/s/f.png', mimetype: 'image/png' } }, bytes: new Uint8Array(PNG) }));
+            const { media, runner } = await harness({ waha: { mediaExact } });
+            const id = `false_${peer}_waha-media`;
+            await service.apply(await f.send('waha', { id, hasMedia: true, media: { url: 'http://waha.internal/api/files/s/f.png', mimetype: 'image/png' }, _data: { type: 'image', mimetype: 'image/png' } }));
+            await runner.drain();
+            expect(mediaExact).toHaveBeenCalledTimes(1);
+            expect(mediaExact.mock.calls[0]![0]).toMatchObject({ session: f.waha.sessionName, purpose: 'serve' });
+            const message = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+            const row = await db.messageMedia.findUniqueOrThrow({ where: { messageId: message.id } });
+            expect(row).toMatchObject({ state: 'stored', sourceKind: 'waha', mimeType: 'image/png' });
+            expect((await media.read({ workspaceId: f.workspaceId, conversationId: message.conversationId, messageId: message.id }))?.bytes.equals(PNG)).toBe(true);
+        });
+        it('retries a provider outage, then fails visibly and recovers after an operator requeue without a duplicate effect', async () => {
+            const f = await fixture();
+            let up = false;
+            const fetchMedia = vi.fn(async () => { if (!up) throw new Error('provider down'); return `data:image/png;base64,${PNG.toString('base64')}`; });
+            const { runner } = await harness({ evolution: { fetchMedia } });
+            await service.apply(await f.send('evolution', { key: { id: 'evo-outage', remoteJid: peer, fromMe: false }, message: { imageMessage: { url: 'https://media.invalid/gone', mimetype: 'image/png' } } }));
+            for (let i = 0; i < 5; i++) { await runner.drain(); await new Promise(r => setTimeout(r, 15)); }
+            const failed = await db.ingressEffect.findFirstOrThrow({ where: { workspaceId: f.workspaceId, kind: 'media.prepare' } });
+            expect(failed).toMatchObject({ state: 'failed', attempts: 3, lastErrorCode: 'MEDIA_UNAVAILABLE' });
+            expect(await db.messageMedia.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ state: 'unavailable', originalRef: null });
+            up = true;
+            expect(await runner.requeue(failed.id)).toBe(true);
+            await runner.drain();
+            expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId, kind: 'media.prepare' } })).toBe(1);
+            expect(await db.ingressEffect.findUniqueOrThrow({ where: { id: failed.id } })).toMatchObject({ state: 'done' });
+            expect(await db.messageMedia.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ state: 'stored' });
+        });
     });
 });

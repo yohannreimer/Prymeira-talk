@@ -37,6 +37,8 @@ interface ConversationsRoutesOptions {
   assistantScheduler?: import('../assistant/assistant-scheduler.js').AssistantScheduler;
   handoffBriefService?: ReturnType<typeof import('../assistant/handoff-brief-service.js').createHandoffBriefService>;
   evolution?: EvolutionRuntime;
+  /** Durable private media copies; omitted until the deployment provides a media store. */
+  durableMedia?: Pick<import('./message-media.js').MessageMediaService, 'read'>;
   messageHistory?: Pick<EvolutionHistorySource, 'findMessage'>;
   followupService?: ConversationFollowupsObserver;
   agentImprovements?: AgentImprovementObserver;
@@ -141,7 +143,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
   app,
   options
 ) => {
-  const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client });
+  const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client, durable: options.durableMedia ?? null });
   app.post('/conversations/:conversationId/messages/:messageId/delete-for-everyone', async (request, reply) => {
     const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
     if (!params.success) return reply.code(400).send({ error: 'Mensagem inválida.' });

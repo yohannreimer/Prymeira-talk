@@ -4,11 +4,10 @@ import type { EvolutionClient } from '../evolution/evolution.client.js';
 import { resolveAgentMedia, type AgentMediaPolicy } from '../agents/agent-media-resolver.js';
 import { prepareAudioPlayback } from '../agents/audio-transcription.js';
 import { renderPdfPreview } from './pdf-preview.js';
+import type { MessageMediaService } from './message-media.js';
 
 type Media = { bytes: Buffer; mimeType: string; pageCount?: number };
-const images = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
-const audio = new Set(['audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/x-m4a', 'audio/wav', 'audio/x-wav', 'audio/ogg', 'audio/opus', 'audio/webm', 'video/webm']);
-const documents = new Set(['application/pdf', 'video/mp4', 'video/webm', 'video/quicktime', 'application/octet-stream', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/plain']);
+import { audioMimeTypes as audio, documentMimeTypes as documents, imageMimeTypes as images, MAX_SERVE_MEDIA_BYTES } from './media-policy.js';
 const photoPolicy: AgentMediaPolicy = { kind: 'image', maxBytes: 2 * 1024 * 1024, allowedMimeTypes: images };
 
 /** Memory-only, tenant-scoped, bounded cache. No changes to AI state, message bodies or sends. */
@@ -18,6 +17,9 @@ export function createInboxMediaService(options: {
   resolve?: typeof resolveAgentMedia;
   convert?: typeof prepareAudioPlayback;
   renderPdf?: typeof renderPdfPreview;
+  /** Durable private copy, when the deployment has one. It wins over any provider fetch; a missing or
+   * unreadable copy falls back to the legacy path, so enabling it can never make an attachment disappear. */
+  durable?: Pick<MessageMediaService, 'read'> | null;
 }) {
   const resolve = options.resolve ?? resolveAgentMedia;
   const convert = options.convert ?? prepareAudioPlayback;
@@ -104,10 +106,16 @@ export function createInboxMediaService(options: {
       const message = await options.prisma.message.findFirst({ where: { id: messageId, conversationId, workspaceId },
         select: { type: true, mediaUrl: true, providerMessageId: true } });
       if (!message || !['audio', 'image', 'file'].includes(message.type)) throw new Error('NOT_FOUND');
+      if (options.durable) {
+        try {
+          const stored = await options.durable.read({ workspaceId, conversationId, messageId });
+          if (stored) return { bytes: stored.bytes, mimeType: stored.mimeType };
+        } catch { /* corrupted or missing blob: serve through the legacy path instead */ }
+      }
       const fingerprint = createHash('sha256').update(message.mediaUrl ?? '').digest('hex');
       const key = `${workspaceId}:${conversationId}:${messageId}:${fingerprint}`;
       const policy: AgentMediaPolicy = { kind: message.type === 'audio' ? 'audio' : message.type === 'image' ? 'image' : 'document',
-        maxBytes: 25 * 1024 * 1024, allowedMimeTypes: message.type === 'audio' ? audio : message.type === 'image' ? images : documents };
+        maxBytes: MAX_SERVE_MEDIA_BYTES, allowedMimeTypes: message.type === 'audio' ? audio : message.type === 'image' ? images : documents };
       const storedMime = /^data:([^;,]+);base64,/i.exec(message.mediaUrl ?? '')?.[1].trim().toLowerCase();
       const storedVisual = storedMime && (message.type === 'image' && images.has(storedMime) ||
         message.type === 'file' && storedMime.startsWith('video/') && documents.has(storedMime));

@@ -20,6 +20,21 @@ function setup() {
   return { service, prisma, resolve, convert, profile, renderPdf, fetchMedia };
 }
 
+describe('inbox media with a durable private copy', () => {
+  it('serves the durable copy without touching providers, and falls back when it is absent or unreadable', async () => {
+    const { prisma, resolve, convert, fetchMedia } = setup();
+    const read = vi.fn().mockResolvedValueOnce({ bytes: Buffer.from('durable'), mimeType: 'audio/mpeg' }).mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('integrity'));
+    const service = createInboxMediaService({ prisma: prisma as unknown as PrismaClient, client: { fetchMedia, fetchProfilePicture: vi.fn() }, resolve, convert, durable: { read } });
+    const hit = await service.media('w', 'c', 'm1');
+    expect(hit).toEqual({ bytes: Buffer.from('durable'), mimeType: 'audio/mpeg' });
+    expect(resolve).not.toHaveBeenCalled(); expect(convert).not.toHaveBeenCalled();
+    expect((await service.media('w', 'c', 'm2')).mimeType).toBe('audio/mpeg');
+    expect((await service.media('w', 'c', 'm3')).mimeType).toBe('audio/mpeg');
+    expect(convert).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledWith({ workspaceId: 'w', conversationId: 'c', messageId: 'm1' });
+  });
+});
+
 describe('inbox media without AI or sending', () => {
   it.each([['image', 'image/png'], ['file', 'video/mp4']] as const)('serves an already stored 26 MiB inline %s through the authenticated media route', async (type, mimeType) => {
     const bytes = Buffer.alloc(26 * 1024 * 1024, 97);
