@@ -461,6 +461,8 @@ model Conversation {
   aiControlUpdatedAt             DateTime?            @map("ai_control_updated_at")
   aiControlUpdatedById           String?              @map("ai_control_updated_by_id") @db.Uuid
   activeAgentSessionId           String?              @map("active_agent_session_id") @db.Uuid
+  /// Set when an authority resolution made another conversation operate this chat: hidden from lists, history shown in the operating one.
+  retiredIntoConversationId      String?              @map("retired_into_conversation_id") @db.Uuid
   createdAt                      DateTime             @default(now()) @map("created_at")
   updatedAt                      DateTime             @updatedAt @map("updated_at")
 
@@ -489,6 +491,7 @@ model Conversation {
   @@index([workspaceId, assignedUserId])
   @@index([workspaceId, aiControlUpdatedById])
   @@index([workspaceId, activeAgentSessionId])
+  @@index([workspaceId, retiredIntoConversationId], map: "conversations_workspace_retired_into_idx")
   @@map("conversations")
   canonicalMembers CanonicalChatMember[]
   canonicalOperations CanonicalChat[]

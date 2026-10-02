@@ -411,7 +411,8 @@ describe("conversations service", () => {
         where: {
           workspaceId: "workspace_a",
           status: "closed",
-          hiddenUntilReply: false
+          hiddenUntilReply: false,
+          retiredIntoConversationId: null
         }
       })
     );
@@ -427,7 +428,8 @@ describe("conversations service", () => {
       expect.objectContaining({
         where: {
           workspaceId: "workspace_a",
-          hiddenUntilReply: false
+          hiddenUntilReply: false,
+          retiredIntoConversationId: null
         }
       })
     );
@@ -479,7 +481,8 @@ describe("conversations service", () => {
           workspaceId: "workspace_a",
           status: { in: ["open", "pending"] },
           assignedUserId: "user_1",
-          hiddenUntilReply: false
+          hiddenUntilReply: false,
+          retiredIntoConversationId: null
         }
       })
     );
@@ -501,7 +504,8 @@ describe("conversations service", () => {
         workspaceId: "workspace_a",
         status: { in: ["open", "pending"] },
         channelId: "channel_a",
-        hiddenUntilReply: false
+        hiddenUntilReply: false,
+        retiredIntoConversationId: null
       },
       cursor: { id: "older_conversation" },
       skip: 1,

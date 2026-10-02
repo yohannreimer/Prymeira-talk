@@ -4,9 +4,9 @@ import { apiListConversationAuthority, apiResolveConversationAuthority, type Aut
 const label = (conversation: AuthorityReviewConversation) => conversation.contactName?.trim() || conversation.contactPhone;
 
 /** One WhatsApp person with two conversations (for example a phone contact and a contact the provider only knew by a
- * hidden ID). Nothing is merged or deleted: both keep their history and settings, and the history reads together. A
- * person picks which conversation operates from now on; the other stops running agents and follow-ups by itself.
- * Renders nothing when there is nothing to decide. */
+ * hidden ID). Talk normally decides on its own: the phone-number conversation stays, the other is hidden and its
+ * history shows inside the one that stays. Only cases it cannot decide safely land here (no phone conversation, a
+ * send with an unknown outcome, an earlier manual choice). Renders nothing when there is nothing to decide. */
 export function ConversationAuthorityPanel({ getToken, refreshKey }: { getToken: () => Promise<string | null>; refreshKey?: number }) {
   const [items, setItems] = useState<AuthorityReviewItem[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -29,7 +29,7 @@ export function ConversationAuthorityPanel({ getToken, refreshKey }: { getToken:
   return (
     <section className="context-card" aria-label="Conversas duplicadas" style={{ margin: '0 16px 12px' }}>
       <div className="context-card-title">Conversas duplicadas ({items.length})</div>
-      <p className="list-note">O mesmo WhatsApp aparece em mais de uma conversa. Escolha qual continua atendendo; nada é apagado nem unido, e as mensagens novas só entram nela.</p>
+      <p className="list-note">O Talk já mantém sozinho a conversa do número de telefone. Estas ele não conseguiu decidir com segurança: escolha qual continua. A outra some da lista e o histórico dela aparece junto; nada é apagado.</p>
       {error ? <p className="error-note" role="alert">{error}</p> : null}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 12 }}>
         {items.map((item) => (

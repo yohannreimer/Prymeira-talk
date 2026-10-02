@@ -4,7 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createCanonicalStore } from '../messaging/canonical-store.js';
 import { deriveTrustedMessagingContext } from '../messaging/canonical-source.js';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
-import { listAuthorityReviews, resolveConversationAuthority } from './conversation-authority.js';
+import { createConversationsService, type PrismaLike as ConversationsPrismaLike } from '../conversations/conversations.service.js';
+import { autoResolveAuthority, autoResolvePending, chooseDefaultConversation, listAuthorityReviews, resolveConversationAuthority } from './conversation-authority.js';
 
 const databaseUrl = process.env.MESSAGING_TEST_DATABASE_URL;
 const PN = '5547999990002@s.whatsapp.net';
@@ -79,7 +80,8 @@ describe.skipIf(!databaseUrl)('conversation authority resolution on PostgreSQL',
     // The held message landed in the operating conversation, without unread or operational effects.
     const operating = await db.conversation.findUniqueOrThrow({ where: { id: f.phoneConversation.id }, include: { messages: true } });
     expect(operating.messages.map(m => m.body)).toContain('enquanto aguardava');
-    expect(operating.unreadCount).toBe(0);
+    // Customer messages that arrived live and were held are not silent (people see them), but nothing acts on them.
+    expect(operating.unreadCount).toBe(2);
     expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
 
     // New messages from either spelling now operate the chosen conversation.
@@ -111,5 +113,65 @@ describe.skipIf(!databaseUrl)('conversation authority resolution on PostgreSQL',
     await db.conversation.create({ data: { workspaceId: f.workspaceId, channelId: f.channel.id, contactId: third.id } });
     const after = await deliver(f, 'AFTER-3RD', 'nova', 60);
     expect(after).toMatchObject({ outcome: 'held', reconciliationReasons: ['multiple_conversation_authorities'] });
+  });
+
+  describe('phone-number default: nobody has to choose, and only one conversation shows', () => {
+    const service = () => createConversationsService(db as unknown as ConversationsPrismaLike);
+    it('picks the phone conversation over the LID one, hides the other and shows both histories in the one that stays', async () => {
+      const f = await fixture();
+      await db.message.create({ data: { workspaceId: f.workspaceId, conversationId: f.lidConversation.id, direction: 'inbound', type: 'text', status: 'delivered', metadata: {}, body: 'historia no lid', createdAt: new Date(Date.now() - 86_400_000) } });
+      await db.message.create({ data: { workspaceId: f.workspaceId, conversationId: f.phoneConversation.id, direction: 'inbound', type: 'text', status: 'delivered', metadata: {}, body: 'historia no telefone', createdAt: new Date(Date.now() - 43_200_000) } });
+      await prove(f);
+      const held = await deliver(f, 'HELD-A', 'chegou durante a duvida', 5);
+      expect(held.outcome).toBe('held');
+      const chat = (await listAuthorityReviews(db, { workspaceId: f.workspaceId }))[0]!;
+      const result = await autoResolveAuthority(db, { workspaceId: f.workspaceId, channelId: f.channel.id, chatId: chat.chatId });
+      expect(result).toMatchObject({ ok: true, operationConversationId: f.phoneConversation.id, retiredConversationIds: [f.lidConversation.id] });
+      expect(await db.canonicalChatAuthorityResolution.findFirstOrThrow({ where: { workspaceId: f.workspaceId } })).toMatchObject({ resolvedBy: 'system:phone-default' });
+      expect(await listAuthorityReviews(db, { workspaceId: f.workspaceId })).toHaveLength(0);
+
+      // Only one conversation reaches the inbox, and the person's whole history is in it.
+      const listed = await service().listConversations({ workspaceId: f.workspaceId, status: 'all' });
+      expect(listed.map(c => c.id)).toEqual([f.phoneConversation.id]);
+      const messages = await service().listMessages({ workspaceId: f.workspaceId, conversationId: f.phoneConversation.id });
+      expect(messages.map(m => m.body)).toEqual(expect.arrayContaining(['historia no lid', 'historia no telefone', 'chegou durante a duvida']));
+      expect((await db.conversation.findUniqueOrThrow({ where: { id: f.phoneConversation.id } })).unreadCount).toBe(2); // the proving message and the held one are live: not silent
+      // Opening the hidden one directly shows nothing extra; it owns only its own rows.
+      expect((await service().listMessages({ workspaceId: f.workspaceId, conversationId: f.lidConversation.id })).map(m => m.body)).toEqual(['historia no lid']);
+    });
+
+    it('leaves a person\'s earlier explicit choice alone, and every safety refusal for a person', async () => {
+      const f = await fixture();
+      await prove(f);
+      const chat = (await listAuthorityReviews(db, { workspaceId: f.workspaceId }))[0]!;
+      // An unknown send outcome keeps the chat waiting; the sweep does not force it.
+      const message = await db.message.create({ data: { workspaceId: f.workspaceId, conversationId: f.lidConversation.id, direction: 'outbound', type: 'text', body: 'x' } });
+      await db.outboundIntent.create({ data: { workspaceId: f.workspaceId, channelId: f.channel.id, conversationId: f.lidConversation.id, messageId: message.id, chatId: chat.chatId,
+        originKind: 'human', originId: 'u', actionOrdinal: 0, requestKey: 'k2', request: {}, domainFences: {}, authorityRevision: 0, state: 'uncertain' } });
+      expect(await autoResolveAuthority(db, { workspaceId: f.workspaceId, channelId: f.channel.id, chatId: chat.chatId })).toEqual({ ok: false, reason: 'send_outcome_unknown' });
+      expect(await autoResolvePending(db, { workspaceIds: [f.workspaceId] })).toEqual({ examined: 1, resolved: 0 });
+      expect((await db.conversation.findUniqueOrThrow({ where: { id: f.lidConversation.id } })).retiredIntoConversationId).toBeNull();
+      // Once the send is settled, the sweep decides.
+      await db.outboundIntent.updateMany({ where: { workspaceId: f.workspaceId }, data: { state: 'definitively_rejected' } });
+      expect(await autoResolvePending(db, { workspaceIds: [f.workspaceId] })).toEqual({ examined: 1, resolved: 1 });
+      // A person chose the LID one earlier: a later conflict is never decided for them.
+      const g = await fixture();
+      await prove(g);
+      const gChat = (await listAuthorityReviews(db, { workspaceId: g.workspaceId }))[0]!;
+      expect((await resolveConversationAuthority(db, { workspaceId: g.workspaceId, channelId: g.channel.id, chatId: gChat.chatId, conversationId: g.lidConversation.id, resolvedBy: 'owner-1' })).ok).toBe(true);
+      const third = await db.contact.create({ data: { workspaceId: g.workspaceId, phone: '554799990002' } });
+      await db.conversation.create({ data: { workspaceId: g.workspaceId, channelId: g.channel.id, contactId: third.id } });
+      await deliver(g, 'AFTER-3RD-B', 'nova', 70);
+      expect(await autoResolveAuthority(db, { workspaceId: g.workspaceId, channelId: g.channel.id, chatId: gChat.chatId })).toEqual({ ok: false, reason: 'manual_choice_on_record' });
+    });
+
+    it('chooses by rule: real phone only, then most recent activity, then more messages', () => {
+      const at = (day: number) => new Date(2026, 9, day);
+      const lid = { id: 'lid', contactPhone: '1@lid', isGroup: false, lastMessageAt: at(30), messageCount: 99 };
+      expect(chooseDefaultConversation([lid])).toBeNull();
+      expect(chooseDefaultConversation([lid, { id: 'phone', contactPhone: '5547999990002', isGroup: false, lastMessageAt: at(1), messageCount: 1 }])).toBe('phone');
+      expect(chooseDefaultConversation([{ id: 'old', contactPhone: '554799990002', isGroup: false, lastMessageAt: at(1), messageCount: 50 }, { id: 'recent', contactPhone: '5547999990002', isGroup: false, lastMessageAt: at(5), messageCount: 2 }])).toBe('recent');
+      expect(chooseDefaultConversation([{ id: 'a', contactPhone: '5547999990002', isGroup: false, lastMessageAt: at(5), messageCount: 2 }, { id: 'b', contactPhone: '554799990002', isGroup: false, lastMessageAt: at(5), messageCount: 9 }])).toBe('b');
+    });
   });
 });

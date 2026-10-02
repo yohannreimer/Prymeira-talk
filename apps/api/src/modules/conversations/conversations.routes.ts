@@ -381,6 +381,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       where: {
         workspaceId: request.talk.workspaceId,
         ...(query.data.channelId ? { channelId: query.data.channelId } : {}),
+        retiredIntoConversationId: null,
         ...inboxHandoffWhere
       }
     });

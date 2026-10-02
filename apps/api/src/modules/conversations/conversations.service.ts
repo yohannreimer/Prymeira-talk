@@ -704,8 +704,9 @@ export function createConversationsService(
           { phone: { contains: searchPhone } }
         ] } } }
       : {};
+    // A conversation retired by an authority resolution is never listed: its chat is operated, and shown, by another one.
     const visibilityWhere: Prisma.ConversationWhereInput = input.search?.trim()
-      ? {} : { hiddenUntilReply: false };
+      ? { retiredIntoConversationId: null } : { hiddenUntilReply: false, retiredIntoConversationId: null };
     const viewWhere: Prisma.ConversationWhereInput = input.view === "unread"
       ? inboxUnreadWhere
       : input.view === "marked"
@@ -1585,10 +1586,14 @@ export function createConversationsService(
         throw new ConversationNotFoundError();
       }
 
+      // Conversations retired into this one keep their rows; their history reads here as one.
+      const retired = prisma.conversation.findMany
+        ? await prisma.conversation.findMany({ where: { workspaceId: input.workspaceId, retiredIntoConversationId: input.conversationId }, select: { id: true } })
+        : [];
       const messages = await prisma.message.findMany({
         where: visibleConversationMessageWhere({
           workspaceId: input.workspaceId,
-          conversationId: input.conversationId
+          conversationId: retired.length ? { in: [input.conversationId, ...retired.map(row => row.id)] } : input.conversationId
         }),
         orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
         take: 100

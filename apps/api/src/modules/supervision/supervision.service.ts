@@ -40,7 +40,7 @@ export function supervisionListWhere(grants: SupervisionGrant[], filters: Superv
   const hours = filters.unreadPeriod === "24h" ? 24 : filters.unreadPeriod === "7d" ? 168 : null;
   return { AND: [
     supervisionScopeWhere(filterGrants(grants, filters.sellerCustomerId)),
-    { hiddenUntilReply: false },
+    { hiddenUntilReply: false, retiredIntoConversationId: null },
     filters.status === "all" ? {} : filters.status === "closed" ? { status: "closed" } : { status: { in: ["open", "pending"] } },
     filters.nextAction ? inboxHandoffWhere : {},
     filters.unread ? inboxUnreadWhere : {},

@@ -4,6 +4,7 @@ import { ConfirmedIngressPublisher, transportTopology } from './broker.js';
 import { IngressPrivateStore } from './private-store.js';
 import { IngressJournal } from './journal.js';
 import { IngressApplicationService } from './application.js';
+import { autoResolvePending } from '../channels/conversation-authority.js';
 import { IngressTransportConsumer } from './consumer.js';
 import { createEffectRunner, startEffectLoop } from './effect-runner.js';
 import { createMediaPrepareHandler } from './media-prepare-handler.js';
@@ -121,7 +122,11 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
     while (!abort.signal.aborted) {
       await delay(30_000, undefined, { signal: abort.signal }).catch(() => {});
       if (abort.signal.aborted) break;
-      try { await application.recertifyPending(config.allowAllWorkspaces ? {} : { workspaceIds: [...config.workspaceAllowlist] }); }
+      try {
+        const scope = config.allowAllWorkspaces ? {} : { workspaceIds: [...config.workspaceAllowlist] };
+        await application.recertifyPending(scope);
+        await autoResolvePending(db, scope); // Old duplicate conversations: the phone-number default decides.
+      }
       catch (error) { console.warn('Recertification sweep failed', error); }
     }
   })() : null;

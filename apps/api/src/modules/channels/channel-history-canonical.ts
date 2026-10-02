@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
+import { autoResolveAuthority } from './conversation-authority.js';
 import { enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
 import { deriveTrustedMessagingContext, StaleMessagingSourceError } from '../messaging/canonical-source.js';
 import { selectConversationPreviewInTransaction } from '../messaging/conversation-preview.js';
@@ -37,6 +38,7 @@ export async function importChatCanonical(input: {
   // canonical store would hold them as "requires adoption" rather than duplicate them.
   const known = new Set((await prisma.message.findMany({ where: { workspaceId: channel.workspaceId, providerMessageId: { in: [...new Set(records.map(r => r.key.id))] } },
     select: { providerMessageId: true } })).map(m => m.providerMessageId));
+  const contested = new Set<string>();
   for (const record of [...records].sort((a, b) => a.messageTimestamp - b.messageTimestamp)) {
     if (known.has(record.key.id)) { result.skipped++; continue; }
     known.add(record.key.id);
@@ -49,7 +51,11 @@ export async function importChatCanonical(input: {
       const event = normalized.event;
       const stored = await store.persistInTransaction(tx, event, { receiptKey: `history:${channel.id}:${record.key.id}`,
         presentation: { ingestedAt: new Date(record.messageTimestamp * 1000), history: { originalType: record.messageType ?? 'unknown', batchId } } });
-      if (stored.outcome === 'held') { result.held++; return; }
+      if (stored.outcome === 'held') {
+        result.held++;
+        if (stored.chatId && stored.reconciliationReasons.includes('multiple_conversation_authorities')) contested.add(stored.chatId);
+        return;
+      }
       if (stored.conversationId) result.conversationId = stored.conversationId;
       if (stored.outcome !== 'created' || !stored.messageId || !stored.conversationId) { result.skipped++; return; }
       result.inserted++;
@@ -60,6 +66,8 @@ export async function importChatCanonical(input: {
         OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: message.createdAt } }] }, data: { lastMessageAt: message.createdAt } });
     }, { isolationLevel: 'ReadCommitted', timeout: 30_000 });
   }
+  // Two conversations claim this chat: the phone-number default decides, and what was held enters as history.
+  for (const chatId of contested) await autoResolveAuthority(prisma, { workspaceId: channel.workspaceId, channelId: channel.id, chatId }).catch(() => undefined);
   if (result.conversationId) {
     // Provider-supplied display details only fill gaps; they never overwrite what a person set.
     const conversation = await prisma.conversation.findFirst({ where: { workspaceId: channel.workspaceId, id: result.conversationId }, include: { contact: true } });

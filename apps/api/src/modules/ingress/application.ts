@@ -14,6 +14,7 @@ import { applyInboundDepartmentRouting } from '../team/team-routing.service.js';
 import { readAssistantSettings } from '../assistant/assistant-policy.js';
 import { createAssistantRepository } from '../assistant/assistant-repository.js';
 import { applyAuthenticatedConnectionObservation, normalizeWhatsappPhone } from '../channels/channel-connections.js';
+import { autoResolveAuthority } from '../channels/conversation-authority.js';
 import { IngressJournal } from './journal.js';
 type Tx = Prisma.TransactionClient;
 type MessageEvent = Extract<NormalizedMessagingEvent, {
@@ -31,6 +32,8 @@ export class IngressApplicationService {
         const { receipt, payload } = await this.journal.readPayload(receiptId);
         const raw = JSON.parse((await this.journal.files.read(receipt.rawRef, receipt.rawDigest)).toString('utf8')) as unknown;
         const source = this.source(receipt);
+        // Chats that two existing conversations claim: decided by the phone-number default once this receipt is stored.
+        const contested = new Map<string, { workspaceId: string; channelId: string; chatId: string }>();
         for (const [eventIndex, item] of payload.events.entries()) {
             await this.journal.db.$transaction(async (tx) => {
                 await enterCanonicalWorkspaceTransaction(tx, receipt.workspaceId);
@@ -90,9 +93,13 @@ export class IngressApplicationService {
                 const result = await this.store.persistInTransaction(tx, event, { receiptKey: `${receiptId}:${eventIndex}` });
                 await tx.ingressEventProgress.create({ data: { ...scope, state: result.outcome === 'held' ? 'held' : 'applied', reason: result.reconciliationReasons[0] ?? null,
                         observationId: result.observationId, actionId: result.actionId ?? null, messageId: result.messageId, conversationId: result.conversationId, result: json(result) } });
+                if (result.outcome === 'held' && result.chatId && result.reconciliationReasons.includes('multiple_conversation_authorities'))
+                    contested.set(result.chatId, { workspaceId: receipt.workspaceId, channelId: receipt.channelId, chatId: result.chatId });
                 await this.afterPersist(tx, receipt, eventIndex, event, result, source);
             }, { isolationLevel: 'ReadCommitted', timeout: 15000 });
         }
+        for (const chat of contested.values())
+            await autoResolveAuthority(this.journal.db, chat).catch(() => undefined); // The sweep retries; a failure never fails the receipt.
         // No application completion at the start or at timer scheduling. Finalize only
         // after every conserved event position exists, including explicit held decisions.
         return this.journal.db.$transaction(async (tx) => {

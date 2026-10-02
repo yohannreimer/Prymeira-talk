@@ -33,7 +33,8 @@ describe('ConversationAuthorityPanel', () => {
     expect(container.textContent).toContain('Conversas duplicadas (1)');
     expect(container.textContent).toContain('Ana');
     expect(container.textContent).toContain('123@lid');
-    expect(container.textContent).toContain('nada é apagado nem unido');
+    expect(container.textContent).toContain('nada é apagado');
+    expect(container.textContent).toContain('número de telefone');
   });
 
   it('records the choice and removes only that chat; a refusal keeps it with the reason', async () => {

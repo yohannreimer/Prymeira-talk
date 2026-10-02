@@ -111,7 +111,7 @@ Para o cutover não duplicar nem perder eventos, `LEGACY_WEBHOOK_DELEGATED_WORKS
 
 Quando PN e LID comprovadamente são a mesma pessoa e já existem duas conversas (um contato com telefone, outro com `@lid`), o chat canônico fica em `review` (`multiple_conversation_authorities`) e as mensagens novas ficam retidas. Agora um dono ou gerente resolve explicitamente em Canais > "Conversas duplicadas" (`GET /channels/conversation-authority`, `POST /channels/conversation-authority/:chatId/resolve`).
 
-- **Nada é unido nem apagado**: as duas conversas mantêm UUIDs, configurações e histórico (os membros do chat canônico continuam lendo juntos). A escolhida passa a operar o chat; mensagens novas de qualquer grafia (PN ou LID) entram nela.
+- **Nada é unido nem apagado**: as duas conversas mantêm UUIDs, configurações e histórico. A escolhida passa a operar o chat; mensagens novas de qualquer grafia (PN ou LID) entram nela. (Correção: a primeira versão deste registro dizia que o histórico já lia junto; isso só passou a ser verdade com o ajuste abaixo.)
 - **Decisão persistida** em `canonical_chat_authority_resolutions` (migração aditiva `20261002150000`), válida apenas enquanto os reivindicantes forem exatamente os do momento da escolha: um terceiro contato do mesmo número devolve o chat para revisão.
 - **Recusas**: conversa que não é membro, envio com resultado desconhecido no chat (`dispatching/accepted_unbound/uncertain/review`), envio de prospecção sem confirmação em outra conversa e mapeamento de endereço em conflito.
 - **A(s) conversa(s) aposentada(s) param de agir sozinhas**: controle humano, sessão de agente fechada, resposta pendente cancelada, follow-ups cancelados e rascunho do assistente obsoleto. Nenhuma linha é removida.
@@ -130,6 +130,18 @@ Evento que chega durante um pareamento ou reset da conexão é retido como `pend
 ### Verificação integrada desta retomada (container de 4 CPUs, PostgreSQL 16 e RabbitMQ locais descartáveis)
 
 `pnpm typecheck` aprovado nos três pacotes. API: 2.518 testes aprovados com todos os testes PostgreSQL/RabbitMQ habilitados (a suíte completa, em série), web 425, shared 80. Os testes de redutores que drenam mais de 100 ações estouravam o limite padrão de 5 s de transação do Prisma e o timeout de 15 s do teste neste container; o cliente do teste agora usa transação de 60 s e esses três testes 60 s (só teste, nenhuma mudança de produção). Um teste de prévia no `application.postgres.test.ts` é sensível a tempo e falhou uma vez em quatro execuções, passando nas demais. **Não** foram feitos: homologação com WAHA/Evolution reais, teste de carga (2x pico), inspeção visual/multimodal, execução dos containers e medição de CPU/RAM da WAHA.
+
+### Conversas duplicadas: telefone por padrão, uma só conversa visível
+
+Pedido do Yohann: ninguém precisa escolher; vale o número de telefone, não o LID, e só uma conversa aparece.
+
+- **Decisão automática** (`autoResolveAuthority`, `resolvedBy = system:phone-default`): fica a conversa do número de telefone real. Se houver mais de uma (por exemplo com e sem o nono dígito), a mais recente; empate, a com mais mensagens. Roda quando o ingresso ou a importação de histórico encontram o conflito e numa varredura de 30 s no worker.
+- **Só uma aparece**: a coluna aditiva `conversations.retired_into_conversation_id` (migração `20261002170000`) marca a aposentada. Lista do inbox (inclusive busca), contador de atenção, supervisão e relatórios a ignoram.
+- **Histórico junto**: abrir a conversa que fica mostra também as mensagens da aposentada (mesmas 100 mais recentes, em ordem). Cada mensagem mantém a conversa dona, então mídia, PDF e transcrição continuam funcionando. Limite: o contexto montado para agente/assistente ainda lê só a conversa que fica.
+- **Mensagens retidas** pelo conflito entram como histórico; as que chegaram ao vivo contam como não lidas (para alguém ver), sem acionar agente ou automação.
+- **Não decide sozinho** quando não existe conversa de telefone (só LID), quando há envio com resultado desconhecido ou prospecção sem confirmação (espera e a varredura tenta de novo), ou quando uma pessoa já escolheu manualmente antes. Só esses casos aparecem no painel "Conversas duplicadas".
+
+Testes: `conversation-authority.postgres.test.ts` (seis cenários, inclusive lista do inbox e histórico unido), testes do inbox/relatórios/supervisão atualizados. Durante a verificação, o RabbitMQ local esgotou descritores por filas sobradas de execuções interrompidas; após limpar os vhosts de teste, a API passou inteira (2.521 testes).
 
 ## Critérios de publicação pendentes
 
