@@ -88,6 +88,15 @@ Estado verificado em `d7d6295`: API 2.457 testes (155 arquivos) aprovados em dua
 
 Limites conhecidos: nenhum webhook produtivo foi redirecionado; os demais efeitos (`agent.debounce`, `assistant.message`, `prospecting.inbound`, `automation.occurrence`, `followup.activity`, `triage.message`, `handoff.brief`, `human_reply.improvement`, `history.backfill`, `assistant.control`, realtime e `content.reconcile`) continuam obrigações pendentes sem handler; o runtime de ingresso segue travado a PostgreSQL/RabbitMQ de teste; o diretório de mídia precisa existir com permissão 0700 do usuário do processo; a cópia em `message_media` convive com o base64 já salvo em `messages.media_url` (nada foi removido); homologação com WAHA/Evolution reais e testes de carga não foram feitos.
 
+### Checkpoint 02/10/2026 (tarde): handlers, roteador de saída, saúde e estágio de produção (`0fe863e`..`282c17c`)
+
+- **`0fe863e`**: handlers para os efeitos durários antes pendentes, realtime entre processos e loop de efeitos na API e no worker.
+- **`4fa1ae6`**: roteador único de saída (`OUTBOUND_ROUTER_ENABLED`, desligado = comportamento atual). Journal `outbound_dispatches` (migração aditiva), failover só quando o envio provadamente não saiu, tentativa incerta retida para revisão e nunca reenviada, voz WAHA como voz.
+- **`4778196`**: monitor de saúde (`CHANNEL_HEALTH_MONITOR_ENABLED`, desligado por padrão): probes de 15 s, falha na 3ª, "conectado mas sem receber" por 3 mensagens vistas só pela outra conexão, retorno à Evolution após 10 min saudáveis; painel de envios em revisão nos Canais.
+- **`282c17c`**: estágio `production` do ingresso/worker com guardas próprias (banco não `*_test`, vhost Rabbit dedicado, namespace `talk.prod.*`, segredos >= 16 caracteres, escopo de workspace explícito); sessões WAHA registram o webhook assinado.
+
+Verificação nesta retomada (container novo, sem PostgreSQL/RabbitMQ em execução): `pnpm typecheck` aprovado nos três pacotes; testes sem banco: API 1.921 aprovados (634 condicionais não executados), web 422, shared 80. Os testes PostgreSQL/Rabbit desses commits foram executados pela sessão anterior e **não** foram reexecutados aqui. Pendentes: 2a.3C/D (conversão dos remetentes/entradas/importadores/leitores), 2a-resolução, 2b.1D e o bloco 5 (infra, carga, homologação real).
+
 ## Critérios de publicação pendentes
 
 Checkpoint canônico integrado aprovado em `117fd9f`: redutores persistentes de edições, exclusões, recibos, certificados e snapshots, com proteção cumulativa dos metadados entre páginas. Conformidade e qualidade independentes encerraram os achados de aliases após união PN/LID, fronteira de recuperação, recibos conflitantes e metadados incompatíveis. Os 164 testes canônicos com PostgreSQL passaram; a última revisão de qualidade executou 33 casos focados e quatro reproduções independentes. As consultas e escritores atuais ainda serão convertidos: essa aprovação não ativa a deduplicação em produção.
