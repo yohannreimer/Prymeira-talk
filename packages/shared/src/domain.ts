@@ -40,6 +40,23 @@ export const channelSchema = z.object({
   updatedAt: z.string().datetime()
 });
 export type ChannelDto = z.infer<typeof channelSchema>;
+export const channelHealthStateSchema = z.enum(["ok", "reconnecting", "disconnected", "needs_qr", "silent"]);
+export const channelHealthSchema = z.object({
+  channelId: z.string().min(1),
+  state: channelHealthStateSchema,
+  since: z.string().datetime().nullable(),
+  lastInboundAt: z.string().datetime().nullable(),
+  attempts: z.number().int().min(0)
+});
+export type ChannelHealthDto = z.infer<typeof channelHealthSchema>;
+export const channelWatchdogStatusSchema = z.object({
+  enabled: z.boolean(),
+  lastTickAt: z.string().datetime().nullable(),
+  lastTickOk: z.boolean(),
+  lastError: z.string().nullable(),
+  unreachable: z.boolean()
+});
+export type ChannelWatchdogStatusDto = z.infer<typeof channelWatchdogStatusSchema>;
 
 export const channelOperationResultSchema = z.object({
   mode: integrationModeSchema,

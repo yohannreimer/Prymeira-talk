@@ -1,5 +1,6 @@
 import { QueryClient, replaceEqualDeep, type QueryKey } from '@tanstack/react-query';
 import { needsHumanAttention, type ChannelDto, type ConversationDto, type InboxView, type MessageDto, type RealtimeEvent } from '@prymeira-talk/shared';
+import { defaultWatchdogStatus, type ChannelHealthSnapshot } from '../channel-health-snapshot';
 import { SessionBlobCache } from './blob-cache';
 
 export const READ_STALE_MS = 15_000;
@@ -334,6 +335,12 @@ export class TalkSession {
         this.writeUI('selectedSnapshot', { ...selected, contactName: event.payload.name, contactPhone: event.payload.phone }, null);
       }
       this.invalidateContext(contactId);
+    }
+    if (event.type === 'channel.health') {
+      this.client.setQueryData<ChannelHealthSnapshot>(this.key('channelHealth'), snapshot => ({
+        health: [...(snapshot?.health ?? []).filter(row => row.channelId !== event.payload.channelId), event.payload],
+        watchdog: snapshot?.watchdog ?? defaultWatchdogStatus
+      }));
     }
     if (event.type === 'channel.updated' || event.type === 'channel.deleted') {
       this.client.setQueryData<ChannelDto[]>(this.key('channels'), rows => rows ? event.type === 'channel.deleted'

@@ -10,6 +10,8 @@ import {
   contactBoardStageSchema,
   channelOperationResultSchema,
   channelQrResultSchema,
+  channelHealthSchema,
+  channelWatchdogStatusSchema,
   channelSchema,
   channelTestInboundResultSchema,
   contactSchema,
@@ -65,6 +67,7 @@ import {
   type TagDto
 } from "@prymeira-talk/shared";
 import { readConfigValue } from "./runtime-config";
+import { defaultWatchdogStatus, type ChannelHealthSnapshot } from "./channel-health-snapshot";
 import type { AssistantConversationDto, AssistantChannelSettings, AssistantSendInput } from '@prymeira-talk/shared';
 import { handoffBriefDtoSchema } from '../../../../packages/shared/src/assistant';
 
@@ -2189,6 +2192,33 @@ export async function apiGetChannels(
   const data = await response.json();
   return channelSchema.array().parse(data);
 
+  });
+}
+
+export async function apiGetChannelHealth(
+  getToken: () => Promise<string | null>,
+  signal?: AbortSignal
+): Promise<ChannelHealthSnapshot> {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+
+    const response = await fetch(`${apiUrl}/channels/health`, {
+      signal: deadline,
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    await assertApiReadAccess(response, token, deadline);
+    if (!response.ok) {
+      throw new Error(`Failed to load channel health: ${response.status}`);
+    }
+
+    const data = await response.json() as { health?: unknown; watchdog?: unknown };
+    return {
+      health: channelHealthSchema.array().parse(data.health ?? []),
+      watchdog: data.watchdog === undefined ? defaultWatchdogStatus : channelWatchdogStatusSchema.parse(data.watchdog)
+    };
   });
 }
 
