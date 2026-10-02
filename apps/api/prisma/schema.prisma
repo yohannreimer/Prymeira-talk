@@ -306,6 +306,7 @@ model Channel {
   canonicalObservations CanonicalObservation[]
   canonicalAliases CanonicalNativeAlias[]
   @@unique([workspaceId, id, provider])
+  outboundDispatches OutboundDispatch[]
   outboundIntents OutboundIntent[]
   outboundAttempts OutboundAttempt[]
   outboundResults OutboundResult[]
@@ -2010,4 +2011,27 @@ model MessageMedia {
   @@unique([workspaceId,conversationId,messageId], map: "message_media_scope_key")
   @@index([workspaceId,conversationId,state], map: "message_media_scope_idx")
   @@map("message_media")
+}
+
+// One logical send routed through the outbound router. Records the physical connection that carried it
+// and sends whose outcome is uncertain (reviewed by an operator, never resent automatically).
+model OutboundDispatch {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  channelId String @map("channel_id") @db.Uuid
+  kind String
+  destination String
+  preview String?
+  state String @default("sending")
+  connectionId String? @map("connection_id") @db.Uuid
+  providerMessageId String? @map("provider_message_id")
+  attempts Json @default("[]")
+  errorCode String? @map("error_code")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  resolvedAt DateTime? @map("resolved_at") @db.Timestamptz
+  resolvedBy String? @map("resolved_by")
+  channel Channel @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade, map: "outbound_dispatches_channel_fkey")
+  @@index([workspaceId, channelId, createdAt(sort: Desc)], map: "outbound_dispatches_scope_idx")
+  @@map("outbound_dispatches")
 }

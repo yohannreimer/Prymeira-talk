@@ -12,6 +12,7 @@ export async function buildApp(
       API_PORT: 0,
       WAHA_ENABLED: false,
       REALTIME_BRIDGE_ENABLED: false,
+      OUTBOUND_ROUTER_ENABLED: false,
       EFFECTS_ENABLED: false,
       EFFECTS_WORKSPACE_ALLOWLIST: [],
       NODE_ENV: "test",

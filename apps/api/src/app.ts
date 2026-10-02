@@ -60,6 +60,10 @@ import { conversationFollowupsRoutes } from "./modules/followups/conversation-fo
 import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js";
 import { createWahaRuntime } from './modules/waha/waha.client.js';
 import { createDurableMedia } from './modules/conversations/durable-media.js';
+import { createOutboundRouter } from './modules/channels/outbound-router.js';
+import { createOutboundDispatchJournal } from './modules/channels/outbound-dispatch-journal.js';
+import { createDeliveryProbe } from './modules/channels/outbound-probes.js';
+import { outboundReviewRoutes } from './modules/channels/outbound-review.routes.js';
 import { createEffectRunner, startEffectLoop } from './modules/ingress/effect-runner.js';
 import { createEffectHandlers } from './modules/ingress/effect-handlers.js';
 import { createMediaPrepareHandler } from './modules/ingress/media-prepare-handler.js';
@@ -193,6 +197,20 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     webhookSecret: env.EVOLUTION_WEBHOOK_SECRET
   });
   const wahaRuntime = createWahaRuntime({ enabled: env.WAHA_ENABLED, baseUrl: env.WAHA_API_BASE_URL, apiKey: env.WAHA_API_KEY });
+  // Opt-in single outbound router: every sender already sends through evolutionRuntime.client, so wrapping it here
+  // routes human, AI, automation, follow-up and campaign sends through one journal and one failover policy.
+  let outboundJournal: ReturnType<typeof createOutboundDispatchJournal> | undefined;
+  if (options.prismaEnabled !== false && env.OUTBOUND_ROUTER_ENABLED && evolutionRuntime.client) {
+    outboundJournal = createOutboundDispatchJournal(app.prisma);
+    evolutionRuntime.client = createOutboundRouter({
+      base: evolutionRuntime.client, waha: wahaRuntime.client, db: app.prisma, journal: outboundJournal,
+      probe: createDeliveryProbe({ waha: wahaRuntime.client, history: { recentMessages: (input) => { if (!evolutionHistorySource) throw new Error('HISTORY_UNAVAILABLE'); return evolutionHistorySource.recentMessages(input); } } }),
+      logger: app.log
+    });
+    const sweeper = setInterval(() => { void outboundJournal!.sweepStale().catch((error: unknown) => app.log.warn({ err: error }, 'Outbound journal sweep failed')); }, 60_000);
+    sweeper.unref();
+    app.addHook('onClose', async () => { clearInterval(sweeper); });
+  }
   // Opt-in durable media + shared transcription job. Without TALK_MEDIA_STORE_PATH nothing changes.
   const durableMedia = options.prismaEnabled !== false && env.TALK_MEDIA_STORE_PATH
     ? await createDurableMedia({ prisma: app.prisma, root: env.TALK_MEDIA_STORE_PATH })
@@ -548,6 +566,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(contactsRoutes, { evolution: evolutionRuntime });
   await app.register(boardsRoutes);
   await app.register(channelsRoutes, { evolution: evolutionRuntime, waha: wahaRuntime });
+  if (outboundJournal) await app.register(outboundReviewRoutes, { journal: outboundJournal });
   await app.register(automationsRoutes, { agentRuntime, evolution: evolutionRuntime });
   await app.register(campaignsRoutes, { evolution: evolutionRuntime });
   await app.register(broadcastListsRoutes);
