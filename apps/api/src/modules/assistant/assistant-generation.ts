@@ -1,3 +1,4 @@
+import { conversationHistoryScope } from '../conversations/conversation-history-scope.js';
 import { createHash } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { AssistantError, type AssistantDb } from './assistant-access.js';
@@ -27,7 +28,7 @@ export async function loadAssistantContext(db: AssistantDb, workspaceId: string,
   const knowledge = await db.aiKnowledgeSource.findMany({ where: { workspaceId, agentId: agent.id, status: 'ready' }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: 50 });
   const complete = usesContextFirst(agent.behaviorConfig);
   const limit = complete ? COMPLETE_HISTORY_MESSAGE_LIMIT : 80;
-  const fetched = await db.message.findMany({ where: visibleConversationMessageWhere({ workspaceId, conversationId, type: { notIn: ['internal_note', 'system'] as never } }), orderBy: complete ? [{ createdAt: 'desc' }, { id: 'desc' }] : [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }], take: limit + 1 });
+  const fetched = await db.message.findMany({ where: visibleConversationMessageWhere({ workspaceId, conversationId: await conversationHistoryScope(db, workspaceId, conversationId), type: { notIn: ['internal_note', 'system'] as never } }), orderBy: complete ? [{ createdAt: 'desc' }, { id: 'desc' }] : [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }], take: limit + 1 });
   const visible = withoutInternalFollowupReservations(fetched);
   if (complete && visible.length > limit) throw new AssistantError('ASSISTANT_CONTEXT_LIMIT', 'O histórico excede o limite de leitura completa. Revise a conversa manualmente.', 422);
   const messages = visible.slice(0, limit).reverse();

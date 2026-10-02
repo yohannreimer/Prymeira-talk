@@ -57,6 +57,11 @@ services:
       INGRESS_EVOLUTION_SECRET: ${EVOLUTION_WEBHOOK_SECRET}
       INGRESS_WAHA_SECRET: ${WAHA_WEBHOOK_HMAC_KEY}
       INGRESS_PORT: "4011"
+      # Listen on the overlay network (the default is loopback only, unreachable for WAHA and Traefik).
+      INGRESS_HOST: 0.0.0.0
+      # WAHA's own LID→phone lookup, so WAHA messages from LID chats join the phone conversation.
+      WAHA_API_BASE_URL: http://waha:3000
+      WAHA_API_KEY: ${WAHA_API_KEY}
     volumes:
       - prymeira_talk_ingress:/data/ingress
     networks:

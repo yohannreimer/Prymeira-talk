@@ -183,4 +183,15 @@ describe("readEnv", () => {
     expect(readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: "/data/media" }).TALK_MEDIA_STORE_PATH).toBe("/data/media");
     expect(() => readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: "media" })).toThrow();
   });
+
+  it("starts with exactly the docker-compose defaults (every new switch empty or false)", () => {
+    const composeDefaults = { WAHA_ENABLED: "false", WAHA_API_BASE_URL: "", WAHA_API_KEY: "", WAHA_WEBHOOK_BASE_URL: "", WAHA_WEBHOOK_HMAC_KEY: "",
+      OUTBOUND_ROUTER_ENABLED: "false", CHANNEL_HEALTH_MONITOR_ENABLED: "false", CANONICAL_HISTORY_IMPORT_ENABLED: "false", LEGACY_WEBHOOK_DELEGATED_WORKSPACES: "",
+      EFFECTS_ENABLED: "false", EFFECTS_WORKSPACE_ALLOWLIST: "", REALTIME_BRIDGE_ENABLED: "false", TALK_MEDIA_STORE_PATH: "" };
+    const env = readEnv({ ...baseProductionEnv, ...composeDefaults });
+    expect(env).toMatchObject({ WAHA_ENABLED: false, OUTBOUND_ROUTER_ENABLED: false, EFFECTS_ENABLED: false, CANONICAL_HISTORY_IMPORT_ENABLED: false });
+    expect(env.WAHA_WEBHOOK_HMAC_KEY).toBeUndefined();
+    expect(env.TALK_MEDIA_STORE_PATH).toBeUndefined();
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_WEBHOOK_HMAC_KEY: "short" })).toThrow();
+  });
 });

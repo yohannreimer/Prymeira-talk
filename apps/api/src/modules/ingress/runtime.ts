@@ -7,9 +7,11 @@ import { IngressApplicationService } from './application.js';
 import { autoResolvePending } from '../channels/conversation-authority.js';
 import { recoverGapsSweep, wahaHistorySweep } from '../channels/provider-history.js';
 import { createEvolutionHistorySource } from '../evolution/evolution-history.js';
+import { createWahaLidResolver } from '../waha/waha-lid-resolver.js';
 import { IngressTransportConsumer } from './consumer.js';
 import { createEffectRunner, startEffectLoop } from './effect-runner.js';
-import { createMediaPrepareHandler } from './media-prepare-handler.js';
+import { createMediaPrepareHandler, createSourceMediaPreparer } from './media-prepare-handler.js';
+import { createCreatedMessagesNotifier } from '../channels/created-messages-notifier.js';
 import { createMessageMediaService } from '../conversations/message-media.js';
 import { MAX_SERVE_MEDIA_BYTES } from '../conversations/media-policy.js';
 import { createEvolutionClient } from '../evolution/evolution.client.js';
@@ -125,8 +127,20 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
   // connection is current again. Nothing is lost while it is not: the receipt and the held decision stay on record.
   const recertifier = consume && stageAppliesReceipts(config.stage) ? (async () => {
     const application = new IngressApplicationService(journal);
-    const history = { evolution: config.evolutionApi ? createEvolutionHistorySource(config.evolutionApi) : null,
-      waha: config.wahaApi ? createWahaClient(config.wahaApi) : null };
+    const wahaClient = config.wahaApi ? createWahaClient(config.wahaApi) : null;
+    const history: Parameters<typeof recoverGapsSweep>[1] = { evolution: config.evolutionApi ? createEvolutionHistorySource(config.evolutionApi) : null, waha: wahaClient,
+      wahaLids: wahaClient ? createWahaLidResolver(wahaClient) : null };
+    // Messages read back from a provider (WAHA history, gap recovery) get durable media and reach open inboxes live.
+    let historyBridge: ReturnType<typeof createRealtimeBridge> | null = null;
+    if (config.gapRecovery || config.wahaHistoryImport) {
+      historyBridge = createRealtimeBridge({ databaseUrl: config.databaseUrl, hub: createRealtimeHub(), logger: { warn: (fields, message) => console.warn(message, fields) } });
+      await historyBridge.start();
+      const mediaStore = config.mediaStorePath ? new IngressPrivateStore(config.mediaStorePath, MAX_SERVE_MEDIA_BYTES + 1024 * 1024) : null;
+      await mediaStore?.initialize();
+      history.after = { notify: createCreatedMessagesNotifier(db, event => historyBridge!.publish(event)),
+        prepareMedia: mediaStore ? createSourceMediaPreparer({ media: createMessageMediaService({ db, store: mediaStore }), waha: wahaClient,
+          evolution: config.evolutionApi ? createEvolutionClient(config.evolutionApi) : null }) : undefined };
+    }
     const warn = (error: unknown, connectionId: string) => console.warn('Provider history step failed', { connectionId, error: error instanceof Error ? error.message : String(error) });
     let lastRecovery = 0;
     while (!abort.signal.aborted) {
@@ -141,6 +155,7 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
       }
       catch (error) { console.warn('Recertification sweep failed', error); }
     }
+    await historyBridge?.stop();
   })() : null;
   let closing: Promise<void> | null = null;
   return { db, files, journal, publisher: () => publisher,

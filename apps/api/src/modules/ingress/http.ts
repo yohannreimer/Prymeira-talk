@@ -1,12 +1,12 @@
 import Fastify, { type FastifyRequest } from 'fastify';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { deriveTrustedMessagingContext } from '../messaging/canonical-source.js';
-import { enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
 import { record } from '../messaging/whatsapp-identity.js';
 import { secretMatches, signatureMatches, singleHeader, authenticateWaha } from './authentication.js';
 import { normalizeReceipt } from './normalization.js';
 import { IngressJournal } from './journal.js';
 import type { ConfirmedIngressPublisher } from './broker.js';
+import type { WahaLidResolver } from '../waha/waha-lid-resolver.js';
 
 type Provider = 'evolution' | 'waha' | 'meta_official';
 class HttpFailure extends Error { constructor(readonly status: number, message: string) { super(message); } }
@@ -17,6 +17,8 @@ export interface IngressHttpOptions {
   maxInflight?: number;
   /** Explicit server-owned private URL aliases, never supplied by a webhook. */
   evolutionAliases?: string[];
+  /** WAHA's own LID→phone lookup: the only proof that a WAHA LID chat is a known phone number. */
+  wahaLids?: Pick<WahaLidResolver, 'resolve'> | null;
 }
 /** Dedicated isolated server: never imports createApp or starts business schedulers. */
 export function createIngressHttp(options: IngressHttpOptions) {
@@ -98,12 +100,12 @@ export function createIngressHttp(options: IngressHttpOptions) {
         const publisher = options.publisher();
         if (!publisher?.ready) throw new HttpFailure(503, 'publisher_backpressure');
         const observedAt = new Date().toISOString();
-        const source = await options.db.$transaction(async tx => {
-          await enterCanonicalWorkspaceTransaction(tx, workspaceId);
-          return sourceFor(tx, provider, workspaceId, input, observedAt, params.connectionId);
-        });
+        // A plain read: the source is re-checked under the shared source fence when the receipt is staged.
+        const source = await options.db.$transaction(tx => sourceFor(tx, provider, workspaceId, input, observedAt, params.connectionId), { isolationLevel: 'ReadCommitted' });
+        // Bounded and cached; a failed lookup is no proof (the event is still accepted, as before).
+        const enrichment = provider === 'waha' && options.wahaLids ? { verifiedLidMappings: await options.wahaLids.resolve(source.sessionName, input).catch(() => []) } : undefined;
         let payload;
-        try { payload = normalizeReceipt(source, input); } catch { throw new HttpFailure(400, 'source_payload_mismatch'); }
+        try { payload = normalizeReceipt(source, input, enrichment); } catch { throw new HttpFailure(400, 'source_payload_mismatch'); }
         const receipt = await options.journal.stage({ transportNamespace: publisher.namespace, source, raw, payload,
           authentication: provider === 'evolution' ? 'evolution_constant_time_secret' : provider === 'waha' ? 'waha_raw_hmac_sha512' : 'meta_raw_hmac_sha256',
           reauthenticate: async tx => {

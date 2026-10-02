@@ -5,6 +5,7 @@ import { deriveTrustedMessagingContext, StaleMessagingSourceError } from '../mes
 import { selectConversationPreviewInTransaction } from '../messaging/conversation-preview.js';
 import { createCanonicalStore } from '../messaging/canonical-store.js';
 import type { NormalizationResult, TrustedMessagingContext } from '../messaging/normalized-event.js';
+import type { FrozenSource } from '../ingress/media-prepare-handler.js';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
 import type { HistoryRecord, RecentEvolutionChat } from '../evolution/evolution-history.js';
 
@@ -24,6 +25,12 @@ export async function canonicalHistoryConnection(prisma: PrismaClient, channel: 
  * context only inside its own transaction. `receiptId` is the provider's own message id: never text or time. */
 export type ProviderMessageItem = { receiptId: string; timestampMs: number; originalType?: string;
   normalize: (context: TrustedMessagingContext) => NormalizationResult };
+/** What happens after the messages are committed: durable media and live updates. Both are best effort: a failure
+ * leaves the message visible with its media pending (recoverable), never rolls the message back. */
+export type AfterPersist = {
+  prepareMedia?: (input: { workspaceId: string; messageId: string; source: FrozenSource }) => Promise<unknown>;
+  notify?: (workspaceId: string, created: Array<{ messageId: string; conversationId: string }>) => Promise<void>;
+};
 
 /**
  * Writes provider messages through the canonical store: exact identity, PN/LID aliases and deduplication against
@@ -40,9 +47,10 @@ export type ProviderMessageItem = { receiptId: string; timestampMs: number; orig
  */
 export async function persistProviderMessages(input: {
   prisma: PrismaClient; channel: CanonicalHistoryChannel; connection: { id: string; provider: 'evolution' | 'waha' };
-  mode: 'history' | 'recovered_live'; items: ProviderMessageItem[]; batchId: string;
+  mode: 'history' | 'recovered_live'; items: ProviderMessageItem[]; batchId: string; after?: AfterPersist;
 }): Promise<CanonicalHistoryResult> {
   const { prisma, channel, connection, mode, batchId } = input;
+  const created: Array<{ messageId: string; conversationId: string; media: FrozenSource | null }> = [];
   const result: CanonicalHistoryResult = { conversationId: null, conversationIds: new Set(), inserted: 0, held: 0, skipped: 0 };
   const contested = new Set<string>();
   const seen = new Set<string>();
@@ -73,6 +81,9 @@ export async function persistProviderMessages(input: {
       if (stored.outcome !== 'created' || !stored.messageId || !stored.conversationId) { result.skipped++; return; }
       result.inserted++;
       const message = await tx.message.findUniqueOrThrow({ where: { id: stored.messageId } });
+      created.push({ messageId: message.id, conversationId: stored.conversationId,
+        media: event.media?.hasMedia && ['audio', 'image', 'file'].includes(message.type)
+          ? { provider: context.provider, channelProvider: context.channelProvider, sessionName: context.sessionName, key: event.key, mimeType: event.attachment.mimeType ?? null } : null });
       if (mode === 'recovered_live' && message.direction === 'inbound')
         await tx.conversation.update({ where: { workspaceId_id: { workspaceId: channel.workspaceId, id: stored.conversationId } }, data: { unreadCount: { increment: 1 }, hiddenUntilReply: false } });
       // Previews and activity only ever move forward; old messages can never displace a newer one.
@@ -83,6 +94,10 @@ export async function persistProviderMessages(input: {
   }
   // Two conversations claim a chat: the phone-number default decides, and what was held enters as history.
   for (const chatId of contested) await autoResolveAuthority(prisma, { workspaceId: channel.workspaceId, channelId: channel.id, chatId }).catch(() => undefined);
+  if (input.after?.prepareMedia) {
+    for (const item of created) if (item.media) await input.after.prepareMedia({ workspaceId: channel.workspaceId, messageId: item.messageId, source: item.media }).catch(() => undefined);
+  }
+  if (created.length && input.after?.notify) await input.after.notify(channel.workspaceId, created.map(({ messageId, conversationId }) => ({ messageId, conversationId }))).catch(() => undefined);
   return result;
 }
 
@@ -98,10 +113,10 @@ export async function fillContactDetails(prisma: PrismaClient, workspaceId: stri
 /** Evolution history for one chat (first connection or per-conversation backfill). */
 export async function importChatCanonical(input: {
   prisma: PrismaClient; channel: CanonicalHistoryChannel; connectionId: string;
-  chat: RecentEvolutionChat; records: HistoryRecord[]; batchId: string;
+  chat: RecentEvolutionChat; records: HistoryRecord[]; batchId: string; after?: AfterPersist;
 }): Promise<CanonicalHistoryResult> {
   const { prisma, channel, chat } = input;
-  const result = await persistProviderMessages({ prisma, channel, connection: { id: input.connectionId, provider: 'evolution' }, mode: 'history', batchId: input.batchId,
+  const result = await persistProviderMessages({ prisma, channel, connection: { id: input.connectionId, provider: 'evolution' }, mode: 'history', batchId: input.batchId, after: input.after,
     items: input.records.map(record => ({ receiptId: record.key.id, timestampMs: record.messageTimestamp * 1000, originalType: record.messageType,
       normalize: context => normalizeEvolutionWebhook(context, { event: 'messages.upsert', instance: channel.providerKey, data: record }) })) });
   if (result.conversationId) await fillContactDetails(prisma, channel.workspaceId, result.conversationId, { name: chat.pushName, avatarUrl: chat.profilePicUrl });

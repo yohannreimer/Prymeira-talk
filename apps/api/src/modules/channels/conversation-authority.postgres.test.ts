@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createCanonicalStore } from '../messaging/canonical-store.js';
 import { deriveTrustedMessagingContext } from '../messaging/canonical-source.js';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
+import { buildConversationContext } from '../agents/conversation-context-builder.js';
 import { createConversationsService, type PrismaLike as ConversationsPrismaLike } from '../conversations/conversations.service.js';
 import { autoResolveAuthority, autoResolvePending, chooseDefaultConversation, listAuthorityReviews, resolveConversationAuthority } from './conversation-authority.js';
 
@@ -136,6 +137,9 @@ describe.skipIf(!databaseUrl)('conversation authority resolution on PostgreSQL',
       const messages = await service().listMessages({ workspaceId: f.workspaceId, conversationId: f.phoneConversation.id });
       expect(messages.map(m => m.body)).toEqual(expect.arrayContaining(['historia no lid', 'historia no telefone', 'chegou durante a duvida']));
       expect((await db.conversation.findUniqueOrThrow({ where: { id: f.phoneConversation.id } })).unreadCount).toBe(2); // the proving message and the held one are live: not silent
+      // The agent and the assistant read the same joint history.
+      const context = await buildConversationContext(db as never, { workspaceId: f.workspaceId, conversationId: f.phoneConversation.id });
+      expect(JSON.stringify(context)).toContain('historia no lid');
       // Opening the hidden one directly shows nothing extra; it owns only its own rows.
       expect((await service().listMessages({ workspaceId: f.workspaceId, conversationId: f.lidConversation.id })).map(m => m.body)).toEqual(['historia no lid']);
     });

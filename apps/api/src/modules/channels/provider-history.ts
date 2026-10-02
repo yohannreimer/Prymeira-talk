@@ -4,17 +4,18 @@ import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normaliz
 import type { EvolutionHistorySource, HistoryRecord } from '../evolution/evolution-history.js';
 import { normalizeWahaEvent } from '../waha/waha-normalizer.js';
 import type { WahaClient, WahaMessage } from '../waha/waha.client.js';
+import type { LidMapping, WahaLidResolver } from '../waha/waha-lid-resolver.js';
 import { normalizeChatAddress, parseWahaMessageKey, record, serialized } from '../messaging/whatsapp-identity.js';
 import { normalizeWhatsappPhone } from './channel-connections.js';
-import { fillContactDetails, persistProviderMessages, type CanonicalHistoryChannel, type ProviderMessageItem } from './channel-history-canonical.js';
+import { fillContactDetails, persistProviderMessages, type AfterPersist, type CanonicalHistoryChannel, type ProviderMessageItem } from './channel-history-canonical.js';
 
 /**
  * History and gap recovery read back from either provider. Evolution and WAHA expose history differently
  * (Evolution: its own database, filled by its sync; WAHA WPP: what the WhatsApp Web session has loaded), so both feed
  * the same canonical store and the store's exact identity keeps one message per WhatsApp message.
  */
-export type ProviderChat = { remoteJid: string; chatAddress: string; name: string | null; avatarUrl: string | null; lastActivityMs: number | null };
-export type ProviderHistoryDeps = { evolution?: Pick<EvolutionHistorySource, 'recentChats' | 'recentMessages'> | null; waha?: Pick<WahaClient, 'getChats' | 'getMessages'> | null };
+export type ProviderChat = { remoteJid: string; chatAddress: string; name: string | null; avatarUrl: string | null; lastActivityMs: number | null; lidMappings?: LidMapping[] };
+export type ProviderHistoryDeps = { evolution?: Pick<EvolutionHistorySource, 'recentChats' | 'recentMessages'> | null; waha?: Pick<WahaClient, 'getChats' | 'getMessages'> | null; wahaLids?: Pick<WahaLidResolver, 'lookup'> | null; after?: AfterPersist };
 
 const HISTORY_WINDOW_MS = 15 * 24 * 60 * 60 * 1000;
 const RECOVERY_OVERLAP_MS = 10 * 60 * 1000;
@@ -29,25 +30,31 @@ const seconds = (value: unknown) => {
   return n < 1e11 ? n * 1000 : n;
 };
 
-/** WAHA chats Talk can attribute: phone chats and groups. A chat known only by a LID is skipped: WAHA gives no
- * proof of its phone number here, and importing it would create a second conversation for the same person. */
+/** WAHA chats Talk can attribute on their own: phone chats and groups. A chat known only by a LID needs WAHA's own
+ * LID→phone answer (see listWahaChats); without it, importing would create a second conversation for the person. */
 export function wahaChatAddress(id: unknown): string | null {
   const address = normalizeChatAddress(serialized(id));
   return address && !address.endsWith('@lid') ? address : null;
 }
 
-export async function listWahaChats(client: Pick<WahaClient, 'getChats'>, session: string, input: { limit: number; sinceMs?: number }): Promise<ProviderChat[]> {
+export async function listWahaChats(client: Pick<WahaClient, 'getChats'>, session: string, input: { limit: number; sinceMs?: number; lids?: Pick<WahaLidResolver, 'lookup'> | null }): Promise<ProviderChat[]> {
   const chats: ProviderChat[] = [];
   for (let offset = 0; offset < 2000 && chats.length < input.limit; offset += 100) {
     const page = await client.getChats({ session, limit: 100, offset }) as unknown[];
     if (!Array.isArray(page) || !page.length) break;
     for (const item of page) {
-      const chat = record(item), remoteJid = serialized(chat.id), chatAddress = wahaChatAddress(chat.id);
+      const chat = record(item), remoteJid = serialized(chat.id);
+      let chatAddress = wahaChatAddress(chat.id), lidMappings: LidMapping[] | undefined;
+      const lid = normalizeChatAddress(remoteJid);
+      if (!chatAddress && lid?.endsWith('@lid') && input.lids) {
+        const pn = await input.lids.lookup(session, lid);
+        if (pn) { chatAddress = pn; lidMappings = [{ lid, pn }]; }
+      }
       if (!remoteJid || !chatAddress) continue;
       const lastActivityMs = seconds(chat.timestamp) ?? seconds(chat.conversationTimestamp) ?? seconds(record(chat.lastMessage).timestamp);
       if (input.sinceMs !== undefined && lastActivityMs !== null && lastActivityMs < input.sinceMs) continue;
       chats.push({ remoteJid, chatAddress, name: typeof chat.name === 'string' && chat.name.trim() ? chat.name.trim().slice(0, 120) : null,
-        avatarUrl: typeof chat.picture === 'string' && /^https:\/\//.test(chat.picture) ? chat.picture : null, lastActivityMs });
+        avatarUrl: typeof chat.picture === 'string' && /^https:\/\//.test(chat.picture) ? chat.picture : null, lastActivityMs, ...(lidMappings ? { lidMappings } : {}) });
       if (chats.length >= input.limit) break;
     }
     if (page.length < 100) break;
@@ -55,12 +62,12 @@ export async function listWahaChats(client: Pick<WahaClient, 'getChats'>, sessio
   return chats;
 }
 
-export function wahaItems(session: string, messages: WahaMessage[]): ProviderMessageItem[] {
+export function wahaItems(session: string, messages: WahaMessage[], lidMappings: LidMapping[] = []): ProviderMessageItem[] {
   return messages.flatMap(message => {
     const id = serialized(message.id), timestampMs = seconds(message.timestamp);
     if (!id || timestampMs === null) return [];
     return [{ receiptId: id, timestampMs, originalType: typeof message.type === 'string' ? message.type : undefined,
-      normalize: context => normalizeWahaEvent(context, { event: 'message.any', session, payload: message }) }];
+      normalize: context => normalizeWahaEvent(context, { event: 'message.any', session, payload: message }, { verifiedLidMappings: lidMappings }) }];
   });
 }
 
@@ -70,7 +77,7 @@ export function evolutionItems(instance: string, records: HistoryRecord[]): Prov
 }
 
 async function chatsSince(deps: ProviderHistoryDeps, connection: ChannelConnection, sinceMs: number, limit: number): Promise<ProviderChat[]> {
-  if (connection.provider === 'waha') return deps.waha ? listWahaChats(deps.waha, connection.sessionName, { limit, sinceMs }) : [];
+  if (connection.provider === 'waha') return deps.waha ? listWahaChats(deps.waha, connection.sessionName, { limit, sinceMs, lids: deps.wahaLids }) : [];
   if (!deps.evolution) return [];
   const { chats } = await deps.evolution.recentChats({ instanceName: connection.sessionName, limit: Math.min(limit, 1000), since: new Date(sinceMs) });
   return chats.flatMap(chat => {
@@ -83,7 +90,7 @@ async function chatItems(deps: ProviderHistoryDeps, connection: ChannelConnectio
   if (connection.provider === 'waha') {
     if (!deps.waha) return [];
     const messages = await deps.waha.getMessages({ session: connection.sessionName, chatId: chat.remoteJid, limit });
-    return wahaItems(connection.sessionName, Array.isArray(messages) ? messages : []);
+    return wahaItems(connection.sessionName, Array.isArray(messages) ? messages : [], chat.lidMappings);
   }
   if (!deps.evolution) return [];
   return evolutionItems(connection.sessionName, await deps.evolution.recentMessages({ instanceName: connection.sessionName, remoteJid: chat.remoteJid, limit }));
@@ -104,7 +111,7 @@ export async function importConnectionHistory(prisma: PrismaClient, deps: Provid
   for (const chat of chats) {
     const items = (await chatItems(deps, connection, chat, options.perChat ?? 30)).filter(item => item.timestampMs >= now - HISTORY_WINDOW_MS);
     if (!items.length) continue;
-    const result = await persistProviderMessages({ prisma, channel, connection: { id: connection.id, provider: connection.provider }, mode: 'history', items, batchId: randomUUID() });
+    const result = await persistProviderMessages({ prisma, channel, connection: { id: connection.id, provider: connection.provider }, mode: 'history', items, batchId: randomUUID(), after: deps.after });
     inserted += result.inserted; held += result.held;
     if (result.conversationId && !chat.chatAddress.endsWith('@g.us')) await fillContactDetails(prisma, channel.workspaceId, result.conversationId, { name: chat.name, avatarUrl: chat.avatarUrl });
   }
@@ -128,7 +135,7 @@ export async function recoverConnectionGap(prisma: PrismaClient, deps: ProviderH
   for (const chat of chats) {
     const items = (await chatItems(deps, connection, chat, options.perChat ?? 50)).filter(item => item.timestampMs >= start && item.timestampMs <= end);
     if (!items.length) continue;
-    const result = await persistProviderMessages({ prisma, channel, connection: { id: connection.id, provider: connection.provider }, mode: 'recovered_live', items, batchId: randomUUID() });
+    const result = await persistProviderMessages({ prisma, channel, connection: { id: connection.id, provider: connection.provider }, mode: 'recovered_live', items, batchId: randomUUID(), after: deps.after });
     recovered += result.inserted;
   }
   const advanced = await prisma.channelConnection.updateMany({ where: { id: connection.id, recoveredThroughAt: connection.recoveredThroughAt, lifecycleGeneration: connection.lifecycleGeneration },
@@ -190,7 +197,7 @@ export type HistoryComparison = {
 export async function compareProviderHistories(deps: Required<ProviderHistoryDeps>, input: { evolutionSession: string; wahaSession: string; chatLimit?: number; perChat?: number }): Promise<HistoryComparison> {
   const perChat = input.perChat ?? 50;
   const { chats } = await deps.evolution!.recentChats({ instanceName: input.evolutionSession, limit: input.chatLimit ?? 20 });
-  const wahaChats = await listWahaChats(deps.waha!, input.wahaSession, { limit: 500 });
+  const wahaChats = await listWahaChats(deps.waha!, input.wahaSession, { limit: 500, lids: deps.wahaLids });
   const wahaByAddress = new Map(wahaChats.map(chat => [chat.chatAddress, chat]));
   const result: HistoryComparison = { chats: [], skippedLidChats: 0, totals: { evolution: 0, waha: 0, onlyEvolution: 0, onlyWaha: 0, both: 0 } };
   for (const chat of chats) {

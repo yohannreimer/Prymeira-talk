@@ -1,3 +1,4 @@
+import { conversationHistoryScope } from '../conversations/conversation-history-scope.js';
 import { createHash } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { selectRelevantKnowledge } from "../agents/knowledge-retrieval.js";
@@ -49,7 +50,7 @@ export async function loadHandoffBriefContext(db: Db, workspaceId: string, conve
       orderBy: [{ createdAt: "desc" }, { id: "desc" }]
     }),
     db.message.findMany({
-      where: visibleConversationMessageWhere({ workspaceId, conversationId, type: { notIn: ["internal_note", "system"] as never } }),
+      where: visibleConversationMessageWhere({ workspaceId, conversationId: await conversationHistoryScope(db, workspaceId, conversationId), type: { notIn: ["internal_note", "system"] as never } }),
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: 81
     }),

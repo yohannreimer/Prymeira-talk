@@ -44,6 +44,7 @@ import { broadcastListsRoutes } from './modules/campaigns/broadcast-lists.routes
 import { createCampaignWorker } from "./modules/campaigns/campaign-worker.js";
 import { channelsRoutes } from "./modules/channels/channels.routes.js";
 import { createChannelHistoryImporter, createChannelHistoryImportScheduler } from "./modules/channels/channel-history-import.js";
+import { createCreatedMessagesNotifier } from "./modules/channels/created-messages-notifier.js";
 import { contactsRoutes } from "./modules/contacts/contacts.routes.js";
 import {
   createConversationsService,
@@ -68,9 +69,10 @@ import { createDeliveryProbe } from './modules/channels/outbound-probes.js';
 import { outboundReviewRoutes } from './modules/channels/outbound-review.routes.js';
 import { conversationAuthorityRoutes } from './modules/channels/conversation-authority.routes.js';
 import { historyComparisonRoutes } from './modules/channels/history-comparison.routes.js';
+import { createWahaLidResolver } from './modules/waha/waha-lid-resolver.js';
 import { createEffectRunner, startEffectLoop } from './modules/ingress/effect-runner.js';
 import { createEffectHandlers } from './modules/ingress/effect-handlers.js';
-import { createMediaPrepareHandler } from './modules/ingress/media-prepare-handler.js';
+import { createMediaPrepareHandler, createSourceMediaPreparer } from './modules/ingress/media-prepare-handler.js';
 import { createAutomationRunner, type AutomationRunnerPrisma } from './modules/automations/automation-runner.js';
 import { crmRoutes } from "./modules/crm/crm.routes.js";
 import { evolutionRoutes } from "./modules/evolution/evolution.routes.js";
@@ -269,12 +271,18 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           apiKey: env.EVOLUTION_API_KEY
         })
       : undefined;
+  // Canonical history import: durable media for imported attachments and live updates for open inboxes.
+  const historyAfter = options.prismaEnabled === false ? undefined : {
+    prepareMedia: durableMedia ? createSourceMediaPreparer({ media: durableMedia.media, waha: wahaRuntime.client, evolution: evolutionRuntime.client ?? null }) : undefined,
+    notify: createCreatedMessagesNotifier(app.prisma, (event) => app.realtime.publish(event))
+  };
   const channelHistoryImportScheduler = options.prismaEnabled === false || !evolutionHistorySource
     ? undefined
     : createChannelHistoryImportScheduler({
         prisma: app.prisma,
         source: evolutionHistorySource,
         canonical: env.CANONICAL_HISTORY_IMPORT_ENABLED,
+        after: historyAfter,
         async onConversation(workspaceId, conversationId) {
           const conversation = await createConversationsService(app.prisma as unknown as ConversationsPrismaLike)
             .getConversationDto({ workspaceId, conversationId });
@@ -494,7 +502,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   const historyBackfill = options.prismaEnabled === false || !evolutionHistorySource ? undefined : async (input: { workspaceId: string; channelId: string; conversationId: string; providerKey: string; remoteJid: string; identity: string; pushName: string | null }) => {
     const count = await app.prisma.message.count({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
     if (count >= 30) return;
-    const importer = createChannelHistoryImporter({ prisma: app.prisma, source: evolutionHistorySource, canonical: env.CANONICAL_HISTORY_IMPORT_ENABLED });
+    const importer = createChannelHistoryImporter({ prisma: app.prisma, source: evolutionHistorySource, canonical: env.CANONICAL_HISTORY_IMPORT_ENABLED, after: historyAfter });
     await importer.importChat({ id: input.channelId, workspaceId: input.workspaceId,
       providerKey: input.providerKey, historyImportAttempts: 0 },
     { remoteJid: input.remoteJid, phoneJid: input.identity, pushName: input.pushName, profilePicUrl: null }, 30);
@@ -573,7 +581,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(boardsRoutes);
   await app.register(channelsRoutes, { evolution: evolutionRuntime, waha: wahaRuntime });
   if (outboundJournal) await app.register(outboundReviewRoutes, { journal: outboundJournal });
-  if (options.prismaEnabled !== false) await app.register(historyComparisonRoutes, { db: app.prisma, deps: { evolution: evolutionHistorySource ?? null, waha: wahaRuntime.client } });
+  if (options.prismaEnabled !== false) await app.register(historyComparisonRoutes, { db: app.prisma, deps: { evolution: evolutionHistorySource ?? null, waha: wahaRuntime.client, wahaLids: wahaRuntime.client ? createWahaLidResolver(wahaRuntime.client) : null } });
   if (options.prismaEnabled !== false) await app.register(conversationAuthorityRoutes, { db: app.prisma, async onResolved(workspaceId, conversationIds) {
     for (const conversationId of conversationIds) {
       const conversation = await createConversationsService(app.prisma as unknown as ConversationsPrismaLike).getConversationDto({ workspaceId, conversationId });

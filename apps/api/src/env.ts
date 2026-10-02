@@ -60,7 +60,7 @@ export const envSchema = z
     /** Internal base URL of Talk's ingress as WAHA reaches it (for example http://ingress:4011). */
     WAHA_WEBHOOK_BASE_URL: optionalUrlWithProtocols(['http:', 'https:']),
     /** HMAC key WAHA signs its webhooks with; must equal the ingress INGRESS_WAHA_SECRET. */
-    WAHA_WEBHOOK_HMAC_KEY: z.string().min(16).optional(),
+    WAHA_WEBHOOK_HMAC_KEY: z.preprocess((value) => (typeof value === 'string' && value.trim() === '' ? undefined : value), z.string().min(16).optional()),
     JEV_API_KEY: optionalNonEmptyString,
     JEV_MODEL: z.string().min(1).default("jev-latest"),
     INBOX_TRIAGE_PRIMARY: z.enum(["luna", "jev"]).default("jev"),

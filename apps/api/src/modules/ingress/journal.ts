@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import type { TrustedMessagingContext } from '../messaging/normalized-event.js';
-import { enterCanonicalTransaction, enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
+import { enterCanonicalWorkspaceTransaction, enterSourceFenceTransaction } from '../messaging/canonical-boundary.js';
 import { json } from '../messaging/canonical-values.js';
 import { normalizeWhatsappPhone } from '../channels/channel-connections.js';
 import { IngressPrivateStore } from './private-store.js';
@@ -25,7 +25,7 @@ export class IngressJournal {
     const raw = await this.files.put(sanitizedRaw), events = await this.files.put(Buffer.from(JSON.stringify(stripEnvelopeCredentials(input.payload))));
     const id = randomUUID(), source = input.source;
     return this.db.$transaction(async tx => {
-      await enterCanonicalTransaction(tx, source);
+      await enterSourceFenceTransaction(tx, source);
       await input.reauthenticate(tx);
       const scope = { workspaceId: source.workspaceId, channelId: source.channelId };
       const channel = await tx.channel.findUniqueOrThrow({ where: { id: source.channelId } });

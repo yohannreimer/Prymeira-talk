@@ -108,4 +108,38 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
     expect(comparison.totals).toEqual({ evolution: 2, waha: 2, onlyEvolution: 1, onlyWaha: 1, both: 1 });
     expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
   });
+
+  it('prepares durable media and announces live what recovery or history writes', async () => {
+    const f = await fixture();
+    await db.channelConnection.update({ where: { id: f.evolution.id }, data: { recoveredThroughAt: new Date(NOW - 20 * 60_000) } });
+    const image: HistoryRecord = { key: { id: 'IMG', remoteJid: PN, fromMe: false }, messageTimestamp: Math.floor((NOW - 10 * 60_000) / 1000), messageType: 'imageMessage',
+      message: { imageMessage: { url: 'https://mmg.whatsapp.net/v/t62/img.enc', mimetype: 'image/jpeg', caption: 'foto' } }, pushName: 'Bia' };
+    const prepareMedia = vi.fn(async () => undefined), notify = vi.fn(async () => undefined);
+    const sources = { ...deps({ evolution: [image, evo('TXT', 'texto', NOW - 9 * 60_000)] }), after: { prepareMedia, notify } };
+    const result = await recoverConnectionGap(db, sources, await db.channelConnection.findUniqueOrThrow({ where: { id: f.evolution.id } }), { now: NOW });
+    expect(result.recovered).toBe(2);
+    const stored = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId, type: 'image' } });
+    expect(prepareMedia).toHaveBeenCalledTimes(1);
+    expect(prepareMedia).toHaveBeenCalledWith({ workspaceId: f.workspaceId, messageId: stored.id,
+      source: expect.objectContaining({ provider: 'evolution', channelProvider: 'evolution', sessionName: f.evolution.sessionName, key: expect.objectContaining({ nativeId: 'IMG' }) }) });
+    expect(notify).toHaveBeenCalledWith(f.workspaceId, expect.arrayContaining([expect.objectContaining({ messageId: stored.id })]));
+    // A failing media download never undoes the message: it stays, with its media pending.
+    const g = await fixture();
+    await db.channelConnection.update({ where: { id: g.evolution.id }, data: { recoveredThroughAt: new Date(NOW - 20 * 60_000) } });
+    const failing = { ...deps({ evolution: [{ ...image, key: { ...image.key, id: 'IMG2' } }] }), after: { prepareMedia: vi.fn(async () => { throw new Error('provider down'); }) } };
+    expect((await recoverConnectionGap(db, failing, await db.channelConnection.findUniqueOrThrow({ where: { id: g.evolution.id } }), { now: NOW })).recovered).toBe(1);
+    expect(await db.message.count({ where: { workspaceId: g.workspaceId, type: 'image' } })).toBe(1);
+  });
+
+  it('imports a WAHA LID chat into the phone conversation once WAHA proves the number, and skips it otherwise', async () => {
+    const f = await fixture();
+    await importChatCanonical({ prisma: db, channel: f.target, connectionId: f.evolution.id, chat: { remoteJid: PN, phoneJid: PN, pushName: 'Bia', profilePicUrl: null },
+      records: [evo('P1', 'pelo telefone', NOW - 86_400_000)], batchId: randomUUID() });
+    const base = deps({ waha: { [LID]: [wa('L1', 'pelo lid', NOW - 3_600_000, LID)] } });
+    expect((await importConnectionHistory(db, { ...base, wahaLids: { lookup: async () => null } }, f.waha)).inserted).toBe(0);
+    const proven = await importConnectionHistory(db, { ...base, wahaLids: { lookup: async (_s: string, lid: string) => lid === LID ? normalizeChatAddress(PN) : null } }, f.waha);
+    expect(proven.inserted).toBe(1);
+    expect(await db.conversation.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+    expect((await db.message.findMany({ where: { workspaceId: f.workspaceId }, orderBy: { createdAt: 'asc' } })).map(m => m.body)).toEqual(['pelo telefone', 'pelo lid']);
+  });
 });

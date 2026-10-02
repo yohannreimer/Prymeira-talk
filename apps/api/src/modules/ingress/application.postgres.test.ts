@@ -435,6 +435,23 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             expect(await db.ingressEventRecertification.count({ where: { receiptId: id } })).toBe(1);
         });
     });
+    it('a WAHA message from a LID chat joins the phone conversation when WAHA itself proves the number', async () => {
+        const f = await fixture(), lid = '423456789012345@lid';
+        await service.apply(await f.send('evolution', { key: { id: 'phone-first', remoteJid: peer, fromMe: false } }));
+        const proven = createIngressHttp({ db, journal, publisher: () => f.publisher, evolutionSecret: secret, wahaSecret: secret, workspaceAllowlist: new Set([f.workspaceId]),
+            wahaLids: { resolve: async (_session: string, input: unknown) => JSON.stringify(input).includes(lid) ? [{ lid, pn: peer }] : [] } });
+        apps.push(proven);
+        const raw = { id: randomUUID(), event: 'message.any', session: f.waha.sessionName, payload: { id: `false_${lid}_from-lid`, from: lid, fromMe: false, body: 'pelo lid', timestamp: 1700000100 } };
+        const result = await proven.inject({ method: 'POST', url: `/webhooks/waha/${f.workspaceId}`, headers: { 'content-type': 'application/json', 'x-webhook-hmac': createHmac('sha512', secret).update(JSON.stringify(raw)).digest('hex'), 'x-webhook-hmac-algorithm': 'sha512' }, payload: JSON.stringify(raw) });
+        expect(result.statusCode).toBe(202);
+        await service.apply(result.json().receiptId);
+        expect(await db.conversation.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+        expect((await db.message.findMany({ where: { workspaceId: f.workspaceId }, orderBy: { createdAt: 'asc' } })).map(m => m.body)).toEqual(['hello', 'pelo lid']);
+        // Without WAHA's answer the same LID stays its own chat (no guessed identity).
+        const unproven = await f.send('waha', { id: `false_${lid}_no-proof`, from: lid, body: 'sem prova' });
+        await service.apply(unproven);
+        expect(await db.message.count({ where: { workspaceId: f.workspaceId, body: 'sem prova' } })).toBe(1);
+    });
     it('history/append never increments unread, opens service window or creates autonomous effects', async () => {
         const f = await fixture(), id = await f.send('evolution', { type: 'append' });
         await service.apply(id);

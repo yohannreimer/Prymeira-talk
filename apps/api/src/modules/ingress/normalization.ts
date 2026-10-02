@@ -50,9 +50,9 @@ function normalizeMeta(context: TrustedMessagingContext, input: unknown): Receip
   }
   return results.length ? results : [{ kind: 'ignored', reason: 'unsupported_meta_event' }];
 }
-export function normalizeReceipt(context: TrustedMessagingContext, input: unknown): ReceiptPayload {
+export function normalizeReceipt(context: TrustedMessagingContext, input: unknown, enrichment?: { verifiedLidMappings: ReadonlyArray<{ lid: string; pn: string }> }): ReceiptPayload {
   const events = context.provider === 'evolution' ? [normalizeEvolutionWebhook(context, input)]
-    : context.provider === 'waha' ? [normalizeWahaEvent(context, input)] : normalizeMeta(context, input);
+    : context.provider === 'waha' ? [normalizeWahaEvent(context, input, enrichment)] : normalizeMeta(context, input);
   return { version: 1, events };
 }
 export function eventKey(event: NormalizedMessagingEvent) {

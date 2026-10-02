@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createCanonicalStore } from './canonical-store.js';
-import { canonicalTransaction, enterCanonicalTransaction } from './canonical-boundary.js';
+import { canonicalTransaction, enterCanonicalTransaction, enterSourceFenceTransaction } from './canonical-boundary.js';
 import { createCanonicalReads, lookupNativeInTransaction, resolveProviderReferenceInTransaction } from './canonical-resolution.js';
 import type { TrustedMessagingContext, NormalizedMessagingEvent } from './normalized-event.js';
 import { deriveTrustedMessagingContext } from './canonical-source.js';
@@ -79,6 +79,25 @@ describe.skipIf(!url)('canonical boundary and exact reads on PostgreSQL', () => 
     await db.channelConnection.create({ data: { workspaceId: c.workspaceId, channelId: c.channelId, provider: 'waha', sessionName: 'independent-qr', lifecycleGeneration: 1 } });
     expect((await persist(message(c))).outcome).toBe('created');
   });
+  it('the shared source fence still holds lifecycle changes back, while two holders never wait for each other', async () => {
+    const c = await fixture();
+    let releaseA!: () => void;
+    const holdA = new Promise<void>(resolve => { releaseA = resolve; });
+    const events: string[] = [];
+    const a = db.$transaction(async tx => { await enterSourceFenceTransaction(tx, c); events.push('A fenced'); await holdA; events.push('A done'); }, { isolationLevel: 'ReadCommitted', timeout: 20_000 });
+    await new Promise(r => setTimeout(r, 200));
+    // A second holder (another webhook, or a canonical writer of another workspace path) is not blocked.
+    await db.$transaction(async tx => { await enterSourceFenceTransaction(tx, c); events.push('B fenced'); }, { isolationLevel: 'ReadCommitted' });
+    // A lifecycle change (QR/logout bumps the generation) must wait for A.
+    const lifecycle = db.channelConnection.update({ where: { id: c.connectionId! }, data: { lifecycleGeneration: 1 } }).then(() => events.push('lifecycle committed'));
+    await new Promise(r => setTimeout(r, 300));
+    expect(events).toEqual(['A fenced', 'B fenced']);
+    releaseA();
+    await a; await lifecycle;
+    expect(events).toEqual(['A fenced', 'B fenced', 'A done', 'lifecycle committed']);
+    // After the lifecycle commit, a new holder sees the source as stale.
+    await expect(db.$transaction(tx => enterSourceFenceTransaction(tx, c), { isolationLevel: 'ReadCommitted' })).rejects.toThrow();
+  });
   it('checks workspace lock before source/domain row locks and rejects snapshot isolation', async () => {
     const c = await fixture();
     const order: string[] = [];
@@ -91,7 +110,20 @@ describe.skipIf(!url)('canonical boundary and exact reads on PostgreSQL', () => 
       } });
       await enterCanonicalTransaction(proxy, c);
     });
-    expect(order.findIndex(s => s.includes('pg_advisory_xact_lock'))).toBeLessThan(order.findIndex(s => s.includes('FOR UPDATE')));
+    expect(order.findIndex(s => s.includes('pg_advisory_xact_lock'))).toBeLessThan(order.findIndex(s => s.includes('FOR SHARE')));
+    // Accepting a webhook fences the source with shared row locks only, never the workspace writer lock.
+    const fenceOrder: string[] = [];
+    await db.$transaction(async tx => {
+      const original = tx.$queryRaw.bind(tx), execute = tx.$executeRaw.bind(tx);
+      const proxy = new Proxy(tx, { get(target, property) {
+        if (property === '$queryRaw') return (...args: Parameters<typeof original>) => { fenceOrder.push(String(args[0])); return original(...args); };
+        if (property === '$executeRaw') return (...args: Parameters<typeof execute>) => { fenceOrder.push(String(args[0])); return execute(...args); };
+        return Reflect.get(target, property);
+      } });
+      await enterSourceFenceTransaction(proxy, c);
+    });
+    expect(fenceOrder.some(s => s.includes('pg_advisory_xact_lock'))).toBe(false);
+    expect(fenceOrder.filter(s => s.includes('FOR SHARE')).length).toBe(2);
     await expect(db.$transaction(tx => enterCanonicalTransaction(tx, c), { isolationLevel: 'RepeatableRead' })).rejects.toThrow('READ COMMITTED');
     expect(await canonicalTransaction(db, c, async () => 'safe')).toBe('safe');
   });

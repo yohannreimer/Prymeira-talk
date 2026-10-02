@@ -1,3 +1,5 @@
+
+import { conversationHistoryScope } from '../conversations/conversation-history-scope.js';
 import { COMPLETE_HISTORY_CHARACTER_LIMIT, COMPLETE_HISTORY_MESSAGE_LIMIT } from "./conversation-reasoning-policy.js";
 import { visibleConversationMessageWhere, withoutInternalFollowupReservations } from "../conversations/internal-message.js";
 
@@ -46,7 +48,7 @@ export async function buildConversationContext(
   const messages = await prisma.message.findMany({
     where: visibleConversationMessageWhere({
       workspaceId: input.workspaceId,
-      conversationId: input.conversationId
+      conversationId: await conversationHistoryScope(prisma, input.workspaceId, input.conversationId)
     }),
     orderBy: [{ createdAt: "desc" }],
     take: input.complete ? COMPLETE_HISTORY_MESSAGE_LIMIT + 1 : input.limit ?? DEFAULT_MESSAGE_LIMIT

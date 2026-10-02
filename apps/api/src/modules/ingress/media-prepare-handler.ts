@@ -35,19 +35,9 @@ export function createMediaPrepareHandler(deps: {
       }
     }
     if (source) {
-      const { key } = source;
-      if (source.provider === 'waha') useStoredUrl = false;
-      if (source.provider === 'waha' && deps.waha) {
-        const waha = deps.waha;
-        fetchers.push({ name: 'waha', async fetch() {
-          const found = await waha.mediaExact({ session: source!.sessionName, key, purpose: 'serve' });
-          if (found.kind !== 'resolved') return null;
-          return { bytes: found.bytes, mimeType: found.message.media?.mimetype ?? source!.mimeType };
-        } });
-      } else if (source.provider === 'evolution' && source.channelProvider === 'evolution' && deps.evolution?.fetchMedia && key.nativeId) {
-        const evolution = deps.evolution, id = key.nativeId;
-        fetchers.push({ name: 'evolution', async fetch() { return { mediaUrl: await evolution.fetchMedia!({ instanceName: source!.sessionName, id }) }; } });
-      }
+      const built = mediaFetchers(source, deps);
+      fetchers.push(...built.fetchers);
+      useStoredUrl = built.useStoredUrl;
     }
     const outcome = await deps.media.prepare({ workspaceId: effect.workspaceId, messageId: effect.messageId, fetchers, useStoredUrl });
     if (outcome.state === 'stored') {
@@ -59,7 +49,34 @@ export function createMediaPrepareHandler(deps: {
   };
 }
 
-type FrozenSource = { provider: string; channelProvider: string; sessionName: string; key: WhatsAppMessageKey; mimeType: string | null };
+/** Provider fetchers for one message's media: the provider that received it, with its own authentication. WAHA never
+ * uses a stored URL (it requires the server-side key and an exact lookup). */
+export function mediaFetchers(source: FrozenSource, deps: { waha: Pick<WahaClient, 'mediaExact'> | null; evolution: Pick<EvolutionClient, 'fetchMedia'> | null }) {
+  const fetchers: ProviderFetcher[] = [];
+  const { key } = source;
+  if (source.provider === 'waha' && deps.waha) {
+    const waha = deps.waha;
+    fetchers.push({ name: 'waha', async fetch() {
+      const found = await waha.mediaExact({ session: source.sessionName, key, purpose: 'serve' });
+      if (found.kind !== 'resolved') return null;
+      return { bytes: found.bytes, mimeType: found.message.media?.mimetype ?? source.mimeType };
+    } });
+  } else if (source.provider === 'evolution' && source.channelProvider === 'evolution' && deps.evolution?.fetchMedia && key.nativeId) {
+    const evolution = deps.evolution, id = key.nativeId;
+    fetchers.push({ name: 'evolution', async fetch() { return { mediaUrl: await evolution.fetchMedia!({ instanceName: source.sessionName, id }) }; } });
+  }
+  return { fetchers, useStoredUrl: source.provider !== 'waha' };
+}
+
+/** Durable media for messages that did not come through an ingress receipt (imported history, gap recovery). */
+export function createSourceMediaPreparer(deps: { media: Pick<MessageMediaService, 'prepare'>; waha: Pick<WahaClient, 'mediaExact'> | null; evolution: Pick<EvolutionClient, 'fetchMedia'> | null }) {
+  return async (input: { workspaceId: string; messageId: string; source: FrozenSource }) => {
+    const { fetchers, useStoredUrl } = mediaFetchers(input.source, deps);
+    return deps.media.prepare({ workspaceId: input.workspaceId, messageId: input.messageId, fetchers, useStoredUrl });
+  };
+}
+
+export type FrozenSource = { provider: string; channelProvider: string; sessionName: string; key: WhatsAppMessageKey; mimeType: string | null };
 function readFrozenSource(value: unknown): FrozenSource | null {
   if (typeof value !== 'object' || value === null) return null;
   const v = value as Record<string, unknown>;

@@ -183,6 +183,8 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
     getGroup: (input: GroupInput) => request<{ id: string; subject?: string }>(`/api/${enc(input.session)}/groups/${enc(input.groupId)}`),
     getGroupParticipants: (input: GroupInput) => request<Array<{ id: string; isAdmin?: boolean }>>(`/api/${enc(input.session)}/groups/${enc(input.groupId)}/participants`),
     getContacts: (input: SessionInput & Page) => request<Array<{ id: string; name?: string }>>(`/api/contacts/all${query({ session: input.session, limit: input.limit ?? 100, offset: input.offset ?? 0 })}`),
+    /** WAHA's own LID→phone mapping for this session (`pn` is null when unknown). */
+    findPnByLid: (input: SessionInput & { lid: string }) => request<{ lid?: string | null; pn?: string | null }>(`/api/${enc(input.session)}/lids/${enc(input.lid)}`),
     getContact: (input: ContactInput) => request<{ id: string; name?: string }>(`/api/contacts${query(input)}`),
     getContactProfilePicture: (input: ContactInput) => request<{ profilePictureURL: string | null }>(`/api/contacts/profile-picture${query(input)}`),
     getProfile: (input: SessionInput) => request<{ id: string; name?: string; picture?: string }>(`/api/${enc(input.session)}/profile`),

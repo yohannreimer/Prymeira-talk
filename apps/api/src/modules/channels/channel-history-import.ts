@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import type { EvolutionHistorySource, HistoryRecord, RecentEvolutionChat } from '../evolution/evolution-history.js';
 import { attachmentPresentation, extractMessageContent } from '../evolution/evolution.routes.js';
-import { canonicalHistoryConnection, importChatCanonical, isStaleHistorySource } from './channel-history-canonical.js';
+import { canonicalHistoryConnection, importChatCanonical, isStaleHistorySource, type AfterPersist } from './channel-history-canonical.js';
 import { buildPhoneLookupCandidates, normalizePhoneForStorage } from '../contacts/phone-normalization.js';
 
 type ImportChannel = { id: string; workspaceId: string; providerKey: string; historyImportAttempts: number };
@@ -20,6 +20,8 @@ export function createChannelHistoryImporter(input: {
   /** Writes through the canonical store (exact identity, PN/LID aliases, dedupe with live events). Chats whose
    * channel has no eligible Evolution connection keep the legacy writer. */
   canonical?: boolean;
+  /** Canonical path only: durable media and live updates for the imported messages. */
+  after?: AfterPersist;
   onConversation?: (workspaceId: string, conversationId: string) => Promise<void> | void;
 }) {
   async function importChat(channel: ImportChannel, chat: RecentEvolutionChat, limit = 30, since?: Date) {
@@ -33,7 +35,7 @@ export function createChannelHistoryImporter(input: {
       if (connection) {
         const imported = await importChatCanonical({ prisma: input.prisma, channel, connectionId: connection.id,
           chat: { ...chat, pushName: chat.pushName ?? [...records].reverse().find((record) => !record.key.fromMe && record.pushName)?.pushName ?? null },
-          records, batchId: randomUUID() }).catch((error) => { throw isStaleHistorySource(error) ? new Error('HISTORY_SOURCE_STALE') : error; });
+          records, batchId: randomUUID(), after: input.after }).catch((error) => { throw isStaleHistorySource(error) ? new Error('HISTORY_SOURCE_STALE') : error; });
         if (imported.conversationId) await input.onConversation?.(channel.workspaceId, imported.conversationId);
         return imported.inserted;
       }
@@ -166,6 +168,7 @@ export function createChannelHistoryImportScheduler(input: {
   prisma: PrismaClient;
   source: EvolutionHistorySource;
   canonical?: boolean;
+  after?: AfterPersist;
   onConversation?: (workspaceId: string, conversationId: string) => Promise<void> | void;
   onError?: (error: unknown, channelId?: string) => void;
   onComplete?: (channelId: string, conversations: number, messages: number) => void;
