@@ -2172,12 +2172,13 @@ export async function apiMoveBoardMembership(
 
 export async function apiGetChannels(
   getToken: () => Promise<string | null>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: { includeArchived?: boolean } = {}
 ): Promise<ChannelDto[]> {
   return withReadDeadline(signal, async (deadline) => {
     const token = await getRequiredToken(getToken, deadline);
 
-    const response = await fetch(`${apiUrl}/channels`, {
+    const response = await fetch(`${apiUrl}/channels${options.includeArchived ? "?includeArchived=true" : ""}`, {
       signal: deadline,
       headers: {
         Authorization: `Bearer ${token}`
@@ -2255,17 +2256,62 @@ export interface DeleteChannelResultDto {
   channelId: string;
 }
 
-export async function apiDeleteChannel(
+export type ChannelDeletionImpact = {
+  channelId: string;
+  confirmationName: string;
+  conversations: number;
+  messages: number;
+};
+
+export async function apiGetChannelDeletionImpact(
   getToken: () => Promise<string | null>,
   channelId: string
+): Promise<ChannelDeletionImpact> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/${channelId}/deletion-impact`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    throw new Error(await readApiErrorMessage(response, "Failed to load channel deletion impact"));
+  }
+  const data = await response.json() as Partial<ChannelDeletionImpact>;
+  if (typeof data.confirmationName !== "string" || typeof data.conversations !== "number" || typeof data.messages !== "number") {
+    throw new Error("Invalid channel deletion impact response.");
+  }
+  return { channelId, confirmationName: data.confirmationName, conversations: data.conversations, messages: data.messages };
+}
+
+export async function apiSetChannelArchived(
+  getToken: () => Promise<string | null>,
+  channelId: string,
+  archived: boolean
+): Promise<ChannelDto> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/${channelId}/${archived ? "archive" : "unarchive"}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    throw new Error(await readApiErrorMessage(response, archived ? "Failed to archive channel" : "Failed to restore channel"));
+  }
+  const data = await response.json() as { channel?: unknown };
+  return channelSchema.parse(data.channel);
+}
+
+export async function apiDeleteChannel(
+  getToken: () => Promise<string | null>,
+  channelId: string,
+  confirmationName: string
 ): Promise<DeleteChannelResultDto> {
   const token = await getRequiredToken(getToken);
 
   const response = await fetch(`${apiUrl}/channels/${channelId}`, {
     method: "DELETE",
     headers: {
-      Authorization: `Bearer ${token}`
-    }
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ confirmationName })
   });
 
   if (!response.ok) {

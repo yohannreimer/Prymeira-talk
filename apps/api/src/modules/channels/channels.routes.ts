@@ -25,6 +25,10 @@ const channelParamsSchema = z.object({
   channelId: uuidParamSchema
 });
 
+const channelListQuerySchema = z.object({ includeArchived: z.enum(["true", "false"]).optional() });
+
+const deleteChannelBodySchema = z.object({ confirmationName: z.string().max(200).optional() }).optional();
+
 const createChannelBodySchema = z.object({
   provider: z.enum(["evolution", "meta_cloud"]).default("evolution"),
   displayName: z.string().trim().min(1).max(160),
@@ -112,9 +116,13 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
     });
   }
 
-  app.get("/channels", async (request) =>
-    service.listChannels({ workspaceId: request.talk.workspaceId })
-  );
+  app.get("/channels", async (request) => {
+    const query = channelListQuerySchema.safeParse(request.query);
+    return service.listChannels({
+      workspaceId: request.talk.workspaceId,
+      includeArchived: query.success && query.data.includeArchived === "true"
+    });
+  });
 
   app.get("/channels/health", async (request) => ({
     health: options.channelHealth?.getHealth(request.talk.workspaceId) ?? [],
@@ -245,7 +253,28 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
     }
   });
 
-  app.delete("/channels/:channelId", async (request, reply) => {
+  for (const action of ["archive", "unarchive"] as const) {
+    app.post(`/channels/:channelId/${action}`, async (request, reply) => {
+      const params = channelParamsSchema.safeParse(request.params);
+
+      if (!params.success) {
+        return reply.code(400).send({ error: "Invalid channel request." });
+      }
+
+      try {
+        const input = { workspaceId: request.talk.workspaceId, channelId: params.data.channelId };
+        const result = action === "archive" ? await service.archiveChannel(input) : await service.unarchiveChannel(input);
+        // Archiving is a deliberate stop: the watchdog must not try to reconnect the channel.
+        if (action === "archive") options.channelHealth?.markManualDisconnect(params.data.channelId);
+        app.realtime.publish({ type: "channel.updated", workspaceId: request.talk.workspaceId, payload: result.channel });
+        return result;
+      } catch (error) {
+        return handleChannelsError(reply, error);
+      }
+    });
+  }
+
+  app.get("/channels/:channelId/deletion-impact", async (request, reply) => {
     const params = channelParamsSchema.safeParse(request.params);
 
     if (!params.success) {
@@ -253,9 +282,25 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
     }
 
     try {
+      return await service.getDeletionImpact({ workspaceId: request.talk.workspaceId, channelId: params.data.channelId });
+    } catch (error) {
+      return handleChannelsError(reply, error);
+    }
+  });
+
+  app.delete("/channels/:channelId", async (request, reply) => {
+    const params = channelParamsSchema.safeParse(request.params);
+    const body = deleteChannelBodySchema.safeParse(request.body);
+
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid channel request." });
+    }
+
+    try {
       const result = await service.deleteChannel({
         workspaceId: request.talk.workspaceId,
-        channelId: params.data.channelId
+        channelId: params.data.channelId,
+        confirmationName: body.data?.confirmationName
       });
 
       app.realtime.publish({

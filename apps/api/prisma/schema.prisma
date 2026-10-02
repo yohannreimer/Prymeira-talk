@@ -286,6 +286,7 @@ model Channel {
   historyImportLeaseUntil DateTime? @map("history_import_lease_until")
   historyImportAttempts Int        @default(0) @map("history_import_attempts")
   historyImportCompletedAt DateTime? @map("history_import_completed_at")
+  archivedAt      DateTime?       @map("archived_at")
   createdAt       DateTime        @default(now()) @map("created_at")
   updatedAt       DateTime        @updatedAt @map("updated_at")
 
@@ -1536,7 +1537,7 @@ model CanonicalChatAuthorityResolution {
   createdAt DateTime @default(now()) @map("created_at")
   chat CanonicalChat @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: Cascade, map: "canonical_chat_authority_resolutions_chat_fkey")
   conversation Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade, map: "canonical_chat_authority_resolutions_conversation_fkey")
-  @@unique([workspaceId, channelId, chatId])
+  @@unique([workspaceId, channelId, chatId], map: "canonical_chat_authority_resolutions_chat_key")
   @@map("canonical_chat_authority_resolutions")
 }
 model CanonicalChatMember {

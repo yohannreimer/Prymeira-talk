@@ -60,6 +60,7 @@ export const channelSchema = z.object({
   connections: channelConnectionSchema.array().optional(),
   connectedCount: z.number().int().min(0).max(2).optional(),
   connectionTotal: z.literal(2).optional(),
+  archivedAt: z.string().datetime().nullable().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });

@@ -323,6 +323,22 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     expect(provider.createSession).not.toHaveBeenCalled();
     expect(provider.getQr).not.toHaveBeenCalled();
   });
+  it('archiving a redundant channel ends the WAHA session and leaves no connection marked as connected', async () => {
+    const ws = `connections-${randomUUID()}`;
+    const own: any = { ...remote, stopSession: vi.fn(), logoutSession: vi.fn(), getSession: vi.fn() };
+    const channels = createChannelsService(prisma as unknown as PrismaLike, { evolution, waha: { enabled: true, client: own } });
+    const created = await channels.createChannel({ workspaceId: ws, displayName: 'Arquivar', phoneNumber: '+55 47 99999-0000' });
+    own.getSession.mockImplementation(async ({ session }: { session: string }) => ({ name: session, status: 'WORKING', engine: { engine: 'WPP' }, config: { metadata: { workspaceId: ws, channelId: created.id } } }));
+    const connections = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: own } });
+    await connections.setRedundancy({ workspaceId: ws, channelId: created.id, enabled: true });
+    await prisma.channelConnection.updateMany({ where: { channelId: created.id }, data: { status: 'connected', eligible: true } });
+    const archived = await channels.archiveChannel({ workspaceId: ws, channelId: created.id });
+    expect(archived.channel.archivedAt).toEqual(expect.any(String));
+    expect(archived.channel.redundancyEnabled).toBe(false);
+    expect(own.stopSession).toHaveBeenCalled();
+    expect(await prisma.channelConnection.count({ where: { channelId: created.id, status: 'connected' } })).toBe(0);
+    await prisma.channel.deleteMany({ where: { workspaceId: ws } });
+  });
   it('secondary lifecycle leaves primary/history intact and deletion cascades physical identities', async () => {
     const service = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: remote } });
     const secondary = await prisma.channelConnection.findFirstOrThrow({ where: { workspaceId, channelId, provider: 'waha' } });
@@ -336,7 +352,7 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     const logical = ({ connectionLifecycleGeneration: _generation, updatedAt: _updatedAt, ...rest }: typeof channel) => rest;
     expect(logical(after)).toEqual(logical(channel));
     const channels = createChannelsService(prisma as unknown as PrismaLike, { evolution, waha: { enabled: true, client: remote } });
-    await channels.deleteChannel({ workspaceId, channelId });
+    await channels.deleteChannel({ workspaceId, channelId, confirmationName: after.displayName?.trim() || after.providerKey });
     expect(await prisma.channelConnection.count({ where: { workspaceId, channelId } })).toBe(0);
     expect(remote.deleteSession).toHaveBeenCalledWith({ session: secondary.sessionName });
     const meta = await channels.createChannel({ workspaceId, provider: 'meta_cloud', providerKey: 'meta', displayName: 'Official' });

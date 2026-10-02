@@ -23,10 +23,16 @@ type MockPrisma = {
   conversation: {
     upsert: any;
     update: any;
+    count: any;
   };
   message: {
     create: any;
+    count: any;
   };
+  leadWhatsappVerification: {
+    updateMany: any;
+  };
+  $transaction: any;
 };
 
 const channelId = "00000000-0000-4000-8000-000000000001";
@@ -56,7 +62,7 @@ const metaChannel = {
 };
 
 function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & PrismaLike {
-  return {
+  const prisma = {
     channel: {
       findMany:
         overrides.channel?.findMany ??
@@ -103,16 +109,23 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
         overrides.conversation?.update ??
         vi.fn().mockResolvedValue({
           id: conversationId
-        })
+        }),
+      count: overrides.conversation?.count ?? vi.fn().mockResolvedValue(149)
     },
     message: {
       create:
         overrides.message?.create ??
         vi.fn().mockResolvedValue({
           id: "00000000-0000-4000-8000-000000000004"
-        })
+        }),
+      count: overrides.message?.count ?? vi.fn().mockResolvedValue(2864)
+    },
+    leadWhatsappVerification: {
+      updateMany: overrides.leadWhatsappVerification?.updateMany ?? vi.fn().mockResolvedValue({ count: 72 })
     }
   } as MockPrisma & PrismaLike;
+  prisma.$transaction = overrides.$transaction ?? vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma));
+  return prisma;
 }
 
 async function buildChannelsApp(
@@ -1002,18 +1015,111 @@ describe("channels routes", () => {
     }
   });
 
-  it("deletes a workspace channel and publishes a channel deleted event", async () => {
+  it("refuses to delete a channel without typing its name, keeping its conversations", async () => {
+    const prisma = createMockPrisma();
+    const { app, publish } = await buildChannelsApp(prisma);
+
+    try {
+      const response = await app.inject({ method: "DELETE", url: `/channels/${channelId}` });
+      const wrongName = await app.inject({ method: "DELETE", url: `/channels/${channelId}`, payload: { confirmationName: "Outro canal" } });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ code: "CHANNEL_DELETE_CONFIRMATION_REQUIRED" });
+      expect(wrongName.statusCode).toBe(409);
+      expect(prisma.channel.delete).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("reports how many conversations and messages a channel deletion removes", async () => {
+    const prisma = createMockPrisma();
+    const { app } = await buildChannelsApp(prisma);
+
+    try {
+      const response = await app.inject({ method: "GET", url: `/channels/${channelId}/deletion-impact` });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ channelId, confirmationName: "WhatsApp Comercial", conversations: 149, messages: 2864 });
+      expect(prisma.message.count).toHaveBeenCalledWith({ where: { workspaceId: "workspace_a", conversation: { channelId } } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("archives a channel: logs out of Evolution, hides it from the list and keeps its conversations", async () => {
+    const logoutInstance = vi.fn().mockResolvedValue({});
+    const markManualDisconnect = vi.fn();
+    const prisma = createMockPrisma({
+      channel: {
+        ...createMockPrisma().channel,
+        findFirst: vi.fn().mockResolvedValue({ ...baseChannel, status: "connected" }),
+        update: vi.fn().mockImplementation(async (args) => ({ ...baseChannel, ...args.data }))
+      }
+    });
+    const { app, publish } = await buildChannelsApp(prisma, {
+      evolution: { mode: "real", client: { logoutInstance } } as never,
+      channelHealth: { markManualDisconnect } as never
+    });
+
+    try {
+      const response = await app.inject({ method: "POST", url: `/channels/${channelId}/archive` });
+      await app.inject({ method: "GET", url: "/channels" });
+      await app.inject({ method: "GET", url: "/channels?includeArchived=true" });
+
+      expect(response.statusCode).toBe(200);
+      expect(logoutInstance).toHaveBeenCalledWith({ instanceName: "demo-evolution" });
+      expect(prisma.channel.update).toHaveBeenCalledWith({
+        where: { workspaceId_id: { workspaceId: "workspace_a", id: channelId } },
+        data: { status: "disconnected", archivedAt: expect.any(Date) }
+      });
+      expect(response.json().channel).toMatchObject({ status: "disconnected", archivedAt: expect.any(String) });
+      expect(markManualDisconnect).toHaveBeenCalledWith(channelId);
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "channel.updated" }));
+      expect(prisma.channel.delete).not.toHaveBeenCalled();
+      expect(prisma.channel.findMany).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: { workspaceId: "workspace_a", archivedAt: null } }));
+      expect(prisma.channel.findMany).toHaveBeenNthCalledWith(2, expect.objectContaining({ where: { workspaceId: "workspace_a" } }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("restores an archived channel to the list", async () => {
+    const prisma = createMockPrisma();
+    const { app } = await buildChannelsApp(prisma);
+
+    try {
+      const response = await app.inject({ method: "POST", url: `/channels/${channelId}/unarchive` });
+
+      expect(response.statusCode).toBe(200);
+      expect(prisma.channel.update).toHaveBeenCalledWith({
+        where: { workspaceId_id: { workspaceId: "workspace_a", id: channelId } },
+        data: { archivedAt: null }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("deletes a confirmed channel, unlinking lead verifications that would block the deletion", async () => {
     const prisma = createMockPrisma();
     const { app, publish } = await buildChannelsApp(prisma);
 
     try {
       const response = await app.inject({
         method: "DELETE",
-        url: `/channels/${channelId}`
+        url: `/channels/${channelId}`,
+        payload: { confirmationName: " WhatsApp Comercial " }
       });
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ ok: true, channelId });
+      expect(prisma.leadWhatsappVerification.updateMany).toHaveBeenCalledWith({
+        where: { workspaceId: "workspace_a", channelId },
+        data: { channelId: null }
+      });
+      expect(prisma.leadWhatsappVerification.updateMany.mock.invocationCallOrder[0]).toBeLessThan(prisma.channel.delete.mock.invocationCallOrder[0]);
       expect(prisma.channel.delete).toHaveBeenCalledWith({
         where: {
           workspaceId_id: {
