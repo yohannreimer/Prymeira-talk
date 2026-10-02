@@ -177,4 +177,10 @@ describe("readEnv", () => {
     expect(readEnv({ ...baseProductionEnv, LEGACY_WEBHOOK_DELEGATED_WORKSPACES: " a , b ,," }).LEGACY_WEBHOOK_DELEGATED_WORKSPACES).toEqual(new Set(["a", "b"]));
     expect(readEnv({ ...baseProductionEnv, LEGACY_WEBHOOK_DELEGATED_WORKSPACES: "*" }).LEGACY_WEBHOOK_DELEGATED_WORKSPACES).toBe("*");
   });
+
+  it("treats an empty TALK_MEDIA_STORE_PATH (compose default) as unset but still rejects a relative one", () => {
+    expect(readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: "" }).TALK_MEDIA_STORE_PATH).toBeUndefined();
+    expect(readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: "/data/media" }).TALK_MEDIA_STORE_PATH).toBe("/data/media");
+    expect(() => readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: "media" })).toThrow();
+  });
 });

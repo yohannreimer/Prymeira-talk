@@ -81,7 +81,8 @@ export const envSchema = z
     /** Fan realtime events out across API processes (PostgreSQL LISTEN/NOTIFY). Off keeps one-process behaviour. */
     REALTIME_BRIDGE_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     /** Absolute private directory for durable message media. Unset keeps the legacy media path. */
-    TALK_MEDIA_STORE_PATH: z.string().min(1).refine((value) => value.startsWith('/'), 'TALK_MEDIA_STORE_PATH must be an absolute path').optional(),
+    TALK_MEDIA_STORE_PATH: z.preprocess((value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+      z.string().min(1).refine((value) => value.startsWith('/'), 'TALK_MEDIA_STORE_PATH must be an absolute path').optional()),
     VINCULA_CRM_API_URL: optionalUrl,
     CNPJ_DATABASE_URL: optionalUrlWithProtocols(["postgres:", "postgresql:"]),
     GOOGLE_MAPS_SCRAPER_URL: optionalUrlWithProtocols(["http:", "https:"]),

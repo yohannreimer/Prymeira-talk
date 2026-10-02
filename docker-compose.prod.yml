@@ -68,6 +68,23 @@ services:
       INBOX_TRIAGE_ENABLED: ${INBOX_TRIAGE_ENABLED:-false}
       INBOX_TRIAGE_PRIMARY: ${INBOX_TRIAGE_PRIMARY:-jev}
       VINCULA_CRM_API_URL: ${VINCULA_CRM_API_URL:-https://vincula.prymeiradigital.com.br/api}
+      # Evolution + WAHA + RabbitMQ integration. Every switch is off (or empty) by default: deploying this file
+      # changes nothing until the values are set. See docs/operations/waha-rabbit-rollout.md for the order.
+      WAHA_ENABLED: ${WAHA_ENABLED:-false}
+      WAHA_API_BASE_URL: ${WAHA_API_BASE_URL:-}
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_WEBHOOK_BASE_URL: ${WAHA_WEBHOOK_BASE_URL:-}
+      WAHA_WEBHOOK_HMAC_KEY: ${WAHA_WEBHOOK_HMAC_KEY:-}
+      OUTBOUND_ROUTER_ENABLED: ${OUTBOUND_ROUTER_ENABLED:-false}
+      CHANNEL_HEALTH_MONITOR_ENABLED: ${CHANNEL_HEALTH_MONITOR_ENABLED:-false}
+      CANONICAL_HISTORY_IMPORT_ENABLED: ${CANONICAL_HISTORY_IMPORT_ENABLED:-false}
+      LEGACY_WEBHOOK_DELEGATED_WORKSPACES: ${LEGACY_WEBHOOK_DELEGATED_WORKSPACES:-}
+      EFFECTS_ENABLED: ${EFFECTS_ENABLED:-false}
+      EFFECTS_WORKSPACE_ALLOWLIST: ${EFFECTS_WORKSPACE_ALLOWLIST:-}
+      REALTIME_BRIDGE_ENABLED: ${REALTIME_BRIDGE_ENABLED:-false}
+      TALK_MEDIA_STORE_PATH: ${TALK_MEDIA_STORE_PATH:-}
+    volumes:
+      - prymeira_talk_media:/data/media
     networks:
       prymeira_talk_internal:
         aliases:
@@ -132,6 +149,8 @@ services:
 
 volumes:
   prymeira_talk_postgres:
+  # Durable private media (API, ingress worker). Shared with docker-compose.waha-rabbit.prod.yml as an external volume.
+  prymeira_talk_media:
 
 networks:
   network_swarm_public:

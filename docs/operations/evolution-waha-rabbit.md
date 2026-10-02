@@ -119,6 +119,10 @@ Quando PN e LID comprovadamente são a mesma pessoa e já existem duas conversas
 
 Cobertura: `conversation-authority.postgres.test.ts` (3 cenários com PostgreSQL), rotas e painel (`conversation-authority.routes.test.ts`, `ConversationAuthorityPanel.test.tsx`).
 
+### Infraestrutura de rollout (bloco 5, parte de código)
+
+`docker-compose.waha-rabbit.prod.yml` (stack `prymeira_talk_wa`: WAHA WPP próprio do Talk, ingresso e worker, reaproveitando o RabbitMQ e o PostgreSQL existentes; a `deskcomm_waha` não é tocada) e as variáveis novas, todas desligadas por padrão, em `docker-compose.prod.yml` e `.env.production.example`. O corte da Evolution é uma regra do Traefik (a URL pública do webhook não muda), com a rota legada devolvendo 409 para os workspaces delegados. Passo a passo, lista do teste com o número do Yohann e reversão: `waha-rabbit-rollout.md`. Os arquivos YAML foram validados sintaticamente e `dist/ingress.js`/`dist/ingress-worker.js` compilam, mas **os containers não foram executados** e as imagens não foram construídas neste ambiente.
+
 ## Critérios de publicação pendentes
 
 Checkpoint canônico integrado aprovado em `117fd9f`: redutores persistentes de edições, exclusões, recibos, certificados e snapshots, com proteção cumulativa dos metadados entre páginas. Conformidade e qualidade independentes encerraram os achados de aliases após união PN/LID, fronteira de recuperação, recibos conflitantes e metadados incompatíveis. Os 164 testes canônicos com PostgreSQL passaram; a última revisão de qualidade executou 33 casos focados e quatro reproduções independentes. As consultas e escritores atuais ainda serão convertidos: essa aprovação não ativa a deduplicação em produção.

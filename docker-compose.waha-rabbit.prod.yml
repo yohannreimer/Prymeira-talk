@@ -1,0 +1,146 @@
+# Second stack of the Evolution + WAHA + RabbitMQ integration: WAHA (WPP engine) for Talk, the independent
+# ingress (HTTP -> RabbitMQ) and its worker (RabbitMQ -> PostgreSQL). It reuses the existing RabbitMQ service and the
+# Talk database; it does not touch the Deskcomm WAHA, the other products' queues or the Evolution instance.
+#
+# Deploy AFTER docker-compose.prod.yml (it needs that stack's internal network and media volume):
+#   docker stack deploy --with-registry-auth -c docker-compose.waha-rabbit.prod.yml prymeira_talk_wa
+# Order, checks and rollback: docs/operations/waha-rabbit-rollout.md
+services:
+  waha:
+    # Pin by digest in the stack environment once the candidate is homologated (see the rollout document).
+    image: ${WAHA_IMAGE:-devlikeapro/waha:chrome-2026.9.1}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
+    environment:
+      WHATSAPP_DEFAULT_ENGINE: WPP
+      WAHA_API_KEY: ${WAHA_API_KEY}
+      WAHA_DASHBOARD_ENABLED: "false"
+      WHATSAPP_SWAGGER_ENABLED: "false"
+      WAHA_PRINT_QR: "false"
+      WAHA_MEDIA_STORAGE: LOCAL
+    volumes:
+      - waha_sessions:/app/.sessions
+      - waha_media:/app/.media
+    networks:
+      prymeira_talk_internal:
+        aliases:
+          - waha
+    deploy:
+      mode: replicated
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1536M
+      restart_policy:
+        condition: on-failure
+
+  ingress:
+    image: ghcr.io/${GHCR_OWNER:-yohannreimer}/prymeira-talk-api:${IMAGE_TAG:-latest}
+    command: ["node", "dist/ingress.js"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
+    environment:
+      NODE_ENV: production
+      INGRESS_TRANSPORT_STAGE: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${PRYMEIRA_TALK_POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-prymeira_talk}
+      INGRESS_AMQP_URL: ${TALK_AMQP_URL}
+      INGRESS_NAMESPACE: talk.prod.v1
+      INGRESS_PRIVATE_ROOT: /data/ingress
+      INGRESS_WORKSPACE_ALLOWLIST: ${INGRESS_WORKSPACE_ALLOWLIST}
+      INGRESS_EVOLUTION_SECRET: ${EVOLUTION_WEBHOOK_SECRET}
+      INGRESS_WAHA_SECRET: ${WAHA_WEBHOOK_HMAC_KEY}
+      INGRESS_PORT: "4011"
+    volumes:
+      - prymeira_talk_ingress:/data/ingress
+    networks:
+      network_swarm_public:
+      prymeira_talk_internal:
+        aliases:
+          - ingress
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4011/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    deploy:
+      mode: replicated
+      replicas: 1
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+      labels:
+        # Evolution keeps posting to the same public URL (/webhooks/evolution/<workspace>). The rule below only matches
+        # after INGRESS_EVOLUTION_ROUTE_RULE is set at cutover; until then it points at a host that never exists.
+        - traefik.enable=true
+        - traefik.docker.network=network_swarm_public
+        - traefik.http.routers.prymeira_talk_ingress.rule=${INGRESS_EVOLUTION_ROUTE_RULE:-Host(`ingress-disabled.invalid`)}
+        - traefik.http.routers.prymeira_talk_ingress.priority=1000
+        - traefik.http.routers.prymeira_talk_ingress.entrypoints=websecure
+        - traefik.http.routers.prymeira_talk_ingress.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.prymeira_talk_ingress.service=prymeira_talk_ingress
+        - traefik.http.services.prymeira_talk_ingress.loadbalancer.server.port=4011
+
+  ingress_worker:
+    image: ghcr.io/${GHCR_OWNER:-yohannreimer}/prymeira-talk-api:${IMAGE_TAG:-latest}
+    command: ["node", "dist/ingress-worker.js"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
+    environment:
+      NODE_ENV: production
+      INGRESS_TRANSPORT_STAGE: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${PRYMEIRA_TALK_POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-prymeira_talk}
+      INGRESS_AMQP_URL: ${TALK_AMQP_URL}
+      INGRESS_NAMESPACE: talk.prod.v1
+      INGRESS_PRIVATE_ROOT: /data/ingress
+      INGRESS_WORKSPACE_ALLOWLIST: ${INGRESS_WORKSPACE_ALLOWLIST}
+      INGRESS_EVOLUTION_SECRET: ${EVOLUTION_WEBHOOK_SECRET}
+      INGRESS_WAHA_SECRET: ${WAHA_WEBHOOK_HMAC_KEY}
+      TALK_MEDIA_STORE_PATH: /data/media
+      EVOLUTION_API_BASE_URL: ${EVOLUTION_API_BASE_URL:-https://wsapi.yrdnegocios.com.br}
+      EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
+      WAHA_API_BASE_URL: http://waha:3000
+      WAHA_API_KEY: ${WAHA_API_KEY}
+    volumes:
+      - prymeira_talk_ingress:/data/ingress
+      - prymeira_talk_media:/data/media
+    networks:
+      network_swarm_public:
+      prymeira_talk_internal:
+    deploy:
+      mode: replicated
+      replicas: 1
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 768M
+      restart_policy:
+        condition: on-failure
+
+volumes:
+  waha_sessions:
+  waha_media:
+  prymeira_talk_ingress:
+  prymeira_talk_media:
+    external: true
+    name: prymeira_talk_prymeira_talk_media
+
+networks:
+  network_swarm_public:
+    external: true
+  prymeira_talk_internal:
+    external: true
+    name: prymeira_talk_prymeira_talk_internal
