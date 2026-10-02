@@ -67,6 +67,7 @@ export const envSchema = z
       .transform((value) => !["false", "0", "off"].includes(value)),
     CHANNEL_WATCHDOG_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
     CHANNEL_WATCHDOG_INTERVAL_SECONDS: z.coerce.number().int().min(30).max(3600).default(120),
+    CHANNEL_WATCHDOG_DRY_RUN: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
     TALK_UPLOAD_DIR: z.string().min(1).default("storage/uploads"),
     VINCULA_CRM_API_URL: optionalUrl,
     CNPJ_DATABASE_URL: optionalUrlWithProtocols(["postgres:", "postgresql:"]),

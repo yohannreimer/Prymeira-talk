@@ -52,10 +52,12 @@ export function createChannelWatchdog(deps: {
   publish: (event: RealtimeEvent) => void;
   now?: () => Date;
   intervalMs?: number;
+  dryRun?: boolean;
   log?: Logger;
 }) {
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? console;
+  const dryRun = deps.dryRun === true;
   const unreachableLoggedAt = new Map<string, number>();
   let lastTickAt: string | null = null;
   let lastTickOk = true;
@@ -112,31 +114,43 @@ export function createChannelWatchdog(deps: {
     }
 
     if (decision.talkStatus && decision.talkStatus !== channel.status) {
-      const from = channel.status;
-      const updated = await deps.prisma.channel.update({
-        where: { workspaceId_id: { workspaceId: channel.workspaceId, id: channel.id } },
-        data: { status: decision.talkStatus }
-      });
-      deps.publish({ type: "channel.updated", workspaceId: channel.workspaceId, payload: toChannelDto(updated as never) });
-      log.info({ event: "channel_watchdog_status_corrected", channelId: channel.id, from, to: decision.talkStatus }, "Channel watchdog corrected the channel status.");
+      if (dryRun) {
+        log.info({ event: "channel_watchdog_dry_run", action: "update_status", channelId: channel.id, from: channel.status, to: decision.talkStatus }, "Channel watchdog dry run: would update the channel status.");
+      } else {
+        const from = channel.status;
+        const updated = await deps.prisma.channel.update({
+          where: { workspaceId_id: { workspaceId: channel.workspaceId, id: channel.id } },
+          data: { status: decision.talkStatus }
+        });
+        deps.publish({ type: "channel.updated", workspaceId: channel.workspaceId, payload: toChannelDto(updated as never) });
+        log.info({ event: "channel_watchdog_status_corrected", channelId: channel.id, from, to: decision.talkStatus }, "Channel watchdog corrected the channel status.");
+      }
     }
 
     if (!suppressed && evolutionState === "open" && (current.getTime() - (webhookAt.get(channel.id) ?? 0)) >= WEBHOOK_EVERY_MS) {
       webhookAt.set(channel.id, current.getTime());
-      await client.setWebhook({
-        instanceName: channel.providerKey,
-        webhookUrl: deps.evolution.publicWebhookUrl(channel.workspaceId),
-        webhookSecret: deps.evolution.webhookSecret
-      }).catch((error: unknown) => log.warn({ event: "channel_watchdog_webhook_failed", err: error, channelId: channel.id }, "Channel watchdog could not reassert the webhook."));
+      if (dryRun) {
+        log.info({ event: "channel_watchdog_dry_run", action: "reassert_webhook", channelId: channel.id, instanceName: channel.providerKey }, "Channel watchdog dry run: would reassert the webhook.");
+      } else {
+        await client.setWebhook({
+          instanceName: channel.providerKey,
+          webhookUrl: deps.evolution.publicWebhookUrl(channel.workspaceId),
+          webhookSecret: deps.evolution.webhookSecret
+        }).catch((error: unknown) => log.warn({ event: "channel_watchdog_webhook_failed", err: error, channelId: channel.id }, "Channel watchdog could not reassert the webhook."));
+      }
     }
 
     if (decision.action === "reconnect") {
-      const result = await client.connectInstance({ instanceName: channel.providerKey })
-        .catch((error: unknown) => { log.warn({ event: "channel_watchdog_reconnect_failed", err: error, channelId: channel.id }, "Channel watchdog reconnect attempt failed."); return null; });
-      if (result?.qrCode) {
-        decision = { ...decision, state: "needs_qr", attempts: MAX_RECONNECT_ATTEMPTS, nextAttemptAt: null, since: previous?.state === "needs_qr" ? previous.since : current.toISOString() };
+      if (dryRun) {
+        log.info({ event: "channel_watchdog_dry_run", action: "reconnect", channelId: channel.id, attempt: decision.attempts }, "Channel watchdog dry run: would attempt a reconnect.");
+      } else {
+        const result = await client.connectInstance({ instanceName: channel.providerKey })
+          .catch((error: unknown) => { log.warn({ event: "channel_watchdog_reconnect_failed", err: error, channelId: channel.id }, "Channel watchdog reconnect attempt failed."); return null; });
+        if (result?.qrCode) {
+          decision = { ...decision, state: "needs_qr", attempts: MAX_RECONNECT_ATTEMPTS, nextAttemptAt: null, since: previous?.state === "needs_qr" ? previous.since : current.toISOString() };
+        }
+        log.info({ event: "channel_watchdog_reconnect_attempted", channelId: channel.id, attempt: decision.attempts, needsQr: Boolean(result?.qrCode) }, "Channel watchdog reconnect attempted.");
       }
-      log.info({ event: "channel_watchdog_reconnect_attempted", channelId: channel.id, attempt: decision.attempts, needsQr: Boolean(result?.qrCode) }, "Channel watchdog reconnect attempted.");
     }
 
     const next = {
@@ -148,7 +162,7 @@ export function createChannelWatchdog(deps: {
     const changed = !previous ? decision.state !== "ok" : previous.state !== decision.state;
     if (changed) {
       log.info({ event: "channel_watchdog_state_changed", channelId: channel.id, from: previous?.state ?? null, to: decision.state }, "Channel watchdog health state changed.");
-      deps.publish({ type: "channel.health", workspaceId: channel.workspaceId, payload: toDto(channel.id, next) });
+      if (!dryRun) deps.publish({ type: "channel.health", workspaceId: channel.workspaceId, payload: toDto(channel.id, next) });
     }
     return evolutionState === null ? "unreachable" : "answered";
   }

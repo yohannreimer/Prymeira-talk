@@ -272,6 +272,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
         },
         publish: (event) => app.realtime.publish(event),
         intervalMs: env.CHANNEL_WATCHDOG_INTERVAL_SECONDS * 1000,
+        dryRun: env.CHANNEL_WATCHDOG_DRY_RUN,
         log: app.log
       })
     : undefined;

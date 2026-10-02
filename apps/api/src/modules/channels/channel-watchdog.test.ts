@@ -13,6 +13,7 @@ function setup(options: {
   lastInbound?: Date | null;
   qr?: string | null;
   activity?: boolean;
+  dryRun?: boolean;
 } = {}) {
   const channels = options.channels ?? [row("a")];
   const events: unknown[] = [];
@@ -48,6 +49,7 @@ function setup(options: {
     evolution: { client: client as never, webhookSecret: "secret", publicWebhookUrl: (w: string) => `https://talk.test/webhooks/evolution/${w}` },
     publish: (event) => { events.push(event); },
     now: () => new Date(clock),
+    dryRun: options.dryRun,
     log
   });
   return { watchdog, prisma, client, events, log, advance: (ms: number) => { clock += ms; } };
@@ -258,5 +260,48 @@ describe("channel watchdog", () => {
     c.prisma.message.findFirst.mockRejectedValueOnce(new Error("x"));
     await c.watchdog.tick();
     expect(c.log.error).toHaveBeenCalledWith(expect.objectContaining({ event: "channel_watchdog_check_failed", channelId: "a" }), "Channel watchdog check failed.");
+  });
+});
+
+describe("channel watchdog dry run", () => {
+  it("update_status: só registra, sem update nem publish", async () => {
+    const { watchdog, prisma, events, log } = setup({ channels: [row("a", "disconnected")], dryRun: true });
+    await watchdog.tick();
+    expect(prisma.channel.update).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(log.info).toHaveBeenCalledWith(
+      { event: "channel_watchdog_dry_run", action: "update_status", channelId: "a", from: "disconnected", to: "connected" },
+      "Channel watchdog dry run: would update the channel status."
+    );
+  });
+
+  it("reassert_webhook: só registra, sem setWebhook", async () => {
+    const { watchdog, client, events, log } = setup({ dryRun: true });
+    await watchdog.tick();
+    expect(client.setWebhook).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(log.info).toHaveBeenCalledWith(
+      { event: "channel_watchdog_dry_run", action: "reassert_webhook", channelId: "a", instanceName: "inst-a" },
+      "Channel watchdog dry run: would reassert the webhook."
+    );
+    await watchdog.tick();
+    expect(log.info.mock.calls.filter(([m]) => (m as { action?: string }).action === "reassert_webhook")).toHaveLength(1);
+  });
+
+  it("reconnect: só registra, sem connectInstance nem publish, mas a memória avança e getHealth reflete", async () => {
+    const { watchdog, client, prisma, events, log, advance } = setup({ states: { a: "close" }, dryRun: true });
+    await watchdog.tick();
+    expect(client.connectInstance).not.toHaveBeenCalled();
+    expect(prisma.channel.update).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(log.info).toHaveBeenCalledWith(
+      { event: "channel_watchdog_dry_run", action: "reconnect", channelId: "a", attempt: 1 },
+      "Channel watchdog dry run: would attempt a reconnect."
+    );
+    expect(watchdog.getHealth("w1")).toEqual([expect.objectContaining({ state: "reconnecting", attempts: 1 })]);
+    advance(3 * 60_000);
+    await watchdog.tick();
+    expect(log.info).toHaveBeenCalledWith(expect.objectContaining({ action: "reconnect", attempt: 2 }), expect.any(String));
+    expect(client.connectInstance).not.toHaveBeenCalled();
   });
 });
