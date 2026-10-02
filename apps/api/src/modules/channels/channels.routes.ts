@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
-import type { ChannelHealthDto } from "@prymeira-talk/shared";
+import type { ChannelHealthDto, ChannelWatchdogStatusDto } from "@prymeira-talk/shared";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { resolveMetaRuntime } from "../meta/meta-runtime.js";
 import { ChannelsServiceError, createChannelsService } from "./channels.service.js";
@@ -10,6 +10,7 @@ interface ChannelsRoutesOptions {
   evolution?: EvolutionRuntime;
   channelHealth?: {
     getHealth(workspaceId: string): ChannelHealthDto[];
+    status(): Omit<ChannelWatchdogStatusDto, "enabled">;
     markManualDisconnect(channelId: string): void;
     clearManualDisconnect(channelId: string): void;
   };
@@ -76,7 +77,10 @@ export const channelsRoutes: FastifyPluginAsync<ChannelsRoutesOptions> = async (
   );
 
   app.get("/channels/health", async (request) => ({
-    health: options.channelHealth?.getHealth(request.talk.workspaceId) ?? []
+    health: options.channelHealth?.getHealth(request.talk.workspaceId) ?? [],
+    watchdog: options.channelHealth
+      ? { enabled: true, ...options.channelHealth.status() }
+      : { enabled: false, lastTickAt: null, lastTickOk: true, lastError: null, unreachable: false }
   }));
 
   app.post("/channels", async (request, reply) => {

@@ -42,14 +42,15 @@ function setup(options: {
     connectInstance: vi.fn(async () => ({ instanceName: "x", qrCode: options.qr ?? null, raw: {} })),
     setWebhook: vi.fn(async () => ({ raw: {} }))
   };
+  const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const watchdog = createChannelWatchdog({
     prisma: prisma as never,
     evolution: { client: client as never, webhookSecret: "secret", publicWebhookUrl: (w: string) => `https://talk.test/webhooks/evolution/${w}` },
     publish: (event) => { events.push(event); },
     now: () => new Date(clock),
-    log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    log
   });
-  return { watchdog, prisma, client, events, advance: (ms: number) => { clock += ms; } };
+  return { watchdog, prisma, client, events, log, advance: (ms: number) => { clock += ms; } };
 }
 
 describe("channel watchdog", () => {
@@ -182,5 +183,80 @@ describe("channel watchdog", () => {
     await watchdog.tick();
     const health = events.filter((e) => (e as { type: string }).type === "channel.health");
     expect(health.at(-1)).toMatchObject({ payload: { channelId: "a", state: "ok", attempts: 0 } });
+  });
+
+  it("tick nunca rejeita: falha no findMany é registrada, aparece no status e o próximo tick funciona", async () => {
+    const { watchdog, prisma, log, advance } = setup();
+    prisma.channel.findMany.mockRejectedValueOnce(new Error("db down"));
+    await expect(watchdog.tick()).resolves.toBeUndefined();
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "channel_watchdog_tick_failed", err: expect.any(Error) }),
+      "Channel watchdog tick failed."
+    );
+    expect(watchdog.status()).toEqual({ lastTickAt: NOON.toISOString(), lastTickOk: false, lastError: "db down", unreachable: false });
+    advance(1000);
+    await watchdog.tick();
+    expect(watchdog.status()).toEqual({ lastTickAt: new Date(NOON.getTime() + 1000).toISOString(), lastTickOk: true, lastError: null, unreachable: false });
+    expect(watchdog.getHealth("w1")).toEqual([expect.objectContaining({ channelId: "a", state: "ok" })]);
+  });
+
+  it("registra Evolution inalcançável no máximo uma vez a cada 10 minutos por canal, sem segredos", async () => {
+    const { watchdog, log, advance } = setup({ states: { a: "throw" } });
+    await watchdog.tick();
+    advance(5 * 60_000);
+    await watchdog.tick();
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith(
+      { event: "channel_watchdog_evolution_unreachable", channelId: "a", err: "evolution unreachable" },
+      "Channel watchdog could not reach Evolution."
+    );
+    advance(5 * 60_000);
+    await watchdog.tick();
+    expect(log.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("status.unreachable só liga após 3 ticks seguidos com todos os canais inalcançáveis e desliga quando algum responde", async () => {
+    const states: Record<string, "open" | "connecting" | "close" | "throw"> = { a: "throw", b: "throw" };
+    const { watchdog } = setup({ channels: [row("a"), row("b")], states });
+    await watchdog.tick();
+    await watchdog.tick();
+    expect(watchdog.status().unreachable).toBe(false);
+    await watchdog.tick();
+    expect(watchdog.status().unreachable).toBe(true);
+    states.b = "open";
+    await watchdog.tick();
+    expect(watchdog.status().unreachable).toBe(false);
+  });
+
+  it("status.unreachable fica falso sem canais e antes do primeiro tick", async () => {
+    const { watchdog } = setup({ channels: [] });
+    expect(watchdog.status()).toEqual({ lastTickAt: null, lastTickOk: true, lastError: null, unreachable: false });
+    await watchdog.tick();
+    await watchdog.tick();
+    await watchdog.tick();
+    expect(watchdog.status().unreachable).toBe(false);
+  });
+
+  it("registra eventos estáveis ao corrigir status, mudar de estado e reconectar", async () => {
+    const { watchdog, log } = setup({ states: { a: "close" } });
+    await watchdog.tick();
+    expect(log.info).toHaveBeenCalledWith({ event: "channel_watchdog_status_corrected", channelId: "a", from: "connected", to: "disconnected" }, expect.any(String));
+    expect(log.info).toHaveBeenCalledWith({ event: "channel_watchdog_state_changed", channelId: "a", from: null, to: "reconnecting" }, expect.any(String));
+    expect(log.info).toHaveBeenCalledWith(expect.objectContaining({ event: "channel_watchdog_reconnect_attempted", channelId: "a" }), "Channel watchdog reconnect attempted.");
+  });
+
+  it("falhas de check, webhook e reconexão têm event estável", async () => {
+    const a = setup();
+    a.client.setWebhook.mockRejectedValueOnce(new Error("x"));
+    await a.watchdog.tick();
+    expect(a.log.warn).toHaveBeenCalledWith(expect.objectContaining({ event: "channel_watchdog_webhook_failed" }), "Channel watchdog could not reassert the webhook.");
+    const b = setup({ states: { a: "close" } });
+    b.client.connectInstance.mockRejectedValueOnce(new Error("x"));
+    await b.watchdog.tick();
+    expect(b.log.warn).toHaveBeenCalledWith(expect.objectContaining({ event: "channel_watchdog_reconnect_failed" }), "Channel watchdog reconnect attempt failed.");
+    const c = setup();
+    c.prisma.message.findFirst.mockRejectedValueOnce(new Error("x"));
+    await c.watchdog.tick();
+    expect(c.log.error).toHaveBeenCalledWith(expect.objectContaining({ event: "channel_watchdog_check_failed", channelId: "a" }), "Channel watchdog check failed.");
   });
 });

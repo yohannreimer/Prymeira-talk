@@ -31,6 +31,7 @@ function fakeChannelHealth() {
   };
   return {
     getHealth: vi.fn((workspaceId: string) => byWorkspace[workspaceId] ?? []),
+    status: vi.fn(() => ({ lastTickAt: "2026-10-02T12:00:00.000Z", lastTickOk: true, lastError: null, unreachable: false })),
     markManualDisconnect: vi.fn(),
     clearManualDisconnect: vi.fn()
   };
@@ -68,7 +69,10 @@ describe("GET /channels/health", () => {
     const response = await app.inject({ method: "GET", url: "/channels/health" });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ health: [health(channelId, { state: "silent" })] });
+    expect(response.json()).toEqual({
+      health: [health(channelId, { state: "silent" })],
+      watchdog: { enabled: true, lastTickAt: "2026-10-02T12:00:00.000Z", lastTickOk: true, lastError: null, unreachable: false }
+    });
     expect(channelHealth.getHealth).toHaveBeenCalledWith("workspace_a");
     expect(channelHealth.getHealth).not.toHaveBeenCalledWith("workspace_b");
     await app.close();
@@ -91,7 +95,7 @@ describe("GET /channels/health", () => {
     const response = await app.inject({ method: "GET", url: "/channels/health" });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ health: [] });
+    expect(response.json()).toEqual({ health: [], watchdog: { enabled: false, lastTickAt: null, lastTickOk: true, lastError: null, unreachable: false } });
     await app.close();
   });
 
@@ -101,7 +105,7 @@ describe("GET /channels/health", () => {
     const response = await app.inject({ method: "GET", url: "/channels/health" });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ health: [] });
+    expect(response.json()).toEqual({ health: [], watchdog: { enabled: false, lastTickAt: null, lastTickOk: true, lastError: null, unreachable: false } });
     await app.close();
   });
 });

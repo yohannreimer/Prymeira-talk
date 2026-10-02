@@ -49,6 +49,14 @@ export const channelHealthSchema = z.object({
   attempts: z.number().int().min(0)
 });
 export type ChannelHealthDto = z.infer<typeof channelHealthSchema>;
+export const channelWatchdogStatusSchema = z.object({
+  enabled: z.boolean(),
+  lastTickAt: z.string().datetime().nullable(),
+  lastTickOk: z.boolean(),
+  lastError: z.string().nullable(),
+  unreachable: z.boolean()
+});
+export type ChannelWatchdogStatusDto = z.infer<typeof channelWatchdogStatusSchema>;
 
 export const channelOperationResultSchema = z.object({
   mode: integrationModeSchema,
