@@ -70,7 +70,8 @@ services:
       CONTACT_NAME_RECOVERY_ENABLED: ${CONTACT_NAME_RECOVERY_ENABLED:-true}
       CHANNEL_WATCHDOG_ENABLED: ${CHANNEL_WATCHDOG_ENABLED:-true}
       CHANNEL_WATCHDOG_INTERVAL_SECONDS: ${CHANNEL_WATCHDOG_INTERVAL_SECONDS:-120}
-      CHANNEL_WATCHDOG_DRY_RUN: ${CHANNEL_WATCHDOG_DRY_RUN:-false}
+      # true = reads and logs only; set false to let the watchdog act
+      CHANNEL_WATCHDOG_DRY_RUN: ${CHANNEL_WATCHDOG_DRY_RUN:-true}
       VINCULA_CRM_API_URL: ${VINCULA_CRM_API_URL:-https://vincula.prymeiradigital.com.br/api}
     networks:
       prymeira_talk_internal:

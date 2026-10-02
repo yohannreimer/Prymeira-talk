@@ -276,6 +276,9 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
         log: app.log
       })
     : undefined;
+  if (channelWatchdog) {
+    app.log.info({ event: "channel_watchdog_started", dryRun: env.CHANNEL_WATCHDOG_DRY_RUN, intervalSeconds: env.CHANNEL_WATCHDOG_INTERVAL_SECONDS }, "Channel watchdog started.");
+  }
   channelWatchdog?.start();
   if (channelWatchdog) app.addHook("onClose", async () => { await channelWatchdog.stop(); });
   const lunaEligibility = options.prismaEnabled === false
