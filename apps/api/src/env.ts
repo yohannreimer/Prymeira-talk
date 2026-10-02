@@ -70,6 +70,8 @@ export const envSchema = z
     CHANNEL_HEALTH_MONITOR_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     /** Routes every outbound send through the single router (journal, failover, uncertain-send handling). */
     OUTBOUND_ROUTER_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+    /** Imports channel history through the canonical store instead of writing messages directly. */
+    CANONICAL_HISTORY_IMPORT_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     /** Runs the durable ingress effects (assistant, agent, follow-ups, triage, automations, realtime) in this API process. */
     EFFECTS_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     /** Comma-separated workspace ids whose effects this process may run (staged rollout). Empty = all. */

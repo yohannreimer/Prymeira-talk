@@ -14,6 +14,7 @@ export async function buildApp(
       REALTIME_BRIDGE_ENABLED: false,
       CHANNEL_HEALTH_MONITOR_ENABLED: false,
       OUTBOUND_ROUTER_ENABLED: false,
+      CANONICAL_HISTORY_IMPORT_ENABLED: false,
       EFFECTS_ENABLED: false,
       EFFECTS_WORKSPACE_ALLOWLIST: [],
       NODE_ENV: "test",

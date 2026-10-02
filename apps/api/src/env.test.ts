@@ -166,4 +166,9 @@ describe("readEnv", () => {
     expect(() => readEnv({ ...baseProductionEnv, LEAD_JOB_POLL_MS: "60001" }))
       .toThrow(/LEAD_JOB_POLL_MS/);
   });
+
+  it("keeps canonical history import off unless explicitly enabled", () => {
+    expect(readEnv({ ...baseProductionEnv }).CANONICAL_HISTORY_IMPORT_ENABLED).toBe(false);
+    expect(readEnv({ ...baseProductionEnv, CANONICAL_HISTORY_IMPORT_ENABLED: "true" }).CANONICAL_HISTORY_IMPORT_ENABLED).toBe(true);
+  });
 });

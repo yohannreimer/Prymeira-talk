@@ -272,6 +272,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     : createChannelHistoryImportScheduler({
         prisma: app.prisma,
         source: evolutionHistorySource,
+        canonical: env.CANONICAL_HISTORY_IMPORT_ENABLED,
         async onConversation(workspaceId, conversationId) {
           const conversation = await createConversationsService(app.prisma as unknown as ConversationsPrismaLike)
             .getConversationDto({ workspaceId, conversationId });
@@ -491,7 +492,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   const historyBackfill = options.prismaEnabled === false || !evolutionHistorySource ? undefined : async (input: { workspaceId: string; channelId: string; conversationId: string; providerKey: string; remoteJid: string; identity: string; pushName: string | null }) => {
     const count = await app.prisma.message.count({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId } });
     if (count >= 30) return;
-    const importer = createChannelHistoryImporter({ prisma: app.prisma, source: evolutionHistorySource });
+    const importer = createChannelHistoryImporter({ prisma: app.prisma, source: evolutionHistorySource, canonical: env.CANONICAL_HISTORY_IMPORT_ENABLED });
     await importer.importChat({ id: input.channelId, workspaceId: input.workspaceId,
       providerKey: input.providerKey, historyImportAttempts: 0 },
     { remoteJid: input.remoteJid, phoneJid: input.identity, pushName: input.pushName, profilePicUrl: null }, 30);
