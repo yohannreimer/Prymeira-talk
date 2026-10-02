@@ -61,6 +61,8 @@ import { createEvolutionRuntime } from "./modules/evolution/evolution-runtime.js
 import { createWahaRuntime } from './modules/waha/waha.client.js';
 import { createDurableMedia } from './modules/conversations/durable-media.js';
 import { createOutboundRouter } from './modules/channels/outbound-router.js';
+import { createChannelHealthMonitor } from './modules/channels/channel-health-monitor.js';
+import { createChannelConnectionsService } from './modules/channels/channel-connections.js';
 import { createOutboundDispatchJournal } from './modules/channels/outbound-dispatch-journal.js';
 import { createDeliveryProbe } from './modules/channels/outbound-probes.js';
 import { outboundReviewRoutes } from './modules/channels/outbound-review.routes.js';
@@ -567,6 +569,21 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(boardsRoutes);
   await app.register(channelsRoutes, { evolution: evolutionRuntime, waha: wahaRuntime });
   if (outboundJournal) await app.register(outboundReviewRoutes, { journal: outboundJournal });
+  // Redundancy health: 15 s probes of both connections, receive-loss detection and writer failover/return.
+  if (options.prismaEnabled !== false && env.CHANNEL_HEALTH_MONITOR_ENABLED && wahaRuntime.enabled) {
+    const connections = createChannelConnectionsService(app.prisma, { waha: wahaRuntime, evolution: evolutionRuntime });
+    const healthMonitor = createChannelHealthMonitor({
+      db: app.prisma,
+      probe: (scope) => connections.refresh(scope),
+      onWriterChange: async (change) => {
+        const channel = await app.prisma.channel.findFirst({ where: { workspaceId: change.workspaceId, id: change.channelId } });
+        if (channel) app.realtime.publish({ type: 'channel.updated', workspaceId: change.workspaceId, payload: await connections.describe(channel) });
+      },
+      logger: app.log
+    });
+    healthMonitor.start();
+    app.addHook('onClose', async () => { healthMonitor.stop(); });
+  }
   await app.register(automationsRoutes, { agentRuntime, evolution: evolutionRuntime });
   await app.register(campaignsRoutes, { evolution: evolutionRuntime });
   await app.register(broadcastListsRoutes);

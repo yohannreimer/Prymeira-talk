@@ -62,6 +62,8 @@ export const envSchema = z
     INBOX_TRIAGE_PRIMARY: z.enum(["luna", "jev"]).default("jev"),
     INBOX_TRIAGE_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
     TALK_UPLOAD_DIR: z.string().min(1).default("storage/uploads"),
+    /** Probes redundant channels every 15 s, detects receive loss and moves the writer between connections. */
+    CHANNEL_HEALTH_MONITOR_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     /** Routes every outbound send through the single router (journal, failover, uncertain-send handling). */
     OUTBOUND_ROUTER_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
     /** Runs the durable ingress effects (assistant, agent, follow-ups, triage, automations, realtime) in this API process. */

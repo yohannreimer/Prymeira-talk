@@ -2315,6 +2315,26 @@ async function connectionRequest(
   return response.json();
 }
 
+export interface OutboundReviewItem { id: string; channelId: string; kind: string; destination: string; preview: string | null; errorCode: string | null; createdAt: string }
+
+/** Sends whose outcome was uncertain. Only owners and managers may see them: a 403 means "nothing to show". */
+export async function apiListOutboundReview(getToken: () => Promise<string | null>): Promise<OutboundReviewItem[]> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/outbound-review`, { headers: { Authorization: `Bearer ${token}` } });
+  if (response.status === 403) return [];
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível carregar os envios em revisão'));
+  const data = await response.json() as { items?: OutboundReviewItem[] };
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+export async function apiResolveOutboundReview(getToken: () => Promise<string | null>, id: string, delivered: boolean): Promise<void> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/channels/outbound-review/${encodeURIComponent(id)}/resolve`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ delivered })
+  });
+  if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível registrar a revisão'));
+}
+
 export async function apiSetChannelRedundancy(getToken: () => Promise<string | null>, channelId: string, enabled: boolean): Promise<ChannelOperationResultDto> {
   return channelOperationResultSchema.parse(await connectionRequest(getToken, channelId, 'redundancy', 'PATCH', { enabled }));
 }

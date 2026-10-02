@@ -80,10 +80,11 @@ export function classifySendFailure(error: unknown): SendFailureClass {
   return NOT_SENT_TEXT.test(text) ? 'not_delivered' : 'uncertain';
 }
 
-/** After a failover the original connection becomes the writer again only once it has been healthy for the
- * whole `stableMs` and agrees with events seen by the other one (callers pass `eventsAgree`). */
-export function shouldReturnToPrimary(input: { primary: RoutableConnection; now: Date; stableMs: number; eventsAgree: boolean; activeConnectionId: string | null }) {
+/** After a failover the original connection becomes the writer again only once it has been continuously healthy for
+ * the whole `stableMs` (`healthySince` is when that unbroken period began, not the latest probe) and real events
+ * seen by both connections agree (`eventsAgree`). */
+export function shouldReturnToPrimary(input: { primary: RoutableConnection; healthySince: Date | null; now: Date; stableMs: number; eventsAgree: boolean; activeConnectionId: string | null }) {
   if (input.activeConnectionId === input.primary.id) return false;
-  if (input.primary.status !== 'connected' || input.primary.health !== 'healthy' || !input.primary.lastHealthyAt) return false;
-  return input.eventsAgree && input.now.getTime() - input.primary.lastHealthyAt.getTime() >= input.stableMs;
+  if (input.primary.status !== 'connected' || input.primary.health !== 'healthy' || !input.healthySince) return false;
+  return input.eventsAgree && input.now.getTime() - input.healthySince.getTime() >= input.stableMs;
 }

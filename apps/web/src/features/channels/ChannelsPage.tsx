@@ -15,6 +15,7 @@ import {
 } from "../../app/api";
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
 import { ChannelConnectionsPanel } from "./ChannelConnectionsPanel";
+import { OutboundReviewPanel } from "./OutboundReviewPanel";
 import { applyQrUpdate, connectionCount, connectionDisplay } from "./connection-display";
 import { AssistantChannelSettings } from './AssistantChannelSettings';
 
@@ -503,6 +504,7 @@ export function ChannelsPage() {
 
       {error ? <p className="error-note" style={{ margin: '0 16px' }}>{error}</p> : null}
       {notice ? <p className="list-note" style={{ margin: '0 16px' }}>{notice}</p> : null}
+      <OutboundReviewPanel getToken={getToken} />
 
       <div className="channels-list-wrap">
         {isLoading ? (

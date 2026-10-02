@@ -5,6 +5,9 @@ import type { EvolutionRuntime } from '../evolution/evolution-runtime.js';
 import { WahaClientError, type WahaRuntime, type WahaSession } from '../waha/waha.client.js';
 import { toChannelDto } from './channel-dto.js';
 
+/** Consecutive failed probes (15 s apart) before a connection is considered down. */
+export const PROBE_FAILURE_THRESHOLD = 3;
+
 export class ConnectionServiceError extends Error {
   constructor(public code: string, message: string, public statusCode = 400) { super(message); this.name = 'ConnectionServiceError'; }
 }
@@ -148,8 +151,12 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
     await tx.channel.update({ where: { workspaceId_id: { workspaceId: channel.workspaceId, id: channel.id } }, data: { connectionLifecycleGeneration: { increment: 1 } } });
   }
   function superseded() { return new ConnectionServiceError('LIFECYCLE_SUPERSEDED', 'A conexão mudou durante esta operação. Atualize o canal.', 409); }
+  /** A provider that merely did not answer is tolerated for two probes: unhealthy (and ineligible) only on the third
+   * consecutive failure, so one slow answer never moves a channel. Configuration/ownership errors are not transient
+   * and demote at once. */
   async function markFailure(tx: ConnectionTransaction, record: ChannelConnection, error: string) {
-    await tx.channelConnection.update({ where: whereId(record), data: { health: 'unhealthy', eligible: false, lastCheckedAt: new Date(), failureStartedAt: record.failureStartedAt ?? new Date(), consecutiveFailures: { increment: 1 }, lastError: error } });
+    const demote = error !== 'PROVIDER_UNAVAILABLE' || record.consecutiveFailures + 1 >= PROBE_FAILURE_THRESHOLD;
+    await tx.channelConnection.update({ where: whereId(record), data: { health: demote ? 'unhealthy' : 'degraded', ...(demote ? { eligible: false } : {}), lastCheckedAt: new Date(), failureStartedAt: record.failureStartedAt ?? new Date(), consecutiveFailures: { increment: 1 }, lastError: error } });
   }
   async function failProbe(channel: Channel, generation: number, record: ChannelConnection, error: string) {
     return commitProbe(channel, generation, async (tx) => {

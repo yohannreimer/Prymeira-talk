@@ -77,15 +77,16 @@ describe('classifySendFailure', () => {
 
 describe('shouldReturnToPrimary', () => {
   const now = new Date('2026-10-02T12:20:00Z');
-  const primary = conn({ id: 'evo', provider: 'evolution', lastHealthyAt: new Date('2026-10-02T12:05:00Z') });
-  it('returns only after ten stable minutes, healthy, with agreeing events, and only when it is not already the writer', () => {
-    const base = { primary, now, stableMs: 10 * 60_000, eventsAgree: true, activeConnectionId: 'waha' };
+  const primary = conn({ id: 'evo', provider: 'evolution' });
+  const healthySince = new Date('2026-10-02T12:05:00Z');
+  it('returns only after ten unbroken healthy minutes with agreeing events, and only when it is not already the writer', () => {
+    const base = { primary, healthySince, now, stableMs: 10 * 60_000, eventsAgree: true, activeConnectionId: 'waha' };
     expect(shouldReturnToPrimary(base)).toBe(true);
     expect(shouldReturnToPrimary({ ...base, activeConnectionId: 'evo' })).toBe(false);
     expect(shouldReturnToPrimary({ ...base, eventsAgree: false })).toBe(false);
-    expect(shouldReturnToPrimary({ ...base, now: new Date('2026-10-02T12:10:00Z') })).toBe(false);
+    expect(shouldReturnToPrimary({ ...base, healthySince: new Date('2026-10-02T12:11:00Z') })).toBe(false);
+    expect(shouldReturnToPrimary({ ...base, healthySince: null })).toBe(false);
     expect(shouldReturnToPrimary({ ...base, primary: { ...primary, health: 'degraded' } })).toBe(false);
     expect(shouldReturnToPrimary({ ...base, primary: { ...primary, status: 'connecting' } })).toBe(false);
-    expect(shouldReturnToPrimary({ ...base, primary: { ...primary, lastHealthyAt: null } })).toBe(false);
   });
 });
