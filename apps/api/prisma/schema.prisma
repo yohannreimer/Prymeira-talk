@@ -271,6 +271,7 @@ model Channel {
   historyImportLeaseUntil DateTime? @map("history_import_lease_until")
   historyImportAttempts Int        @default(0) @map("history_import_attempts")
   historyImportCompletedAt DateTime? @map("history_import_completed_at")
+  archivedAt      DateTime?       @map("archived_at")
   createdAt       DateTime        @default(now()) @map("created_at")
   updatedAt       DateTime        @updatedAt @map("updated_at")
 

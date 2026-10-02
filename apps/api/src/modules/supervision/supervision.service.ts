@@ -134,7 +134,7 @@ export function createSupervisionService(prisma: Store, clock: () => Date = () =
     },
 
     async channels(workspaceId: string) {
-      const channels = await prisma.channel.findMany({ where: { workspaceId },
+      const channels = await prisma.channel.findMany({ where: { workspaceId, archivedAt: null },
         select: { id: true, workspaceId: true, displayName: true, phoneNumber: true },
         orderBy: [{ displayName: "asc" }, { id: "asc" }] });
       return { channels: channels.map(channel => ({ ...channel,

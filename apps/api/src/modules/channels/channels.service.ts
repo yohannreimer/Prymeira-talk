@@ -21,6 +21,7 @@ interface ChannelRecord {
   phoneNumber: string | null;
   displayName: string | null;
   status: ChannelDto["status"];
+  archivedAt?: DateLike | null;
   createdAt: DateLike;
   updatedAt: DateLike;
 }
@@ -34,7 +35,7 @@ interface IntegrationConfigRecord {
 export interface PrismaLike {
   channel: {
     findMany(args: {
-      where: { workspaceId: string };
+      where: { workspaceId: string; archivedAt?: null };
       orderBy: Array<{ createdAt: "asc" }>;
     }): Promise<ChannelRecord[]>;
     findFirst(args: {
@@ -55,7 +56,8 @@ export interface PrismaLike {
     update(args: {
       where: { workspaceId_id: { workspaceId: string; id: string } };
       data: {
-        status: ChannelDto["status"];
+        status?: ChannelDto["status"];
+        archivedAt?: Date | null;
         historyImportStatus?: string;
         historyImportNextAt?: Date;
         historyImportAttempts?: number;
@@ -68,6 +70,13 @@ export interface PrismaLike {
       where: { workspaceId_id: { workspaceId: string; id: string } };
     }): Promise<ChannelRecord>;
   };
+  leadWhatsappVerification: {
+    updateMany(args: {
+      where: { workspaceId: string; channelId: string };
+      data: { channelId: null };
+    }): Promise<{ count: number }>;
+  };
+  $transaction<T>(fn: (tx: Pick<PrismaLike, "channel" | "leadWhatsappVerification">) => Promise<T>): Promise<T>;
   integrationConfig: {
     findUnique(args: {
       where: { workspaceId_provider: { workspaceId: string; provider: string } };
@@ -98,6 +107,7 @@ export interface PrismaLike {
       };
       update: Record<string, never>;
     }): Promise<{ id: string }>;
+    count(args: { where: { workspaceId: string; channelId: string } }): Promise<number>;
     update(args: {
       where: { workspaceId_id: { workspaceId: string; id: string } };
       data: {
@@ -108,6 +118,7 @@ export interface PrismaLike {
     }): Promise<{ id: string }>;
   };
   message: {
+    count(args: { where: { workspaceId: string; conversation: { channelId: string } } }): Promise<number>;
     create(args: {
       data: {
         workspaceId: string;
@@ -144,6 +155,7 @@ export class ChannelsServiceError extends Error {
   constructor(
     public code:
       | "CHANNEL_NOT_FOUND"
+      | "CHANNEL_DELETE_CONFIRMATION_REQUIRED"
       | "CHANNEL_PROVIDER_KEY_REQUIRED"
       | "CHANNEL_PROVIDER_UNSUPPORTED"
       | "EVOLUTION_LICENSE_REQUIRED"
@@ -176,9 +188,14 @@ export function toChannelDto(record: ChannelRecord): ChannelDto {
     phoneNumber: record.phoneNumber,
     displayName: record.displayName,
     status: record.status,
+    archivedAt: record.archivedAt ? toIsoString(record.archivedAt) : null,
     createdAt: toIsoString(record.createdAt),
     updatedAt: toIsoString(record.updatedAt)
   };
+}
+
+function channelConfirmationName(channel: ChannelRecord) {
+  return channel.displayName?.trim() || channel.providerKey;
 }
 
 function normalizeOptional(value: string | undefined) {
@@ -263,6 +280,16 @@ export function createChannelsService(
     });
   };
 
+  const getChannel = async (input: { workspaceId: string; channelId: string }) => {
+    const channel = await prisma.channel.findFirst({
+      where: { workspaceId: input.workspaceId, id: input.channelId }
+    });
+    if (!channel) {
+      throw new ChannelsServiceError("CHANNEL_NOT_FOUND", "Channel not found.");
+    }
+    return channel;
+  };
+
   const getEvolutionChannel = async (input: {
     workspaceId: string;
     channelId: string;
@@ -290,9 +317,9 @@ export function createChannelsService(
   };
 
   return {
-    async listChannels(input: { workspaceId: string }): Promise<ChannelDto[]> {
+    async listChannels(input: { workspaceId: string; includeArchived?: boolean }): Promise<ChannelDto[]> {
       const channels = await prisma.channel.findMany({
-        where: { workspaceId: input.workspaceId },
+        where: input.includeArchived ? { workspaceId: input.workspaceId } : { workspaceId: input.workspaceId, archivedAt: null },
         orderBy: [{ createdAt: "asc" }]
       });
 
@@ -533,17 +560,81 @@ export function createChannelsService(
       };
     },
 
+    // Archiving hides a channel and stops its session while keeping its conversations.
+    async archiveChannel(input: {
+      workspaceId: string;
+      channelId: string;
+    }): Promise<{ channel: ChannelDto }> {
+      const existingChannel = await getChannel(input);
+      if (existingChannel.provider === "evolution" && existingChannel.status !== "disconnected" && options.evolution?.mode === "real") {
+        if (!options.evolution.client?.logoutInstance) {
+          throw new ChannelsServiceError(
+            "EVOLUTION_DISCONNECT_UNAVAILABLE",
+            "Não foi possível encerrar a sessão na Evolution no momento.",
+            503
+          );
+        }
+        await options.evolution.client.logoutInstance({ instanceName: existingChannel.providerKey });
+      }
+      const channel = await prisma.channel.update({
+        where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.channelId } },
+        data: { status: "disconnected", archivedAt: new Date() }
+      });
+      return { channel: toChannelDto(channel) };
+    },
+
+    async unarchiveChannel(input: {
+      workspaceId: string;
+      channelId: string;
+    }): Promise<{ channel: ChannelDto }> {
+      await getChannel(input);
+      const channel = await prisma.channel.update({
+        where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.channelId } },
+        data: { archivedAt: null }
+      });
+      return { channel: toChannelDto(channel) };
+    },
+
+    async getDeletionImpact(input: {
+      workspaceId: string;
+      channelId: string;
+    }): Promise<{ channelId: string; confirmationName: string; conversations: number; messages: number }> {
+      const channel = await getChannel(input);
+      const [conversations, messages] = await Promise.all([
+        prisma.conversation.count({ where: { workspaceId: input.workspaceId, channelId: input.channelId } }),
+        prisma.message.count({ where: { workspaceId: input.workspaceId, conversation: { channelId: input.channelId } } })
+      ]);
+      return { channelId: input.channelId, confirmationName: channelConfirmationName(channel), conversations, messages };
+    },
+
+    // Deleting cascades to every conversation of the channel, so the caller must type its name.
     async deleteChannel(input: {
       workspaceId: string;
       channelId: string;
+      confirmationName?: string;
     }): Promise<{ channelId: string }> {
-      await prisma.channel.delete({
-        where: {
-          workspaceId_id: {
-            workspaceId: input.workspaceId,
-            id: input.channelId
+      const channel = await getChannel(input);
+      if (input.confirmationName?.trim() !== channelConfirmationName(channel)) {
+        throw new ChannelsServiceError(
+          "CHANNEL_DELETE_CONFIRMATION_REQUIRED",
+          "Digite o nome do canal para confirmar a exclusão.",
+          409
+        );
+      }
+      await prisma.$transaction(async (tx) => {
+        // Lead verifications only record which channel checked the number; keep them, unlinked.
+        await tx.leadWhatsappVerification.updateMany({
+          where: { workspaceId: input.workspaceId, channelId: input.channelId },
+          data: { channelId: null }
+        });
+        await tx.channel.delete({
+          where: {
+            workspaceId_id: {
+              workspaceId: input.workspaceId,
+              id: input.channelId
+            }
           }
-        }
+        });
       });
 
       return { channelId: input.channelId };

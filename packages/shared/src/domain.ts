@@ -36,6 +36,7 @@ export const channelSchema = z.object({
   phoneNumber: z.string().nullable(),
   displayName: z.string().nullable(),
   status: channelStatusSchema,
+  archivedAt: z.string().datetime().nullable().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });

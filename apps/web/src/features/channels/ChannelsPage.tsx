@@ -1,6 +1,6 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto, ChannelQrResultDto, RealtimeEvent } from "@prymeira-talk/shared";
-import { CheckCircle2, Link2, MessageCircle, PlugZap, QrCode, RefreshCw, Trash2, WifiOff } from "lucide-react";
+import { Archive, ArchiveRestore, CheckCircle2, Link2, MessageCircle, PlugZap, QrCode, RefreshCw, Trash2, WifiOff } from "lucide-react";
 import QRCode from "qrcode";
 import type * as React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -9,9 +9,12 @@ import {
   apiCreateTestInbound,
   apiDeleteChannel,
   apiDisconnectChannel,
+  apiGetChannelDeletionImpact,
   apiGetChannels,
   apiGetSettings,
+  apiSetChannelArchived,
   apiStartChannelQr,
+  type ChannelDeletionImpact,
   type SettingsDto
 } from "../../app/api";
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
@@ -123,6 +126,8 @@ export function ChannelsPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [realtimeToken, setRealtimeToken] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ channel: ChannelDto; impact: ChannelDeletionImpact | null; typedName: string; error: string | null } | null>(null);
   const [createDrawerOpen, setCreateDrawerOpen] = useState(false);
   const [createProvider, setCreateProvider] = useState<CreateChannelProvider>("evolution");
   const [newChannelName, setNewChannelName] = useState("");
@@ -157,7 +162,7 @@ export function ChannelsPage() {
       setError(null);
 
       try {
-        const nextChannels = await apiGetChannels(getToken);
+        const nextChannels = await apiGetChannels(getToken, undefined, { includeArchived: true });
 
         if (!isMounted) return;
 
@@ -318,8 +323,11 @@ export function ChannelsPage() {
 
   const simulatedModeActive = qrResult?.mode === "simulated";
   const qrImageSrc = qrDisplaySource?.kind === "image" ? qrDisplaySource.src : generatedQrImageSrc;
-  const connectedCount = channels.filter((channel) => channel.status === "connected").length;
-  const connectingCount = channels.filter((channel) => channel.status === "connecting").length;
+  const activeChannels = useMemo(() => channels.filter((channel) => !channel.archivedAt), [channels]);
+  const archivedChannels = useMemo(() => channels.filter((channel) => channel.archivedAt), [channels]);
+  const listedChannels = showArchived ? archivedChannels : activeChannels;
+  const connectedCount = activeChannels.filter((channel) => channel.status === "connected").length;
+  const connectingCount = activeChannels.filter((channel) => channel.status === "connecting").length;
   const metaCreateSettings = useMemo(() => getMetaCloudCreateSettings(settings), [settings]);
 
   useEffect(() => {
@@ -450,16 +458,47 @@ export function ChannelsPage() {
     }
   }
 
-  async function deleteChannel(channel: ChannelDto) {
-    const confirmed = window.confirm(`Apagar o canal "${channelTitle(channel)}"? Esta ação remove as conversas ligadas a este canal.`);
-    if (!confirmed) return;
-
+  async function setChannelArchived(channel: ChannelDto, archived: boolean) {
     setIsSaving(true);
     setError(null);
     setNotice(null);
 
     try {
-      await apiDeleteChannel(getToken, channel.id);
+      const updated = await apiSetChannelArchived(getToken, channel.id, archived);
+      setChannels((current) => mergeChannel(current, updated));
+      setQrResult((current) => (current?.channel.id === channel.id ? null : current));
+      setNotice(archived
+        ? `Canal "${channelTitle(channel)}" arquivado. As conversas continuam no Atendimento.`
+        : `Canal "${channelTitle(channel)}" restaurado. Reconecte para voltar a receber mensagens.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : archived ? "Erro ao arquivar canal." : "Erro ao restaurar canal.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function openDeleteDialog(channel: ChannelDto) {
+    setError(null);
+    setNotice(null);
+    setDeleteTarget({ channel, impact: null, typedName: "", error: null });
+    try {
+      const impact = await apiGetChannelDeletionImpact(getToken, channel.id);
+      setDeleteTarget((current) => (current?.channel.id === channel.id ? { ...current, impact } : current));
+    } catch (err) {
+      setDeleteTarget((current) => (current?.channel.id === channel.id
+        ? { ...current, error: err instanceof Error ? err.message : "Não foi possível calcular o que será apagado." }
+        : current));
+    }
+  }
+
+  async function deleteChannel(channel: ChannelDto, confirmationName: string) {
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      await apiDeleteChannel(getToken, channel.id, confirmationName);
+      setDeleteTarget(null);
       markChannelDeleted(channel.id);
       setChannels((current) => current.filter((item) => item.id !== channel.id));
       setSelectedChannelId((selected) => getSelectedChannelIdAfterDelete(channelsRef.current, channel.id, selected));
@@ -475,7 +514,8 @@ export function ChannelsPage() {
       }
       setNotice("Canal apagado.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao apagar canal.");
+      const message = err instanceof Error ? err.message : "Erro ao apagar canal.";
+      setDeleteTarget((current) => (current?.channel.id === channel.id ? { ...current, error: message } : current));
     } finally {
       setIsSaving(false);
     }
@@ -524,6 +564,11 @@ export function ChannelsPage() {
                 {connectingCount} conectando
               </span>
             ) : null}
+            {archivedChannels.length > 0 || showArchived ? (
+              <button className="secondary-button" onClick={() => setShowArchived((current) => !current)} type="button">
+                {showArchived ? "Ver canais ativos" : `Arquivados (${archivedChannels.length})`}
+              </button>
+            ) : null}
           </div>
         </div>
         <button
@@ -547,7 +592,9 @@ export function ChannelsPage() {
       <div className="channels-list-wrap">
         {isLoading ? (
           <p className="list-note">Carregando canais...</p>
-        ) : channels.length === 0 ? (
+        ) : showArchived && listedChannels.length === 0 ? (
+          <p className="list-note">Nenhum canal arquivado.</p>
+        ) : listedChannels.length === 0 ? (
           <div className="empty-state">
             <div className="empty-state-icon">
               <PlugZap size={28} aria-hidden="true" />
@@ -557,7 +604,7 @@ export function ChannelsPage() {
           </div>
         ) : (
           <div className="channel-card-list" role="list">
-            {channels.map((channel) => (
+            {listedChannels.map((channel) => (
               <article
                 className={`channel-row-card ${channel.id === selectedChannelId ? 'is-selected' : ''}`}
                 key={channel.id}
@@ -583,7 +630,18 @@ export function ChannelsPage() {
                   </span>
                 </button>
                 <div className="channel-row-actions">
-                  {channel.provider === "evolution" ? (
+                  {channel.archivedAt ? (
+                    <button
+                      className="secondary-button"
+                      disabled={isSaving}
+                      onClick={() => { void setChannelArchived(channel, false); }}
+                      type="button"
+                    >
+                      <ArchiveRestore size={14} aria-hidden="true" />
+                      Restaurar
+                    </button>
+                  ) : null}
+                  {!channel.archivedAt && channel.provider === "evolution" ? (
                     <>
                       <button
                         className="secondary-button"
@@ -605,10 +663,22 @@ export function ChannelsPage() {
                       </button>
                     </>
                   ) : null}
+                  {!channel.archivedAt ? (
+                    <button
+                      className="secondary-button"
+                      disabled={isSaving}
+                      onClick={() => { void setChannelArchived(channel, true); }}
+                      title="Tira o canal da lista e mantém as conversas"
+                      type="button"
+                    >
+                      <Archive size={14} aria-hidden="true" />
+                      Arquivar
+                    </button>
+                  ) : null}
                   <button
                     className="secondary-button danger-button"
                     disabled={isSaving}
-                    onClick={() => { void deleteChannel(channel); }}
+                    onClick={() => { void openDeleteDialog(channel); }}
                     type="button"
                   >
                     <Trash2 size={14} aria-hidden="true" />
@@ -621,6 +691,58 @@ export function ChannelsPage() {
         )}
       </div>
 
+      {deleteTarget ? (
+        <div className="leads-dialog-backdrop" role="presentation">
+          <section className="leads-dialog" role="dialog" aria-modal="true" aria-labelledby="channel-delete-title">
+            <span className="leads-eyebrow">APAGAR CANAL</span>
+            <h2 id="channel-delete-title">Apagar “{channelTitle(deleteTarget.channel)}” de vez?</h2>
+            {deleteTarget.impact ? (
+              <p>
+                Isso apaga permanentemente <strong>{deleteTarget.impact.conversations} conversa{deleteTarget.impact.conversations === 1 ? "" : "s"}</strong> e{" "}
+                <strong>{deleteTarget.impact.messages} mensage{deleteTarget.impact.messages === 1 ? "m" : "ns"}</strong> deste canal. Não dá para desfazer.
+                Para só tirar o canal da lista e manter o histórico, use <strong>Arquivar</strong>.
+              </p>
+            ) : !deleteTarget.error ? <p>Calculando o que será apagado…</p> : null}
+            {deleteTarget.impact ? (
+              <label>
+                Digite <strong>{deleteTarget.impact.confirmationName}</strong> para confirmar
+                <input
+                  aria-label="Nome do canal para confirmar"
+                  autoFocus
+                  className="text-input"
+                  onChange={(event) => {
+                    const typedName = event.target.value;
+                    setDeleteTarget((current) => (current ? { ...current, typedName, error: null } : current));
+                  }}
+                  value={deleteTarget.typedName}
+                />
+              </label>
+            ) : null}
+            {deleteTarget.error ? <p className="leads-delete-error" role="alert">{deleteTarget.error}</p> : null}
+            <div className="leads-dialog-actions">
+              <button className="secondary-button" disabled={isSaving} onClick={() => setDeleteTarget(null)} type="button">Cancelar</button>
+              {!deleteTarget.channel.archivedAt ? (
+                <button
+                  className="secondary-button"
+                  disabled={isSaving}
+                  onClick={() => { const { channel } = deleteTarget; setDeleteTarget(null); void setChannelArchived(channel, true); }}
+                  type="button"
+                >
+                  Arquivar em vez disso
+                </button>
+              ) : null}
+              <button
+                className="leads-danger-button"
+                disabled={isSaving || !deleteTarget.impact || deleteTarget.typedName.trim() !== deleteTarget.impact.confirmationName}
+                onClick={() => { void deleteChannel(deleteTarget.channel, deleteTarget.typedName.trim()); }}
+                type="button"
+              >
+                {isSaving ? "Apagando…" : "Apagar definitivamente"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {selectedChannelId ? <AssistantChannelSettings key={selectedChannelId} channelId={selectedChannelId} getToken={getToken} /> : null}
       {createDrawerOpen ? (
         <>

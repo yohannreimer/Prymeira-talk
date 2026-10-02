@@ -18,7 +18,7 @@ type ChannelRow = {
 
 export interface ChannelWatchdogPrisma {
   channel: {
-    findMany(args: { where: { provider: "evolution" } }): Promise<ChannelRow[]>;
+    findMany(args: { where: { provider: "evolution"; archivedAt: null } }): Promise<ChannelRow[]>;
     update(args: { where: { workspaceId_id: { workspaceId: string; id: string } }; data: { status: ChannelStatus } }): Promise<ChannelRow>;
   };
   message: {
@@ -171,7 +171,7 @@ export function createChannelWatchdog(deps: {
     if (running) return;
     running = true;
     try {
-      const channels = await deps.prisma.channel.findMany({ where: { provider: "evolution" } });
+      const channels = await deps.prisma.channel.findMany({ where: { provider: "evolution", archivedAt: null } });
       let checked = 0;
       let unreachable = 0;
       for (const channel of channels) {
