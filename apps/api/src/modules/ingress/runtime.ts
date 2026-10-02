@@ -114,6 +114,17 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
       logger: { warn: (fields, message) => console.warn(message, fields) } });
     return startEffectLoop(runner, { signal: abort.signal, onError: error => console.warn('Effect loop iteration failed', error) });
   })() : null;
+  // Events held as stale_source (they arrived while a connection was being paired or reset) are certified once the
+  // connection is current again. Nothing is lost while it is not: the receipt and the held decision stay on record.
+  const recertifier = consume && stageAppliesReceipts(config.stage) ? (async () => {
+    const application = new IngressApplicationService(journal);
+    while (!abort.signal.aborted) {
+      await delay(30_000, undefined, { signal: abort.signal }).catch(() => {});
+      if (abort.signal.aborted) break;
+      try { await application.recertifyPending(config.allowAllWorkspaces ? {} : { workspaceIds: [...config.workspaceAllowlist] }); }
+      catch (error) { console.warn('Recertification sweep failed', error); }
+    }
+  })() : null;
   let closing: Promise<void> | null = null;
   return { db, files, journal, publisher: () => publisher,
     close() {
@@ -124,6 +135,7 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
         await Promise.all([consumer?.close(), publisher?.close()]);
         await loop;
         await effects;
+        await recertifier;
         await bridge?.stop();
         // Setup already in flight when abort arrived may have assigned a session.
         await Promise.all([consumer?.close(), publisher?.close()]);

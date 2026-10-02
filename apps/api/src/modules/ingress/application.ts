@@ -3,7 +3,7 @@ import { groupFallbackName } from '../evolution/evolution-normalizer.js';
 import { validateEvolutionIdentityDeclarations, validateWahaIdentityDeclarations } from '../messaging/identity-declarations.js';
 import { Prisma, type IngressReceipt } from '@prisma/client';
 import { enterCanonicalTransaction, enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
-import { StaleMessagingSourceError } from '../messaging/canonical-source.js';
+import { deriveTrustedMessagingContext, StaleMessagingSourceError } from '../messaging/canonical-source.js';
 import { createCanonicalStore, type CanonicalStoreResult } from '../messaging/canonical-store.js';
 import { equal, json, sha, stable } from '../messaging/canonical-values.js';
 import type { NormalizedMessagingEvent, TrustedMessagingContext } from '../messaging/normalized-event.js';
@@ -90,33 +90,7 @@ export class IngressApplicationService {
                 const result = await this.store.persistInTransaction(tx, event, { receiptKey: `${receiptId}:${eventIndex}` });
                 await tx.ingressEventProgress.create({ data: { ...scope, state: result.outcome === 'held' ? 'held' : 'applied', reason: result.reconciliationReasons[0] ?? null,
                         observationId: result.observationId, actionId: result.actionId ?? null, messageId: result.messageId, conversationId: result.conversationId, result: json(result) } });
-                if (result.conversationId)
-                    await lockProspectingConversation(tx, source.workspaceId, result.conversationId);
-                if (event.kind === 'message' && result.messageId && result.conversationId && result.outcome !== 'held')
-                    await this.contactAnnotations(tx, receipt, eventIndex, event, result);
-                if (event.kind === 'message' && result.outcome !== 'held' && result.messageId && result.conversationId)
-                    await this.preparePresentationMedia(tx, receipt, eventIndex, event, result);
-                if (event.kind === 'message') {
-                    if (result.allowOperationalEffects && result.outcome === 'created')
-                        await this.messageHooks(tx, receipt, eventIndex, event, result);
-                    else if (result.messageId && result.conversationId) {
-                        if (result.outcome !== 'held' && source.mode === 'live')
-                            await this.exactEcho(tx, receipt, eventIndex, event, result);
-                        if (result.changes.length) {
-                            const current = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
-                            await this.invalidate(tx, receipt, eventIndex, result, `content:${result.messageId}:${sha(stable([current.body, current.mediaUrl, current.metadata, current.status]))}`);
-                        }
-                    }
-                }
-                else if (result.messageId && result.conversationId && result.changes.length) {
-                    const current = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
-                    if (event.kind === 'edit' || event.kind === 'revoke')
-                        await refreshOwnedConversationPreviewInTransaction(tx, source, { conversationId: result.conversationId, messageId: current.id, preview: current.body });
-                    await this.invalidate(tx, receipt, eventIndex, result, `action:${result.messageId}:${sha(stable([event.kind, event.target, 'action' in event ? event.action : null, 'order' in event ? event.order : null, 'patch' in event ? event.patch : null, 'status' in event ? event.status : null, 'recipient' in event ? event.recipient : null]))}`);
-                    if (event.kind === 'edit' || event.kind === 'encrypted_edit' || event.kind === 'revoke') {
-                        await this.effect(tx, receipt, eventIndex, 'content.reconcile', `action:${result.actionId}`, result.messageId, result.conversationId, result.observationId, { kind: event.kind, actionId: result.actionId });
-                    }
-                }
+                await this.afterPersist(tx, receipt, eventIndex, event, result, source);
             }, { isolationLevel: 'ReadCommitted', timeout: 15000 });
         }
         // No application completion at the start or at timer scheduling. Finalize only
@@ -135,6 +109,125 @@ export class IngressApplicationService {
             await tx.ingressDelivery.update({ where: { receiptId }, data: { state: 'pending_application', consumedAt: delivery.consumedAt ?? new Date(), leaseToken: null, leaseUntil: null, lastError: held ? 'application_held' : null } });
             return application;
         }, { isolationLevel: 'ReadCommitted' });
+    }
+    /**
+     * Certifies, under the connection's current source, an event that was held as `stale_source` because it arrived while
+     * the connection was being paired or reset. The authenticated private receipt is unchanged and the progress row stays
+     * an immutable fact; the outcome goes to `ingress_event_recertifications`. The message is kept (it is a real customer
+     * message) but enters as recovered traffic: no agent, automation or follow-up fires for a message that may be minutes
+     * old; people see it in the inbox as unread.
+     */
+    async recertify(receiptId: string, eventIndex: number) {
+        const { receipt, payload } = await this.journal.readPayload(receiptId);
+        const item = payload.events[eventIndex];
+        if (!item)
+            return { state: 'missing_event' as const };
+        const raw = JSON.parse((await this.journal.files.read(receipt.rawRef, receipt.rawDigest)).toString('utf8')) as unknown;
+        const original = this.source(receipt);
+        if (original.connectionId === null)
+            return { state: 'unsupported_source' as const };
+        return this.journal.db.$transaction(async (tx) => {
+            await enterCanonicalWorkspaceTransaction(tx, receipt.workspaceId);
+            const progress = await tx.ingressEventProgress.findUnique({ where: { receiptId_eventIndex: { receiptId, eventIndex } } });
+            if (!progress || progress.state !== 'pending_recertification' || progress.reason !== 'stale_source')
+                return { state: 'not_pending' as const };
+            if (await tx.ingressEventRecertification.findUnique({ where: { receiptId_eventIndex: { receiptId, eventIndex } } }))
+                return { state: 'already_certified' as const };
+            const scope = { workspaceId: receipt.workspaceId, channelId: receipt.channelId, receiptId, eventIndex };
+            let current: TrustedMessagingContext;
+            try {
+                current = await deriveTrustedMessagingContext(tx, { workspaceId: receipt.workspaceId, channelId: receipt.channelId,
+                    authenticatedSource: { provider: original.provider as 'evolution' | 'waha', connectionId: original.connectionId },
+                    mode: 'recovered_live', observedAt: new Date().toISOString() });
+            }
+            catch (error) {
+                if (error instanceof StaleMessagingSourceError)
+                    return { state: 'still_stale' as const }; // The connection is still being paired; try again later.
+                throw error;
+            }
+            const record_ = async (outcome: 'applied' | 'held' | 'superseded', reason: string | null, extra: Partial<{ observationId: string | null; conversationId: string | null; messageId: string | null }>, result: unknown) => {
+                await tx.ingressEventRecertification.create({ data: { ...scope, outcome, reason, ...extra, result: json(result) } });
+                return { state: outcome } as const;
+            };
+            if (current.sessionName !== original.sessionName)
+                return record_('held', 'session_changed', {}, { reason: 'session_changed' });
+            // A reset can end with another phone paired. Only the same verified WhatsApp number may inherit the message.
+            const acceptedNumber = normalizeWhatsappPhone(record(record(receipt.source).acceptedFacts).verifiedPhoneNumber as string | null | undefined);
+            const physical = await tx.channelConnection.findUniqueOrThrow({ where: { id: original.connectionId } });
+            const currentNumber = normalizeWhatsappPhone(physical.verifiedPhoneNumber);
+            if (!acceptedNumber)
+                return record_('held', 'number_unproven', {}, { reason: 'number_unproven' });
+            if (!currentNumber || physical.status !== 'connected')
+                return { state: 'still_stale' as const };
+            if (currentNumber !== acceptedNumber)
+                return record_('held', 'number_changed', {}, { reason: 'number_changed' });
+            if (item.kind !== 'accepted' || item.event.kind === 'control')
+                return record_('superseded', 'obsolete_connection_event', {}, { kind: item.kind });
+            const contradiction = original.provider === 'evolution' ? validateEvolutionIdentityDeclarations(raw) : validateWahaIdentityDeclarations(raw, item.event.addressMappings);
+            if (contradiction)
+                return record_('held', contradiction, {}, { reason: contradiction });
+            if (original.provider === 'waha') {
+                // Receive authority for the second connection requires the same verified number on both connections now.
+                const primary = await tx.channelConnection.findFirst({ where: { workspaceId: receipt.workspaceId, channelId: receipt.channelId, provider: 'evolution' } });
+                const secondary = await tx.channelConnection.findUnique({ where: { id: original.connectionId } });
+                const a = normalizeWhatsappPhone(primary?.verifiedPhoneNumber), b = normalizeWhatsappPhone(secondary?.verifiedPhoneNumber);
+                if (!a || !b || a !== b || !secondary?.lastHealthyAt || !primary || primary.lifecycleGeneration % 2 !== 0)
+                    return { state: 'still_stale' as const };
+            }
+            const event = { ...item.event, context: current };
+            const result = await this.store.persistInTransaction(tx, event, { receiptKey: `${receiptId}:${eventIndex}` });
+            if (result.outcome === 'held')
+                return record_('held', result.reconciliationReasons[0] ?? 'held', { observationId: result.observationId }, result);
+            await this.afterPersist(tx, receipt, eventIndex, event, result, current);
+            if (event.kind === 'message' && result.outcome === 'created' && result.messageId && result.conversationId) {
+                const message = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
+                if (message.direction === 'inbound')
+                    await tx.conversation.update({ where: { workspaceId_id: { workspaceId: receipt.workspaceId, id: result.conversationId } }, data: { unreadCount: { increment: 1 }, hiddenUntilReply: false } });
+                await selectConversationPreviewInTransaction(tx, current, { conversationId: result.conversationId, messageId: message.id, preview: event.content.preview, selection: 'new_message' });
+                await tx.conversation.updateMany({ where: { workspaceId: receipt.workspaceId, id: result.conversationId, OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: message.createdAt } }] }, data: { lastMessageAt: message.createdAt } });
+            }
+            return record_('applied', null, { observationId: result.observationId, conversationId: result.conversationId, messageId: result.messageId }, result);
+        }, { isolationLevel: 'ReadCommitted', timeout: 30000 });
+    }
+    /** Certifies every event waiting for a current source on this workspace scope. Returns how many were applied. */
+    async recertifyPending(input: { workspaceIds?: readonly string[]; limit?: number }) {
+        const rows = await this.journal.db.ingressEventProgress.findMany({ where: { state: 'pending_recertification', reason: 'stale_source', recertification: { is: null },
+            ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}) }, orderBy: { committedAt: 'asc' }, take: input.limit ?? 50, select: { receiptId: true, eventIndex: true } });
+        let applied = 0;
+        for (const row of rows)
+            if ((await this.recertify(row.receiptId, row.eventIndex)).state === 'applied')
+                applied++;
+        return { examined: rows.length, applied };
+    }
+    /** Everything that follows a successful canonical persist. Shared by first application and recertification. */
+    private async afterPersist(tx: Tx, receipt: IngressReceipt, eventIndex: number, event: Exclude<NormalizedMessagingEvent, { kind: 'control' }>, result: CanonicalStoreResult, source: TrustedMessagingContext) {
+        if (result.conversationId)
+            await lockProspectingConversation(tx, source.workspaceId, result.conversationId);
+        if (event.kind === 'message' && result.messageId && result.conversationId && result.outcome !== 'held')
+            await this.contactAnnotations(tx, receipt, eventIndex, event, result);
+        if (event.kind === 'message' && result.outcome !== 'held' && result.messageId && result.conversationId)
+            await this.preparePresentationMedia(tx, receipt, eventIndex, event, result);
+        if (event.kind === 'message') {
+            if (result.allowOperationalEffects && result.outcome === 'created')
+                await this.messageHooks(tx, receipt, eventIndex, event, result);
+            else if (result.messageId && result.conversationId) {
+                if (result.outcome !== 'held' && source.mode === 'live')
+                    await this.exactEcho(tx, receipt, eventIndex, event, result);
+                if (result.changes.length) {
+                    const current = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
+                    await this.invalidate(tx, receipt, eventIndex, result, `content:${result.messageId}:${sha(stable([current.body, current.mediaUrl, current.metadata, current.status]))}`);
+                }
+            }
+        }
+        else if (result.messageId && result.conversationId && result.changes.length) {
+            const current = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
+            if (event.kind === 'edit' || event.kind === 'revoke')
+                await refreshOwnedConversationPreviewInTransaction(tx, source, { conversationId: result.conversationId, messageId: current.id, preview: current.body });
+            await this.invalidate(tx, receipt, eventIndex, result, `action:${result.messageId}:${sha(stable([event.kind, event.target, 'action' in event ? event.action : null, 'order' in event ? event.order : null, 'patch' in event ? event.patch : null, 'status' in event ? event.status : null, 'recipient' in event ? event.recipient : null]))}`);
+            if (event.kind === 'edit' || event.kind === 'encrypted_edit' || event.kind === 'revoke') {
+                await this.effect(tx, receipt, eventIndex, 'content.reconcile', `action:${result.actionId}`, result.messageId, result.conversationId, result.observationId, { kind: event.kind, actionId: result.actionId });
+            }
+        }
     }
     private source(receipt: IngressReceipt): TrustedMessagingContext {
         const { acceptedFacts: _facts, ...source } = record(receipt.source);

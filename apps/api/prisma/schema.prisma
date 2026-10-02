@@ -1949,6 +1949,7 @@ model IngressEventProgress {
   conversation Conversation? @relation(fields: [workspaceId,channelId,conversationId], references: [workspaceId,channelId,id], onDelete: NoAction, map: "ingress_progress_conversation_fkey")
   message Message? @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: NoAction, map: "ingress_progress_message_fkey")
   effects IngressEffect[]
+  recertification IngressEventRecertification?
   @@id([receiptId,eventIndex])
   @@unique([workspaceId,channelId,receiptId,eventIndex], map: "ingress_event_progress_scope_event_key")
   @@index([workspaceId,channelId,state,committedAt], map: "ingress_event_progress_scope_state_idx")
@@ -2052,4 +2053,24 @@ model OutboundDispatch {
   channel Channel @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade, map: "outbound_dispatches_channel_fkey")
   @@index([workspaceId, channelId, createdAt(sort: Desc)], map: "outbound_dispatches_scope_idx")
   @@map("outbound_dispatches")
+}
+
+/// Append-only record that a held `stale_source` event was certified later, under the then-current source. The
+/// progress row itself stays immutable; this row is the proof of what happened afterwards.
+model IngressEventRecertification {
+  workspaceId String @map("workspace_id")
+  channelId String @db.Uuid @map("channel_id")
+  receiptId String @db.Uuid @map("receipt_id")
+  eventIndex Int @map("event_index")
+  outcome String
+  reason String?
+  observationId String? @db.Uuid @map("observation_id")
+  conversationId String? @db.Uuid @map("conversation_id")
+  messageId String? @db.Uuid @map("message_id")
+  result Json
+  certifiedAt DateTime @default(now()) @map("certified_at")
+  progress IngressEventProgress @relation(fields: [workspaceId,channelId,receiptId,eventIndex], references: [workspaceId,channelId,receiptId,eventIndex], onDelete: Cascade, map: "ingress_recertification_progress_fkey")
+  @@id([receiptId,eventIndex])
+  @@unique([workspaceId,channelId,receiptId,eventIndex], map: "ingress_recertification_scope_event_key")
+  @@map("ingress_event_recertifications")
 }

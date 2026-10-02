@@ -386,6 +386,55 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
         expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
         expect((await db.ingressReceipt.findUniqueOrThrow({ where: { id } })).source).toMatchObject({ lifecycleGeneration: 0 });
     });
+    describe('recertification of events held as stale_source', () => {
+        async function held(f: Awaited<ReturnType<typeof fixture>>, generation = 2) {
+            const id = await f.send();
+            await db.channelConnection.update({ where: { id: f.evo.id }, data: { lifecycleGeneration: generation, status: 'connected' } });
+            await service.apply(id);
+            return id;
+        }
+        it('applies the message under the current source as recovered traffic, leaving the held fact untouched', async () => {
+            const f = await fixture(), id = await held(f);
+            expect(await service.recertify(id, 0)).toMatchObject({ state: 'applied' });
+            expect(await db.ingressEventProgress.findFirst({ where: { receiptId: id } })).toMatchObject({ state: 'pending_recertification', reason: 'stale_source' });
+            expect(await db.ingressEventRecertification.findUnique({ where: { receiptId_eventIndex: { receiptId: id, eventIndex: 0 } } })).toMatchObject({ outcome: 'applied', messageId: expect.any(String) });
+            const conversation = await db.conversation.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+            expect(conversation).toMatchObject({ unreadCount: 1, lastMessagePreview: 'hello' });
+            expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+            // Recovered traffic reaches people, not agents or automations.
+            const kinds = (await db.ingressEffect.findMany({ where: { workspaceId: f.workspaceId } })).map(e => e.kind);
+            expect(kinds).toEqual(expect.arrayContaining(['realtime.message']));
+            expect(kinds).not.toEqual(expect.arrayContaining(['agent.debounce']));
+            expect(kinds).not.toEqual(expect.arrayContaining(['assistant.message']));
+            expect(kinds).not.toEqual(expect.arrayContaining(['automation.occurrence']));
+            expect(await service.recertify(id, 0)).toMatchObject({ state: 'already_certified' });
+            expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+        });
+        it('keeps the event waiting while the connection is still being paired, and applies it once it settles', async () => {
+            const f = await fixture(), id = await held(f, 2);
+            await db.channelConnection.update({ where: { id: f.evo.id }, data: { lifecycleGeneration: 3 } });
+            expect(await service.recertify(id, 0)).toEqual({ state: 'still_stale' });
+            expect(await db.ingressEventRecertification.count({ where: { receiptId: id } })).toBe(0);
+            await db.channelConnection.update({ where: { id: f.evo.id }, data: { lifecycleGeneration: 4 } });
+            expect(await service.recertify(id, 0)).toMatchObject({ state: 'applied' });
+        });
+        it('never gives a message from one number to a session now paired with another', async () => {
+            const f = await fixture(), id = await held(f);
+            await db.channelConnection.update({ where: { id: f.evo.id }, data: { verifiedPhoneNumber: '15559990000' } });
+            expect(await service.recertify(id, 0)).toMatchObject({ state: 'held' });
+            expect(await db.ingressEventRecertification.findUnique({ where: { receiptId_eventIndex: { receiptId: id, eventIndex: 0 } } })).toMatchObject({ outcome: 'held', reason: 'number_changed' });
+            expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+        });
+        it('does nothing for events that are not waiting, and the sweep applies what is ready', async () => {
+            const f = await fixture(), fresh = await f.send('evolution', { key: { id: 'fresh-one', remoteJid: peer, fromMe: false } });
+            await service.apply(fresh);
+            expect(await service.recertify(fresh, 0)).toEqual({ state: 'not_pending' });
+            const id = await held(f);
+            expect(await service.recertifyPending({ workspaceIds: [f.workspaceId] })).toEqual({ examined: 1, applied: 1 });
+            expect(await service.recertifyPending({ workspaceIds: [f.workspaceId] })).toEqual({ examined: 0, applied: 0 });
+            expect(await db.ingressEventRecertification.count({ where: { receiptId: id } })).toBe(1);
+        });
+    });
     it('history/append never increments unread, opens service window or creates autonomous effects', async () => {
         const f = await fixture(), id = await f.send('evolution', { type: 'append' });
         await service.apply(id);
