@@ -19,6 +19,13 @@ describe("describeChannelProblems", () => {
     const [problem] = describeChannelProblems([channel({ status: "disconnected" })], [], NOW);
     expect(problem).toMatchObject({ channelId: "c1", tone: "danger", title: "Vendas 6 está desconectado" });
   });
+  it("desconectado mas o vigia diz ok (dormente ou desligado de propósito): sem aviso", () => {
+    expect(describeChannelProblems([channel({ status: "disconnected" })], [health({ state: "ok" })], NOW)).toEqual([]);
+    expect(describeChannelProblems([channel({ status: "failed" })], [health({ state: "ok" })], NOW)).toEqual([]);
+  });
+  it("desconectado sem entrada de saúde mantém o aviso pelo status", () => {
+    expect(describeChannelProblems([channel({ status: "disconnected" })], [health({ channelId: "outro" })], NOW)).toHaveLength(1);
+  });
   it("falhou também é grave", () => {
     expect(describeChannelProblems([channel({ status: "failed" })], [], NOW)[0]?.tone).toBe("danger");
   });

@@ -20,10 +20,13 @@ export function describeChannelProblems(channels: ChannelDto[], health: ChannelH
     if (channel.provider !== "evolution") continue;
     const label = labelOf(channel);
     const item = byChannel.get(channel.id);
+    const disconnected = channel.status === "disconnected" || channel.status === "failed";
+    // Watchdog says "ok" for a disconnected channel: it is dormant or was disconnected on purpose.
+    if (disconnected && item?.state === "ok") continue;
     if (item?.state === "needs_qr") {
       problems.push({ channelId: channel.id, tone: "danger", title: `${label} precisa ser reconectado`,
         detail: "O WhatsApp desvinculou este número. Abra Canais e escaneie o QR para voltar a receber mensagens." });
-    } else if (channel.status === "disconnected" || channel.status === "failed") {
+    } else if (disconnected) {
       if (item?.state === "reconnecting") {
         problems.push({ channelId: channel.id, tone: "info", title: `${label} está reconectando`,
           detail: "O Talk está tentando reconectar sozinho. Se continuar assim, vamos avisar que é preciso escanear o QR." });

@@ -37,4 +37,19 @@ describe("ChannelHealthAlertList", () => {
     expect(html).toContain("O monitoramento dos canais não consegue falar com a Evolution");
     expect(html).toContain("channel-alert-warning");
   });
+  it("com onDismiss mostra o botão Dispensar com aria-label", () => {
+    const html = renderToStaticMarkup(<ChannelHealthAlertList onOpenChannels={vi.fn()} onDismiss={vi.fn()} problems={[
+      { channelId: "a", tone: "danger", title: "Vendas 6 está desconectado", detail: "x" }
+    ]} />);
+    expect(html).toContain("channel-alert-actions");
+    expect(html).toContain("channel-alert-dismiss");
+    expect(html).toContain("Dispensar");
+    expect(html).toContain('aria-label="Dispensar aviso: Vendas 6 está desconectado"');
+  });
+  it("sem onDismiss não mostra o botão Dispensar", () => {
+    const html = renderToStaticMarkup(<ChannelHealthAlertList onOpenChannels={vi.fn()} problems={[
+      { channelId: "a", tone: "danger", title: "A", detail: "x" }
+    ]} />);
+    expect(html).not.toContain("Dispensar");
+  });
 });

@@ -8573,3 +8573,4 @@ select:disabled {
 .channel-alert-danger { --channel-alert-border: #c0392b; background: #fdf0ee; }
 .channel-alert-warning { --channel-alert-border: #c98a00; background: #fff7e0; }
 .channel-alert-info { --channel-alert-border: #3b6ea5; background: #eef4fb; }
+.channel-alert-actions { display: flex; gap: 8px; flex-wrap: wrap; }
