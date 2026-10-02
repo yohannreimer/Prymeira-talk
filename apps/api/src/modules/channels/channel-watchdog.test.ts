@@ -12,6 +12,7 @@ function setup(options: {
   states?: Record<string, "open" | "connecting" | "close" | "throw">;
   lastInbound?: Date | null;
   qr?: string | null;
+  activity?: boolean;
 } = {}) {
   const channels = options.channels ?? [row("a")];
   const events: unknown[] = [];
@@ -25,7 +26,12 @@ function setup(options: {
         return { ...found };
       })
     },
-    message: { findFirst: vi.fn(async () => options.lastInbound === undefined ? { createdAt: new Date(NOON.getTime() - 60_000) } : options.lastInbound ? { createdAt: options.lastInbound } : null) }
+    message: {
+      findFirst: vi.fn(async (args: { select: { id?: true; createdAt?: true } }) => {
+        if (args.select.id) return options.activity === false ? null : { id: "m1" };
+        return options.lastInbound === undefined ? { createdAt: new Date(NOON.getTime() - 60_000) } : options.lastInbound ? { createdAt: options.lastInbound } : null;
+      })
+    }
   };
   const client = {
     getConnectionState: vi.fn(async ({ instanceName }: { instanceName: string }) => {
@@ -138,5 +144,43 @@ describe("channel watchdog", () => {
     expect(health.at(-1)).toMatchObject({ payload: { channelId: "a", state: "ok", attempts: 0 } });
     expect(prisma.channel.update).toHaveBeenLastCalledWith(expect.objectContaining({ data: { status: "connected" } }));
     expect(watchdog.getHealth("w1")).toEqual([expect.objectContaining({ state: "ok" })]);
+  });
+
+  it("canal dormente (sem mensagens há 7 dias): reconcilia o status, mas não reconecta nem alerta", async () => {
+    const { watchdog, prisma, client, events } = setup({ states: { a: "close" }, activity: false });
+    await watchdog.tick();
+    expect(prisma.channel.update).toHaveBeenCalledWith(expect.objectContaining({ data: { status: "disconnected" } }));
+    expect(client.connectInstance).not.toHaveBeenCalled();
+    expect(events.filter((e) => (e as { type: string }).type === "channel.health")).toEqual([]);
+    expect(prisma.message.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ createdAt: { gte: new Date(NOON.getTime() - 7 * 24 * 60 * 60_000) } })
+    }));
+  });
+
+  it("canal dormente aberto não reafirma o webhook", async () => {
+    const { watchdog, client } = setup({ activity: false });
+    await watchdog.tick();
+    expect(client.setWebhook).not.toHaveBeenCalled();
+  });
+
+  it("desconexão manual: não reconecta nem alerta; ao limpar volta ao normal", async () => {
+    const { watchdog, prisma, client, events } = setup({ states: { a: "close" } });
+    watchdog.markManualDisconnect("a");
+    await watchdog.tick();
+    expect(prisma.channel.update).toHaveBeenCalledWith(expect.objectContaining({ data: { status: "disconnected" } }));
+    expect(client.connectInstance).not.toHaveBeenCalled();
+    expect(events.filter((e) => (e as { type: string }).type === "channel.health")).toEqual([]);
+    watchdog.clearManualDisconnect("a");
+    await watchdog.tick();
+    expect(client.connectInstance).toHaveBeenCalledTimes(1);
+  });
+
+  it("ao marcar desconexão manual de um canal em alerta, publica o retorno a ok", async () => {
+    const { watchdog, events } = setup({ states: { a: "close" } });
+    await watchdog.tick();
+    watchdog.markManualDisconnect("a");
+    await watchdog.tick();
+    const health = events.filter((e) => (e as { type: string }).type === "channel.health");
+    expect(health.at(-1)).toMatchObject({ payload: { channelId: "a", state: "ok", attempts: 0 } });
   });
 });

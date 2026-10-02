@@ -4,6 +4,7 @@ import { decideChannelHealth, MAX_RECONNECT_ATTEMPTS, type EvolutionState, type 
 
 const DEFAULT_INTERVAL_MS = 120_000;
 const WEBHOOK_EVERY_MS = 15 * 60_000;
+const DORMANT_AFTER_MS = 7 * 24 * 60 * 60_000;
 
 type ChannelRow = {
   id: string; workspaceId: string; provider: string; providerKey: string;
@@ -22,6 +23,10 @@ export interface ChannelWatchdogPrisma {
       orderBy: { createdAt: "desc" };
       select: { createdAt: true };
     }): Promise<{ createdAt: Date } | null>;
+    findFirst(args: {
+      where: { workspaceId: string; conversation: { channelId: string }; createdAt: { gte: Date } };
+      select: { id: true };
+    }): Promise<{ id: string } | null>;
   };
 }
 
@@ -49,6 +54,7 @@ export function createChannelWatchdog(deps: {
   const log = deps.log ?? console;
   const memory = new Map<string, HealthMemory & { workspaceId: string; lastInboundAt: string | null }>();
   const webhookAt = new Map<string, number>();
+  const manualDisconnects = new Set<string>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let running = false;
 
@@ -74,6 +80,18 @@ export function createChannelWatchdog(deps: {
 
     let decision = decideChannelHealth({ evolutionState, previous, lastInboundAt, now: current });
 
+    // Manually disconnected or dormant channels are still reconciled, but never reconnected or alerted.
+    const suppressed = evolutionState !== null && (manualDisconnects.has(channel.id) || !(await deps.prisma.message.findFirst({
+      where: { workspaceId: channel.workspaceId, conversation: { channelId: channel.id }, createdAt: { gte: new Date(current.getTime() - DORMANT_AFTER_MS) } },
+      select: { id: true }
+    })));
+    if (suppressed) {
+      decision = {
+        ...decision, state: "ok", attempts: 0, nextAttemptAt: null, action: "none",
+        since: previous?.state === "ok" ? previous.since : current.toISOString()
+      };
+    }
+
     if (decision.talkStatus && decision.talkStatus !== channel.status) {
       const updated = await deps.prisma.channel.update({
         where: { workspaceId_id: { workspaceId: channel.workspaceId, id: channel.id } },
@@ -82,7 +100,7 @@ export function createChannelWatchdog(deps: {
       deps.publish({ type: "channel.updated", workspaceId: channel.workspaceId, payload: toChannelDto(updated as never) });
     }
 
-    if (evolutionState === "open" && (current.getTime() - (webhookAt.get(channel.id) ?? 0)) >= WEBHOOK_EVERY_MS) {
+    if (!suppressed && evolutionState === "open" && (current.getTime() - (webhookAt.get(channel.id) ?? 0)) >= WEBHOOK_EVERY_MS) {
       webhookAt.set(channel.id, current.getTime());
       await client.setWebhook({
         instanceName: channel.providerKey,
@@ -130,6 +148,8 @@ export function createChannelWatchdog(deps: {
       timer = setInterval(() => { void tick(); }, deps.intervalMs ?? DEFAULT_INTERVAL_MS);
       timer.unref?.();
     },
+    markManualDisconnect(channelId: string) { manualDisconnects.add(channelId); },
+    clearManualDisconnect(channelId: string) { manualDisconnects.delete(channelId); },
     async stop() {
       if (timer) clearInterval(timer);
       timer = undefined;
