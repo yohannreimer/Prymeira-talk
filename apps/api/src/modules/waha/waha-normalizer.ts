@@ -3,6 +3,15 @@ import type { MessageEditPatch, NormalizationResult, SourceOrder, TrustedMessagi
 import { normalizeChatAddress, parseWahaMessageKey, record, serialized, string, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 import { wahaContent } from './waha-content.js';
 
+/** WhatsApp notices, not messages: encryption/security notices, group and call logs, protocol frames and the
+ * "waiting for this message" placeholder. WAHA WPP only drops gp2/e2e_notification live and drops nothing in chat
+ * history; a fresh WhatsApp Web link stamps many of them with the link time, so kept they would surface old chats as
+ * new inbound "unrecognized" messages. */
+const WPP_NOTICE_TYPES = new Set(['e2e_notification', 'notification', 'notification_template', 'gp2', 'broadcast_notification', 'call_log', 'ciphertext', 'protocol', 'revoked', 'debug', 'newsletter_notification', 'pinned_message', 'keep_in_chat']);
+export function isWahaNotice(payload: Record<string, unknown>) {
+  const raw = record(payload._data), type = string(raw.type);
+  return (type !== null && WPP_NOTICE_TYPES.has(type)) || raw.isNotification === true;
+}
 const unknownOrder: SourceOrder = { timestampMs: null, sequence: null };
 function messageOrder(value: unknown): SourceOrder {
   return { timestampMs: typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 8.64e12 ? value * 1000 : null, sequence: null };
@@ -84,6 +93,7 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
       recipient: normalizeChatAddress(model.sender), order: { ...unknownOrder } } };
   }
   if (eventName !== 'message' && eventName !== 'message.any') return { kind: 'ignored', reason: 'unsupported_event' };
+  if (isWahaNotice(payload)) return { kind: 'ignored', reason: 'provider_system_notice' };
   if (!string(payload.id) || (payload.fromMe !== undefined && typeof payload.fromMe !== 'boolean')) return { kind: 'invalid', reason: 'invalid_message_key' };
   const participant = participantOf(raw);
   const key = parsedKey(raw.id ?? payload.id, participant);

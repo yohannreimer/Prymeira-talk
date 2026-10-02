@@ -18,6 +18,12 @@ function content(input: unknown) {
   return result;
 }
 describe('WAHA 2026.9.1 WPP normalization', () => {
+  it.each(['e2e_notification', 'notification_template', 'ciphertext', 'call_log', 'protocol', 'gp2'])('ignores WhatsApp notice %s instead of creating an unrecognized inbound message', type => {
+    expect(normalizeWahaEvent(context, message({ type, body: '' }, { body: '' }))).toEqual({ kind: 'ignored', reason: 'provider_system_notice' });
+  });
+  it('ignores raw notifications whatever their type', () => {
+    expect(normalizeWahaEvent(context, message({ type: 'chat', isNotification: true }))).toEqual({ kind: 'ignored', reason: 'provider_system_notice' });
+  });
   it('uses trusted context only, retains exact native ID and ignores source app/api as echo evidence', () => {
     const result = content(message({}, { source: 'api' }));
     expect(result.context).toEqual(context);

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ChannelConnection, PrismaClient } from '@prisma/client';
 import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normalizer.js';
 import type { EvolutionHistorySource, HistoryRecord } from '../evolution/evolution-history.js';
-import { normalizeWahaEvent } from '../waha/waha-normalizer.js';
+import { isWahaNotice, normalizeWahaEvent } from '../waha/waha-normalizer.js';
 import type { WahaClient, WahaMessage } from '../waha/waha.client.js';
 import type { LidMapping, WahaLidResolver } from '../waha/waha-lid-resolver.js';
 import { normalizeChatAddress, parseWahaMessageKey, record, serialized } from '../messaging/whatsapp-identity.js';
@@ -64,9 +64,9 @@ export async function listWahaChats(client: Pick<WahaClient, 'getChats'>, sessio
 
 export function wahaItems(session: string, messages: WahaMessage[], lidMappings: LidMapping[] = []): ProviderMessageItem[] {
   return messages.flatMap(message => {
-    const id = serialized(message.id), timestampMs = seconds(message.timestamp);
-    if (!id || timestampMs === null) return [];
-    return [{ receiptId: id, timestampMs, originalType: typeof message.type === 'string' ? message.type : undefined,
+    const id = serialized(message.id), timestampMs = seconds(message.timestamp), type = record(message._data).type;
+    if (!id || timestampMs === null || isWahaNotice(record(message))) return [];
+    return [{ receiptId: id, timestampMs, originalType: typeof type === 'string' ? type : undefined,
       normalize: context => normalizeWahaEvent(context, { event: 'message.any', session, payload: message }, { verifiedLidMappings: lidMappings }) }];
   });
 }
