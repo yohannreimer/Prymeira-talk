@@ -28,6 +28,7 @@ export async function buildApp(
       JEV_MODEL: "jev-latest",
       INBOX_TRIAGE_PRIMARY: "jev",
       INBOX_TRIAGE_ENABLED: false,
+      CONTACT_NAME_RECOVERY_ENABLED: true,
       TALK_UPLOAD_DIR: "tmp/test-uploads",
       LEAD_GOOGLE_MAX_CONCURRENT_JOBS: 1,
       LEAD_GOOGLE_DEFAULT_DEPTH: 5,

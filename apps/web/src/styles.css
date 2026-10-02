@@ -4787,6 +4787,19 @@ select:disabled {
 .campaign-review-message span { color: #688074; font-size: .83rem; font-weight: 700; }
 .campaign-review-message p { margin: 0; padding: 19px; border-radius: 12px; color: #fff;
   background: #255345; white-space: pre-wrap; line-height: 1.55; }
+.campaign-review-samples ul { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.campaign-review-sample { display: grid; gap: 6px; }
+.campaign-review-sample strong { color: #253f34; font-size: .87rem; }
+.campaign-review-samples small { color: #688074; font-size: .83rem; }
+.message-name-helper { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.message-name-helper small { flex: 1 1 260px; color: #668373; font-size: 12px; line-height: 1.45; }
+.message-variations { display: grid; gap: 14px; padding: 18px; border: 1px solid #d7e6da;
+  border-radius: 12px; background: #f8fbf9; }
+.message-variations-heading { display: flex; flex-wrap: wrap; align-items: center;
+  justify-content: space-between; gap: 10px; color: #275544; }
+.message-variation { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid #e3ece6; }
+.message-variation .secondary-button { justify-self: start; }
+.message-variation .error-note { margin: 0; }
 .campaign-review-confirmation { display: flex; gap: 11px; padding: 16px;
   border: 1px solid #bdd7c5; border-radius: 12px; line-height: 1.45; cursor: pointer; }
 .campaign-review-confirmation input { align-self: start; margin-top: 4px; accent-color: #245f4d; }

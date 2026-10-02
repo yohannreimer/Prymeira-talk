@@ -18,6 +18,7 @@ import {
   buildPhoneLookupCandidates,
   normalizePhoneForStorage
 } from "../contacts/phone-normalization.js";
+import { usableContactName } from "../contacts/contact-name.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import { pauseAgentOnHumanOutbound } from "../conversations/pause-agent-on-human-outbound.js";
 import { applyInboundDepartmentRouting, supportsDepartmentRouting } from "../team/team-routing.service.js";
@@ -437,7 +438,11 @@ function extractPushName(data: unknown) {
     readStringPath(data, ["data", "key", "pushName"])
   ];
 
-  return candidates.find((value) => value && value.trim().length > 0)?.trim() ?? null;
+  for (const value of candidates) {
+    const name = usableContactName(value);
+    if (name) return name;
+  }
+  return null;
 }
 
 function extractQrCode(data: unknown) {

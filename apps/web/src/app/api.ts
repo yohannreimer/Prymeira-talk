@@ -375,6 +375,7 @@ export interface CampaignAudiencePreviewDto {
   revision: string;
   unresolvedVariables: string[];
   effectiveStartAt?: string;
+  nameCheck?: "ok" | "unavailable";
 }
 
 export interface CampaignProgressDto {
@@ -2934,6 +2935,26 @@ export function apiPreviewCampaignAudience(getToken: TokenProvider, campaignId: 
   channelId: string, schedule?: { startMode: "now" | "scheduled"; scheduledAt: string | null;
     timeZone: string }): Promise<CampaignAudiencePreviewDto> {
   return campaignAction(getToken, campaignId, "preview-audience", { channelId, ...schedule });
+}
+
+export async function apiGenerateMessageVariations(
+  getToken: () => Promise<string | null>,
+  message: string
+): Promise<string[]> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/campaigns/message-variations`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ message })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(payload?.error ?? `Failed to generate variations: ${response.status}`);
+  }
+  const data = await response.json() as { variations?: unknown };
+  return Array.isArray(data.variations)
+    ? data.variations.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 export function apiActivateCampaign(getToken: TokenProvider, campaignId: string, body: {

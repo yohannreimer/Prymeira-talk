@@ -57,6 +57,18 @@ describe("readEnv", () => {
     expect(() => readEnv({ ...baseProductionEnv, INBOX_TRIAGE_PRIMARY: "unknown" })).toThrow(/INBOX_TRIAGE_PRIMARY/);
   });
 
+  it("enables contact name recovery by default and accepts a kill switch", () => {
+    expect(readEnv(baseProductionEnv).CONTACT_NAME_RECOVERY_ENABLED).toBe(true);
+    expect(readEnv({ ...baseProductionEnv, CONTACT_NAME_RECOVERY_ENABLED: "" }).CONTACT_NAME_RECOVERY_ENABLED).toBe(true);
+    for (const value of ["true", "1", "on", "TRUE", " On "]) {
+      expect(readEnv({ ...baseProductionEnv, CONTACT_NAME_RECOVERY_ENABLED: value }).CONTACT_NAME_RECOVERY_ENABLED).toBe(true);
+    }
+    for (const value of ["false", "0", "off", "FALSE", " Off "]) {
+      expect(readEnv({ ...baseProductionEnv, CONTACT_NAME_RECOVERY_ENABLED: value }).CONTACT_NAME_RECOVERY_ENABLED).toBe(false);
+    }
+    expect(() => readEnv({ ...baseProductionEnv, CONTACT_NAME_RECOVERY_ENABLED: "maybe" })).toThrow(/CONTACT_NAME_RECOVERY_ENABLED/);
+  });
+
   it("loads the conservative Leads defaults without source services", () => {
     const env = readEnv(baseProductionEnv);
 
