@@ -159,6 +159,17 @@ describe('physical channel lifecycle', () => {
     expect(f.records.find((r) => r.id === wahaId)).toMatchObject({ status: 'disconnected', eligible: false });
     expect(f.records.find((r) => r.id === wahaId).lifecycleGeneration % 2).toBe(0);
   });
+  it('disconnecting a stuck WAHA (timeout or 5xx) still ends the connection in Talk; a refusal does not', async () => {
+    const f = fixture();
+    const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
+    await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    f.client.logoutSession.mockRejectedValueOnce(Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }));
+    await service.disconnect({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
+    expect(f.records.find((r) => r.id === wahaId)).toMatchObject({ status: 'disconnected', eligible: false, lastError: 'REMOTE_STOP_UNCONFIRMED' });
+    expect(f.records.find((r) => r.id === wahaId).lifecycleGeneration % 2).toBe(0);
+    f.client.getSession.mockResolvedValueOnce({ name: 'talk-waha', status: 'WORKING', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: { workspaceId: 'other', channelId: ch } } });
+    await expect(service.disconnect({ workspaceId: 'ws', channelId: ch, connectionId: wahaId })).rejects.toMatchObject({ code: 'WAHA_SESSION_CONFLICT' });
+  });
   it('discards a delayed failed Evolution probe after secondary logout', async () => {
     const f = fixture();
     const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });

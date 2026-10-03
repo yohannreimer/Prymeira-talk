@@ -92,6 +92,7 @@ export function ChannelConnectionsPanel({ channel, primaryQr, qrEvent, getToken,
       {connection?.lastError === 'PHONE_MISMATCH' ? <p className="error-note">Número diferente — conecte o mesmo número da Evolution. Esta conexão não pode enviar.</p> : null}
       {connection?.lastError === 'PRIMARY_PHONE_UNVERIFIED' ? <p>Confirme a conexão Evolution para verificar o número.</p> : null}
       {connection?.lastError === 'ENGINE_NOT_READY' ? <p className="error-note">A sessão está aberta, mas o WhatsApp não carregou nela. Esta conexão não envia nem recebe até voltar; se continuar, desconecte e gere o QR de novo.</p> : null}
+      {connection?.lastError === 'REMOTE_STOP_UNCONFIRMED' ? <p>O WAHA não confirmou o desligamento (estava sem responder). O Talk já parou de usar esta conexão.</p> : null}
       {connection?.lastError === 'RECEIVE_LOSS' ? <p className="error-note">Esta conexão deixou de receber mensagens que a outra recebeu. Ela volta sozinha quando receber de novo.</p> : null}
       {provider === 'Evolution' ? <>
         <ChannelQrView key={qr ? qrKey(qr) : `${channel.id}:${provider}`} provider={provider} qrCode={qr?.qrCode} expiresAt={qr?.qr.expiresAt} />

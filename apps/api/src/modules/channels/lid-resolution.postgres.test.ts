@@ -56,7 +56,7 @@ describe.skipIf(!databaseUrl)('LID conversations resolved through WAHA', () => {
     expect(visible[0]!.contact.phone).not.toContain('@lid');
   });
 
-  it('leaves a LID WAHA does not know as it is and asks again only hours later', async () => {
+  it('leaves a LID WAHA does not know as it is and asks again later, more rarely each time', async () => {
     const f = await fixture(), L = lid();
     await f.imported(L, 'U1', 'oi', NOW - 60_000);
     const lookup = vi.fn(async () => null);
@@ -65,9 +65,12 @@ describe.skipIf(!databaseUrl)('LID conversations resolved through WAHA', () => {
     expect(await run()).toEqual({ resolved: 0, merged: 0 });
     expect(await run()).toEqual({ resolved: 0, merged: 0 });
     expect(lookup).toHaveBeenCalledTimes(1);
-    clock += 7 * 60 * 60_000;
-    await run();
-    expect(lookup).toHaveBeenCalledTimes(2);
+    clock += 6 * 60_000; await run();
+    expect(lookup).toHaveBeenCalledTimes(2); // 5 min after the first try
+    clock += 6 * 60_000; await run();
+    expect(lookup).toHaveBeenCalledTimes(2); // the next one waits 15 min
+    clock += 7 * 60 * 60_000; await run();
+    expect(lookup).toHaveBeenCalledTimes(3);
     expect((await db.conversation.findFirstOrThrow({ where: { workspaceId: f.workspaceId }, include: { contact: true } })).contact.phone).toBe(L);
   });
 });

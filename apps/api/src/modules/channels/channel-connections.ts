@@ -186,7 +186,9 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
   async function revalidateSecondary(tx: ConnectionTransaction, channel: Channel, primaryPhone: string | null) {
     const secondary = await tx.channelConnection.findFirst({ where: { workspaceId: channel.workspaceId, channelId: channel.id, provider: 'waha' } });
     if (!secondary || (primaryPhone && primaryPhone === secondary.verifiedPhoneNumber)) return false;
-    await tx.channelConnection.update({ where: whereId(secondary), data: { eligible: false, health: secondary.status === 'connected' ? 'degraded' : secondary.health, lastHealthyAt: null, lastError: primaryPhone ? 'PHONE_MISMATCH' : 'PRIMARY_PHONE_UNVERIFIED' } });
+    // A WAHA that has no verified number (e.g. its engine is not connected) is not a different number: keep its own reason.
+    const reason = !primaryPhone ? 'PRIMARY_PHONE_UNVERIFIED' : secondary.verifiedPhoneNumber ? 'PHONE_MISMATCH' : secondary.lastError ?? 'PHONE_UNVERIFIED';
+    await tx.channelConnection.update({ where: whereId(secondary), data: { eligible: false, health: secondary.status === 'connected' ? 'degraded' : secondary.health, lastHealthyAt: null, lastError: reason } });
     return true;
   }
   async function refresh(input: ConnectionScope): Promise<ChannelOperationResultDto> {
@@ -280,6 +282,15 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
       if (logout) await client.logoutSession({ session: connection.sessionName });
       await client.stopSession({ session: connection.sessionName });
     } catch (error) {
+      // A stuck WAHA (timeout, 5xx, unreachable) must not trap the user: Talk stops using the connection anyway and
+      // records that WAHA did not confirm. Refusals (another channel's session, unqualified engine, other 4xx) still fail.
+      const unconfirmed = !(error instanceof ConnectionServiceError) && !(error instanceof WahaClientError && error.statusCode < 500);
+      if (unconfirmed) {
+        await commitLifecycle(operation, async (tx) => {
+          await tx.channelConnection.update({ where: whereId(connection), data: { status: 'disconnected', health: 'unknown', verifiedPhoneNumber: logout ? null : connection.verifiedPhoneNumber, lastHealthyAt: null, eligible: false, disconnectedAt: new Date(), lastError: 'REMOTE_STOP_UNCONFIRMED' } });
+        });
+        return;
+      }
       if (!(error instanceof WahaClientError && error.statusCode === 404)) {
         await commitLifecycle(operation, (tx) => markFailure(tx, connection, error instanceof ConnectionServiceError ? error.code : 'PROVIDER_UNAVAILABLE')); throw error;
       }

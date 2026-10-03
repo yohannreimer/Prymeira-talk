@@ -8,9 +8,11 @@ import { autoResolveAuthority } from './conversation-authority.js';
 import { pairedConnections } from './provider-history.js';
 
 const store = createCanonicalStore();
-/** A LID WAHA could not answer is asked again only after this; an answer is permanent (it becomes a mapping). */
-const RETRY_AFTER_MS = 6 * 60 * 60_000;
-const asked = new Map<string, number>();
+/** A LID WAHA could not answer is asked again later, more rarely each time (right after pairing WAHA is still
+ * learning the account's LIDs): 5 min, 15 min, 1 h, then every 6 h. An answer is permanent (it becomes a mapping).
+ * Keyed by the pairing, so a new QR asks again at once. */
+const RETRY_AFTER_MS = [5 * 60_000, 15 * 60_000, 60 * 60_000, 6 * 60 * 60_000];
+const asked = new Map<string, { at: number; attempts: number }>();
 
 /** Chats Talk only knows by a LID (no phone in their address family) and that have a conversation. */
 async function unresolvedLidChats(prisma: PrismaClient, scope: { workspaceId: string; channelId: string }) {
@@ -44,9 +46,9 @@ export async function resolveLidConversationsSweep(prisma: PrismaClient, deps: {
     try {
       for (const lid of await unresolvedLidChats(prisma, { workspaceId: connection.workspaceId, channelId: connection.channelId })) {
         if (budget <= 0) break;
-        const key = `${connection.id}\n${lid}`;
-        if ((asked.get(key) ?? 0) > now() - RETRY_AFTER_MS) continue;
-        budget--; asked.set(key, now());
+        const key = `${connection.id}\n${connection.connectedAt?.getTime() ?? 0}\n${lid}`, previous = asked.get(key);
+        if (previous && previous.at > now() - RETRY_AFTER_MS[Math.min(previous.attempts, RETRY_AFTER_MS.length) - 1]!) continue;
+        budget--; asked.set(key, { at: now(), attempts: (previous?.attempts ?? 0) + 1 });
         const pn = await deps.lids.lookup(connection.sessionName, lid);
         if (!pn) continue;
         const outcome = await applyLidMapping(prisma, connection, lid, pn);
