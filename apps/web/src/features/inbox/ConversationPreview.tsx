@@ -1,4 +1,4 @@
-import { Camera, FileText, Mic, Sticker, Video } from 'lucide-react';
+import { CameraIcon, FileTextIcon, MicrophoneIcon, StickerIcon, VideoCameraIcon, type Icon as PhosphorIcon } from '@phosphor-icons/react';
 import type { ConversationDto, ConversationLastMessageKind } from '@prymeira-talk/shared';
 import { MessageTicks } from './MessageTicks';
 
@@ -20,14 +20,15 @@ export function conversationPreview(conversation: Pick<ConversationDto, 'lastMes
   return { kind, text: placeholder ? labels[placeholder] : text };
 }
 
-const icons: Record<MediaKind, typeof Camera> = { sticker: Sticker, image: Camera, video: Video, audio: Mic, file: FileText };
+// Phosphor's filled glyphs read like WhatsApp's solid media icons.
+const icons: Record<MediaKind, PhosphorIcon> = { sticker: StickerIcon, image: CameraIcon, video: VideoCameraIcon, audio: MicrophoneIcon, file: FileTextIcon };
 
 export function ConversationPreview({ conversation }: { conversation: Pick<ConversationDto, 'lastMessagePreview' | 'lastMessage'> }) {
   const { kind, text } = conversationPreview(conversation);
   const Icon = kind ? icons[kind] : null;
   return <span className="conversation-preview">
     {conversation.lastMessage?.direction === 'outbound' ? <MessageTicks status={conversation.lastMessage.status} /> : null}
-    {Icon ? <Icon className="conversation-preview-kind" size={14} aria-hidden="true" /> : null}
+    {Icon ? <Icon className="conversation-preview-kind" size={15} weight="fill" aria-hidden="true" /> : null}
     <span className="conversation-preview-text">{text}</span>
   </span>;
 }
