@@ -8625,9 +8625,14 @@ select:disabled {
 .message-bubble.is-highlighted .msg-bubble-body { animation: message-flash 1.6s ease; }
 @keyframes message-flash { 0%, 40% { box-shadow: 0 0 0 3px rgba(6, 207, 156, 0.55); } 100% { box-shadow: none; } }
 
-.message-actions { display: flex; flex-direction: column; gap: 4px; align-self: center; opacity: 0; transition: opacity 0.12s ease; }
+/* Floating beside the bubble: hidden actions must not add height, so consecutive messages stay close like WhatsApp. */
+.message-bubble { position: relative; }
+.message-actions { position: absolute; top: 50%; display: flex; gap: 4px; transform: translateY(-50%); opacity: 0; pointer-events: none; transition: opacity 0.12s ease; }
+.message-bubble.is-inbound .message-actions { left: 100%; padding-left: 6px; }
+.message-bubble.is-outbound .message-actions { right: 100%; padding-right: 6px; flex-direction: row-reverse; }
+.message-bubble:hover .message-actions, .message-bubble:focus-within .message-actions { pointer-events: auto; }
 .message-bubble:hover .message-actions, .message-bubble:focus-within .message-actions { opacity: 1; }
-@media (hover: none) { .message-actions { opacity: 0.85; } }
+@media (hover: none) { .message-actions { opacity: 0.85; pointer-events: auto; } }
 .message-action { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%;
   background: var(--color-surface-card); color: var(--color-text-secondary, #54656f); box-shadow: 0 1px 2px rgba(11, 20, 26, 0.18); cursor: pointer; }
 .message-action:hover, .message-action:focus-visible { color: var(--color-brand-600, #1f4f44); }
