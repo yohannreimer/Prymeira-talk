@@ -8604,3 +8604,45 @@ select:disabled {
 .composer-reply .message-quote { flex: 1; margin: 0; }
 .composer-reply button { border: 0; background: transparent; cursor: pointer; padding: 4px; color: var(--color-text-secondary, #666); }
 .message-bubble:has(.message-reactions) { margin-bottom: 16px; }
+
+/* WhatsApp-like thread: tighter bubbles, time on the last line, actions beside the bubble on hover. */
+.message-thread-content { gap: 6px; }
+.message-bubble { max-width: min(72%, 680px); gap: 6px; }
+.message-bubble.is-inbound .msg-bubble-body,
+.message-bubble.is-outbound .msg-bubble-body { position: relative; min-width: 0; gap: 3px; padding: 6px 9px 7px; }
+.message-bubble.is-inbound .msg-bubble-body { border-radius: 2px 10px 10px 10px; }
+.message-bubble.is-outbound .msg-bubble-body { border-radius: 10px 2px 10px 10px; }
+.message-bubble p { font-size: 13.5px; line-height: 1.42; }
+.message-bubble-meta { gap: 4px; line-height: 1; }
+.message-bubble time { font-size: 10.5px; white-space: nowrap; }
+/* The spacer reserves the meta's width at the end of the text: the time sits on the last line when it fits and
+ * drops to a line of its own when it does not, exactly like WhatsApp. */
+.message-meta-spacer { display: none; }
+.msg-bubble-body.has-inline-meta .message-meta-spacer { display: inline-flex; gap: 4px; padding-left: 12px; visibility: hidden; white-space: nowrap; vertical-align: baseline; }
+.msg-bubble-body.has-inline-meta .message-meta-spacer time { font-size: 10.5px; }
+.msg-bubble-body.has-inline-meta .message-text { position: relative; }
+.msg-bubble-body.has-inline-meta .message-text .message-bubble-meta { position: absolute; right: 0; bottom: 1px; display: inline-flex; white-space: nowrap; }
+.message-bubble.is-highlighted .msg-bubble-body { animation: message-flash 1.6s ease; }
+@keyframes message-flash { 0%, 40% { box-shadow: 0 0 0 3px rgba(6, 207, 156, 0.55); } 100% { box-shadow: none; } }
+
+.message-actions { display: flex; flex-direction: column; gap: 4px; align-self: center; opacity: 0; transition: opacity 0.12s ease; }
+.message-bubble:hover .message-actions, .message-bubble:focus-within .message-actions { opacity: 1; }
+@media (hover: none) { .message-actions { opacity: 0.85; } }
+.message-action { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%;
+  background: var(--color-surface-card); color: var(--color-text-secondary, #54656f); box-shadow: 0 1px 2px rgba(11, 20, 26, 0.18); cursor: pointer; }
+.message-action:hover, .message-action:focus-visible { color: var(--color-brand-600, #1f4f44); }
+.message-action:disabled { opacity: 0.45; cursor: wait; }
+
+/* Quoted message, WhatsApp style: coloured bar and author, muted text, clickable to the original. */
+.message-quote { display: flex; flex-direction: column; align-items: stretch; gap: 1px; width: 100%; min-width: 0; margin: 0 0 3px; padding: 5px 9px 6px 9px;
+  border: 0; border-left: 4px solid #8a6cf5; border-radius: 7px; background: rgba(11, 20, 26, 0.05); font: inherit; font-size: 12.5px; line-height: 1.35;
+  text-align: left; color: inherit; cursor: pointer; }
+.message-quote:disabled { cursor: default; }
+.message-quote strong { color: #7556e0; font-size: 12.5px; font-weight: 600; }
+.message-quote span { -webkit-line-clamp: 3; opacity: 1; color: #54656f; }
+.message-quote.is-mine { border-left-color: #06cf9c; }
+.message-quote.is-mine strong { color: #06a07a; }
+.message-bubble.is-outbound .message-quote { background: rgba(0, 0, 0, 0.18); }
+.message-bubble.is-outbound .message-quote strong { color: #c9b8ff; }
+.message-bubble.is-outbound .message-quote.is-mine strong { color: #9ff0d8; }
+.message-bubble.is-outbound .message-quote span { color: rgba(255, 255, 255, 0.78); }

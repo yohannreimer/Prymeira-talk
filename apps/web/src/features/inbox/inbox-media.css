@@ -58,3 +58,8 @@
 @media (prefers-reduced-motion: reduce) { .talk-media-loading { animation: none; } }
 .talk-contact-photo { overflow: hidden; }
 .talk-contact-photo img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+
+/* Received voice note: the sender's photo on the right with a mic badge, like WhatsApp. */
+.talk-voice-avatar { position: relative; order: 5; flex-shrink: 0; width: 46px; height: 46px; }
+.talk-voice-avatar-photo { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 50%; background: #d6e9e2; color: #276253; font-size: 14px; font-weight: 700; }
+.talk-voice-avatar-mic { position: absolute; left: -4px; bottom: -2px; color: #3e9f86; filter: drop-shadow(0 0 1px #fff) drop-shadow(0 0 1px #fff); }

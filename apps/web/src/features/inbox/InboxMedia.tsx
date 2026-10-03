@@ -4,6 +4,7 @@ import type { MessageDto } from '@prymeira-talk/shared';
 import { apiGetAudioTranscription, apiGetInboxMedia, apiGetPdfPreview } from '../../app/api';
 import { SessionBlobCache } from '../../app/session/blob-cache';
 import { BlobCacheContext } from '../../app/session/blob-cache-context';
+import { ContactAvatar } from './ContactAvatar';
 import './inbox-media.css';
 
 export type InboxMediaTransport = {
@@ -84,7 +85,10 @@ function MediaViewer({ src, kind, name, message, getToken, transport, onClose }:
 }
 
 /** Fetches privately on demand; local media URLs comply with production CSP. */
-export const InboxMedia = memo(function InboxMedia({ message, getToken, transport = defaultTransport }: { message: MessageDto; getToken: () => Promise<string | null>; transport?: InboxMediaTransport }) {
+/** A received voice note shows who sent it, like WhatsApp: the contact's photo (or initials in a group) with a mic badge. */
+export const InboxMedia = memo(function InboxMedia({ message, getToken, transport = defaultTransport, avatarConversationId, avatarName }: {
+  message: MessageDto; getToken: () => Promise<string | null>; transport?: InboxMediaTransport; avatarConversationId?: string; avatarName?: string | null;
+}) {
   const sharedCache = useContext(BlobCacheContext);
   const [localCache] = useState(() => new SessionBlobCache());
   const cache = sharedCache ?? localCache;
@@ -238,7 +242,10 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
   return <div className="talk-attachment" ref={root}>
     {isAudio ? <>
       <div className="talk-voice-note">
-        <span className="talk-voice-icon" aria-hidden="true"><Mic size={24} /></span>
+        {avatarConversationId || avatarName ? <span className="talk-voice-avatar" aria-hidden="true">
+          <ContactAvatar conversationId={avatarConversationId} name={avatarName} className="talk-voice-avatar-photo" />
+          <Mic className="talk-voice-avatar-mic" size={15} />
+        </span> : <span className="talk-voice-icon" aria-hidden="true"><Mic size={24} /></span>}
         <button className="talk-media-play" type="button" aria-label={playing ? 'Pausar áudio' : 'Reproduzir áudio'} disabled={loading} onClick={() => void play()}>
           {loading ? <LoaderCircle className="talk-media-loading" size={23} /> : playing ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" />}
         </button>

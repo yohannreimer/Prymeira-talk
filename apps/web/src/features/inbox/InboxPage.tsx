@@ -93,6 +93,17 @@ function formatMessageTime(value: string) {
   }).format(new Date(value));
 }
 
+/** Clicking a quote brings the quoted message into view and flashes it, like WhatsApp. */
+function revealMessage(messageId: string) {
+  const element = document.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`);
+  if (!element) return;
+  element.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  element.classList.remove('is-highlighted');
+  void element.offsetWidth; // restart the flash when the same quote is clicked twice
+  element.classList.add('is-highlighted');
+  window.setTimeout(() => element.classList.remove('is-highlighted'), 1600);
+}
+
 function statusLabel(status: ConversationDto["status"]) {
   const labels: Record<ConversationDto["status"], string> = {
     open: "Aberta",
@@ -1672,41 +1683,46 @@ selectedConversation ? (
             {!messageError && !isLoadingMessages && !isThreadTransitioning && visibleMessages.length === 0 ? (
               <p className="thread-note">Ainda não ha mensagens nesta conversa.</p>
             ) : null}
-            {thread.visible.map((message) => (
+            {thread.visible.map((message) => {
+              const isInbound = message.direction === "inbound";
+              const isMedia = ['image', 'audio', 'file'].includes(message.type);
+              // Plain text keeps its time on the last line, like WhatsApp; media, maps and cards keep it below.
+              const inlineMeta = !isMedia && !message.location && !message.contactCards?.length;
+              const meta = <>
+                {message.editedAt ? <span className="message-edited-label">Editada</span> : null}
+                <time>{formatMessageTime(message.createdAt)}</time>
+              </>;
+              const canReply = selectedConversation.channelProvider === 'evolution' && Boolean(message.whatsappId) && !message.deletedAt && message.type !== 'system';
+              const canDelete = selectedConversation.channelProvider === 'evolution' && !selectedConversation.isGroup && message.direction === 'outbound' &&
+                Boolean(message.providerMessageId || message.whatsappId) && !message.deletedAt && ['sent', 'delivered', 'read'].includes(message.status);
+              const senderName = selectedConversation.isGroup ? message.senderName ?? message.senderJid : selectedConversation.contactName;
+              return (
               <article
-                className={`message-bubble ${message.direction === "outbound" ? "is-outbound" : "is-inbound"}`}
+                className={`message-bubble ${isInbound ? "is-inbound" : "is-outbound"}`}
+                data-message-id={message.id}
                 key={message.id}
               >
-                {message.direction === "inbound" ? (
-                  <ContactAvatar conversationId={selectedConversation?.id} name={selectedConversation?.isGroup ? message.senderName ?? message.senderJid : selectedConversation?.contactName} className="msg-avatar" />
+                {isInbound ? (
+                  <ContactAvatar conversationId={selectedConversation?.id} name={senderName} className="msg-avatar" />
                 ) : null}
-                <div className="msg-bubble-body">
-                  {selectedConversation.isGroup && message.direction === "inbound" ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
+                <div className={`msg-bubble-body${inlineMeta ? ' has-inline-meta' : ''}`}>
+                  {selectedConversation.isGroup && isInbound ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
                   {message.quoted ? (() => { const quote = quotedPreview(message.quoted, visibleMessages, selectedConversation.contactName ?? null); return (
-                    <div className="message-quote"><strong>{quote.author}</strong><span>{quote.text}</span></div>); })() : null}
-                  {['image', 'audio', 'file'].includes(message.type) ? <>
-                    <InboxMedia key={message.id} message={message} getToken={getToken} />
+                    <button type="button" className={`message-quote${quote.author === 'Você' ? ' is-mine' : ''}`} disabled={!quote.targetId}
+                      aria-label={`Mensagem respondida de ${quote.author}`} onClick={() => quote.targetId && revealMessage(quote.targetId)}>
+                      <strong>{quote.author}</strong><span>{quote.text}</span>
+                    </button>); })() : null}
+                  {isMedia ? <>
+                    <InboxMedia key={message.id} message={message} getToken={getToken}
+                      avatarConversationId={isInbound && message.type === 'audio' && !selectedConversation.isGroup ? selectedConversation.id : undefined}
+                      avatarName={isInbound && message.type === 'audio' ? senderName : undefined} />
                     {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
                     {attachmentReadNotice(message) ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
-                  </> : message.location ? <LocationMessage location={message.location} /> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} onSelect={setSelectedContactCard} /> : <p><WhatsappText text={messageDisplayText(message)} /></p>}
-                  <div className="message-bubble-meta">
-                    {message.editedAt ? <span className="message-edited-label">Editada</span> : null}
-                    <time>{formatMessageTime(message.createdAt)}</time>
-                    {selectedConversation.channelProvider === 'evolution' && message.whatsappId && !message.deletedAt && message.type !== 'system' ? (
-                        <button type="button" className="message-delete-action" title="Responder" aria-label="Responder esta mensagem"
-                          onClick={() => { setReplyTarget(message); draftTextAreaRef.current?.focus(); }}>
-                          <Reply size={13} aria-hidden="true" />
-                        </button>
-                      ) : null}
-                    {selectedConversation.channelProvider === 'evolution' && !selectedConversation.isGroup && message.direction === 'outbound' &&
-                      (message.providerMessageId || message.whatsappId) && !message.deletedAt && ['sent', 'delivered', 'read'].includes(message.status) ? (
-                        <button type="button" className="message-delete-action" title="Apagar para todos"
-                          aria-label="Apagar mensagem para todos" disabled={Boolean(deletingMessageId)}
-                          onClick={() => { void actionsRef.current.deleteMessageForEveryone(message); }}>
-                          <Trash2 size={13} aria-hidden="true" />
-                        </button>
-                      ) : null}
-                  </div>
+                  </> : message.location ? <LocationMessage location={message.location} /> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} onSelect={setSelectedContactCard} /> : (
+                    <p className="message-text"><WhatsappText text={messageDisplayText(message)} /><span className="message-meta-spacer" aria-hidden="true">{meta}</span>
+                      <span className="message-bubble-meta">{meta}</span></p>
+                  )}
+                  {inlineMeta ? null : <div className="message-bubble-meta">{meta}</div>}
                   {outboundStatusLabel(message) ? (
                     <span className={`message-send-state message-send-state--${message.status}`}>
                       {outboundStatusLabel(message)}
@@ -1718,8 +1734,26 @@ selectedConversation ? (
                     </div>
                   ) : null}
                 </div>
+                {canReply || canDelete ? (
+                  <div className="message-actions">
+                    {canReply ? (
+                      <button type="button" className="message-action" title="Responder" aria-label="Responder esta mensagem"
+                        onClick={() => { setReplyTarget(message); draftTextAreaRef.current?.focus(); }}>
+                        <Reply size={15} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                    {canDelete ? (
+                      <button type="button" className="message-action" title="Apagar para todos"
+                        aria-label="Apagar mensagem para todos" disabled={Boolean(deletingMessageId)}
+                        onClick={() => { void actionsRef.current.deleteMessageForEveryone(message); }}>
+                        <Trash2 size={15} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
               </article>
-            ))}
+              );
+            })}
             </div>
             {newMessagesBelow > 0 ? (
               <button

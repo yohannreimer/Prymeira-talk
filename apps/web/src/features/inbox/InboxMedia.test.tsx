@@ -43,6 +43,13 @@ describe('WhatsApp-style attachments', () => {
     expect(html).not.toContain('Processando áudio');
     expect(html).not.toContain('Abrir áudio original');
   });
+  it('shows the sender on a received voice note, like WhatsApp, and the plain mic otherwise', () => {
+    const audio: MessageDto = { ...base, type: 'audio', body: 'Áudio recebido', mediaUrl: 'data:audio/ogg;base64,YQ==' };
+    const received = renderToStaticMarkup(<InboxMedia message={audio} getToken={async () => null} avatarConversationId="c" avatarName="Ana Silva" />);
+    expect(received).toContain('talk-voice-avatar'); expect(received).toContain('AS'); expect(received).not.toContain('talk-voice-icon');
+    const plain = renderToStaticMarkup(<InboxMedia message={audio} getToken={async () => null} />);
+    expect(plain).toContain('talk-voice-icon'); expect(plain).not.toContain('talk-voice-avatar');
+  });
   it('renders a PDF filename only once and offers opening and downloading', () => {
     const message: MessageDto = { ...base, type: 'file', body: 'Cotação.pdf', mediaUrl: 'data:application/pdf;base64,YQ==' };
     const html = renderToStaticMarkup(<InboxMedia message={message} getToken={async () => null} />);
