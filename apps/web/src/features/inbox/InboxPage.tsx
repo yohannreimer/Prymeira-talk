@@ -9,6 +9,7 @@ import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent,
 import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
 import { quotedPreview, threadWithReactions } from "./message-threading.js";
 import { MessageTicks } from "./MessageTicks";
+import { ConversationPreview } from "./ConversationPreview";
 import type { ChangeEvent, DragEvent, FormEvent, SetStateAction } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -671,6 +672,7 @@ function InboxPageContent() {
   const messagesConversationId = messagesQuery.data ? selectedConversationId : null;
   const contactContext = contextQuery.data ?? null;
   const channels = channelsQuery.data ?? EMPTY_CHANNELS;
+  const showChannelOrigin = channels.length > 1;
   const tagCatalog = useMemo(() => (tagsQuery.data ?? EMPTY_TAGS).filter(tag => tag.isActive), [tagsQuery.data]);
   const quickReplies = quickRepliesQuery.data ?? EMPTY_QUICK_REPLIES;
   const isLoading = listQuery.isFetching;
@@ -1482,7 +1484,8 @@ function InboxPageContent() {
           </button>
         </div>
 
-        {isLoading ? <p className="list-note">Carregando conversas...</p> : null}
+        {/* Background refreshes stay silent; the note is only for an empty list that is still loading. */}
+        {isLoading && visibleConversations.length === 0 ? <p className="list-note">Carregando conversas...</p> : null}
         {error ? <p className="error-note" role="status">{error} <button type="button" onClick={() => void listQuery.refetch()}>Tentar novamente</button></p> : null}
         {sendNotice ? <div className="inbox-send-notice" role="status">{sendNotice}<button type="button" aria-label="Fechar aviso" onClick={() => setSendNotice(null)}><X size={14} /></button></div> : null}
         {dismissUndo ? <div className="inbox-undo-toast" role="status">
@@ -1561,6 +1564,7 @@ function InboxPageContent() {
               </div>
               <span className="conversation-content">
                 <span className="conversation-row">
+                  <span className="conv-title-col">
                   <span className="conv-name-wrap">
                     <strong>{contactDisplayName(conversation)}</strong>
                     {conversation.isGroup ? <span className="conv-dept-tag"><Users size={12} aria-hidden="true" /> Grupo</span> : null}
@@ -1574,6 +1578,9 @@ function InboxPageContent() {
                       <span className="conv-review-tag">Revisar</span>
                     ) : null}
                   </span>
+                  {/* Only workspaces with more than one number need to know which one the conversation came through. */}
+                  {showChannelOrigin ? <span className="conversation-channel-origin">via {conversation.channelName ?? "Canal sem nome"}</span> : null}
+                  </span>
                   <span className="conv-meta-right">
                     <ConversationCardTime value={conversationPreviewTime(conversation)} />
                     {conversation.unreadCount > 0 ? (
@@ -1583,17 +1590,7 @@ function InboxPageContent() {
                     ) : null}
                   </span>
                 </span>
-                <span className="conversation-channel-origin">
-                  via {conversation.channelName ?? "Canal sem nome"}
-                </span>
-                <span className="conversation-owner-line">
-                  <UserCheck size={11} aria-hidden="true" />
-                  <span>{conversation.assignedUserName ?? "Fila geral"}</span>
-                </span>
-                <span className="conversation-preview">
-                  {conversation.lastMessage?.direction === 'outbound' ? <MessageTicks status={conversation.lastMessage.status} /> : null}
-                  <span className="conversation-preview-text">{conversation.lastMessagePreview ?? "Conversa iniciada."}</span>
-                </span>
+                <ConversationPreview conversation={conversation} />
               </span>
               </button>
               <div className="conversation-card-actions">
@@ -1718,7 +1715,8 @@ selectedConversation ? (
                   {isMedia ? <>
                     <InboxMedia key={message.id} message={message} getToken={getToken}
                       avatarConversationId={isInbound && message.type === 'audio' && !selectedConversation.isGroup ? selectedConversation.id : undefined}
-                      avatarName={isInbound && message.type === 'audio' ? senderName : undefined} />
+                      avatarChannelId={!isInbound && message.type === 'audio' ? selectedConversation.channelId : undefined}
+                      avatarName={message.type !== 'audio' ? undefined : isInbound ? senderName : selectedConversation.channelName ?? 'Você'} />
                     {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
                     {attachmentReadNotice(message) ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
                   </> : message.location ? <LocationMessage location={message.location} /> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} onSelect={setSelectedContactCard} /> : (

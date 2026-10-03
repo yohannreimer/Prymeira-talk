@@ -39,7 +39,7 @@ describe('store-held events are replayed on their own observation', () => {
     const store = (service as unknown as { store: { replayResolvableHeldInTransaction: unknown } }).store;
     const replay = vi.fn().mockResolvedValue(replayed && { ...replayed, observationId: 'obs1', conversationId: 'c', messageId: 'm', changes: ['recipient_receipt_advanced'] });
     store.replayResolvableHeldInTransaction = replay;
-    const afterPersist = vi.spyOn(service as never, 'afterPersist').mockResolvedValue(undefined as never);
+    const afterPersist = vi.spyOn(service as unknown as { afterPersist: () => Promise<void> }, 'afterPersist').mockResolvedValue(undefined);
     return { service, replay, afterPersist, created };
   }
   it('applies a receipt whose message now exists, without creating a second observation', async () => {

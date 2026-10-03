@@ -1419,6 +1419,19 @@ export async function apiGetContactPhoto(conversationId: string, getToken: () =>
   });
 }
 
+export async function apiGetChannelPhoto(channelId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/channels/${encodeURIComponent(channelId)}/photo`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: deadline
+    });
+    if (response.status === 204) return null;
+    await assertApiReadAccess(response, token, deadline);
+    if (!response.ok) throw new Error('Não foi possível carregar a foto do canal.');
+    return response.blob();
+  });
+}
+
 export async function apiGetSavedContactPhoto(contactId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
   return withReadDeadline(signal, async (deadline) => {
     const token = await getRequiredToken(getToken, deadline);

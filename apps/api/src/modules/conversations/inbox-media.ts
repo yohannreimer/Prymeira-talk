@@ -148,6 +148,21 @@ export function createInboxMediaService(options: {
         const media = await resolve({ mediaUrl: url, policy: photoPolicy });
         return { bytes: media.bytes, mimeType: media.mimeType };
       });
+    },
+    /** The connected number's own WhatsApp picture, shown on voice notes we sent. */
+    async channelPhoto(workspaceId: string, channelId: string) {
+      const channel = await options.prisma.channel.findFirst({
+        where: { workspaceId, id: channelId }, select: { provider: true, providerKey: true, phoneNumber: true }
+      });
+      if (!channel) throw new Error('NOT_FOUND');
+      const number = channel.phoneNumber?.replace(/\D/g, '');
+      if (channel.provider !== 'evolution' || !number || !options.client?.fetchProfilePicture) return null;
+      return cached(`channel-photo:${workspaceId}:${channelId}:${channel.providerKey}`, async () => {
+        const url = await options.client!.fetchProfilePicture!({ instanceName: channel.providerKey, number });
+        if (!url) return null;
+        const media = await resolve({ mediaUrl: url, policy: photoPolicy });
+        return { bytes: media.bytes, mimeType: media.mimeType };
+      });
     }
   };
 }

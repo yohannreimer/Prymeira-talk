@@ -1,4 +1,4 @@
-import { messageLocationSchema } from '@prymeira-talk/shared';
+import { lastMessageKind, messageLocationSchema } from '@prymeira-talk/shared';
 import { lockProspectingConversation } from "../prospecting/prospecting-lock.js";
 import { reserveProspectingOutbound, adoptProspectingOutbound, dispatchProspectingOutbound, confirmProspectingOutbound, cancelProspectingOutbound } from "../prospecting/prospecting-delivery.js";
 import { stopProspectingConversation, autonomousAgentAllowed, releaseEndedProspectingBinding, findProspectingReservation } from "../prospecting/prospecting-policy.js";
@@ -501,17 +501,22 @@ function isFutureDate(value: DateLike | null | undefined) {
 export async function withLastMessages(prisma: Pick<PrismaLike, '$queryRaw'>, workspaceId: string, dtos: ConversationDto[]): Promise<ConversationDto[]> {
   if (!dtos.length || typeof prisma.$queryRaw !== 'function') return dtos;
   try {
-    const rows = await prisma.$queryRaw<Array<{ conversation_id: string; id: string; direction: string; status: string; created_at: Date }>>`
-      SELECT c.id::text AS conversation_id, m.id::text AS id, m.direction::text AS direction, m.status::text AS status, m.created_at
+    const rows = await prisma.$queryRaw<Array<{ conversation_id: string; id: string; direction: string; status: string; created_at: Date;
+      type: string; body: string | null; mime_type: string | null; media_mime: string | null }>>`
+      SELECT c.id::text AS conversation_id, m.id::text AS id, m.direction::text AS direction, m.status::text AS status, m.created_at,
+        m.type::text AS type, m.body, m.mime_type,
+        substring(m.media_url from '^data:([^;,]+)') AS media_mime
       FROM unnest(${dtos.map(dto => dto.id)}::uuid[]) AS c(id)
       CROSS JOIN LATERAL (
-        SELECT id, direction, status, created_at FROM messages
+        SELECT id, direction, status, created_at, type, left(body, 64) AS body,
+          metadata->'attachment'->>'mimeType' AS mime_type, left(media_url, 64) AS media_url FROM messages
         WHERE workspace_id = ${workspaceId} AND conversation_id = c.id
           AND NOT (status = 'pending' AND metadata->>'source' = 'followup_review')
         ORDER BY created_at DESC, id DESC LIMIT 1
       ) m`;
     const latest = new Map(rows.map(row => [row.conversation_id, {
-      id: row.id, direction: row.direction, status: row.status, createdAt: toIsoString(row.created_at)
+      id: row.id, direction: row.direction, status: row.status, createdAt: toIsoString(row.created_at),
+      kind: lastMessageKind({ type: row.type, body: row.body, mimeType: row.mime_type ?? row.media_mime })
     } as ConversationLastMessage]));
     return dtos.map(dto => ({ ...dto, lastMessage: latest.get(dto.id) ?? null }));
   } catch {

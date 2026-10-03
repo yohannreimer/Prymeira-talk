@@ -1,5 +1,5 @@
 import { QueryClient, replaceEqualDeep, type QueryKey } from '@tanstack/react-query';
-import { needsHumanAttention, type ChannelDto, type ConversationDto, type InboxView, type MessageDto, type RealtimeEvent } from '@prymeira-talk/shared';
+import { lastMessageKind, needsHumanAttention, type ChannelDto, type ConversationDto, type InboxView, type MessageDto, type RealtimeEvent } from '@prymeira-talk/shared';
 import { defaultWatchdogStatus, type ChannelHealthSnapshot } from '../channel-health-snapshot';
 import { SessionBlobCache } from './blob-cache';
 
@@ -93,7 +93,8 @@ export function patchConversations(rows: ConversationDto[], event: RealtimeEvent
       if (current && current.id !== message.id && Date.parse(message.createdAt) < Date.parse(current.createdAt)) return row;
       if (current?.id === message.id && current.status === message.status && current.direction === message.direction) return row;
       changed = true;
-      return { ...row, lastMessage: { id: message.id, direction: message.direction, status: message.status, createdAt: message.createdAt } };
+      return { ...row, lastMessage: { id: message.id, direction: message.direction, status: message.status, createdAt: message.createdAt,
+        kind: lastMessageKind({ type: message.type, body: message.body, mimeType: message.attachment?.mimeType, mediaUrl: message.mediaUrl }) } };
     });
     return changed ? next : rows;
   }

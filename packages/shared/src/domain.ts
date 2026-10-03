@@ -219,9 +219,20 @@ export const conversationLastMessageSchema = z.object({
   id: z.string().min(1),
   direction: messageDirectionSchema,
   status: messageStatusSchema,
-  createdAt: z.string().datetime()
+  createdAt: z.string().datetime(),
+  /** What the card icon shows next to the preview, like WhatsApp's camera/sticker/document glyphs. */
+  kind: z.enum(['text', 'image', 'sticker', 'video', 'audio', 'file']).optional()
 });
 export type ConversationLastMessage = z.infer<typeof conversationLastMessageSchema>;
+export type ConversationLastMessageKind = NonNullable<ConversationLastMessage['kind']>;
+/** One rule for the server's list query and the browser's realtime patch. */
+export function lastMessageKind(message: { type: string; body?: string | null; mimeType?: string | null; mediaUrl?: string | null }): ConversationLastMessageKind {
+  const mime = (message.mimeType ?? /^data:([^;,]+)/i.exec(message.mediaUrl ?? '')?.[1] ?? '').toLowerCase();
+  if (message.type === 'audio') return 'audio';
+  if (message.type === 'image') return message.body === 'Figurinha recebida' ? 'sticker' : 'image';
+  if (message.type === 'file') return mime.startsWith('video/') || message.body === 'Vídeo recebido' ? 'video' : mime.startsWith('image/') ? 'image' : 'file';
+  return 'text';
+}
 
 export const conversationSchema = z.object({
   id: z.string().min(1),

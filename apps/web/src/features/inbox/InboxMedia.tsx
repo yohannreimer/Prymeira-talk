@@ -86,8 +86,8 @@ function MediaViewer({ src, kind, name, message, getToken, transport, onClose }:
 
 /** Fetches privately on demand; local media URLs comply with production CSP. */
 /** A received voice note shows who sent it, like WhatsApp: the contact's photo (or initials in a group) with a mic badge. */
-export const InboxMedia = memo(function InboxMedia({ message, getToken, transport = defaultTransport, avatarConversationId, avatarName }: {
-  message: MessageDto; getToken: () => Promise<string | null>; transport?: InboxMediaTransport; avatarConversationId?: string; avatarName?: string | null;
+export const InboxMedia = memo(function InboxMedia({ message, getToken, transport = defaultTransport, avatarConversationId, avatarChannelId, avatarName }: {
+  message: MessageDto; getToken: () => Promise<string | null>; transport?: InboxMediaTransport; avatarConversationId?: string; avatarChannelId?: string; avatarName?: string | null;
 }) {
   const sharedCache = useContext(BlobCacheContext);
   const [localCache] = useState(() => new SessionBlobCache());
@@ -244,8 +244,8 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
   return <div className="talk-attachment" ref={root}>
     {isAudio ? <>
       <div className="talk-voice-note">
-        {avatarConversationId || avatarName ? <span className="talk-voice-avatar" aria-hidden="true">
-          <ContactAvatar conversationId={avatarConversationId} name={avatarName} className="talk-voice-avatar-photo" />
+        {avatarConversationId || avatarChannelId || avatarName ? <span className="talk-voice-avatar" aria-hidden="true">
+          <ContactAvatar conversationId={avatarConversationId} channelId={avatarChannelId} name={avatarName} className="talk-voice-avatar-photo" />
           <Mic className="talk-voice-avatar-mic" size={15} />
         </span> : <span className="talk-voice-icon" aria-hidden="true"><Mic size={24} /></span>}
         <button className="talk-media-play" type="button" aria-label={playing ? 'Pausar áudio' : 'Reproduzir áudio'} disabled={loading} onClick={() => void play()}>

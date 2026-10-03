@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { UserRound } from 'lucide-react';
-import { apiGetContactPhoto, apiGetSavedContactPhoto } from '../../app/api';
+import { apiGetChannelPhoto, apiGetContactPhoto, apiGetSavedContactPhoto } from '../../app/api';
 import { SessionBlobCache } from '../../app/session/blob-cache';
 import { BlobCacheContext } from '../../app/session/blob-cache-context';
 import { createContactPhotoLoader } from './contact-photo-loader';
@@ -20,6 +20,7 @@ function OwnedContactPhotoProvider({ getToken, children, cache: sharedCache }: {
     const cached = cache.get(`photo:${id}`); if (cached) return cached.url;
     const blob = id.startsWith('contact:')
       ? await apiGetSavedContactPhoto(id.slice('contact:'.length), () => tokenRef.current(), signal)
+      : id.startsWith('channel:') ? await apiGetChannelPhoto(id.slice('channel:'.length), () => tokenRef.current(), signal)
       : await apiGetContactPhoto(id, () => tokenRef.current(), signal);
     if (!blob || signal.aborted) return null;
     const { url } = await cache.load(`photo:${id}`, async () => blob);
@@ -33,14 +34,14 @@ export function contactInitials(name?: string | null) {
   const parts = name?.trim().split(/\s+/).filter(part => /\p{L}/u.test(part));
   return parts?.slice(0, 2).map(part => Array.from(part)[0]).join('').toUpperCase() || null;
 }
-export function ContactAvatar({ conversationId, contactId, name, className }: { conversationId?: string; contactId?: string; name?: string | null; className: string }) {
+export function ContactAvatar({ conversationId, contactId, channelId, name, className }: { conversationId?: string; contactId?: string; channelId?: string; name?: string | null; className: string }) {
   const load = useContext(PhotoContext);
   const cache = useContext(BlobCacheContext);
   const ref = useRef<HTMLSpanElement>(null);
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     setUrl(null);
-    const photoId = contactId ? `contact:${contactId}` : conversationId;
+    const photoId = channelId ? `channel:${channelId}` : contactId ? `contact:${contactId}` : conversationId;
     if (!load || !photoId || !ref.current) return;
     let active = true;
     let visible = false;
@@ -69,7 +70,7 @@ export function ContactAvatar({ conversationId, contactId, name, className }: { 
     });
     observer.observe(ref.current);
     return () => { active = false; observer.disconnect(); if (visible) cache?.release(`photo:${photoId}`); if (retryTimer) clearTimeout(retryTimer); };
-  }, [load, conversationId, contactId, cache]);
+  }, [load, conversationId, contactId, channelId, cache]);
   return <span ref={ref} className={`${className} talk-contact-photo`} aria-hidden="true">
     {url ? <img src={url} loading="lazy" decoding="async" alt="" onError={() => setUrl(null)} /> : contactInitials(name) || <UserRound size={18} />}
   </span>;

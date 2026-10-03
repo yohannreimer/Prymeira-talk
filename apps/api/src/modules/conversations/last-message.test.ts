@@ -8,11 +8,11 @@ const dto = (id: string): ConversationDto => ({ id, workspaceId: 'w', channelId:
 describe('withLastMessages (queue card ticks)', () => {
   it('adds each conversation latest message in one query, null when it has none, and stays schema-valid', async () => {
     const $queryRaw = vi.fn().mockResolvedValue([
-      { conversation_id: 'c1', id: 'm1', direction: 'outbound', status: 'read', created_at: new Date('2026-10-03T12:00:00Z') }
+      { conversation_id: 'c1', id: 'm1', direction: 'outbound', status: 'read', created_at: new Date('2026-10-03T12:00:00Z'), type: 'image', body: 'Figurinha recebida', mime_type: null, media_mime: null }
     ]);
     const result = await withLastMessages({ $queryRaw } as never, 'w', [dto('c1'), dto('c2')]);
     expect($queryRaw).toHaveBeenCalledTimes(1);
-    expect(result[0]!.lastMessage).toEqual({ id: 'm1', direction: 'outbound', status: 'read', createdAt: '2026-10-03T12:00:00.000Z' });
+    expect(result[0]!.lastMessage).toEqual({ id: 'm1', direction: 'outbound', status: 'read', createdAt: '2026-10-03T12:00:00.000Z', kind: 'sticker' });
     expect(result[1]!.lastMessage).toBeNull();
     for (const row of result) expect(conversationSchema.parse(row)).toBeTruthy();
   });

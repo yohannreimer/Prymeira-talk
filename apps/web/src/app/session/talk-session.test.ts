@@ -388,7 +388,7 @@ describe('queue card ticks', () => {
   it('follows the newest message, ignores an older recovered one and keeps it across conversation updates', () => {
     let rows = [conversation('c1')];
     rows = patchConversations(rows, event('message.created', outbound('m2', '2026-09-30T10:00:00Z', 'pending')));
-    expect(rows[0]!.lastMessage).toEqual({ id: 'm2', direction: 'outbound', status: 'pending', createdAt: '2026-09-30T10:00:00Z' });
+    expect(rows[0]!.lastMessage).toMatchObject({ id: 'm2', direction: 'outbound', status: 'pending', createdAt: '2026-09-30T10:00:00Z' });
     rows = patchConversations(rows, event('message.status_changed', { messageId: 'm2', status: 'read' }));
     expect(rows[0]!.lastMessage?.status).toBe('read');
     const late = patchConversations(rows, event('message.created', { ...message('m1'), createdAt: '2026-09-30T09:00:00Z' }));
