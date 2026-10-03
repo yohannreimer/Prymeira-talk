@@ -124,12 +124,16 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
   const isSticker = isImage && message.body === 'Figurinha recebida';
   const previewMime = compactPreviewMime(message);
   const isVideo = message.attachment?.mimeType?.toLowerCase().startsWith('video/') || previewMime?.startsWith('video/') || /^data:video\//i.test(message.mediaUrl ?? '') || /\.(mp4|mov|webm)(\?|$)/i.test(message.mediaUrl ?? '');
+  const isGif = Boolean(isVideo && message.attachment?.isGif);
+  const [autoStart, setAutoStart] = useState(false);
+  const { width: mediaWidth, height: mediaHeight } = message.attachment ?? {};
+  const aspect = mediaWidth && mediaHeight ? { aspectRatio: `${mediaWidth} / ${mediaHeight}` } : undefined;
   const isPdf = message.attachment?.mimeType?.toLowerCase() === 'application/pdf' || previewMime === 'application/pdf' || /pdf/i.test(name + message.mediaUrl?.slice(0, 40));
   useEffect(() => {
     setSrc(initialMediaSource());
     setError(false); setViewer(null); setPlaying(false); setLoading(false);
     setPosition(0); setDuration(message.attachment?.durationSeconds ?? 0);
-    setVideoPlaying(false); videoPlayingRef.current = false;
+    setVideoPlaying(false); videoPlayingRef.current = false; setAutoStart(false);
     setTranscriptOpen(false); setRequestedTranscript(null); setTranscriptLoading(false); setTranscriptError(false);
     return () => {
       controller.current?.abort();
@@ -188,6 +192,9 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
       visible = nextVisible;
       if (isVideo) {
         videoVisibleRef.current = visible; setVideoVisible(visible);
+        // A GIF plays once by itself when it comes on screen, like WhatsApp; off screen it stops and frees its bytes.
+        if (isGif && visible) { void load().catch(() => {}); return; }
+        if (isGif) { video.current?.pause(); videoPlayingRef.current = false; }
         if (!visible) releasePausedVideo();
         return;
       }
@@ -199,7 +206,7 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
     }, { rootMargin: '100px' });
     observer.observe(root.current);
     return () => { observer.disconnect(); if (visible && isImage) cache.release(cacheKey); };
-  }, [message.id, mediaIdentity, cache, cacheKey, isVideo, isImage]);
+  }, [message.id, mediaIdentity, cache, cacheKey, isVideo, isImage, isGif]);
 
   async function play() {
     if (!audio.current || loading) return;
@@ -272,12 +279,20 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
       <Sticker size={30} aria-hidden="true" /><small>Figurinha animada</small>
     </span> : isImage ? <button className={`talk-image-preview${isSticker ? ' is-sticker' : ''}`} type="button" aria-label="Ampliar imagem" onClick={() => void open()}>
       {src && !error ? <img src={src} loading="lazy" decoding="async" alt={mediaCaption(message) || (isSticker ? 'Figurinha' : 'Imagem da conversa')} onError={() => setError(true)} /> : <span>{loading ? (isSticker ? 'Carregando figurinha…' : 'Carregando imagem…') : isSticker ? 'Figurinha' : 'Abrir imagem'}</span>}
-    </button> : isVideo ? <div className="talk-video-preview">
-      {src ? <video ref={video} src={src} controls playsInline preload="none" aria-label="Vídeo da conversa"
+    </button> : isGif ? <button type="button" className="talk-gif-preview" style={aspect} aria-label={videoPlaying ? 'Pausar GIF' : 'Tocar GIF'}
+      onClick={() => { const element = video.current; if (element) void (element.paused ? element.play().catch(() => {}) : element.pause()); }}>
+      {src && !error ? <video ref={video} src={src} autoPlay muted playsInline preload="auto" aria-hidden="true" onError={() => setError(true)}
+        onPlay={() => { videoPlayingRef.current = true; setVideoPlaying(true); }}
+        onPause={() => { videoPlayingRef.current = false; setVideoPlaying(false); }}
+        onEnded={() => { videoPlayingRef.current = false; setVideoPlaying(false); }} />
+        : loading ? <LoaderCircle className="talk-media-loading" size={26} /> : null}
+      {videoPlaying ? null : <span className="talk-gif-badge">GIF</span>}
+    </button> : isVideo ? <div className="talk-video-preview" style={aspect}>
+      {src ? <video ref={video} src={src} controls playsInline autoPlay={autoStart} preload={autoStart ? 'auto' : 'none'} aria-label="Vídeo da conversa"
         onPlay={() => { videoPlayingRef.current = true; setVideoPlaying(true); }}
         onPause={() => { videoPlayingRef.current = false; setVideoPlaying(false); if (!videoVisibleRef.current) releasePausedVideo(); }}
         onEnded={() => { videoPlayingRef.current = false; setVideoPlaying(false); if (!videoVisibleRef.current) releasePausedVideo(); }} /> :
-        <button type="button" aria-label="Reproduzir vídeo" disabled={loading} onClick={() => void load().catch(() => {})}>
+        <button type="button" aria-label="Reproduzir vídeo" disabled={loading} onClick={() => { setAutoStart(true); void load().catch(() => {}); }}>
           {loading ? <LoaderCircle className="talk-media-loading" size={28} /> : <><Video size={28} /><span>Reproduzir vídeo</span></>}
         </button>}
     </div> : <div className="talk-document-card">

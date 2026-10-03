@@ -438,7 +438,11 @@ export const messageSchema = z.object({
     fileName: z.string().optional(),
     caption: z.string().optional(),
     mimeType: z.string().optional(),
-    durationSeconds: z.number().nonnegative().optional()
+    durationSeconds: z.number().nonnegative().optional(),
+    /** WhatsApp GIFs are short muted MP4s that play on their own, in a loop. */
+    isGif: z.boolean().optional(),
+    width: z.number().positive().optional(),
+    height: z.number().positive().optional()
   }).optional(),
   status: messageStatusSchema,
   sentByUserId: z.string().nullable(),

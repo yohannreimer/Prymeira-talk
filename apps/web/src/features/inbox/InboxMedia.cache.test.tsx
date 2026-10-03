@@ -196,7 +196,7 @@ describe('attachment memory lifetime', () => {
       await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Reproduzir vídeo"]')!.click());
       await act(async () => { await vi.advanceTimersByTimeAsync(40); });
       const video = container.querySelector<HTMLVideoElement>('video')!;
-      expect(video.preload).toBe('none');
+      expect(video.preload).toBe('auto'); expect(video.autoplay).toBe(true); // the tap that loaded it also starts it, never a black still frame
       await act(async () => video.dispatchEvent(new Event('play')));
       await act(async () => VisibilityObserver.instances[0].visible(false));
       expect(video.getAttribute('src')).toBe('blob:video');

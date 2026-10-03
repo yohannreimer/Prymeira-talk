@@ -624,7 +624,10 @@ function mapMessageDto(record: MessageRecord, publicTalkUrl?: string): MessageDt
     ...(typeof attachment.fileName === 'string' ? { fileName: attachment.fileName.slice(0, 240) } : {}),
     ...(typeof attachment.caption === 'string' ? { caption: attachment.caption } : {}),
     ...(typeof attachment.mimeType === 'string' ? { mimeType: attachment.mimeType } : inferredMimeType ? { mimeType: inferredMimeType } : {}),
-    ...(typeof attachment.durationSeconds === 'number' && Number.isFinite(attachment.durationSeconds) && attachment.durationSeconds >= 0 ? { durationSeconds: attachment.durationSeconds } : {})
+    ...(typeof attachment.durationSeconds === 'number' && Number.isFinite(attachment.durationSeconds) && attachment.durationSeconds >= 0 ? { durationSeconds: attachment.durationSeconds } : {}),
+    ...(attachment.isGif === true ? { isGif: true } : {}),
+    ...(typeof attachment.width === 'number' && attachment.width > 0 && typeof attachment.height === 'number' && attachment.height > 0
+      ? { width: attachment.width, height: attachment.height } : {})
   };
   const processed = result.status === 'processed' && typeof result.extractedText === 'string' && result.extractedText.trim().length > 0;
   const unread = ['image', 'audio', 'file'].includes(record.type) && !processed && (result.status === 'failed' || (history.source === 'evolution' && ['unavailable', 'unread'].includes(String(history.mediaStatus))));

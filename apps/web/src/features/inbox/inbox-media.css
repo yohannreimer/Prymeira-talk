@@ -24,6 +24,11 @@
 .talk-video-preview video { display: block; width: 100%; height: 100%; object-fit: contain; background: #10251f; }
 .talk-video-preview > button { display: flex; width: 100%; height: 100%; align-items: center; justify-content: center; gap: 10px; border: 0; background: transparent; color: inherit; font-weight: 700 !important; }
 .talk-video-preview > button:hover { background: #ffffff15; }
+.talk-video-preview { max-height: 420px; }
+/* WhatsApp GIF: a muted clip that plays once on its own; stopped, it shows the GIF badge, and a tap replays or pauses it. */
+.talk-gif-preview { position: relative; display: grid; place-items: center; width: min(260px, 58vw); aspect-ratio: 1; max-height: 360px; padding: 0; border: 0; border-radius: 10px; overflow: hidden; background: #183b31; color: #f2faf7; cursor: pointer; }
+.talk-gif-preview video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.talk-gif-badge { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; background: #00000073; color: #fff; font-size: 13px; font-weight: 800; letter-spacing: .04em; pointer-events: none; }
 .talk-document-card { display: flex; width: min(320px, 58vw); border-radius: 10px; background: #dce7e278; overflow: hidden; }
 .talk-document-open { display: flex; text-align: left; align-items: center; gap: 12px; padding: 13px; flex: 1; min-width: 0; border: 0; background: transparent; }
 .talk-document-title { display: grid; gap: 5px; min-width: 0; }

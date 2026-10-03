@@ -71,6 +71,15 @@ describe('WhatsApp-style attachments', () => {
     expect(mediaFileName({ type: 'file', body: 'Segue a proposta', mediaUrl: 'data:application/pdf;base64,YQ==' })).toBe('Documento.pdf');
     expect(mediaCaption({ type: 'file', body: 'Segue a proposta' })).toBe('Segue a proposta');
   });
+  it('plays a WhatsApp GIF muted once, without video controls or a loop, and a plain video on its first tap', () => {
+    const gif: MessageDto = { ...base, type: 'file', body: 'Vídeo recebido', mediaUrl: 'data:video/mp4;base64,YQ==',
+      attachment: { mimeType: 'video/mp4', isGif: true, width: 199, height: 244 } };
+    const html = renderToStaticMarkup(<InboxMedia message={gif} getToken={async () => null} />);
+    expect(html).toContain('talk-gif-preview'); expect(html).toContain('GIF'); expect(html).not.toContain('loop');
+    expect(html).toContain('aspect-ratio:199 / 244'); expect(html).not.toContain('controls');
+    const video = renderToStaticMarkup(<InboxMedia message={{ ...gif, attachment: { mimeType: 'video/mp4' } }} getToken={async () => null} />);
+    expect(video).toContain('talk-video-preview'); expect(video).not.toContain('talk-gif-preview');
+  });
   it('formats real durations safely', () => {
     expect(audioTime(73)).toBe('1:13'); expect(audioTime(NaN)).toBe('0:00'); expect(audioTime(Infinity)).toBe('0:00');
   });

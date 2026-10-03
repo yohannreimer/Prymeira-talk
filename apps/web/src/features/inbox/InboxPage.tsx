@@ -1718,7 +1718,7 @@ selectedConversation ? (
                       avatarChannelId={!isInbound && message.type === 'audio' ? selectedConversation.channelId : undefined}
                       avatarName={message.type !== 'audio' ? undefined : isInbound ? senderName : selectedConversation.channelName ?? 'Você'} />
                     {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
-                    {attachmentReadNotice(message) ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
+                    {attachmentReadNotice(message) && !message.attachment?.isGif ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
                   </> : message.location ? <LocationMessage location={message.location} /> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} onSelect={setSelectedContactCard} /> : (
                     <p className="message-text"><WhatsappText text={messageDisplayText(message)} /><span className="message-meta-spacer" aria-hidden="true">{meta}</span>
                       <span className="message-bubble-meta">{meta}</span></p>
