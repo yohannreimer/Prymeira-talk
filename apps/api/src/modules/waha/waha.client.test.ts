@@ -116,6 +116,23 @@ describe('WAHA HTTP contracts', () => {
     expect(fetch.mock.calls[11][0]).toBe('https://waha.example/api/contacts/check-exists?session=talk&phone=123');
   });
 
+  it('reads a GOWS file published under WAHA\'s own localhost base from the configured WAHA origin, with the key', async () => {
+    const { createWahaClient } = await load();
+    const { parseWahaMessageKey } = await import('../messaging/whatsapp-identity.js');
+    const id = 'false_5547999990000@c.us_3EB0IMG';
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      if (url.includes('/messages/')) return json({ id, from: '5547999990000@c.us', fromMe: false, hasMedia: true,
+        media: { url: 'http://localhost:3000/api/files/s1/3EB0IMG.jpeg', mimetype: 'image/jpeg' },
+        _data: { Info: { Chat: '5547999990000@s.whatsapp.net', Sender: '5547999990000@s.whatsapp.net', IsFromMe: false, IsGroup: false, ID: '3EB0IMG' }, Message: { imageMessage: {} } } });
+      expect(url).toBe('http://waha:3000/api/files/s1/3EB0IMG.jpeg');
+      expect((init.headers as Record<string, string>)['X-Api-Key']).toBe('k');
+      return new Response('jpeg-bytes');
+    });
+    const client = createWahaClient({ baseUrl: 'http://waha:3000', apiKey: 'k', fetch: fetch as never });
+    const found = await client.mediaExact({ session: 's1', key: parseWahaMessageKey(id), purpose: 'serve' });
+    expect(found.kind).toBe('resolved');
+    if (found.kind === 'resolved') expect(Buffer.from(found.bytes).toString()).toBe('jpeg-bytes');
+  });
   it('only downloads provider media from its configured origin without following redirects or URL credentials', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response('media'));
     const client = (await load()).createWahaClient({ baseUrl: 'https://waha.example', apiKey: 'secret', fetch });

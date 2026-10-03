@@ -17,6 +17,8 @@ export function createMediaPrepareHandler(deps: {
   media: MessageMediaService;
   waha: Pick<WahaClient, 'mediaExact'> | null;
   evolution: Pick<EvolutionClient, 'fetchMedia'> | null;
+  /** The channel's Evolution instance, asked when WAHA received the message but cannot give its bytes. */
+  evolutionInstanceOf?: (workspaceId: string, messageId: string) => Promise<string | null>;
 }): EffectHandler {
   return async effect => {
     if (!effect.messageId) return { status: 'failed', errorCode: 'EFFECT_WITHOUT_MESSAGE' };
@@ -35,7 +37,8 @@ export function createMediaPrepareHandler(deps: {
       }
     }
     if (source) {
-      const built = mediaFetchers(source, deps);
+      const fallback = source.provider === 'waha' && deps.evolutionInstanceOf ? await deps.evolutionInstanceOf(effect.workspaceId, effect.messageId).catch(() => null) : null;
+      const built = mediaFetchers(source, deps, fallback);
       fetchers.push(...built.fetchers);
       useStoredUrl = built.useStoredUrl;
     }
@@ -50,17 +53,25 @@ export function createMediaPrepareHandler(deps: {
 }
 
 /** Provider fetchers for one message's media: the provider that received it, with its own authentication. WAHA never
- * uses a stored URL (it requires the server-side key and an exact lookup). */
-export function mediaFetchers(source: FrozenSource, deps: { waha: Pick<WahaClient, 'mediaExact'> | null; evolution: Pick<EvolutionClient, 'fetchMedia'> | null }) {
+ * uses a stored URL (it requires the server-side key and an exact lookup). When WAHA received it and the channel's
+ * Evolution instance is known, Evolution is asked next by the same WhatsApp message id (both connections are the same
+ * number, and Evolution keeps the media keys of what it saw). */
+export function mediaFetchers(source: FrozenSource, deps: { waha: Pick<WahaClient, 'mediaExact'> | null; evolution: Pick<EvolutionClient, 'fetchMedia'> | null }, evolutionInstance: string | null = null) {
   const fetchers: ProviderFetcher[] = [];
   const { key } = source;
-  if (source.provider === 'waha' && deps.waha) {
-    const waha = deps.waha;
-    fetchers.push({ name: 'waha', async fetch() {
-      const found = await waha.mediaExact({ session: source.sessionName, key, purpose: 'serve' });
-      if (found.kind !== 'resolved') return null;
-      return { bytes: found.bytes, mimeType: found.message.media?.mimetype ?? source.mimeType };
-    } });
+  if (source.provider === 'waha') {
+    if (deps.waha) {
+      const waha = deps.waha;
+      fetchers.push({ name: 'waha', async fetch() {
+        const found = await waha.mediaExact({ session: source.sessionName, key, purpose: 'serve' });
+        if (found.kind !== 'resolved') return null;
+        return { bytes: found.bytes, mimeType: found.message.media?.mimetype ?? source.mimeType };
+      } });
+    }
+    if (evolutionInstance && deps.evolution?.fetchMedia && key.rawId) {
+      const evolution = deps.evolution, id = key.rawId;
+      fetchers.push({ name: 'evolution', async fetch() { return { mediaUrl: await evolution.fetchMedia!({ instanceName: evolutionInstance, id }) }; } });
+    }
   } else if (source.provider === 'evolution' && source.channelProvider === 'evolution' && deps.evolution?.fetchMedia && key.nativeId) {
     const evolution = deps.evolution, id = key.nativeId;
     fetchers.push({ name: 'evolution', async fetch() { return { mediaUrl: await evolution.fetchMedia!({ instanceName: source.sessionName, id }) }; } });
@@ -69,9 +80,11 @@ export function mediaFetchers(source: FrozenSource, deps: { waha: Pick<WahaClien
 }
 
 /** Durable media for messages that did not come through an ingress receipt (imported history, gap recovery). */
-export function createSourceMediaPreparer(deps: { media: Pick<MessageMediaService, 'prepare'>; waha: Pick<WahaClient, 'mediaExact'> | null; evolution: Pick<EvolutionClient, 'fetchMedia'> | null }) {
+export function createSourceMediaPreparer(deps: { media: Pick<MessageMediaService, 'prepare'>; waha: Pick<WahaClient, 'mediaExact'> | null; evolution: Pick<EvolutionClient, 'fetchMedia'> | null;
+  evolutionInstanceOf?: (workspaceId: string, messageId: string) => Promise<string | null> }) {
   return async (input: { workspaceId: string; messageId: string; source: FrozenSource }) => {
-    const { fetchers, useStoredUrl } = mediaFetchers(input.source, deps);
+    const fallback = input.source.provider === 'waha' && deps.evolutionInstanceOf ? await deps.evolutionInstanceOf(input.workspaceId, input.messageId).catch(() => null) : null;
+    const { fetchers, useStoredUrl } = mediaFetchers(input.source, deps, fallback);
     return deps.media.prepare({ workspaceId: input.workspaceId, messageId: input.messageId, fetchers, useStoredUrl });
   };
 }

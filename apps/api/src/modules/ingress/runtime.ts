@@ -108,6 +108,13 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
   // private receipt this process owns, so it publishes to the API processes through the bridge) and,
   // with a media store configured, media.prepare. Every other effect runs in the API process.
   let bridge: ReturnType<typeof createRealtimeBridge> | null = null;
+  /** The Evolution instance of the channel a message belongs to: the media fallback when WAHA cannot give the bytes. */
+  const evolutionInstanceOf = async (workspaceId: string, messageId: string) => {
+    const message = await db.message.findFirst({ where: { workspaceId, id: messageId }, select: { conversation: { select: { channelId: true } } } });
+    if (!message?.conversation.channelId) return null;
+    const connection = await db.channelConnection.findFirst({ where: { workspaceId, channelId: message.conversation.channelId, provider: 'evolution' }, select: { sessionName: true } });
+    return connection?.sessionName ?? null;
+  };
   const effects = consume && stageAppliesReceipts(config.stage) ? (async () => {
     bridge = createRealtimeBridge({ databaseUrl: config.databaseUrl, hub: createRealtimeHub(), logger: { warn: (fields, message) => console.warn(message, fields) } });
     await bridge.start();
@@ -118,7 +125,7 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
     if (config.mediaStorePath) {
       const mediaStore = new IngressPrivateStore(config.mediaStorePath, MAX_SERVE_MEDIA_BYTES + 1024 * 1024); await mediaStore.initialize();
       only['media.prepare'] = createMediaPrepareHandler({ journal, media: createMessageMediaService({ db, store: mediaStore }),
-        waha: wahaRuntime.client, evolution: config.evolutionApi ? createEvolutionClient(config.evolutionApi) : null });
+        waha: wahaRuntime.client, evolution: config.evolutionApi ? createEvolutionClient(config.evolutionApi) : null, evolutionInstanceOf });
     }
     const runner = createEffectRunner({ db, workerId: `ingress-${process.pid}-${Math.random().toString(36).slice(2, 8)}`, handlers: only, ...(config.allowAllWorkspaces ? {} : { workspaceIds: [...config.workspaceAllowlist] }),
       logger: { warn: (fields, message) => console.warn(message, fields) } });
@@ -140,7 +147,7 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
       await mediaStore?.initialize();
       history.after = { notify: createCreatedMessagesNotifier(db, event => historyBridge!.publish(event)),
         prepareMedia: mediaStore ? createSourceMediaPreparer({ media: createMessageMediaService({ db, store: mediaStore }), waha: wahaClient,
-          evolution: config.evolutionApi ? createEvolutionClient(config.evolutionApi) : null }) : undefined };
+          evolution: config.evolutionApi ? createEvolutionClient(config.evolutionApi) : null, evolutionInstanceOf }) : undefined };
     }
     const warnFor = (step: 'waha_history' | 'gap_recovery' | 'lid_resolution') => (error: unknown, connectionId: string) =>
       console.warn(`Provider ${step} step failed`, { step, connectionId, error: error instanceof Error ? error.message : String(error) });

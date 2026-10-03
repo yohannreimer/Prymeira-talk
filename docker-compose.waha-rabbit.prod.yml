@@ -27,6 +27,9 @@ services:
       WHATSAPP_SWAGGER_ENABLED: "false"
       WAHA_PRINT_QR: "false"
       WAHA_MEDIA_STORAGE: LOCAL
+      # File URLs WAHA hands out (media.url) must be reachable from Talk's API/worker; without it WAHA writes
+      # http://localhost:3000. Talk also rebases them onto WAHA_API_BASE_URL, so this is belt and braces.
+      WAHA_BASE_URL: ${WAHA_BASE_URL:-http://waha:3000}
     volumes:
       - waha_sessions:/app/.sessions
       - waha_media:/app/.media

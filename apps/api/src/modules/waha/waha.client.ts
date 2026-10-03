@@ -131,6 +131,17 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
     const filename = decoded[1]!, dot = filename.lastIndexOf('.');
     if (decoded[0] !== session || dot < 1 || (filename.slice(0, dot) !== nativeId && (!rawId || filename.slice(0, dot) !== rawId)) || !/^[a-zA-Z0-9]{1,16}$/.test(filename.slice(dot + 1))) fail();
   }
+  /** WAHA writes file URLs with its own public base (WAHA_BASE_URL, default http://localhost:3000), which Talk may not
+   * reach. The URL comes from this authenticated client's own answer, so only its /api/files path is kept and it is
+   * read from the configured WAHA origin; anything else is left for assertExactMediaUrl to refuse. */
+  function rebaseFileUrl(value: string) {
+    try {
+      const url = new URL(value);
+      if (url.origin === base.origin || url.username || url.password || url.search || url.hash || !url.pathname.startsWith('/api/files/')) return value;
+      if (!/^https?:\/\/[^/?#]+(\/[^?#]*)$/.test(value)) return value;
+      return `${base.origin}${url.pathname}`;
+    } catch { return value; }
+  }
   async function findMessageExact(input: { session: string; key: WhatsAppMessageKey }, downloadMedia = false): Promise<
     { kind: 'resolved'; message: WahaMessage } | { kind: 'missing' | 'incomplete' | 'ambiguous' }> {
     if (!input.session || !completeProviderKey(input.key)) return { kind: 'incomplete' };
@@ -151,8 +162,9 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
       const found = await findMessageExact(input, true);
       if (found.kind !== 'resolved') return found;
       if (!found.message.media?.url) return { kind: 'missing' as const };
-      assertExactMediaUrl(found.message.media.url, input.session, input.key.nativeId!, input.key.rawId);
-      const bytes = await getMediaBytes({ url: found.message.media.url, maxBytes: exactMediaLimit(input.purpose) });
+      const url = rebaseFileUrl(found.message.media.url);
+      assertExactMediaUrl(url, input.session, input.key.nativeId!, input.key.rawId);
+      const bytes = await getMediaBytes({ url, maxBytes: exactMediaLimit(input.purpose) });
       return { kind: 'resolved' as const, message: found.message, bytes };
     },
     getVersion: () => request<{ version: string; engine: string }>('/api/server/version'),
