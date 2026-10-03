@@ -31,6 +31,9 @@ export function canGenerateSuggestion(input:{mode:AssistantMode;control:string;t
   const allowedControl=input.control==='agent_allowed'||(input.control==='human_controlled'&&input.humanSupport===true);
   return allowedControl&&input.mode!=='disabled'&&(input.mode==='automatic'||input.mode==='automatic_with_agent'||input.trigger==='manual');
 }
-export function nextSuggestionAt(firstPendingMs:number,lastInboundMs:number):number{
-  return Math.min(lastInboundMs+5000,firstPendingMs+10000);
+/** Waits until the customer stops writing: 20 s after their last message, with no ceiling. A burst of
+ * messages is answered once, after the last one, instead of a suggestion per message that is then discarded. */
+export const SUGGESTION_QUIET_MS = 20_000;
+export function nextSuggestionAt(_firstPendingMs:number,lastInboundMs:number):number{
+  return lastInboundMs+SUGGESTION_QUIET_MS;
 }

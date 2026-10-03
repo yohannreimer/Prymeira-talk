@@ -1142,6 +1142,24 @@ model AssistantSuggestion {
   @@map("assistant_suggestions")
 }
 
+/// What the AI suggested next to what the seller actually replied (typed in Talk, edited, accepted or sent from
+/// the phone), recorded when a ready suggestion was on screen. Training material only; nothing reads it yet.
+model AssistantReplySample {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id")
+  conversationId String @map("conversation_id") @db.Uuid
+  suggestionId String @map("suggestion_id") @db.Uuid
+  messageId String @map("message_id") @db.Uuid
+  source String
+  suggestedBody String @map("suggested_body")
+  replyBody String @map("reply_body")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([workspaceId, messageId])
+  @@index([workspaceId, createdAt])
+  @@map("assistant_reply_samples")
+}
+
 model AssistantSuggestionSend {
   id String @id @default(uuid()) @db.Uuid
   workspaceId String @map("workspace_id")

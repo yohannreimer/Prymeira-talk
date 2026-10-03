@@ -1,5 +1,5 @@
 import { memo, useContext, useEffect, useRef, useState } from 'react';
-import { Download, FileText, LoaderCircle, Mic, Pause, Play, RotateCcw, Video, X } from 'lucide-react';
+import { Download, FileText, LoaderCircle, Mic, Pause, Play, RotateCcw, Sticker, Video, X } from 'lucide-react';
 import type { MessageDto } from '@prymeira-talk/shared';
 import { apiGetAudioTranscription, apiGetInboxMedia, apiGetPdfPreview } from '../../app/api';
 import { SessionBlobCache } from '../../app/session/blob-cache';
@@ -120,6 +120,8 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
   const name = mediaFileName(message);
   const isImage = message.type === 'image';
   const isAudio = message.type === 'audio';
+  // WhatsApp's animated (lottie) stickers arrive as application/was, which browsers cannot draw.
+  const isSticker = isImage && message.body === 'Figurinha recebida';
   const previewMime = compactPreviewMime(message);
   const isVideo = message.attachment?.mimeType?.toLowerCase().startsWith('video/') || previewMime?.startsWith('video/') || /^data:video\//i.test(message.mediaUrl ?? '') || /\.(mp4|mov|webm)(\?|$)/i.test(message.mediaUrl ?? '');
   const isPdf = message.attachment?.mimeType?.toLowerCase() === 'application/pdf' || previewMime === 'application/pdf' || /pdf/i.test(name + message.mediaUrl?.slice(0, 40));
@@ -266,8 +268,10 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
         {(transcript || transport.transcribe) ? <button type="button" aria-expanded={transcriptOpen} onClick={() => void showTranscript()}>{transcriptOpen ? 'Ocultar transcrição' : 'Ver transcrição'}</button> : null}
         {transcriptOpen ? <p role="status">{transcript ?? (transcriptLoading ? 'Transcrevendo áudio…' : transcriptError ? 'Transcrição indisponível. Feche e tente novamente.' : 'Transcrição indisponível.')}</p> : null}
       </div>
-    </> : isImage ? <button className={`talk-image-preview${message.body === 'Figurinha recebida' ? ' is-sticker' : ''}`} type="button" aria-label="Ampliar imagem" onClick={() => void open()}>
-      {src && !error ? <img src={src} loading="lazy" decoding="async" alt={mediaCaption(message) || 'Imagem da conversa'} onError={() => setError(true)} /> : <span>{loading ? 'Carregando imagem…' : 'Abrir imagem'}</span>}
+    </> : isSticker && error ? <span className="talk-sticker-fallback" role="img" aria-label="Figurinha animada">
+      <Sticker size={30} aria-hidden="true" /><small>Figurinha animada</small>
+    </span> : isImage ? <button className={`talk-image-preview${isSticker ? ' is-sticker' : ''}`} type="button" aria-label="Ampliar imagem" onClick={() => void open()}>
+      {src && !error ? <img src={src} loading="lazy" decoding="async" alt={mediaCaption(message) || (isSticker ? 'Figurinha' : 'Imagem da conversa')} onError={() => setError(true)} /> : <span>{loading ? (isSticker ? 'Carregando figurinha…' : 'Carregando imagem…') : isSticker ? 'Figurinha' : 'Abrir imagem'}</span>}
     </button> : isVideo ? <div className="talk-video-preview">
       {src ? <video ref={video} src={src} controls playsInline preload="none" aria-label="Vídeo da conversa"
         onPlay={() => { videoPlayingRef.current = true; setVideoPlaying(true); }}
@@ -283,7 +287,7 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
       </button>
       <button className="talk-document-download" type="button" aria-label="Baixar documento" disabled={loading} onClick={() => void open(true)}><Download size={20} /></button>
     </div>}
-    {error ? <div className="talk-media-error" role="status"><span>Não foi possível carregar {isAudio ? 'o áudio' : 'o arquivo'}.</span>
+    {error && !isSticker ? <div className="talk-media-error" role="status"><span>Não foi possível carregar {isAudio ? 'o áudio' : 'o arquivo'}.</span>
       <button type="button" onClick={() => { setError(false); if (isAudio) void play(); else void open(); }}><RotateCcw size={13} /> Tentar novamente</button></div> : null}
     {viewer && src ? <MediaViewer src={src} kind={viewer} message={message} getToken={getToken} transport={transport} name={isImage ? 'Imagem da conversa' : name} onClose={() => setViewer(null)} /> : null}
   </div>;

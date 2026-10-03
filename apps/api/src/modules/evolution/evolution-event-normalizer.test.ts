@@ -10,6 +10,16 @@ function normalize(data: unknown, event = 'MESSAGES_UPSERT') {
   return result.event;
 }
 describe('Evolution shared event adapter', () => {
+  it("recognizes WhatsApp's default animated (lottie) stickers, keeping the quoted reply", () => {
+    // Shape observed in production (Evolution 2.4): the sticker is wrapped in lottieStickerMessage.message.
+    const sticker = normalize({ key, messageType: 'lottieStickerMessage', message: { messageContextInfo: {}, lottieStickerMessage: { message: { stickerMessage: {
+      mimetype: 'application/was', isAnimated: true, isLottie: true,
+      contextInfo: { stanzaId: 'Q9', participant: '230794412974089@lid', quotedMessage: { conversation: 'Eu vou ser teu sócio' } } } } } } });
+    if (sticker.kind !== 'message') throw new Error('Expected message');
+    expect(sticker.content).toMatchObject({ type: 'image', body: 'Figurinha recebida', preview: 'Figurinha recebida' });
+    expect(sticker.content.quoted).toEqual({ id: 'Q9', participant: '230794412974089@lid', body: 'Eu vou ser teu sócio' });
+    expect(sticker.media).toMatchObject({ kind: 'sticker', hasMedia: true });
+  });
   it('keeps the quoted message of a reply and the target of a reaction', () => {
     const reply = normalize({ key, message: { extendedTextMessage: { text: 'sim', contextInfo: { stanzaId: 'Q1', participant: '5547888880000@s.whatsapp.net', quotedMessage: { conversation: 'vai hoje?' } } } } });
     if (reply.kind !== 'message') throw new Error();

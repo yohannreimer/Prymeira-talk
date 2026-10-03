@@ -126,7 +126,8 @@ export function readMessageBase64(message: unknown, messageKey: string) {
 export function unwrapMessage(message: unknown) {
   let current = message;
   for (let depth = 0; depth < 6; depth++) {
-    const wrapper = ["ephemeralMessage", "viewOnceMessage", "viewOnceMessageV2", "documentWithCaptionMessage"]
+    // lottieStickerMessage: WhatsApp's default animated stickers wrap a regular stickerMessage (application/was).
+    const wrapper = ["ephemeralMessage", "viewOnceMessage", "viewOnceMessageV2", "documentWithCaptionMessage", "lottieStickerMessage"]
       .find((key) => hasRecordPath(current, [key, "message"]));
     if (!wrapper) break;
     current = (current as Record<string, Record<string, unknown>>)[wrapper].message;

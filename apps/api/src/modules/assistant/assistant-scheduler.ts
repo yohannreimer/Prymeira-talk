@@ -30,7 +30,8 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
           if (prospecting && prospecting.status !== "stopped") { await repository.fail(state, token, "Conversa reservada para prospecção."); return; }
           await dependencies.prepareContext?.(state.workspaceId, state.conversationId);
           const context = await loadContext(prisma, state.workspaceId, state.conversationId);
-          if (!state.requestedById && context.messages.at(-1)?.direction !== 'inbound' && !(context.humanSupport && context.messages.at(-1)?.direction === 'outbound')) {
+          // Automatic suggestions answer the customer; after our own message only a requested follow-up is generated.
+          if (!state.requestedById && context.messages.at(-1)?.direction !== 'inbound') {
             await repository.fail(state, token, 'O cliente já recebeu uma resposta. Aguarde uma nova mensagem.');
             return;
           }
@@ -50,6 +51,29 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
     } catch (error) { dependencies.onError?.(error); }
     finally { processing = false; }
   }
+  /** Training pair: when a ready suggestion was on screen and the seller replied (typed in Talk, accepted, edited or
+   * from the phone), keep both texts. Messages sent by the AI agent, automations or campaigns are not seller replies.
+   * Best effort: a failure here never affects message processing. */
+  async function recordReplySample(input: { workspaceId: string; conversationId: string; messageId: string }) {
+    try {
+      if (!prisma.assistantConversationState?.findUnique || !prisma.assistantReplySample?.createMany) return;
+      const state = await prisma.assistantConversationState.findUnique({ where: { workspaceId_conversationId: { workspaceId: input.workspaceId, conversationId: input.conversationId } } });
+      if (state?.status !== 'ready') return;
+      const [message, suggestion] = await Promise.all([
+        prisma.message.findFirst({ where: { workspaceId: input.workspaceId, id: input.messageId }, select: { body: true, type: true, sentByUserId: true, metadata: true } }),
+        prisma.assistantSuggestion.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, revision: state.revision }, select: { id: true, body: true } })
+      ]);
+      const reply = message?.type === 'text' ? message.body?.trim() : null;
+      if (!message || !suggestion || !reply) return;
+      const metadata = message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata) ? message.metadata as Record<string, unknown> : {};
+      const source = metadata.source === 'assistant_review'
+        ? metadata.suggestionId === suggestion.id ? (reply === suggestion.body.trim() ? 'suggestion_accepted' : 'suggestion_edited') : null
+        : metadata.source !== undefined ? null : message.sentByUserId ? 'talk_typed' : 'phone';
+      if (!source) return;
+      await prisma.assistantReplySample.createMany({ data: [{ workspaceId: input.workspaceId, conversationId: input.conversationId, suggestionId: suggestion.id,
+        messageId: input.messageId, source, suggestedBody: suggestion.body, replyBody: reply }], skipDuplicates: true });
+    } catch (error) { dependencies.onError?.(error); }
+  }
   return {
     repository, tick,
     async persistInbound(tx: Prisma.TransactionClient, input: { workspaceId: string; conversationId: string; messageId: string; direction: string }) {
@@ -61,9 +85,10 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
     },
     async message(input: { workspaceId: string; conversationId: string; messageId: string; direction: string }) {
       if (input.direction === 'inbound') await repository.schedule({ ...input, trigger: 'inbound' });
+      // After our own message the panel waits for the customer; a follow-up is only suggested on request.
       else {
+        await recordReplySample(input);
         await repository.invalidate(input.workspaceId, input.conversationId);
-        await repository.schedule({ workspaceId: input.workspaceId, conversationId: input.conversationId, trigger: 'continuation' });
       }
     },
     async control(workspaceId: string, conversationId: string, _human: boolean) {
@@ -71,13 +96,11 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
       // Either control change may leave a customer message unanswered.
       await prisma.assistantConversationState.updateMany({ where: { workspaceId, conversationId }, data: { lastMessageId: null } });
       await repository.schedule({ workspaceId, conversationId, trigger: 'inbound' });
-      await repository.schedule({ workspaceId, conversationId, trigger: 'continuation' });
     },
     async handoffCompleted(workspaceId: string, conversationId: string) {
       await repository.invalidate(workspaceId, conversationId);
       await prisma.assistantConversationState.updateMany({ where: { workspaceId, conversationId }, data: { lastMessageId: null } });
       await repository.schedule({ workspaceId, conversationId, trigger: 'inbound' });
-      await repository.schedule({ workspaceId, conversationId, trigger: 'continuation' });
     },
     start() { if (!timer) { timer = setInterval(() => void tick(), 1000); timer.unref(); } },
     stop() { if (timer) clearInterval(timer); timer = undefined; }

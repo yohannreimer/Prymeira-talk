@@ -35,10 +35,11 @@ describe('assistant policy', () => {
     expect(canGenerateSuggestion({mode:'on_demand',control:'agent_allowed',trigger:'manual'})).toBe(true);
     expect(canGenerateSuggestion({mode:'disabled',control:'agent_allowed',trigger:'manual'})).toBe(false);
   });
-  it('caps the debounce',()=>{
-    expect(nextSuggestionAt(1000,1000)).toBe(6000);
-    expect(nextSuggestionAt(1000,4000)).toBe(9000);
-    expect(nextSuggestionAt(1000,15000)).toBe(11000);
+  it('waits 20 s after the last customer message, with no ceiling while they keep writing',()=>{
+    expect(nextSuggestionAt(1000,1000)).toBe(21000);
+    expect(nextSuggestionAt(1000,16000)).toBe(36000);
+    // 30 messages 15 s apart: still waits for the last one.
+    expect(nextSuggestionAt(1000,1000+29*15000)).toBe(1000+29*15000+20000);
   });
   it.each([null,{}, {assistant:{mode:'automatic'}}, {assistant:{mode:'surprise',agentId:'bad'}}])('legacy or invalid settings stay disabled',config=>{
     expect(readAssistantSettings(config)).toEqual({mode:'disabled',agentId:null});
