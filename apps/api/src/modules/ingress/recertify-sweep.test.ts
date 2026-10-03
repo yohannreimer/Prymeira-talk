@@ -21,3 +21,38 @@ describe('recertification sweep', () => {
     expect(reasons).toEqual(expect.arrayContaining(['legacy_identity_requires_adoption', 'target_missing', 'contradictory_sender_declarations']));
   });
 });
+
+describe('store-held events are replayed on their own observation', () => {
+  function setup(replayed: { outcome: string; reconciliationReasons: string[] } | null) {
+    const created: unknown[] = [];
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([{ isolation: 'read committed' }]), $executeRaw: vi.fn().mockResolvedValue(0),
+      ingressEventProgress: { findUnique: vi.fn().mockResolvedValue({ state: 'held', reason: 'target_missing', observationId: 'obs1' }) },
+      ingressEventRecertification: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn(async (args: unknown) => { created.push(args); }) },
+      canonicalObservation: { findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 'obs1', payload: { kind: 'receipt', context: { mode: 'live' } } }) }
+    };
+    const receipt = { id: 'r1', workspaceId: 'w', channelId: 'ch', rawRef: 'raw', rawDigest: 'd',
+      source: { workspaceId: 'w', channelId: 'ch', provider: 'waha', mode: 'live', observedAt: '2026-10-03T20:00:00Z', connectionId: 'conn' } };
+    const journal = { db: { $transaction: (fn: (t: typeof tx) => unknown) => fn(tx) }, readPayload: vi.fn().mockResolvedValue({ receipt, payload: { events: [{ kind: 'accepted' }] } }),
+      files: { read: vi.fn().mockResolvedValue(Buffer.from('{}')) } };
+    const service = new IngressApplicationService(journal as never);
+    const store = (service as unknown as { store: { replayResolvableHeldInTransaction: unknown } }).store;
+    const replay = vi.fn().mockResolvedValue(replayed && { ...replayed, observationId: 'obs1', conversationId: 'c', messageId: 'm', changes: ['recipient_receipt_advanced'] });
+    store.replayResolvableHeldInTransaction = replay;
+    const afterPersist = vi.spyOn(service as never, 'afterPersist').mockResolvedValue(undefined as never);
+    return { service, replay, afterPersist, created };
+  }
+  it('applies a receipt whose message now exists, without creating a second observation', async () => {
+    const s = setup({ outcome: 'duplicate', reconciliationReasons: [] });
+    expect(await s.service.recertify('r1', 0)).toEqual({ state: 'applied' });
+    expect(s.replay).toHaveBeenCalledWith(expect.anything(), { workspaceId: 'w', channelId: 'ch', observationId: 'obs1' });
+    expect(s.afterPersist).toHaveBeenCalledOnce();
+    expect(s.created).toEqual([expect.objectContaining({ data: expect.objectContaining({ outcome: 'applied', observationId: 'obs1' }) })]);
+  });
+  it('a hold that is not resolvable yet is not recorded, so a later sweep can still recover it', async () => {
+    const s = setup({ outcome: 'held', reconciliationReasons: ['target_missing'] });
+    expect(await s.service.recertify('r1', 0)).toEqual({ state: 'still_invalid', reason: 'target_missing' });
+    expect(s.created).toEqual([]);
+    expect(s.afterPersist).not.toHaveBeenCalled();
+  });
+});

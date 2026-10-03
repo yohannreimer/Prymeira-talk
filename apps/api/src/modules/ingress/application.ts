@@ -4,7 +4,7 @@ import { validateEvolutionIdentityDeclarations, validateWahaIdentityDeclarations
 import { Prisma, type IngressReceipt } from '@prisma/client';
 import { enterCanonicalTransaction, enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
 import { deriveTrustedMessagingContext, StaleMessagingSourceError } from '../messaging/canonical-source.js';
-import { createCanonicalStore, type CanonicalStoreResult } from '../messaging/canonical-store.js';
+import { createCanonicalStore, REPLAYABLE_HOLDS, type CanonicalStoreResult } from '../messaging/canonical-store.js';
 import { equal, json, sha, stable } from '../messaging/canonical-values.js';
 import type { NormalizedMessagingEvent, TrustedMessagingContext } from '../messaging/normalized-event.js';
 import { record } from '../messaging/whatsapp-identity.js';
@@ -19,11 +19,10 @@ import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normaliz
 import { normalizeWahaEvent } from '../waha/waha-normalizer.js';
 import { IngressJournal } from './journal.js';
 type Tx = Prisma.TransactionClient;
-// Holds that a later fix or a later fact can resolve, so the sweep re-reads them under today's rules:
-// identity rules that may have been corrected, an echo of a Talk send that its outbound journal now proves
-// (legacy adoption), and a receipt whose message has since been adopted or arrived.
-const IDENTITY_HOLD_REASONS = ['contradictory_sender_declarations', 'contradictory_chat_declarations', 'contradictory_direction_declarations', 'contradictory_stanza_declarations',
-    'legacy_identity_requires_adoption', 'target_missing'];
+// Identity rules that may since have been corrected: the authenticated raw is read again under today's rules.
+const IDENTITY_HOLD_REASONS = ['contradictory_sender_declarations', 'contradictory_chat_declarations', 'contradictory_direction_declarations', 'contradictory_stanza_declarations'];
+// Held inside the canonical store until a later fact (a journaled Talk send, a message that arrives later): the same
+// observation is replayed, never re-normalized into a second one (that would be a receipt-key conflict).
 /** An event that is still invalid or still waiting for its source is retried after this, so it never blocks the queue. */
 const RECERTIFY_BACKOFF_MS = 10 * 60_000;
 type MessageEvent = Extract<NormalizedMessagingEvent, {
@@ -149,11 +148,24 @@ export class IngressApplicationService {
             const staleSource = progress?.state === 'pending_recertification' && progress.reason === 'stale_source';
             // Held by an identity rule that may since have been corrected (e.g. Evolution 2.4's empty participant).
             const identityHeld = progress?.state === 'held' && IDENTITY_HOLD_REASONS.includes(progress.reason ?? '');
-            if (!progress || (!staleSource && !identityHeld))
+            const storeHeld = progress?.state === 'held' && REPLAYABLE_HOLDS.includes(progress.reason ?? '') && Boolean(progress.observationId);
+            if (!progress || (!staleSource && !identityHeld && !storeHeld))
                 return { state: 'not_pending' as const };
             if (await tx.ingressEventRecertification.findUnique({ where: { receiptId_eventIndex: { receiptId, eventIndex } } }))
                 return { state: 'already_certified' as const };
             const scope = { workspaceId: receipt.workspaceId, channelId: receipt.channelId, receiptId, eventIndex };
+            if (storeHeld) {
+                const replayed = await this.store.replayResolvableHeldInTransaction(tx, { workspaceId: receipt.workspaceId, channelId: receipt.channelId, observationId: progress.observationId! });
+                // Not resolved yet (or no longer replayable): not recorded, so a later sweep can still recover it.
+                if (!replayed || replayed.outcome === 'held')
+                    return { state: 'still_invalid' as const, reason: replayed?.reconciliationReasons.at(-1) ?? 'not_replayable' };
+                const observation = await tx.canonicalObservation.findUniqueOrThrow({ where: { id: replayed.observationId } });
+                const event = observation.payload as unknown as Exclude<NormalizedMessagingEvent, { kind: 'control' }>;
+                await this.afterPersist(tx, receipt, eventIndex, event, replayed, event.context);
+                await tx.ingressEventRecertification.create({ data: { ...scope, outcome: 'applied', reason: null, observationId: replayed.observationId,
+                    conversationId: replayed.conversationId, messageId: replayed.messageId, result: json(replayed) } });
+                return { state: 'applied' as const };
+            }
             let current: TrustedMessagingContext;
             try {
                 current = await deriveTrustedMessagingContext(tx, { workspaceId: receipt.workspaceId, channelId: receipt.channelId,
@@ -219,7 +231,7 @@ export class IngressApplicationService {
     /** Certifies every event waiting for a current source on this workspace scope. Returns how many were applied. */
     async recertifyPending(input: { workspaceIds?: readonly string[]; limit?: number }) {
         const rows = await this.journal.db.ingressEventProgress.findMany({ where: { recertification: { is: null },
-            OR: [{ state: 'pending_recertification', reason: 'stale_source' }, { state: 'held', reason: { in: IDENTITY_HOLD_REASONS } }],
+            OR: [{ state: 'pending_recertification', reason: 'stale_source' }, { state: 'held', reason: { in: [...IDENTITY_HOLD_REASONS, ...REPLAYABLE_HOLDS] } }],
             ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}) }, orderBy: { committedAt: 'asc' }, take: 1000, select: { receiptId: true, eventIndex: true } });
         // Oldest first, but an event that stays invalid (not recorded, so it would be read again) waits its backoff
         // instead of holding the first places of the queue forever.

@@ -30,6 +30,8 @@ export interface CanonicalStoreResult {
   conflictingMessageIds?: string[]; actionId?: string;
 }
 export type { CanonicalRevisionEvidence, CanonicalSnapshotEvidence } from './canonical-reducers.js';
+/** Held reasons that a later fact (a journaled send, a message that arrives later) can resolve by replay. */
+export const REPLAYABLE_HOLDS = ['legacy_identity_requires_adoption', 'target_missing'];
 type Tx = Prisma.TransactionClient;
 type Scope = { workspaceId: string; channelId: string };
 type MessageEvent = Extract<NormalizedMessagingEvent, { kind: 'message' }>;
@@ -582,6 +584,18 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     await tx.canonicalObservation.update({ where: { id: observation.id }, data: { resolutionEvidence: json({ ...proof, resolution: { kind: 'persisted_dispatch_settlement', resolutions } }) } });
     return persistObservationInTransaction(tx, event, { receiptKey: String(Array.isArray(observation.receiptTuple) ? observation.receiptTuple.at(-1) : '') }, { observation, staleFact, known: classification.kind === 'known' });
   }
+  /** Holds a later fact resolves: the echo of a Talk send (its outbound journal proves it, see legacy adoption) and a
+   * receipt whose message has since arrived or been adopted. Replays the SAME observation, never a new one: a second
+   * observation of the same receipt would be a receipt-key conflict. Returns null when this observation is not one. */
+  async function replayResolvableHeldInTransaction(tx: Tx, input: Scope & { observationId: string }): Promise<CanonicalStoreResult | null> {
+    await enterCanonicalWorkspaceTransaction(tx, input.workspaceId);
+    const observation = await tx.canonicalObservation.findFirst({ where: { workspaceId: input.workspaceId, channelId: input.channelId, id: input.observationId } });
+    if (!observation || observation.state !== 'held' || !REPLAYABLE_HOLDS.includes(observation.reason ?? '')) return null;
+    const event = observation.payload as unknown as NormalizedMessagingEvent;
+    let staleFact = false;
+    try { await lockAndScope(tx, event.context); } catch (error) { if (!(error instanceof StaleMessagingSourceError)) throw error; staleFact = true; }
+    return persistObservationInTransaction(tx, event, { receiptKey: String(Array.isArray(observation.receiptTuple) ? observation.receiptTuple.at(-1) : '') }, { observation, staleFact, known: false });
+  }
   const AMBIGUOUS_SEND_STATES = ['dispatching', 'accepted_unbound', 'uncertain', 'review'];
   /** Explicit, audited choice of the one existing conversation that operates a chat several conversations claim.
    * Nothing is moved or merged: UUIDs, settings and history stay where they are and the members remain readable
@@ -623,6 +637,6 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
   }
   async function persistInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) { return persistObservationInTransaction(tx, event, options); }
   return { ...createCanonicalReads({ hash }), resolveProviderReferenceInTransaction, persistInTransaction, reconcileRevisionInTransaction, reconcileSnapshotInTransaction, reconciliationFrontierInTransaction, recoverPendingInTransaction,
-    reprocessHeldMessageObservationInTransaction, applyDispatchMappingsInTransaction, applyLidLookupMappingInTransaction, resolveAuthorityInTransaction, replayAuthorityHeldInTransaction,
+    reprocessHeldMessageObservationInTransaction, replayResolvableHeldInTransaction, applyDispatchMappingsInTransaction, applyLidLookupMappingInTransaction, resolveAuthorityInTransaction, replayAuthorityHeldInTransaction,
     persist: (db: PrismaClient, event: NormalizedMessagingEvent, options: CanonicalStoreOptions) => db.$transaction(tx => persistInTransaction(tx, event, options), { isolationLevel: 'ReadCommitted' }) };
 }
