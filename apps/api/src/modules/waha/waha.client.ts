@@ -110,10 +110,11 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
       return bytes;
     }
   /** WAHA 55a7d78e src/core/media/local/MediaLocalStorage.ts and WPP
-   * WPPEngineMediaProcessor: <session>/<full serialized ID>.<actual extension>.
+   * WPPEngineMediaProcessor: <session>/<full serialized ID>.<actual extension>; GOWSEngineMediaProcessor names the
+   * file after the message's short id (Info.ID) instead.
    * Check the raw path before WHATWG URL normalization, then decode exactly once.
    * These provider URLs expire; resolve them afresh and never treat them as storage. */
-  function assertExactMediaUrl(value: string, session: string, nativeId: string) {
+  function assertExactMediaUrl(value: string, session: string, nativeId: string, rawId: string | null = null) {
     const fail = () => { throw new Error('WAHA media URL does not match the exact session and message'); };
     if (/[\u0000-\u0020\\?#]/.test(value)) fail();
     let url: URL;
@@ -127,7 +128,7 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
     try { decoded = segments.slice(3).map(segment => decodeURIComponent(segment)); } catch { return fail(); }
     if (decoded.some(segment => !segment || segment === '.' || segment === '..' || /[\u0000-\u0020%/\\]/.test(segment))) fail();
     const filename = decoded[1]!, dot = filename.lastIndexOf('.');
-    if (decoded[0] !== session || dot < 1 || filename.slice(0, dot) !== nativeId || !/^[a-zA-Z0-9]{1,16}$/.test(filename.slice(dot + 1))) fail();
+    if (decoded[0] !== session || dot < 1 || (filename.slice(0, dot) !== nativeId && (!rawId || filename.slice(0, dot) !== rawId)) || !/^[a-zA-Z0-9]{1,16}$/.test(filename.slice(dot + 1))) fail();
   }
   async function findMessageExact(input: { session: string; key: WhatsAppMessageKey }, downloadMedia = false): Promise<
     { kind: 'resolved'; message: WahaMessage } | { kind: 'missing' | 'incomplete' | 'ambiguous' }> {
@@ -149,7 +150,7 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
       const found = await findMessageExact(input, true);
       if (found.kind !== 'resolved') return found;
       if (!found.message.media?.url) return { kind: 'missing' as const };
-      assertExactMediaUrl(found.message.media.url, input.session, input.key.nativeId!);
+      assertExactMediaUrl(found.message.media.url, input.session, input.key.nativeId!, input.key.rawId);
       const bytes = await getMediaBytes({ url: found.message.media.url, maxBytes: exactMediaLimit(input.purpose) });
       return { kind: 'resolved' as const, message: found.message, bytes };
     },

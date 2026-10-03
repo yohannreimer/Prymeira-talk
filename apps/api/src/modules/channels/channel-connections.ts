@@ -28,12 +28,15 @@ export function normalizeWhatsappPhone(value: string | null | undefined): string
   const phone = value.split('@')[0]!.split(':')[0]!.replace(/\D/g, '');
   return /^\d{8,15}$/.test(phone) ? phone : null;
 }
+/** Qualified WAHA engines: GOWS (Go/whatsmeow, no browser) and WPP (WhatsApp Web in Chrome). The WAHA container's
+ * WHATSAPP_DEFAULT_ENGINE picks one; switching needs a new QR, and Talk reads both. */
+const WAHA_ENGINES = new Set(['GOWS', 'WPP']);
 function assertWahaOwnership(session: WahaSession, record: ChannelConnection) {
   if (session.name !== record.sessionName || session.config?.metadata?.workspaceId !== record.workspaceId || session.config?.metadata?.channelId !== record.channelId) {
     throw new ConnectionServiceError('WAHA_SESSION_CONFLICT', 'Esta sessão WAHA não pertence a este canal.', 409);
   }
-  if (session.engine?.engine !== 'WPP' && !(session.status === 'STOPPED' && !session.engine?.engine)) {
-    throw new ConnectionServiceError('WAHA_ENGINE_UNSUPPORTED', 'A sessão WAHA exige o engine WPP qualificado.', 503);
+  if (!WAHA_ENGINES.has(session.engine?.engine ?? '') && !(session.status === 'STOPPED' && !session.engine?.engine)) {
+    throw new ConnectionServiceError('WAHA_ENGINE_UNSUPPORTED', 'A sessão WAHA exige um engine qualificado (GOWS ou WPP).', 503);
   }
 }
 
@@ -45,7 +48,7 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
   async function qualifiedClient() {
     const client = wahaClient();
     const server = await client.getVersion();
-    if (server.engine !== 'WPP') throw new ConnectionServiceError('WAHA_ENGINE_UNSUPPORTED', 'O servidor WAHA exige o engine WPP qualificado.', 503);
+    if (!WAHA_ENGINES.has(server.engine)) throw new ConnectionServiceError('WAHA_ENGINE_UNSUPPORTED', 'O servidor WAHA exige um engine qualificado (GOWS ou WPP).', 503);
     if (server.version !== '2026.9.1') throw new ConnectionServiceError('WAHA_VERSION_UNSUPPORTED', 'O servidor WAHA exige a versão 2026.9.1 qualificada.', 503);
     return client;
   }

@@ -1,4 +1,5 @@
 import type { AddressMappingEvidence } from './normalized-event.js';
+import { gowsEnvelopeToWpp } from '../waha/waha-gows.js';
 import { normalizeChatAddress, record, serialized, string } from './whatsapp-identity.js';
 import { normalizeEvolutionEvent, unwrapMessage } from '../evolution/evolution-normalizer.js';
 type Pair = readonly [
@@ -125,6 +126,7 @@ export function validateEvolutionIdentityDeclarations(input: unknown): string | 
     return validate({ keys: [protocol.key] }) ?? validate({ keys: [secret.targetMessageKey] });
 }
 function wahaDeclarationBundles(input: unknown, verifiedMappings: ReadonlyArray<AddressMappingEvidence>): Declarations[] {
+    input = gowsEnvelopeToWpp(input);
     const envelope = record(input), payload = record(envelope.payload), name = string(envelope.event);
     if (!['message', 'message.any', 'message.edited', 'message.revoked', 'message.ack', 'message.ack.group'].includes(name ?? ''))
         return [];

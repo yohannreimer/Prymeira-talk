@@ -2,6 +2,7 @@ import { usedWahaAddressMappings, validateWahaIdentityDeclarations } from '../me
 import type { MessageEditPatch, NormalizationResult, SourceOrder, TrustedMessagingContext } from '../messaging/normalized-event.js';
 import { normalizeChatAddress, parseWahaMessageKey, record, serialized, string, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 import { wahaContent } from './waha-content.js';
+import { gowsEnvelopeToWpp } from './waha-gows.js';
 
 /** WhatsApp notices, not messages: encryption/security notices, group and call logs, protocol frames and the
  * "waiting for this message" placeholder. WAHA WPP only drops gp2/e2e_notification live and drops nothing in chat
@@ -21,13 +22,15 @@ function scopedTarget(value: unknown, chat: unknown): WhatsAppMessageKey {
   // Only chat scope can be borrowed from the envelope; never its action sender/direction.
   return { ...target, chatAddress: target.chatAddress ?? normalizeChatAddress(chat) };
 }
-/** Pure WPP adapter, grounded in WAHA commit 55a7d78e3feaf24280fd2a16177ad6187202ea00.
+/** Pure WPP adapter, grounded in WAHA commit 55a7d78e3feaf24280fd2a16177ad6187202ea00. GOWS events are translated
+ * to the same shape first (waha-gows.ts).
  * Authentication, DB lifecycle fencing, LID lookup and media I/O belong to the caller.
  */
 export function normalizeWahaEvent(context: TrustedMessagingContext, input: unknown, enrichment?: {
   /** Results from the caller's bounded, authenticated WAHA LID lookup; never webhook metadata. */
   verifiedLidMappings: ReadonlyArray<{ lid: string; pn: string }>;
 }): NormalizationResult {
+  input = gowsEnvelopeToWpp(input); // GOWS engine events, in the WPP shape these rules are written for.
   const envelope = record(input), payload = record(envelope.payload);
   const eventName = string(envelope.event);
   if (context.provider !== 'waha' || String(context.channelProvider) === 'meta' || !eventName || !envelope.payload || typeof envelope.payload !== 'object' || Array.isArray(envelope.payload)) return { kind: 'invalid', reason: 'invalid_envelope' };

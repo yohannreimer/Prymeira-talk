@@ -1,4 +1,4 @@
-# Second stack of the Evolution + WAHA + RabbitMQ integration: WAHA (WPP engine) for Talk, the independent
+# Second stack of the Evolution + WAHA + RabbitMQ integration: WAHA (GOWS engine) for Talk, the independent
 # ingress (HTTP -> RabbitMQ) and its worker (RabbitMQ -> PostgreSQL). It reuses the existing RabbitMQ service and the
 # Talk database; it does not touch the Deskcomm WAHA, the other products' queues or the Evolution instance.
 #
@@ -11,15 +11,17 @@
 # alias `postgres` resolves to another stack's PostgreSQL.
 services:
   waha:
-    # Pinned by digest (the registry candidate recorded in docs/operations/evolution-waha-rabbit.md). Still to qualify on the VPS.
-    image: ${WAHA_IMAGE:-devlikeapro/waha:chrome-2026.9.1@sha256:23d0344ea7dd3a1190d9ee5c78efebd27eb8bb41bdc6cdc10c2e2ce186ce70d5}
+    # Engine GOWS (Go/whatsmeow, no browser: a fraction of WPP's memory), pinned by digest. Talk reads both engines.
+    # Fallback to WPP (WhatsApp Web in Chrome): WAHA_IMAGE=devlikeapro/waha:chrome-2026.9.1@sha256:23d0344ea7dd3a1190d9ee5c78efebd27eb8bb41bdc6cdc10c2e2ce186ce70d5
+    # and WAHA_ENGINE=WPP. Either switch needs "Desconectar WAHA" first and a new WAHA QR after (a session belongs to one engine).
+    image: ${WAHA_IMAGE:-devlikeapro/waha:gows-2026.9.1@sha256:d2056b8dec41b218b54f431b8b4eb7d148346d530bb3658295ecb882944e9a18}
     logging:
       driver: json-file
       options:
         max-size: "20m"
         max-file: "10"
     environment:
-      WHATSAPP_DEFAULT_ENGINE: WPP
+      WHATSAPP_DEFAULT_ENGINE: ${WAHA_ENGINE:-GOWS}
       WAHA_API_KEY: ${WAHA_API_KEY}
       WAHA_DASHBOARD_ENABLED: "false"
       WHATSAPP_SWAGGER_ENABLED: "false"

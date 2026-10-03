@@ -35,7 +35,21 @@ ou `false`). Verificar `/api/health` e que a conversa, o envio e a Evolution con
 
 ## 3. Stack WAHA + ingresso + worker
 
-Variáveis (Portainer): `WAHA_IMAGE` (já fixada por digest no compose; só trocar depois de qualificar outra versão), `WAHA_API_KEY`, `WAHA_WEBHOOK_HMAC_KEY` (>= 16
+### Engine do WAHA (GOWS padrão, WPP como fallback)
+
+- **GOWS** (padrão): engine em Go sobre a whatsmeow, sem navegador. É independente da Baileys usada pela Evolution, então a
+  redundância continua real, e gasta uma fração da memória do WPP. Imagem
+  `devlikeapro/waha:gows-2026.9.1@sha256:d2056b8dec41b218b54f431b8b4eb7d148346d530bb3658295ecb882944e9a18`, `WAHA_ENGINE=GOWS`.
+- **WPP** (fallback): WhatsApp Web num Chrome. Imagem
+  `devlikeapro/waha:chrome-2026.9.1@sha256:23d0344ea7dd3a1190d9ee5c78efebd27eb8bb41bdc6cdc10c2e2ce186ce70d5`, `WAHA_ENGINE=WPP`.
+- O Talk lê os dois formatos (o GOWS é traduzido para o do WPP na entrada, `apps/api/src/modules/waha/waha-gows.ts`) e aceita
+  qualquer um dos dois servidores. Trocar não exige imagem nova do Talk.
+- Trocar de engine: 1) no Talk, em Canais, **Desconectar WAHA** em cada canal com WAHA; 2) trocar `WAHA_IMAGE` e `WAHA_ENGINE` e
+  atualizar a stack; 3) gerar o QR do WAHA de novo. Uma sessão do WhatsApp pertence a um engine só; a Evolution não é afetada.
+- No GOWS o histórico vem da sincronização que o próprio WhatsApp envia ao parear (guardada pelo WAHA), não do que um navegador
+  carregou.
+
+Variáveis (Portainer): `WAHA_IMAGE` e `WAHA_ENGINE` (padrão GOWS, fixado por digest no compose; ver "Engine do WAHA" abaixo), `WAHA_API_KEY`, `WAHA_WEBHOOK_HMAC_KEY` (>= 16
 caracteres cada, valores distintos), `TALK_AMQP_URL`, `INGRESS_WORKSPACE_ALLOWLIST=<id do workspace de teste>` (**nunca `*`** no
 primeiro teste), `EVOLUTION_WEBHOOK_SECRET` (o mesmo da stack principal), `INGRESS_EVOLUTION_ROUTE_RULE` vazio.
 

@@ -1,4 +1,5 @@
 import { normalizeChatAddress, parseWahaMessageKey, record, serialized, string, type WhatsAppMessageKey } from './whatsapp-identity.js';
+import { gowsMessageToWpp } from '../waha/waha-gows.js';
 export type MediaPurpose = 'serve' | 'process';
 export const exactMediaLimit = (purpose: MediaPurpose) => (purpose === 'serve' ? 25 : 8) * 1024 * 1024;
 export function completeProviderKey(key: WhatsAppMessageKey) {
@@ -25,6 +26,7 @@ export function fullProviderKeyMatches(expected: WhatsAppMessageKey, actual: Wha
  * or dispatch response can certify a WAHA identity. Structured IDs without a
  * serialized member may be completed only by the matching outer serialized ID. */
 export function parseExactWahaResponse(value: unknown): WhatsAppMessageKey | null {
+  value = gowsMessageToWpp(value);
   const envelope = record(value), data = record(envelope._data);
   const nativeId = string(envelope.id) ?? string(record(envelope.id)._serialized);
   if (!nativeId) return null;
