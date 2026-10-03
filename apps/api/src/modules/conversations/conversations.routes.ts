@@ -306,6 +306,18 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
         .send({ error: 'Não foi possível carregar o anexo. Tente novamente.' });
     }
   });
+  app.get('/conversations/:conversationId/messages/:messageId/poster', async (request, reply) => {
+    const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Invalid poster request.' });
+    try {
+      const poster = await mediaService.poster(request.talk.workspaceId, params.data.conversationId, params.data.messageId);
+      return reply.header('Cache-Control', 'private, no-store').header('X-Content-Type-Options', 'nosniff').type(poster.mimeType).send(poster.bytes);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : '';
+      // No poster is not an error for the reader: the bubble keeps its plain play tile.
+      return reply.code(code === 'NOT_FOUND' ? 404 : code === 'MEDIA_BUSY' ? 429 : 204).send();
+    }
+  });
   app.post('/conversations/:conversationId/messages/:messageId/transcription', async (request, reply) => {
     const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
     if (!params.success) return reply.code(400).send({ error: 'Áudio inválido.' });

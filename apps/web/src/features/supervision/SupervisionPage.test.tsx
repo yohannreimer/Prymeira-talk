@@ -14,7 +14,7 @@ vi.mock("../../app/supervision-api", async importOriginal => ({
   apiSupervisionConversations: vi.fn(), apiSupervisionSummary: vi.fn(), apiSupervisionThread: vi.fn(),
   apiSupervisionMedia: vi.fn(), apiSupervisionPreview: vi.fn()
 }));
-vi.mock("../../app/api", () => ({ apiGetAudioTranscription: vi.fn(), apiGetInboxMedia: vi.fn(), apiGetPdfPreview: vi.fn() }));
+vi.mock("../../app/api", () => ({ apiGetAudioTranscription: vi.fn(), apiGetInboxMedia: vi.fn(), apiGetPdfPreview: vi.fn(), apiGetVideoPoster: vi.fn() }));
 
 const seller1 = "00000000-0000-4000-8000-000000000001";
 const seller2 = "00000000-0000-4000-8000-000000000002";

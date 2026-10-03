@@ -8664,3 +8664,10 @@ select:disabled {
 .message-ticks.is-failed { color: #c0392b; }
 .message-bubble.is-outbound .message-ticks { color: rgba(255, 255, 255, 0.6); }
 .message-bubble.is-outbound .message-ticks.is-read { color: #7fd6ff; }
+
+/* Quoted attachment, like WhatsApp: text on the left (kind icon + label), thumbnail on the right. */
+.message-quote.is-rich { flex-direction: row; align-items: center; gap: 8px; min-width: min(230px, 62vw); }
+.message-quote .message-quote-main { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; color: inherit; }
+.message-quote .message-quote-kind { display: inline; vertical-align: -2px; margin-right: 4px; opacity: .75; }
+.message-quote .message-quote-thumb { display: block; flex-shrink: 0; width: 46px; height: 46px; border-radius: 5px; object-fit: cover; }
+.message-quote .message-quote-thumb.is-empty { background: rgba(0, 0, 0, 0.08); }

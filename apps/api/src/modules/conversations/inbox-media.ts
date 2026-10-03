@@ -1,4 +1,9 @@
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import type { PrismaClient } from '@prisma/client';
 import type { EvolutionClient } from '../evolution/evolution.client.js';
 import { resolveAgentMedia, type AgentMediaPolicy } from '../agents/agent-media-resolver.js';
@@ -12,11 +17,12 @@ const photoPolicy: AgentMediaPolicy = { kind: 'image', maxBytes: 2 * 1024 * 1024
 
 /** Memory-only, tenant-scoped, bounded cache. No changes to AI state, message bodies or sends. */
 export function createInboxMediaService(options: {
-  prisma: Pick<PrismaClient, 'conversation' | 'message' | 'contact' | 'channel' | '$executeRaw'>;
+  prisma: Pick<PrismaClient, 'conversation' | 'message' | 'contact' | 'channel' | '$executeRaw'> & Partial<Pick<PrismaClient, 'canonicalMessageIdentity'>>;
   client?: Pick<EvolutionClient, 'fetchMedia' | 'fetchProfilePicture'> | null;
   resolve?: typeof resolveAgentMedia;
   convert?: typeof prepareAudioPlayback;
   renderPdf?: typeof renderPdfPreview;
+  renderPoster?: (video: Media) => Promise<Media>;
   /** Durable private copy, when the deployment has one. It wins over any provider fetch; a missing or
    * unreadable copy falls back to the legacy path, so enabling it can never make an attachment disappear. */
   durable?: Pick<MessageMediaService, 'read'> | null;
@@ -134,13 +140,23 @@ export function createInboxMediaService(options: {
           resolved = await resolve({ mediaUrl: message.mediaUrl, policy: storedPolicy });
         }
         catch {
-          if (owner.channel.provider !== 'evolution' || !message.providerMessageId || !options.client?.fetchMedia) throw new Error('MEDIA_UNAVAILABLE');
-          const mediaUrl = await options.client.fetchMedia({ instanceName: owner.channel.providerKey, id: message.providerMessageId });
+          // Messages written by the canonical ingress keep the WhatsApp id on their identity, not on the message row.
+          const whatsappId = message.providerMessageId || (await options.prisma.canonicalMessageIdentity?.findFirst({
+            where: { workspaceId, messageId }, select: { rawId: true } }).catch(() => null))?.rawId;
+          if (owner.channel.provider !== 'evolution' || !whatsappId || !options.client?.fetchMedia) throw new Error('MEDIA_UNAVAILABLE');
+          const mediaUrl = await options.client.fetchMedia({ instanceName: owner.channel.providerKey, id: whatsappId });
           resolved = await resolve({ mediaUrl, policy });
         }
         return message.type === 'audio' ? convert(resolved) : { bytes: resolved.bytes,
           mimeType: resolved.bytes.subarray(0, 5).toString() === '%PDF-' ? 'application/pdf' : resolved.mimeType };
       }))!;
+    },
+    /** The video's first frame as a small JPEG, so the bubble shows the clip like WhatsApp before anyone plays it. */
+    async poster(workspaceId: string, conversationId: string, messageId: string): Promise<Media> {
+      const video = await this.media(workspaceId, conversationId, messageId);
+      if (!video.mimeType.startsWith('video/')) throw new Error('NOT_A_VIDEO');
+      const fingerprint = createHash('sha256').update(video.bytes).digest('hex');
+      return (await cached(`poster:${workspaceId}:${conversationId}:${messageId}:${fingerprint}`, () => (options.renderPoster ?? renderVideoPoster)(video)))!;
     },
     async photo(workspaceId: string, conversationId: string) {
       const owner = await conversation(workspaceId, conversationId);
@@ -168,4 +184,20 @@ export function createInboxMediaService(options: {
       });
     }
   };
+}
+
+const run = promisify(execFile);
+/** ffmpeg (already in the API image for voice notes) reads the clip once and writes a ≤480px JPEG of its first frame. */
+export async function renderVideoPoster(video: Media): Promise<Media> {
+  const directory = await mkdtemp(join(tmpdir(), 'talk-poster-'));
+  try {
+    const source = join(directory, 'video'), target = join(directory, 'poster.jpg');
+    await writeFile(source, video.bytes);
+    const frame = (seek: string[]) => run('ffmpeg', ['-v', 'error', '-y', ...seek, '-i', source, '-frames:v', '1', '-vf', "scale='min(480,iw)':-2", '-q:v', '5', target], { timeout: 20_000 });
+    // A clip shorter than the seek point has no frame there; its very first frame is used instead.
+    await frame(['-ss', '0.1']).catch(() => frame([]));
+    const bytes = await readFile(target);
+    if (!bytes.length) throw new Error('POSTER_FAILED');
+    return { bytes, mimeType: 'image/jpeg' };
+  } finally { await rm(directory, { recursive: true, force: true }); }
 }

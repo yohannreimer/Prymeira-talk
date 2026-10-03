@@ -10,6 +10,7 @@ import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCi
 import { quotedPreview, threadWithReactions } from "./message-threading.js";
 import { MessageTicks } from "./MessageTicks";
 import { ConversationPreview } from "./ConversationPreview";
+import { QuoteContent } from "./QuoteMedia";
 import type { ChangeEvent, DragEvent, FormEvent, SetStateAction } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -1708,9 +1709,9 @@ selectedConversation ? (
                 <div className={`msg-bubble-body${inlineMeta ? ' has-inline-meta' : ''}`}>
                   {selectedConversation.isGroup && isInbound ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
                   {message.quoted ? (() => { const quote = quotedPreview(message.quoted, visibleMessages, selectedConversation.contactName ?? null); return (
-                    <button type="button" className={`message-quote${quote.author === 'Você' ? ' is-mine' : ''}`} disabled={!quote.targetId}
+                    <button type="button" className={`message-quote is-rich${quote.author === 'Você' ? ' is-mine' : ''}`} disabled={!quote.targetId}
                       aria-label={`Mensagem respondida de ${quote.author}`} onClick={() => quote.targetId && revealMessage(quote.targetId)}>
-                      <strong>{quote.author}</strong><span>{quote.text}</span>
+                      <QuoteContent quote={quote} getToken={getToken} />
                     </button>); })() : null}
                   {isMedia ? <>
                     <InboxMedia key={message.id} message={message} getToken={getToken}
@@ -2146,7 +2147,7 @@ selectedConversation ? (
             {replyTarget && replyTarget.conversationId === selectedConversationId ? (() => {
               const quote = quotedPreview({ whatsappId: replyTarget.whatsappId ?? '', participant: replyTarget.senderJid ?? null, body: replyTarget.body }, visibleMessages, selectedConversation?.contactName ?? null);
               return <div className="composer-reply" role="status">
-                <div className="message-quote"><strong>{quote.author}</strong><span>{quote.text}</span></div>
+                <div className="message-quote is-rich"><QuoteContent quote={quote} getToken={getToken} /></div>
                 <button type="button" aria-label="Cancelar resposta" onClick={() => setReplyTarget(null)}><X size={14} aria-hidden="true" /></button>
               </div>;
             })() : null}

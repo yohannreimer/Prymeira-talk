@@ -8,7 +8,7 @@ import { apiGetAudioTranscription } from '../../app/api';
 
 vi.mock('../../app/api', () => ({
   apiGetAudioTranscription: vi.fn(),
-  apiGetInboxMedia: vi.fn(),
+  apiGetInboxMedia: vi.fn(), apiGetVideoPoster: vi.fn(),
   apiGetPdfPreview: vi.fn()
 }));
 

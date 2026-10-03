@@ -1,7 +1,7 @@
 import { memo, useContext, useEffect, useRef, useState } from 'react';
 import { Download, FileText, LoaderCircle, Mic, Pause, Play, RotateCcw, Sticker, Video, X } from 'lucide-react';
 import type { MessageDto } from '@prymeira-talk/shared';
-import { apiGetAudioTranscription, apiGetInboxMedia, apiGetPdfPreview } from '../../app/api';
+import { apiGetAudioTranscription, apiGetInboxMedia, apiGetPdfPreview, apiGetVideoPoster } from '../../app/api';
 import { SessionBlobCache } from '../../app/session/blob-cache';
 import { BlobCacheContext } from '../../app/session/blob-cache-context';
 import { ContactAvatar } from './ContactAvatar';
@@ -11,8 +11,9 @@ export type InboxMediaTransport = {
   media: typeof apiGetInboxMedia;
   preview: typeof apiGetPdfPreview;
   transcribe?: typeof apiGetAudioTranscription;
+  poster?: typeof apiGetVideoPoster;
 };
-const defaultTransport: InboxMediaTransport = { media: apiGetInboxMedia, preview: apiGetPdfPreview, transcribe: apiGetAudioTranscription };
+const defaultTransport: InboxMediaTransport = { media: apiGetInboxMedia, preview: apiGetPdfPreview, transcribe: apiGetAudioTranscription, poster: apiGetVideoPoster };
 
 type MediaMessage = Pick<MessageDto, 'type' | 'body'> & Partial<Pick<MessageDto, 'mediaUrl' | 'attachment'>>;
 const placeholder = /^(Imagem recebida|Figurinha recebida|Arquivo recebido|Áudio recebido|Áudio enviado|Vídeo recebido|Vídeo enviado)$/i;
@@ -130,6 +131,22 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
   // Like WhatsApp: a clip keeps its shape, and a tall one is sized by its height, never stretched to the bubble width.
   const aspect = mediaWidth && mediaHeight ? { aspectRatio: `${mediaWidth} / ${mediaHeight}`,
     ...(mediaHeight > mediaWidth ? { width: `min(${Math.round(320 * mediaWidth / mediaHeight)}px, 58vw)`, minHeight: 0 } : {}) } : undefined;
+  const posterKey = `poster:${message.conversationId}:${message.id}`;
+  const [poster, setPoster] = useState<string | null>(() => cache.get(posterKey)?.url ?? null);
+  useEffect(() => {
+    if (!isVideo || !videoVisible || poster || !transport.poster) return;
+    const abort = new AbortController();
+    const fetchPoster = transport.poster;
+    // Absent posters resolve to an empty blob so the cache remembers "none" for this session.
+    void cache.load(posterKey, async () => (await fetchPoster(message.conversationId, message.id, getToken, abort.signal)) ?? new Blob([]))
+      .then(item => { if (!abort.signal.aborted && item.blob.size) setPoster(item.url); }).catch(() => {});
+    return () => abort.abort();
+  }, [isVideo, videoVisible, poster, posterKey, cache]);
+  useEffect(() => {
+    if (!poster) return;
+    cache.retain(posterKey);
+    return () => cache.release(posterKey);
+  }, [poster, posterKey, cache]);
   const isPdf = message.attachment?.mimeType?.toLowerCase() === 'application/pdf' || previewMime === 'application/pdf' || /pdf/i.test(name + message.mediaUrl?.slice(0, 40));
   useEffect(() => {
     setSrc(initialMediaSource());
@@ -283,19 +300,22 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
       {src && !error ? <img src={src} loading="lazy" decoding="async" alt={mediaCaption(message) || (isSticker ? 'Figurinha' : 'Imagem da conversa')} onError={() => setError(true)} /> : <span>{loading ? (isSticker ? 'Carregando figurinha…' : 'Carregando imagem…') : isSticker ? 'Figurinha' : 'Abrir imagem'}</span>}
     </button> : isGif ? <button type="button" className="talk-gif-preview" style={aspect} aria-label={videoPlaying ? 'Pausar GIF' : 'Tocar GIF'}
       onClick={() => { const element = video.current; if (element) void (element.paused ? element.play().catch(() => {}) : element.pause()); }}>
-      {src && !error ? <video ref={video} src={src} autoPlay muted playsInline preload="auto" aria-hidden="true" onError={() => setError(true)}
+      {src && !error ? <video ref={video} src={src} poster={poster ?? undefined} autoPlay muted playsInline preload="auto" aria-hidden="true" onError={() => setError(true)}
         onPlay={() => { videoPlayingRef.current = true; setVideoPlaying(true); }}
         onPause={() => { videoPlayingRef.current = false; setVideoPlaying(false); }}
         onEnded={() => { videoPlayingRef.current = false; setVideoPlaying(false); }} />
-        : loading ? <LoaderCircle className="talk-media-loading" size={26} /> : null}
+        : poster ? <img src={poster} alt="" /> : loading ? <LoaderCircle className="talk-media-loading" size={26} /> : null}
       {videoPlaying ? null : <span className="talk-gif-badge">GIF</span>}
     </button> : isVideo ? <div className="talk-video-preview" style={aspect}>
-      {src ? <video ref={video} src={src} controls playsInline autoPlay={autoStart} preload={autoStart ? 'auto' : 'none'} aria-label="Vídeo da conversa"
+      {src ? <video ref={video} src={src} poster={poster ?? undefined} controls playsInline autoPlay={autoStart} preload={autoStart ? 'auto' : 'none'} aria-label="Vídeo da conversa"
         onPlay={() => { videoPlayingRef.current = true; setVideoPlaying(true); }}
         onPause={() => { videoPlayingRef.current = false; setVideoPlaying(false); if (!videoVisibleRef.current) releasePausedVideo(); }}
         onEnded={() => { videoPlayingRef.current = false; setVideoPlaying(false); if (!videoVisibleRef.current) releasePausedVideo(); }} /> :
-        <button type="button" aria-label="Reproduzir vídeo" disabled={loading} onClick={() => { setAutoStart(true); void load().catch(() => {}); }}>
-          {loading ? <LoaderCircle className="talk-media-loading" size={28} /> : <><Video size={28} /><span>Reproduzir vídeo</span></>}
+        <button type="button" className={poster ? 'has-poster' : undefined} aria-label="Reproduzir vídeo" disabled={loading} onClick={() => { setAutoStart(true); void load().catch(() => {}); }}>
+          {/* WhatsApp's tile: the first frame, a round play button and the clip's length. */}
+          {poster ? <img className="talk-video-poster" src={poster} alt="" /> : null}
+          <span className="talk-video-play">{loading ? <LoaderCircle className="talk-media-loading" size={26} /> : <Play size={26} fill="currentColor" />}</span>
+          <span className="talk-video-length"><Video size={14} aria-hidden="true" />{message.attachment?.durationSeconds ? audioTime(message.attachment.durationSeconds) : 'Vídeo'}</span>
         </button>}
     </div> : <div className="talk-document-card">
       <button type="button" className="talk-document-open" aria-label="Abrir documento" onClick={() => void open()} disabled={loading}>

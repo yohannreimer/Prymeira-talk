@@ -1,4 +1,6 @@
-import type { MessageDto } from '@prymeira-talk/shared';
+import { lastMessageKind, type MessageDto } from '@prymeira-talk/shared';
+import { mediaKindLabels, mediaPlaceholders, type MediaKind } from './ConversationPreview';
+import { mediaCaption, mediaFileName } from './InboxMedia';
 
 export type ReactionChip = { emoji: string; count: number; mine: boolean };
 
@@ -36,6 +38,12 @@ export function quotedPreview(quoted: NonNullable<MessageDto['quoted']>, message
   const target = messages.find(message => message.whatsappId === quoted.whatsappId);
   const author = target ? target.direction === 'outbound' ? 'Você' : target.senderName?.trim() || contactName || 'Contato'
     : quoted.participant ? quoted.participant.split('@')[0]! : contactName || 'Contato';
-  const text = quoted.body?.trim() || target?.body?.trim() || 'Mensagem';
-  return { author, text, targetId: target?.id ?? null };
+  const declared = target ? lastMessageKind({ type: target.type, body: target.body, mimeType: target.attachment?.mimeType, mediaUrl: target.mediaUrl }) : null;
+  const raw = quoted.body?.trim() || target?.body?.trim() || '';
+  const kind: MediaKind | null = declared && declared !== 'text' ? declared : mediaPlaceholders[raw] ?? null;
+  // Like WhatsApp: a quoted attachment reads as its kind (or its caption / file name), never "Figurinha recebida".
+  const text = !kind ? raw || 'Mensagem'
+    : kind === 'file' && target ? mediaFileName(target)
+    : (target && mediaCaption(target)) || (mediaPlaceholders[raw] ? mediaKindLabels[kind] : raw || mediaKindLabels[kind]);
+  return { author, text, targetId: target?.id ?? null, target: target ?? null, kind };
 }

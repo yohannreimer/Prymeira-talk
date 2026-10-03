@@ -1400,6 +1400,20 @@ export async function apiGetInboxMedia(conversationId: string, messageId: string
   });
 }
 
+/** The video's first frame (null when the server could not draw one: the bubble keeps its plain play tile). */
+export async function apiGetVideoPoster(conversationId: string, messageId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/poster`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: deadline
+    });
+    if (response.status === 204) return null;
+    await assertApiReadAccess(response, token, deadline);
+    if (!response.ok) return null;
+    return response.blob();
+  });
+}
+
 export function apiGetAudioTranscription(conversationId: string, messageId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
   return fetchJson(getToken, `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/transcription`,
     { method: 'POST', signal }, data => data as { text: string }, 'Não foi possível transcrever este áudio.');
