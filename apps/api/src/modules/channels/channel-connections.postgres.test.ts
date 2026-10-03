@@ -10,7 +10,7 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
   const workspaceId = `connections-${randomUUID()}`;
   const otherWorkspace = `connections-${randomUUID()}`;
   let channelId: string;
-  const remote: any = { getVersion: vi.fn(async () => ({ version: '2026.9.1', engine: 'WPP' })), createSession: vi.fn(), startSession: vi.fn(), getQr: vi.fn(async () => 'waha-qr'), getMe: vi.fn(async () => ({ id: '5547999990000@c.us' })), stopSession: vi.fn(), logoutSession: vi.fn(), deleteSession: vi.fn(), getSession: vi.fn(async ({ session }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP' }, config: { metadata: { workspaceId, channelId } } })) };
+  const remote: any = { getVersion: vi.fn(async () => ({ version: '2026.9.1', engine: 'WPP' })), createSession: vi.fn(), startSession: vi.fn(), getQr: vi.fn(async () => 'waha-qr'), getMe: vi.fn(async () => ({ id: '5547999990000@c.us' })), stopSession: vi.fn(), logoutSession: vi.fn(), deleteSession: vi.fn(), getSession: vi.fn(async ({ session }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: { workspaceId, channelId } } })) };
   const evolution: any = { mode: 'real', webhookSecret: 'test', publicWebhookUrl: () => 'https://talk.test/webhook', client: { createInstance: vi.fn(async ({ instanceName }) => ({ instanceName, qrCode: 'evolution-qr' })), setWebhook: vi.fn(), logoutInstance: vi.fn(), getConnectionState: vi.fn(async () => 'open'), getInstanceIdentity: vi.fn(async () => '5547999990000@s.whatsapp.net') } };
   beforeAll(() => {
     const target = new URL(databaseUrl!);
@@ -54,7 +54,7 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     const service = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: remote } });
     const secondary = await prisma.channelConnection.findFirstOrThrow({ where: { workspaceId, channelId, provider: 'waha' } });
     const primary = await prisma.channelConnection.findFirstOrThrow({ where: { workspaceId, channelId, provider: 'evolution' } });
-    remote.getSession.mockResolvedValue({ name: secondary.sessionName, status: 'WORKING', engine: { engine: 'WPP' }, config: { metadata: { workspaceId, channelId } } });
+    remote.getSession.mockResolvedValue({ name: secondary.sessionName, status: 'WORKING', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: { workspaceId, channelId } } });
     try {
       await service.refresh({ workspaceId, channelId, connectionId: secondary.id });
       expect(await prisma.channelConnection.findUnique({ where: { id: secondary.id } })).toMatchObject({ eligible: true, health: 'healthy', lastHealthyAt: expect.any(Date) });
@@ -73,16 +73,52 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
       const changed = await service.refresh({ workspaceId, channelId, connectionId: primary.id });
       expect(changed.channel.connections!.find((record) => record.id === secondary.id)).toMatchObject({ eligible: false, health: 'degraded', lastError: 'PHONE_MISMATCH' });
     } finally {
-      remote.getSession.mockImplementation(async ({ session }: { session: string }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP' }, config: { metadata: { workspaceId, channelId } } }));
+      remote.getSession.mockImplementation(async ({ session }: { session: string }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: { workspaceId, channelId } } }));
       evolution.client.getConnectionState.mockResolvedValue('open');
       evolution.client.getInstanceIdentity.mockResolvedValue('5547999990000@s.whatsapp.net');
     }
+  });
+  it('a WORKING session whose engine never connected is not healthy, and a receive loss survives probes', async () => {
+    const channels = createChannelsService(prisma as unknown as PrismaLike, { evolution, waha: { enabled: true, client: remote } });
+    const created = await channels.createChannel({ workspaceId, displayName: 'Zombie QA' });
+    const scope = { workspaceId, channelId: created.id };
+    let engine: Record<string, unknown> = { engine: 'WPP', state: 'CONNECTED' };
+    const provider: any = { ...remote, getSession: vi.fn(async ({ session }) => ({ name: session, status: 'WORKING', engine, config: { metadata: scope } })) };
+    const service = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: provider } });
+    const secondary = (await service.setRedundancy({ ...scope, enabled: true })).channel.connections!.find(r => r.provider === 'waha')!;
+    const primary = await prisma.channelConnection.findFirstOrThrow({ where: { ...scope, provider: 'evolution' } });
+    const read = (id: string) => prisma.channelConnection.findUniqueOrThrow({ where: { id } });
+    await service.refresh({ ...scope, connectionId: secondary.id });
+    expect(await read(secondary.id)).toMatchObject({ health: 'healthy', eligible: true });
+    // Production: WAHA said WORKING, but WPP's Chrome never loaded WhatsApp (no engine.state).
+    engine = { engine: 'WPP' };
+    await service.refresh({ ...scope, connectionId: secondary.id });
+    expect(await read(secondary.id)).toMatchObject({ status: 'connected', health: 'degraded', eligible: false, lastError: 'ENGINE_NOT_READY' });
+    engine = { engine: 'GOWS', gows: { found: true, connected: false } };
+    await service.refresh({ ...scope, connectionId: secondary.id });
+    expect(await read(secondary.id)).toMatchObject({ health: 'degraded', eligible: false, lastError: 'ENGINE_NOT_READY' });
+    engine = { engine: 'GOWS', gows: { found: true, connected: true } };
+    await service.refresh({ ...scope, connectionId: secondary.id });
+    expect(await read(secondary.id)).toMatchObject({ health: 'healthy', eligible: true, lastError: null });
+    // The health monitor saw it miss live messages: probes keep the mark and do not renew its health proof.
+    await prisma.channelConnection.update({ where: { id: secondary.id }, data: { health: 'degraded', lastError: 'RECEIVE_LOSS', eligible: false } });
+    const before = (await read(secondary.id)).lastHealthyAt;
+    await service.refresh({ ...scope, connectionId: secondary.id });
+    expect(await read(secondary.id)).toMatchObject({ health: 'degraded', eligible: false, lastError: 'RECEIVE_LOSS', lastHealthyAt: before });
+    await prisma.channelConnection.update({ where: { id: primary.id }, data: { health: 'degraded', lastError: 'RECEIVE_LOSS' } });
+    const primaryBefore = (await read(primary.id)).lastHealthyAt;
+    await service.refresh({ ...scope, connectionId: primary.id });
+    expect(await read(primary.id)).toMatchObject({ health: 'degraded', lastError: 'RECEIVE_LOSS', lastHealthyAt: primaryBefore });
+    // Only the monitor's evidence clears it; the next probe then judges the connection afresh.
+    await prisma.channelConnection.update({ where: { id: secondary.id }, data: { lastError: null } });
+    await service.refresh({ ...scope, connectionId: secondary.id });
+    expect(await read(secondary.id)).toMatchObject({ health: 'healthy', eligible: true });
   });
   it.each(['logout', 'disable', 'fresh-qr', 'primary-logout', 'primary-qr', 'primary-reconnect'] as const)('rejects a WAHA observation begun before %s on real PostgreSQL', async (action) => {
     const channels = createChannelsService(prisma as unknown as PrismaLike, { evolution, waha: { enabled: true, client: remote } });
     const created = await channels.createChannel({ workspaceId, displayName: 'Race QA' });
     const scope = { workspaceId, channelId: created.id };
-    const provider: any = { ...remote, getSession: vi.fn(async ({ session }) => ({ name: session, status: 'WORKING', engine: { engine: 'WPP' }, config: { metadata: scope } })) };
+    const provider: any = { ...remote, getSession: vi.fn(async ({ session }) => ({ name: session, status: 'WORKING', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: scope } })) };
     const primaryProvider: any = { ...evolution, client: { ...evolution.client, getInstanceIdentity: vi.fn(async () => '5547999990000@s.whatsapp.net') } };
     const service = createChannelConnectionsService(prisma, { evolution: primaryProvider, waha: { enabled: true, client: provider } });
     const legacy = createChannelsService(prisma as unknown as PrismaLike, { evolution: primaryProvider, waha: { enabled: true, client: provider } });
@@ -157,7 +193,7 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     const legacy = createChannelsService(prisma as unknown as PrismaLike, { evolution: primaryProvider });
     const created = await legacy.createChannel({ workspaceId, displayName: 'Pending lifecycle QA' });
     const scope = { workspaceId, channelId: created.id };
-    const provider: any = { ...remote, getMe: vi.fn(async () => ({ id: '5547999990000@c.us' })), getQr: vi.fn(async () => 'waha-qr'), logoutSession: vi.fn(), stopSession: vi.fn(), getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'WORKING', engine: { engine: 'WPP' }, config: { metadata: scope } })) };
+    const provider: any = { ...remote, getMe: vi.fn(async () => ({ id: '5547999990000@c.us' })), getQr: vi.fn(async () => 'waha-qr'), logoutSession: vi.fn(), stopSession: vi.fn(), getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'WORKING', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: scope } })) };
     const service = createChannelConnectionsService(prisma, { evolution: primaryProvider, waha: { enabled: true, client: provider } });
     const enabled = await service.setRedundancy({ ...scope, enabled: true });
     const secondary = enabled.channel.connections!.find((r) => r.provider === 'waha')!;
@@ -186,7 +222,7 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     const legacy = createChannelsService(prisma as unknown as PrismaLike, { evolution: primaryProvider });
     const created = await legacy.createChannel({ workspaceId, displayName: 'Protective observation QA' });
     const scope = { workspaceId, channelId: created.id };
-    const provider: any = { ...remote, getMe: vi.fn(async () => ({ id: '5547999990000@c.us' })), getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'WORKING', engine: { engine: 'WPP' }, config: { metadata: scope } })) };
+    const provider: any = { ...remote, getMe: vi.fn(async () => ({ id: '5547999990000@c.us' })), getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'WORKING', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: scope } })) };
     const service = createChannelConnectionsService(prisma, { evolution: primaryProvider, waha: { enabled: true, client: provider } });
     const enabled = await service.setRedundancy({ ...scope, enabled: true });
     const secondary = enabled.channel.connections!.find((r) => r.provider === 'waha')!;
@@ -214,7 +250,7 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     const legacy = createChannelsService(prisma as unknown as PrismaLike, { evolution: primaryProvider });
     const created = await legacy.createChannel({ workspaceId, displayName: 'Exclusive lifecycle QA' });
     const scope = { workspaceId, channelId: created.id };
-    const provider: any = { ...remote, getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP' }, config: { metadata: scope } })), startSession: vi.fn(), getQr: vi.fn(async () => 'waha-qr'), logoutSession: vi.fn(), stopSession: vi.fn() };
+    const provider: any = { ...remote, getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: scope } })), startSession: vi.fn(), getQr: vi.fn(async () => 'waha-qr'), logoutSession: vi.fn(), stopSession: vi.fn() };
     const service = createChannelConnectionsService(prisma, { evolution: primaryProvider, waha: { enabled: true, client: provider } });
     const enabled = await service.setRedundancy({ ...scope, enabled: true });
     const target = enabled.channel.connections!.find((r) => r.provider === providerName)!;
@@ -236,7 +272,7 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
       await expect(service.setRedundancy({ ...scope, enabled: false })).rejects.toMatchObject({ code: 'LIFECYCLE_IN_PROGRESS' });
       expect(await prisma.channel.findUnique({ where: { id: created.id } })).toEqual(beforeDisable);
     }
-    release(providerName === 'waha' ? { name: target.sessionName, status: 'SCAN_QR_CODE', engine: { engine: 'WPP' }, config: { metadata: scope } } : undefined);
+    release(providerName === 'waha' ? { name: target.sessionName, status: 'SCAN_QR_CODE', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: scope } } : undefined);
     await logout;
     expect(await prisma.channelConnection.findUnique({ where: { id: target.id } })).toMatchObject({ status: 'disconnected', eligible: false, lifecycleGeneration: current.lifecycleGeneration + 1 });
   });
@@ -247,7 +283,7 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     let release!: (qr: string) => void; let entered!: () => void; let rejected!: () => void;
     const remotePending = new Promise<void>((resolve) => { entered = resolve; });
     const rejectedRequest = new Promise<void>((resolve) => { rejected = resolve; });
-    const provider: any = { ...remote, getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP' }, config: { metadata: scope } })), getQr: vi.fn(() => { entered(); return new Promise((resolve) => { release = resolve; }); }) };
+    const provider: any = { ...remote, getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: scope } })), getQr: vi.fn(() => { entered(); return new Promise((resolve) => { release = resolve; }); }) };
     const service = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: provider } });
     const enabled = await service.setRedundancy({ ...scope, enabled: true });
     const secondary = enabled.channel.connections!.find((r) => r.provider === 'waha')!;
@@ -269,7 +305,7 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     const scope = { workspaceId, channelId: created.id };
     let release!: () => void; let entered!: () => void;
     const paused = new Promise<void>((resolve) => { entered = resolve; });
-    const provider: any = { ...remote, getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP' }, config: { metadata: scope } })), stopSession: vi.fn(() => { entered(); return new Promise<void>((resolve) => { release = resolve; }); }) };
+    const provider: any = { ...remote, getSession: vi.fn(async ({ session }: { session: string }) => ({ name: session, status: 'SCAN_QR_CODE', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: scope } })), stopSession: vi.fn(() => { entered(); return new Promise<void>((resolve) => { release = resolve; }); }) };
     const service = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: provider } });
     await service.setRedundancy({ ...scope, enabled: true });
     const disable = service.setRedundancy({ ...scope, enabled: false });
@@ -328,7 +364,7 @@ describe.skipIf(!databaseUrl)('physical connections on PostgreSQL', () => {
     const own: any = { ...remote, stopSession: vi.fn(), logoutSession: vi.fn(), getSession: vi.fn() };
     const channels = createChannelsService(prisma as unknown as PrismaLike, { evolution, waha: { enabled: true, client: own } });
     const created = await channels.createChannel({ workspaceId: ws, displayName: 'Arquivar', phoneNumber: '+55 47 99999-0000' });
-    own.getSession.mockImplementation(async ({ session }: { session: string }) => ({ name: session, status: 'WORKING', engine: { engine: 'WPP' }, config: { metadata: { workspaceId: ws, channelId: created.id } } }));
+    own.getSession.mockImplementation(async ({ session }: { session: string }) => ({ name: session, status: 'WORKING', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: { workspaceId: ws, channelId: created.id } } }));
     const connections = createChannelConnectionsService(prisma, { evolution, waha: { enabled: true, client: own } });
     await connections.setRedundancy({ workspaceId: ws, channelId: created.id, enabled: true });
     await prisma.channelConnection.updateMany({ where: { channelId: created.id }, data: { status: 'connected', eligible: true } });

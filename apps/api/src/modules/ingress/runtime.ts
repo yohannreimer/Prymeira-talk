@@ -142,7 +142,8 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
         prepareMedia: mediaStore ? createSourceMediaPreparer({ media: createMessageMediaService({ db, store: mediaStore }), waha: wahaClient,
           evolution: config.evolutionApi ? createEvolutionClient(config.evolutionApi) : null }) : undefined };
     }
-    const warn = (error: unknown, connectionId: string) => console.warn('Provider history step failed', { connectionId, error: error instanceof Error ? error.message : String(error) });
+    const warnFor = (step: 'waha_history' | 'gap_recovery' | 'lid_resolution') => (error: unknown, connectionId: string) =>
+      console.warn(`Provider ${step} step failed`, { step, connectionId, error: error instanceof Error ? error.message : String(error) });
     let lastRecovery = 0;
     while (!abort.signal.aborted) {
       await delay(30_000, undefined, { signal: abort.signal }).catch(() => {});
@@ -151,10 +152,10 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
         const scope = config.allowAllWorkspaces ? {} : { workspaceIds: [...config.workspaceAllowlist] };
         await application.recertifyPending(scope);
         await autoResolvePending(db, scope); // Old duplicate conversations: the phone-number default decides.
-        if (config.wahaHistoryImport) await wahaHistorySweep(db, history, { ...scope, onError: warn });
+        if (config.wahaHistoryImport) await wahaHistorySweep(db, history, { ...scope, onError: warnFor('waha_history') });
         // Conversations known only by a LID (Evolution history without a phone) get their number from WAHA.
-        if (config.wahaHistoryImport && history.wahaLids) await resolveLidConversationsSweep(db, { lids: history.wahaLids }, { ...scope, onError: warn });
-        if (config.gapRecovery && Date.now() - lastRecovery >= 5 * 60_000) { lastRecovery = Date.now(); await recoverGapsSweep(db, history, { ...scope, onError: warn }); }
+        if (config.wahaHistoryImport && history.wahaLids) await resolveLidConversationsSweep(db, { lids: history.wahaLids }, { ...scope, onError: warnFor('lid_resolution') });
+        if (config.gapRecovery && Date.now() - lastRecovery >= 5 * 60_000) { lastRecovery = Date.now(); await recoverGapsSweep(db, history, { ...scope, onError: warnFor('gap_recovery') }); }
       }
       catch (error) { console.warn('Recertification sweep failed', error); }
     }

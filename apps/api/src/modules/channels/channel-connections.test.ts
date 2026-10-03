@@ -32,7 +32,7 @@ function fixture() {
       catch (error) { channel = beforeChannel; records.splice(0, records.length, ...beforeRecords); throw error; }
     })
   };
-  const client: any = { getVersion: vi.fn(async () => ({ version: '2026.9.1', engine: 'WPP' })), getSession: vi.fn(async () => ({ name: 'talk-waha', status: 'WORKING', engine: { engine: 'WPP' }, config: { metadata: { workspaceId: 'ws', channelId: ch } } })), getMe: vi.fn(async () => ({ id: '5547999990000@c.us' })), getQr: vi.fn(async () => 'secondary-qr'), createSession: vi.fn(), startSession: vi.fn(), stopSession: vi.fn(), logoutSession: vi.fn(), deleteSession: vi.fn() };
+  const client: any = { getVersion: vi.fn(async () => ({ version: '2026.9.1', engine: 'WPP' })), getSession: vi.fn(async () => ({ name: 'talk-waha', status: 'WORKING', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: { workspaceId: 'ws', channelId: ch } } })), getMe: vi.fn(async () => ({ id: '5547999990000@c.us' })), getQr: vi.fn(async () => 'secondary-qr'), createSession: vi.fn(), startSession: vi.fn(), stopSession: vi.fn(), logoutSession: vi.fn(), deleteSession: vi.fn() };
   const evolution: any = { mode: 'real', client: { getConnectionState: vi.fn(async () => 'open'), getInstanceIdentity: vi.fn(async () => '5547999990000@s.whatsapp.net'), logoutInstance: vi.fn() } };
   return { prisma, client, evolution, channel: () => channel, records };
 }
@@ -331,7 +331,7 @@ describe('physical channel lifecycle', () => {
     await service.refresh({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
     f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'STOPPED', engine: {}, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
     await service.startQr({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
-    f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'WORKING', engine: { engine: 'WPP' }, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
+    f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'WORKING', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
     if (primaryResponse === 'unavailable') f.evolution.client.getInstanceIdentity.mockRejectedValue(new Error('primary unavailable'));
     else f.evolution.client.getInstanceIdentity.mockResolvedValue(null);
     for (let probe = 0; probe < 2; probe++) {
@@ -371,7 +371,7 @@ describe('physical channel lifecycle', () => {
     const f = fixture(); const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
     f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'SCAN_QR_CODE', engine: { engine: 'NOWEB' }, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
     await expect(service.startQr({ workspaceId: 'ws', channelId: ch, connectionId: wahaId })).rejects.toMatchObject({ code: 'WAHA_ENGINE_UNSUPPORTED' });
-    f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'SCAN_QR_CODE', engine: { engine: 'WPP' }, config: { metadata: { workspaceId: 'other', channelId: ch } } });
+    f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'SCAN_QR_CODE', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: { workspaceId: 'other', channelId: ch } } });
     await expect(service.startQr({ workspaceId: 'ws', channelId: ch, connectionId: wahaId })).rejects.toMatchObject({ code: 'WAHA_SESSION_CONFLICT' });
     expect(f.client.startSession).not.toHaveBeenCalled();
   });
@@ -385,7 +385,7 @@ describe('physical channel lifecycle', () => {
     await expect(service.startQr({ workspaceId: 'ws', channelId: ch, connectionId: wahaId })).rejects.toMatchObject({ code: 'WAHA_VERSION_UNSUPPORTED' });
   });
   it('starts secondary QR independently and disconnects only its session', async () => {
-    const f = fixture(); f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'SCAN_QR_CODE', engine: { engine: 'WPP' }, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
+    const f = fixture(); f.client.getSession.mockResolvedValue({ name: 'talk-waha', status: 'SCAN_QR_CODE', engine: { engine: 'WPP', state: 'CONNECTED' }, config: { metadata: { workspaceId: 'ws', channelId: ch } } });
     const service = (await load()).createChannelConnectionsService(f.prisma, { waha: { enabled: true, client: f.client }, evolution: f.evolution });
     const result = await service.startQr({ workspaceId: 'ws', channelId: ch, connectionId: wahaId });
     expect(result).toMatchObject({ connectionId: wahaId, provider: 'waha', qrCode: 'secondary-qr', channel: { status: 'connected', activeConnectionId: evo } });

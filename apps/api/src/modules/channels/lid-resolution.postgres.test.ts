@@ -20,7 +20,7 @@ describe.skipIf(!databaseUrl)('LID conversations resolved through WAHA', () => {
   async function fixture() {
     const workspaceId = randomUUID();
     const channel = await db.channel.create({ data: { workspaceId, provider: 'evolution', providerKey: `inst-${randomUUID()}`, historyImportStatus: 'completed' } });
-    const connected = { status: 'connected' as const, verifiedPhoneNumber: '5547999998888', lastHealthyAt: new Date() };
+    const connected = { status: 'connected' as const, verifiedPhoneNumber: '5547999998888', lastHealthyAt: new Date(), eligible: true };
     const evolution = await db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: channel.providerKey, ...connected } });
     await db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider: 'waha', sessionName: `waha-${randomUUID()}`, ...connected } });
     const target = { id: channel.id, workspaceId, providerKey: channel.providerKey };

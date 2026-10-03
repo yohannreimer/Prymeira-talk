@@ -87,6 +87,25 @@ describe.skipIf(!databaseUrl)('channel health on PostgreSQL', () => {
     });
   });
 
+  describe('sticky receive loss', () => {
+    it('takes a WAHA that stopped receiving out of the writers, and clears the mark only when it receives again', async () => {
+      const f = await fixture(), clock = { now: new Date() }, { m } = monitor(clock);
+      for (const id of identities(3)) await observe(f, f.evolution, id, ago(clock.now, MIN));
+      await m.evaluate({ workspaceId: f.workspaceId, id: f.channelId });
+      expect(await connectionOf(f.waha.id)).toMatchObject({ health: 'degraded', lastError: 'RECEIVE_LOSS', eligible: false });
+      expect(await connectionOf(f.evolution.id)).toMatchObject({ eligible: true });
+      // Quiet minutes later: no new evidence either way, the mark stays.
+      clock.now = new Date(clock.now.getTime() + 5 * MIN);
+      await m.evaluate({ workspaceId: f.workspaceId, id: f.channelId });
+      expect(await connectionOf(f.waha.id)).toMatchObject({ lastError: 'RECEIVE_LOSS' });
+      // It receives again: a live message both connections got, none missed.
+      const both = randomUUID();
+      await observe(f, f.evolution, both, ago(clock.now, 30_000)); await observe(f, f.waha, both, ago(clock.now, 30_000));
+      await m.evaluate({ workspaceId: f.workspaceId, id: f.channelId });
+      expect(await connectionOf(f.waha.id)).toMatchObject({ lastError: null });
+    });
+  });
+
   describe('writer selection', () => {
     it('moves the writer when the active connection cannot write, and not when the other cannot either', async () => {
       const f = await fixture({ evolution: { health: 'unhealthy', eligible: false } }), clock = { now: new Date() }, { m, changes } = monitor(clock);

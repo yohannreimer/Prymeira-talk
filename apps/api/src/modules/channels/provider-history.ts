@@ -151,6 +151,8 @@ export async function pairedConnections(prisma: PrismaClient, input: { workspace
   return connections.filter(connection => {
     if (connection.lifecycleGeneration % 2 !== 0) return false; // A QR/logout operation is in flight.
     if (connection.provider === 'evolution') return true;
+    // A WAHA session whose engine is not connected, or that stopped receiving, is not read: it would only time out.
+    if (!connection.eligible) return false;
     const primary = byChannel.get(connection.channelId)?.find(c => c.provider === 'evolution');
     const a = normalizeWhatsappPhone(primary?.verifiedPhoneNumber), b = normalizeWhatsappPhone(connection.verifiedPhoneNumber);
     return !!a && a === b && !!connection.lastHealthyAt;

@@ -21,7 +21,8 @@ export interface WahaSession {
   name: string;
   status: 'STOPPED' | 'STARTING' | 'SCAN_QR_CODE' | 'WORKING' | 'FAILED' | 'PASSKEY_REQUIRED' | 'PASSKEY_CONFIRMATION_REQUIRED';
   config?: { metadata?: Record<string, string> };
-  engine?: { engine?: string };
+  /** WPP reports `state` (CONNECTED when WhatsApp Web is loaded); GOWS reports `gows.connected`. */
+  engine?: { engine?: string; state?: string; gows?: { connected?: boolean } };
   me?: WahaMe | null;
 }
 export interface WahaMessage {

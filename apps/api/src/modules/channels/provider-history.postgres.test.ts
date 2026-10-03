@@ -35,7 +35,7 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
   async function fixture(paired = true) {
     const workspaceId = randomUUID(); workspaces.push(workspaceId);
     const channel = await db.channel.create({ data: { workspaceId, provider: 'evolution', providerKey: `inst-${randomUUID()}`, historyImportStatus: 'completed' } });
-    const connected = { status: 'connected' as const, verifiedPhoneNumber: '5547999998888', lastHealthyAt: new Date() };
+    const connected = { status: 'connected' as const, verifiedPhoneNumber: '5547999998888', lastHealthyAt: new Date(), eligible: true };
     const evolution = await db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider: 'evolution', sessionName: channel.providerKey, ...connected } });
     const waha = await db.channelConnection.create({ data: { workspaceId, channelId: channel.id, provider: 'waha', sessionName: `waha-${randomUUID()}`, ...connected,
       ...(paired ? {} : { verifiedPhoneNumber: '5511000000000' }) } });

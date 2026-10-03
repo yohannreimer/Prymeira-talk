@@ -5,7 +5,8 @@ import { shouldReturnToPrimary, writerCandidates, type RoutableChannel, type Rou
  *  1. probes both physical connections (the connection service applies the 3-consecutive-failures rule);
  *  2. detects a connection that is "connected" but no longer receives: three live messages that the other
  *     connection saw and this one did not, within two minutes (and older than a 10 s grace), mark it degraded;
- *     silence alone, or a merely delayed queue, is never evidence;
+ *     silence alone, or a merely delayed queue, is never evidence. The mark is sticky: probes never clear it, only
+ *     live messages this connection received together with the other one (and none missed) do;
  *  3. moves the writer to the other connection when the active one cannot write (or stopped receiving), and
  *     returns to Evolution only after ten stable minutes with real, agreeing events from both connections.
  * Idempotent and fenced: the writer change only applies if nobody changed it in the meantime. */
@@ -63,6 +64,21 @@ export function createChannelHealthMonitor(options: {
     return new Map(rows.map(row => [row.connection_id, row.missed]));
   }
 
+  /** Per connection: live messages in the loss window that it AND another connection both received. This is the only
+   * evidence that clears a receive loss (a probe that just finds the session up never does). */
+  async function receivedWithOthers(channel: { workspaceId: string; id: string }) {
+    const from = new Date(now().getTime() - lossWindowMs);
+    const rows = await db.$queryRaw<Array<{ connection_id: string; agreed: number }>>`
+      WITH seen AS (
+        SELECT identity_id, array_agg(DISTINCT connection_id) AS conns
+        FROM canonical_observations
+        WHERE workspace_id = ${channel.workspaceId} AND channel_id = ${channel.id}::uuid AND kind = 'message' AND mode = 'live'
+          AND identity_id IS NOT NULL AND connection_id IS NOT NULL AND received_at >= (${from}::timestamptz AT TIME ZONE 'UTC')
+        GROUP BY identity_id HAVING count(DISTINCT connection_id) >= 2)
+      SELECT c AS connection_id, count(*)::int AS agreed FROM seen, unnest(seen.conns) AS c GROUP BY c`;
+    return new Map(rows.map(row => [String(row.connection_id), row.agreed]));
+  }
+
   /** Real events seen by both connections recently: the evidence that returning to the primary is safe. */
   async function agreeingMessages(channel: { workspaceId: string; id: string }) {
     const from = new Date(now().getTime() - agreementWindowMs);
@@ -97,10 +113,17 @@ export function createChannelHealthMonitor(options: {
     const first = await load(channelRef);
     if (!first || !first.redundancyEnabled) return { changed: false };
     const missed = await missedMessages(channelRef);
+    const received = first.connections.some(connection => connection.lastError === 'RECEIVE_LOSS') ? await receivedWithOthers(channelRef) : new Map<string, number>();
     for (const connection of first.connections) {
-      if ((missed.get(connection.id) ?? 0) >= lossThreshold && connection.status === 'connected' && connection.health !== 'unhealthy') {
+      const lost = missed.get(connection.id) ?? 0;
+      if (lost >= lossThreshold && connection.status === 'connected' && connection.health !== 'unhealthy') {
         await db.channelConnection.updateMany({ where: { workspaceId: channelRef.workspaceId, id: connection.id, status: 'connected', health: { in: ['healthy', 'unknown', 'degraded'] } },
-          data: { health: 'degraded', lastError: 'RECEIVE_LOSS' } });
+          data: { health: 'degraded', lastError: 'RECEIVE_LOSS', ...(connection.provider === 'evolution' ? {} : { eligible: false }) } });
+      } else if (connection.lastError === 'RECEIVE_LOSS' && lost === 0 && (received.get(connection.id) ?? 0) >= 1) {
+        // It receives again (live messages it and the other connection both got, none missed): the next probe
+        // re-evaluates it from scratch and may make it healthy and eligible again.
+        await db.channelConnection.updateMany({ where: { workspaceId: channelRef.workspaceId, id: connection.id, lastError: 'RECEIVE_LOSS' }, data: { lastError: null } });
+        options.logger?.info?.({ channelId: channelRef.id, connectionId: connection.id }, 'Connection receives again');
       }
     }
     const channel = await load(channelRef);

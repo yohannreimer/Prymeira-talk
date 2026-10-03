@@ -31,6 +31,16 @@ export function normalizeWhatsappPhone(value: string | null | undefined): string
 /** Qualified WAHA engines: GOWS (Go/whatsmeow, no browser) and WPP (WhatsApp Web in Chrome). The WAHA container's
  * WHATSAPP_DEFAULT_ENGINE picks one; switching needs a new QR, and Talk reads both. */
 const WAHA_ENGINES = new Set(['GOWS', 'WPP']);
+/** WORKING alone is not proof: a session can stay WORKING while its engine never loaded WhatsApp (seen in production
+ * when WPP's Chrome ran out of memory). Only the engine's own connected flag counts. */
+export function wahaEngineReady(session: WahaSession) {
+  if (session.engine?.engine === 'GOWS') return session.engine.gows?.connected === true;
+  if (session.engine?.engine === 'WPP') return session.engine.state === 'CONNECTED';
+  return false;
+}
+/** A connection that stopped receiving (three live messages the other connection saw and it did not) stays marked
+ * until the health monitor sees it receive again; a probe that only proves the session is up never clears it. */
+const RECEIVE_LOSS = 'RECEIVE_LOSS';
 function assertWahaOwnership(session: WahaSession, record: ChannelConnection) {
   if (session.name !== record.sessionName || session.config?.metadata?.workspaceId !== record.workspaceId || session.config?.metadata?.channelId !== record.channelId) {
     throw new ConnectionServiceError('WAHA_SESSION_CONFLICT', 'Esta sessão WAHA não pertence a este canal.', 409);
@@ -191,7 +201,10 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
           const state = await client.getConnectionState({ instanceName: connection.sessionName });
           const phone = state === 'open' ? normalizeWhatsappPhone(await client.getInstanceIdentity({ instanceName: connection.sessionName })) : null;
           await commitProbe(channel, generation, async (tx) => {
-            await tx.channelConnection.update({ where: whereId(connection), data: { status: state === 'open' ? 'connected' : state === 'connecting' ? 'connecting' : 'disconnected', health: state === 'open' && phone ? 'healthy' : 'unknown', ...(phone ? { verifiedPhoneNumber: phone } : {}), eligible: state === 'open', lastCheckedAt: now, ...(phone ? { lastHealthyAt: now, consecutiveFailures: 0, failureStartedAt: null, lastError: null } : {}) } });
+            const receiveLoss = state === 'open' && connection.lastError === RECEIVE_LOSS;
+            await tx.channelConnection.update({ where: whereId(connection), data: { status: state === 'open' ? 'connected' : state === 'connecting' ? 'connecting' : 'disconnected', health: receiveLoss ? 'degraded' : state === 'open' && phone ? 'healthy' : 'unknown', ...(phone ? { verifiedPhoneNumber: phone } : {}), eligible: state === 'open', lastCheckedAt: now,
+              ...(phone ? { consecutiveFailures: 0, failureStartedAt: null, ...(receiveLoss ? {} : { lastHealthyAt: now, lastError: null }) } : {}),
+              ...(state !== 'open' && connection.lastError === RECEIVE_LOSS ? { lastError: null } : {}) } });
             const revoked = phone ? await revalidateSecondary(tx, channel, phone) : false;
             if (state !== 'open' || (phone && phone !== connection.verifiedPhoneNumber) || revoked) await advanceObservationGeneration(tx, channel);
           });
@@ -226,8 +239,9 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
         }
       }
       const restricted = me?.reachoutTimelock?.isActive || me?.messageCapping?.cappingStatus === 'CAPPED';
-      const reason = status !== 'connected' ? null : !primaryPhone ? 'PRIMARY_PHONE_UNVERIFIED' : !phone ? 'PHONE_UNVERIFIED' : phone !== primaryPhone ? 'PHONE_MISMATCH' : restricted ? 'ACCOUNT_RESTRICTED' : null;
-      const eligible = status === 'connected' && reason === null;
+      const reason = status !== 'connected' ? null : !wahaEngineReady(session) ? 'ENGINE_NOT_READY' : !primaryPhone ? 'PRIMARY_PHONE_UNVERIFIED' : !phone ? 'PHONE_UNVERIFIED' : phone !== primaryPhone ? 'PHONE_MISMATCH' : restricted ? 'ACCOUNT_RESTRICTED' : null;
+      const receiveLoss = status === 'connected' && reason === null && connection.lastError === RECEIVE_LOSS;
+      const eligible = status === 'connected' && reason === null && !receiveLoss;
       const revokeProof = reason === 'PHONE_MISMATCH' || reason === 'PHONE_UNVERIFIED' || Boolean(status === 'connected' && connection.lastHealthyAt && phone !== connection.verifiedPhoneNumber);
       await commitProbe(channel, generation, async (tx) => {
         if (primaryFailed) await markFailure(tx, primary, 'PROVIDER_UNAVAILABLE');
@@ -235,8 +249,8 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
           await tx.channelConnection.update({ where: whereId(primary), data: { ...(observedPhone ? { verifiedPhoneNumber: observedPhone } : {}), lastCheckedAt: now } });
         }
         await tx.channelConnection.update({ where: whereId(connection), data: {
-          status, verifiedPhoneNumber: phone, health: status === 'connected' ? reason ? 'degraded' : 'healthy' : status === 'failed' ? 'unhealthy' : 'unknown',
-          eligible, lastCheckedAt: now, lastError: reason,
+          status, verifiedPhoneNumber: phone, health: status === 'connected' ? reason || receiveLoss ? 'degraded' : 'healthy' : status === 'failed' ? 'unhealthy' : 'unknown',
+          eligible, lastCheckedAt: now, lastError: reason ?? (receiveLoss ? RECEIVE_LOSS : null),
           ...(revokeProof ? { lastHealthyAt: null } : {}),
           ...(status === 'connected' ? { connectedAt: connection.connectedAt ?? now } : {}),
           ...(eligible ? { lastHealthyAt: now, consecutiveFailures: 0, failureStartedAt: null } : {})
