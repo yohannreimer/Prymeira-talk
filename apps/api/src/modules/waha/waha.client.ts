@@ -2,7 +2,7 @@ import { completeProviderKey, fullProviderKeyMatches, parseExactWahaResponse, ex
 import { normalizeChatAddress, parseWahaMessageKey, record, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 /** WAHA 2026.9.1 contracts: https://github.com/devlikeapro/waha/tree/2026.9.1/src/api */
 /** Exactly the events Talk's WAHA normalizer understands: messages (including our own), edits, revokes, receipts and session status. */
-export const WAHA_WEBHOOK_EVENTS = ['message.any', 'message.edited', 'message.revoked', 'message.ack', 'message.ack.group', 'session.status'];
+export const WAHA_WEBHOOK_EVENTS = ['message.any', 'message.reaction', 'message.edited', 'message.revoked', 'message.ack', 'message.ack.group', 'session.status'];
 
 export class WahaClientError extends Error {
   constructor(public readonly statusCode: number) {
@@ -20,7 +20,7 @@ export interface WahaMe {
 export interface WahaSession {
   name: string;
   status: 'STOPPED' | 'STARTING' | 'SCAN_QR_CODE' | 'WORKING' | 'FAILED' | 'PASSKEY_REQUIRED' | 'PASSKEY_CONFIRMATION_REQUIRED';
-  config?: { metadata?: Record<string, string> };
+  config?: { metadata?: Record<string, string>; webhooks?: Array<{ url?: string; events?: string[] }> };
   /** WPP reports `state` (CONNECTED when WhatsApp Web is loaded); GOWS reports `gows.connected`. */
   engine?: { engine?: string; state?: string; gows?: { connected?: boolean } };
   me?: WahaMe | null;
@@ -78,6 +78,8 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
     if (!raw || typeof raw.id !== 'string' || !raw.id) throw new Error('WAHA returned no message identity');
     return { providerMessageId: raw.id, raw };
   }
+  const sessionConfig = (input: { workspaceId: string; channelId: string; webhook?: { url: string; hmacKey: string } }) => ({ metadata: { workspaceId: input.workspaceId, channelId: input.channelId },
+    ...(input.webhook ? { webhooks: [{ url: input.webhook.url, events: WAHA_WEBHOOK_EVENTS, hmac: { key: input.webhook.hmacKey }, retries: { policy: 'exponential', delaySeconds: 2, attempts: 15 } }] } : {}) });
   const sessions = (input: SessionInput) => `/api/sessions/${enc(input.session)}`;
   const chats = (input: ChatInput) => `/api/${enc(input.session)}/chats/${enc(input.chatId)}`;
   const messagePath = (input: ChatInput & { messageId: string }) => `${chats(input)}/messages/${enc(input.messageId)}`;
@@ -170,8 +172,11 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
     getVersion: () => request<{ version: string; engine: string }>('/api/server/version'),
     /** `webhook` makes WAHA deliver this session's events (signed with the HMAC key) to Talk's ingress. */
     createSession(input: SessionInput & { workspaceId: string; channelId: string; webhook?: { url: string; hmacKey: string } }) {
-      return request<WahaSession>('/api/sessions', 'POST', { name: input.session, start: false, config: { metadata: { workspaceId: input.workspaceId, channelId: input.channelId },
-        ...(input.webhook ? { webhooks: [{ url: input.webhook.url, events: WAHA_WEBHOOK_EVENTS, hmac: { key: input.webhook.hmacKey }, retries: { policy: 'exponential', delaySeconds: 2, attempts: 15 } }] } : {}) } });
+      return request<WahaSession>('/api/sessions', 'POST', { name: input.session, start: false, config: sessionConfig(input) });
+    },
+    /** Replaces the session's config (WAHA stops and starts a running session quietly; the pairing is kept). */
+    updateSession(input: SessionInput & { workspaceId: string; channelId: string; webhook?: { url: string; hmacKey: string } }) {
+      return request<WahaSession>(sessions(input), 'PUT', { name: input.session, config: sessionConfig(input) });
     },
     startSession: (input: SessionInput) => request<WahaSession>(`${sessions(input)}/start`, 'POST'),
     stopSession: (input: SessionInput) => request<WahaSession>(`${sessions(input)}/stop`, 'POST'),

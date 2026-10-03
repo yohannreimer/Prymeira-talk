@@ -384,7 +384,12 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     const receipts = await tx.canonicalObservation.findMany({ where: { ...scope, receiptHash } });
     const sameReceipts = receipts.filter(r => equal(r.receiptTuple, receiptTuple));
     // Context timing/mode is delivery provenance, never a reason to replay created.
-    const envelope = (value: unknown) => { const { context: ignored, ...data } = record(value); return data; };
+    // Quote/reaction are presentation added later; a redelivery normalized before they existed is still the same fact.
+    const envelope = (value: unknown) => {
+      const { context: ignored, ...data } = record(value);
+      const { quoted: q, reaction: r, ...content } = record(data.content);
+      return data.content === undefined ? data : { ...data, content };
+    };
     const previous = sameReceipts.find(r => equal(envelope(r.payload), envelope(event)));
     const receiptConflict = sameReceipts.length > 0 && !previous;
     const result: CanonicalStoreResult = { outcome: 'held', observationId: '', messageId: null, conversationId: null, chatId: null, identityId: null,

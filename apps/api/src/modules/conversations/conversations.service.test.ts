@@ -1544,7 +1544,7 @@ describe("conversations service", () => {
         conversationId: "conv_1",
         NOT: { status: "pending", metadata: { path: ["source"], equals: "followup_review" } }
       },
-      orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 100
     });
     expect(messageSchema.array().parse(messages)).toEqual(messages);

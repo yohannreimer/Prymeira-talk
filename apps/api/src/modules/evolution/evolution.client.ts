@@ -74,6 +74,8 @@ export interface SendTextInput {
   number: string;
   text: string;
   linkPreview?: boolean;
+  /** Reply to this WhatsApp message (stanza id; participant for a group member's message). */
+  quoted?: { id: string; fromMe: boolean; participant?: string | null; body?: string | null };
 }
 
 export interface SendTextResult {
@@ -640,7 +642,10 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       const responseBody = await post(`/message/sendText/${encodeURIComponent(input.instanceName)}`, {
         number: input.number,
         text: input.text,
-        linkPreview: input.linkPreview ?? false
+        linkPreview: input.linkPreview ?? false,
+        // Evolution 2.x: the quoted message's key, and its text for the preview WhatsApp shows above the reply.
+        ...(input.quoted ? { quoted: { key: { id: input.quoted.id, fromMe: input.quoted.fromMe, ...(input.quoted.participant ? { participant: input.quoted.participant } : {}) },
+          message: { conversation: input.quoted.body ?? '' } } } : {})
       });
 
       return {

@@ -44,6 +44,16 @@ describe('delete message for everyone', () => {
     } finally { await context.app.close(); }
   });
 
+  it('revokes a message the canonical writer stored (WhatsApp id in metadata, no providerMessageId)', async () => {
+    const context = await setup({ ...message, providerMessageId: null as never, metadata: { whatsapp: { id: '3EB0CANON', fromMe: true } } as never });
+    try {
+      const response = await context.app.inject({ method: 'POST', url: `/conversations/${conversationId}/messages/${messageId}/delete-for-everyone` });
+      expect(response.statusCode).toBe(200);
+      expect(context.deleteMessageForEveryone).toHaveBeenCalledWith(expect.objectContaining({ id: '3EB0CANON', fromMe: true }));
+      expect(response.json().whatsappId).toBe('3EB0CANON');
+    } finally { await context.app.close(); }
+  });
+
   it('keeps the Talk message when the provider rejects deletion', async () => {
     const context = await setup(message, true);
     try {

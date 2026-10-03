@@ -26,8 +26,13 @@ export function presentationMetadata(event: MessageEvent) {
     if (typeof value === 'number' && Number.isFinite(value) && value >= 0) attachment[name] = value;
   }
   if (typeof event.attachment.isGif === 'boolean') attachment.isGif = event.attachment.isGif;
-  return { attachment, ...(event.content.contactCards ? { contactCards: event.content.contactCards } : {}),
+  // The WhatsApp stanza id lets replies and reactions find this message, and lets Talk revoke it.
+  const whatsapp = event.key.rawId ? { whatsapp: { id: event.key.rawId, fromMe: event.key.direction === 'outbound',
+    ...(event.key.senderParticipant ? { participant: event.key.senderParticipant } : {}) } } : {};
+  return { attachment, ...whatsapp, ...(event.content.contactCards ? { contactCards: event.content.contactCards } : {}),
     ...(event.content.location ? { location: event.content.location } : {}),
+    ...(event.content.quoted ? { quoted: event.content.quoted } : {}),
+    ...(event.content.reaction ? { reaction: event.content.reaction } : {}),
     ...(event.media?.hasMedia ? { canonicalPreparation: { status: 'pending' } } : {}) };
 }
 /** Compare factual cards/location independently of summary labels and media.

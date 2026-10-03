@@ -37,7 +37,7 @@ type Command =
 
 export function createOutboundRouter(options: {
   base: EvolutionClient;
-  waha: Pick<WahaClient, 'sendText' | 'sendMedia' | 'sendVoice' | 'sendContact'> | null;
+  waha: Pick<WahaClient, 'sendText' | 'sendMedia' | 'sendVoice' | 'sendContact'> & Partial<Pick<WahaClient, 'deleteMessage'>> | null;
   db: Db;
   journal: OutboundDispatchJournal;
   probe?: DeliveryProbe;
@@ -98,7 +98,10 @@ export function createOutboundRouter(options: {
     const session = connection.sessionName, id = chatId(command.destination);
     switch (command.kind) {
       case 'text': {
-        const sent = await waha.sendText({ session, chatId: id, text: command.input.text, linkPreview: command.input.linkPreview });
+        const quoted = command.input.quoted;
+        // WAHA replies by the quoted message's serialized id: <fromMe>_<chat>_<stanza>[_<participant>] (group members).
+        const replyTo = quoted ? `${quoted.fromMe}_${id}_${quoted.id}${id.endsWith('@g.us') && quoted.participant ? `_${quoted.participant.replace('@s.whatsapp.net', '@c.us')}` : ''}` : undefined;
+        const sent = await waha.sendText({ session, chatId: id, text: command.input.text, linkPreview: command.input.linkPreview, ...(replyTo ? { replyTo } : {}) });
         return { providerMessageId: stanzaId(sent.raw) ?? sent.providerMessageId, raw: sent.raw };
       }
       case 'media': {
@@ -180,6 +183,19 @@ export function createOutboundRouter(options: {
     ...base,
     sendText: (input: SendTextInput): Promise<SendTextResult> => route(input.instanceName, { kind: 'text', destination: input.number, text: input.text, input }, () => base.sendText(input)),
     sendMedia: (input: SendMediaInput): Promise<SendMediaResult> => route(input.instanceName, { kind: 'media', destination: input.number, text: input.caption ?? null, input }, () => base.sendMedia(input))
+  };
+  // Delete for everyone: Evolution as before; in routed workspaces, when Evolution cannot, the WAHA connection of the
+  // same number revokes it (WhatsApp accepts the revoke from any linked device of the sender).
+  if (base.deleteMessageForEveryone) router.deleteMessageForEveryone = async input => {
+    try { return await base.deleteMessageForEveryone!(input); }
+    catch (error) {
+      const channel = waha?.deleteMessage ? await loadChannel(input.instanceName) : null;
+      if (!channel || (options.routes && !options.routes(channel.workspaceId))) throw error;
+      const alternative = writerCandidates(channel).find(connection => connection.provider === 'waha') as ConnectionRef | undefined;
+      if (!alternative) throw error;
+      const chat = chatId(input.remoteJid.replace('@s.whatsapp.net', '@c.us'));
+      await waha!.deleteMessage!({ session: alternative.sessionName, chatId: chat, messageId: `true_${chat}_${input.id}` });
+    }
   };
   if (base.sendAudio) router.sendAudio = input => route(input.instanceName, { kind: 'audio', destination: input.number, text: null, input }, () => base.sendAudio!(input));
   if (base.sendContact) router.sendContact = input => route(input.instanceName, { kind: 'contact', destination: input.number, text: null, input }, () => base.sendContact!(input));

@@ -1,3 +1,4 @@
+import { quotedOf, reactionOf } from "./evolution-event-normalizer.js";
 import {
   resolveWebhookPhone, resolveGroupJid, groupFallbackName, normalizeEvolutionEvent,
   isEditProtocolType, mapEvolutionMessageStatus, readPath, hasRecordPath, unwrapMessage,
@@ -585,6 +586,10 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
         });
 
         await lockProspectingConversation(tx, workspaceId, conversation.id);
+        // Reply/reaction presentation, as the canonical writer stores it (metadata.quoted / metadata.reaction).
+        const unwrapped = unwrapMessage(payload.data.message) as Record<string, unknown> | undefined;
+        const legacyQuoted = unwrapped && typeof unwrapped === 'object' ? quotedOf(unwrapped, payload.data as unknown as Record<string, unknown>) : null;
+        const legacyReaction = unwrapped && typeof unwrapped === 'object' ? reactionOf(unwrapped) : null;
         const prospectingEcho = await findProspectingOutboundEcho(tx, { workspaceId, conversationId: conversation.id,
           direction: payload.data.key.fromMe ? 'outbound' : 'inbound', body: messageContent.body, mediaUrl: messageContent.mediaUrl });
         const message = prospectingEcho ? await tx.message.update({ where: { id: prospectingEcho.id }, data: {
@@ -598,8 +603,10 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             type: messageContent.type,
             body: messageContent.body,
             mediaUrl: messageContent.mediaUrl,
-            ...(isGroup || messageContent.location || messageContent.contactCards?.length || ['audio', 'image', 'file'].includes(messageContent.type)
+            ...(isGroup || messageContent.location || messageContent.contactCards?.length || ['audio', 'image', 'file'].includes(messageContent.type) || legacyQuoted || legacyReaction
               ? { metadata: {
+                  ...(legacyQuoted ? { quoted: legacyQuoted } : {}),
+                  ...(legacyReaction ? { reaction: legacyReaction } : {}),
                   ...(isGroup && !payload.data.key.fromMe ? { groupSender: { jid: senderJid, name: pushName } } : {}),
                   ...(messageContent.contactCards?.length ? { contactCards: messageContent.contactCards } : {}),
                   ...(messageContent.location ? { location: messageContent.location } : {}),
@@ -622,7 +629,12 @@ export const evolutionRoutes: FastifyPluginAsync<EvolutionRoutesOptions> = async
             })
           : false;
 
-        if (!payload.data.key.fromMe) {
+        // We answered from the phone: whatever was waiting in this conversation has been seen.
+        if (payload.data.key.fromMe && !campaignDispatchMessage && !prospectingEcho) {
+          await tx.conversation.updateMany({ where: { workspaceId, id: conversation.id, unreadCount: { gt: 0 } }, data: { unreadCount: 0 } });
+        }
+
+        if (!payload.data.key.fromMe && !legacyReaction) {
           if (channel.provider === "meta_cloud") {
             const customerServiceWindowExpiresAt = new Date(receivedAt.getTime() + 24 * 60 * 60 * 1000);
             await tx.conversation.updateMany({

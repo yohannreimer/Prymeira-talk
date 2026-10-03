@@ -10,6 +10,17 @@ function normalize(data: unknown, event = 'MESSAGES_UPSERT') {
   return result.event;
 }
 describe('Evolution shared event adapter', () => {
+  it('keeps the quoted message of a reply and the target of a reaction', () => {
+    const reply = normalize({ key, message: { extendedTextMessage: { text: 'sim', contextInfo: { stanzaId: 'Q1', participant: '5547888880000@s.whatsapp.net', quotedMessage: { conversation: 'vai hoje?' } } } } });
+    if (reply.kind !== 'message') throw new Error();
+    expect(reply.content.quoted).toEqual({ id: 'Q1', participant: '5547888880000@s.whatsapp.net', body: 'vai hoje?' });
+    const reaction = normalize({ key: { ...key, id: 'R1' }, message: { reactionMessage: { key: { id: 'T1', remoteJid: key.remoteJid, fromMe: true }, text: '😂' } } });
+    if (reaction.kind !== 'message') throw new Error();
+    expect(reaction.content).toMatchObject({ type: 'system', body: 'Reagiu com 😂', reaction: { targetId: 'T1', emoji: '😂' } });
+    const removed = normalize({ key: { ...key, id: 'R2' }, message: { reactionMessage: { key: { id: 'T1' }, text: '' } } });
+    if (removed.kind !== 'message') throw new Error();
+    expect(removed.content.reaction).toEqual({ targetId: 'T1', emoji: null });
+  });
   it('preserves trusted bridge/history context and only explicit PN/LID evidence', () => {
     const result = normalize({ key, message: { conversation: 'hello' }, pushName: 'Alice' });
     expect(result.context).toEqual(context);

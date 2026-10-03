@@ -19,6 +19,8 @@ describe.skipIf(!databaseUrl)('channel health on PostgreSQL', () => {
   afterAll(async () => {
     if (!db) return;
     await db.$executeRaw`DELETE FROM canonical_observations WHERE workspace_id = ANY(${workspaces}::text[])`;
+    await db.$executeRaw`DELETE FROM canonical_message_identities WHERE workspace_id = ANY(${workspaces}::text[])`;
+    await db.$executeRaw`DELETE FROM messages WHERE workspace_id = ANY(${workspaces}::text[])`;
     await db.channelConnection.deleteMany({ where: { workspaceId: { in: workspaces } } });
     await db.channel.deleteMany({ where: { workspaceId: { in: workspaces } } });
     await db.$disconnect();
@@ -35,9 +37,14 @@ describe.skipIf(!databaseUrl)('channel health on PostgreSQL', () => {
   }
 
   /** Foreign keys are bypassed on purpose: the monitor only reads (connection, identity, time). */
-  async function observe(f: { workspaceId: string; channelId: string }, connection: { id: string; provider: 'evolution' | 'waha' }, identityId: string, receivedAt: Date) {
+  async function observe(f: { workspaceId: string; channelId: string }, connection: { id: string; provider: 'evolution' | 'waha' }, identityId: string, receivedAt: Date, type: 'text' | 'system' = 'text') {
     await db.$transaction(async tx => {
       await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+      // The identity and its message, once per identity (the monitor reads the message type: reactions do not count).
+      const conversationId = randomUUID(), messageId = randomUUID();
+      const inserted = await tx.$executeRaw`INSERT INTO canonical_message_identities (id, workspace_id, channel_id, chat_id, conversation_id, message_id, identity_format, provider_scope, raw_id, direction, tuple_hash, full_tuple, initial_mode)
+        VALUES (${identityId}::uuid, ${f.workspaceId}, ${f.channelId}::uuid, ${randomUUID()}::uuid, ${conversationId}::uuid, ${messageId}::uuid, 'whatsapp_stanza', '', ${identityId}, 'inbound', ${randomUUID().replaceAll('-', '').padEnd(64, '0')}, '[]'::jsonb, 'live') ON CONFLICT (id) DO NOTHING`;
+      if (inserted) await tx.$executeRaw`INSERT INTO messages (id, workspace_id, conversation_id, direction, type, body, status, updated_at) VALUES (${messageId}::uuid, ${f.workspaceId}, ${conversationId}::uuid, 'inbound', ${type}::"MessageType", 'x', 'delivered', now())`;
       await tx.$executeRaw`INSERT INTO canonical_observations (id, workspace_id, channel_id, channel_provider, provider, connection_provider, connection_id, identity_id, receipt_hash, receipt_tuple, kind, event_type, mode, session_name, lifecycle_generation, received_at, source_order, payload, state)
         VALUES (${randomUUID()}::uuid, ${f.workspaceId}, ${f.channelId}::uuid, 'evolution', ${connection.provider}, ${connection.provider}::"ChannelConnectionProvider", ${connection.id}::uuid, ${identityId}::uuid, ${randomUUID().replaceAll('-', '').padEnd(64, '0')}, '{}'::jsonb, 'message', 'messages.upsert', 'live', 's', 0, (${receivedAt}::timestamptz AT TIME ZONE 'UTC'), '{}'::jsonb, '{}'::jsonb, 'applied')`;
     });
@@ -84,6 +91,15 @@ describe.skipIf(!databaseUrl)('channel health on PostgreSQL', () => {
       const quiet = await fixture();
       expect(await monitor(clock).m.evaluate({ workspaceId: quiet.workspaceId, id: quiet.channelId })).toEqual({ changed: false });
       expect(await connectionOf(quiet.evolution.id)).toMatchObject({ health: 'healthy' });
+    });
+  });
+
+  describe('reactions', () => {
+    it('reactions one connection does not deliver are not a receive loss', async () => {
+      const f = await fixture(), clock = { now: new Date() }, { m } = monitor(clock);
+      for (const id of identities(4)) await observe(f, f.evolution, id, ago(clock.now, MIN), 'system');
+      expect(await m.evaluate({ workspaceId: f.workspaceId, id: f.channelId })).toEqual({ changed: false });
+      expect(await connectionOf(f.waha.id)).toMatchObject({ health: 'healthy', lastError: null });
     });
   });
 

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Channel, ChannelConnection, Prisma, PrismaClient } from '@prisma/client';
 import type { ChannelDto, ChannelOperationResultDto, ChannelQrResultDto } from '@prymeira-talk/shared';
 import type { EvolutionRuntime } from '../evolution/evolution-runtime.js';
-import { WahaClientError, type WahaRuntime, type WahaSession } from '../waha/waha.client.js';
+import { WAHA_WEBHOOK_EVENTS, WahaClientError, type WahaClient, type WahaRuntime, type WahaSession } from '../waha/waha.client.js';
 import { toChannelDto } from './channel-dto.js';
 
 /** Consecutive failed probes (15 s apart) before a connection is considered down. */
@@ -222,6 +222,7 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
       const client = await qualifiedClient();
       const session = await client.getSession({ session: connection.sessionName });
       assertWahaOwnership(session, connection);
+      await subscribeMissingEvents(client, session, connection);
       const status = session.status === 'WORKING' ? 'connected' : session.status === 'STOPPED' ? 'disconnected' : session.status === 'FAILED' ? 'failed' : 'connecting';
       const me = status === 'connected' ? await client.getMe({ session: connection.sessionName }) : null;
       const phone = normalizeWhatsappPhone(me?.id);
@@ -266,6 +267,16 @@ export function createChannelConnectionsService(prisma: ConnectionPrisma, option
       if (error instanceof ConnectionServiceError) throw error;
     }
     return result(await getChannel(input));
+  }
+  /** Sessions created before Talk read an event (e.g. message.reaction) keep their old subscription: bring it up to
+   * date once. Best effort; WAHA restarts the session quietly and the next probe sees it working again. */
+  async function subscribeMissingEvents(client: WahaClient, session: WahaSession, connection: ChannelConnection) {
+    const webhook = options.waha?.webhook;
+    const hooks = session.config?.webhooks;
+    if (!webhook || session.status !== 'WORKING' || !Array.isArray(hooks) || !hooks.length) return;
+    if (hooks.every(hook => WAHA_WEBHOOK_EVENTS.every(event => hook.events?.includes(event)))) return;
+    await client.updateSession({ session: connection.sessionName, workspaceId: connection.workspaceId, channelId: connection.channelId,
+      webhook: { url: `${webhook.baseUrl}/webhooks/waha/${encodeURIComponent(connection.workspaceId)}/${connection.id}`, hmacKey: webhook.hmacKey } }).catch(() => undefined);
   }
   async function stopSecondary(channel: Channel, connection: ChannelConnection, logout: boolean, disable = false) {
     // Revoke proof before remote I/O, even when the remote stop subsequently fails.

@@ -8585,3 +8585,22 @@ select:disabled {
 .channel-alert-warning { --channel-alert-border: #c98a00; background: #fff7e0; }
 .channel-alert-info { --channel-alert-border: #3b6ea5; background: #eef4fb; }
 .channel-alert-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Messages keep WhatsApp's line breaks and blank lines; links are clickable. */
+.msg-bubble-body p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.message-link { color: inherit; text-decoration: underline; word-break: break-all; }
+
+/* Replies and reactions, as WhatsApp shows them. */
+.message-quote { display: flex; flex-direction: column; gap: 2px; margin: 0 0 6px; padding: 6px 10px; border-left: 4px solid #06cf9c; border-radius: 6px; background: rgba(0, 0, 0, 0.06); font-size: 12px; line-height: 1.4; max-width: 100%; }
+.message-quote strong { color: #06a07a; font-size: 12px; }
+.message-quote span { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; white-space: pre-wrap; overflow-wrap: anywhere; opacity: 0.85; }
+.message-bubble.is-outbound .message-quote { background: rgba(255, 255, 255, 0.14); }
+.message-bubble.is-outbound .message-quote strong { color: #9ff0d8; }
+.message-reactions { display: flex; gap: 4px; margin: 4px 0 -14px; position: relative; z-index: 1; }
+.message-reactions span { display: inline-flex; align-items: center; gap: 2px; padding: 1px 6px; border-radius: 12px; background: var(--color-surface, #fff); border: 1px solid var(--color-border, #e5e7eb); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); font-size: 14px; line-height: 20px; color: #111; }
+.message-reactions span.is-mine { border-color: #06cf9c; }
+.message-reactions small { font-size: 11px; color: #555; }
+.composer-reply { display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px 0; }
+.composer-reply .message-quote { flex: 1; margin: 0; }
+.composer-reply button { border: 0; background: transparent; cursor: pointer; padding: 4px; color: var(--color-text-secondary, #666); }
+.message-bubble:has(.message-reactions) { margin-bottom: 16px; }

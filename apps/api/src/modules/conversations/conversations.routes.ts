@@ -1,4 +1,5 @@
-import type { FastifyPluginAsync, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyPluginAsync, FastifyReply } from "fastify";
+import type { Prisma } from "@prisma/client";
 import { inboxViewSchema } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { createBoardRulesService } from "../boards/board-rules.service.js";
@@ -70,7 +71,8 @@ const createMessageBodySchema = z
         mediaUrl: z.string().min(1)
       })
       .optional(),
-    contactCard: z.object({ sourceConversationId: z.string().uuid() }).optional()
+    contactCard: z.object({ sourceConversationId: z.string().uuid() }).optional(),
+    replyToMessageId: z.string().uuid().optional()
   })
   .refine((body) => body.body || body.attachment || body.contactCard, {
     message: "Message body or attachment is required."
@@ -141,6 +143,23 @@ function requireConversationResetOwner(
   return false;
 }
 
+/** What WhatsApp needs to quote a message of this conversation (or of one retired into it): its stanza id, who sent it
+ * and its text. Null when the message has no WhatsApp id (e.g. a note, or a send that never left). */
+async function replyReference(prisma: FastifyInstance['prisma'], workspaceId: string, conversationId: string, messageId: string) {
+  const record = await prisma.message.findFirst({ where: { workspaceId, id: messageId,
+    OR: [{ conversationId }, { conversation: { retiredIntoConversationId: conversationId } }] } });
+  if (!record) return null;
+  const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata) ? record.metadata as Record<string, unknown> : {};
+  const whatsapp = (metadata.whatsapp && typeof metadata.whatsapp === 'object' ? metadata.whatsapp : {}) as Record<string, unknown>;
+  const groupSender = (metadata.groupSender && typeof metadata.groupSender === 'object' ? metadata.groupSender : {}) as Record<string, unknown>;
+  const identity = typeof whatsapp.id === 'string' || !prisma.canonicalMessageIdentity ? null : await prisma.canonicalMessageIdentity.findFirst({ where: { workspaceId, messageId: record.id, identityFormat: 'whatsapp_stanza' }, select: { rawId: true } });
+  const legacy = record.providerMessageId && !record.providerMessageId.includes('_') && !record.providerMessageId.startsWith('wamid.') ? record.providerMessageId : null;
+  const id = typeof whatsapp.id === 'string' ? whatsapp.id : identity?.rawId ?? legacy;
+  if (!id) return null;
+  const participant = typeof whatsapp.participant === 'string' ? whatsapp.participant : typeof groupSender.jid === 'string' ? groupSender.jid : null;
+  return { id, fromMe: record.direction === 'outbound', participant: record.direction === 'outbound' ? null : participant, body: record.body?.slice(0, 500) ?? null };
+}
+
 export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions> = async (
   app,
   options
@@ -159,10 +178,12 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       ? record.metadata as Record<string, unknown> : {};
     if (typeof metadata.deletedAt === 'string') return toMessageDto(record);
     const client = options.evolution?.client;
+    // Messages written by the canonical writer keep their WhatsApp id in metadata/identity, not in providerMessageId.
+    const reference = record.direction === 'outbound' ? await replyReference(app.prisma, workspaceId, record.conversationId, record.id) : null;
     if (options.evolution?.mode !== 'real' || !client?.deleteMessageForEveryone ||
       record.conversation.channel.provider !== 'evolution' || record.conversation.contact.isGroup ||
       record.direction !== 'outbound' ||
-      !record.providerMessageId || record.status === 'pending' || record.status === 'failed') {
+      !reference || record.status === 'pending' || record.status === 'failed') {
       return reply.code(409).send({ error: 'Esta mensagem não pode ser apagada para todos.' });
     }
     const phone = record.conversation.contact.phone;
@@ -172,7 +193,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     try {
       await client.deleteMessageForEveryone({
         instanceName: record.conversation.channel.providerKey,
-        id: record.providerMessageId, remoteJid, fromMe: true
+        id: reference.id, remoteJid, fromMe: true
       });
     } catch (error) {
       request.log.warn({ err: error, messageId: record.id }, 'Evolution failed to revoke message.');
@@ -181,7 +202,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     const updated = await app.prisma.message.update({
       where: { id: record.id }, data: {
         type: 'system', body: 'Você apagou esta mensagem', mediaUrl: null,
-        metadata: { deletedAt: new Date().toISOString() }
+        metadata: { ...(metadata.whatsapp ? { whatsapp: metadata.whatsapp } : {}), deletedAt: new Date().toISOString() } as Prisma.InputJsonValue
       }
     });
     await app.prisma.conversation.updateMany({
@@ -734,13 +755,16 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       });
     }
 
+    const quoted = body.data.replyToMessageId && body.data.body && !body.data.attachment
+      ? await replyReference(app.prisma, request.talk.workspaceId, params.data.conversationId, body.data.replyToMessageId) : null;
     const result = await writeService.createPendingOutboundMessage({
       workspaceId: request.talk.workspaceId,
       conversationId: params.data.conversationId,
       body: body.data.body,
       attachment: body.data.attachment,
       contactCard,
-      sentByUserId: null
+      sentByUserId: null,
+      ...(quoted ? { quoted } : {})
     }).catch((error: unknown) => {
       if (error instanceof ConversationNotFoundError) {
         return null;

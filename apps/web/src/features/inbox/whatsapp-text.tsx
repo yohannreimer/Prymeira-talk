@@ -42,10 +42,25 @@ export function serializeWhatsappText(doc: JSONContent): string {
   }
   return (doc.content ?? []).map(blockText).join('\n');
 }
+/** Links as WhatsApp shows them: http(s) and www. addresses become clickable (opened in a new tab, no referrer). */
+const LINK = /\b(?:https?:\/\/|www\.)[^\s<>"']+[^\s<>"'.,;:!?)\]}]/giu;
+function withLinks(text: string) {
+  const parts: Array<string | { href: string; label: string }> = [];
+  let last = 0;
+  for (const match of text.matchAll(LINK)) {
+    if (match.index! > last) parts.push(text.slice(last, match.index));
+    parts.push({ href: match[0].startsWith('www.') ? `https://${match[0]}` : match[0], label: match[0] });
+    last = match.index! + match[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  if (parts.length === 1 && typeof parts[0] === 'string') return parts[0];
+  return parts.map((part, i) => typeof part === 'string' ? part
+    : <a key={i} href={part.href} target="_blank" rel="noopener noreferrer" className="message-link">{part.label}</a>);
+}
 export function WhatsappText({ text }: { text: string }) {
   return <>{parseWhatsappText(text).content?.map((line, index) => <span key={index}>
     {index > 0 ? '\n' : null}{line.content?.map((node, i) => {
-      let content = <>{node.text}</>;
+      let content = <>{withLinks(node.text ?? '')}</>;
       if (node.marks?.some(m => m.type === 'italic')) content = <em>{content}</em>;
       if (node.marks?.some(m => m.type === 'bold')) content = <strong>{content}</strong>;
       return <span key={i}>{content}</span>;

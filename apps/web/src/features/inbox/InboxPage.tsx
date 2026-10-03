@@ -6,7 +6,8 @@ import { CATALOG_STALE_MS, MAX_MESSAGES, receiptStatus } from '../../app/session
 import { LocationMessage } from './LocationMessage';
 import { needsHumanAttention } from "@prymeira-talk/shared";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
+import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
+import { quotedPreview, threadWithReactions } from "./message-threading.js";
 import type { ChangeEvent, DragEvent, FormEvent, SetStateAction } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -296,7 +297,10 @@ function upsertMessage(list: MessageDto[], message: MessageDto, optimisticId?: s
     return list.map((item, index) => (index === optimisticIndex ? { ...message, status: receiptStatus(item.status, message.status) } : item));
   }
 
-  return [...list, message];
+  // A late arrival (recovered after a disconnection) goes where its WhatsApp time puts it, as in WhatsApp.
+  const at = Date.parse(message.createdAt);
+  const after = Number.isFinite(at) ? list.findIndex(item => Date.parse(item.createdAt) > at) : -1;
+  return after < 0 ? [...list, message] : [...list.slice(0, after), message, ...list.slice(after)];
 }
 
 function fileToDataUrl(file: File) {
@@ -479,6 +483,9 @@ function InboxPageContent() {
   const [dismissUndo, setDismissUndo] = useState<{ conversationId: string; anchorMessageId: string } | null>(null);
   const [conversationReloadKey, setConversationReloadKey] = useState(0);
   const [isSending, setIsSending] = useState(false);
+  const textSendQueue = useRef(new Map<string, Promise<unknown>>());
+  /** The message being replied to (WhatsApp quote); only for messages that have a WhatsApp id. */
+  const [replyTarget, setReplyTarget] = useState<MessageDto | null>(null);
   const [pendingFile, setPendingFile] = useSessionState<File | null>(`draftFile:${selectedConversationId ?? 'none'}`, null);
   const [pendingFilePreview, setPendingFilePreview] = useState<string | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -816,6 +823,8 @@ function InboxPageContent() {
   const assistant = useAssistantConversation(selectedConversation?.isGroup ? null : selectedConversationId, getToken, `${selectedConversation?.lastMessageAt ?? ''}:${selectedConversation?.aiControlStatus ?? ''}:${selectedConversation?.handoffActionCompletedAt ?? ''}`);
   const beginPerformance = useTalkPerformance(selectedConversationId, selectedConversation?.id ?? null, messagesQuery.data);
   const visibleMessages = messagesConversationId === selectedConversationId ? messages : EMPTY_MESSAGES;
+  const thread = useMemo(() => threadWithReactions(visibleMessages), [visibleMessages]);
+  useEffect(() => { setReplyTarget(current => current && current.conversationId !== selectedConversationId ? null : current); }, [selectedConversationId]);
   const handoffEnabled = Boolean(selectedConversation && !selectedConversation.isGroup && needsHumanAttention(selectedConversation));
   const handoff = useHandoffBrief(selectedConversationId, handoffEnabled, selectedConversation?.lastMessageAt, getToken);
   const handoffBrief = useMemo(() => handoffEnabled ? handoff.data ?? {
@@ -949,8 +958,9 @@ function InboxPageContent() {
       return;
     }
 
-    if (!selectedConversationId || !draft.trim() || isSending) return;
+    if (!selectedConversationId || !draft.trim()) return;
     if (composerOrigin) {
+      if (isSending) return;
       if (originNeedsReview) { setMessageError('Chegaram novas informações. Revise o rascunho antes de enviar.'); return; }
       const source = assistant.data?.history.find(s => s.id === composerOrigin.suggestionId);
       if (!source) { setMessageError('A revisão original não está disponível. Abra novamente o apoio.'); return; }
@@ -979,10 +989,12 @@ function InboxPageContent() {
       mediaUrl: null,
       status: "pending",
       sentByUserId: null,
+      ...(replyTarget?.whatsappId ? { quoted: { whatsappId: replyTarget.whatsappId, participant: replyTarget.senderJid ?? null, body: replyTarget.body } } : {}),
       createdAt: new Date().toISOString()
     };
 
-    setIsSending(true);
+    // Like WhatsApp: the composer is free again at once. Texts of one conversation still reach the server one after
+    // another, in the order they were typed, through a per-conversation queue.
     setMessageError(null);
     session.writeUI(`sendFailure:${targetConversationId}`, null, null);
     setDraft("");
@@ -1000,12 +1012,16 @@ function InboxPageContent() {
     );
     scheduleMessageThreadScroll("smooth");
 
+    const previous = textSendQueue.current.get(targetConversationId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(() => apiCreateConversationMessage(
+      targetConversationId,
+      { body: messageBody, ...(replyTarget ? { replyToMessageId: replyTarget.id } : {}) },
+      getFreshToken
+    ));
+    textSendQueue.current.set(targetConversationId, current);
+    setReplyTarget(null);
     try {
-      const createdMessage = await apiCreateConversationMessage(
-        targetConversationId,
-        { body: messageBody },
-        getFreshToken
-      );
+      const createdMessage = await current;
 
       session.updateMessages(targetConversationId, current => upsertMessage(current, createdMessage, optimisticMessage.id));
       setConversations((current) =>
@@ -1022,7 +1038,7 @@ function InboxPageContent() {
     } catch (sendError) {
       recordSendFailure(targetConversationId, optimisticMessage.id, sendError, 'Não foi possível enviar a mensagem.', messageBody);
     } finally {
-      setIsSending(false);
+      if (textSendQueue.current.get(targetConversationId) === current) textSendQueue.current.delete(targetConversationId);
     }
   }
 
@@ -1656,7 +1672,7 @@ selectedConversation ? (
             {!messageError && !isLoadingMessages && !isThreadTransitioning && visibleMessages.length === 0 ? (
               <p className="thread-note">Ainda não ha mensagens nesta conversa.</p>
             ) : null}
-            {visibleMessages.map((message) => (
+            {thread.visible.map((message) => (
               <article
                 className={`message-bubble ${message.direction === "outbound" ? "is-outbound" : "is-inbound"}`}
                 key={message.id}
@@ -1666,6 +1682,8 @@ selectedConversation ? (
                 ) : null}
                 <div className="msg-bubble-body">
                   {selectedConversation.isGroup && message.direction === "inbound" ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
+                  {message.quoted ? (() => { const quote = quotedPreview(message.quoted, visibleMessages, selectedConversation.contactName ?? null); return (
+                    <div className="message-quote"><strong>{quote.author}</strong><span>{quote.text}</span></div>); })() : null}
                   {['image', 'audio', 'file'].includes(message.type) ? <>
                     <InboxMedia key={message.id} message={message} getToken={getToken} />
                     {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
@@ -1674,8 +1692,14 @@ selectedConversation ? (
                   <div className="message-bubble-meta">
                     {message.editedAt ? <span className="message-edited-label">Editada</span> : null}
                     <time>{formatMessageTime(message.createdAt)}</time>
+                    {selectedConversation.channelProvider === 'evolution' && message.whatsappId && !message.deletedAt && message.type !== 'system' ? (
+                        <button type="button" className="message-delete-action" title="Responder" aria-label="Responder esta mensagem"
+                          onClick={() => { setReplyTarget(message); draftTextAreaRef.current?.focus(); }}>
+                          <Reply size={13} aria-hidden="true" />
+                        </button>
+                      ) : null}
                     {selectedConversation.channelProvider === 'evolution' && !selectedConversation.isGroup && message.direction === 'outbound' &&
-                      message.providerMessageId && !message.deletedAt && ['sent', 'delivered', 'read'].includes(message.status) ? (
+                      (message.providerMessageId || message.whatsappId) && !message.deletedAt && ['sent', 'delivered', 'read'].includes(message.status) ? (
                         <button type="button" className="message-delete-action" title="Apagar para todos"
                           aria-label="Apagar mensagem para todos" disabled={Boolean(deletingMessageId)}
                           onClick={() => { void actionsRef.current.deleteMessageForEveryone(message); }}>
@@ -1687,6 +1711,11 @@ selectedConversation ? (
                     <span className={`message-send-state message-send-state--${message.status}`}>
                       {outboundStatusLabel(message)}
                     </span>
+                  ) : null}
+                  {message.whatsappId && thread.chips.get(message.whatsappId) ? (
+                    <div className="message-reactions" aria-label="Reações">
+                      {thread.chips.get(message.whatsappId)!.map(chip => <span key={chip.emoji} className={chip.mine ? 'is-mine' : undefined}>{chip.emoji}{chip.count > 1 ? <small>{chip.count}</small> : null}</span>)}
+                    </div>
                   ) : null}
                 </div>
               </article>
@@ -1711,7 +1740,7 @@ selectedConversation ? (
             <p>Escolha uma conversa na fila para acompanhar o atendimento.</p>
           </div>
         )
-  ), [selectedConversation, selectedConversationId, visibleMessages, isThreadTransitioning, isLoadingMessages,
+  ), [selectedConversation, selectedConversationId, visibleMessages, thread, isThreadTransitioning, isLoadingMessages,
     messageError, sendFailure, newMessagesBelow, deletingMessageId, getToken, getFreshToken, session]);
   const sidebarView = useMemo(() => (
 <aside className={`contact-panel assistant-contact-panel${assistantOpen ? ' assistant-drawer-open' : ''}`} aria-label="Contato e IA de apoio">
@@ -2079,6 +2108,13 @@ selectedConversation ? (
                 ))}
               </div>
             ) : null}
+            {replyTarget && replyTarget.conversationId === selectedConversationId ? (() => {
+              const quote = quotedPreview({ whatsappId: replyTarget.whatsappId ?? '', participant: replyTarget.senderJid ?? null, body: replyTarget.body }, visibleMessages, selectedConversation?.contactName ?? null);
+              return <div className="composer-reply" role="status">
+                <div className="message-quote"><strong>{quote.author}</strong><span>{quote.text}</span></div>
+                <button type="button" aria-label="Cancelar resposta" onClick={() => setReplyTarget(null)}><X size={14} aria-hidden="true" /></button>
+              </div>;
+            })() : null}
             <div className="composer-input-row">
               <RichDraft key={selectedConversationId ?? 'no-conversation'} ref={draftTextAreaRef} value={draft} disabled={!selectedConversation || isSending} onFormatChange={setDraftFormat} onChange={value => { setDraft(value); if (!value) setComposerOrigin(null); }} onPasteImage={stageAttachment} />
               <button

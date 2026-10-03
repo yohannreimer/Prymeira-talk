@@ -373,6 +373,7 @@ type AuditLogCreateArgs = Parameters<PrismaClient["auditLog"]["create"]>[0];
 type CrmSyncActionCreateArgs = Parameters<PrismaClient["crmSyncAction"]["create"]>[0];
 
 export interface PrismaLike {
+  canonicalMessageIdentity?: { findMany(args: { where: Record<string, unknown>; select: { messageId: true; rawId: true } }): Promise<Array<{ messageId: string; rawId: string }>> };
   assistantConversationState?: Pick<PrismaClient['assistantConversationState'], 'deleteMany'>;
   assistantSuggestion?: Pick<PrismaClient['assistantSuggestion'], 'deleteMany'>;
   conversation: {
@@ -617,7 +618,21 @@ function mapMessageDto(record: MessageRecord, publicTalkUrl?: string): MessageDt
     sentByUserId: record.sentByUserId ?? null,
     ...(typeof metadata.editedAt === 'string' ? { editedAt: metadata.editedAt } : {}),
     ...(typeof metadata.deletedAt === 'string' ? { deletedAt: metadata.deletedAt } : {}),
+    ...whatsappPresentation(metadata, record.providerMessageId ?? null),
     createdAt: toIsoString(record.createdAt)
+  };
+}
+
+/** WhatsApp id, quote and reaction stored by the canonical writer (metadata.whatsapp/quoted/reaction). */
+function whatsappPresentation(metadata: Record<string, unknown>, providerMessageId: string | null) {
+  const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
+  const text = (v: unknown, max: number) => typeof v === 'string' && v ? v.slice(0, max) : null;
+  const whatsapp = object(metadata.whatsapp), quoted = object(metadata.quoted), reaction = object(metadata.reaction);
+  const whatsappId = text(whatsapp.id, 200) ?? (providerMessageId && !providerMessageId.includes('_') && !providerMessageId.startsWith('wamid.') ? providerMessageId : null);
+  return {
+    ...(whatsappId ? { whatsappId } : {}),
+    ...(text(quoted.id, 200) ? { quoted: { whatsappId: text(quoted.id, 200)!, participant: text(quoted.participant, 100), body: text(quoted.body, 500) } } : {}),
+    ...(text(reaction.targetId, 200) ? { reaction: { targetWhatsappId: text(reaction.targetId, 200)!, emoji: text(reaction.emoji, 32) } } : {})
   };
 }
 
@@ -877,6 +892,8 @@ export function createConversationsService(
       contactCard?: { fullName: string; phoneNumber: string };
       sentByUserId: string | null;
       metadata?: Record<string, unknown>;
+      /** Reply to this message (text only). */
+      quoted?: { id: string; fromMe: boolean; participant: string | null; body: string | null };
     }): Promise<{ message: MessageDto; conversation: ConversationDto }> {
       if (input.reservedMessageId && !prisma.message.update) throw new Error('Reserved outbound storage is unavailable.');
       const conversation = await prisma.conversation.findUnique({
@@ -997,7 +1014,8 @@ export function createConversationsService(
           : await callProvider(() => options.evolution!.client!.sendText({
               instanceName: providerKey,
               number: contactPhone,
-              text: messageBody
+              text: messageBody,
+              ...(input.quoted ? { quoted: input.quoted } : {})
             }));
         }
       }
@@ -1064,7 +1082,7 @@ export function createConversationsService(
           type: messageType,
           body: messageBody,
           mediaUrl: audio?.mediaUrl ?? input.attachment?.mediaUrl,
-          ...(audio || input.attachment || input.metadata || input.contactCard
+          ...(audio || input.attachment || input.metadata || input.contactCard || input.quoted
             ? {
                 metadata: {
                   ...(audio
@@ -1072,7 +1090,8 @@ export function createConversationsService(
                     : input.attachment ? { attachment: { fileName: input.attachment.fileName, mimeType: input.attachment.mimetype,
                       ...(input.body?.trim() ? { caption: input.body.trim() } : {}) } } : {}),
                   ...(input.metadata ?? {}),
-                  ...(input.contactCard ? { contactCard: input.contactCard } : {})
+                  ...(input.contactCard ? { contactCard: input.contactCard } : {}),
+                  ...(input.quoted && !input.attachment ? { quoted: { id: input.quoted.id, participant: input.quoted.participant, body: input.quoted.body } } : {})
                 } as Prisma.InputJsonValue
               }
             : {}),
@@ -1595,12 +1614,22 @@ export function createConversationsService(
           workspaceId: input.workspaceId,
           conversationId: retired.length ? { in: [input.conversationId, ...retired.map(row => row.id)] } : input.conversationId
         }),
-        orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
+        // WhatsApp's own time, like WhatsApp: a message recovered after a disconnection sits where it was sent,
+        // not at the bottom where it arrived.
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: 100
       });
 
-      return measureInboxAssembly(() => withoutInternalFollowupReservations([...messages]).reverse().map(record => input.compactMedia
+      const dtos = measureInboxAssembly(() => withoutInternalFollowupReservations([...messages]).reverse().map(record => input.compactMedia
         ? toCompactMessageDto(record, options.publicTalkUrl ?? 'https://talk.prymeiradigital.com.br') : toMessageDto(record)));
+      // Messages written before the WhatsApp id was kept in their metadata get it from their canonical identity.
+      const missing = dtos.filter(dto => !dto.whatsappId).map(dto => dto.id);
+      if (missing.length && prisma.canonicalMessageIdentity?.findMany) {
+        const identities = await prisma.canonicalMessageIdentity.findMany({ where: { workspaceId: input.workspaceId, messageId: { in: missing }, identityFormat: 'whatsapp_stanza' }, select: { messageId: true, rawId: true } });
+        const byMessage = new Map(identities.map(row => [row.messageId, row.rawId]));
+        for (const dto of dtos) if (!dto.whatsappId && byMessage.get(dto.id)) dto.whatsappId = byMessage.get(dto.id)!;
+      }
+      return dtos;
     }
   };
 }

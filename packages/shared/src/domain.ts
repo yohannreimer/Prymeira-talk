@@ -423,6 +423,12 @@ export const messageSchema = z.object({
   sentByUserId: z.string().nullable(),
   editedAt: z.string().datetime().optional(),
   deletedAt: z.string().datetime().optional(),
+  /** WhatsApp's id of this message (stanza id): replies and reactions point to it. */
+  whatsappId: z.string().optional(),
+  /** The message this one replies to, as WhatsApp quoted it. */
+  quoted: z.object({ whatsappId: z.string(), participant: z.string().nullable(), body: z.string().nullable() }).optional(),
+  /** This message is a reaction (emoji null = removed) to the message with this WhatsApp id; shown on that message. */
+  reaction: z.object({ targetWhatsappId: z.string(), emoji: z.string().nullable() }).optional(),
   createdAt: z.string().datetime()
 });
 export type MessageDto = z.infer<typeof messageSchema>;

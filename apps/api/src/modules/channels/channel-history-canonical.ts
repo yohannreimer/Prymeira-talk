@@ -85,7 +85,10 @@ export async function persistProviderMessages(input: {
       created.push({ messageId: message.id, conversationId: stored.conversationId,
         media: event.media?.hasMedia && ['audio', 'image', 'file'].includes(message.type)
           ? { provider: context.provider, channelProvider: context.channelProvider, sessionName: context.sessionName, key: event.key, mimeType: event.attachment.mimeType ?? null } : null });
-      if (mode === 'recovered_live' && message.direction === 'inbound')
+      // Recovered in time order: a reply we sent from the phone clears what was waiting before it.
+      if (mode === 'recovered_live' && message.direction === 'outbound')
+        await tx.conversation.updateMany({ where: { workspaceId: channel.workspaceId, id: stored.conversationId, unreadCount: { gt: 0 } }, data: { unreadCount: 0 } });
+      if (mode === 'recovered_live' && message.direction === 'inbound' && !event.content.reaction)
         await tx.conversation.update({ where: { workspaceId_id: { workspaceId: channel.workspaceId, id: stored.conversationId } }, data: { unreadCount: { increment: 1 }, hiddenUntilReply: false } });
       // Previews and activity only ever move forward; old messages can never displace a newer one.
       await selectConversationPreviewInTransaction(tx, context, { conversationId: stored.conversationId, messageId: message.id, preview: event.content.preview, selection: 'new_message' });

@@ -9,6 +9,12 @@ describe('visual WhatsApp formatting', () => {
     const html = renderToStaticMarkup(<WhatsappText text={'*Olá* _amigo_ <script>alert(1)</script>'} />);
     expect(html).toContain('<strong>Olá</strong>'); expect(html).toContain('<em>amigo</em>'); expect(html).not.toContain('<script>');
   });
+  it('makes links clickable without touching the rest of the text', () => {
+    const html = renderToStaticMarkup(<WhatsappText text={'LINK: https://meli.la/2J73jq5\n\nwww.exemplo.com.br, ok'} />);
+    expect(html).toContain('<a href="https://meli.la/2J73jq5" target="_blank" rel="noopener noreferrer" class="message-link">https://meli.la/2J73jq5</a>');
+    expect(html).toContain('<a href="https://www.exemplo.com.br" target="_blank" rel="noopener noreferrer" class="message-link">www.exemplo.com.br</a>, ok');
+    expect(html).not.toContain('javascript:');
+  });
   it('does not format measurements or underscores inside words', () => {
     expect(renderToStaticMarkup(<WhatsappText text="10*20*30 nome_do_item" />)).not.toContain('<strong>');
     expect(renderToStaticMarkup(<WhatsappText text="nome_do_item" />)).not.toContain('<em>');

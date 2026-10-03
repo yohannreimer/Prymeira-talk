@@ -1,5 +1,5 @@
 import { validateEvolutionIdentityDeclarations } from '../messaging/identity-declarations.js';
-import type { AddressMappingEvidence, MediaSourceDescriptor, NormalizationResult, SourceOrder, TrustedMessagingContext } from '../messaging/normalized-event.js';
+import type { AddressMappingEvidence, MediaSourceDescriptor, NormalizationResult, NormalizedContent, SourceOrder, TrustedMessagingContext } from '../messaging/normalized-event.js';
 import { normalizeChatAddress, record, string, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 import { attachmentPresentation, extractMessageContent, extractMessageEdit, extractPushName, extractQrCode, hasRecordPath, isEditProtocolType, mapEvolutionMessageStatus, normalizeEvolutionEvent, unwrapMessage } from './evolution-normalizer.js';
 import { extractEncryptedMessageEdit, isEncryptedControlEnvelope } from './evolution-message-edit.js';
@@ -22,6 +22,22 @@ function mapping(first: unknown, second: unknown, role: AddressMappingEvidence['
 function order(value: unknown, seconds = false): SourceOrder {
   const n = typeof value === 'number' ? value : null;
   return { timestampMs: n !== null && Number.isFinite(n) && n >= 0 && n <= (seconds ? 8.64e12 : 8.64e15) ? n * (seconds ? 1000 : 1) : null, sequence: null };
+}
+/** Baileys puts the replied-to message in the content's contextInfo (stanzaId, participant, quotedMessage);
+ * Evolution 2.x may also lift it to data.contextInfo. */
+export function quotedOf(message: Record<string, unknown>, data: Record<string, unknown>) {
+  const contexts = [record(data.contextInfo), ...Object.values(message).map(value => record(record(value).contextInfo))];
+  const context = contexts.find(candidate => string(candidate.stanzaId));
+  if (!context) return null;
+  const quotedMessage = context.quotedMessage && typeof context.quotedMessage === 'object' ? context.quotedMessage : null;
+  const quotedContent = quotedMessage ? extractMessageContent(quotedMessage, undefined) : null;
+  return { id: string(context.stanzaId)!, participant: string(context.participant),
+    body: quotedContent && quotedContent.type !== 'system' ? quotedContent.body?.slice(0, 500) ?? null : null };
+}
+/** A reactionMessage: the reacted message's stanza id and the emoji (null = removed). */
+export function reactionOf(message: Record<string, unknown>) {
+  const reaction = record(message.reactionMessage), targetId = string(record(reaction.key).id);
+  return targetId ? { targetId, emoji: string(reaction.text) } : null;
 }
 /** Shared adapter is opt-in for the canonical writer. Legacy handlers keep their existing helpers. */
 export function normalizeEvolutionWebhook(context: TrustedMessagingContext, input: unknown): NormalizationResult {
@@ -87,7 +103,7 @@ export function normalizeEvolutionWebhook(context: TrustedMessagingContext, inpu
   if (eventName !== 'messages.upsert') return { kind: 'ignored', reason: 'unsupported_event' };
   if (!key.nativeId || !key.chatAddress || !key.direction) return { kind: 'invalid', reason: 'invalid_message_key' };
   if (key.chatAddress.endsWith('@g.us') && !key.senderParticipant) key.senderParticipant = normalizeChatAddress(data.participant);
-  let content = extractMessageContent(data.message, data.messageType);
+  let content: NormalizedContent = extractMessageContent(data.message, data.messageType);
   const kinds = { audioMessage: 'audio', imageMessage: 'image', stickerMessage: 'sticker', videoMessage: 'video', documentMessage: 'document' } as const;
   const mediaField = (Object.keys(kinds) as Array<keyof typeof kinds>).find(name => hasRecordPath(message, [name]))
     ?? (typeof data.messageType === 'string' && Object.hasOwn(kinds, data.messageType) ? data.messageType as keyof typeof kinds : null);
@@ -102,6 +118,10 @@ export function normalizeEvolutionWebhook(context: TrustedMessagingContext, inpu
       : string(payload.fileName) ?? caption ?? 'Arquivo recebido';
     content = { ...content, type: kind === 'audio' ? 'audio' : kind === 'image' || kind === 'sticker' ? 'image' : 'file', body, preview: body };
   }
+  const reaction = reactionOf(message);
+  if (reaction) content = { ...content, reaction };
+  const quoted = quotedOf(message, data);
+  if (quoted) content = { ...content, quoted };
   const media: MediaSourceDescriptor | null = kind ? { kind, hasMedia: true, url: content.mediaUrl, state: content.mediaUrl ? 'available' : 'pending' } : null;
   return { kind: 'accepted', event: { ...base, kind: 'message', key, content, attachment: attachmentPresentation(data.message), media,
     currentRevision: null, pushName: extractPushName(data), source: null, order: order(data.messageTimestamp, true) } };

@@ -18,6 +18,10 @@ export interface NormalizedContent {
   type: MessageDto['type']; body: string | null; preview: string | null; mediaUrl: string | null;
   contactCards?: Array<{ fullName: string; phoneNumber: string | null }>;
   location?: MessageLocation;
+  /** The message this one replies to (WhatsApp stanza id), with the quoted text the provider sent. Presentation only. */
+  quoted?: { id: string; participant: string | null; body: string | null };
+  /** A reaction (empty emoji = reaction removed) to the message with this stanza id. Presentation only. */
+  reaction?: { targetId: string; emoji: string | null };
 }
 export interface AttachmentPresentation {
   fileName?: string; caption?: string; mimeType?: string; durationSeconds?: number;

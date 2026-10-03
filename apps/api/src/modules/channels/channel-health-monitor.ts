@@ -50,12 +50,16 @@ export function createChannelHealthMonitor(options: {
     const to = new Date(now().getTime() - graceMs), from = new Date(now().getTime() - lossWindowMs);
     const rows = await db.$queryRaw<Array<{ connection_id: string; missed: number }>>`
       WITH seen AS (
-        SELECT identity_id, array_agg(DISTINCT connection_id) AS conns
-        FROM canonical_observations
-        WHERE workspace_id = ${channel.workspaceId} AND channel_id = ${channel.id}::uuid AND kind = 'message' AND mode = 'live'
-          AND identity_id IS NOT NULL AND connection_id IS NOT NULL
-          AND received_at >= (${from}::timestamptz AT TIME ZONE 'UTC') AND received_at <= (${to}::timestamptz AT TIME ZONE 'UTC')
-        GROUP BY identity_id)
+        SELECT o.identity_id, array_agg(DISTINCT o.connection_id) AS conns
+        FROM canonical_observations o
+        JOIN canonical_message_identities i ON i.id = o.identity_id
+        JOIN messages m ON m.workspace_id = i.workspace_id AND m.id = i.message_id
+        WHERE o.workspace_id = ${channel.workspaceId} AND o.channel_id = ${channel.id}::uuid AND o.kind = 'message' AND o.mode = 'live'
+          AND o.identity_id IS NOT NULL AND o.connection_id IS NOT NULL
+          -- Reactions and other WhatsApp notices are not delivered the same way by every engine: only real messages count.
+          AND m.type <> 'system'
+          AND o.received_at >= (${from}::timestamptz AT TIME ZONE 'UTC') AND o.received_at <= (${to}::timestamptz AT TIME ZONE 'UTC')
+        GROUP BY o.identity_id)
       SELECT c.id AS connection_id, count(*)::int AS missed
       FROM channel_connections c JOIN seen s ON NOT (c.id = ANY(s.conns))
       WHERE c.workspace_id = ${channel.workspaceId} AND c.channel_id = ${channel.id}::uuid AND c.status = 'connected'

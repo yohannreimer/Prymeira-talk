@@ -66,6 +66,13 @@ describe('WAHA GOWS engine events', () => {
   it('exact lookups (media) accept GOWS messages, including our own in groups', () => {
     expect(parseExactWahaResponse(gows({ id: 'G2', group: true, fromMe: true, sender: '5547777770000@c.us', message: { conversation: 'x' } }))).toMatchObject({ rawId: 'G2', direction: 'outbound', chatAddress: GROUP });
   });
+  it('reactions and replies', () => {
+    const reaction = accepted({ id: `false_${CUS}_R9`, from: CUS, fromMe: false, participant: null, timestamp: 1759500000, reaction: { text: '👍', messageId: `true_${CUS}_3EB0A2` } }, 'message.reaction');
+    expect(reaction).toMatchObject({ kind: 'message', key: { rawId: 'R9', direction: 'inbound' }, content: { type: 'system', reaction: { targetId: '3EB0A2', emoji: '👍' } } });
+    const reply = accepted({ ...gows({ id: 'Q2', body: 'sim', message: { extendedTextMessage: { text: 'sim' } } }), replyTo: { id: '3EB0A2', participant: CUS, body: 'vai hoje?' } });
+    if (reply.kind !== 'message') throw new Error();
+    expect(reply.content.quoted).toEqual({ id: '3EB0A2', participant: CUS, body: 'vai hoje?' });
+  });
   it('WPP events are untouched (fallback engine)', () => {
     const event = accepted({ id: `false_${CUS}_W1`, from: CUS, fromMe: false, body: 'Hello', timestamp: 123, _data: { type: 'chat', body: 'Hello' } });
     expect(event).toMatchObject({ kind: 'message', content: { body: 'Hello' } });

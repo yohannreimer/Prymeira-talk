@@ -95,6 +95,26 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
     return { kind: 'accepted', event: { ...base, kind: 'receipt', target, status, providerStatus: payload.ack as number,
       recipient: normalizeChatAddress(model.sender), order: { ...unknownOrder } } };
   }
+  if (eventName === 'message.reaction') {
+    // WPP and GOWS: { id (the reaction's own key), from, fromMe, participant, timestamp, reaction: { text, messageId } }.
+    const reaction = record(payload.reaction), target = parseWahaMessageKey(reaction.messageId);
+    const targetId = target.rawId ?? string(reaction.messageId);
+    if (!string(payload.id) || typeof payload.fromMe !== 'boolean' || !targetId) return { kind: 'invalid', reason: 'invalid_reaction' };
+    const key = parsedKey(payload.id, payload.participant);
+    key.nativeId = string(payload.id) ?? key.nativeId;
+    if (!key.chatAddress) {
+      key.nativeChatAddress = serialized(payload.from);
+      key.chatAddress = normalizeChatAddress(key.nativeChatAddress);
+      if (key.chatAddress && !key.chatAddress.endsWith('@g.us')) key.senderParticipant = '';
+    }
+    if (!key.direction) key.direction = payload.fromMe ? 'outbound' : 'inbound';
+    if (!key.chatAddress || (!key.nativeId && !key.rawId)) return { kind: 'invalid', reason: 'invalid_message_key' };
+    const emoji = string(reaction.text);
+    const body = emoji ? `Reagiu com ${emoji}` : 'Removeu uma reação';
+    return { kind: 'accepted', event: { ...base, kind: 'message', key,
+      content: { type: 'system', body, preview: body, mediaUrl: null, reaction: { targetId, emoji } }, attachment: {}, media: null,
+      currentRevision: null, pushName: null, source: string(payload.source), order: messageOrder(payload.timestamp) } };
+  }
   if (eventName !== 'message' && eventName !== 'message.any') return { kind: 'ignored', reason: 'unsupported_event' };
   if (isWahaNotice(payload)) return { kind: 'ignored', reason: 'provider_system_notice' };
   if (!string(payload.id) || (payload.fromMe !== undefined && typeof payload.fromMe !== 'boolean')) return { kind: 'invalid', reason: 'invalid_message_key' };
@@ -110,7 +130,12 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
   if (!key.direction && typeof payload.fromMe === 'boolean') key.direction = payload.fromMe ? 'outbound' : 'inbound';
   if (!key.chatAddress || (!key.nativeId && !key.rawId)) return { kind: 'invalid', reason: 'invalid_message_key' };
   const sender = record(raw.sender);
-  return { kind: 'accepted', event: { ...base, kind: 'message', key, ...wahaContent(payload),
+  const content = wahaContent(payload);
+  // WAHA's replyTo (WPP and GOWS): the quoted message's id (serialized or stanza), participant and text.
+  const replyTo = record(payload.replyTo), replyId = string(replyTo.id);
+  if (replyId) content.content = { ...content.content, quoted: { id: parseWahaMessageKey(replyId).rawId ?? replyId,
+    participant: string(replyTo.participant), body: string(replyTo.body)?.slice(0, 500) ?? null } };
+  return { kind: 'accepted', event: { ...base, kind: 'message', key, ...content,
     currentRevision: raw.latestEditMsgKey ? parseWahaMessageKey(raw.latestEditMsgKey) : null,
     pushName: string(raw.notifyName) ?? string(sender.pushname) ?? string(sender.pushName),
     source: string(payload.source), order: messageOrder(payload.timestamp ?? raw.timestamp ?? raw.t) } };

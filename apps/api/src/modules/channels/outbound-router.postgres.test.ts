@@ -83,6 +83,19 @@ describe.skipIf(!databaseUrl)('outbound router on PostgreSQL', () => {
     expect((await rows(f.workspaceId))[0]).toMatchObject({ state: 'accepted', connectionId: f.waha.id, providerMessageId: '3EB0TEXT' });
   });
 
+  it('a reply goes through WAHA quoting the message by its serialized id, and through Evolution with its key', async () => {
+    const f = await fixture({ active: 'waha' }), c = clients();
+    await router(c).sendText({ instanceName: f.channel.providerKey, number: '5547888880000', text: 'sim', quoted: { id: '3EB0Q', fromMe: false, participant: null, body: 'vai hoje?' } });
+    expect(c.waha.sendText).toHaveBeenCalledWith(expect.objectContaining({ replyTo: 'false_5547888880000@c.us_3EB0Q' }));
+    const e = await fixture(), d = clients();
+    await router(d).sendText({ instanceName: e.channel.providerKey, number: '5547888880000', text: 'sim', quoted: { id: '3EB0Q', fromMe: true, participant: null, body: 'oi' } });
+    expect(d.base.sendText).toHaveBeenCalledWith(expect.objectContaining({ quoted: { id: '3EB0Q', fromMe: true, participant: null, body: 'oi' } }));
+  });
+  it('deletes for everyone through WAHA when Evolution cannot', async () => {
+    const f = await fixture(), c = clients({ evolution: { deleteMessageForEveryone: vi.fn(async () => { throw new Error('evolution down'); }) }, waha: { deleteMessage: vi.fn(async () => undefined) } });
+    await router(c).deleteMessageForEveryone!({ instanceName: f.channel.providerKey, id: '3EB0DEL', remoteJid: '5547888880000@s.whatsapp.net', fromMe: true });
+    expect((c.waha as unknown as { deleteMessage: ReturnType<typeof vi.fn> }).deleteMessage).toHaveBeenCalledWith({ session: f.waha.sessionName, chatId: '5547888880000@c.us', messageId: 'true_5547888880000@c.us_3EB0DEL' });
+  });
   it('fails over to the other connection only when the first provably did not send', async () => {
     const f = await fixture(), onNotDelivered = vi.fn();
     const c = clients({ evolution: { sendText: vi.fn(async () => { throw http(404); }) } as never });

@@ -363,7 +363,12 @@ export class IngressApplicationService {
         const campaign = intent?.originKind === 'campaign_recipient' && talkEcho ? await tx.campaignRecipient.findFirst({ where: { workspaceId, channelId, id: intent.originId, campaign: { is: { hideFromInboxUntilReply: true } } }, select: { id: true } }) : null;
         const human = message.direction === 'outbound' && !talkEcho && !isGroup;
         const humanTookControl = human ? await pauseAgentOnHumanOutbound(tx, { workspaceId, conversationId }) : false;
-        if (message.direction === 'inbound') {
+        // We answered from the phone (not an echo of Talk's own send): whatever was waiting has been seen.
+        if (message.direction === 'outbound' && !talkEcho)
+            await tx.conversation.updateMany({ where: { workspaceId, id: conversationId, unreadCount: { gt: 0 } }, data: { unreadCount: 0 } });
+        // A reaction is shown on the message it reacts to; like WhatsApp, it is not an unread message.
+        const isReaction = event.kind === 'message' && !!event.content.reaction;
+        if (message.direction === 'inbound' && !isReaction) {
             await tx.conversation.update({ where: { workspaceId_id: { workspaceId, id: conversationId } }, data: { unreadCount: { increment: 1 }, hiddenUntilReply: false } });
             if (event.context.channelProvider === 'meta') {
                 const expires = new Date(message.createdAt.getTime() + 24 * 60 * 60 * 1000);
