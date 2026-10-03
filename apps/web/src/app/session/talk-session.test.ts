@@ -381,3 +381,26 @@ describe('channel health realtime', () => {
     });
   });
 });
+
+describe('queue card ticks', () => {
+  const outbound = (id: string, createdAt: string, status: MessageDto['status'] = 'sent'): MessageDto =>
+    ({ ...message(id), direction: 'outbound', status, createdAt });
+  it('follows the newest message, ignores an older recovered one and keeps it across conversation updates', () => {
+    let rows = [conversation('c1')];
+    rows = patchConversations(rows, event('message.created', outbound('m2', '2026-09-30T10:00:00Z', 'pending')));
+    expect(rows[0]!.lastMessage).toEqual({ id: 'm2', direction: 'outbound', status: 'pending', createdAt: '2026-09-30T10:00:00Z' });
+    rows = patchConversations(rows, event('message.status_changed', { messageId: 'm2', status: 'read' }));
+    expect(rows[0]!.lastMessage?.status).toBe('read');
+    const late = patchConversations(rows, event('message.created', { ...message('m1'), createdAt: '2026-09-30T09:00:00Z' }));
+    expect(late).toBe(rows);
+    rows = patchConversations(rows, event('conversation.updated', conversation('c1', { lastMessagePreview: 'oi' })));
+    expect(rows[0]!.lastMessagePreview).toBe('oi');
+    expect(rows[0]!.lastMessage?.id).toBe('m2');
+    rows = patchConversations(rows, event('message.created', { ...message('m3'), createdAt: '2026-09-30T11:00:00Z' }));
+    expect(rows[0]!.lastMessage?.direction).toBe('inbound');
+  });
+  it('ignores status changes of a message that is not the last one', () => {
+    const rows = [conversation('c1', { lastMessage: { id: 'm2', direction: 'outbound', status: 'sent', createdAt: '2026-09-30T10:00:00Z' } })];
+    expect(patchConversations(rows, event('message.status_changed', { messageId: 'other', status: 'read' }))).toBe(rows);
+  });
+});

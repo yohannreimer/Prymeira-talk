@@ -83,12 +83,34 @@ export function patchConversations(rows: ConversationDto[], event: RealtimeEvent
     return conversationMatches(updated, scope) === false ? [] : [updated];
     });
   }
+  // The card's ticks follow the conversation's newest message; a late (recovered) older one does not replace it.
+  if (event.type === 'message.created' || event.type === 'message.updated') {
+    const message = event.payload;
+    let changed = false;
+    const next = rows.map(row => {
+      if (row.id !== message.conversationId) return row;
+      const current = row.lastMessage;
+      if (current && current.id !== message.id && Date.parse(message.createdAt) < Date.parse(current.createdAt)) return row;
+      if (current?.id === message.id && current.status === message.status && current.direction === message.direction) return row;
+      changed = true;
+      return { ...row, lastMessage: { id: message.id, direction: message.direction, status: message.status, createdAt: message.createdAt } };
+    });
+    return changed ? next : rows;
+  }
+  if (event.type === 'message.status_changed') {
+    const { messageId, status } = event.payload;
+    if (!rows.some(row => row.lastMessage?.id === messageId && row.lastMessage.status !== status)) return rows;
+    return rows.map(row => row.lastMessage?.id === messageId ? { ...row, lastMessage: { ...row.lastMessage, status } } : row);
+  }
   if (event.type !== 'conversation.updated') return rows;
-  const membership = conversationMatches(event.payload, scope);
-  if (membership === false) return rows.some(row => row.id === event.payload.id) ? rows.filter(row => row.id !== event.payload.id) : rows;
-  const existing = rows.some(row => row.id === event.payload.id);
-  if (membership === 'unknown' && !existing) return rows;
-  return sortRows([...rows.filter(row => row.id !== event.payload.id), event.payload]);
+  const previousRow = rows.find(row => row.id === event.payload.id);
+  // Most writers publish the conversation without its last message; keep the one the card already knows.
+  const payload = event.payload.lastMessage === undefined && previousRow?.lastMessage !== undefined
+    ? { ...event.payload, lastMessage: previousRow.lastMessage } : event.payload;
+  const membership = conversationMatches(payload, scope);
+  if (membership === false) return previousRow ? rows.filter(row => row.id !== payload.id) : rows;
+  if (membership === 'unknown' && !previousRow) return rows;
+  return sortRows([...rows.filter(row => row.id !== payload.id), payload]);
 }
 function scopeFromKey(key: QueryKey): InboxListScope {
   return { view: key[3] as InboxView, channelId: key[4] === 'all' ? undefined : key[4] as string, search: key[5] as string, status: 'all' };

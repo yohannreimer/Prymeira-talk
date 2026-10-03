@@ -214,6 +214,15 @@ export const contactBoardMembershipSchema = z.object({
 });
 export type ContactBoardMembershipDto = z.infer<typeof contactBoardMembershipSchema>;
 
+/** Who sent the conversation's latest message and how far it got: the queue card shows WhatsApp's ticks for our own. */
+export const conversationLastMessageSchema = z.object({
+  id: z.string().min(1),
+  direction: messageDirectionSchema,
+  status: messageStatusSchema,
+  createdAt: z.string().datetime()
+});
+export type ConversationLastMessage = z.infer<typeof conversationLastMessageSchema>;
+
 export const conversationSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
@@ -234,6 +243,7 @@ export const conversationSchema = z.object({
   lastMessageAt: z.string().datetime().nullable(),
   lastMessagePreviewAt: z.string().datetime().nullable().optional(),
   lastMessagePreview: z.string().nullable(),
+  lastMessage: conversationLastMessageSchema.nullable().optional(),
   unreadCount: z.number().int().min(0),
   hiddenUntilReply: z.boolean().optional(),
   priority: conversationPrioritySchema,

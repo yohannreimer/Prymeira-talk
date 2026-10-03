@@ -8651,3 +8651,12 @@ select:disabled {
 .message-bubble.is-outbound .message-quote strong { color: #c9b8ff; }
 .message-bubble.is-outbound .message-quote.is-mine strong { color: #9ff0d8; }
 .message-bubble.is-outbound .message-quote span { color: rgba(255, 255, 255, 0.78); }
+
+/* Queue card: WhatsApp's ticks before the preview when the last message is ours. */
+.conversation-preview { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.conversation-preview-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.message-ticks { flex-shrink: 0; color: var(--color-text-muted); }
+.message-ticks.is-read { color: #53bdeb; }
+.message-ticks.is-failed { color: #c0392b; }
+.message-bubble.is-outbound .message-ticks { color: rgba(255, 255, 255, 0.6); }
+.message-bubble.is-outbound .message-ticks.is-read { color: #7fd6ff; }

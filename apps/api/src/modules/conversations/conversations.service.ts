@@ -9,6 +9,7 @@ import type {
   ContactBoardMembershipDto,
   ContactBoardMoveSource,
   ConversationDto,
+  ConversationLastMessage,
   InboxView,
   MessageDto
 } from "@prymeira-talk/shared";
@@ -373,6 +374,7 @@ type AuditLogCreateArgs = Parameters<PrismaClient["auditLog"]["create"]>[0];
 type CrmSyncActionCreateArgs = Parameters<PrismaClient["crmSyncAction"]["create"]>[0];
 
 export interface PrismaLike {
+  $queryRaw?: PrismaClient['$queryRaw'];
   canonicalMessageIdentity?: { findMany(args: { where: Record<string, unknown>; select: { messageId: true; rawId: true } }): Promise<Array<{ messageId: string; rawId: string }>> };
   assistantConversationState?: Pick<PrismaClient['assistantConversationState'], 'deleteMany'>;
   assistantSuggestion?: Pick<PrismaClient['assistantSuggestion'], 'deleteMany'>;
@@ -490,6 +492,31 @@ function isFutureDate(value: DateLike | null | undefined) {
 
   const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
   return Number.isFinite(timestamp) && timestamp > Date.now();
+}
+
+/**
+ * Each conversation's latest visible message (who sent it, its status), for WhatsApp's ticks on the queue card.
+ * One query per page, one index probe per conversation (LATERAL ... LIMIT 1). A failure leaves the cards without ticks.
+ */
+export async function withLastMessages(prisma: Pick<PrismaLike, '$queryRaw'>, workspaceId: string, dtos: ConversationDto[]): Promise<ConversationDto[]> {
+  if (!dtos.length || typeof prisma.$queryRaw !== 'function') return dtos;
+  try {
+    const rows = await prisma.$queryRaw<Array<{ conversation_id: string; id: string; direction: string; status: string; created_at: Date }>>`
+      SELECT c.id::text AS conversation_id, m.id::text AS id, m.direction::text AS direction, m.status::text AS status, m.created_at
+      FROM unnest(${dtos.map(dto => dto.id)}::uuid[]) AS c(id)
+      CROSS JOIN LATERAL (
+        SELECT id, direction, status, created_at FROM messages
+        WHERE workspace_id = ${workspaceId} AND conversation_id = c.id
+          AND NOT (status = 'pending' AND metadata->>'source' = 'followup_review')
+        ORDER BY created_at DESC, id DESC LIMIT 1
+      ) m`;
+    const latest = new Map(rows.map(row => [row.conversation_id, {
+      id: row.id, direction: row.direction, status: row.status, createdAt: toIsoString(row.created_at)
+    } as ConversationLastMessage]));
+    return dtos.map(dto => ({ ...dto, lastMessage: latest.get(dto.id) ?? null }));
+  } catch {
+    return dtos;
+  }
 }
 
 export function toConversationDto(record: ConversationRecord): ConversationDto {
@@ -857,7 +884,8 @@ export function createConversationsService(
 
   return {
     async getConversationDto(input: { workspaceId: string; conversationId: string }): Promise<ConversationDto> {
-      return toConversationDto(await findConversation(input));
+      const [dto] = await withLastMessages(prisma, input.workspaceId, [toConversationDto(await findConversation(input))]);
+      return dto!;
     },
     async listConversations(input: {
       workspaceId: string;
@@ -876,7 +904,7 @@ export function createConversationsService(
         take: 50
       });
 
-      return measureInboxAssembly(() => conversations.map(toConversationDto));
+      return withLastMessages(prisma, input.workspaceId, measureInboxAssembly(() => conversations.map(toConversationDto)));
     },
 
     async createPendingOutboundMessage(input: {

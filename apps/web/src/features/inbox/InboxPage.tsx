@@ -8,6 +8,7 @@ import { needsHumanAttention } from "@prymeira-talk/shared";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
 import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
 import { quotedPreview, threadWithReactions } from "./message-threading.js";
+import { MessageTicks } from "./MessageTicks";
 import type { ChangeEvent, DragEvent, FormEvent, SetStateAction } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -1590,7 +1591,8 @@ function InboxPageContent() {
                   <span>{conversation.assignedUserName ?? "Fila geral"}</span>
                 </span>
                 <span className="conversation-preview">
-                  {conversation.lastMessagePreview ?? "Conversa iniciada."}
+                  {conversation.lastMessage?.direction === 'outbound' ? <MessageTicks status={conversation.lastMessage.status} /> : null}
+                  <span className="conversation-preview-text">{conversation.lastMessagePreview ?? "Conversa iniciada."}</span>
                 </span>
               </span>
               </button>
@@ -1691,6 +1693,7 @@ selectedConversation ? (
               const meta = <>
                 {message.editedAt ? <span className="message-edited-label">Editada</span> : null}
                 <time>{formatMessageTime(message.createdAt)}</time>
+                {!isInbound && ['sent', 'delivered', 'read'].includes(message.status) ? <MessageTicks status={message.status} /> : null}
               </>;
               const canReply = selectedConversation.channelProvider === 'evolution' && Boolean(message.whatsappId) && !message.deletedAt && message.type !== 'system';
               const canDelete = selectedConversation.channelProvider === 'evolution' && !selectedConversation.isGroup && message.direction === 'outbound' &&
