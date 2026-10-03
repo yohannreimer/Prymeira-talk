@@ -221,7 +221,9 @@ export const conversationLastMessageSchema = z.object({
   status: messageStatusSchema,
   createdAt: z.string().datetime(),
   /** What the card icon shows next to the preview, like WhatsApp's camera/sticker/document glyphs. */
-  kind: z.enum(['text', 'image', 'sticker', 'video', 'audio', 'file']).optional()
+  kind: z.enum(['text', 'image', 'sticker', 'video', 'audio', 'file']).optional(),
+  /** Who sent it in a group, for WhatsApp's "~Rejane: …" preview. */
+  senderName: z.string().nullable().optional()
 });
 export type ConversationLastMessage = z.infer<typeof conversationLastMessageSchema>;
 export type ConversationLastMessageKind = NonNullable<ConversationLastMessage['kind']>;

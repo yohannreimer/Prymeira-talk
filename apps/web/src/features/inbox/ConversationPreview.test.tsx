@@ -18,6 +18,12 @@ describe('queue card preview, like WhatsApp', () => {
     expect(renderToStaticMarkup(<ConversationPreview conversation={{ lastMessagePreview: 'Imagem recebida', lastMessage: last('image') }} />)).toContain('Entregue');
     expect(renderToStaticMarkup(<ConversationPreview conversation={{ lastMessagePreview: 'Imagem recebida', lastMessage: last('image', 'inbound') }} />)).not.toContain('Entregue');
   });
+  it('names who wrote a group\'s last message, like WhatsApp ("~Rejane: …"), and nobody for our own or a private chat', () => {
+    const inbound = { ...last('text', 'inbound'), senderName: 'Rejane' };
+    expect(renderToStaticMarkup(<ConversationPreview conversation={{ isGroup: true, lastMessagePreview: 'Mesada do vorcaro', lastMessage: inbound }} />)).toContain('~Rejane:');
+    expect(renderToStaticMarkup(<ConversationPreview conversation={{ isGroup: false, lastMessagePreview: 'oi', lastMessage: inbound }} />)).not.toContain('~Rejane');
+    expect(renderToStaticMarkup(<ConversationPreview conversation={{ isGroup: true, lastMessagePreview: 'oi', lastMessage: last('text') }} />)).not.toContain('~');
+  });
   it('classifies messages the same way on the server and in realtime', () => {
     expect(lastMessageKind({ type: 'image', body: 'Figurinha recebida' })).toBe('sticker');
     expect(lastMessageKind({ type: 'file', body: 'x', mimeType: 'video/mp4' })).toBe('video');

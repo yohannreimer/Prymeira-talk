@@ -23,11 +23,14 @@ export function conversationPreview(conversation: Pick<ConversationDto, 'lastMes
 // Phosphor's filled glyphs read like WhatsApp's solid media icons.
 export const mediaKindIcons: Record<MediaKind, PhosphorIcon> = { sticker: StickerIcon, image: CameraIcon, video: VideoCameraIcon, audio: MicrophoneIcon, file: FileTextIcon };
 
-export function ConversationPreview({ conversation }: { conversation: Pick<ConversationDto, 'lastMessagePreview' | 'lastMessage'> }) {
+export function ConversationPreview({ conversation }: { conversation: Pick<ConversationDto, 'lastMessagePreview' | 'lastMessage'> & Partial<Pick<ConversationDto, 'isGroup'>> }) {
   const { kind, text } = conversationPreview(conversation);
   const Icon = kind ? mediaKindIcons[kind] : null;
   return <span className="conversation-preview">
     {conversation.lastMessage?.direction === 'outbound' ? <MessageTicks status={conversation.lastMessage.status} /> : null}
+    {/* WhatsApp names who wrote a group's last message: "~Rejane: Mesada do vorcaro". */}
+    {conversation.isGroup && conversation.lastMessage?.direction === 'inbound' && conversation.lastMessage.senderName
+      ? <span className="conversation-preview-sender">~{conversation.lastMessage.senderName}:</span> : null}
     {Icon ? <Icon className="conversation-preview-kind" size={15} weight="fill" aria-hidden="true" /> : null}
     <span className="conversation-preview-text">{text}</span>
   </span>;

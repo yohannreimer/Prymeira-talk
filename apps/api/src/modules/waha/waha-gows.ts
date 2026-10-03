@@ -1,6 +1,7 @@
 // Source contract: WAHA 2026.9.1 src/core/engines/gows/session.gows.core.ts (toWAMessage, receiptToMessageAck,
 // subscribeEngineEvents2) and waproto.ts. GOWS is WAHA's Go engine on whatsmeow (not Baileys, not a browser).
 import { record, string } from '../messaging/whatsapp-identity.js';
+import { interactiveMessageText } from '../messaging/interactive-content.js';
 
 /**
  * WAHA's two qualified engines describe the same WhatsApp message differently. WPP puts WhatsApp Web's message
@@ -40,10 +41,12 @@ const number = (value: unknown) => typeof value === 'number' && Number.isFinite(
 /** The WhatsApp Web style fields Talk reads (`type`, body, caption, media and location/contact details). */
 function wppModel(payload: Record<string, unknown>, info: Record<string, unknown>, message: Record<string, unknown>) {
   const body = string(payload.body);
-  const base = { notifyName: string(info.PushName) ?? undefined };
+  // Business accounts often have no push name; WhatsApp then shows their verified name ("Minha Claro").
+  const verified = record(record(info.VerifiedName).Details);
+  const base = { notifyName: string(info.PushName) ?? string(verified.verifiedName) ?? string(verified.VerifiedName) ?? undefined };
   if (typeof message.conversation === 'string') return { ...base, type: 'chat', body: message.conversation };
   if (record(message.extendedTextMessage).text !== undefined) return { ...base, type: 'chat', body: string(record(message.extendedTextMessage).text) ?? body ?? '' };
-  const media: Array<[string, string]> = [['imageMessage', 'image'], ['videoMessage', 'video'], ['audioMessage', 'audio'], ['documentMessage', 'document'], ['stickerMessage', 'sticker']];
+  const media: Array<[string, string]> = [['imageMessage', 'image'], ['videoMessage', 'video'], ['ptvMessage', 'video'], ['audioMessage', 'audio'], ['documentMessage', 'document'], ['stickerMessage', 'sticker']];
   for (const [field, type] of media) {
     const m = record(message[field]);
     if (!message[field]) continue;
@@ -67,7 +70,10 @@ function wppModel(payload: Record<string, unknown>, info: Record<string, unknown
     const contacts = Array.isArray(record(message.contactsArrayMessage).contacts) ? record(message.contactsArrayMessage).contacts as unknown[] : [];
     return { ...base, type: 'multi_vcard', body: '', vcardList: contacts.map(c => ({ displayName: record(c).displayName, vcard: record(c).vcard })) };
   }
-  // A type Talk does not render (poll, event, order...): no text is invented; it shows as unrecognized.
+  // Business templates, buttons, lists, polls, events, invites: the text WhatsApp shows for them.
+  const rich = interactiveMessageText(message);
+  if (rich) return { ...base, type: 'chat', body: rich };
+  // A type Talk does not render: no text is invented; it shows as unrecognized.
   return { ...base, type: Object.keys(message)[0] ?? 'unknown', body: '' };
 }
 

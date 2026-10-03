@@ -1,5 +1,6 @@
 import { usableContactName } from "../contacts/contact-name.js";
 import { parseContactCard } from "../messaging/contact-card.js";
+import { interactiveMessageText } from "../messaging/interactive-content.js";
 import type { MessageDto, MessageLocation } from "@prymeira-talk/shared";
 import { normalizePhoneForStorage } from "../contacts/phone-normalization.js";
 import { extractLocation, locationMessageBody } from "./evolution-location.js";
@@ -293,6 +294,10 @@ export function extractMessageContent(message: unknown, messageType?: unknown): 
     };
   }
 
+  // Business templates with media headers, buttons, lists, polls, events, invites: the text WhatsApp shows for them.
+  const rich = interactiveMessageText(message);
+  if (rich) return { type: "text", body: rich, mediaUrl: null, preview: rich };
+
   return {
     type: "system",
     body: "Mensagem não reconhecida",
@@ -329,7 +334,10 @@ export function extractPushName(data: unknown) {
     readStringPath(data, ["pushName"]),
     readStringPath(data, ["data", "pushName"]),
     readStringPath(data, ["key", "pushName"]),
-    readStringPath(data, ["data", "key", "pushName"])
+    readStringPath(data, ["data", "key", "pushName"]),
+    // Business accounts often have no push name; WhatsApp then shows their verified name ("Minha Claro").
+    readStringPath(data, ["verifiedBizName"]),
+    readStringPath(data, ["data", "verifiedBizName"])
   ];
 
   for (const value of candidates) {

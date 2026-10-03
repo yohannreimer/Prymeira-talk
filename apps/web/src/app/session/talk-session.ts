@@ -94,7 +94,8 @@ export function patchConversations(rows: ConversationDto[], event: RealtimeEvent
       if (current?.id === message.id && current.status === message.status && current.direction === message.direction) return row;
       changed = true;
       return { ...row, lastMessage: { id: message.id, direction: message.direction, status: message.status, createdAt: message.createdAt,
-        kind: lastMessageKind({ type: message.type, body: message.body, mimeType: message.attachment?.mimeType, mediaUrl: message.mediaUrl }) } };
+        kind: lastMessageKind({ type: message.type, body: message.body, mimeType: message.attachment?.mimeType, mediaUrl: message.mediaUrl }),
+        ...(message.direction === 'inbound' && (message.senderName?.trim() || message.senderJid) ? { senderName: message.senderName?.trim() || message.senderJid!.split('@')[0]! } : {}) } };
     });
     return changed ? next : rows;
   }

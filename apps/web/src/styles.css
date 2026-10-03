@@ -8656,6 +8656,7 @@ select:disabled {
 .conversation-preview { display: flex; align-items: center; gap: 3px; min-width: 0; }
 .conversation-preview-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .conversation-preview-kind { flex-shrink: 0; color: var(--color-text-muted); }
+.conversation-preview-sender { flex-shrink: 1; min-width: 0; max-width: 45%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 /* Card title: the number it came through sits right under the name, not below the two-line time. */
 .conv-title-col { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
 .conv-title-col .conv-name-wrap { flex: 0 0 auto; }
