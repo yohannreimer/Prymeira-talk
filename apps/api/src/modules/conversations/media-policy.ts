@@ -14,3 +14,11 @@ export function servePolicy(type: AttachmentMessageType): AgentMediaPolicy {
   return { kind: type === 'audio' ? 'audio' : type === 'image' ? 'image' : 'document', maxBytes: MAX_SERVE_MEDIA_BYTES,
     allowedMimeTypes: type === 'audio' ? audioMimeTypes : type === 'image' ? imageMimeTypes : documentMimeTypes };
 }
+
+/** WhatsApp's CDN (mmg.whatsapp.net, *.cdn.whatsapp.net) serves the attachment encrypted, often as a generic
+ * application/octet-stream with no .enc suffix: those bytes are never the file and must come from the provider. */
+export function isEncryptedWhatsappUrl(url: string | null | undefined) {
+  if (!url) return false;
+  if (/\.enc(?:\?|$)/i.test(url)) return true;
+  try { const host = new URL(url).hostname.toLowerCase(); return host === 'whatsapp.net' || host.endsWith('.whatsapp.net'); } catch { return false; }
+}

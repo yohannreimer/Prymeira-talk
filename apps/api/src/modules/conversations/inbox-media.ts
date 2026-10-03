@@ -7,7 +7,7 @@ import { renderPdfPreview } from './pdf-preview.js';
 import type { MessageMediaService } from './message-media.js';
 
 type Media = { bytes: Buffer; mimeType: string; pageCount?: number };
-import { audioMimeTypes as audio, documentMimeTypes as documents, imageMimeTypes as images, MAX_SERVE_MEDIA_BYTES } from './media-policy.js';
+import { audioMimeTypes as audio, documentMimeTypes as documents, imageMimeTypes as images, isEncryptedWhatsappUrl, MAX_SERVE_MEDIA_BYTES } from './media-policy.js';
 const photoPolicy: AgentMediaPolicy = { kind: 'image', maxBytes: 2 * 1024 * 1024, allowedMimeTypes: images };
 
 /** Memory-only, tenant-scoped, bounded cache. No changes to AI state, message bodies or sends. */
@@ -108,7 +108,10 @@ export function createInboxMediaService(options: {
       if (!message || !['audio', 'image', 'file'].includes(message.type)) throw new Error('NOT_FOUND');
       if (options.durable) {
         try {
-          const stored = await options.durable.read({ workspaceId, conversationId, messageId });
+          const read = await options.durable.read({ workspaceId, conversationId, messageId });
+          // A copy downloaded straight from WhatsApp's CDN is still encrypted (videos and documents were let through
+          // as octet-stream): it is not the file, so the provider is asked instead.
+          const stored = read && !(read.sourceKind === 'remote' && isEncryptedWhatsappUrl(message.mediaUrl)) ? read : null;
           // An audio without a playback derivative (conversion failed earlier) is converted on demand.
           if (stored && !(message.type === 'audio' && stored.variant === 'original')) return { bytes: stored.bytes, mimeType: stored.mimeType };
           if (stored) return (await cached(`durable-audio:${workspaceId}:${conversationId}:${messageId}`, async () => convert({ bytes: stored.bytes, mimeType: stored.mimeType })))!;
@@ -127,7 +130,7 @@ export function createInboxMediaService(options: {
       return (await cached(key, async () => {
         let resolved: Media;
         try {
-          if (/\.enc(?:\?|$)/i.test(message.mediaUrl ?? '')) throw new Error('ENCRYPTED_MEDIA');
+          if (isEncryptedWhatsappUrl(message.mediaUrl)) throw new Error('ENCRYPTED_MEDIA');
           resolved = await resolve({ mediaUrl: message.mediaUrl, policy: storedPolicy });
         }
         catch {

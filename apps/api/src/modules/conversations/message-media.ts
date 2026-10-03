@@ -2,7 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { AgentMediaError, resolveAgentMedia } from '../agents/agent-media-resolver.js';
 import { prepareAudioPlayback } from '../agents/audio-transcription.js';
 import type { IngressPrivateStore } from '../ingress/private-store.js';
-import { isAttachmentType, MAX_SERVE_MEDIA_BYTES, servePolicy, type AttachmentMessageType } from './media-policy.js';
+import { isAttachmentType, isEncryptedWhatsappUrl, MAX_SERVE_MEDIA_BYTES, servePolicy, type AttachmentMessageType } from './media-policy.js';
 
 /** Durable, provider-independent copy of a message attachment. Originals and the audio playback
  * derivative live in the private store (never in the queue, never behind a provider URL, which
@@ -55,7 +55,7 @@ export function createMessageMediaService(options: {
     const policy = servePolicy(type);
     const errors: ReturnType<typeof classify>[] = [];
     const attempts: Array<() => Promise<{ bytes: Buffer; mimeType: string; sourceKind: string }>> = [];
-    if (mediaUrl && !/\.enc(?:\?|$)/i.test(mediaUrl)) {
+    if (mediaUrl && !isEncryptedWhatsappUrl(mediaUrl)) {
       attempts.push(async () => {
         const media = await resolve({ mediaUrl, policy });
         return { bytes: media.bytes, mimeType: media.mimeType, sourceKind: media.source === 'data_url' ? 'inline' : 'remote' };
@@ -139,7 +139,8 @@ export function createMessageMediaService(options: {
       return { bytes: await store.read(row.playbackRef, row.playbackSha256), mimeType: row.playbackMimeType ?? 'audio/mpeg', variant: 'playback' as const };
     }
     const bytes = await store.read(row.originalRef, row.sha256);
-    return { bytes, mimeType: row.mimeType === 'application/octet-stream' && sniffMime(bytes) === 'application/pdf' ? 'application/pdf' : row.mimeType, variant: 'original' as const };
+    return { bytes, mimeType: row.mimeType === 'application/octet-stream' && sniffMime(bytes) === 'application/pdf' ? 'application/pdf' : row.mimeType, variant: 'original' as const,
+      sourceKind: row.sourceKind };
   }
 
   return { prepare, read };

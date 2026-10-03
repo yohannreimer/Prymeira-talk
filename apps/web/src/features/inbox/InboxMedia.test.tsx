@@ -76,7 +76,7 @@ describe('WhatsApp-style attachments', () => {
       attachment: { mimeType: 'video/mp4', isGif: true, width: 199, height: 244 } };
     const html = renderToStaticMarkup(<InboxMedia message={gif} getToken={async () => null} />);
     expect(html).toContain('talk-gif-preview'); expect(html).toContain('GIF'); expect(html).not.toContain('loop');
-    expect(html).toContain('aspect-ratio:199 / 244'); expect(html).not.toContain('controls');
+    expect(html).toContain('aspect-ratio:199 / 244'); expect(html).toContain('width:min(261px, 58vw)'); expect(html).not.toContain('controls');
     const video = renderToStaticMarkup(<InboxMedia message={{ ...gif, attachment: { mimeType: 'video/mp4' } }} getToken={async () => null} />);
     expect(video).toContain('talk-video-preview'); expect(video).not.toContain('talk-gif-preview');
   });

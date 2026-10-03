@@ -127,7 +127,9 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
   const isGif = Boolean(isVideo && message.attachment?.isGif);
   const [autoStart, setAutoStart] = useState(false);
   const { width: mediaWidth, height: mediaHeight } = message.attachment ?? {};
-  const aspect = mediaWidth && mediaHeight ? { aspectRatio: `${mediaWidth} / ${mediaHeight}` } : undefined;
+  // Like WhatsApp: a clip keeps its shape, and a tall one is sized by its height, never stretched to the bubble width.
+  const aspect = mediaWidth && mediaHeight ? { aspectRatio: `${mediaWidth} / ${mediaHeight}`,
+    ...(mediaHeight > mediaWidth ? { width: `min(${Math.round(320 * mediaWidth / mediaHeight)}px, 58vw)`, minHeight: 0 } : {}) } : undefined;
   const isPdf = message.attachment?.mimeType?.toLowerCase() === 'application/pdf' || previewMime === 'application/pdf' || /pdf/i.test(name + message.mediaUrl?.slice(0, 40));
   useEffect(() => {
     setSrc(initialMediaSource());
