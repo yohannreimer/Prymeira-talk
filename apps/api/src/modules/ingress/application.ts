@@ -19,7 +19,13 @@ import { normalizeEvolutionWebhook } from '../evolution/evolution-event-normaliz
 import { normalizeWahaEvent } from '../waha/waha-normalizer.js';
 import { IngressJournal } from './journal.js';
 type Tx = Prisma.TransactionClient;
-const IDENTITY_HOLD_REASONS = ['contradictory_sender_declarations', 'contradictory_chat_declarations', 'contradictory_direction_declarations', 'contradictory_stanza_declarations'];
+// Holds that a later fix or a later fact can resolve, so the sweep re-reads them under today's rules:
+// identity rules that may have been corrected, an echo of a Talk send that its outbound journal now proves
+// (legacy adoption), and a receipt whose message has since been adopted or arrived.
+const IDENTITY_HOLD_REASONS = ['contradictory_sender_declarations', 'contradictory_chat_declarations', 'contradictory_direction_declarations', 'contradictory_stanza_declarations',
+    'legacy_identity_requires_adoption', 'target_missing'];
+/** An event that is still invalid or still waiting for its source is retried after this, so it never blocks the queue. */
+const RECERTIFY_BACKOFF_MS = 10 * 60_000;
 type MessageEvent = Extract<NormalizedMessagingEvent, {
     kind: 'message';
 }>;
@@ -31,6 +37,7 @@ export class IngressApplicationService {
     private readonly store = createCanonicalStore();
     private readonly assistant;
     constructor(readonly journal: IngressJournal) { this.assistant = createAssistantRepository(journal.db); }
+    private readonly recertifyRetryAt = new Map<string, number>();
     async apply(receiptId: string) {
         const { receipt, payload } = await this.journal.readPayload(receiptId);
         const raw = JSON.parse((await this.journal.files.read(receipt.rawRef, receipt.rawDigest)).toString('utf8')) as unknown;
@@ -213,12 +220,22 @@ export class IngressApplicationService {
     async recertifyPending(input: { workspaceIds?: readonly string[]; limit?: number }) {
         const rows = await this.journal.db.ingressEventProgress.findMany({ where: { recertification: { is: null },
             OR: [{ state: 'pending_recertification', reason: 'stale_source' }, { state: 'held', reason: { in: IDENTITY_HOLD_REASONS } }],
-            ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}) }, orderBy: { committedAt: 'asc' }, take: input.limit ?? 50, select: { receiptId: true, eventIndex: true } });
-        let applied = 0;
-        for (const row of rows)
-            if ((await this.recertify(row.receiptId, row.eventIndex)).state === 'applied')
-                applied++;
-        return { examined: rows.length, applied };
+            ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}) }, orderBy: { committedAt: 'asc' }, take: 1000, select: { receiptId: true, eventIndex: true } });
+        // Oldest first, but an event that stays invalid (not recorded, so it would be read again) waits its backoff
+        // instead of holding the first places of the queue forever.
+        const limit = input.limit ?? 50, now = Date.now();
+        let applied = 0, examined = 0;
+        for (const row of rows) {
+            const key = `${row.receiptId}:${row.eventIndex}`;
+            if ((this.recertifyRetryAt.get(key) ?? 0) > now) continue;
+            if (examined >= limit) break;
+            examined++;
+            const outcome = await this.recertify(row.receiptId, row.eventIndex);
+            if (outcome.state === 'applied') applied++;
+            if (outcome.state === 'still_invalid' || outcome.state === 'still_stale') this.recertifyRetryAt.set(key, now + RECERTIFY_BACKOFF_MS);
+            else this.recertifyRetryAt.delete(key);
+        }
+        return { examined, applied };
     }
     /** Everything that follows a successful canonical persist. Shared by first application and recertification. */
     private async afterPersist(tx: Tx, receipt: IngressReceipt, eventIndex: number, event: Exclude<NormalizedMessagingEvent, { kind: 'control' }>, result: CanonicalStoreResult, source: TrustedMessagingContext) {

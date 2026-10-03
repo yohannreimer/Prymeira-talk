@@ -461,14 +461,19 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       result.conversationId = canonicalChat.operationConversationId;
       if (!result.conversationId) return hold('missing_conversation_authority');
       let messageId: string;
-      if (!options.adoption) {
+      let adoption = options.adoption;
+      if (!adoption) {
         const nativeIds = [...new Set([key.nativeId, key.rawId].filter((id): id is string => id !== null))];
         const legacy = await tx.message.findFirst({ where: { workspaceId: c.workspaceId, conversationId: result.conversationId,
           direction: key.direction!, providerMessageId: { in: nativeIds } } });
-        if (legacy) return hold('legacy_identity_requires_adoption');
+        // A message Talk sent through the outbound router is proven by its own journal: the provider accepted that
+        // exact id on this channel. Its echo adopts the Talk message (receipts then reach it) instead of waiting forever.
+        const journaled = legacy?.providerMessageId && key.direction === 'outbound' ? await tx.outboundDispatch.findFirst({ where: {
+          workspaceId: c.workspaceId, channelId: c.channelId, providerMessageId: legacy.providerMessageId, state: 'accepted' }, select: { id: true } }) : null;
+        if (legacy && !journaled) return hold('legacy_identity_requires_adoption');
+        if (legacy) adoption = { messageId: legacy.id, key, source: 'provider_exact_lookup' };
       }
-      if (options.adoption) {
-        const adoption = options.adoption;
+      if (adoption) {
         if (adoption.source !== 'provider_exact_lookup' || !complete(adoption.key)) throw new Error('Incomplete adoption evidence');
         const adoptionChat = await address(tx, scope, adoption.key.chatAddress!);
         const adoptionSender = adoption.key.chatAddress!.endsWith('@g.us') ? await address(tx, scope, adoption.key.senderParticipant!) : null;
