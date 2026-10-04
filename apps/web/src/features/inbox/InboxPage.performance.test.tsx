@@ -285,6 +285,11 @@ describe('Atendimento query/UI integration', () => {
     const count = scroll.mock.calls.length; heights.c1 = 1300;
     await act(async () => { ContentResizeObserver.instances[0].changed(); ContentResizeObserver.instances[0].changed(); await vi.advanceTimersByTimeAsync(20); });
     expect(thread.scrollTop).toBe(1000); expect(scroll).toHaveBeenCalledTimes(count + 1);
+    // Right after Talk follows the latest message, small movements are Talk's own (Safari keeps animating); a reader
+    // scrolling up a moment later is reading history.
+    thread.scrollTop = 990; await act(async () => thread.dispatchEvent(new Event('scroll')));
+    expect(session.readUI('scrollFollow:c1', true)).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
     thread.scrollTop = 970; await act(async () => thread.dispatchEvent(new Event('scroll')));
     expect(session.readUI('scrollFollow:c1', true)).toBe(false);
     await act(async () => { heights.c1 = 1400; ContentResizeObserver.instances[0].changed(); await vi.advanceTimersByTimeAsync(20); });
@@ -299,6 +304,7 @@ describe('Atendimento query/UI integration', () => {
     expect(thread.scrollTop).toBe(250);
     await select('c2'); expect(thread.scrollTop).toBe(1200);
     await select('c1'); expect(thread.scrollTop).toBe(1500);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
     thread.scrollTop = 350; await act(async () => thread.dispatchEvent(new Event('scroll')));
     await render(false); heights.c1 = 450; await render(); await act(async () => { await vi.advanceTimersByTimeAsync(40); });
     expect(container.querySelector<HTMLDivElement>('.message-thread')?.scrollTop).toBe(150);

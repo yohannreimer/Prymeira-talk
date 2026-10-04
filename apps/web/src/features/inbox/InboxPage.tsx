@@ -536,6 +536,8 @@ function InboxPageContent() {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showQuickReplies, setShowQuickReplies] = useState(false);
   const [newMessagesBelow, setNewMessagesBelow] = useState(0);
+  /** Until when a scroll is Talk's own doing (following the latest message), not the reader's. */
+  const programmaticScrollUntilRef = useRef(0);
   const selectedConversationIdRef = useRef<string | null>(null);
   const conversationCursorRef = useRef<string | null>(null);
   const conversationListGenerationRef = useRef(0);
@@ -606,12 +608,15 @@ function InboxPageContent() {
     return thread.scrollHeight - thread.scrollTop - thread.clientHeight < 96;
   }
 
-  function scrollMessageThreadToBottom(behavior: ScrollBehavior = "smooth", targetId = selectedConversationIdRef.current) {
+  function scrollMessageThreadToBottom(behavior: ScrollBehavior = "auto", targetId = selectedConversationIdRef.current) {
     const thread = messageThreadRef.current;
 
     if (!thread) return;
 
     const bottom = Math.max(0, thread.scrollHeight - thread.clientHeight);
+    // Movements right after Talk scrolls (the animation settling, Safari finishing a smooth scroll, photos above
+    // loading) are Talk's own, never the reader going back in history.
+    programmaticScrollUntilRef.current = Date.now() + (behavior === 'smooth' ? 900 : 400);
     thread.scrollTo({ top: bottom, behavior });
     if (behavior === 'auto') thread.scrollTop = bottom;
     lastThreadScrollTopRef.current = thread.scrollTop;
@@ -624,7 +629,7 @@ function InboxPageContent() {
     setNewMessagesBelow(0);
   }
 
-  function scheduleMessageThreadScroll(behavior: ScrollBehavior = "smooth") {
+  function scheduleMessageThreadScroll(behavior: ScrollBehavior = "auto") {
     pendingThreadRestoreRef.current = null;
     userReadingHistoryRef.current = false;
     pendingThreadScrollRef.current = behavior;
@@ -947,7 +952,7 @@ function InboxPageContent() {
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.workspaceId !== session.workspaceId) return;
     if (event.type === 'message.created' && event.payload.conversationId === selectedConversationIdRef.current) {
-      if (!userReadingHistoryRef.current) scheduleMessageThreadScroll('smooth');
+      if (!userReadingHistoryRef.current) scheduleMessageThreadScroll('auto');
       else setNewMessagesBelow(current => current + 1);
     }
     if (event.type === 'conversation.updated' && event.payload.id === selectedConversationIdRef.current) {
@@ -1173,7 +1178,7 @@ function InboxPageContent() {
           : conversation
       )
     );
-    scheduleMessageThreadScroll("smooth");
+    scheduleMessageThreadScroll("auto");
 
     const previous = textSendQueue.current.get(targetConversationId) ?? Promise.resolve();
     const current = previous.catch(() => undefined).then(() => apiCreateConversationMessage(
@@ -1338,7 +1343,7 @@ function InboxPageContent() {
           : conversation
       )
     );
-    scheduleMessageThreadScroll("smooth");
+    scheduleMessageThreadScroll("auto");
 
     try {
       const createdMessage = await apiCreateConversationMessage(
@@ -1855,7 +1860,7 @@ selectedConversation ? (
               const distanceFromBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight;
               // Small shifts are layout, not the reader: the message box shrinking after a send or a photo settling
               // nudges the thread a few (fractional, on Retina/Safari) pixels. Only a real scroll up means reading history.
-              if (thread.scrollTop < lastThreadScrollTopRef.current && distanceFromBottom > THREAD_FOLLOW_SLACK) {
+              if (thread.scrollTop < lastThreadScrollTopRef.current && distanceFromBottom > THREAD_FOLLOW_SLACK && Date.now() > programmaticScrollUntilRef.current) {
                 userReadingHistoryRef.current = true;
               } else if (distanceFromBottom <= THREAD_FOLLOW_SLACK) {
                 userReadingHistoryRef.current = false;
