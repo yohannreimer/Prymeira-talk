@@ -5,6 +5,7 @@ import {
   SignedOut,
   SignIn,
   useAuth as useClerkAuth,
+  useUser,
 } from "@clerk/clerk-react";
 import type { PropsWithChildren } from "react";
 import { readConfigValue } from "./runtime-config";
@@ -311,6 +312,19 @@ export function AuthGate({ children }: PropsWithChildren) {
       </SignedOut>
     </>
   );
+}
+
+/** The signed-in person's first name, for the {vendedor} field of quick replies (null in local development). */
+export function useTalkUserName(): string | null {
+  if (localAuthBypass) return null;
+  try {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- the branch is fixed for the app's whole life.
+    const { user } = useUser();
+    return user?.firstName?.trim() || user?.fullName?.trim()?.split(" ")[0] || null;
+  } catch {
+    // Outside Clerk (embedded views, tests) the field simply stays empty.
+    return null;
+  }
 }
 
 export function useTalkAuth() {

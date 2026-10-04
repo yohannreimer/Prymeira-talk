@@ -919,10 +919,15 @@ model QuickReply {
   title       String
   body        String
   category    String?
+  /// The Talk user (Clerk id) who owns it; null for the team's shared ones (created by Talk itself or before 2026-10).
+  ownerUserId String?  @map("owner_user_id")
+  /// What follows "/" in the composer, e.g. "bemvindo".
+  shortcut    String?
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   @@unique([workspaceId, id])
+  @@index([workspaceId, ownerUserId])
   @@index([workspaceId, category])
   @@index([workspaceId, updatedAt])
   @@map("quick_replies")

@@ -632,9 +632,17 @@ export interface QuickReplyDto {
   title: string;
   body: string;
   category: string | null;
+  /** What follows "/" in the composer. */
+  shortcut: string | null;
+  /** The team's: visible to everyone (the others are personal). */
+  shared: boolean;
   createdAt: string;
   updatedAt: string;
 }
+export type QuickReplyInput = { title: string; body: string; category?: string | null; shortcut?: string | null };
+/** How to address a contact in a quick reply, and how long it took (to measure the AI's cost in time). */
+export type ContactNameInsightDto = { firstName: string | null; fullName: string | null; company: string | null; salutation: string | null;
+  source: "manual" | "ai" | "rule" | "none"; ms?: number };
 
 async function getRequiredToken(getToken: () => Promise<string | null>, signal?: AbortSignal) {
   const token = signal ? await abortable(getToken(), signal) : await getToken();
@@ -783,6 +791,8 @@ function parseQuickReply(payload: unknown): QuickReplyDto {
     title: String(record.title ?? ""),
     body: String(record.body ?? ""),
     category: typeof record.category === "string" ? record.category : null,
+    shortcut: typeof record.shortcut === "string" ? record.shortcut : null,
+    shared: record.shared === true,
     createdAt: String(record.createdAt ?? ""),
     updatedAt: String(record.updatedAt ?? "")
   };
@@ -2694,7 +2704,7 @@ export async function apiGetQuickReplies(getToken: () => Promise<string | null>,
 
 export async function apiCreateQuickReply(
   getToken: () => Promise<string | null>,
-  body: { title: string; body: string; category?: string | null }
+  body: QuickReplyInput
 ): Promise<QuickReplyDto> {
   const token = await getRequiredToken(getToken);
   const response = await fetch(`${apiUrl}/quick-replies`, {
@@ -2711,7 +2721,7 @@ export async function apiCreateQuickReply(
 export async function apiUpdateQuickReply(
   getToken: () => Promise<string | null>,
   quickReplyId: string,
-  body: Partial<{ title: string; body: string; category: string | null }>
+  body: Partial<QuickReplyInput>
 ): Promise<QuickReplyDto> {
   const token = await getRequiredToken(getToken);
   const response = await fetch(`${apiUrl}/quick-replies/${quickReplyId}`, {
@@ -2737,6 +2747,21 @@ export async function apiDeleteQuickReply(
   if (!response.ok) {
     throw new Error(`Failed to delete quick reply: ${response.status}`);
   }
+}
+
+export async function apiImportQuickReplies(getToken: () => Promise<string | null>, replies: QuickReplyInput[]): Promise<{ created: number; skipped: number }> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/quick-replies/import`, { method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ version: 1, replies }) });
+  if (!response.ok) throw new Error(response.status === 400 ? "Este arquivo não é um pacote de mensagens do Talk." : "Não foi possível importar o pacote.");
+  return response.json() as Promise<{ created: number; skipped: number }>;
+}
+
+export async function apiGetContactNameInsight(getToken: () => Promise<string | null>, contactId: string): Promise<ContactNameInsightDto> {
+  const token = await getRequiredToken(getToken);
+  const response = await fetch(`${apiUrl}/contacts/${encodeURIComponent(contactId)}/name-insight`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error("Não foi possível ler o nome do contato.");
+  return response.json() as Promise<ContactNameInsightDto>;
 }
 
 export async function apiUploadAutomationAsset(

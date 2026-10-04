@@ -7,8 +7,10 @@ function insertedText(text: string) {
   const paragraphs = parseWhatsappText(text).content!;
   return paragraphs.length === 1 ? paragraphs[0].content ?? [] : paragraphs;
 }
-export interface RichDraftHandle { focus(): void; format(mark: 'bold' | 'italic'): void; insertText(text: string): void }
-export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: boolean; onChange(value: string): void; onFormatChange(value: { bold: boolean; italic: boolean }): void; onPasteImage?(file: File): void }>(function RichDraft(props, ref) {
+export interface RichDraftHandle { focus(): void; focusEnd(): void; format(mark: 'bold' | 'italic'): void; insertText(text: string): void }
+export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: boolean; onChange(value: string): void; onFormatChange(value: { bold: boolean; italic: boolean }): void; onPasteImage?(file: File): void;
+  /** Lets an open menu (the "/" quick replies) take ↑ ↓ Enter Tab Esc before the editor does. */
+  onKeyCommand?(key: string): boolean }>(function RichDraft(props, ref) {
   const latest = useRef(props); latest.current = props;
   const written = useRef(props.value);
   const editor = useEditor({
@@ -19,6 +21,9 @@ export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: 
     editorProps: {
       attributes: { role: 'textbox', 'aria-label': 'Mensagem', 'aria-multiline': 'true', class: 'composer-rich-input', 'data-placeholder': 'Escreva uma mensagem...' },
       handleKeyDown(view, event) {
+        if (['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'].includes(event.key) && !event.isComposing && latest.current.onKeyCommand?.(event.key)) {
+          event.preventDefault(); return true;
+        }
         if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !view.composing) {
           event.preventDefault(); view.dom.closest('form')?.requestSubmit(); return true;
         }
@@ -46,6 +51,7 @@ export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: 
   useEffect(() => { editor?.setEditable(!props.disabled); }, [editor, props.disabled]);
   useImperativeHandle(ref, () => ({
     focus: () => { editor?.commands.focus(); },
+    focusEnd: () => { editor?.commands.focus('end'); },
     format: mark => { if (!props.disabled) editor?.chain().focus().toggleMark(mark).run(); },
     insertText: text => { if (!props.disabled) editor?.chain().focus().insertContent(insertedText(text)).run(); }
   }), [editor, props.disabled]);

@@ -3,6 +3,9 @@ import { z } from "zod";
 import { createContactsService } from "./contacts.service.js";
 import { createInboxMediaService } from "../conversations/inbox-media.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import { resolveOpenAiCompatibleSettings } from "../agents/ai-provider-settings.js";
+import { createOpenAiCompatibleAgentProvider } from "../agents/provider-gateway.js";
+import { resolveNameInsight, saveNameInsight } from "./name-insight.js";
 
 const searchQuerySchema = z.object({
   search: z.string().optional()
@@ -67,6 +70,38 @@ function sendPhoneConflict(reply: FastifyReply) {
 export const contactsRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntime }> = async (app, options) => {
   const service = createContactsService(app.prisma);
   const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client });
+
+  // How to address the contact in a quick reply ({primeiro_nome}, {empresa}): saved answer, plain-name rule, or one AI read.
+  app.post("/contacts/:contactId/name-insight", async (request, reply) => {
+    const params = contactParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: "Contato inválido." });
+    const startedAt = Date.now();
+    try {
+      const insight = await resolveNameInsight(app.prisma, { workspaceId: request.talk.workspaceId, contactId: params.data.contactId }, await (async () => {
+        const settings = await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId: request.talk.workspaceId });
+        return settings.active ? { provider: createOpenAiCompatibleAgentProvider(settings), model: settings.chatModel } : null;
+      })());
+      const ms = Date.now() - startedAt;
+      request.log.info({ event: "contact_name_insight", workspaceId: request.talk.workspaceId, source: insight.source, ms }, "Contact name insight resolved.");
+      return { ...insight, ms };
+    } catch (error) {
+      if (error instanceof Error && error.message === "NOT_FOUND") return reply.code(404).send({ error: "Contato não encontrado." });
+      throw error;
+    }
+  });
+  // The team corrects it by hand; a manual answer always wins over the AI's.
+  app.put("/contacts/:contactId/name-insight", async (request, reply) => {
+    const params = contactParamsSchema.safeParse(request.params);
+    const body = z.object({ firstName: z.string().trim().max(60).nullable(), company: z.string().trim().max(120).nullable(),
+      salutation: z.string().trim().max(10).nullable().optional() }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: "Dados inválidos." });
+    const contact = await app.prisma.contact.findFirst({ where: { workspaceId: request.talk.workspaceId, id: params.data.contactId }, select: { customFields: true } });
+    if (!contact) return reply.code(404).send({ error: "Contato não encontrado." });
+    const insight = { firstName: body.data.firstName || null, fullName: body.data.firstName || null, company: body.data.company || null,
+      salutation: body.data.salutation || null, source: "manual" as const };
+    await saveNameInsight(app.prisma, { workspaceId: request.talk.workspaceId, contactId: params.data.contactId }, insight, contact.customFields);
+    return insight;
+  });
 
   app.get("/contacts/page", async (request, reply) => {
     const query = pageQuerySchema.safeParse(request.query);

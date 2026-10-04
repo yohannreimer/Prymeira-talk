@@ -20,6 +20,9 @@ import {
   apiDeleteMessageForEveryone,
   apiCreateCrmLead,
   apiDeleteQuickReply,
+  apiGetContactNameInsight,
+  apiImportQuickReplies,
+  type ContactNameInsightDto,
   apiGetConversationContext,
   apiGetConversationMessages,
   apiRecognizeContactMessage,
@@ -52,7 +55,9 @@ import { ShareContactDialog } from "./ShareContactDialog";
 import { NewConversationDialog } from "./NewConversationDialog";
 import { ContactCardDialog, ContactCardMessage } from './ContactCardDialog';
 import { QuickSendDialog } from "./QuickSendDialog";
-import { QuickRepliesPopover } from "./QuickRepliesPopover";
+import { QuickRepliesManager, SlashQuickReplies, rankQuickReplies } from "./QuickRepliesPopover";
+import { greeting, renderTemplate, usesContactFields, type TemplateValues } from "./quick-reply-template";
+import { useTalkUserName } from "../../app/auth";
 import { useRealtimeEvents } from "./useRealtimeEvents";
 import { AssistantPanel } from './AssistantPanel';
 import { useHandoffBrief } from './useHandoffBrief';
@@ -632,6 +637,40 @@ function InboxPageContent() {
     draftTextAreaRef.current?.insertText(text);
   }
 
+  /** The values of a quick reply's fields for this conversation. The contact's name is read (rule or one AI call, then
+   * saved on the contact) only when the message actually uses it. */
+  async function quickReplyValues(body: string): Promise<TemplateValues> {
+    const conversation = selectedConversation;
+    const values: TemplateValues = { saudacao: greeting(), vendedor: sellerName };
+    if (!conversation || conversation.isGroup || !usesContactFields(body)) return values;
+    const cached = nameInsights.current.get(conversation.contactId);
+    const insight = cached ?? await apiGetContactNameInsight(getFreshToken, conversation.contactId).catch(() => null);
+    if (insight && !cached) nameInsights.current.set(conversation.contactId, insight);
+    return { ...values, primeiro_nome: insight?.firstName ?? null, nome: insight?.fullName ?? null, empresa: insight?.company ?? null };
+  }
+  async function quickReplyText(reply: QuickReplyDto) {
+    setFillingReplyId(reply.id);
+    try { return renderTemplate(reply.body, await quickReplyValues(reply.body)).text; }
+    finally { setFillingReplyId(null); }
+  }
+  /** "/" menu: the typed "/bem" is replaced by the filled message, ready to review and send. */
+  async function pickSlashReply(reply: QuickReplyDto) {
+    const target = selectedConversationId;
+    const text = await quickReplyText(reply);
+    if (selectedConversationIdRef.current !== target) return;
+    setDraft(current => current.replace(/(^|\s)\/[\p{L}\p{N}_-]{0,30}$/u, (_all, before: string) => before) + text);
+    requestAnimationFrame(() => draftTextAreaRef.current?.focusEnd());
+  }
+  function handleComposerKey(key: string) {
+    if (!slashOpen) return false;
+    if (key === 'Escape') { setSlashDismissedFor(draft); return true; }
+    if (!slashResults.length) return key !== 'Enter';
+    if (key === 'ArrowDown') { setSlashIndex(index => (index + 1) % slashResults.length); return true; }
+    if (key === 'ArrowUp') { setSlashIndex(index => (index - 1 + slashResults.length) % slashResults.length); return true; }
+    void pickSlashReply(slashResults[Math.min(slashIndex, slashResults.length - 1)]!);
+    return true;
+  }
+
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
   }, [selectedConversationId]);
@@ -677,7 +716,8 @@ function InboxPageContent() {
   const tagsQuery = useQuery({ queryKey: session.key('tags'), staleTime: CATALOG_STALE_MS,
     queryFn: ({ signal }) => apiGetTags(getFreshToken, signal) });
   const quickRepliesKey = useMemo(() => session.key('quickReplies'), [session]);
-  const quickRepliesQuery = useQuery({ queryKey: quickRepliesKey, enabled: showQuickReplies, staleTime: CATALOG_STALE_MS,
+  // Loaded with the inbox (it is small) so that "/" opens at once.
+  const quickRepliesQuery = useQuery({ queryKey: quickRepliesKey, staleTime: CATALOG_STALE_MS,
     queryFn: ({ signal }) => apiGetQuickReplies(getFreshToken, signal) });
   const attentionQuery = useQuery({ queryKey: session.key('attention', selectedChannelFilter),
     queryFn: ({ signal }) => session.readAttention(selectedChannelFilter, () => apiGetAttentionCount(getFreshToken, selectedChannelFilter === 'all' ? undefined : selectedChannelFilter, signal)) });
@@ -689,6 +729,16 @@ function InboxPageContent() {
   const showChannelOrigin = channels.length > 1;
   const tagCatalog = useMemo(() => (tagsQuery.data ?? EMPTY_TAGS).filter(tag => tag.isActive), [tagsQuery.data]);
   const quickReplies = quickRepliesQuery.data ?? EMPTY_QUICK_REPLIES;
+  const sellerName = useTalkUserName();
+  const nameInsights = useRef(new Map<string, ContactNameInsightDto>());
+  const [fillingReplyId, setFillingReplyId] = useState<string | null>(null);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissedFor, setSlashDismissedFor] = useState<string | null>(null);
+  const slashMatch = /(^|\s)\/([\p{L}\p{N}_-]{0,30})$/u.exec(draft);
+  const slashQuery = slashMatch?.[2] ?? '';
+  const slashOpen = Boolean(slashMatch) && slashDismissedFor !== draft;
+  const slashResults = useMemo(() => slashOpen ? rankQuickReplies(quickReplies, slashQuery).slice(0, 8) : [], [slashOpen, quickReplies, slashQuery]);
+  useEffect(() => { setSlashIndex(0); }, [slashQuery, slashOpen]);
   const isLoading = listQuery.isFetching;
   const isLoadingMessages = messagesQuery.isFetching;
   const isLoadingContext = contextQuery.isFetching;
@@ -2069,26 +2119,37 @@ selectedConversation ? (
         <div className="composer-shell">
           {!selectedConversation?.isGroup ? <button ref={assistantTriggerRef} type="button" className="assistant-mobile-trigger" onClick={() => { setAssistantTab('assistant'); setAssistantOpen(true); }} disabled={!selectedConversation}><MessageSquare size={15} /> IA de apoio <span>{handoffBrief ? 'Próxima ação' : assistant.data?.status === 'ready' ? 'Sugestão pronta' : 'Abrir'}</span></button> : null}
           {composerOrigin ? <div className="assistant-composer-origin"><span>{originNeedsReview ? 'A conversa mudou. Confira o rascunho.' : 'Sugestão em edição. O texto enviado ficará registrado.'}</span>{originNeedsReview ? <button type="button" disabled={!assistant.data?.currentContextKey} onClick={() => setComposerOrigin(current => current && assistant.data?.currentContextKey ? { ...current, contextKey: assistant.data.currentContextKey } : current)}>Revisei o contexto</button> : null}</div> : null}
+          {selectedConversation && slashOpen && !composerOrigin ? <SlashQuickReplies replies={slashResults} query={slashQuery} activeIndex={slashIndex}
+            loading={isQuickRepliesLoading} fillingId={fillingReplyId} onHover={setSlashIndex} onPick={reply => void pickSlashReply(reply)}
+            onManage={() => { setSlashDismissedFor(draft); setShowQuickReplies(true); }} /> : null}
           {showQuickReplies ? (
-            <QuickRepliesPopover
+            <QuickRepliesManager
               replies={quickReplies}
-              isLoading={isQuickRepliesLoading}
+              loading={isQuickRepliesLoading}
               error={quickRepliesError}
-              onInsert={(body) => {
-                insertDraftText(body);
-                setShowQuickReplies(false);
-              }}
+              sample={{ saudacao: greeting(), vendedor: sellerName, nome: selectedConversation && !selectedConversation.isGroup ? selectedConversation.contactName ?? 'Jackson Cappelli' : 'Jackson Cappelli',
+                primeiro_nome: (selectedConversation && !selectedConversation.isGroup ? selectedConversation.contactName : null)?.split(' ')[0] ?? 'Jackson',
+                empresa: (selectedConversation ? nameInsights.current.get(selectedConversation.contactId)?.company : null) ?? 'Construtora Alfa' }}
+              onClose={() => setShowQuickReplies(false)}
+              onUse={(reply) => { setShowQuickReplies(false); void quickReplyText(reply).then(text => insertDraftText(text)); }}
               onCreate={async (input) => {
                 const created = await apiCreateQuickReply(getToken, input);
                 setQuickReplies((current) => [created, ...current]);
+                return created;
               }}
               onUpdate={async (id, input) => {
                 const updated = await apiUpdateQuickReply(getToken, id, input);
                 setQuickReplies((current) => current.map((reply) => (reply.id === id ? updated : reply)));
+                return updated;
               }}
               onDelete={async (id) => {
                 await apiDeleteQuickReply(getToken, id);
                 setQuickReplies((current) => current.filter((reply) => reply.id !== id));
+              }}
+              onImport={async (replies) => {
+                const result = await apiImportQuickReplies(getToken, replies);
+                await session.client.invalidateQueries({ queryKey: quickRepliesKey });
+                return result;
               }}
             />
           ) : null}
@@ -2182,7 +2243,7 @@ selectedConversation ? (
               </div>;
             })() : null}
             <div className="composer-input-row">
-              <RichDraft key={selectedConversationId ?? 'no-conversation'} ref={draftTextAreaRef} value={draft} disabled={!selectedConversation || isSending} onFormatChange={setDraftFormat} onChange={value => { setDraft(value); if (!value) setComposerOrigin(null); }} onPasteImage={file => stageAttachments([file])} />
+              <RichDraft key={selectedConversationId ?? 'no-conversation'} ref={draftTextAreaRef} value={draft} disabled={!selectedConversation || isSending} onFormatChange={setDraftFormat} onChange={value => { setDraft(value); if (!value) setComposerOrigin(null); }} onPasteImage={file => stageAttachments([file])} onKeyCommand={handleComposerKey} />
               <button
                 className="composer-send"
                 disabled={!selectedConversation || !draft.trim() || isSending}

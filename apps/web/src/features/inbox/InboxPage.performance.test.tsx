@@ -8,7 +8,7 @@ import { InboxPage } from './InboxPage';
 import { TalkSessionContext } from '../../app/session/TalkSessionProvider';
 import { TalkSession } from '../../app/session/talk-session';
 import { RealtimeConnection } from './realtime-connection';
-import { apiCreateConversationMessage, apiGetConversationMessages, apiGetConversations, apiGetAssistantConversation, apiGetConversationContext, apiMarkConversationRead } from '../../app/api';
+import { apiCreateConversationMessage, apiGetConversationMessages, apiGetConversations, apiGetAssistantConversation, apiGetConversationContext, apiMarkConversationRead, apiGetQuickReplies, apiGetContactNameInsight } from '../../app/api';
 
 const renders = vi.hoisted(() => ({ media: vi.fn(), mediaMount: vi.fn(), mediaUnmount: vi.fn(), assistant: vi.fn(), avatar: vi.fn() }));
 vi.mock('./InboxMedia', () => ({ InboxMedia: ({ message }: { message: MessageDto }) => {
@@ -18,15 +18,16 @@ vi.mock('./InboxMedia', () => ({ InboxMedia: ({ message }: { message: MessageDto
 vi.mock('./ContactAvatar', () => ({ ContactAvatar: () => { renders.avatar(); return <span />; }, ContactPhotoProvider: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 vi.mock('./AssistantPanel', () => ({ AssistantPanel: () => { renders.assistant(); return <span>Assistente</span>; } }));
 vi.mock('./VoiceRecorder', () => ({ VoiceRecorder: () => null }));
-vi.mock('./RichDraft', () => ({ RichDraft: forwardRef(function MockDraft(props: { value: string; onChange(value: string): void }, ref) {
-  useImperativeHandle(ref, () => ({ focus() {}, format() {}, insertText(text: string) { props.onChange(props.value + text); } }));
-  return <input aria-label="Mensagem" value={props.value} onChange={event => props.onChange(event.target.value)} />;
+vi.mock('./RichDraft', () => ({ RichDraft: forwardRef(function MockDraft(props: { value: string; onChange(value: string): void; onKeyCommand?(key: string): boolean }, ref) {
+  useImperativeHandle(ref, () => ({ focus() {}, focusEnd() {}, format() {}, insertText(text: string) { props.onChange(props.value + text); } }));
+  return <input aria-label="Mensagem" value={props.value} onChange={event => props.onChange(event.target.value)}
+    onKeyDown={event => { if (props.onKeyCommand?.(event.key)) event.preventDefault(); }} />;
 }) }));
 vi.mock('../../app/api', async importOriginal => ({ ...await importOriginal<typeof import('../../app/api')>(),
   apiGetConversationMessages: vi.fn(), apiGetConversations: vi.fn(), apiGetConversationContext: vi.fn(),
   apiGetChannels: vi.fn(async () => []), apiGetTags: vi.fn(async () => []), apiGetAttentionCount: vi.fn(async () => 0),
   apiGetAssistantConversation: vi.fn(async () => ({ settings: { mode: 'disabled', agentId: null }, status: 'paused', history: [], suggestion: null, currentContextKey: null, humanControlled: true, humanSupport: false, awaitingCustomer: false, agentName: null, error: null })),
-  apiMarkConversationRead: vi.fn(), apiCreateConversationMessage: vi.fn()
+  apiMarkConversationRead: vi.fn(), apiCreateConversationMessage: vi.fn(), apiGetQuickReplies: vi.fn(async () => []), apiGetContactNameInsight: vi.fn()
 }));
 
 const conversation = (id: string): ConversationDto => ({ id, workspaceId: 'w', channelId: 'channel', contactId: `contact-${id}`, contactName: id, status: 'open', assignedUserId: null, departmentId: null, lastMessageAt: null, lastMessagePreview: null, unreadCount: 0, priority: 'normal' });
@@ -201,6 +202,24 @@ describe('Atendimento query/UI integration', () => {
     expect(container.querySelector('.message-thread')?.textContent).not.toContain('Atualizando mensagens');
     expect(container.querySelector('.message-thread')?.textContent).toContain('history-c1');
     await act(async () => finish([message('c1')])); await flush();
+  });
+  it('"/" opens my quick replies, filters as I type and fills the contact\'s first name on Enter', async () => {
+    const reply = (id: string, title: string, shortcut: string, body: string) => ({ id, workspaceId: 'w', title, body, category: null, shortcut, shared: false, createdAt: '', updatedAt: '' });
+    vi.mocked(apiGetQuickReplies).mockResolvedValue([reply('q1', 'Bem-vindo', 'bemvindo', '{saudacao}, {primeiro_nome}! Tudo bem?'), reply('q2', 'Preços', 'precos', 'Seguem os preços.')]);
+    vi.mocked(apiGetContactNameInsight).mockResolvedValue({ firstName: 'Maria', fullName: 'Maria Cecília', company: null, salutation: null, source: 'rule', ms: 3 });
+    await render(); await type('Oi /');
+    expect(container.querySelectorAll('.slash-menu-list > button')).toHaveLength(2);
+    await type('Oi /bem');
+    expect([...container.querySelectorAll('.slash-menu-list > button strong')].map(node => node.textContent)).toEqual(['Bem-vindo']);
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Mensagem"]')!;
+    await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); }); await flush(); await flush();
+    expect(apiGetContactNameInsight).toHaveBeenCalledWith(expect.any(Function), 'contact-c1');
+    expect(input.value).toMatch(/^Oi (Bom dia|Boa tarde|Boa noite), Maria! Tudo bem\?$/);
+    expect(container.querySelector('.slash-menu')).toBeNull();
+    expect(apiCreateConversationMessage).not.toHaveBeenCalled();
+    await type('/pre');
+    await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(container.querySelector('.slash-menu')).toBeNull();
   });
   it("marks, for the seller only, a message their supervisor sent from the supervision view", async () => {
     vi.mocked(apiGetConversationMessages).mockImplementation(async id => [{ ...message(id), id: 'sup', direction: 'outbound', type: 'text', body: 'Aqui é o gerente', mediaUrl: null, sentBySupervisor: true }, { ...message(id), id: 'mine', direction: 'outbound', type: 'text', body: 'Resposta do vendedor', mediaUrl: null }]);
