@@ -1,0 +1,30 @@
+/* WhatsApp's attachment preview, over the chat panel. */
+.attachment-tray { position: absolute; inset: 0; z-index: 40; display: grid; grid-template-rows: 1fr auto; background: #0b141a; color: #e9edef; }
+.attachment-tray-close { position: absolute; top: 14px; left: 14px; z-index: 2; display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 50%; background: #ffffff1a; color: #e9edef; cursor: pointer; }
+.attachment-tray-stage { position: relative; min-height: 0; overflow: hidden; }
+.attachment-tray-stage > * { position: absolute; inset: 64px 24px 12px; margin: auto; }
+.attachment-tray-stage img, .attachment-tray-stage video { width: calc(100% - 48px); height: calc(100% - 76px); object-fit: contain; }
+.attachment-tray-stage .attachment-tray-document { width: fit-content; height: fit-content; }
+.attachment-tray-document { display: grid; justify-items: center; gap: 10px; padding: 32px 40px; border-radius: 12px; background: #ffffff0f; text-align: center; color: #d1d7db; }
+.attachment-tray-document strong { max-width: 420px; font-size: 15px; overflow-wrap: anywhere; color: #e9edef; }
+.attachment-tray-document small { font-size: 12px; opacity: .75; }
+.attachment-tray-bottom { display: grid; justify-items: center; gap: 12px; padding: 0 90px 18px; }
+.attachment-tray-caption { width: min(560px, 100%); padding: 12px 18px; border: 0; border-radius: 24px; background: #2a3942; color: #e9edef; font: inherit; font-size: 14px; outline: none; }
+.attachment-tray-caption::placeholder { color: #8696a0; }
+.attachment-tray-strip { display: flex; align-items: center; gap: 8px; max-width: 100%; overflow-x: auto; padding: 4px; }
+.attachment-tray-thumb { position: relative; flex-shrink: 0; width: 56px; height: 56px; border-radius: 8px; outline: 2px solid transparent; outline-offset: 2px; }
+.attachment-tray-thumb.is-active { outline-color: #e9edef; }
+.attachment-tray-thumb > button:first-child { display: block; width: 100%; height: 100%; padding: 0; border: 0; border-radius: 8px; overflow: hidden; background: #2a3942; cursor: pointer; }
+.attachment-tray-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.attachment-tray-thumb-file { display: grid; place-items: center; gap: 2px; height: 100%; color: #d1d7db; }
+.attachment-tray-thumb-file small { font-size: 9px; font-weight: 700; letter-spacing: .03em; }
+.attachment-tray-remove { position: absolute; inset: 0; display: grid; place-items: center; border: 0; border-radius: 8px; background: #0b141a99; color: #fff; cursor: pointer; }
+.attachment-tray-add { flex-shrink: 0; display: grid; place-items: center; width: 56px; height: 56px; border: 1px dashed #8696a0; border-radius: 8px; background: transparent; color: #e9edef; cursor: pointer; }
+.attachment-tray-recipient { position: absolute; left: 18px; bottom: 22px; max-width: 160px; padding: 6px 12px; border-radius: 8px; background: #ffffff1a; font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.attachment-tray-send { position: absolute; right: 22px; bottom: 18px; display: grid; place-items: center; width: 54px; height: 54px; border: 0; border-radius: 50%; background: #00a884; color: #fff; cursor: pointer; box-shadow: 0 2px 6px #0006; }
+.attachment-tray-send:disabled, .attachment-tray button:disabled { cursor: default; opacity: .7; }
+.attachment-tray-count { position: absolute; top: -4px; right: -4px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: #e9edef; color: #0b141a; font-size: 11px; font-weight: 800; line-height: 20px; }
+@media (max-width: 640px) {
+  .attachment-tray-bottom { padding: 0 12px 84px; }
+  .attachment-tray-recipient { display: none; }
+}

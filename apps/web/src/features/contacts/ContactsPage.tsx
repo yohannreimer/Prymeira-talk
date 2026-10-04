@@ -760,7 +760,8 @@ export function ContactsPage() {
       url.searchParams.set("module", "atendimento");
       url.searchParams.set("conversation", conversation.id);
       url.searchParams.set("leadDraft", "1");
-      window.history.pushState({ module: "atendimento", conversation: conversation.id }, "", `${url.pathname}${url.search}${url.hash}`);
+      // The conversation travels with the navigation: a new one has no messages yet and is not on the inbox's first page.
+      window.history.pushState({ module: "atendimento", conversation: conversation.id, conversationSnapshot: conversation }, "", `${url.pathname}${url.search}${url.hash}`);
       window.dispatchEvent(new PopStateEvent("popstate"));
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : "Não foi possível iniciar a conversa.");

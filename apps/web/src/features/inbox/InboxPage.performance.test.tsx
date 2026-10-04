@@ -60,6 +60,15 @@ describe('Atendimento query/UI integration', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }); await flush();
   };
+  const caption = async (value: string) => {
+    const input = container.querySelector<HTMLInputElement>('.attachment-tray-caption')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }); await flush();
+  };
+  const sendTray = async () => { await act(async () => container.querySelector<HTMLButtonElement>('.attachment-tray-send')!.click()); await flush(); };
+  const trayFiles = (id: string) => session.readUI<Array<{ file: File; caption: string }>>(`draftFiles:${id}`, []);
   beforeEach(() => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); vi.useFakeTimers();
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: vi.fn(), configurable: true });
@@ -164,6 +173,35 @@ describe('Atendimento query/UI integration', () => {
     await act(async () => release([message('c3')])); await flush();
     expect(panel.textContent).toContain('2 aberturas'); expect(panel.textContent).toContain('1 canceladas');
   });
+  it('sends several dropped/picked files like WhatsApp: one message each, in order, each with its own caption', async () => {
+    vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:text/plain;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
+    Object.defineProperty(URL, 'createObjectURL', { value: vi.fn(() => 'blob:x'), configurable: true });
+    Object.defineProperty(URL, 'revokeObjectURL', { value: vi.fn(), configurable: true });
+    await render();
+    vi.mocked(apiCreateConversationMessage).mockImplementation(async (id, body) => ({ ...message(id), id: `sent-${body.attachment?.fileName}`, direction: 'outbound', body: body.body ?? null } as MessageDto));
+    const files = [new File(['a'], 'a.pdf', { type: 'application/pdf' }), new File(['b'], 'b.png', { type: 'image/png' }), new File(['c'], 'c.mp4', { type: 'video/mp4' })];
+    const input = container.querySelector<HTMLInputElement>('.composer-file-input')!;
+    expect(input.multiple).toBe(true);
+    Object.defineProperty(input, 'files', { value: files, configurable: true });
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
+    expect(container.querySelectorAll('.attachment-tray-thumb')).toHaveLength(3);
+    await caption('Proposta');
+    await act(async () => container.querySelectorAll<HTMLButtonElement>('.attachment-tray-thumb > button:first-child')[2]!.click()); await flush();
+    await caption('Vídeo da obra');
+    await sendTray();
+    const sent = vi.mocked(apiCreateConversationMessage).mock.calls.map(([, body]) => [body.attachment?.fileName, body.body]);
+    expect(sent).toEqual([['a.pdf', 'Proposta'], ['b.png', undefined], ['c.mp4', 'Vídeo da obra']]);
+    expect(container.querySelector('.attachment-tray')).toBeNull(); expect(trayFiles('c1')).toEqual([]);
+  });
+  it('opens the conversation started from Contatos, even when it is not on the loaded list yet', async () => {
+    await render(); expect(container.querySelector('.chat-header h2')?.textContent).toContain('c1');
+    await render(false);
+    const started = { ...conversation('novo-lead'), contactName: 'Lead novo' };
+    window.history.pushState({ module: 'atendimento', conversation: started.id, conversationSnapshot: started }, '', '/?module=atendimento&conversation=novo-lead');
+    await render();
+    expect(container.querySelector('.chat-header h2')?.textContent).toContain('Lead novo');
+    window.history.replaceState(null, '', '/');
+  });
   it('retains a file draft across module navigation while disposing/recreating its preview URL', async () => {
     const create = vi.fn().mockReturnValueOnce('blob:first-preview').mockReturnValueOnce('blob:second-preview');
     const revoke = vi.fn();
@@ -173,11 +211,11 @@ describe('Atendimento query/UI integration', () => {
     const input = container.querySelector<HTMLInputElement>('.composer-file-input')!;
     Object.defineProperty(input, 'files', { value: [file], configurable: true });
     await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
-    expect(session.readUI('draftFile:c1', null)).toBe(file);
-    expect(container.querySelector<HTMLImageElement>('.composer-attachment-preview img')?.src).toBe('blob:first-preview');
+    expect(trayFiles('c1').map(item => item.file)).toEqual([file]);
+    expect(container.querySelector<HTMLImageElement>('.attachment-tray-stage img')?.src).toBe('blob:first-preview');
     await render(false); expect(revoke).toHaveBeenCalledWith('blob:first-preview');
-    await render(); expect(session.readUI('draftFile:c1', null)).toBe(file);
-    expect(container.querySelector<HTMLImageElement>('.composer-attachment-preview img')?.src).toBe('blob:second-preview');
+    await render(); expect(trayFiles('c1').map(item => item.file)).toEqual([file]);
+    expect(container.querySelector<HTMLImageElement>('.attachment-tray-stage img')?.src).toBe('blob:second-preview');
   });
   it('opens switched conversations at the bottom and preserves the selected history/list position on module return', async () => {
     await render(); const list = container.querySelector<HTMLDivElement>('.conversation-items')!;
@@ -414,19 +452,23 @@ describe('Atendimento query/UI integration', () => {
     vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:text/plain;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
     await render(); await select('c2'); await select('c1'); let fail!: (error: Error) => void;
     vi.mocked(apiCreateConversationMessage).mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
-    await type('draft to recover'); const file = new File(['a'], 'document.txt', { type: 'text/plain' });
+    const file = new File(['a'], 'document.txt', { type: 'text/plain' });
     if (kind === 'attachment') {
+      // Files go through the attachment tray, each with its own caption, and are sent from there.
       const input = container.querySelector<HTMLInputElement>('.composer-file-input')!; Object.defineProperty(input, 'files', { value: [file], configurable: true });
       await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
+      await caption('draft to recover'); await sendTray();
+    } else {
+      await type('draft to recover');
+      await act(async () => container.querySelector<HTMLFormElement>('.composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); await flush();
     }
-    await act(async () => container.querySelector<HTMLFormElement>('.composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); await flush();
     expect(apiCreateConversationMessage).toHaveBeenCalledOnce();
     await select('c2'); await act(async () => fail(new Error('Falha de rede'))); await flush();
     expect(container.querySelector('.message-thread')?.textContent).not.toContain('Falha de rede');
     expect(session.readUI('draft:c2', '')).toBe('');
     await select('c1');
-    expect(container.querySelector<HTMLInputElement>('[aria-label="Mensagem"]')?.value).toBe('draft to recover');
-    if (kind === 'attachment') expect(session.readUI('draftFile:c1', null)).toBe(file);
+    if (kind === 'attachment') expect(trayFiles('c1')).toEqual([expect.objectContaining({ file, caption: 'draft to recover' })]);
+    else expect(container.querySelector<HTMLInputElement>('[aria-label="Mensagem"]')?.value).toBe('draft to recover');
     const rows = session.client.getQueryData<MessageDto[]>(session.key('messages', 'c1'))!;
     expect(rows.find(row => row.id.startsWith('optimistic-'))?.status).toBe('failed');
     expect(container.querySelector('.message-thread')?.textContent).toContain('Falha de rede');
@@ -437,19 +479,24 @@ describe('Atendimento query/UI integration', () => {
     vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:text/plain;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
     await render(); await select('c2'); await select('c1'); let fail!: (error: Error) => void;
     vi.mocked(apiCreateConversationMessage).mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
-    await type('old draft'); const oldFile = new File(['old'], 'old.txt', { type: 'text/plain' });
+    const oldFile = new File(['old'], 'old.txt', { type: 'text/plain' });
     if (kind === 'attachment') {
       const input = container.querySelector<HTMLInputElement>('.composer-file-input')!; Object.defineProperty(input, 'files', { value: [oldFile], configurable: true });
       await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
+      await caption('old caption'); await sendTray();
+    } else {
+      await type('old draft');
+      await act(async () => container.querySelector<HTMLFormElement>('.composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); await flush();
     }
-    await act(async () => container.querySelector<HTMLFormElement>('.composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); await flush();
     await select('c2'); await render(false); await render(); await select('c1'); if (newText) await type('newer draft');
     const newFile = new File(['new'], 'new.txt', { type: 'text/plain' });
     const input = container.querySelector<HTMLInputElement>('.composer-file-input')!; Object.defineProperty(input, 'files', { value: [newFile], configurable: true });
     await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
     await select('c2'); await act(async () => fail(new Error('Falha de rede'))); await flush(); await select('c1');
     expect(container.querySelector<HTMLInputElement>('[aria-label="Mensagem"]')?.value).toBe(newText ? 'newer draft' : '');
-    expect(session.readUI('draftFile:c1', null)).toBe(newFile);
+    // The newer file stays first in the tray; a failed one comes back after it with its caption, never replacing it.
+    expect(trayFiles('c1')[0]?.file).toBe(newFile);
+    if (kind === 'attachment') expect(trayFiles('c1')[1]).toEqual(expect.objectContaining({ file: oldFile, caption: 'old caption' }));
     expect(container.querySelector('.message-thread')?.textContent).toContain('Falha de rede');
     expect(apiCreateConversationMessage).toHaveBeenCalledOnce();
   });

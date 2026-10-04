@@ -191,7 +191,8 @@ export function extractMessageContent(message: unknown, messageType?: unknown): 
   if (hasRecordPath(message, ["templateMessage"]) || messageType === "templateMessage") {
     const title = readStringPath(message, ["templateMessage", "hydratedTemplate", "hydratedTitleText"])?.trim();
     const content = readStringPath(message, ["templateMessage", "hydratedTemplate", "hydratedContentText"])?.trim();
-    const body = [title, content].filter(Boolean).join("\n");
+    // Templates whose text lives elsewhere (document header, interactive template, buttons) read like WhatsApp shows them.
+    const body = [title, content].filter(Boolean).join("\n") || interactiveMessageText(message);
     return body
       ? { type: "template", body, mediaUrl: null, preview: body }
       : { type: "system", body: "Template recebido sem texto", mediaUrl: null, preview: "Template recebido sem texto" };

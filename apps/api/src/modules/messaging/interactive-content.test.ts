@@ -24,6 +24,10 @@ describe('business and interactive messages read like WhatsApp shows them', () =
     expect(interactiveMessageText({ eventMessage: { name: 'Aniversário', description: 'Às 20h' } })).toBe('📅 Evento: Aniversário\nÀs 20h');
     expect(interactiveMessageText({ groupInviteMessage: { groupName: 'Padel' } })).toBe('👥 Convite para o grupo Padel');
   });
+  it('Evolution: a template with its text only in an interactive template is no longer "Template recebido sem texto"', () => {
+    const template = { templateMessage: { hydratedTemplate: { documentMessage: { fileName: 'Fatura.pdf' }, hydratedContentText: '' }, interactiveMessageTemplate: { body: { text: 'Sua fatura chegou' } } } };
+    expect(extractMessageContent(template)).toMatchObject({ type: 'template', body: '📄 Fatura.pdf\nSua fatura chegou' });
+  });
   it('leaves what it cannot read to the caller', () => {
     expect(interactiveMessageText({ protocolMessage: { type: 0 } })).toBeNull();
     expect(interactiveMessageText({ conversation: 'oi' })).toBeNull();

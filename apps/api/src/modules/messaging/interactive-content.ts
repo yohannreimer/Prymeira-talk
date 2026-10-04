@@ -41,8 +41,9 @@ export function interactiveMessageText(message: unknown): string | null {
   if (Object.keys(template).length) {
     const t = obj(template.hydratedTemplate ?? template.hydratedFourRowTemplate ?? template.fourRowTemplate);
     const native = obj(template.interactiveMessageTemplate);
-    if (Object.keys(native).length && !Object.keys(t).length) return interactiveMessageText({ interactiveMessage: native });
-    return lines(headerMedia(t), text(t.hydratedTitleText), text(t.hydratedContentText),
+    const nativeText = Object.keys(native).length ? interactiveMessageText({ interactiveMessage: native }) : null;
+    if (!Object.keys(t).length) return nativeText;
+    return lines(headerMedia(t), text(t.hydratedTitleText), text(t.hydratedContentText), nativeText,
       text(t.hydratedFooterText), buttons(list(t.hydratedButtons).map(button => {
         const b = obj(button);
         return text(obj(b.quickReplyButton).displayText) ?? text(obj(b.urlButton).displayText) ?? text(obj(b.callButton).displayText);

@@ -11,6 +11,7 @@ import { quotedPreview, threadWithReactions } from "./message-threading.js";
 import { MessageTicks } from "./MessageTicks";
 import { ConversationPreview } from "./ConversationPreview";
 import { QuoteContent } from "./QuoteMedia";
+import { AttachmentTray, type PendingAttachment } from "./AttachmentTray";
 import type { ChangeEvent, DragEvent, FormEvent, SetStateAction } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -500,8 +501,9 @@ function InboxPageContent() {
   const textSendQueue = useRef(new Map<string, Promise<unknown>>());
   /** The message being replied to (WhatsApp quote); only for messages that have a WhatsApp id. */
   const [replyTarget, setReplyTarget] = useState<MessageDto | null>(null);
-  const [pendingFile, setPendingFile] = useSessionState<File | null>(`draftFile:${selectedConversationId ?? 'none'}`, null);
-  const [pendingFilePreview, setPendingFilePreview] = useState<string | null>(null);
+  const [pendingFiles, setPendingFiles] = useSessionState<PendingAttachment[]>(`draftFiles:${selectedConversationId ?? 'none'}`, []);
+  const [activeAttachmentId, setActiveAttachmentId] = useState<string | null>(null);
+  const [isSendingAttachments, setIsSendingAttachments] = useState(false);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const dragDepthRef = useRef(0);
   const [isRunningAction, setIsRunningAction] = useState(false);
@@ -536,15 +538,24 @@ function InboxPageContent() {
   }, [getToken]);
   useEffect(() => { setContextError(null); setError(null); setAiSuggestion(null); setCrmStatus(null); setAssistantOpen(false); setShareContactOpen(false); setSelectedContactCard(null); setIsDraggingFile(false); dragDepthRef.current = 0; }, [selectedConversationId]);
   useEffect(() => {
-    if (!pendingFile?.type.startsWith('image/')) { setPendingFilePreview(null); return; }
-    const url = URL.createObjectURL(pendingFile);
-    setPendingFilePreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [pendingFile]);
-  useEffect(() => {
     const timeout = window.setTimeout(() => setSearchQuery(searchDraft.trim()), 250);
     return () => window.clearTimeout(timeout);
   }, [searchDraft]);
+  // A conversation opened from elsewhere (Contatos → Iniciar conversa) wins over the one remembered from before, even
+  // when it is not on the loaded page of the list yet; it is applied once per navigation.
+  useEffect(() => {
+    const apply = () => {
+      const requestedId = readConversationIdFromUrl();
+      const state = (window.history.state ?? {}) as { conversationSnapshot?: ConversationDto; conversationApplied?: boolean };
+      if (!requestedId || state.conversationApplied) return;
+      window.history.replaceState({ ...state, conversationApplied: true }, "", window.location.href);
+      if (state.conversationSnapshot?.id === requestedId) setSelectedConversationSnapshot(state.conversationSnapshot);
+      setSelectedConversationId(requestedId);
+    };
+    apply();
+    window.addEventListener("popstate", apply);
+    return () => window.removeEventListener("popstate", apply);
+  }, [setSelectedConversationId, setSelectedConversationSnapshot]);
   useEffect(() => {
     if (!selectedConversationId) return;
     const cleanUrl = takeLeadDraftRequest(window.location.href, selectedConversationId);
@@ -828,7 +839,9 @@ function InboxPageContent() {
 
   useEffect(() => {
     const current = conversations.find((conversation) => conversation.id === selectedConversationId);
-    if (current) setSelectedConversationSnapshot(current);
+    // Only refreshes the snapshot of the same conversation: a selection made in the same commit (opened from
+    // Contatos) must not be overwritten by the previous one.
+    if (current) setSelectedConversationSnapshot(previous => !previous || previous.id === current.id ? current : previous);
   }, [conversations, selectedConversationId]);
 
   const selectedConversation = useMemo(
@@ -965,14 +978,6 @@ function InboxPageContent() {
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (pendingFile) {
-      const file = pendingFile;
-      const targetId = selectedConversationId;
-      try { await sendAttachment(file); session.writeUI<File | null>(`draftFile:${targetId}`, current => current === file ? null : current, null); }
-      catch { /* sendAttachment displays the error beside the composer. */ }
-      return;
-    }
-
     if (!selectedConversationId || !draft.trim()) return;
     if (composerOrigin) {
       if (isSending) return;
@@ -1065,22 +1070,44 @@ function InboxPageContent() {
     session.writeUI(`sendFailure:${targetId}`, { generation: optimisticId, message: `${error} Confira o histórico antes de reenviar.` }, null);
     const hasNewText = session.readUI(`draft:${targetId}`, '').trim().length > 0;
     const hasNewOrigin = Boolean(session.readUI(`draftOrigin:${targetId}`, null));
-    const currentFile = session.readUI<File | null>(`draftFile:${targetId}`, null);
-    const hasNewFile = Boolean(currentFile && currentFile !== file);
-    if (!hasNewText && !hasNewOrigin && !hasNewFile) {
-      session.writeUI(`draft:${targetId}`, text, '');
-      if (file) session.writeUI<File | null>(`draftFile:${targetId}`, current => current ?? file, null);
+    // A file that failed goes back to the attachment tray with its caption, so nothing typed is lost.
+    if (file) {
+      session.writeUI<PendingAttachment[]>(`draftFiles:${targetId}`, current => current.some(item => item.file === file) ? current
+        : [...current, { id: optimisticId, file, caption: text }], []);
+      return;
     }
+    const hasNewFile = session.readUI<PendingAttachment[]>(`draftFiles:${targetId}`, []).length > 0;
+    if (!hasNewText && !hasNewOrigin && !hasNewFile) session.writeUI(`draft:${targetId}`, text, '');
   }
 
-  function stageAttachment(file: File) {
-    if (!selectedConversationId) return;
-    if (file.size > 8 * 1024 * 1024) { setMessageError('Envie um arquivo de até 8 MB.'); return; }
+  /** Like WhatsApp: several files at once (dropped, picked or pasted) open the attachment tray, one message each. */
+  function stageAttachments(files: File[]) {
+    if (!selectedConversationId || !files.length) return;
     if (composerOrigin) { setMessageError('Envie primeiro o texto em revisão. Depois anexe o arquivo em uma nova mensagem.'); return; }
     const serviceWindowError = metaServiceWindowSendError(selectedConversation);
     if (serviceWindowError) { setMessageError(serviceWindowError); return; }
-    setMessageError(null);
-    setPendingFile(file);
+    const accepted = files.filter(file => file.size <= 8 * 1024 * 1024);
+    const room = Math.max(0, 30 - pendingFiles.length);
+    const added = accepted.slice(0, room).map(file => ({ id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, file, caption: '' }));
+    const skipped = files.length - added.length;
+    setMessageError(skipped ? `${skipped} ${skipped === 1 ? 'arquivo ficou' : 'arquivos ficaram'} de fora: até 8 MB cada e 30 por envio.` : null);
+    if (!added.length) return;
+    setPendingFiles(current => [...current, ...added]);
+    setActiveAttachmentId(added[0]!.id);
+  }
+
+  async function sendPendingAttachments() {
+    const targetId = selectedConversationId;
+    if (!targetId || isSendingAttachments) return;
+    setIsSendingAttachments(true);
+    try {
+      for (const item of session.readUI<PendingAttachment[]>(`draftFiles:${targetId}`, [])) {
+        // Leaves the tray before it is sent; a failure puts it back (recordSendFailure) and stops the rest, in order.
+        session.writeUI<PendingAttachment[]>(`draftFiles:${targetId}`, current => current.filter(entry => entry.id !== item.id), []);
+        try { await sendAttachment(item.file, false, item.caption.trim()); }
+        catch { break; }
+      }
+    } finally { setIsSendingAttachments(false); }
   }
 
   function hasDraggedFiles(event: DragEvent<HTMLElement>) {
@@ -1106,17 +1133,16 @@ function InboxPageContent() {
     event.preventDefault();
     dragDepthRef.current = 0;
     setIsDraggingFile(false);
-    const file = event.dataTransfer.files[0];
-    if (file) stageAttachment(file);
+    stageAttachments(Array.from(event.dataTransfer.files));
   }
 
   function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files ?? []);
     event.target.value = "";
-    if (file) stageAttachment(file);
+    stageAttachments(files);
   }
 
-  async function sendAttachment(file: File, voice = false) {
+  async function sendAttachment(file: File, voice = false, captionOverride?: string) {
     if (!selectedConversationId || isSending) throw new Error('Aguarde o envio atual.');
     if (file.size > 8 * 1024 * 1024) { setMessageError('Envie um arquivo de até 8 MB.'); throw new Error('Arquivo maior que 8 MB.'); }
     if (composerOrigin) { setMessageError('Envie primeiro o texto em revisão. Depois anexe o arquivo em uma nova mensagem.'); throw new Error('Texto em revisão.'); }
@@ -1129,7 +1155,7 @@ function InboxPageContent() {
       throw new Error(serviceWindowError);
     }
 
-    const caption = voice ? '' : draft.trim();
+    const caption = voice ? '' : captionOverride ?? draft.trim();
     const mediaUrl = await fileToDataUrl(file).catch((fileError: unknown) => {
       setMessageError(fileError instanceof Error ? fileError.message : "Não foi possível ler o arquivo.");
       return null;
@@ -1156,7 +1182,7 @@ function InboxPageContent() {
     setIsSending(true);
     setMessageError(null);
     session.writeUI(`sendFailure:${targetConversationId}`, null, null);
-    if (!voice) setDraft("");
+    if (!voice && captionOverride === undefined) setDraft("");
     session.updateMessages(targetConversationId, current => [...current, optimisticMessage]);
     setConversations((current) =>
       current.map((conversation) =>
@@ -1996,6 +2022,12 @@ selectedConversation ? (
         onDragOver={(event) => { if (selectedConversationId && hasDraggedFiles(event)) event.preventDefault(); }}
         onDrop={handleChatDrop}>
         {isDraggingFile ? <div className="chat-drop-overlay" aria-hidden="true"><UploadCloud size={34} />Solte para anexar à conversa</div> : null}
+        {selectedConversation && pendingFiles.length ? <AttachmentTray items={pendingFiles} activeId={activeAttachmentId} recipient={contactDisplayName(selectedConversation)}
+          sending={isSendingAttachments} onSelect={setActiveAttachmentId}
+          onCaption={(id, caption) => setPendingFiles(current => current.map(item => item.id === id ? { ...item, caption } : item))}
+          onRemove={id => { const index = pendingFiles.findIndex(item => item.id === id); const rest = pendingFiles.filter(item => item.id !== id);
+            setPendingFiles(rest); setActiveAttachmentId(rest[Math.min(index, rest.length - 1)]?.id ?? null); }}
+          onAdd={() => fileInputRef.current?.click()} onClose={() => setPendingFiles([])} onSend={() => void sendPendingAttachments()} /> : null}
         <header className="chat-header">
           <button className="assistant-mobile-back" type="button" onClick={() => setSelectedConversationId(null)}>Voltar</button>
           <div>
@@ -2033,11 +2065,6 @@ selectedConversation ? (
         {historyView}
 
         <div className="composer-shell">
-          {pendingFile ? <div className="composer-attachment-preview" aria-label="Anexo pronto para enviar">
-            <span className="composer-attachment-icon">{pendingFilePreview ? <img src={pendingFilePreview} alt="Prévia do anexo" /> : <FileText size={22} aria-hidden="true" />}</span>
-            <span className="composer-attachment-details"><strong>{pendingFile.name}</strong><small>{(pendingFile.size / 1024 / 1024).toFixed(1)} MB · Pronto para enviar</small></span>
-            <button type="button" aria-label="Remover anexo" title="Remover anexo" onClick={() => setPendingFile(null)}><X size={18} /></button>
-          </div> : null}
           {!selectedConversation?.isGroup ? <button ref={assistantTriggerRef} type="button" className="assistant-mobile-trigger" onClick={() => { setAssistantTab('assistant'); setAssistantOpen(true); }} disabled={!selectedConversation}><MessageSquare size={15} /> IA de apoio <span>{handoffBrief ? 'Próxima ação' : assistant.data?.status === 'ready' ? 'Sugestão pronta' : 'Abrir'}</span></button> : null}
           {composerOrigin ? <div className="assistant-composer-origin"><span>{originNeedsReview ? 'A conversa mudou. Confira o rascunho.' : 'Sugestão em edição. O texto enviado ficará registrado.'}</span>{originNeedsReview ? <button type="button" disabled={!assistant.data?.currentContextKey} onClick={() => setComposerOrigin(current => current && assistant.data?.currentContextKey ? { ...current, contextKey: assistant.data.currentContextKey } : current)}>Revisei o contexto</button> : null}</div> : null}
           {showQuickReplies ? (
@@ -2116,6 +2143,7 @@ selectedConversation ? (
                 onChange={handleFileSelected}
                 ref={fileInputRef}
                 type="file"
+                multiple
               />
               <VoiceRecorder key={selectedConversationId ?? 'no-conversation'} disabled={!selectedConversation || isSending || Boolean(composerOrigin) || selectedConversation.channelProvider !== 'evolution'} onSend={file => sendAttachment(file, true)} />
               <span className="composer-tool-spacer" aria-hidden="true" />
@@ -2152,12 +2180,12 @@ selectedConversation ? (
               </div>;
             })() : null}
             <div className="composer-input-row">
-              <RichDraft key={selectedConversationId ?? 'no-conversation'} ref={draftTextAreaRef} value={draft} disabled={!selectedConversation || isSending} onFormatChange={setDraftFormat} onChange={value => { setDraft(value); if (!value) setComposerOrigin(null); }} onPasteImage={stageAttachment} />
+              <RichDraft key={selectedConversationId ?? 'no-conversation'} ref={draftTextAreaRef} value={draft} disabled={!selectedConversation || isSending} onFormatChange={setDraftFormat} onChange={value => { setDraft(value); if (!value) setComposerOrigin(null); }} onPasteImage={file => stageAttachments([file])} />
               <button
                 className="composer-send"
-                disabled={!selectedConversation || (!draft.trim() && !pendingFile) || isSending}
+                disabled={!selectedConversation || !draft.trim() || isSending}
                 type="submit"
-                aria-label={pendingFile ? "Enviar anexo" : "Enviar mensagem"}
+                aria-label="Enviar mensagem"
               >
                 →
               </button>
