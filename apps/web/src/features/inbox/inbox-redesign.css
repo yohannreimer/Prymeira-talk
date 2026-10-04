@@ -58,16 +58,20 @@
 .talk-workspace-atendimento .conversation-preview { font-size: 13px; color: var(--color-text-secondary); }
 .talk-workspace-atendimento .conv-time { font-size: 11.5px; }
 .talk-workspace-atendimento .conversation-card.has-unread .conv-time { color: var(--rd-live); font-weight: 600; }
-/* Unread counter at the bottom right, in WhatsApp green; the bookmark sits just left of it. */
-.talk-workspace-atendimento .conv-unread-badge { top: auto; bottom: 12px; right: 16px; transform: none; min-width: 20px; height: 20px; font-size: 11.5px; background: var(--rd-live); }
-.talk-workspace-atendimento .conversation-card-actions { top: auto; bottom: 9px; right: 12px; flex-direction: row; gap: 0; }
-.talk-workspace-atendimento .conversation-card.has-unread .conversation-card-actions { right: 42px; }
+/* Right column like WhatsApp: the time, and right under it the unread counter; the bookmark sits just left of it. */
+.talk-workspace-atendimento .conv-meta-right { flex: 0 0 auto; width: auto; min-width: 42px; gap: 6px; }
+.talk-workspace-atendimento .conv-unread-badge { position: static; transform: none; min-width: 20px; height: 20px; font-size: 11.5px; background: var(--rd-live); }
+.talk-workspace-atendimento .conversation-card-actions { top: 30px; bottom: auto; right: 13px; flex-direction: row; gap: 0; }
+.talk-workspace-atendimento .conversation-card.has-unread .conversation-card-actions { right: 40px; }
+/* Room on the right of the text for the time column (and the bookmark beside the counter). */
+.talk-workspace-atendimento .conversation-content { padding-right: 4px; }
 .talk-workspace-atendimento .conversation-card-icon { width: 26px; height: 26px; border: 0; background: transparent; opacity: 0; transition: opacity .12s; }
 .talk-workspace-atendimento .conversation-card-icon svg { width: 15px; height: 15px; }
 .talk-workspace-atendimento .conversation-card:is(:hover, :focus-within) .conversation-card-icon,
 .talk-workspace-atendimento .conversation-card-icon.is-marked { opacity: 1; }
+.talk-workspace-atendimento .conversation-card-icon.is-marked { color: var(--color-brand-600); }
 @media (hover: none) { .talk-workspace-atendimento .conversation-card-icon { opacity: 1; } }
-.talk-workspace-atendimento .conversation-card-main { padding-right: 56px; }
+.talk-workspace-atendimento .conversation-card-main { padding-right: 16px; }
 
 /* ---------- Conversation header ---------- */
 .talk-workspace-atendimento .chat-header { flex-wrap: nowrap; align-items: center; gap: 12px; padding: 10px 18px; background: var(--color-surface-card); border-bottom: 1px solid var(--rd-line); }
@@ -206,3 +210,6 @@
 .talk-workspace-atendimento .assistant-reply > p:not(.assistant-warning):not(.assistant-caption) { padding: 10px 12px; border-radius: 10px; background: var(--rd-out); color: var(--rd-out-ink); }
 .talk-workspace-atendimento .assistant-orient-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; color: var(--color-brand-600); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
 .talk-workspace-atendimento .assistant-history { font-size: 12.5px; color: var(--color-text-secondary); }
+/* The preview never runs under the bookmark or the counter. */
+.talk-workspace-atendimento .conversation-card .conversation-preview { padding-right: 28px; }
+.talk-workspace-atendimento .conversation-card.has-unread .conversation-preview { padding-right: 56px; }

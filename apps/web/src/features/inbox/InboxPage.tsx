@@ -84,7 +84,8 @@ import { formatConversationCardDate } from './conversation-card-date';
 function ConversationCardTime({ value }: { value: string | null }) {
   if (!value) return <time className="conv-time">Sem mensagens</time>;
   const { day, time } = formatConversationCardDate(value);
-  return <time className="conv-time" dateTime={value}><span>{day}</span><span>{time}</span></time>;
+  // One line, like WhatsApp: today's time, "Ontem", or the date. The full moment stays in the tooltip.
+  return <time className="conv-time" dateTime={value} title={`${day} ${time}`}><span>{day === 'Hoje' ? time : day}</span></time>;
 }
 
 const CONVERSATION_PAGE_SIZE = 50;
@@ -1064,6 +1065,9 @@ function InboxPageContent() {
     if (!content || !selectedConversationId || !messagesQuery.data) return;
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(followThreadContent) : null;
     observer?.observe(content);
+    // The thread itself also shrinks and grows (the message box gets taller while typing, the recorder opens): someone
+    // following the conversation keeps the latest message in view, like WhatsApp.
+    if (messageThreadRef.current) observer?.observe(messageThreadRef.current);
     return () => {
       observer?.disconnect();
       if (threadFollowFrameRef.current !== null) window.cancelAnimationFrame(threadFollowFrameRef.current);
