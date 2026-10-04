@@ -200,7 +200,9 @@ export const authContextPlugin = fp(
 
       if (supervisionPath) {
         reply.header("Cache-Control", "private, no-store");
-        if (request.method !== "GET") {
+        // Read only, except one action: a supervisor answering a customer in a seller's conversation.
+        const supervisorReply = request.method === "POST" && /^\/supervision\/workspaces\/[^/]+\/conversations\/[^/]+\/messages$/.test(pathname);
+        if (request.method !== "GET" && !supervisorReply) {
           throw new SupervisionError(403, "A supervisão permite somente consulta.");
         }
         request.supervision = await validateSupervisionAccess({

@@ -15,6 +15,8 @@ export type SupervisionFilters = {
   unreadPeriod?: SupervisionUnreadPeriod;
   /** Only customers waiting for an answer, the longest wait first. */
   waiting?: boolean;
+  /** Customer name or phone digits. */
+  search?: string;
   cursor?: string;
 };
 /** The inbox include plus the session metadata, where the handoff brief keeps the seller's next action. */
@@ -49,10 +51,16 @@ export function supervisionListWhere(grants: SupervisionGrant[], filters: Superv
     filters.status === "all" ? {} : filters.status === "closed" ? { status: "closed" } : { status: { in: ["open", "pending"] } },
     filters.nextAction ? inboxHandoffWhere : {},
     filters.unread ? inboxUnreadWhere : {},
+    filters.search?.trim() ? searchWhere(filters.search.trim()) : {},
     filters.unread && hours ? { messages: { some: visibleConversationMessageWhere({
       direction: "inbound" as const, createdAt: { gte: new Date(now.getTime() - hours * 3_600_000), lte: now }
     }) } } : {}
   ] };
+}
+
+function searchWhere(search: string): Prisma.ConversationWhereInput {
+  const digits = search.replace(/\D/g, "");
+  return { contact: { OR: [{ name: { contains: search, mode: "insensitive" } }, ...(digits.length >= 3 ? [{ phone: { contains: digits } }] : [])] } };
 }
 
 function afterCursor(anchor: { id: string; lastMessageAt: Date | null; createdAt: Date }): Prisma.ConversationWhereInput {
@@ -114,7 +122,7 @@ export function createSupervisionService(prisma: Store, clock: () => Date = () =
 
     async list(grants: SupervisionGrant[], filters: SupervisionFilters = {}): Promise<SupervisionPage> {
       const selected = filterGrants(grants, filters.sellerCustomerId);
-      if (filters.waiting) {
+      if (filters.waiting && !filters.search?.trim()) {
         // The attention queue: every waiting customer, the longest wait first (bounded, so no cursor).
         if (typeof prisma.$queryRaw !== "function") return { conversations: [], nextCursor: null };
         const rows = await waitingConversations(prisma as Required<Store>, selected, clock());

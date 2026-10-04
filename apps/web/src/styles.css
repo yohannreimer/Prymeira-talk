@@ -8672,3 +8672,6 @@ select:disabled {
 .message-quote .message-quote-kind { display: inline; vertical-align: -2px; margin-right: 4px; opacity: .75; }
 .message-quote .message-quote-thumb { display: block; flex-shrink: 0; width: 46px; height: 46px; border-radius: 5px; object-fit: cover; }
 .message-quote .message-quote-thumb.is-empty { background: rgba(0, 0, 0, 0.08); }
+/* A supervisor's answer, marked for the seller only (the customer sees an ordinary message). */
+.message-supervisor-label { display:inline-flex; align-items:center; gap:5px; margin:0 0 4px; padding:2px 8px; border-radius:999px; background:rgba(255, 255, 255, 0.18); color:#efe6ff; font-size:11.5px; font-weight:700; }
+.message-bubble.is-inbound .message-supervisor-label { background:#efe9fd; color:#5b3ab5; }

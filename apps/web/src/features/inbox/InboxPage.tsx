@@ -6,7 +6,7 @@ import { CATALOG_STALE_MS, MAX_MESSAGES, receiptStatus } from '../../app/session
 import { LocationMessage } from './LocationMessage';
 import { needsHumanAttention } from "@prymeira-talk/shared";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bookmark, Bot, CheckCircle2, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
+import { Bookmark, Bot, CheckCircle2, ShieldCheck, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
 import { quotedPreview, threadWithReactions } from "./message-threading.js";
 import { MessageTicks } from "./MessageTicks";
 import { ConversationPreview } from "./ConversationPreview";
@@ -1735,6 +1735,8 @@ selectedConversation ? (
                   <ContactAvatar conversationId={selectedConversation?.id} name={senderName} className="msg-avatar" />
                 ) : null}
                 <div className={`msg-bubble-body${inlineMeta ? ' has-inline-meta' : ''}`}>
+                  {/* Internal only (never sent to the customer): the seller sees that their supervisor answered here. */}
+                  {message.sentBySupervisor ? <span className="message-supervisor-label" title="Mensagem enviada pelo supervisor pela tela de supervisão"><ShieldCheck size={12} aria-hidden="true" />Respondido pelo supervisor</span> : null}
                   {selectedConversation.isGroup && isInbound ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
                   {message.quoted ? (() => { const quote = quotedPreview(message.quoted, visibleMessages, selectedConversation.contactName ?? null); return (
                     <button type="button" className={`message-quote is-rich${quote.author === 'Você' ? ' is-mine' : ''}`} disabled={!quote.targetId}

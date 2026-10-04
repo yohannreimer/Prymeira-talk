@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Clock3, Eye, Headphones, Hourglass, ListTodo, MailWarning, MessageSquareText, RefreshCw, ShieldCheck, Sparkles, X } from "lucide-react";
+import { ArrowLeft, Clock3, Eye, Headphones, Hourglass, ListTodo, MailWarning, MessageSquareText, RefreshCw, Search, Send, ShieldCheck, Sparkles, X } from "lucide-react";
 import { needsHumanAttention, type SupervisionConversation, type MessageDto, type SupervisionUnreadPeriod } from "@prymeira-talk/shared";
 import type { SupervisionSummary } from "@prymeira-talk/shared";
 import { useTalkAuth } from "../../app/auth";
 import { readConfigValue } from "../../app/runtime-config";
-import { apiSupervisionMedia, apiSupervisionPreview } from "../../app/supervision-api";
+import { apiSupervisionMedia, apiSupervisionPreview, apiSupervisionReply } from "../../app/supervision-api";
 import { InboxMedia, mediaCaption, type InboxMediaTransport } from "../inbox/InboxMedia";
 import { LocationMessage } from "../inbox/LocationMessage";
 import { contactDisplayName } from "../inbox/conversation-display";
@@ -78,7 +78,8 @@ function NextAction({ text }: { text?: string | null }) {
 function ThreadMessage({ message, transport, getToken }: { message: MessageDto; transport: InboxMediaTransport; getToken: () => Promise<string | null> }) {
   const media = message.type === "audio" || message.type === "image" || message.type === "file";
   const body = media ? mediaCaption(message) : message.body;
-  return <article className={`supervision-message ${message.direction === "outbound" ? "is-outbound" : "is-inbound"}`}>
+  return <article className={`supervision-message ${message.direction === "outbound" ? "is-outbound" : "is-inbound"}${message.sentBySupervisor ? " is-supervisor" : ""}`}>
+    {message.sentBySupervisor ? <strong className="supervision-message-supervisor"><ShieldCheck size={12} aria-hidden="true" />Você (supervisor)</strong> : null}
     {message.senderName ? <strong className="supervision-message-sender">{message.senderName}</strong> : null}
     {message.deletedAt ? <p className="supervision-message-deleted">Mensagem apagada</p> : <>
       {media ? <InboxMedia message={message} transport={transport} getToken={getToken} /> : null}
@@ -89,6 +90,31 @@ function ThreadMessage({ message, transport, getToken }: { message: MessageDto; 
     </>}
     <footer><time dateTime={message.createdAt}>{fullTime(message.createdAt)}</time>{message.editedAt ? " · editada" : ""}</footer>
   </article>;
+}
+
+/** The supervisor's reply box: the message leaves through the seller's WhatsApp, and the seller sees in Talk that the
+ * supervisor answered. Nothing is sent without pressing Enviar. */
+function SupervisorReply({ conversation, getToken, onSent }: { conversation: SupervisionConversation; getToken: () => Promise<string | null>; onSent: () => void }) {
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function send() {
+    const body = text.trim();
+    if (!body || sending) return;
+    setSending(true); setError(null);
+    try { await apiSupervisionReply(conversation.workspaceId, conversation.id, body, getToken); setText(""); onSent(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível enviar. Tente novamente."); }
+    finally { setSending(false); }
+  }
+  return <form className="supervision-reply" onSubmit={event => { event.preventDefault(); void send(); }}>
+    <p className="supervision-reply-note"><ShieldCheck size={14} aria-hidden="true" />Sua resposta sai pelo WhatsApp de <strong>{sellerLabel(conversation)}</strong>. No Talk, o vendedor verá que foi o supervisor.</p>
+    <div className="supervision-reply-row">
+      <textarea aria-label="Resposta do supervisor" placeholder="Responder ao cliente como supervisor…" rows={2} maxLength={4000} value={text} disabled={sending}
+        onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} />
+      <button type="submit" disabled={!text.trim() || sending} aria-label="Enviar resposta do supervisor"><Send size={17} aria-hidden="true" />Enviar</button>
+    </div>
+    {error ? <p className="supervision-reply-error" role="alert">{error}</p> : null}
+  </form>;
 }
 
 function sellerState(seller: Seller, now: number) {
@@ -129,16 +155,16 @@ export function SupervisionPage() {
     return values.length ? values[Math.floor((values.length - 1) / 2)]! : null;
   })();
   function indicator(sellerCustomerId: string | undefined, kind: "nextAction" | "unread" | "waiting") {
-    view.changeFilters({ ...filters, status: "active", sellerCustomerId, nextAction: kind === "nextAction", unread: kind === "unread", waiting: kind === "waiting" || undefined });
+    view.changeFilters({ ...filters, status: "active", sellerCustomerId, nextAction: kind === "nextAction", unread: kind === "unread", waiting: kind === "waiting" || undefined, search: undefined });
   }
   function allSellerConversations(sellerCustomerId: string) {
-    view.changeFilters({ ...filters, sellerCustomerId, status: "all", nextAction: false, unread: false, waiting: undefined });
+    view.changeFilters({ ...filters, sellerCustomerId, status: "all", nextAction: false, unread: false, waiting: undefined, search: undefined });
   }
   const unreadPeriod = filters.unreadPeriod ?? "24h";
   const displayedConversation = thread?.conversation ?? selected;
   const today = new Date(now).toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" });
   const queueTitle = filters.waiting ? "Clientes esperando resposta" : filters.nextAction && filters.unread ? "Próxima ação e não lidas"
-    : filters.nextAction ? "Próximas ações" : filters.unread ? "Não lidas pelo vendedor" : filters.status === "closed" ? "Conversas encerradas" : "Conversas";
+    : filters.nextAction ? "Próximas ações" : filters.unread ? "Não lidas pelo vendedor" : filters.search ? `Busca: “${filters.search}”` : filters.status === "closed" ? "Conversas encerradas" : filters.status === "all" ? "Todas as conversas" : "Conversas ativas";
 
   return <main className="supervision-page">
     <header className="supervision-header">
@@ -148,8 +174,8 @@ export function SupervisionPage() {
     </header>
     <div className="supervision-content">
       <div className="supervision-title-row"><div><p className="supervision-eyebrow">Supervisão · {today}</p><h1>Sua equipe hoje</h1>
-        <p>Quem está esperando resposta, o que ficou pendente e como foi o atendimento do dia.</p></div>
-        <div className="supervision-refresh"><span><Eye size={14} aria-hidden="true" /> Somente leitura</span>
+        <p>Quem está esperando resposta, o que ficou pendente e como foi o atendimento do dia. Você lê todas as conversas e pode responder quando precisar.</p></div>
+        <div className="supervision-refresh"><span><Eye size={14} aria-hidden="true" /> Leitura e respostas do supervisor</span>
           <button type="button" onClick={view.refresh} disabled={view.loading && !view.denied}><RefreshCw size={16} aria-hidden="true" className={view.loading ? "is-refreshing" : ""} />Atualizar</button>
           {view.updatedAt ? <small>Atualizado às {view.updatedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</small> : null}
         </div>
@@ -210,13 +236,17 @@ export function SupervisionPage() {
         </section>
 
         <section className="supervision-inbox" aria-label="Caixa de entrada da supervisão">
-          <div className="supervision-filters"><label>Vendedor<select value={filters.sellerCustomerId ?? ""} onChange={event => view.changeFilters({ ...filters, sellerCustomerId: event.target.value || undefined })}><option value="">Todos os vendedores</option>{sellers.map(seller => <option key={seller.sellerCustomerId} value={seller.sellerCustomerId}>{sellerLabel(seller)}</option>)}</select></label>
+          <div className="supervision-filters"><label className="supervision-search">Buscar cliente<span><Search size={14} aria-hidden="true" /><input key={filters.search ?? ""} type="search" placeholder="Nome ou telefone" defaultValue={filters.search ?? ""}
+              onKeyDown={event => { if (event.key === "Enter") view.changeFilters({ ...filters, search: event.currentTarget.value.trim() || undefined, waiting: undefined, nextAction: false, unread: false, status: event.currentTarget.value.trim() ? "all" : filters.status }); }}
+              onBlur={event => { const value = event.currentTarget.value.trim() || undefined; if (value !== filters.search) view.changeFilters({ ...filters, search: value, waiting: undefined, nextAction: false, unread: false, status: value ? "all" : filters.status }); }} /></span></label>
+            <label>Vendedor<select value={filters.sellerCustomerId ?? ""} onChange={event => view.changeFilters({ ...filters, sellerCustomerId: event.target.value || undefined })}><option value="">Todos os vendedores</option>{sellers.map(seller => <option key={seller.sellerCustomerId} value={seller.sellerCustomerId}>{sellerLabel(seller)}</option>)}</select></label>
             <label>Conversas<select value={filters.status} onChange={event => view.changeFilters({ ...filters, status: event.target.value as typeof filters.status, waiting: undefined })}><option value="active">Ativas</option><option value="closed">Encerradas</option><option value="all">Todas</option></select></label>
             <label>Período das não lidas<select value={unreadPeriod} onChange={event => view.changeFilters({ ...filters, unreadPeriod: event.target.value as SupervisionUnreadPeriod })}>{Object.entries(unreadPeriodLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             <div className="supervision-toggle-group" aria-label="Indicadores">
               {insights ? <button type="button" className={`supervision-filter-waiting${filters.waiting ? " is-active" : ""}`} aria-pressed={!!filters.waiting} onClick={() => view.changeFilters({ ...filters, status: "active", nextAction: false, unread: false, waiting: filters.waiting ? undefined : true })}>Esperando resposta</button> : null}
               <button type="button" className={`supervision-filter-pending${filters.nextAction ? " is-active" : ""}`} aria-pressed={filters.nextAction} onClick={() => view.changeFilters({ ...filters, nextAction: !filters.nextAction, waiting: undefined })}>Próxima ação</button>
-              <button type="button" className={filters.unread ? "is-active" : ""} aria-pressed={filters.unread} onClick={() => view.changeFilters({ ...filters, unread: !filters.unread, waiting: undefined })}>Não lidas</button></div>
+              <button type="button" className={filters.unread ? "is-active" : ""} aria-pressed={filters.unread} onClick={() => view.changeFilters({ ...filters, unread: !filters.unread, waiting: undefined })}>Não lidas</button>
+              <button type="button" className={!filters.waiting && !filters.nextAction && !filters.unread && filters.status === "all" ? "is-active" : ""} onClick={() => view.changeFilters({ ...filters, status: "all", nextAction: false, unread: false, waiting: undefined })}>Todas as conversas</button></div>
           </div>
           {view.queueError ? <div className="supervision-error" role="alert">{view.queueError}<button type="button" onClick={view.refresh}>Tentar novamente</button></div> : null}
           <div className={`supervision-columns${selected ? " has-selection" : ""}`}>
@@ -246,7 +276,7 @@ export function SupervisionPage() {
                 {view.threadError ? <div className="supervision-error" role="alert">{view.threadError}<button type="button" onClick={view.refresh}>Tentar novamente</button></div> : null}
                 <div className="supervision-history">{thread?.messages.map(message => <ThreadMessage key={message.id} message={message} getToken={getToken} transport={transport} />)}
                   {!thread ? <p className="supervision-empty" role="status">{view.threadLoading ? "Carregando histórico…" : "Histórico indisponível."}</p> : !thread.messages.length ? <p className="supervision-empty">Esta conversa ainda não tem mensagens.</p> : null}</div>
-                <footer className="supervision-read-only"><Eye size={16} aria-hidden="true" /><span>Somente leitura. As ações e a leitura de mensagens continuam com o vendedor.</span></footer>
+                <SupervisorReply key={conversationKey(displayedConversation)} conversation={displayedConversation} getToken={getToken} onSent={view.refresh} />
               </> : <div className="supervision-thread-empty"><Eye size={30} aria-hidden="true" /><h2>Escolha uma conversa</h2><p>Você vê o histórico completo, o que o cliente pediu e o que o vendedor precisa fazer.</p>{view.threadError ? <p role="alert">{view.threadError}</p> : null}</div>}
             </section>
           </div>

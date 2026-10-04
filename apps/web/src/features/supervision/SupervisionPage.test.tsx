@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupervisionConversation, SupervisionPage as QueuePage, SupervisionSummary, SupervisionThread, MessageDto } from "@prymeira-talk/shared";
 import { SupervisionPage } from "./SupervisionPage";
-import { apiSupervisionConversations, apiSupervisionSummary, apiSupervisionThread, apiSupervisionMedia, SupervisionApiError } from "../../app/supervision-api";
+import { apiSupervisionConversations, apiSupervisionSummary, apiSupervisionThread, apiSupervisionMedia, apiSupervisionReply, SupervisionApiError } from "../../app/supervision-api";
 import { apiGetAudioTranscription, apiGetInboxMedia } from "../../app/api";
 
 const getToken = vi.hoisted(() => vi.fn(async () => "supervisor-token"));
@@ -12,7 +12,7 @@ vi.mock("../../app/auth", () => ({ useTalkAuth: () => ({ getToken }) }));
 vi.mock("../../app/supervision-api", async importOriginal => ({
   ...await importOriginal<typeof import("../../app/supervision-api")>(),
   apiSupervisionConversations: vi.fn(), apiSupervisionSummary: vi.fn(), apiSupervisionThread: vi.fn(),
-  apiSupervisionMedia: vi.fn(), apiSupervisionPreview: vi.fn()
+  apiSupervisionMedia: vi.fn(), apiSupervisionPreview: vi.fn(), apiSupervisionReply: vi.fn()
 }));
 vi.mock("../../app/api", () => ({ apiGetAudioTranscription: vi.fn(), apiGetInboxMedia: vi.fn(), apiGetPdfPreview: vi.fn(), apiGetVideoPoster: vi.fn() }));
 
@@ -67,7 +67,7 @@ describe("supervisão somente de leitura", () => {
     const link = [...container.querySelectorAll<HTMLAnchorElement>("a")].find(element => element.textContent === "Abrir no mapa")!;
     expect(link.href).toContain("-23.55"); expect(link.href).toContain("-46.63");
     expect(apiSupervisionMedia).not.toHaveBeenCalled();
-    expect(container.querySelector("textarea")).toBeNull();
+    expect(apiSupervisionReply).not.toHaveBeenCalled();
   });
 
   it("uses full server summary counts beyond the first 50 rows and starts with the customers waiting for an answer", async () => {
@@ -125,8 +125,8 @@ describe("supervisão somente de leitura", () => {
     await open(1);
     const timestamp = container.querySelector<HTMLTimeElement>('.supervision-message time[datetime="2025-03-10T14:25:30Z"]')!;
     expect(timestamp.textContent).toBe(new Date(oldMessage.createdAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }));
-    expect(container.textContent).toContain("Pedido respondido"); expect(container.textContent).toContain("Somente leitura");
-    expect(container.querySelector("textarea")).toBeNull(); expect(apiGetAudioTranscription).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Pedido respondido"); expect(container.textContent).toContain("o vendedor verá que foi o supervisor");
+    expect(apiSupervisionReply).not.toHaveBeenCalled(); expect(apiGetAudioTranscription).not.toHaveBeenCalled();
   });
 
   it("aborts stale unread-period summaries and lists before showing the new period's counts", async () => {
@@ -171,11 +171,30 @@ describe("supervisão somente de leitura", () => {
     expect(container.textContent).toContain("2 não lidas");
     expect(container.textContent).toContain("+5511999999999");
     expect(button("Ver transcrição")).toBeUndefined();
-    expect(container.querySelector("textarea")).toBeNull();
+    expect(apiSupervisionReply).not.toHaveBeenCalled();
     expect(apiGetAudioTranscription).not.toHaveBeenCalled(); expect(apiGetInboxMedia).not.toHaveBeenCalled(); expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
 
+  it("lets the supervisor answer a customer through the seller's conversation, only when they press Enviar", async () => {
+    vi.mocked(apiSupervisionReply).mockResolvedValue(message({ id: "sent", direction: "outbound", body: "Oi, aqui é o gerente", sentBySupervisor: true }));
+    await render(); await open();
+    const box = container.querySelector<HTMLTextAreaElement>('[aria-label="Resposta do supervisor"]')!;
+    expect(container.textContent).toContain("Sua resposta sai pelo WhatsApp de Marina");
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "Oi, aqui é o gerente"); box.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(apiSupervisionReply).not.toHaveBeenCalled();
+    await click(container.querySelector<HTMLButtonElement>('[aria-label="Enviar resposta do supervisor"]')!);
+    expect(apiSupervisionReply).toHaveBeenCalledWith("workspace-1", "c1", "Oi, aqui é o gerente", expect.any(Function));
+    expect(box.value).toBe("");
+  });
+  it("searches every conversation by customer name or phone", async () => {
+    await render();
+    const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+    await act(async () => { search.value = "Jackson"; search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(apiSupervisionConversations).toHaveBeenLastCalledWith(expect.objectContaining({ search: "Jackson", status: "all", nextAction: false, unread: false, waiting: undefined }), expect.any(Function), expect.any(AbortSignal));
+    await click(button("Todas as conversas"));
+    expect(apiSupervisionConversations).toHaveBeenLastCalledWith(expect.objectContaining({ status: "all", nextAction: false, unread: false }), expect.any(Function), expect.any(AbortSignal));
+  });
   it("can display an existing transcription without generating one", async () => {
     vi.mocked(apiSupervisionThread).mockResolvedValue({ conversation: conversation(), messages: [message({ type: "audio", body: "Transcrição: Quero um orçamento", mediaUrl: "https://example.com/audio.ogg" })] });
     await render(); await open(); await click(button("Ver transcrição"));

@@ -193,6 +193,13 @@ describe('Atendimento query/UI integration', () => {
     expect(sent).toEqual([['a.pdf', 'Proposta'], ['b.png', undefined], ['c.mp4', 'Vídeo da obra']]);
     expect(container.querySelector('.attachment-tray')).toBeNull(); expect(trayFiles('c1')).toEqual([]);
   });
+  it("marks, for the seller only, a message their supervisor sent from the supervision view", async () => {
+    vi.mocked(apiGetConversationMessages).mockImplementation(async id => [{ ...message(id), id: 'sup', direction: 'outbound', type: 'text', body: 'Aqui é o gerente', mediaUrl: null, sentBySupervisor: true }, { ...message(id), id: 'mine', direction: 'outbound', type: 'text', body: 'Resposta do vendedor', mediaUrl: null }]);
+    await render();
+    const labels = container.querySelectorAll('.message-supervisor-label');
+    expect(labels).toHaveLength(1); expect(labels[0]!.textContent).toBe('Respondido pelo supervisor');
+    expect(labels[0]!.closest('.message-bubble')?.textContent).toContain('Aqui é o gerente');
+  });
   it('opens the conversation started from Contatos, even when it is not on the loaded list yet', async () => {
     await render(); expect(container.querySelector('.chat-header h2')?.textContent).toContain('c1');
     await render(false);

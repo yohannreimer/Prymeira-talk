@@ -655,6 +655,7 @@ function mapMessageDto(record: MessageRecord, publicTalkUrl?: string): MessageDt
     sentByUserId: record.sentByUserId ?? null,
     ...(typeof metadata.editedAt === 'string' ? { editedAt: metadata.editedAt } : {}),
     ...(typeof metadata.deletedAt === 'string' ? { deletedAt: metadata.deletedAt } : {}),
+    ...(metadata.supervisorReply && typeof metadata.supervisorReply === 'object' ? { sentBySupervisor: true } : {}),
     ...whatsappPresentation(metadata, record.providerMessageId ?? null),
     createdAt: toIsoString(record.createdAt)
   };

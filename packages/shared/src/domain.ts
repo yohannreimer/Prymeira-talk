@@ -449,6 +449,8 @@ export const messageSchema = z.object({
   status: messageStatusSchema,
   sentByUserId: z.string().nullable(),
   editedAt: z.string().datetime().optional(),
+  /** Sent by the seller's supervisor from the supervision view: the seller sees who answered. */
+  sentBySupervisor: z.boolean().optional(),
   deletedAt: z.string().datetime().optional(),
   /** WhatsApp's id of this message (stanza id): replies and reactions point to it. */
   whatsappId: z.string().optional(),

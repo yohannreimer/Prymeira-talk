@@ -1,4 +1,6 @@
-import type { FastifyInstance, FastifyPluginAsync, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import { createSupervisionService } from "../supervision/supervision.service.js";
+import { SupervisionError } from "../supervision/supervision-access.js";
 import type { Prisma } from "@prisma/client";
 import { inboxViewSchema } from "@prymeira-talk/shared";
 import { z } from "zod";
@@ -729,14 +731,10 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     return result;
   });
 
-  // A 25 MB attachment travels as a data URL (4/3 of its size) inside JSON.
-  app.post("/conversations/:conversationId/messages", { bodyLimit: 36 * 1024 * 1024 }, async (request, reply) => {
-    const params = createMessageParamsSchema.safeParse(request.params);
-    const body = createMessageBodySchema.safeParse(request.body);
-
-    if (!params.success || !body.success) {
-      return reply.code(400).send({ error: "Invalid conversation message request." });
-    }
+  /** One outbound path for the seller and for a supervisor answering in their place: same agent pause, delivery,
+   * triage, follow-ups and realtime. Only where the workspace comes from, and the message's marks, differ. */
+  async function createMessage(request: FastifyRequest, reply: FastifyReply, scope: { workspaceId: string; conversationId: string; metadata?: Record<string, unknown> },
+    body: { data: z.infer<typeof createMessageBodySchema> }) {
 
     let contactCard: { fullName: string; phoneNumber: string } | undefined;
     if (body.data.contactCard) {
@@ -744,7 +742,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
         return reply.code(409).send({ code: "CONTACT_CARD_NOT_SUPPORTED", error: "O envio de contatos não está disponível neste canal." });
       }
       const source = await app.prisma.conversation.findFirst({
-        where: { id: body.data.contactCard.sourceConversationId, workspaceId: request.talk.workspaceId },
+        where: { id: body.data.contactCard.sourceConversationId, workspaceId: scope.workspaceId },
         select: { contact: { select: { name: true, phone: true } } }
       });
       if (!source?.contact.phone) return reply.code(404).send({ error: "Contato de origem não encontrado." });
@@ -754,7 +752,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       };
     }
 
-    const meta = await resolveMetaRuntime(app.prisma, { workspaceId: request.talk.workspaceId });
+    const meta = await resolveMetaRuntime(app.prisma, { workspaceId: scope.workspaceId });
     const writeService = createConversationsService(app.prisma as unknown as PrismaLike, {
       evolution: options.evolution,
       meta: {
@@ -771,26 +769,27 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     // Take control before the provider send: an agent run may be in progress.
     const humanTookControl = await app.prisma.$transaction((tx) =>
       pauseAgentOnHumanOutbound(tx, {
-        workspaceId: request.talk.workspaceId,
-        conversationId: params.data.conversationId
+        workspaceId: scope.workspaceId,
+        conversationId: scope.conversationId
       })
     );
     if (humanTookControl) {
-      request.log.info({ event: "human_outbound_paused_agent", workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId }, "Talk outbound message paused the agent.");
-      await options.assistantScheduler?.control(request.talk.workspaceId, params.data.conversationId, true).catch((error: unknown) => {
-        request.log.error({ error, workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId }, "Failed to pause assistant suggestions after Talk outbound message.");
+      request.log.info({ event: "human_outbound_paused_agent", workspaceId: scope.workspaceId, conversationId: scope.conversationId }, "Talk outbound message paused the agent.");
+      await options.assistantScheduler?.control(scope.workspaceId, scope.conversationId, true).catch((error: unknown) => {
+        request.log.error({ error, workspaceId: scope.workspaceId, conversationId: scope.conversationId }, "Failed to pause assistant suggestions after Talk outbound message.");
       });
     }
 
     const quoted = body.data.replyToMessageId && body.data.body && !body.data.attachment
-      ? await replyReference(app.prisma, request.talk.workspaceId, params.data.conversationId, body.data.replyToMessageId) : null;
+      ? await replyReference(app.prisma, scope.workspaceId, scope.conversationId, body.data.replyToMessageId) : null;
     const result = await writeService.createPendingOutboundMessage({
-      workspaceId: request.talk.workspaceId,
-      conversationId: params.data.conversationId,
+      workspaceId: scope.workspaceId,
+      conversationId: scope.conversationId,
       body: body.data.body,
       attachment: body.data.attachment,
       contactCard,
       sentByUserId: null,
+      ...(scope.metadata ? { metadata: scope.metadata } : {}),
       ...(quoted ? { quoted } : {})
     }).catch((error: unknown) => {
       if (error instanceof ConversationNotFoundError) {
@@ -821,8 +820,8 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     if (result instanceof EvolutionClientError) {
       request.log.error({
         event: "evolution_outbound_rejected",
-        workspaceId: request.talk.workspaceId,
-        conversationId: params.data.conversationId,
+        workspaceId: scope.workspaceId,
+        conversationId: scope.conversationId,
         messageType: body.data.contactCard ? "contact_card" : body.data.attachment ? "attachment" : "text",
         providerStatus: result.statusCode,
         providerResponse: result.responseBody
@@ -831,28 +830,28 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       if (isEvolutionConnectionClosedError(result)) {
         const degraded = await app.prisma.channel.updateMany({
           where: {
-            workspaceId: request.talk.workspaceId,
+            workspaceId: scope.workspaceId,
             provider: "evolution",
             status: "connected",
-            conversations: { some: { id: params.data.conversationId } }
+            conversations: { some: { id: scope.conversationId } }
           },
           data: { status: "failed" }
         }).catch((error: unknown) => {
-          request.log.error({ err: error, conversationId: params.data.conversationId }, "Failed to mark Evolution channel as unhealthy after closed connection.");
+          request.log.error({ err: error, conversationId: scope.conversationId }, "Failed to mark Evolution channel as unhealthy after closed connection.");
           return { count: 0 };
         });
         if (degraded.count > 0) {
           const channel = await app.prisma.channel.findFirst({
             where: {
-              workspaceId: request.talk.workspaceId,
+              workspaceId: scope.workspaceId,
               provider: "evolution",
-              conversations: { some: { id: params.data.conversationId } }
+              conversations: { some: { id: scope.conversationId } }
             }
           }).catch((error: unknown) => {
-            request.log.error({ err: error, conversationId: params.data.conversationId }, "Failed to load degraded Evolution channel.");
+            request.log.error({ err: error, conversationId: scope.conversationId }, "Failed to load degraded Evolution channel.");
             return null;
           });
-          if (channel) app.realtime.publish({ type: "channel.updated", workspaceId: request.talk.workspaceId, payload: toChannelDto(channel) });
+          if (channel) app.realtime.publish({ type: "channel.updated", workspaceId: scope.workspaceId, payload: toChannelDto(channel) });
         }
         return reply.code(502).send({
           code: "EVOLUTION_CONNECTION_CLOSED",
@@ -875,16 +874,16 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
 
     if (!result.conversation.isGroup && result.message.status !== "pending") {
       await options.inboxTriage?.observeMessage({
-        workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId,
+        workspaceId: scope.workspaceId, conversationId: scope.conversationId,
         messageId: result.message.id, direction: "outbound", observedAt: new Date()
       }).catch((error: unknown) => {
-        request.log.error({ err: error, conversationId: params.data.conversationId }, "Inbox triage observation failed");
+        request.log.error({ err: error, conversationId: scope.conversationId }, "Inbox triage observation failed");
       });
     }
 
     if (!result.conversation.isGroup) await options.followupService?.observeConversationActivity({
-      workspaceId: request.talk.workspaceId,
-      conversationId: params.data.conversationId,
+      workspaceId: scope.workspaceId,
+      conversationId: scope.conversationId,
       messageId: result.message.id,
       direction: "outbound",
       source: "human"
@@ -893,38 +892,68 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     });
     if (!result.conversation.isGroup && options.agentImprovements) {
       void options.agentImprovements.observeHumanReply({
-        workspaceId: request.talk.workspaceId,
-        conversationId: params.data.conversationId,
+        workspaceId: scope.workspaceId,
+        conversationId: scope.conversationId,
         messageId: result.message.id
       }).then((analysis) => {
         request.log.info({
           event: "agent_improvement_observation",
           source: "talk_outbound",
-          workspaceId: request.talk.workspaceId,
-          conversationId: params.data.conversationId,
+          workspaceId: scope.workspaceId,
+          conversationId: scope.conversationId,
           messageId: result.message.id,
           outcome: analysis.created ? "created" : "skipped",
           reason: analysis.reason ?? null
         }, "Agent improvement observation completed.");
       }).catch((error: unknown) => {
-        request.log.error({ error, event: "agent_improvement_observation_failed", source: "talk_outbound", workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId, messageId: result.message.id }, "Failed to prepare agent improvement suggestion.");
+        request.log.error({ error, event: "agent_improvement_observation_failed", source: "talk_outbound", workspaceId: scope.workspaceId, conversationId: scope.conversationId, messageId: result.message.id }, "Failed to prepare agent improvement suggestion.");
       });
     }
     if (!result.conversation.isGroup && !humanTookControl) {
-      await options.assistantScheduler?.message({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId, messageId: result.message.id, direction: 'outbound' });
+      await options.assistantScheduler?.message({ workspaceId: scope.workspaceId, conversationId: scope.conversationId, messageId: result.message.id, direction: 'outbound' });
     }
-    if (!result.conversation.isGroup) options.handoffBriefService?.schedule({ workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId });
+    if (!result.conversation.isGroup) options.handoffBriefService?.schedule({ workspaceId: scope.workspaceId, conversationId: scope.conversationId });
     app.realtime.publish({
       type: "message.created",
-      workspaceId: request.talk.workspaceId,
+      workspaceId: scope.workspaceId,
       payload: result.message
     });
     app.realtime.publish({
       type: "conversation.updated",
-      workspaceId: request.talk.workspaceId,
+      workspaceId: scope.workspaceId,
       payload: result.conversation
     });
 
     return reply.code(201).send(result.message);
+  }
+
+  // A 25 MB attachment travels as a data URL (4/3 of its size) inside JSON.
+  app.post("/conversations/:conversationId/messages", { bodyLimit: 36 * 1024 * 1024 }, async (request, reply) => {
+    const params = createMessageParamsSchema.safeParse(request.params);
+    const body = createMessageBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid conversation message request." });
+    }
+    return createMessage(request, reply, { workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId }, body);
+  });
+
+  // A supervisor may answer a customer of a seller they supervise (text only). The message goes out through the
+  // seller's channel like any other, marked so the seller sees in Talk that the supervisor answered.
+  app.post("/supervision/workspaces/:workspaceId/conversations/:conversationId/messages", async (request, reply) => {
+    const params = z.object({ workspaceId: z.string().uuid(), conversationId: z.string().uuid() }).safeParse(request.params);
+    const body = createMessageBodySchema.safeParse(request.body);
+    if (!params.success || !body.success || !body.data.body || body.data.attachment || body.data.contactCard) {
+      return reply.code(400).send({ error: "Escreva a resposta do supervisor." });
+    }
+    if (request.supervision?.kind !== "viewer") return reply.code(403).send({ error: "Acesso de supervisão necessário." });
+    const grants = request.supervision.grants;
+    try { await createSupervisionService(app.prisma).authorizedConversation(grants, params.data.workspaceId, params.data.conversationId); }
+    catch (error) {
+      if (error instanceof SupervisionError) return reply.code(error.statusCode).send({ error: error.message });
+      throw error;
+    }
+    const grant = grants.find(item => item.workspace_id === params.data.workspaceId);
+    return createMessage(request, reply, { workspaceId: params.data.workspaceId, conversationId: params.data.conversationId,
+      metadata: { supervisorReply: { supervisorCustomerId: grant?.supervisor_customer_id ?? null, at: new Date().toISOString() } } }, body);
   });
 };
