@@ -2,6 +2,8 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { createQuickRepliesService, QuickReplyNotFoundError } from "./quick-replies.service.js";
 import type { PrismaLike } from "./quick-replies.service.js";
+import { resolveOpenAiCompatibleSettings } from "../agents/ai-provider-settings.js";
+import { createOpenAiCompatibleAgentProvider } from "../agents/provider-gateway.js";
 
 const paramsSchema = z.object({ quickReplyId: z.string().uuid() });
 
@@ -57,6 +59,26 @@ export const quickRepliesRoutes: FastifyPluginAsync = async (app) => {
     const body = packSchema.safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: "Pacote de mensagens inválido." });
     return service.importPack({ workspaceId: request.talk.workspaceId, ownerUserId: request.talk.clerkUserId, replies: body.data.replies });
+  });
+
+  // The quick reply rewritten for a contact without these fields ("sem nome"): the AI once, then the saved copy.
+  app.post("/quick-replies/:quickReplyId/variant", async (request, reply) => {
+    const params = paramsSchema.safeParse(request.params);
+    const body = z.object({ missing: z.array(z.enum(["primeiro_nome", "nome", "empresa"])).min(1).max(3) }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: "Pedido inválido." });
+    const startedAt = Date.now();
+    try {
+      const result = await service.variant({ workspaceId: request.talk.workspaceId, ownerUserId: request.talk.clerkUserId, id: params.data.quickReplyId,
+        missing: body.data.missing, ai: await (async () => {
+          const settings = await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId: request.talk.workspaceId });
+          return settings.active ? { provider: createOpenAiCompatibleAgentProvider(settings), model: settings.chatModel } : null;
+        })() });
+      request.log.info({ event: "quick_reply_variant", workspaceId: request.talk.workspaceId, source: result.source, ms: Date.now() - startedAt }, "Quick reply variant resolved.");
+      return result;
+    } catch (error) {
+      if (isPrismaKnownRequestErrorCode(error, "P2025")) return reply.code(404).send({ code: "QUICK_REPLY_NOT_FOUND", error: "Quick reply not found." });
+      throw error;
+    }
   });
 
   app.patch("/quick-replies/:quickReplyId", async (request, reply) => {

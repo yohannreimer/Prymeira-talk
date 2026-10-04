@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, Forward, Search, Send, X } from 'lucide-react';
 import type { ConversationDto, MessageDto } from '@prymeira-talk/shared';
-import { apiForwardMessage, apiGetConversations } from '../../app/api';
+import { apiForwardMessages, apiGetConversations } from '../../app/api';
 import { ContactAvatar } from './ContactAvatar';
 import { contactDisplayName } from './conversation-display';
 import './forward-dialog.css';
@@ -17,6 +17,7 @@ export function displayPhone(phone: string | null | undefined) {
 
 /** What is being forwarded, in one line: the text, or the kind of file and its caption. */
 export function forwardSummary(message: MessageDto) {
+  if (message.contactCards?.length) return message.contactCards.length === 1 ? `Contato · ${message.contactCards[0]!.fullName}` : `${message.contactCards.length} contatos`;
   const caption = message.attachment?.caption?.trim();
   if (message.type === 'audio') return 'Áudio';
   if (message.type === 'image') return caption ? `Foto · ${caption}` : 'Foto';
@@ -28,8 +29,9 @@ export function forwardSummary(message: MessageDto) {
 }
 
 export function canForward(message: MessageDto) {
-  return !message.deletedAt && !message.reaction && !message.location && !message.contactCards?.length &&
-    (['image', 'audio', 'file'].includes(message.type) || (['text', 'template'].includes(message.type) && Boolean(message.body?.trim()))) &&
+  return !message.deletedAt && !message.reaction && !message.location &&
+    (message.contactCards?.length ? message.contactCards.some(card => card.phoneNumber)
+      : ['image', 'audio', 'file'].includes(message.type) || (['text', 'template'].includes(message.type) && Boolean(message.body?.trim()))) &&
     !(message.direction === 'outbound' && ['pending', 'failed'].includes(message.status));
 }
 
@@ -42,8 +44,13 @@ export function conversationMatches(conversation: ConversationDto, query: string
 }
 
 /** WhatsApp's "Enviar para": recent conversations first, a search, up to five picks, one send. */
-export function ForwardDialog({ message, sourceConversationId, conversations, getToken, onClose, onSent }: {
-  message: MessageDto;
+/** "Foto · Planta" for one message, "3 mensagens" for several. */
+export function forwardSelectionSummary(messages: MessageDto[]) {
+  return messages.length === 1 ? forwardSummary(messages[0]!) : `${messages.length} mensagens`;
+}
+
+export function ForwardDialog({ messages, sourceConversationId, conversations, getToken, onClose, onSent }: {
+  messages: MessageDto[];
   sourceConversationId: string;
   conversations: ConversationDto[];
   getToken: () => Promise<string | null>;
@@ -93,7 +100,7 @@ export function ForwardDialog({ message, sourceConversationId, conversations, ge
     if (!selected.length || busy) return;
     setBusy(true); setError(null);
     try {
-      const { results } = await apiForwardMessage(sourceConversationId, message.id, selected.map(item => item.id), getToken);
+      const { results } = await apiForwardMessages(sourceConversationId, messages.map(item => item.id), selected.map(item => item.id), getToken);
       const failed = results.filter(item => !item.ok);
       if (failed.length === results.length) throw new Error(failed[0]?.error ?? 'Não foi possível encaminhar.');
       const name = (id: string) => contactDisplayName(selected.find(item => item.id === id)!);
@@ -102,7 +109,8 @@ export function ForwardDialog({ message, sourceConversationId, conversations, ge
         setError(`Não foi para ${failed.map(item => name(item.conversationId)).join(', ')}. ${failed[0]?.error ?? ''}`.trim());
         return;
       }
-      onSent(results.length === 1 ? `Mensagem encaminhada para ${name(results[0]!.conversationId)}.` : `Mensagem encaminhada para ${results.length} conversas.`);
+      const what = messages.length === 1 ? 'Mensagem encaminhada' : `${messages.length} mensagens encaminhadas`;
+      onSent(results.length === 1 ? `${what} para ${name(results[0]!.conversationId)}.` : `${what} para ${results.length} conversas.`);
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : 'Não foi possível encaminhar.');
     } finally { setBusy(false); }
@@ -134,7 +142,7 @@ export function ForwardDialog({ message, sourceConversationId, conversations, ge
         }) : <p className="forward-empty">Nenhuma conversa encontrada.</p>}
       </div>
       <footer className={selected.length ? 'is-ready' : ''}>
-        <div className="forward-what"><Forward size={14} aria-hidden="true" /><span>{forwardSummary(message)}</span></div>
+        <div className="forward-what"><Forward size={14} aria-hidden="true" /><span>{forwardSelectionSummary(messages)}</span></div>
         {error ? <p className="forward-error" role="alert">{error}</p> : null}
         <div className="forward-send">
           <span className="forward-names">{selected.length ? selected.map(contactDisplayName).join(', ') : 'Escolha até 5 conversas'}</span>

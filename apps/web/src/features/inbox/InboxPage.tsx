@@ -6,7 +6,7 @@ import { CATALOG_STALE_MS, MAX_MESSAGES, receiptStatus } from '../../app/session
 import { LocationMessage } from './LocationMessage';
 import { needsHumanAttention } from "@prymeira-talk/shared";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bookmark, Bot, CheckCircle2, ShieldCheck, ContactRound, FileText, Forward, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
+import { Bookmark, Bot, Check, CheckCircle2, ShieldCheck, ContactRound, FileText, Forward, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
 import { quotedPreview, threadWithReactions } from "./message-threading.js";
 import { MessageTicks } from "./MessageTicks";
 import { ConversationPreview } from "./ConversationPreview";
@@ -21,6 +21,8 @@ import {
   apiCreateCrmLead,
   apiDeleteQuickReply,
   apiGetContactNameInsight,
+  apiQuickReplyVariant,
+  apiSaveContactNameInsight,
   apiImportQuickReplies,
   type ContactNameInsightDto,
   apiGetConversationContext,
@@ -53,10 +55,11 @@ import {
 import { InboxQuickFilters } from "./InboxQuickFilters";
 import { ShareContactDialog } from "./ShareContactDialog";
 import { NewConversationDialog } from "./NewConversationDialog";
-import { ContactCardDialog, ContactCardMessage } from './ContactCardDialog';
+import { ContactCardActions, ContactCardDialog, ContactCardMessage, startCardConversation } from './ContactCardDialog';
 import { QuickSendDialog } from "./QuickSendDialog";
 import { QuickRepliesManager, SlashQuickReplies, rankQuickReplies } from "./QuickRepliesPopover";
-import { greeting, renderTemplate, usesContactFields, type TemplateValues } from "./quick-reply-template";
+import { greeting, renderTemplate, usesContactFields, type TemplateFieldKey, type TemplateValues } from "./quick-reply-template";
+import { QuickReplyFill, type FillAnswer } from "./QuickReplyFill";
 import { useTalkUserName } from "../../app/auth";
 import { useRealtimeEvents } from "./useRealtimeEvents";
 import { AssistantPanel } from './AssistantPanel';
@@ -509,7 +512,10 @@ function InboxPageContent() {
   const textSendQueue = useRef(new Map<string, Promise<unknown>>());
   /** The message being replied to (WhatsApp quote); only for messages that have a WhatsApp id. */
   const [replyTarget, setReplyTarget] = useState<MessageDto | null>(null);
-  const [forwardTarget, setForwardTarget] = useState<MessageDto | null>(null);
+  /** Messages picked to forward (WhatsApp's selection mode); null when not selecting. */
+  const [forwardSelection, setForwardSelection] = useState<string[] | null>(null);
+  const [forwardOpen, setForwardOpen] = useState(false);
+  const [cardChatBusy, setCardChatBusy] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useSessionState<PendingAttachment[]>(`draftFiles:${selectedConversationId ?? 'none'}`, []);
   const [activeAttachmentId, setActiveAttachmentId] = useState<string | null>(null);
   const [isSendingAttachments, setIsSendingAttachments] = useState(false);
@@ -650,18 +656,66 @@ function InboxPageContent() {
     if (insight && !cached) nameInsights.current.set(conversation.contactId, insight);
     return { ...values, primeiro_nome: insight?.firstName ?? null, nome: insight?.fullName ?? null, empresa: insight?.company ?? null };
   }
-  async function quickReplyText(reply: QuickReplyDto) {
+  function placeQuickReply(text: string, mode: 'slash' | 'insert') {
+    if (mode === 'insert') { insertDraftText(text); return; }
+    setDraft(current => current.replace(/(^|\s)\/[\p{L}\p{N}_-]{0,30}$/u, (_all, before: string) => before) + text);
+    requestAnimationFrame(() => draftTextAreaRef.current?.focusEnd());
+  }
+  /** Fills a quick reply. When it needs the contact's name or company and Talk does not know them, it asks first
+   * (type it, or send without it) instead of leaving a sentence with a hole. "slash": the typed "/bem" is replaced. */
+  async function chooseQuickReply(reply: QuickReplyDto, mode: 'slash' | 'insert') {
+    const conversation = selectedConversation;
+    if (!conversation) return;
     setFillingReplyId(reply.id);
-    try { return renderTemplate(reply.body, await quickReplyValues(reply.body)).text; }
-    finally { setFillingReplyId(null); }
+    let values: TemplateValues;
+    try { values = await quickReplyValues(reply.body); } finally { setFillingReplyId(null); }
+    if (selectedConversationIdRef.current !== conversation.id) return;
+    const { text, missing } = renderTemplate(reply.body, values);
+    const contactMissing = missing.filter(field => field === 'primeiro_nome' || field === 'nome' || field === 'empresa');
+    if (contactMissing.length && !conversation.isGroup) {
+      setFillError(null);
+      setPendingFill({ reply, values, missing: contactMissing, mode, conversationId: conversation.id, contactId: conversation.contactId,
+        contactLabel: conversation.contactName?.trim() ? `de ${conversation.contactName.trim()}` : 'deste contato' });
+      return;
+    }
+    placeQuickReply(text, mode);
+  }
+  async function fillQuickReply(answer: FillAnswer) {
+    const fill = pendingFill;
+    if (!fill) return;
+    setFillBusy('use'); setFillError(null);
+    const known = nameInsights.current.get(fill.contactId);
+    const fullName = answer.name ?? known?.fullName ?? null;
+    const firstName = answer.name ? answer.name.split(/\s+/)[0]! : known?.firstName ?? null;
+    const company = answer.company ?? known?.company ?? null;
+    try {
+      const saved = await apiSaveContactNameInsight(getFreshToken, fill.contactId, { firstName, fullName, company, salutation: known?.salutation ?? null });
+      nameInsights.current.set(fill.contactId, saved);
+    } catch { /* Saving is for next time; the message still goes in with what was typed. */ }
+    finally { setFillBusy(null); }
+    setPendingFill(null);
+    if (selectedConversationIdRef.current === fill.conversationId) {
+      placeQuickReply(renderTemplate(fill.reply.body, { ...fill.values, primeiro_nome: firstName, nome: fullName, empresa: company }).text, fill.mode);
+    }
+  }
+  async function fillQuickReplyWithout() {
+    const fill = pendingFill;
+    if (!fill) return;
+    setFillBusy('without'); setFillError(null);
+    const variant = await apiQuickReplyVariant(getFreshToken, fill.reply.id, fill.missing).catch(() => ({ body: null }));
+    setFillBusy(null);
+    setPendingFill(null);
+    // Without an AI answer the field is simply dropped, keeping the sentence clean.
+    if (selectedConversationIdRef.current === fill.conversationId) placeQuickReply(renderTemplate(variant.body ?? fill.reply.body, fill.values).text, fill.mode);
+  }
+  function cancelQuickReplyFill() {
+    if (pendingFill?.mode === 'slash') setSlashDismissedFor(draft);
+    setPendingFill(null);
+    requestAnimationFrame(() => draftTextAreaRef.current?.focusEnd());
   }
   /** "/" menu: the typed "/bem" is replaced by the filled message, ready to review and send. */
   async function pickSlashReply(reply: QuickReplyDto) {
-    const target = selectedConversationId;
-    const text = await quickReplyText(reply);
-    if (selectedConversationIdRef.current !== target) return;
-    setDraft(current => current.replace(/(^|\s)\/[\p{L}\p{N}_-]{0,30}$/u, (_all, before: string) => before) + text);
-    requestAnimationFrame(() => draftTextAreaRef.current?.focusEnd());
+    await chooseQuickReply(reply, 'slash');
   }
   function handleComposerKey(key: string) {
     if (!slashOpen) return false;
@@ -676,6 +730,14 @@ function InboxPageContent() {
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
   }, [selectedConversationId]);
+  // A selection belongs to the conversation it was made in.
+  useEffect(() => { setForwardSelection(null); setForwardOpen(false); setPendingFill(null); }, [selectedConversationId]);
+  useEffect(() => {
+    if (!forwardSelection || forwardOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setForwardSelection(null); };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [forwardSelection, forwardOpen]);
 
 
 
@@ -734,6 +796,10 @@ function InboxPageContent() {
   const sellerName = useTalkUserName();
   const nameInsights = useRef(new Map<string, ContactNameInsightDto>());
   const [fillingReplyId, setFillingReplyId] = useState<string | null>(null);
+  const [pendingFill, setPendingFill] = useState<{ reply: QuickReplyDto; values: TemplateValues; missing: TemplateFieldKey[]; mode: 'slash' | 'insert';
+    conversationId: string; contactId: string; contactLabel: string } | null>(null);
+  const [fillBusy, setFillBusy] = useState<'use' | 'without' | null>(null);
+  const [fillError, setFillError] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissedFor, setSlashDismissedFor] = useState<string | null>(null);
   const slashMatch = /(^|\s)\/([\p{L}\p{N}_-]{0,30})$/u.exec(draft);
@@ -1500,10 +1566,36 @@ function InboxPageContent() {
   }
 
   // Actions read the current composer/context; memoized sections never capture an old draft.
+  /** Shows a conversation just started from a contact card, clearing filters that could hide it. */
+  function openStartedConversation(conversation: ConversationDto) {
+    setActiveView('all');
+    setSelectedChannelFilter('all');
+    setSearchOpen(false);
+    setSearchDraft('');
+    setSearchQuery('');
+    setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+    setSelectedConversationSnapshot(conversation);
+    setSelectedConversationId(conversation.id);
+    window.requestAnimationFrame(() => draftTextAreaRef.current?.focus());
+  }
+  /** "Conversar" on a shared contact: straight into the conversation on this channel; the dialog only if that fails. */
+  async function openCardChat(card: NonNullable<MessageDto['contactCards']>[number], messageId: string) {
+    const channelId = selectedConversation?.channelProvider === 'evolution' ? selectedConversation.channelId : null;
+    if (!channelId) { setSelectedContactCard(card); return; }
+    setCardChatBusy(messageId);
+    try { openStartedConversation(await startCardConversation(card, channelId, getToken)); }
+    catch { setSelectedContactCard(card); }
+    finally { setCardChatBusy(null); }
+  }
+  function toggleForwardPick(message: MessageDto) {
+    if (!canForward(message)) return;
+    setForwardSelection(current => !current ? [message.id] : current.includes(message.id) ? current.filter(id => id !== message.id)
+      : current.length >= 20 ? current : [...current, message.id]);
+  }
   const actionsRef = useRef({ handleManualMark, handleDismissReply, handleUndoDismiss, deleteMessageForEveryone,
-    runAction, handleCreateLead, resetSelectedConversation, handleRemoveTag, saveContactName, handleAddTag, handleAddNote, sendSuggestion, editSuggestion });
+    runAction, handleCreateLead, resetSelectedConversation, handleRemoveTag, saveContactName, handleAddTag, handleAddNote, sendSuggestion, editSuggestion, openCardChat, toggleForwardPick });
   actionsRef.current = { handleManualMark, handleDismissReply, handleUndoDismiss, deleteMessageForEveryone,
-    runAction, handleCreateLead, resetSelectedConversation, handleRemoveTag, saveContactName, handleAddTag, handleAddNote, sendSuggestion, editSuggestion };
+    runAction, handleCreateLead, resetSelectedConversation, handleRemoveTag, saveContactName, handleAddTag, handleAddNote, sendSuggestion, editSuggestion, openCardChat, toggleForwardPick };
   const conversationListView = useMemo(() => (
 <section className="conversation-list" aria-label="Atendimento">
         <header className="list-header">
@@ -1780,12 +1872,15 @@ selectedConversation ? (
               const canDelete = selectedConversation.channelProvider === 'evolution' && !selectedConversation.isGroup && message.direction === 'outbound' &&
                 Boolean(message.providerMessageId || message.whatsappId) && !message.deletedAt && ['sent', 'delivered', 'read'].includes(message.status);
               const senderName = selectedConversation.isGroup ? message.senderName ?? message.senderJid : selectedConversation.contactName;
+              const picked = Boolean(forwardSelection?.includes(message.id));
               return (
               <article
-                className={`message-bubble ${isInbound ? "is-inbound" : "is-outbound"}`}
+                className={`message-bubble ${isInbound ? "is-inbound" : "is-outbound"}${forwardSelection ? ' is-selecting' : ''}${picked ? ' is-picked' : ''}${forwardSelection && !canForward(message) ? ' is-unpickable' : ''}`}
                 data-message-id={message.id}
                 key={message.id}
+                onClickCapture={forwardSelection ? (event) => { event.preventDefault(); event.stopPropagation(); actionsRef.current.toggleForwardPick(message); } : undefined}
               >
+                {forwardSelection ? <span className="message-pick" role="checkbox" aria-checked={picked} aria-label="Selecionar mensagem">{picked ? <Check size={13} strokeWidth={3} /> : null}</span> : null}
                 {isInbound ? (
                   <ContactAvatar conversationId={selectedConversation?.id} name={senderName} className="msg-avatar" />
                 ) : null}
@@ -1806,11 +1901,13 @@ selectedConversation ? (
                       avatarName={message.type !== 'audio' ? undefined : isInbound ? senderName : selectedConversation.channelName ?? 'Você'} />
                     {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
                     {attachmentReadNotice(message) && !message.attachment?.isGif ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
-                  </> : message.location ? <LocationMessage location={message.location} /> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} onSelect={setSelectedContactCard} /> : (
+                  </> : message.location ? <LocationMessage location={message.location} /> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} conversationId={selectedConversation.id} onSelect={setSelectedContactCard} /> : (
                     <p className="message-text"><WhatsappText text={messageDisplayText(message)} /><span className="message-meta-spacer" aria-hidden="true">{meta}</span>
                       <span className="message-bubble-meta">{meta}</span></p>
                   )}
                   {inlineMeta ? null : <div className="message-bubble-meta">{meta}</div>}
+                  {message.contactCards?.length && !message.location ? <ContactCardActions cards={message.contactCards} busy={cardChatBusy === message.id}
+                    onChat={card => { void actionsRef.current.openCardChat(card, message.id); }} /> : null}
                   {outboundStatusLabel(message) ? (
                     <span className={`message-send-state message-send-state--${message.status}`}>
                       {outboundStatusLabel(message)}
@@ -1822,7 +1919,7 @@ selectedConversation ? (
                     </div>
                   ) : null}
                 </div>
-                {canReply || canDelete || canForward(message) ? (
+                {!forwardSelection && (canReply || canDelete || canForward(message)) ? (
                   <div className="message-actions">
                     {canReply ? (
                       <button type="button" className="message-action" title="Responder" aria-label="Responder esta mensagem"
@@ -1832,7 +1929,7 @@ selectedConversation ? (
                     ) : null}
                     {canForward(message) ? (
                       <button type="button" className="message-action" title="Encaminhar" aria-label="Encaminhar esta mensagem"
-                        onClick={() => setForwardTarget(message)}>
+                        onClick={() => actionsRef.current.toggleForwardPick(message)}>
                         <Forward size={15} aria-hidden="true" />
                       </button>
                     ) : null}
@@ -1869,7 +1966,7 @@ selectedConversation ? (
           </div>
         )
   ), [selectedConversation, selectedConversationId, visibleMessages, thread, isThreadTransitioning, isLoadingMessages,
-    messageError, sendFailure, newMessagesBelow, deletingMessageId, getToken, getFreshToken, session]);
+    messageError, sendFailure, newMessagesBelow, deletingMessageId, getToken, getFreshToken, session, forwardSelection, cardChatBusy]);
   const sidebarView = useMemo(() => (
 <aside className={`contact-panel assistant-contact-panel${assistantOpen ? ' assistant-drawer-open' : ''}`} aria-label="Contato e IA de apoio">
         {selectedConversation?.isGroup ? <>
@@ -2131,9 +2228,17 @@ selectedConversation ? (
         {historyView}
 
         <div className="composer-shell">
+          {forwardSelection ? <div className="forward-select-bar" role="toolbar" aria-label="Mensagens selecionadas">
+            <button type="button" className="forward-select-cancel" aria-label="Cancelar seleção" onClick={() => setForwardSelection(null)}><X size={18} /></button>
+            <span>{forwardSelection.length === 0 ? 'Toque nas mensagens para selecionar' : forwardSelection.length === 1 ? '1 selecionada' : `${forwardSelection.length} selecionadas`}</span>
+            <button type="button" className="forward-select-go" disabled={!forwardSelection.length} onClick={() => setForwardOpen(true)}><Forward size={16} aria-hidden="true" />Encaminhar</button>
+          </div> : null}
           {!selectedConversation?.isGroup ? <button ref={assistantTriggerRef} type="button" className="assistant-mobile-trigger" onClick={() => { setAssistantTab('assistant'); setAssistantOpen(true); }} disabled={!selectedConversation}><MessageSquare size={15} /> IA de apoio <span>{handoffBrief ? 'Próxima ação' : assistant.data?.status === 'ready' ? 'Sugestão pronta' : 'Abrir'}</span></button> : null}
           {composerOrigin ? <div className="assistant-composer-origin"><span>{originNeedsReview ? 'A conversa mudou. Confira o rascunho.' : 'Sugestão em edição. O texto enviado ficará registrado.'}</span>{originNeedsReview ? <button type="button" disabled={!assistant.data?.currentContextKey} onClick={() => setComposerOrigin(current => current && assistant.data?.currentContextKey ? { ...current, contextKey: assistant.data.currentContextKey } : current)}>Revisei o contexto</button> : null}</div> : null}
-          {selectedConversation && slashOpen && !composerOrigin ? <SlashQuickReplies replies={slashResults} query={slashQuery} activeIndex={slashIndex}
+          {pendingFill && pendingFill.conversationId === selectedConversationId ? <QuickReplyFill title={pendingFill.reply.title} missing={pendingFill.missing}
+            contactLabel={pendingFill.contactLabel} busy={fillBusy} error={fillError} onUse={answer => void fillQuickReply(answer)}
+            onWithout={() => void fillQuickReplyWithout()} onCancel={cancelQuickReplyFill} /> : null}
+          {selectedConversation && slashOpen && !composerOrigin && !pendingFill ? <SlashQuickReplies replies={slashResults} query={slashQuery} activeIndex={slashIndex}
             loading={isQuickRepliesLoading} fillingId={fillingReplyId} onHover={setSlashIndex} onPick={reply => void pickSlashReply(reply)}
             onManage={() => { setSlashDismissedFor(draft); setShowQuickReplies(true); }} /> : null}
           {showQuickReplies ? (
@@ -2145,7 +2250,7 @@ selectedConversation ? (
                 primeiro_nome: (selectedConversation && !selectedConversation.isGroup ? selectedConversation.contactName : null)?.split(' ')[0] ?? 'Jackson',
                 empresa: (selectedConversation ? nameInsights.current.get(selectedConversation.contactId)?.company : null) ?? 'Construtora Alfa' }}
               onClose={() => setShowQuickReplies(false)}
-              onUse={(reply) => { setShowQuickReplies(false); void quickReplyText(reply).then(text => insertDraftText(text)); }}
+              onUse={(reply) => { setShowQuickReplies(false); void chooseQuickReply(reply, 'insert'); }}
               onCreate={async (input) => {
                 const created = await apiCreateQuickReply(getToken, input);
                 setQuickReplies((current) => [created, ...current]);
@@ -2273,8 +2378,9 @@ selectedConversation ? (
 
       {sidebarView}
 
-      {forwardTarget && selectedConversation ? <ForwardDialog message={forwardTarget} sourceConversationId={selectedConversation.id} conversations={conversations}
-        getToken={getToken} onClose={() => setForwardTarget(null)} onSent={(notice) => { setForwardTarget(null); setSendNotice(notice); }} /> : null}
+      {forwardOpen && forwardSelection?.length && selectedConversation ? <ForwardDialog messages={visibleMessages.filter(message => forwardSelection.includes(message.id))}
+        sourceConversationId={selectedConversation.id} conversations={conversations} getToken={getToken} onClose={() => setForwardOpen(false)}
+        onSent={(notice) => { setForwardOpen(false); setForwardSelection(null); setSendNotice(notice); }} /> : null}
       {shareContactOpen && selectedConversation ? <ShareContactDialog source={selectedConversation} getToken={getToken} onClose={() => setShareContactOpen(false)} onSent={(name, contextImages) => { setShareContactOpen(false); setSendNotice(contextImages ? `Contato e histórico enviados para ${name}.` : `Contato enviado para ${name}; a conversa ainda não tem mensagens para compartilhar.`); setConversationReloadKey((current) => current + 1); }} /> : null}
       {newConversationOpen ? <NewConversationDialog channels={channels} getToken={getToken} onClose={() => setNewConversationOpen(false)} onOpened={(conversation) => {
         setNewConversationOpen(false);
@@ -2288,18 +2394,7 @@ selectedConversation ? (
         setSelectedConversationId(conversation.id);
         window.requestAnimationFrame(() => draftTextAreaRef.current?.focus());
       }} /> : null}
-      {selectedContactCard ? <ContactCardDialog card={selectedContactCard} channels={channels} currentChannelId={selectedConversation?.channelId} getToken={getToken} onClose={() => setSelectedContactCard(null)} onOpened={(conversation) => {
-        setSelectedContactCard(null);
-        setActiveView('all');
-        setSelectedChannelFilter('all');
-        setSearchOpen(false);
-        setSearchDraft('');
-        setSearchQuery('');
-        setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
-        setSelectedConversationSnapshot(conversation);
-        setSelectedConversationId(conversation.id);
-        window.requestAnimationFrame(() => draftTextAreaRef.current?.focus());
-      }} /> : null}
+      {selectedContactCard ? <ContactCardDialog card={selectedContactCard} conversationId={selectedConversation?.id} channels={channels} currentChannelId={selectedConversation?.channelId} getToken={getToken} onClose={() => setSelectedContactCard(null)} onOpened={(conversation) => { setSelectedContactCard(null); openStartedConversation(conversation); }} /> : null}
       {quickSendOpen ? <QuickSendDialog channels={channels} initialChannelId={selectedConversation?.channelId} getToken={getToken} onClose={() => setQuickSendOpen(false)} onSent={() => setConversationReloadKey((current) => current + 1)} /> : null}
     </section>
   );

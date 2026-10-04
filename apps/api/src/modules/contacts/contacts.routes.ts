@@ -92,12 +92,12 @@ export const contactsRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntime }
   // The team corrects it by hand; a manual answer always wins over the AI's.
   app.put("/contacts/:contactId/name-insight", async (request, reply) => {
     const params = contactParamsSchema.safeParse(request.params);
-    const body = z.object({ firstName: z.string().trim().max(60).nullable(), company: z.string().trim().max(120).nullable(),
-      salutation: z.string().trim().max(10).nullable().optional() }).safeParse(request.body);
+    const body = z.object({ firstName: z.string().trim().max(60).nullable(), fullName: z.string().trim().max(120).nullable().optional(),
+      company: z.string().trim().max(120).nullable(), salutation: z.string().trim().max(10).nullable().optional() }).safeParse(request.body);
     if (!params.success || !body.success) return reply.code(400).send({ error: "Dados inválidos." });
     const contact = await app.prisma.contact.findFirst({ where: { workspaceId: request.talk.workspaceId, id: params.data.contactId }, select: { customFields: true } });
     if (!contact) return reply.code(404).send({ error: "Contato não encontrado." });
-    const insight = { firstName: body.data.firstName || null, fullName: body.data.firstName || null, company: body.data.company || null,
+    const insight = { firstName: body.data.firstName || null, fullName: body.data.fullName || body.data.firstName || null, company: body.data.company || null,
       salutation: body.data.salutation || null, source: "manual" as const };
     await saveNameInsight(app.prisma, { workspaceId: request.talk.workspaceId, contactId: params.data.contactId }, insight, contact.customFields);
     return insight;

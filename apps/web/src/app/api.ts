@@ -1456,6 +1456,19 @@ export async function apiGetChannelPhoto(channelId: string, getToken: () => Prom
   });
 }
 
+export async function apiGetCardPhoto(conversationId: string, phone: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
+  return withReadDeadline(signal, async (deadline) => {
+    const token = await getRequiredToken(getToken, deadline);
+    const response = await fetch(`${apiUrl}/conversations/${encodeURIComponent(conversationId)}/card-photo/${encodeURIComponent(phone)}`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: deadline
+    });
+    if (response.status === 204) return null;
+    await assertApiReadAccess(response, token, deadline);
+    if (!response.ok) return null;
+    return response.blob();
+  });
+}
+
 export async function apiGetSavedContactPhoto(contactId: string, getToken: () => Promise<string | null>, signal?: AbortSignal) {
   return withReadDeadline(signal, async (deadline) => {
     const token = await getRequiredToken(getToken, deadline);
@@ -2556,14 +2569,21 @@ export async function apiDeleteMessageForEveryone(
     { method: 'POST' }, (data) => messageSchema.parse(data), 'Não foi possível apagar a mensagem para todos.');
 }
 
-export async function apiForwardMessage(
+export type ForwardResult = { results: Array<{ conversationId: string; ok: boolean; sent: number; error?: string }>; total: number };
+export async function apiForwardMessages(
   conversationId: string,
-  messageId: string,
+  messageIds: string[],
   targetConversationIds: string[],
   getToken: () => Promise<string | null>
-): Promise<{ results: Array<{ conversationId: string; ok: boolean; error?: string }> }> {
-  return fetchJson(getToken, `/conversations/${conversationId}/messages/${messageId}/forward`,
-    { method: 'POST', body: JSON.stringify({ targetConversationIds }) }, (data) => data as { results: Array<{ conversationId: string; ok: boolean; error?: string }> }, 'Não foi possível encaminhar a mensagem.');
+): Promise<ForwardResult> {
+  return fetchJson(getToken, `/conversations/${conversationId}/forward`,
+    { method: 'POST', body: JSON.stringify({ messageIds, targetConversationIds }) }, (data) => data as ForwardResult, 'Não foi possível encaminhar.');
+}
+
+/** The quick reply rewritten (once, by the AI, then saved) for a contact without these fields. body null: no rewrite. */
+export async function apiQuickReplyVariant(getToken: () => Promise<string | null>, quickReplyId: string, missing: string[]): Promise<{ body: string | null; source: string }> {
+  return fetchJson(getToken, `/quick-replies/${quickReplyId}/variant`, { method: 'POST', body: JSON.stringify({ missing }) },
+    (data) => data as { body: string | null; source: string }, 'Não foi possível ajustar a mensagem.');
 }
 
 export async function apiGetCurrentTalkUser(
@@ -2772,6 +2792,13 @@ export async function apiGetContactNameInsight(getToken: () => Promise<string | 
   const response = await fetch(`${apiUrl}/contacts/${encodeURIComponent(contactId)}/name-insight`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
   if (!response.ok) throw new Error("Não foi possível ler o nome do contato.");
   return response.json() as Promise<ContactNameInsightDto>;
+}
+
+/** Typed by the seller ("como chamar o cliente"): a manual answer, reused by every quick reply from now on. */
+export async function apiSaveContactNameInsight(getToken: () => Promise<string | null>, contactId: string,
+  insight: { firstName: string | null; fullName?: string | null; company: string | null; salutation?: string | null }): Promise<ContactNameInsightDto> {
+  return fetchJson(getToken, `/contacts/${encodeURIComponent(contactId)}/name-insight`, { method: 'PUT', body: JSON.stringify(insight) },
+    (data) => data as ContactNameInsightDto, 'Não foi possível salvar o nome do contato.');
 }
 
 export async function apiUploadAutomationAsset(

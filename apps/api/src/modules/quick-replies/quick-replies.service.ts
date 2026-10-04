@@ -1,3 +1,6 @@
+import type { AgentProvider } from "../agents/provider-gateway.js";
+import { bodyHash, CONTACT_FIELDS, generateVariant, variantKey } from "./quick-reply-variant.js";
+
 type DateLike = Date | string;
 
 interface QuickReplyRecord {
@@ -8,6 +11,7 @@ interface QuickReplyRecord {
   category: string | null;
   ownerUserId?: string | null;
   shortcut?: string | null;
+  variants?: unknown;
   createdAt: DateLike;
   updatedAt: DateLike;
 }
@@ -34,7 +38,7 @@ export interface PrismaLike {
     create(args: { data: { workspaceId: string; title: string; body: string; category?: string | null; ownerUserId?: string | null; shortcut?: string | null } }): Promise<QuickReplyRecord>;
     update(args: {
       where: { workspaceId_id: { workspaceId: string; id: string } };
-      data: Partial<{ title: string; body: string; category: string | null; shortcut: string | null }>;
+      data: Partial<{ title: string; body: string; category: string | null; shortcut: string | null; variants: Record<string, unknown> }>;
     }): Promise<QuickReplyRecord>;
     delete(args: { where: { workspaceId_id: { workspaceId: string; id: string } } }): Promise<QuickReplyRecord>;
   };
@@ -108,6 +112,30 @@ export function createQuickRepliesService(prisma: PrismaLike) {
     async delete(input: { workspaceId: string; ownerUserId?: string | null; id: string }) {
       await owned(input.workspaceId, input.id, input.ownerUserId);
       await prisma.quickReply.delete({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.id } } });
+    },
+
+    /**
+     * The message for a contact without some fields (no name, no company…): rewritten once by the AI and saved on the
+     * quick reply, so every later use is instant and identical. Editing the body makes the saved rewrite stale.
+     * Returns null when there is no AI or it gave nothing usable: the composer then just drops the field.
+     */
+    async variant(input: { workspaceId: string; ownerUserId?: string | null; id: string; missing: string[];
+      ai: { provider: Pick<AgentProvider, "generate">; model: string } | null }) {
+      const record = await owned(input.workspaceId, input.id, input.ownerUserId);
+      const missing = input.missing.filter(field => (CONTACT_FIELDS as readonly string[]).includes(field));
+      if (!missing.length) return { body: record.body, source: "original" as const };
+      const key = variantKey(missing); const hash = bodyHash(record.body);
+      const variants = record.variants && typeof record.variants === "object" && !Array.isArray(record.variants) ? record.variants as Record<string, unknown> : {};
+      const saved = variants[key] as { body?: unknown; hash?: unknown } | undefined;
+      if (saved && saved.hash === hash && typeof saved.body === "string") return { body: saved.body, source: "saved" as const };
+      if (!input.ai) return { body: null, source: "none" as const };
+      const body = await generateVariant(record.body, missing, input.ai).catch(() => null);
+      if (!body) return { body: null, source: "none" as const };
+      // Rewrites of an older body are dropped as the new one is saved.
+      const fresh = Object.fromEntries(Object.entries(variants).filter(([, value]) => (value as { hash?: unknown })?.hash === hash));
+      await prisma.quickReply.update({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.id } },
+        data: { variants: { ...fresh, [key]: { body, hash, at: new Date().toISOString() } } } });
+      return { body, source: "ai" as const };
     },
 
     /** A pack exported by someone (or another account) becomes the importer's own copies; ones already there are skipped. */

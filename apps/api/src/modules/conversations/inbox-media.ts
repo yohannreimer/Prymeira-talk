@@ -168,6 +168,18 @@ export function createInboxMediaService(options: {
         return { bytes: media.bytes, mimeType: media.mimeType };
       });
     },
+    /** The WhatsApp picture of a number shared in a contact card, read through the conversation's channel. */
+    async photoForPhone(workspaceId: string, conversationId: string, phone: string) {
+      const owner = await conversation(workspaceId, conversationId);
+      const number = phone.replace(/\D/g, '');
+      if (owner.channel.provider !== 'evolution' || number.length < 8 || !options.client?.fetchProfilePicture) return null;
+      return cached(`card-photo:${workspaceId}:${owner.channel.providerKey}:${number}`, async () => {
+        const url = await options.client!.fetchProfilePicture!({ instanceName: owner.channel.providerKey, number });
+        if (!url) return null;
+        const media = await resolve({ mediaUrl: url, policy: photoPolicy });
+        return { bytes: media.bytes, mimeType: media.mimeType };
+      });
+    },
     /** The connected number's own WhatsApp picture, shown on voice notes we sent. */
     async channelPhoto(workspaceId: string, channelId: string) {
       const channel = await options.prisma.channel.findFirst({

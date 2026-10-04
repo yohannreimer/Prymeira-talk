@@ -923,6 +923,8 @@ model QuickReply {
   ownerUserId String?  @map("owner_user_id")
   /// What follows "/" in the composer, e.g. "bemvindo".
   shortcut    String?
+  /// Rewrites for contacts missing a field ("primeiro_nome", "empresa+primeiro_nome"…), each with the hash of the body it came from.
+  variants    Json     @default("{}")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
