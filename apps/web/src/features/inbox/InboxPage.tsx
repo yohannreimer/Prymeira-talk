@@ -538,6 +538,9 @@ function InboxPageContent() {
   const [newMessagesBelow, setNewMessagesBelow] = useState(0);
   /** Until when a scroll is Talk's own doing (following the latest message), not the reader's. */
   const programmaticScrollUntilRef = useRef(0);
+  /** Right after a send (or following a new message), the thread stays on the latest message whatever nudges it:
+   * the provisional message swapped for the confirmed one, delivery ticks, a photo above, Safari. */
+  const pinToLatestUntilRef = useRef(0);
   const selectedConversationIdRef = useRef<string | null>(null);
   const conversationCursorRef = useRef<string | null>(null);
   const conversationListGenerationRef = useRef(0);
@@ -632,11 +635,13 @@ function InboxPageContent() {
   function scheduleMessageThreadScroll(behavior: ScrollBehavior = "auto") {
     pendingThreadRestoreRef.current = null;
     userReadingHistoryRef.current = false;
+    pinToLatestUntilRef.current = Date.now() + 1500;
     pendingThreadScrollRef.current = behavior;
   }
 
   function followThreadContent() {
-    if ((userReadingHistoryRef.current && pendingThreadRestoreRef.current === null) || threadFollowFrameRef.current !== null) return;
+    const pinned = Date.now() < pinToLatestUntilRef.current;
+    if ((userReadingHistoryRef.current && !pinned && pendingThreadRestoreRef.current === null) || threadFollowFrameRef.current !== null) return;
     const targetId = selectedConversationIdRef.current;
     threadFollowFrameRef.current = window.requestAnimationFrame(() => {
       threadFollowFrameRef.current = null;
@@ -646,7 +651,7 @@ function InboxPageContent() {
         const bottom = Math.max(0, thread.scrollHeight - thread.clientHeight);
         thread.scrollTop = Math.min(restore, bottom); lastThreadScrollTopRef.current = thread.scrollTop;
         if (bottom - restore > 1) pendingThreadRestoreRef.current = null;
-      } else if (!userReadingHistoryRef.current) scrollMessageThreadToBottom('auto');
+      } else if (!userReadingHistoryRef.current || Date.now() < pinToLatestUntilRef.current) scrollMessageThreadToBottom('auto');
     });
   }
 
@@ -1858,6 +1863,13 @@ selectedConversation ? (
               pendingThreadRestoreRef.current = null;
               session.writeUI(`scroll:${selectedConversationId}`, thread.scrollTop, 0);
               const distanceFromBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight;
+              // Just sent: whatever pushed the thread, it goes back to the latest message (never "reading history").
+              if (Date.now() < pinToLatestUntilRef.current) {
+                userReadingHistoryRef.current = false;
+                if (distanceFromBottom > 2) followThreadContent();
+                lastThreadScrollTopRef.current = thread.scrollTop;
+                return;
+              }
               // Small shifts are layout, not the reader: the message box shrinking after a send or a photo settling
               // nudges the thread a few (fractional, on Retina/Safari) pixels. Only a real scroll up means reading history.
               if (thread.scrollTop < lastThreadScrollTopRef.current && distanceFromBottom > THREAD_FOLLOW_SLACK && Date.now() > programmaticScrollUntilRef.current) {
