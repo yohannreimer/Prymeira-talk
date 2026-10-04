@@ -58,6 +58,39 @@ describe.skipIf(!url)('assistant PostgreSQL integration', () => {
     expect(await db.message.count({ where: { workspaceId, direction: 'outbound' } })).toBe(0);
     await db.conversation.update({ where: { id: conversationId }, data: { aiControlStatus: 'agent_allowed' } });
   });
+  it('writes the suggestion again, without an error, when the customer writes while it is being prepared', async () => {
+    await db.assistantConversationState.updateMany({ where: { workspaceId }, data: { lastMessageId: null } });
+    await repository.schedule({ workspaceId, conversationId, trigger: 'inbound' });
+    await db.assistantConversationState.updateMany({ where: { workspaceId }, data: { scheduledAt: new Date(0) } });
+    let release!: () => void; let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const seen: number[] = [];
+    const scheduler = createAssistantScheduler(db, { generate: async context => {
+      seen.push(context.messages.length);
+      if (seen.length === 1) { started(); await hold; }
+      return { body: `Sugestão com ${context.messages.length} mensagens`, agentId, agentHash: context.agentHash, contextKey: context.contextKey, warnings: [], proposedActions: {} };
+    } });
+    const tick = scheduler.tick(); await ready;
+    // The second message lands before its own hook runs (or with no hook at all).
+    await db.message.create({ data: { workspaceId, conversationId, direction: 'inbound', type: 'text', status: 'delivered', body: 'E também 4 tubos.' } });
+    release(); await tick;
+    const waiting = await db.assistantConversationState.findFirstOrThrow({ where: { workspaceId } });
+    expect(waiting).toMatchObject({ status: 'pending', lastError: null });
+    await db.assistantConversationState.updateMany({ where: { workspaceId }, data: { scheduledAt: new Date(0) } });
+    await scheduler.tick();
+    expect(await db.assistantConversationState.findFirstOrThrow({ where: { workspaceId } })).toMatchObject({ status: 'ready', lastError: null });
+    const latest = await db.assistantSuggestion.findFirstOrThrow({ where: { workspaceId }, orderBy: { revision: 'desc' } });
+    expect(latest.body).toBe(`Sugestão com ${seen.at(-1)} mensagens`);
+    expect(seen.at(-1)).toBe(seen[0]! + 1);
+  });
+  it('refreshes a ready suggestion that the customer has outdated', async () => {
+    const state = await db.assistantConversationState.findFirstOrThrow({ where: { workspaceId } });
+    const last = await db.message.findFirstOrThrow({ where: { workspaceId, conversationId }, orderBy: { createdAt: 'desc' } });
+    expect(await repository.refresh(state, last.id)).toBe(true);
+    expect(await repository.refresh(state, last.id)).toBe(false);
+    expect(await db.assistantConversationState.findFirstOrThrow({ where: { workspaceId } })).toMatchObject({ status: 'pending', lastError: null });
+  });
   it('recovers an expired lease and enforces the retry cap', async () => {
     await db.assistantConversationState.updateMany({ where: { workspaceId }, data: { status: 'generating', attempts: 1, leaseUntil: new Date(0) } });
     expect((await repository.due()).some(s => s.workspaceId === workspaceId)).toBe(true);

@@ -52,6 +52,22 @@ export function createAssistantRepository(prisma: PrismaClient) {
       await prisma.assistantConversationState.updateMany({ where: { id: state.id, workspaceId: state.workspaceId, leaseToken },
         data: { status: 'stale', lastError: null, scheduledAt: null } });
     },
+    /**
+     * The conversation changed while the suggestion was being written (the customer sent another message, edited one…):
+     * write it again shortly with the new messages instead of showing an error. Bounded by `attempts` (reset by a new
+     * customer message), so a conversation that keeps changing cannot loop forever.
+     */
+    async requeue(state: AssistantConversationState, leaseToken: string, lastMessageId: string, delayMs = 3_000) {
+      const result = await prisma.assistantConversationState.updateMany({ where: { id: state.id, workspaceId: state.workspaceId, revision: state.revision, leaseToken },
+        data: { status: 'pending', lastMessageId, revision: { increment: 1 }, scheduledAt: new Date(Date.now() + delayMs), lastError: null, leaseToken: null, leaseUntil: null } });
+      return result.count === 1;
+    },
+    /** A ready suggestion (or one that gave up) no longer matches the conversation and the customer spoke last: refresh it. */
+    async refresh(state: AssistantConversationState, lastMessageId: string) {
+      const result = await prisma.assistantConversationState.updateMany({ where: { id: state.id, workspaceId: state.workspaceId, revision: state.revision, status: { in: ['ready', 'failed'] }, leaseToken: null },
+        data: { status: 'pending', lastMessageId, revision: { increment: 1 }, scheduledAt: new Date(Date.now() + 1_500), lastError: null, attempts: 0, instruction: null, requestedById: null } });
+      return result.count === 1;
+    },
     async releaseLease(state: AssistantConversationState, leaseToken: string) {
       await prisma.assistantConversationState.updateMany({ where: { id: state.id, workspaceId: state.workspaceId, leaseToken }, data: { leaseToken: null, leaseUntil: null } });
     },

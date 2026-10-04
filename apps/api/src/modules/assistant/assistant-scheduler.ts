@@ -43,7 +43,15 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
             if (prospecting && prospecting.status !== "stopped") return false;
             return (current.conversation.aiControlStatus === 'agent_allowed' || current.humanSupport) && current.contextKey === context.contextKey;
           });
-          if (!published) await repository.fail(state, token, 'A conversa mudou. Solicite uma nova sugestão.');
+          if (!published) {
+            // The conversation moved on while this was written: write it again with the new messages, never an error.
+            const current = await loadContext(prisma, state.workspaceId, state.conversationId).catch(() => null);
+            const last = current?.messages.at(-1);
+            if (!current || current.conversation.aiControlStatus !== 'agent_allowed' && !current.humanSupport) await repository.dismiss(state, token);
+            else if (last?.direction === 'inbound' && state.attempts < 4) await repository.requeue(state, token, last.id);
+            else if (last?.direction !== 'inbound' && !state.requestedById) await repository.dismiss(state, token);
+            else await repository.fail(state, token, 'A conversa mudou várias vezes seguidas. Gere a sugestão novamente.');
+          }
         } catch (error) {
           // Provider responses may contain credentials or customer data: do not persist raw errors.
           await repository.fail(state, token, error instanceof AssistantError ? error.message : 'Não foi possível gerar a sugestão. Tente novamente.');

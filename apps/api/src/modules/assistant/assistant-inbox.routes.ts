@@ -60,6 +60,12 @@ export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantSch
     let status = assistantDraftStatusSchema.catch('stale').parse(state?.status ?? 'stale');
     if (humanControlled && !humanSupport) status = 'paused';
     if (status === 'ready' && history[0]?.contextKey !== context?.contextKey) status = 'stale';
+    // The customer spoke after the suggestion (or it gave up because the conversation changed mid-way): write a new one
+    // by itself, as the panel promises, instead of asking the seller to request it.
+    const lastMessage = context?.messages.at(-1);
+    const outdated = status === 'stale' && state?.status === 'ready' || state?.status === 'failed' && state.lastError?.startsWith('A conversa mudou');
+    if (state && outdated && lastMessage?.direction === 'inbound' && status !== 'paused' && options.scheduler
+      && await options.scheduler.repository.refresh(state, lastMessage.id)) status = 'pending';
     // After our own last message only a follow-up the seller asked for is shown as in progress (or failed); a leftover
     // automatic suggestion is not, so the panel never says "preparing" or "failed" for something nobody requested.
     const requested = Boolean(state?.requestedById);
