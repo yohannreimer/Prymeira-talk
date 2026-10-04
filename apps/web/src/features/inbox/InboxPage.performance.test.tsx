@@ -285,16 +285,17 @@ describe('Atendimento query/UI integration', () => {
     const count = scroll.mock.calls.length; heights.c1 = 1300;
     await act(async () => { ContentResizeObserver.instances[0].changed(); ContentResizeObserver.instances[0].changed(); await vi.advanceTimersByTimeAsync(20); });
     expect(thread.scrollTop).toBe(1000); expect(scroll).toHaveBeenCalledTimes(count + 1);
-    // Right after Talk follows the latest message, small movements are Talk's own (Safari keeps animating); a reader
-    // scrolling up a moment later is reading history.
-    thread.scrollTop = 990; await act(async () => thread.dispatchEvent(new Event('scroll')));
-    expect(session.readUI('scrollFollow:c1', true)).toBe(true);
-    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    // A movement nobody made (the layout nudging the thread, Safari) is undone: the reader keeps the latest message.
+    thread.scrollTop = 940; await act(async () => { thread.dispatchEvent(new Event('scroll')); await vi.advanceTimersByTimeAsync(20); });
+    expect(thread.scrollTop).toBe(1000); expect(session.readUI('scrollFollow:c1', true)).toBe(true);
+    // The reader scrolling up (wheel/trackpad) is reading history.
+    await act(async () => { thread.dispatchEvent(new Event('wheel', { bubbles: true })); });
     thread.scrollTop = 970; await act(async () => thread.dispatchEvent(new Event('scroll')));
     expect(session.readUI('scrollFollow:c1', true)).toBe(false);
     await act(async () => { heights.c1 = 1400; ContentResizeObserver.instances[0].changed(); await vi.advanceTimersByTimeAsync(20); });
     expect(thread.scrollTop).toBe(970);
     heights.c1 = 1600; ContentResizeObserver.instances[0].changed();
+    await act(async () => { thread.dispatchEvent(new Event('wheel', { bubbles: true })); });
     thread.scrollTop = 250; await act(async () => { thread.dispatchEvent(new Event('scroll')); await vi.advanceTimersByTimeAsync(20); });
     expect(thread.scrollTop).toBe(250);
     await act(async () => { heights.c1 = 1800; ContentResizeObserver.instances[0].changed(); await vi.advanceTimersByTimeAsync(20); });
@@ -304,7 +305,7 @@ describe('Atendimento query/UI integration', () => {
     expect(thread.scrollTop).toBe(250);
     await select('c2'); expect(thread.scrollTop).toBe(1200);
     await select('c1'); expect(thread.scrollTop).toBe(1500);
-    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    await act(async () => { thread.dispatchEvent(new Event('wheel', { bubbles: true })); });
     thread.scrollTop = 350; await act(async () => thread.dispatchEvent(new Event('scroll')));
     await render(false); heights.c1 = 450; await render(); await act(async () => { await vi.advanceTimersByTimeAsync(40); });
     expect(container.querySelector<HTMLDivElement>('.message-thread')?.scrollTop).toBe(150);

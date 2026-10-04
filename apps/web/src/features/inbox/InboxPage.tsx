@@ -91,6 +91,7 @@ function ConversationCardTime({ value }: { value: string | null }) {
 const CONVERSATION_PAGE_SIZE = 50;
 /** How far from the end the thread may sit and still count as "at the latest message". */
 const THREAD_FOLLOW_SLACK = 24;
+const THREAD_SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 /** Same as the server's media limit (MAX_SERVE_MEDIA_BYTES): what is sent can always be opened again. */
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const EMPTY_CONVERSATIONS: ConversationDto[] = [];
@@ -536,11 +537,10 @@ function InboxPageContent() {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showQuickReplies, setShowQuickReplies] = useState(false);
   const [newMessagesBelow, setNewMessagesBelow] = useState(0);
-  /** Until when a scroll is Talk's own doing (following the latest message), not the reader's. */
-  const programmaticScrollUntilRef = useRef(0);
-  /** Right after a send (or following a new message), the thread stays on the latest message whatever nudges it:
-   * the provisional message swapped for the confirmed one, delivery ticks, a photo above, Safari. */
-  const pinToLatestUntilRef = useRef(0);
+  /** Until when a scroll comes from the reader (wheel, trackpad, touch, keys, scrollbar, a quote click). Any other
+   * movement is the layout changing (a message swapped for its confirmed copy, ticks, a photo loading, Safari) and
+   * never means "reading history". */
+  const readerScrollUntilRef = useRef(0);
   const selectedConversationIdRef = useRef<string | null>(null);
   const conversationCursorRef = useRef<string | null>(null);
   const conversationListGenerationRef = useRef(0);
@@ -617,9 +617,6 @@ function InboxPageContent() {
     if (!thread) return;
 
     const bottom = Math.max(0, thread.scrollHeight - thread.clientHeight);
-    // Movements right after Talk scrolls (the animation settling, Safari finishing a smooth scroll, photos above
-    // loading) are Talk's own, never the reader going back in history.
-    programmaticScrollUntilRef.current = Date.now() + (behavior === 'smooth' ? 900 : 400);
     thread.scrollTo({ top: bottom, behavior });
     if (behavior === 'auto') thread.scrollTop = bottom;
     lastThreadScrollTopRef.current = thread.scrollTop;
@@ -632,16 +629,25 @@ function InboxPageContent() {
     setNewMessagesBelow(0);
   }
 
+  /** A scroll the reader makes (wheel, trackpad, touch, keys, scrollbar): it may take the thread back in history. */
+  function markReaderScroll() {
+    readerScrollUntilRef.current = Date.now() + 800;
+  }
+  /** Clicking a quote moves the thread on purpose: the reader is now looking back in history. */
+  function revealQuotedMessage(messageId: string) {
+    userReadingHistoryRef.current = true;
+    readerScrollUntilRef.current = Date.now() + 1500;
+    revealMessage(messageId);
+  }
+
   function scheduleMessageThreadScroll(behavior: ScrollBehavior = "auto") {
     pendingThreadRestoreRef.current = null;
     userReadingHistoryRef.current = false;
-    pinToLatestUntilRef.current = Date.now() + 1500;
     pendingThreadScrollRef.current = behavior;
   }
 
   function followThreadContent() {
-    const pinned = Date.now() < pinToLatestUntilRef.current;
-    if ((userReadingHistoryRef.current && !pinned && pendingThreadRestoreRef.current === null) || threadFollowFrameRef.current !== null) return;
+    if ((userReadingHistoryRef.current && pendingThreadRestoreRef.current === null) || threadFollowFrameRef.current !== null) return;
     const targetId = selectedConversationIdRef.current;
     threadFollowFrameRef.current = window.requestAnimationFrame(() => {
       threadFollowFrameRef.current = null;
@@ -651,7 +657,7 @@ function InboxPageContent() {
         const bottom = Math.max(0, thread.scrollHeight - thread.clientHeight);
         thread.scrollTop = Math.min(restore, bottom); lastThreadScrollTopRef.current = thread.scrollTop;
         if (bottom - restore > 1) pendingThreadRestoreRef.current = null;
-      } else if (!userReadingHistoryRef.current || Date.now() < pinToLatestUntilRef.current) scrollMessageThreadToBottom('auto');
+      } else if (!userReadingHistoryRef.current) scrollMessageThreadToBottom('auto');
     });
   }
 
@@ -1863,17 +1869,17 @@ selectedConversation ? (
               pendingThreadRestoreRef.current = null;
               session.writeUI(`scroll:${selectedConversationId}`, thread.scrollTop, 0);
               const distanceFromBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight;
-              // Just sent: whatever pushed the thread, it goes back to the latest message (never "reading history").
-              if (Date.now() < pinToLatestUntilRef.current) {
-                userReadingHistoryRef.current = false;
+              if (Date.now() < readerScrollUntilRef.current) {
+                // The reader scrolled: going up means reading history; reaching the end means following again.
+                if (thread.scrollTop < lastThreadScrollTopRef.current && distanceFromBottom > THREAD_FOLLOW_SLACK) {
+                  userReadingHistoryRef.current = true;
+                } else if (distanceFromBottom <= THREAD_FOLLOW_SLACK) {
+                  userReadingHistoryRef.current = false;
+                  setNewMessagesBelow(0);
+                }
+              } else if (!userReadingHistoryRef.current) {
+                // Not the reader: the layout moved the thread. Someone following stays on the latest message.
                 if (distanceFromBottom > 2) followThreadContent();
-                lastThreadScrollTopRef.current = thread.scrollTop;
-                return;
-              }
-              // Small shifts are layout, not the reader: the message box shrinking after a send or a photo settling
-              // nudges the thread a few (fractional, on Retina/Safari) pixels. Only a real scroll up means reading history.
-              if (thread.scrollTop < lastThreadScrollTopRef.current && distanceFromBottom > THREAD_FOLLOW_SLACK && Date.now() > programmaticScrollUntilRef.current) {
-                userReadingHistoryRef.current = true;
               } else if (distanceFromBottom <= THREAD_FOLLOW_SLACK) {
                 userReadingHistoryRef.current = false;
                 setNewMessagesBelow(0);
@@ -1882,6 +1888,11 @@ selectedConversation ? (
               session.writeUI(`scrollFollow:${selectedConversationId}`, !userReadingHistoryRef.current, true);
             }}
             onLoadCapture={followThreadContent}
+            onWheel={markReaderScroll}
+            onTouchMove={markReaderScroll}
+            onKeyDown={event => { if (THREAD_SCROLL_KEYS.has(event.key)) markReaderScroll(); }}
+            onPointerDown={event => { if (event.target === event.currentTarget) readerScrollUntilRef.current = Date.now() + 10_000; }}
+            onPointerUp={markReaderScroll}
             ref={messageThreadRef}
           >
             <div className="message-thread-content" ref={messageContentRef}>
@@ -1939,7 +1950,7 @@ selectedConversation ? (
                   {selectedConversation.isGroup && isInbound && placement.startsRun ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
                   {message.quoted ? (() => { const quote = quotedPreview(message.quoted, visibleMessages, selectedConversation.contactName ?? null); return (
                     <button type="button" className={`message-quote is-rich${quote.author === 'Você' ? ' is-mine' : ''}`} disabled={!quote.targetId}
-                      aria-label={`Mensagem respondida de ${quote.author}`} onClick={() => quote.targetId && revealMessage(quote.targetId)}>
+                      aria-label={`Mensagem respondida de ${quote.author}`} onClick={() => quote.targetId && revealQuotedMessage(quote.targetId)}>
                       <QuoteContent quote={quote} getToken={getToken} />
                     </button>); })() : null}
                   {isMedia ? <>
