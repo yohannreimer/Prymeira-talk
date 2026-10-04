@@ -55,3 +55,4 @@
 .forward-select-cancel:hover { background: var(--color-surface-subtle); }
 .forward-select-go { display: inline-flex; align-items: center; gap: 7px; padding: 10px 18px; border: 0; border-radius: 999px; background: #1fa855; color: white; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
 .forward-select-go:disabled { opacity: .4; cursor: default; }
+.forward-channel { display: block; margin-top: 2px; font-size: 12px; font-weight: 500; color: var(--color-text-muted); }

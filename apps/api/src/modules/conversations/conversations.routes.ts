@@ -1013,7 +1013,13 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       }
     }
     if (!outgoing.length) return reply.code(409).send({ code: "FORWARD_NOT_SUPPORTED", error: "Estas mensagens ainda não podem ser encaminhadas." });
-    const targets = [...new Set(body.data.targetConversationIds)].filter(id => id !== params.data.conversationId);
+    // A forward leaves through the same WhatsApp number it came from: with two numbers connected, the customer must
+    // never receive it from the other one.
+    const requested = [...new Set(body.data.targetConversationIds)].filter(id => id !== params.data.conversationId);
+    const owner = await app.prisma.conversation.findFirst({ where: { workspaceId, id: params.data.conversationId }, select: { channelId: true } });
+    const sameNumber = owner ? await app.prisma.conversation.findMany({ where: { workspaceId, id: { in: requested }, channelId: owner.channelId }, select: { id: true } }) : [];
+    if (sameNumber.length !== requested.length) return reply.code(409).send({ code: "FORWARD_OTHER_NUMBER", error: "Só é possível encaminhar para conversas do mesmo número do WhatsApp." });
+    const targets = requested;
     const results: Array<{ conversationId: string; ok: boolean; sent: number; error?: string }> = [];
     for (const conversationId of targets) {
       let sentCount = 0; let error: string | undefined;

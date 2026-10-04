@@ -49,9 +49,12 @@ export function forwardSelectionSummary(messages: MessageDto[]) {
   return messages.length === 1 ? forwardSummary(messages[0]!) : `${messages.length} mensagens`;
 }
 
-export function ForwardDialog({ messages, sourceConversationId, conversations, getToken, onClose, onSent }: {
+export function ForwardDialog({ messages, sourceConversationId, channelId, channelName, conversations, getToken, onClose, onSent }: {
   messages: MessageDto[];
   sourceConversationId: string;
+  /** Only conversations of this WhatsApp number: a forward never leaves through another number. */
+  channelId: string;
+  channelName?: string | null;
   conversations: ConversationDto[];
   getToken: () => Promise<string | null>;
   onClose(): void;
@@ -74,20 +77,20 @@ export function ForwardDialog({ messages, sourceConversationId, conversations, g
     if (query.trim().length < 2) { setFound([]); return; }
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      void apiGetConversations(getToken, { status: 'all', search: query.trim() }, controller.signal).then(setFound).catch(() => {});
+      void apiGetConversations(getToken, { status: 'all', search: query.trim(), channelId }, controller.signal).then(setFound).catch(() => {});
     }, 250);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [getToken, query]);
+  }, [getToken, query, channelId]);
 
   const list = useMemo(() => {
     const seen = new Set<string>([sourceConversationId]);
     const rows: ConversationDto[] = [];
     for (const conversation of [...conversations.filter(item => conversationMatches(item, query)), ...found]) {
-      if (seen.has(conversation.id)) continue;
+      if (seen.has(conversation.id) || conversation.channelId !== channelId) continue;
       seen.add(conversation.id); rows.push(conversation);
     }
     return rows.slice(0, query.trim() ? 40 : 30);
-  }, [conversations, found, query, sourceConversationId]);
+  }, [conversations, found, query, sourceConversationId, channelId]);
 
   const isSelected = (id: string) => selected.some(item => item.id === id);
   function toggle(conversation: ConversationDto) {
@@ -120,7 +123,7 @@ export function ForwardDialog({ messages, sourceConversationId, conversations, g
     <section className="forward-dialog" role="dialog" aria-modal="true" aria-labelledby="forward-title">
       <header>
         <button type="button" className="forward-close" aria-label="Fechar" onClick={onClose} disabled={busy}><X size={18} /></button>
-        <h2 id="forward-title">Encaminhar para</h2>
+        <h2 id="forward-title">Encaminhar para{channelName ? <span className="forward-channel">pelo número {channelName}</span> : null}</h2>
         <small>{selected.length}/{MAX_TARGETS}</small>
       </header>
       <div className="forward-search"><Search size={16} aria-hidden="true" />

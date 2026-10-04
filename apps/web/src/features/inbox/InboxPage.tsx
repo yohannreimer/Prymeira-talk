@@ -2379,7 +2379,7 @@ selectedConversation ? (
       {sidebarView}
 
       {forwardOpen && forwardSelection?.length && selectedConversation ? <ForwardDialog messages={visibleMessages.filter(message => forwardSelection.includes(message.id))}
-        sourceConversationId={selectedConversation.id} conversations={conversations} getToken={getToken} onClose={() => setForwardOpen(false)}
+        sourceConversationId={selectedConversation.id} channelId={selectedConversation.channelId} channelName={channels.length > 1 ? selectedConversation.channelName : null} conversations={conversations} getToken={getToken} onClose={() => setForwardOpen(false)}
         onSent={(notice) => { setForwardOpen(false); setForwardSelection(null); setSendNotice(notice); }} /> : null}
       {shareContactOpen && selectedConversation ? <ShareContactDialog source={selectedConversation} getToken={getToken} onClose={() => setShareContactOpen(false)} onSent={(name, contextImages) => { setShareContactOpen(false); setSendNotice(contextImages ? `Contato e histórico enviados para ${name}.` : `Contato enviado para ${name}; a conversa ainda não tem mensagens para compartilhar.`); setConversationReloadKey((current) => current + 1); }} /> : null}
       {newConversationOpen ? <NewConversationDialog channels={channels} getToken={getToken} onClose={() => setNewConversationOpen(false)} onOpened={(conversation) => {

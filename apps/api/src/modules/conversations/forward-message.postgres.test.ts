@@ -5,12 +5,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { conversationsRoutes } from "./conversations.routes.js";
 
 const databaseUrl = process.env.SUPERVISION_TEST_DATABASE_URL;
-const workspaceId = randomUUID(), otherWorkspaceId = randomUUID(), channelId = randomUUID(), otherChannelId = randomUUID();
+const workspaceId = randomUUID(), otherWorkspaceId = randomUUID(), channelId = randomUUID(), otherChannelId = randomUUID(), secondNumberId = randomUUID();
 const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 describe.skipIf(!databaseUrl)("forwarding a message to other conversations", () => {
   let prisma: PrismaClient; let app: ReturnType<typeof Fastify>;
-  let source: string; let targets: string[]; let foreign: string; let textId: string; let imageId: string; let cardId: string;
+  let source: string; let targets: string[]; let foreign: string; let otherNumber: string; let textId: string; let imageId: string; let cardId: string;
   let sequence = 0;
   const sent = (kind: string) => vi.fn().mockImplementation(async () => ({ providerMessageId: `${kind}-${++sequence}`, raw: {} }));
   const client = { sendText: sent("text"), sendMedia: sent("media"), sendContact: sent("card") };
@@ -18,12 +18,14 @@ describe.skipIf(!databaseUrl)("forwarding a message to other conversations", () 
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
     await prisma.channel.createMany({ data: [
       { id: channelId, workspaceId, provider: "evolution", providerKey: `k-${channelId}`, displayName: "Vendas", status: "connected" },
+      { id: secondNumberId, workspaceId, provider: "evolution", providerKey: `k-${secondNumberId}`, displayName: "Pessoal", status: "connected" },
       { id: otherChannelId, workspaceId: otherWorkspaceId, provider: "evolution", providerKey: `k-${otherChannelId}`, displayName: "Outro", status: "connected" }] });
     const conversation = async (ws: string, ch: string, phone: string) => (await prisma.conversation.create({ data: { workspaceId: ws, channelId: ch,
       contactId: (await prisma.contact.create({ data: { workspaceId: ws, phone, name: phone } })).id } })).id;
     source = await conversation(workspaceId, channelId, "5547999990011");
     targets = [await conversation(workspaceId, channelId, "5547999990012"), await conversation(workspaceId, channelId, "5547999990013")];
     foreign = await conversation(otherWorkspaceId, otherChannelId, "5547999990014");
+    otherNumber = await conversation(workspaceId, secondNumberId, "5547999990015");
     textId = (await prisma.message.create({ data: { workspaceId, conversationId: source, direction: "inbound", type: "text", body: "Segue o orçamento da obra", status: "delivered" } })).id;
     imageId = (await prisma.message.create({ data: { workspaceId, conversationId: source, direction: "inbound", type: "image", body: "Imagem recebida", mediaUrl: png, status: "delivered",
       metadata: { attachment: { fileName: "planta.png", mimeType: "image/png", caption: "Planta baixa" } } } })).id;
@@ -71,10 +73,14 @@ describe.skipIf(!databaseUrl)("forwarding a message to other conversations", () 
     expect(stored.at(-1)!.metadata).toMatchObject({ contactCard: { fullName: "Mamãe linda", phoneNumber: "5547999463048" } });
     expect(client.sendContact).toHaveBeenCalledWith(expect.objectContaining({ contact: [expect.objectContaining({ phoneNumber: "5547999463048" })] }));
   });
-  it("never reaches a conversation of another workspace", async () => {
-    const response = await forward(textId, [foreign]);
-    expect(response.statusCode).toBe(502);
-    expect(response.json().results[0]).toMatchObject({ ok: false });
+  it("never leaves through another number, nor reaches another workspace", async () => {
+    for (const target of [[otherNumber], [targets[0]!, otherNumber], [foreign]]) {
+      const before = await prisma.message.count({ where: { workspaceId } });
+      const response = await forward(textId, target);
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ code: "FORWARD_OTHER_NUMBER" });
+      expect(await prisma.message.count({ where: { workspaceId } })).toBe(before);
+    }
     expect(await prisma.message.count({ where: { workspaceId: otherWorkspaceId } })).toBe(0);
   });
 });
