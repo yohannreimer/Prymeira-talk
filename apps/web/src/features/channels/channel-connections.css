@@ -1,0 +1,74 @@
+/* Connections drawer: a status summary, one card per connection, the QR only when it is needed. */
+.contact-drawer.is-connections { width: min(460px, 100vw); }
+.channel-connections-panel { display: grid; gap: 12px; }
+
+.connections-summary { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: 14px; border: 1px solid transparent; }
+.connections-summary > svg { flex-shrink: 0; margin-top: 1px; }
+.connections-summary strong { display: block; font-size: 15px; font-weight: 700; color: var(--color-text-primary); }
+.connections-summary p { margin: 2px 0 6px; font-size: 13px; line-height: 1.45; color: var(--color-text-secondary, #4b5f57); }
+.connections-summary small { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--color-text-muted); }
+.connections-summary.is-ok { background: #ecf8f2; border-color: #cdebdc; }
+.connections-summary.is-ok > svg { color: #1f9d64; }
+.connections-summary.is-warning { background: #fff7e8; border-color: #f6dfb3; }
+.connections-summary.is-warning > svg { color: #c27c0e; }
+.connections-summary.is-down { background: #fdf0ef; border-color: #f5d0cc; }
+.connections-summary.is-down > svg { color: #c2412f; }
+
+.connection-card { display: grid; gap: 10px; padding: 14px 16px; border-radius: 14px; background: var(--color-surface-card); box-shadow: var(--shadow-card); }
+.connection-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.connection-card-head h3 { margin: 0; font-size: 14px; font-weight: 700; color: var(--color-text-primary); display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.connection-engine { font-size: 10.5px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: var(--color-text-muted); }
+.connection-card-hint { margin: 2px 0 0; font-size: 12px; line-height: 1.4; color: var(--color-text-muted); }
+
+.connection-state { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.connection-state i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.connection-state.is-ok { background: #e3f5ec; color: #17784c; }
+.connection-state.is-warning { background: #fdf1d8; color: #9a6206; }
+.connection-state.is-pending { background: #eef1f6; color: #4c5d79; }
+.connection-state.is-pending i { animation: connection-pulse 1.2s ease-in-out infinite; }
+.connection-state.is-down { background: #fbe6e3; color: #ad3424; }
+.connection-state.is-off { background: var(--color-surface-subtle); color: var(--color-text-muted); }
+@keyframes connection-pulse { 50% { opacity: .25; } }
+
+.connection-writer { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; font-weight: 600; color: var(--color-brand-600); }
+.connection-callout { display: flex; align-items: flex-start; gap: 7px; margin: 0; padding: 9px 11px; border-radius: 10px; font-size: 12.5px; line-height: 1.45; }
+.connection-callout svg { flex-shrink: 0; margin-top: 2px; }
+.connection-callout.is-ok { background: #e3f5ec; color: #17603f; }
+.connection-callout.is-warning { background: #fff4de; color: #7a4f08; }
+.connection-callout.is-error { background: #fdebe8; color: #8f2a1c; }
+
+.connection-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.connection-actions .primary-button, .connection-actions .secondary-button { justify-content: center; }
+.connection-actions .primary-button { flex: 1 1 auto; }
+.connection-actions .text-button { border: 0; background: transparent; padding: 6px 4px; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--color-text-muted); cursor: pointer; }
+.connection-actions .text-button:hover:not(:disabled) { color: #ad3424; text-decoration: underline; }
+.connection-actions .text-button:disabled { opacity: .5; cursor: default; }
+.connection-spin { animation: connection-spin 0.9s linear infinite; }
+@keyframes connection-spin { to { transform: rotate(360deg); } }
+
+.connection-qr { display: grid; gap: 12px; padding: 14px; border-radius: 12px; background: var(--color-surface-subtle); }
+.connection-qr .qr-box { min-height: 0; padding: 0; background: transparent; }
+.connection-qr .qr-image { width: min(100%, 248px); padding: 10px; }
+.connection-qr-steps ol { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: 12.5px; line-height: 1.45; color: var(--color-text-primary); }
+.connection-qr-timer { display: block; margin-top: 8px; font-size: 11.5px; font-weight: 600; color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+
+.connections-diagnostics { border-radius: 12px; background: var(--color-surface-card); box-shadow: var(--shadow-card); }
+.connections-diagnostics > summary { cursor: pointer; padding: 12px 16px; font-size: 12.5px; font-weight: 600; color: var(--color-text-muted); list-style: none; }
+.connections-diagnostics > summary::-webkit-details-marker { display: none; }
+.connections-diagnostics > summary::before { content: '›'; display: inline-block; margin-right: 8px; transition: transform .15s; }
+.connections-diagnostics[open] > summary::before { transform: rotate(90deg); }
+.connections-diagnostics > .history-comparison { padding: 0 16px 16px; }
+
+.history-comparison { display: grid; gap: 10px; min-width: 0; }
+.history-comparison p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--color-text-muted); }
+.history-comparison-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 6px; }
+.history-comparison-stats div { padding: 8px 10px; border-radius: 8px; background: var(--color-surface-subtle); }
+.history-comparison-stats dt { font-size: 10.5px; color: var(--color-text-muted); }
+.history-comparison-stats dd { margin: 2px 0 0; font-size: 15px; font-weight: 700; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
+.history-comparison-table { max-height: 260px; overflow: auto; border: 1px solid var(--color-border); border-radius: 8px; }
+.history-comparison-table table { width: 100%; border-collapse: collapse; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.history-comparison-table th, .history-comparison-table td { padding: 6px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--color-border); }
+.history-comparison-table th:first-child, .history-comparison-table td:first-child { text-align: left; }
+.history-comparison-table th { position: sticky; top: 0; background: var(--color-surface-card); font-weight: 600; color: var(--color-text-muted); }
+.connections-drawer-title { display: grid; gap: 2px; }
+.connections-drawer-title strong { font-size: 16px; font-weight: 700; color: var(--color-text-primary); }

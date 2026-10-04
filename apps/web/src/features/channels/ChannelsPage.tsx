@@ -831,9 +831,12 @@ export function ChannelsPage() {
             onClick={closeQrDrawer}
             aria-hidden="true"
           />
-          <aside className="contact-drawer is-open" aria-label="Conectar canal via QR">
+          <aside className="contact-drawer is-open is-connections" aria-label="Conectar canal via QR">
             <header className="contact-drawer-header">
-              <span className="context-card-title">Conectar via QR</span>
+              <span className="connections-drawer-title">
+                <span className="context-card-title">Conexões do WhatsApp</span>
+                {selectedChannel ? <strong>{channelTitle(selectedChannel)}</strong> : null}
+              </span>
               <button
                 className="drawer-close"
                 onClick={closeQrDrawer}
@@ -850,23 +853,6 @@ export function ChannelsPage() {
                   qrEvent={qrEvent} getToken={getToken} onChannel={updatePhysicalChannel}
                   onPrimaryQr={() => void reconnectChannel(selectedChannel)} />
               ) : null}
-              <div className="context-card">
-                <div className="context-card-title">Checklist</div>
-                <div className="setup-checklist" aria-label="Checklist de setup">
-                  <div>
-                    <CheckCircle2 size={16} aria-hidden="true" />
-                    <span>Workspace autenticado</span>
-                  </div>
-                  <div>
-                    <CheckCircle2 size={16} aria-hidden="true" />
-                    <span>{selectedChannel ? 'Canal selecionado' : 'Selecione um canal'}</span>
-                  </div>
-                  <div>
-                    <Link2 size={16} aria-hidden="true" />
-                    <span>{qrResult ? 'Sessão QR pronta — escaneie o QR no WhatsApp' : 'Iniciando sessão QR...'}</span>
-                  </div>
-                </div>
-              </div>
               {simulatedModeActive ? (
                 <div className="context-card">
                   <div className="context-card-title">Modo simulado ativo</div>

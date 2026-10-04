@@ -67,7 +67,7 @@ describe('same-channel two QR setup', () => {
     await act(async () => root.render(<ChannelsPage />));
     expect(container.textContent).toContain('1 de 2 conectados');
     await act(async () => button('Reconectar').click());
-    await act(async () => button('Gerar outro QR Code — WAHA').click());
+    await act(async () => button('Ativar conexão reserva').click());
     expect(mocks.apiSetChannelRedundancy).toHaveBeenCalledWith(expect.any(Function), 'channel', true);
     expect(mocks.apiStartConnectionQr).toHaveBeenCalledWith(expect.any(Function), 'channel', 'waha');
     const images = [...container.querySelectorAll<HTMLImageElement>('.qr-image')];
@@ -77,23 +77,24 @@ describe('same-channel two QR setup', () => {
     expect(container.querySelectorAll<HTMLImageElement>('.qr-image')[0]!.src).toBe(evolutionSrc);
     expect(container.querySelectorAll<HTMLImageElement>('.qr-image')[1]!.src).toBe(secondarySrc);
     await act(async () => mocks.onEvent({ type: 'channel.updated', workspaceId: 'workspace', payload: { ...channel, redundancyEnabled: true, connections: [primary, { ...secondary, status: 'connected', health: 'degraded', lastError: 'PHONE_MISMATCH' }] } }));
-    expect(container.textContent).toContain('2 de 2 conectados'); expect(container.textContent).toContain('Degradada'); expect(container.textContent).toContain('Enviando por esta conexão'); expect(container.textContent).toContain('Número diferente');
+    expect(container.textContent).toContain('2 de 2 conectados'); expect(container.textContent).toContain('Degradada'); expect(container.textContent).toContain('Enviando mensagens por esta conexão'); expect(container.textContent).toContain('lido por outro número');
   });
   it('keeps optional WAHA visible but gated before qualification and leaves Meta without redundancy controls', async () => {
     mocks.apiGetChannels.mockResolvedValue([{ ...channel, redundancyAvailable: false }, { ...channel, id: 'meta', provider: 'meta_cloud', displayName: 'Official', connections: undefined }]);
     await act(async () => root.render(<ChannelsPage />));
     await act(async () => button('Conexões').click());
-    expect(button('Gerar outro QR Code — WAHA').disabled).toBe(true);
+    expect(button('Ativar conexão reserva')).toBeUndefined();
+    expect(container.textContent).toContain('ainda não está liberada');
     expect(mocks.apiSetChannelRedundancy).not.toHaveBeenCalled();
     expect(container.querySelectorAll('button').length).toBeGreaterThan(0);
   });
   it('disconnects secondary without losing the primary QR or invoking the legacy disconnect', async () => {
     await act(async () => root.render(<ChannelsPage />));
     await act(async () => button('Reconectar').click());
-    await act(async () => button('Gerar outro QR Code — WAHA').click());
+    await act(async () => button('Ativar conexão reserva').click());
     const primarySrc = container.querySelector<HTMLImageElement>('.qr-image')!.src;
     mocks.apiDisconnectConnection.mockResolvedValue({ mode: 'real', channel: { ...channel, redundancyEnabled: true, connections: [primary, { ...secondary, status: 'disconnected' }] } });
-    await act(async () => button('Desconectar WAHA').click());
+    await act(async () => button('Desconectar reserva').click());
     expect(mocks.apiDisconnectConnection).toHaveBeenCalledWith(expect.any(Function), 'channel', 'waha');
     expect(mocks.apiDisconnectChannel).not.toHaveBeenCalled();
     expect(container.querySelectorAll('.qr-image')).toHaveLength(1);
@@ -105,11 +106,11 @@ describe('same-channel two QR setup', () => {
     mocks.apiStartConnectionQr.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     await act(async () => root.render(<ChannelsPage />));
     await act(async () => button('Reconectar').click());
-    await act(async () => button('Gerar outro QR Code — WAHA').click());
+    await act(async () => button('Ativar conexão reserva').click());
     await act(async () => [...container.querySelectorAll<HTMLButtonElement>('.channel-row-main')].find((row) => row.textContent?.includes('Support'))!.click());
     await act(async () => finish(qr('waha', 'late-secondary-qr', 'waha', { ...channel, redundancyEnabled: true, connections: [primary, secondary] })));
     expect(container.querySelectorAll('.qr-image')).toHaveLength(0);
-    expect(container.textContent).not.toContain('Atualizar QR Code — WAHA');
+    expect(container.textContent).not.toContain('Gerar outro QR Code da reserva');
   });
   it('polls pending WAHA startup for at most a minute while preserving the primary QR', async () => {
     vi.useFakeTimers();
@@ -117,7 +118,7 @@ describe('same-channel two QR setup', () => {
       mocks.apiStartConnectionQr.mockRejectedValue(new Error('A sessão WAHA está iniciando.'));
       await act(async () => root.render(<ChannelsPage />));
       await act(async () => button('Reconectar').click());
-      await act(async () => button('Gerar outro QR Code — WAHA').click());
+      await act(async () => button('Ativar conexão reserva').click());
       await act(async () => vi.advanceTimersByTimeAsync(65_000));
       const calls = mocks.apiStartConnectionQr.mock.calls.length;
       expect(calls).toBeLessThanOrEqual(12);

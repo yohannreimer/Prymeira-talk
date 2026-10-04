@@ -13,17 +13,19 @@ export function HistoryComparisonPanel({ channelId, getToken }: { channelId: str
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Não foi possível comparar o histórico.'); }
     finally { setBusy(false); }
   }
-  return <section className="context-card" aria-label="Comparar histórico">
-    <div className="context-card-title">Histórico: Evolution × WAHA</div>
-    <p className="list-note">Compara as conversas recentes nas duas conexões, mensagem por mensagem. Só lê; nada é importado.</p>
-    <button className="secondary-button" type="button" disabled={busy} onClick={() => void compare()}>{busy ? 'Comparando…' : 'Comparar histórico'}</button>
-    {error ? <p className="error-note" role="alert">{error}</p> : null}
+  const stats = result ? [['Evolution', result.totals.evolution], ['WAHA', result.totals.waha], ['Nas duas', result.totals.both],
+    ['Só Evolution', result.totals.onlyEvolution], ['Só WAHA', result.totals.onlyWaha]] as const : [];
+  return <section className="history-comparison" aria-label="Comparar histórico">
+    <p>Confere se as duas conexões estão recebendo as mesmas mensagens nas conversas recentes. Só lê; nada é alterado.</p>
+    <div><button className="secondary-button" type="button" disabled={busy} onClick={() => void compare()}>{busy ? 'Comparando…' : 'Comparar histórico'}</button></div>
+    {error ? <p className="connection-callout is-error" role="alert">{error}</p> : null}
     {result ? <>
-      <p>Evolution: {result.totals.evolution} · WAHA: {result.totals.waha} · nas duas: {result.totals.both} · só Evolution: {result.totals.onlyEvolution} · só WAHA: {result.totals.onlyWaha}</p>
-      {result.skippedLidChats ? <p className="list-note">{result.skippedLidChats} conversa(s) só com identificador oculto (LID) ficaram fora da comparação.</p> : null}
-      <table className="list-note"><thead><tr><th>Conversa</th><th>Evolution</th><th>WAHA</th><th>Só Evolution</th><th>Só WAHA</th></tr></thead>
+      <dl className="history-comparison-stats">{stats.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+      {result.skippedLidChats ? <p>{result.skippedLidChats} conversa(s) só com identificador oculto (LID) ficaram fora da comparação.</p> : null}
+      {result.chats.length ? <div className="history-comparison-table"><table>
+        <thead><tr><th>Conversa</th><th>Evolution</th><th>WAHA</th><th>Só Evo.</th><th>Só WAHA</th></tr></thead>
         <tbody>{result.chats.map((row) => <tr key={row.chatAddress}><td>{row.chatAddress.split('@')[0]}</td><td>{row.evolution}</td><td>{row.waha}</td><td>{row.onlyEvolution}</td><td>{row.onlyWaha}</td></tr>)}</tbody>
-      </table>
+      </table></div> : null}
     </> : null}
   </section>;
 }

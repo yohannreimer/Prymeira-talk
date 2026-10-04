@@ -36,3 +36,17 @@ export function applyQrUpdate(current: ChannelQrResultDto | null, update: QrUpda
   if (!Number.isFinite(updateTime) || (update.issuedAt && current.qr.issuedAt ? updateTime < currentTime : Date.parse(update.expiresAt) < Date.parse(current.qr.expiresAt))) return current;
   return { ...current, mode: 'real', qrCode: update.qrCode, qr: { payload: update.qrCode, expiresAt: update.expiresAt, issuedAt: update.issuedAt } };
 }
+
+/** One sentence for the top of the connections panel: is everything fine, or what should the person do. */
+export function connectionSummary(channel: Pick<ChannelDto, 'provider' | 'status' | 'connections' | 'redundancyEnabled'>) {
+  const entries = connectionDisplay(channel).filter((entry) => entry.provider === 'evolution' || channel.redundancyEnabled);
+  const up = entries.filter((entry) => entry.status === 'connected');
+  const shaky = up.some((entry) => entry.health === 'degraded' || entry.health === 'unhealthy');
+  const count = `${up.length} de ${entries.length || 1} ${entries.length === 1 ? 'conexão ativa' : 'conexões ativas'}`;
+  if (!entries.length || !up.length) return { tone: 'down' as const, count, title: 'WhatsApp desconectado',
+    detail: 'Gere o QR Code da conexão principal e escaneie com o celular deste número.' };
+  if (up.length < entries.length) return { tone: 'warning' as const, count, title: 'Uma conexão caiu',
+    detail: 'As mensagens seguem pela outra conexão. Gere o QR Code da que caiu para religar.' };
+  if (shaky) return { tone: 'warning' as const, count, title: 'Conexão instável', detail: 'As mensagens continuam, mas uma conexão está respondendo mal.' };
+  return { tone: 'ok' as const, count, title: 'Tudo funcionando', detail: 'As mensagens estão chegando e saindo normalmente.' };
+}

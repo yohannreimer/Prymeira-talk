@@ -18,7 +18,7 @@ describe('HistoryComparisonPanel', () => {
     expect(mocks.apiCompareChannelHistory).not.toHaveBeenCalled();
     await act(async () => container.querySelector('button')!.click());
     expect(mocks.apiCompareChannelHistory).toHaveBeenCalledWith(expect.any(Function), 'c1');
-    expect(container.textContent).toContain('só WAHA: 3');
+    expect(container.textContent).toContain('Só WAHA3');
     expect(container.textContent).toContain('554799990003');
     expect(container.textContent).toContain('2 conversa(s)');
   });
