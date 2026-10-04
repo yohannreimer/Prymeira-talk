@@ -193,6 +193,15 @@ describe('Atendimento query/UI integration', () => {
     expect(sent).toEqual([['a.pdf', 'Proposta'], ['b.png', undefined], ['c.mp4', 'Vídeo da obra']]);
     expect(container.querySelector('.attachment-tray')).toBeNull(); expect(trayFiles('c1')).toEqual([]);
   });
+  it("refreshes an open conversation silently, without a note that pushes the thread down and back", async () => {
+    await render();
+    let finish!: (rows: MessageDto[]) => void;
+    vi.mocked(apiGetConversationMessages).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => { void session.client.invalidateQueries({ queryKey: session.key('messages', 'c1') }); }); await flush();
+    expect(container.querySelector('.message-thread')?.textContent).not.toContain('Atualizando mensagens');
+    expect(container.querySelector('.message-thread')?.textContent).toContain('history-c1');
+    await act(async () => finish([message('c1')])); await flush();
+  });
   it("marks, for the seller only, a message their supervisor sent from the supervision view", async () => {
     vi.mocked(apiGetConversationMessages).mockImplementation(async id => [{ ...message(id), id: 'sup', direction: 'outbound', type: 'text', body: 'Aqui é o gerente', mediaUrl: null, sentBySupervisor: true }, { ...message(id), id: 'mine', direction: 'outbound', type: 'text', body: 'Resposta do vendedor', mediaUrl: null }]);
     await render();

@@ -7097,9 +7097,11 @@ select:disabled {
   justify-content: center;
   gap: 14px;
   min-height: 260px;
-  opacity: 0.9;
-  animation: thread-soft-enter 180ms ease-out;
+  opacity: 0;
+  /* Only a slow opening shows the placeholder: a cached or quick one never flashes it. */
+  animation: thread-skeleton-appear 200ms ease-out 220ms forwards;
 }
+@keyframes thread-skeleton-appear { to { opacity: 0.9; } }
 
 .message-thread-skeleton span {
   width: min(58%, 420px);
@@ -8675,3 +8677,11 @@ select:disabled {
 /* A supervisor's answer, marked for the seller only (the customer sees an ordinary message). */
 .message-supervisor-label { display:inline-flex; align-items:center; gap:5px; margin:0 0 4px; padding:2px 8px; border-radius:999px; background:rgba(255, 255, 255, 0.18); color:#efe6ff; font-size:11.5px; font-weight:700; }
 .message-bubble.is-inbound .message-supervisor-label { background:#efe9fd; color:#5b3ab5; }
+
+/* Smooth state changes in the assistant panel: placeholders while it loads, texts that fade instead of popping. */
+.assistant-loading { display: grid; gap: 10px; padding: 18px 2px; opacity: 0; animation: thread-skeleton-appear 200ms ease-out 200ms forwards; }
+.assistant-loading span { height: 14px; border-radius: 7px; background: linear-gradient(90deg, #eef3f0, #e2ebe6, #eef3f0); background-size: 220% 100%; animation: thread-skeleton-pulse 1.2s ease-in-out infinite; }
+.assistant-loading span:nth-child(1) { width: 55%; } .assistant-loading span:nth-child(2) { width: 90%; height: 56px; border-radius: 10px; } .assistant-loading span:nth-child(3) { width: 70%; }
+.assistant-fade, .assistant-caption, .assistant-suggestion, .assistant-reply-actions { animation: assistant-fade-in 180ms ease-out; }
+@keyframes assistant-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .assistant-fade, .assistant-caption, .assistant-suggestion, .assistant-reply-actions, .assistant-loading, .message-thread-skeleton { animation: none; opacity: 1; } }

@@ -195,6 +195,13 @@ describe("supervisão somente de leitura", () => {
     await click(button("Todas as conversas"));
     expect(apiSupervisionConversations).toHaveBeenLastCalledWith(expect.objectContaining({ status: "all", nextAction: false, unread: false }), expect.any(Function), expect.any(AbortSignal));
   });
+  it("opens a conversation on its latest message, like WhatsApp", async () => {
+    const height = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) { return this.classList.contains("supervision-history") ? 1800 : 0; });
+    vi.mocked(apiSupervisionThread).mockResolvedValue({ conversation: conversation(), messages: [message({ id: "old" }), message({ id: "new", body: "Última mensagem" })] });
+    await render(); await open();
+    expect(container.querySelector<HTMLDivElement>(".supervision-history")!.scrollTop).toBe(1800);
+    height.mockRestore();
+  });
   it("can display an existing transcription without generating one", async () => {
     vi.mocked(apiSupervisionThread).mockResolvedValue({ conversation: conversation(), messages: [message({ type: "audio", body: "Transcrição: Quero um orçamento", mediaUrl: "https://example.com/audio.ogg" })] });
     await render(); await open(); await click(button("Ver transcrição"));

@@ -1698,9 +1698,7 @@ selectedConversation ? (
                 <span />
               </div>
             ) : null}
-            {isLoadingMessages && !isThreadTransitioning ? (
-              <p className="thread-note">Atualizando mensagens...</p>
-            ) : null}
+            {/* Background refreshes stay silent: a note popping in and out at the top made the whole thread jump. */}
             {messageError ? <p className="error-note" role="status">{messageError} <button type="button" onClick={() => {
               const targetId = selectedConversationId!; const consultedGeneration = sendFailure?.generation;
               void session.refetchMessages(targetId, signal => apiGetConversationMessages(targetId, getFreshToken, signal)).then(() => {
@@ -1816,7 +1814,7 @@ selectedConversation ? (
         </> : <>
         <div className="assistant-tabs"><button type="button" aria-pressed={assistantTab === 'contact'} onClick={() => setAssistantTab('contact')}>Contato</button><button type="button" aria-pressed={assistantTab === 'assistant'} onClick={() => setAssistantTab('assistant')}>IA de apoio{handoffBrief ? <span className="assistant-tab-dot is-handoff" /> : assistant.data?.status === 'ready' ? <span className="assistant-tab-dot" /> : null}</button><button ref={assistantCloseRef} className="assistant-drawer-close" aria-label="Fechar apoio" type="button" onClick={() => { setAssistantOpen(false); assistantTriggerRef.current?.focus(); }}><X size={18} /></button></div>
         {handoff.error ? <p className="error-note" role="status">{handoff.error} <button type="button" onClick={handoff.refresh}>Tentar novamente</button></p> : null}
-        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} handoffBrief={handoffBrief} handoffCompleted={Boolean(selectedConversation?.handoffActionCompletedAt)} handoffFeedback={handoffFeedback} handoffBusy={isRunningAction} onCompleteHandoff={() => { void actionsRef.current.runAction({ action: 'complete_handoff_action' }); }} onReopenHandoff={() => { void actionsRef.current.runAction({ action: 'reopen_handoff_action' }); }} onReanalyzeHandoff={() => { void actionsRef.current.runAction({ action: 'reanalyze_handoff_reply' }); }} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={(...args) => actionsRef.current.sendSuggestion(...args)} onEdit={(...args) => actionsRef.current.editSuggestion(...args)} /> : <>
+        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} loading={assistant.loading} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} handoffBrief={handoffBrief} handoffCompleted={Boolean(selectedConversation?.handoffActionCompletedAt)} handoffFeedback={handoffFeedback} handoffBusy={isRunningAction} onCompleteHandoff={() => { void actionsRef.current.runAction({ action: 'complete_handoff_action' }); }} onReopenHandoff={() => { void actionsRef.current.runAction({ action: 'reopen_handoff_action' }); }} onReanalyzeHandoff={() => { void actionsRef.current.runAction({ action: 'reanalyze_handoff_reply' }); }} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={(...args) => actionsRef.current.sendSuggestion(...args)} onEdit={(...args) => actionsRef.current.editSuggestion(...args)} /> : <>
         {isLoadingContext ? <p className="thread-note" role="status">Atualizando contato…</p> : null}
         {/* Card identidade */}
         {selectedConversation ? <ContactIdentityCard key={selectedConversation.contactId}

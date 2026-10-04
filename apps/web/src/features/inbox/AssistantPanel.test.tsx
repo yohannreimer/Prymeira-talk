@@ -5,6 +5,10 @@ import { AssistantPanel } from './AssistantPanel';
 const data: AssistantConversationDto = { settings: { mode: 'automatic', agentId: 'a' }, status: 'ready', humanControlled: false, humanSupport: false, awaitingCustomer: false, suggestion: { id: 's', conversationId: 'c', agentId: 'a', revision: 1, contextKey: 'k', body: 'Qual a cidade de entrega?', instruction: null, createdAt: '2026-09-06T12:00:00Z', warnings: [], actorName: null, finalBody: null, messageId: null, sendStatus: null }, history: [], agentName: 'Pré-atendimento', error: null, currentContextKey: 'k' };
 const props = { data, error: null, humanControlled: false, draftExists: false, sending: false, handoffCompleted: false, handoffFeedback: null, handoffBusy: false, onCompleteHandoff: vi.fn(), onReopenHandoff: vi.fn(), onReanalyzeHandoff: vi.fn(), onGenerate: vi.fn(), onSend: vi.fn(), onEdit: vi.fn() };
 describe('assistant panel', () => {
+  it('while the first answer loads, shows a quiet placeholder instead of a wrong "select a conversation" message', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} data={null} loading />);
+    expect(html).toContain('assistant-loading'); expect(html).not.toContain('Selecione uma conversa');
+  });
   it('shows a private draft with explicit send and edit controls', () => {
     const html = renderToStaticMarkup(<AssistantPanel {...props} />);
     expect(html).toContain('Só você e sua equipe'); expect(html).toContain('Enviar resposta'); expect(html).toContain('Editar no campo'); expect(props.onSend).not.toHaveBeenCalled();

@@ -6,6 +6,8 @@ import type { HandoffBriefDto } from '../../../../../packages/shared/src/assista
 
 type Props = {
   data: AssistantConversationDto | null; error: string | null; humanControlled: boolean;
+  /** The first answer for this conversation has not arrived yet. */
+  loading?: boolean;
   draftExists: boolean; sending: boolean;
   handoffBrief?: HandoffBriefDto | null;
   handoffCompleted: boolean; handoffFeedback: string | null; handoffBusy: boolean;
@@ -14,7 +16,7 @@ type Props = {
   onSend: (suggestion: AssistantSuggestionDto) => Promise<void>;
   onEdit: (suggestion: AssistantSuggestionDto, confirmed: boolean) => void;
 };
-export function AssistantPanel({ data, error, humanControlled, draftExists, sending, handoffBrief, handoffCompleted, handoffFeedback, handoffBusy, onCompleteHandoff, onReopenHandoff, onReanalyzeHandoff, onGenerate, onSend, onEdit }: Props) {
+export function AssistantPanel({ data, error, loading, humanControlled, draftExists, sending, handoffBrief, handoffCompleted, handoffFeedback, handoffBusy, onCompleteHandoff, onReopenHandoff, onReanalyzeHandoff, onGenerate, onSend, onEdit }: Props) {
   const [instruction, setInstruction] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
@@ -49,8 +51,9 @@ export function AssistantPanel({ data, error, humanControlled, draftExists, send
     <div className="assistant-private"><LockKeyhole size={14} aria-hidden="true" /> Só você e sua equipe veem este apoio</div>
     {(localError || (!handoffPending && error)) ? <p className="assistant-alert" role="alert">{localError ?? error}</p> : null}
     {handoffPending ? <HandoffBrief brief={handoffBrief!} busy={handoffBusy} onComplete={onCompleteHandoff} /> : null}
-    {!data ? !handoffPending ? <div className="assistant-empty">{error ? 'Tente abrir novamente o apoio.' : 'Selecione uma conversa para acompanhar as sugestões.'}</div> : null : data.settings.mode === 'disabled' ? !handoffPending ? <div className="assistant-empty"><MessageSquareText size={24} /><h3>Apoio não ativado</h3><p>Um gestor pode escolher o agente e ativar as sugestões em Canais.</p></div> : null : handoffPending ? null : <>
-      <div className="assistant-state" role="status"><span className={`assistant-status-dot${paused ? ' is-paused' : ''}`} />{stateLabel}<small>{data.agentName}</small></div>
+    {!data ? !handoffPending ? loading ? <div className="assistant-loading" aria-label="Carregando o apoio"><span /><span /><span /></div>
+      : <div className="assistant-empty">{error ? 'Tente abrir novamente o apoio.' : 'Selecione uma conversa para acompanhar as sugestões.'}</div> : null : data.settings.mode === 'disabled' ? !handoffPending ? <div className="assistant-empty"><MessageSquareText size={24} /><h3>Apoio não ativado</h3><p>Um gestor pode escolher o agente e ativar as sugestões em Canais.</p></div> : null : handoffPending ? null : <>
+      <div className="assistant-state" role="status"><span className={`assistant-status-dot${paused ? ' is-paused' : ''}`} /><span key={stateLabel} className="assistant-fade">{stateLabel}</span><small>{data.agentName}</small></div>
       {paused ? <div className="assistant-empty"><UserRound size={24} /><h3>O atendimento está com você</h3><p>A IA não gera sugestões enquanto o humano está no controle. Você pode continuar pelo campo de mensagem.</p></div> : null}
       {!paused && awaitingCustomer && !ready && !generating ? <p className="assistant-caption">A última mensagem foi sua. Quando o cliente responder, a IA sugere a resposta. Se quiser retomar o contato antes, peça um follow-up.</p> : null}
       {!paused && !awaitingCustomer && !suggestion && !generating && data.status !== 'failed' ? <p className="assistant-caption">Gere uma sugestão para responder mais rápido. Você revisa antes de enviar.</p> : null}

@@ -38,5 +38,5 @@ export function useAssistantConversation(conversationId: string | null, getToken
       refresh();
     }
   }, [conversationId, getToken, session, refresh]);
-  return { data: query.data ?? null, error: query.error?.message ?? null, refresh, request };
+  return { data: query.data ?? null, error: query.error?.message ?? null, loading: Boolean(conversationId) && query.isPending && !query.error, refresh, request };
 }

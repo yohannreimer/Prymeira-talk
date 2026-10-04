@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Clock3, Eye, Headphones, Hourglass, ListTodo, MailWarning, MessageSquareText, RefreshCw, Search, Send, ShieldCheck, Sparkles, X } from "lucide-react";
 import { needsHumanAttention, type SupervisionConversation, type MessageDto, type SupervisionUnreadPeriod } from "@prymeira-talk/shared";
 import type { SupervisionSummary } from "@prymeira-talk/shared";
@@ -115,6 +115,26 @@ function SupervisorReply({ conversation, getToken, onSent }: { conversation: Sup
     </div>
     {error ? <p className="supervision-reply-error" role="alert">{error}</p> : null}
   </form>;
+}
+
+/** Opens on the latest message, like WhatsApp, and follows new ones (or late images) while the reader stays at the
+ * bottom; reading older messages is never interrupted by a refresh. */
+function ThreadHistory({ lastMessageId, children }: { lastMessageId: string | undefined; children: ReactNode }) {
+  const box = useRef<HTMLDivElement>(null);
+  const atBottom = useRef(true);
+  useLayoutEffect(() => {
+    const element = box.current;
+    if (element && atBottom.current) element.scrollTop = element.scrollHeight;
+  }, [lastMessageId]);
+  useEffect(() => {
+    const element = box.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => { if (atBottom.current) element.scrollTop = element.scrollHeight; });
+    for (const child of Array.from(element.children)) observer.observe(child);
+    return () => observer.disconnect();
+  }, [lastMessageId]);
+  return <div className="supervision-history" ref={box}
+    onScroll={event => { const el = event.currentTarget; atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; }}>{children}</div>;
 }
 
 function sellerState(seller: Seller, now: number) {
@@ -274,8 +294,8 @@ export function SupervisionPage() {
                   <NextAction text={displayedConversation.nextActionText} />
                 </div><button type="button" aria-label="Fechar conversa" onClick={() => view.selectConversation(null)}><X size={20} /></button></header>
                 {view.threadError ? <div className="supervision-error" role="alert">{view.threadError}<button type="button" onClick={view.refresh}>Tentar novamente</button></div> : null}
-                <div className="supervision-history">{thread?.messages.map(message => <ThreadMessage key={message.id} message={message} getToken={getToken} transport={transport} />)}
-                  {!thread ? <p className="supervision-empty" role="status">{view.threadLoading ? "Carregando histórico…" : "Histórico indisponível."}</p> : !thread.messages.length ? <p className="supervision-empty">Esta conversa ainda não tem mensagens.</p> : null}</div>
+                <ThreadHistory lastMessageId={thread?.messages.at(-1)?.id}>{thread?.messages.map(message => <ThreadMessage key={message.id} message={message} getToken={getToken} transport={transport} />)}
+                  {!thread ? <p className="supervision-empty" role="status">{view.threadLoading ? "Carregando histórico…" : "Histórico indisponível."}</p> : !thread.messages.length ? <p className="supervision-empty">Esta conversa ainda não tem mensagens.</p> : null}</ThreadHistory>
                 <SupervisorReply key={conversationKey(displayedConversation)} conversation={displayedConversation} getToken={getToken} onSent={view.refresh} />
               </> : <div className="supervision-thread-empty"><Eye size={30} aria-hidden="true" /><h2>Escolha uma conversa</h2><p>Você vê o histórico completo, o que o cliente pediu e o que o vendedor precisa fazer.</p>{view.threadError ? <p role="alert">{view.threadError}</p> : null}</div>}
             </section>
