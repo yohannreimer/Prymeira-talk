@@ -55,5 +55,6 @@ export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: 
     format: mark => { if (!props.disabled) editor?.chain().focus().toggleMark(mark).run(); },
     insertText: text => { if (!props.disabled) editor?.chain().focus().insertContent(insertedText(text)).run(); }
   }), [editor, props.disabled]);
-  return <EditorContent editor={editor} className="composer-rich-shell" />;
+  // The placeholder shows only when there is truly nothing written (CSS alone cannot see the text beside a line break).
+  return <EditorContent editor={editor} className={`composer-rich-shell${props.value ? '' : ' is-empty'}`} />;
 });

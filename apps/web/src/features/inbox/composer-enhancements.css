@@ -3,7 +3,7 @@
 .composer-rich-input p { margin: 0; }
 .composer-rich-input strong, .msg-bubble-body strong { font-weight: 700; }
 .composer-rich-input em, .msg-bubble-body em { font-style: italic; }
-.composer-rich-input p:only-child:has(> br:only-child)::before { content: 'Escreva uma mensagem...'; color: #92aaa1; pointer-events: none; float: left; height: 0; }
+.composer-rich-shell.is-empty .composer-rich-input > p:first-child::before { content: 'Escreva uma mensagem...'; color: #92aaa1; pointer-events: none; float: left; height: 0; }
 .composer-rich-input[contenteditable=false] { opacity: .65; }
 .composer-tool[aria-pressed=true] { background: #d5e9e0; color: #20584d; border-radius: 6px; }
 .composer-voice { position: relative; }
