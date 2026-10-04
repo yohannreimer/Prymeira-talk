@@ -373,6 +373,28 @@ type AiActionLogDeleteManyArgs = Parameters<PrismaClient["aiActionLog"]["deleteM
 type AuditLogCreateArgs = Parameters<PrismaClient["auditLog"]["create"]>[0];
 type CrmSyncActionCreateArgs = Parameters<PrismaClient["crmSyncAction"]["create"]>[0];
 
+const OUTBOUND_STATUS_RANK: Record<string, number> = { failed: 0, pending: 1, sent: 2, delivered: 3, read: 4 };
+/** The echo of a message Talk just sent, stored first because WhatsApp answered before the send call returned. */
+async function findEchoedOutbound(prisma: PrismaLike, workspaceId: string, conversationId: string, providerMessageId: string) {
+  // Each candidate is checked again here: only the same WhatsApp id, in this conversation, sent by us, is the echo.
+  const ours = (record: MessageRecord | undefined) => record && record.conversationId === conversationId && record.direction === 'outbound' ? record : null;
+  const byProviderId = ours((await prisma.message.findMany({ where: { workspaceId, conversationId, direction: 'outbound', providerMessageId }, take: 1 } as never))
+    .find(record => record.providerMessageId === providerMessageId));
+  if (byProviderId) return byProviderId;
+  const identity = (await prisma.canonicalMessageIdentity?.findMany({ where: { workspaceId, conversationId, rawId: providerMessageId, direction: 'outbound' }, select: { messageId: true, rawId: true } }).catch(() => []) ?? [])
+    .find(row => row.rawId === providerMessageId);
+  if (!identity) return null;
+  return ours((await prisma.message.findMany({ where: { workspaceId, conversationId, id: identity.messageId }, take: 1 } as never)).find(record => record.id === identity.messageId));
+}
+/** Talk's details win (caption, file name, who sent, marks); the echo keeps its stored media and the furthest status. */
+function mergeEchoedOutbound(echo: MessageRecord, talk: { metadata?: unknown; mediaUrl?: string | null; status: string } & Record<string, unknown>) {
+  const record = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const echoMeta = record(echo.metadata); const talkMeta = record(talk.metadata);
+  const metadata = { ...echoMeta, ...talkMeta, ...(echoMeta.attachment || talkMeta.attachment ? { attachment: { ...record(echoMeta.attachment), ...record(talkMeta.attachment) } } : {}) };
+  const status = (OUTBOUND_STATUS_RANK[String(echo.status)] ?? 0) > (OUTBOUND_STATUS_RANK[talk.status] ?? 0) ? echo.status : talk.status;
+  return { ...talk, mediaUrl: echo.mediaUrl ?? talk.mediaUrl, status, metadata: metadata as Prisma.InputJsonValue } as never;
+}
+
 export interface PrismaLike {
   $queryRaw?: PrismaClient['$queryRaw'];
   canonicalMessageIdentity?: { findMany(args: { where: Record<string, unknown>; select: { messageId: true; rawId: true } }): Promise<Array<{ messageId: string; rawId: string }>> };
@@ -1140,8 +1162,13 @@ export function createConversationsService(
           sentByUserId: input.sentByUserId
       };
       try {
+        // A large file can take longer to send than WhatsApp takes to echo it back: the echo may already be stored as a
+        // message with this WhatsApp id. Then that one is completed with Talk's details instead of creating a twin.
+        const echoed = !prospectingPending && !reservedMessageId && providerSend?.providerMessageId && prisma.message.update
+          ? await findEchoedOutbound(prisma, input.workspaceId, input.conversationId, providerSend.providerMessageId) : null;
         const message = prospectingPending ? confirmedProspectingMessage ?? await confirmProspectingOutbound(prisma, prospectingPending.id, providerSend?.providerMessageId) : reservedMessageId
           ? await prisma.message.update!({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: reservedMessageId } }, data: messageData })
+          : echoed ? await prisma.message.update!({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: echoed.id } }, data: mergeEchoedOutbound(echoed, messageData) })
           : await prisma.message.create({ data: messageData });
 
         const updatedConversation = await prisma.conversation.update({

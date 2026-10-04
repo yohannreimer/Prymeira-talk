@@ -44,7 +44,9 @@ export function mediaFileName(message: MediaMessage) {
 export function mediaCaption(message: MediaMessage) {
   if (message.attachment?.caption?.trim()) return message.attachment.caption;
   const body = message.body?.trim();
-  if (!body || placeholder.test(body) || message.type === 'audio' || (message.type === 'file' && filename.test(body))) return null;
+  // A photo or file sent without a caption carries its file name as body: WhatsApp shows no caption for it.
+  if (!body || placeholder.test(body) || message.type === 'audio' || ((message.type === 'file' || message.type === 'image') && filename.test(body))
+    || (message.attachment?.fileName && body === message.attachment.fileName.trim())) return null;
   return body;
 }
 export function audioTime(value: number) {
