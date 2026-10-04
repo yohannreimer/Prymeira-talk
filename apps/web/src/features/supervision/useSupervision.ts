@@ -5,7 +5,8 @@ import {
   SupervisionApiError, type SupervisionFilter
 } from "../../app/supervision-api";
 
-export const defaultSupervisionFilters: SupervisionFilter = { status: "active", nextAction: true, unread: false, unreadPeriod: "24h" };
+// A manager first wants to know who is waiting for an answer, the longest wait first.
+export const defaultSupervisionFilters: SupervisionFilter = { status: "active", nextAction: false, unread: false, unreadPeriod: "24h", waiting: true };
 export const conversationKey = (conversation: SupervisionConversation) => `${conversation.workspaceId}:${conversation.id}`;
 
 export function useSupervision(getToken: () => Promise<string | null>) {

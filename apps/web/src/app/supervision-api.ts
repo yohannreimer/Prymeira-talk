@@ -9,6 +9,8 @@ export type SupervisionFilter = {
   nextAction: boolean;
   unread: boolean;
   unreadPeriod?: SupervisionUnreadPeriod;
+  /** Only customers waiting for an answer, the longest wait first (present only when on). */
+  waiting?: boolean;
 };
 
 export class SupervisionApiError extends Error {
@@ -41,6 +43,7 @@ export async function apiSupervisionConversations(filters: SupervisionFilter, ge
   const query = new URLSearchParams({ status: filters.status, nextAction: String(filters.nextAction), unread: String(filters.unread) });
   if (filters.sellerCustomerId) query.set("sellerCustomerId", filters.sellerCustomerId);
   if (filters.unreadPeriod) query.set("unreadPeriod", filters.unreadPeriod);
+  if (filters.waiting) query.set("waiting", "true");
   if (cursor) query.set("cursor", cursor);
   return supervisionPageSchema.parse(await (await request(`/supervision/conversations?${query}`, getToken, signal)).json());
 }

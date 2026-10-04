@@ -12,6 +12,7 @@ const querySchema = z.object({
   nextAction: z.enum(["true", "false"]).transform(value => value === "true").optional(),
   unread: z.enum(["true", "false"]).transform(value => value === "true").optional(),
   unreadPeriod: supervisionUnreadPeriodSchema.optional(),
+  waiting: z.enum(["true", "false"]).transform(value => value === "true").optional(),
   cursor: z.string().min(1).max(1024).optional()
 }).strict();
 const threadParams = z.object({ workspaceId: z.string().uuid(), conversationId: z.string().uuid() });

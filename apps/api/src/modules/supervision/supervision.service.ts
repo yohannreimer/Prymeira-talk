@@ -4,17 +4,22 @@ import { z } from "zod";
 import { conversationDtoInclude, inboxHandoffWhere, inboxUnreadWhere, toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import { visibleConversationMessageWhere } from "../conversations/internal-message.js";
 import { SupervisionError } from "./supervision-access.js";
+import { nextActionText, todayActivity, waitingConversations } from "./supervision-insights.js";
 
-type Store = Pick<PrismaClient, "conversation" | "message" | "channel">;
+type Store = Pick<PrismaClient, "conversation" | "message" | "channel"> & Partial<Pick<PrismaClient, "$queryRaw">>;
 export type SupervisionFilters = {
   status?: "active" | "closed" | "all";
   sellerCustomerId?: string;
   nextAction?: boolean;
   unread?: boolean;
   unreadPeriod?: SupervisionUnreadPeriod;
+  /** Only customers waiting for an answer, the longest wait first. */
+  waiting?: boolean;
   cursor?: string;
 };
-type Conversation = Prisma.ConversationGetPayload<{ include: typeof conversationDtoInclude }>;
+/** The inbox include plus the session metadata, where the handoff brief keeps the seller's next action. */
+const supervisionInclude = { ...conversationDtoInclude, activeAgentSession: { select: { ...conversationDtoInclude.activeAgentSession.select, metadata: true } } } as const;
+type Conversation = Prisma.ConversationGetPayload<{ include: typeof supervisionInclude }>;
 const cursorSchema = z.object({
   workspaceId: z.string().uuid(), channelId: z.string().uuid(), id: z.string().uuid(),
   lastMessageAt: z.string().datetime().nullable(), createdAt: z.string().datetime()
@@ -67,7 +72,17 @@ export function createSupervisionService(prisma: Store, clock: () => Date = () =
     const grant = grants.find(item => item.workspace_id === record.workspaceId && item.channel_id === record.channelId);
     if (!grant) throw new SupervisionError(404, "Conversa não encontrada.");
     return { ...toConversationDto(record), sellerCustomerId: grant.seller_customer_id,
-      sellerName: grant.seller_name, sellerEmail: grant.seller_email, channelPhoneNumber: record.channel.phoneNumber };
+      sellerName: grant.seller_name, sellerEmail: grant.seller_email, channelPhoneNumber: record.channel.phoneNumber,
+      nextActionText: nextActionText(record.activeAgentSession) };
+  }
+  /** Adds how long each customer of the page has been waiting; a failure leaves the page as it was. */
+  async function withWaiting(conversations: SupervisionConversation[], grants: SupervisionGrant[]) {
+    if (!conversations.length || typeof prisma.$queryRaw !== "function") return conversations;
+    try {
+      const rows = await waitingConversations(prisma as Required<Store>, grants, clock(), conversations.map(conversation => conversation.id));
+      const since = new Map(rows.map(row => [`${row.workspace_id}:${row.conversation_id}`, row.waiting_since.toISOString()]));
+      return conversations.map(conversation => ({ ...conversation, waitingSince: since.get(`${conversation.workspaceId}:${conversation.id}`) ?? null }));
+    } catch { return conversations; }
   }
 
   return {
@@ -75,20 +90,44 @@ export function createSupervisionService(prisma: Store, clock: () => Date = () =
       supervisionScopeWhere(grants);
       const now = clock();
       const sellerIds = [...new Set(grants.map(grant => grant.seller_customer_id))];
+      // The team's pulse: who is waiting and today's work. Optional, so the counts below never depend on it.
+      const [waiting, today] = typeof prisma.$queryRaw === "function" ? await Promise.all([
+        waitingConversations(prisma as Required<Store>, grants, now).catch(() => null),
+        todayActivity(prisma as Required<Store>, grants, now).catch(() => null)
+      ]) : [null, null];
       const sellers = await Promise.all(sellerIds.map(async sellerCustomerId => {
         const grant = grants.find(item => item.seller_customer_id === sellerCustomerId)!;
         const [nextActionCount, unreadConversationCount] = await Promise.all([
           prisma.conversation.count({ where: supervisionListWhere(grants, { sellerCustomerId, nextAction: true }) }),
           prisma.conversation.count({ where: supervisionListWhere(grants, { sellerCustomerId, unread: true, unreadPeriod }, now) })
         ]);
+        const mine = waiting?.filter(row => row.seller_id === sellerCustomerId);
+        const activity = today?.find(row => row.seller_id === sellerCustomerId);
         return { sellerCustomerId, sellerName: grant.seller_name, sellerEmail: grant.seller_email,
-          nextActionCount, unreadConversationCount };
+          nextActionCount, unreadConversationCount,
+          ...(mine ? { waitingCount: mine.length, oldestWaitingSince: mine[0]?.waiting_since.toISOString() ?? null } : {}),
+          ...(today ? { today: { received: activity?.received ?? 0, sent: activity?.sent ?? 0, conversations: activity?.conversations ?? 0,
+            medianResponseSeconds: activity?.median_response_seconds ?? null } } : {}) };
       }));
       return { sellers: sellers.sort((a, b) => a.sellerName.localeCompare(b.sellerName, "pt-BR") || a.sellerCustomerId.localeCompare(b.sellerCustomerId)) };
     },
 
     async list(grants: SupervisionGrant[], filters: SupervisionFilters = {}): Promise<SupervisionPage> {
       const selected = filterGrants(grants, filters.sellerCustomerId);
+      if (filters.waiting) {
+        // The attention queue: every waiting customer, the longest wait first (bounded, so no cursor).
+        if (typeof prisma.$queryRaw !== "function") return { conversations: [], nextCursor: null };
+        const rows = await waitingConversations(prisma as Required<Store>, selected, clock());
+        if (!rows.length) return { conversations: [], nextCursor: null };
+        const records = await prisma.conversation.findMany({
+          where: { AND: [supervisionScopeWhere(selected), { id: { in: rows.map(row => row.conversation_id) } }] }, include: supervisionInclude
+        });
+        const byKey = new Map(records.map(record => [`${record.workspaceId}:${record.id}`, record]));
+        return { conversations: rows.flatMap(row => {
+          const record = byKey.get(`${row.workspace_id}:${row.conversation_id}`);
+          return record ? [{ ...toDto(record, selected), waitingSince: row.waiting_since.toISOString() }] : [];
+        }), nextCursor: null };
+      }
       const where = supervisionListWhere(selected, filters, clock());
       let continuation: Prisma.ConversationWhereInput = {};
       if (filters.cursor) {
@@ -104,11 +143,11 @@ export function createSupervisionService(prisma: Store, clock: () => Date = () =
           lastMessageAt: cursor.lastMessageAt ? new Date(cursor.lastMessageAt) : null });
       }
       const rows = await prisma.conversation.findMany({
-        where: { AND: [where, continuation] }, include: conversationDtoInclude, orderBy, take: 51
+        where: { AND: [where, continuation] }, include: supervisionInclude, orderBy, take: 51
       });
       const page = rows.slice(0, 50);
       const last = page.at(-1);
-      return { conversations: page.map(row => toDto(row, selected)),
+      return { conversations: await withWaiting(page.map(row => toDto(row, selected)), selected),
         nextCursor: rows.length > 50 && last
           ? Buffer.from(JSON.stringify({ workspaceId: last.workspaceId, channelId: last.channelId, id: last.id,
             lastMessageAt: last.lastMessageAt?.toISOString() ?? null, createdAt: last.createdAt.toISOString() })).toString("base64url") : null };
@@ -117,7 +156,7 @@ export function createSupervisionService(prisma: Store, clock: () => Date = () =
     async authorizedConversation(grants: SupervisionGrant[], workspaceId: string, conversationId: string) {
       const record = await prisma.conversation.findFirst({
         where: { AND: [supervisionScopeWhere(grants), { workspaceId, id: conversationId, hiddenUntilReply: false }] },
-        include: conversationDtoInclude
+        include: supervisionInclude
       });
       if (!record) throw new SupervisionError(404, "Conversa não encontrada.");
       return toDto(record, grants);
@@ -130,7 +169,7 @@ export function createSupervisionService(prisma: Store, clock: () => Date = () =
         orderBy: [{ createdAt: "asc" }, { id: "asc" }]
       });
       // Read only: no read receipt, history import, acknowledgement or AI work.
-      return { conversation, messages: messages.map(toMessageDto) };
+      return { conversation: (await withWaiting([conversation], grants))[0]!, messages: messages.map(toMessageDto) };
     },
 
     async channels(workspaceId: string) {

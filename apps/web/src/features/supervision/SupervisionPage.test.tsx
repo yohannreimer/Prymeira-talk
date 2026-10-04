@@ -70,21 +70,20 @@ describe("supervisão somente de leitura", () => {
     expect(container.querySelector("textarea")).toBeNull();
   });
 
-  it("uses full server summary counts beyond the first 50 rows and starts with the next action queue", async () => {
+  it("uses full server summary counts beyond the first 50 rows and starts with the customers waiting for an answer", async () => {
     vi.mocked(apiSupervisionConversations).mockResolvedValue({ conversations: Array.from({ length: 50 }, (_, index) => conversation(`c${index}`)), nextCursor: "opaque-page-2" });
     await render();
-    expect(apiSupervisionConversations).toHaveBeenCalledWith({ status: "active", nextAction: true, unread: false, unreadPeriod: "24h" }, expect.any(Function), expect.any(AbortSignal));
+    expect(apiSupervisionConversations).toHaveBeenCalledWith({ status: "active", nextAction: false, unread: false, unreadPeriod: "24h", waiting: true }, expect.any(Function), expect.any(AbortSignal));
     expect(apiSupervisionSummary).toHaveBeenCalledWith(expect.any(Function), expect.any(AbortSignal), "24h");
     expect(container.querySelector(".supervision-period-label")?.textContent).toBe("Últimas 24 horas");
     expect(container.querySelector('[aria-label="Próxima ação de todos: 75"]')?.textContent).toContain("75");
     expect(container.querySelector('[aria-label="Não lidas de todos: 43"]')).not.toBeNull();
     expect(container.querySelectorAll(".supervision-conversation")).toHaveLength(50);
     expect(container.textContent).toContain("50 carregadas");
-    expect(container.textContent).toContain("Totais da fila ativa");
   });
 
   it("passes seller, status and both indicator filters as an intersection; summary clicks return to the active queue", async () => {
-    await render(); await select(0, seller2); await select(1, "closed"); await click(button("Não lidas"));
+    await render(); await select(0, seller2); await select(1, "closed"); await click(button("Próxima ação")); await click(button("Não lidas"));
     expect(apiSupervisionConversations).toHaveBeenLastCalledWith({ sellerCustomerId: seller2, status: "closed", nextAction: true, unread: true, unreadPeriod: "24h" }, expect.any(Function), expect.any(AbortSignal));
     await click(container.querySelector<HTMLButtonElement>('[aria-label="Não lidas de Marina: 32"]')!);
     expect(apiSupervisionConversations).toHaveBeenLastCalledWith({ sellerCustomerId: seller1, status: "active", nextAction: false, unread: true, unreadPeriod: "24h" }, expect.any(Function), expect.any(AbortSignal));
@@ -102,7 +101,7 @@ describe("supervisão somente de leitura", () => {
     expect(container.querySelector(".supervision-period-label")?.textContent).toBe("Últimos 7 dias");
     expect(container.querySelector('[aria-label="Próxima ação de todos: 75"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Não lidas de todos: 10"]')).not.toBeNull();
-    await select(0, seller1); await select(1, "all"); await click(button("Não lidas"));
+    await select(0, seller1); await select(1, "all"); await click(button("Próxima ação")); await click(button("Não lidas"));
     expect(apiSupervisionConversations).toHaveBeenLastCalledWith({ sellerCustomerId: seller1, status: "all", nextAction: true, unread: true, unreadPeriod: "7d" }, expect.any(Function), expect.any(AbortSignal));
     await click(container.querySelector<HTMLButtonElement>('[aria-label="Não lidas de Marina: 5"]')!);
     expect(apiSupervisionConversations).toHaveBeenLastCalledWith({ sellerCustomerId: seller1, status: "active", nextAction: false, unread: true, unreadPeriod: "7d" }, expect.any(Function), expect.any(AbortSignal));
@@ -152,7 +151,7 @@ describe("supervisão somente de leitura", () => {
   });
 
   it("preserves the chosen unread period through polling and opaque cursor pagination", async () => {
-    vi.useFakeTimers(); await render(); await select(2, "7d"); await click(button("Não lidas"));
+    vi.useFakeTimers(); await render(); await select(2, "7d"); await click(button("Próxima ação")); await click(button("Não lidas"));
     vi.mocked(apiSupervisionConversations).mockResolvedValueOnce({ conversations: [conversation()], nextCursor: "period-page-2" });
     await click(button("Atualizar"));
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
@@ -187,7 +186,7 @@ describe("supervisão somente de leitura", () => {
     vi.mocked(apiSupervisionConversations).mockResolvedValueOnce({ conversations: [conversation()], nextCursor: "opaque-token" })
       .mockResolvedValueOnce({ conversations: [conversation(), conversation("c2"), conversation("c1", { workspaceId: "workspace-2", sellerCustomerId: seller2 })], nextCursor: null });
     await render(); await click(button("Carregar mais conversas"));
-    expect(apiSupervisionConversations).toHaveBeenLastCalledWith({ status: "active", nextAction: true, unread: false, unreadPeriod: "24h" }, expect.any(Function), expect.any(AbortSignal), "opaque-token");
+    expect(apiSupervisionConversations).toHaveBeenLastCalledWith({ status: "active", nextAction: false, unread: false, unreadPeriod: "24h", waiting: true }, expect.any(Function), expect.any(AbortSignal), "opaque-token");
     expect(container.querySelectorAll(".supervision-conversation")).toHaveLength(3);
     expect(container.querySelector('[aria-label="Próxima ação de todos: 75"]')).not.toBeNull();
   });
@@ -198,7 +197,7 @@ describe("supervisão somente de leitura", () => {
       .mockResolvedValueOnce({ conversations: [conversation("new-first-page")], nextCursor: "fresh-page-2" })
       .mockResolvedValueOnce({ conversations: [conversation("second-page")], nextCursor: "fresh-page-3" });
     await render(); await click(button("Carregar mais conversas")); await click(button("Atualizar"));
-    expect(apiSupervisionConversations).toHaveBeenLastCalledWith({ status: "active", nextAction: true, unread: false, unreadPeriod: "24h" }, expect.any(Function), expect.any(AbortSignal), "fresh-page-2");
+    expect(apiSupervisionConversations).toHaveBeenLastCalledWith({ status: "active", nextAction: false, unread: false, unreadPeriod: "24h", waiting: true }, expect.any(Function), expect.any(AbortSignal), "fresh-page-2");
     expect(container.textContent).not.toContain("completed-old"); expect(container.textContent).toContain("new-first-page"); expect(container.textContent).toContain("second-page");
     expect(container.querySelectorAll(".supervision-conversation")).toHaveLength(2);
     // A filter change resets the loaded depth to the first page.
@@ -297,7 +296,7 @@ describe("supervisão somente de leitura", () => {
     expect(container.textContent).toContain("Cliente remaining"); expect(container.textContent).toContain("rafael@example.com");
     expect(container.textContent).not.toContain("marina@example.com"); expect(container.textContent).not.toContain("Histórico privado");
     expect(container.textContent).not.toContain("Acesso à supervisão indisponível");
-    expect(apiSupervisionConversations).toHaveBeenLastCalledWith({ sellerCustomerId: undefined, status: "active", nextAction: true, unread: false, unreadPeriod: "7d" }, expect.any(Function), expect.any(AbortSignal));
+    expect(apiSupervisionConversations).toHaveBeenLastCalledWith({ sellerCustomerId: undefined, status: "active", nextAction: false, unread: false, unreadPeriod: "7d", waiting: true }, expect.any(Function), expect.any(AbortSignal));
     expect(container.querySelectorAll("select")[2].value).toBe("7d");
     expect(vi.mocked(apiSupervisionSummary).mock.calls.slice(1).every(call => call[2] === "7d")).toBe(true);
     const polls = vi.mocked(apiSupervisionConversations).mock.calls.length;
@@ -356,7 +355,7 @@ describe("supervisão somente de leitura", () => {
     expect(container.querySelector<HTMLSelectElement>("select")?.value).toBe(""); expect(container.textContent).toContain("Cliente remaining");
     expect(container.textContent).not.toContain("Histórico privado"); expect(container.textContent).not.toContain("Acesso à supervisão indisponível");
     expect(vi.mocked(apiSupervisionSummary).mock.calls.slice(1).every(call => call[2] === "7d")).toBe(true);
-    expect(apiSupervisionConversations).toHaveBeenLastCalledWith({ sellerCustomerId: undefined, status: "active", nextAction: true, unread: false, unreadPeriod: "7d" }, expect.any(Function), expect.any(AbortSignal));
+    expect(apiSupervisionConversations).toHaveBeenLastCalledWith({ sellerCustomerId: undefined, status: "active", nextAction: false, unread: false, unreadPeriod: "7d", waiting: true }, expect.any(Function), expect.any(AbortSignal));
   });
 
   it("unmounts cached history on a revoked seller scope or a missing thread", async () => {
