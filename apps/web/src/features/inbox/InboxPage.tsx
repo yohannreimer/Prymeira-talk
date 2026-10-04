@@ -89,6 +89,8 @@ function ConversationCardTime({ value }: { value: string | null }) {
 }
 
 const CONVERSATION_PAGE_SIZE = 50;
+/** How far from the end the thread may sit and still count as "at the latest message". */
+const THREAD_FOLLOW_SLACK = 24;
 /** Same as the server's media limit (MAX_SERVE_MEDIA_BYTES): what is sent can always be opened again. */
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const EMPTY_CONVERSATIONS: ConversationDto[] = [];
@@ -1851,9 +1853,11 @@ selectedConversation ? (
               pendingThreadRestoreRef.current = null;
               session.writeUI(`scroll:${selectedConversationId}`, thread.scrollTop, 0);
               const distanceFromBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight;
-              if (thread.scrollTop < lastThreadScrollTopRef.current && distanceFromBottom > 1) {
+              // Small shifts are layout, not the reader: the message box shrinking after a send or a photo settling
+              // nudges the thread a few (fractional, on Retina/Safari) pixels. Only a real scroll up means reading history.
+              if (thread.scrollTop < lastThreadScrollTopRef.current && distanceFromBottom > THREAD_FOLLOW_SLACK) {
                 userReadingHistoryRef.current = true;
-              } else if (distanceFromBottom <= 1) {
+              } else if (distanceFromBottom <= THREAD_FOLLOW_SLACK) {
                 userReadingHistoryRef.current = false;
                 setNewMessagesBelow(0);
               }
