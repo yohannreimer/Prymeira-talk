@@ -76,6 +76,8 @@ function ConversationCardTime({ value }: { value: string | null }) {
 }
 
 const CONVERSATION_PAGE_SIZE = 50;
+/** Same as the server's media limit (MAX_SERVE_MEDIA_BYTES): what is sent can always be opened again. */
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const EMPTY_CONVERSATIONS: ConversationDto[] = [];
 const EMPTY_MESSAGES: MessageDto[] = [];
 const EMPTY_CHANNELS: ChannelDto[] = [];
@@ -1086,11 +1088,11 @@ function InboxPageContent() {
     if (composerOrigin) { setMessageError('Envie primeiro o texto em revisão. Depois anexe o arquivo em uma nova mensagem.'); return; }
     const serviceWindowError = metaServiceWindowSendError(selectedConversation);
     if (serviceWindowError) { setMessageError(serviceWindowError); return; }
-    const accepted = files.filter(file => file.size <= 8 * 1024 * 1024);
+    const accepted = files.filter(file => file.size <= MAX_ATTACHMENT_BYTES);
     const room = Math.max(0, 30 - pendingFiles.length);
     const added = accepted.slice(0, room).map(file => ({ id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, file, caption: '' }));
     const skipped = files.length - added.length;
-    setMessageError(skipped ? `${skipped} ${skipped === 1 ? 'arquivo ficou' : 'arquivos ficaram'} de fora: até 8 MB cada e 30 por envio.` : null);
+    setMessageError(skipped ? `${skipped} ${skipped === 1 ? 'arquivo ficou' : 'arquivos ficaram'} de fora: até 25 MB cada e 30 por envio.` : null);
     if (!added.length) return;
     setPendingFiles(current => [...current, ...added]);
     setActiveAttachmentId(added[0]!.id);
@@ -1144,7 +1146,7 @@ function InboxPageContent() {
 
   async function sendAttachment(file: File, voice = false, captionOverride?: string) {
     if (!selectedConversationId || isSending) throw new Error('Aguarde o envio atual.');
-    if (file.size > 8 * 1024 * 1024) { setMessageError('Envie um arquivo de até 8 MB.'); throw new Error('Arquivo maior que 8 MB.'); }
+    if (file.size > MAX_ATTACHMENT_BYTES) { setMessageError('Envie um arquivo de até 25 MB.'); throw new Error('Arquivo maior que 25 MB.'); }
     if (composerOrigin) { setMessageError('Envie primeiro o texto em revisão. Depois anexe o arquivo em uma nova mensagem.'); throw new Error('Texto em revisão.'); }
 
     const targetConversationId = selectedConversationId;

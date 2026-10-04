@@ -58,23 +58,23 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
     const text = params.toString();
     return text ? `?${text}` : '';
   };
-  async function response(url: string, method = 'GET', body?: unknown) {
+  async function response(url: string, method = 'GET', body?: unknown, timeoutMs = options.timeoutMs ?? 15_000) {
     const result = await fetcher(url, {
-      method, redirect: 'error', signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
+      method, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
       headers: { 'X-Api-Key': options.apiKey, Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
     });
     if (!result.ok) throw new WahaClientError(result.status);
     return result;
   }
-  async function request<T = unknown>(path: string, method = 'GET', body?: unknown): Promise<T> {
-    const result = await response(`${baseUrl}${path}`, method, body);
+  async function request<T = unknown>(path: string, method = 'GET', body?: unknown, timeoutMs?: number): Promise<T> {
+    const result = await response(`${baseUrl}${path}`, method, body, timeoutMs);
     const text = await result.text();
     return (text ? JSON.parse(text) : null) as T;
   }
   const file = (input: BinaryFile) => ({ data: input.data, mimetype: input.mimetype, filename: input.filename });
-  async function send(path: string, body: unknown) {
-    const raw = await request<WahaMessage>(path, 'POST', body);
+  async function send(path: string, body: unknown, timeoutMs?: number) {
+    const raw = await request<WahaMessage>(path, 'POST', body, timeoutMs);
     if (!raw || typeof raw.id !== 'string' || !raw.id) throw new Error('WAHA returned no message identity');
     return { providerMessageId: raw.id, raw };
   }
@@ -195,7 +195,9 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
     getMessage: (input: ChatInput & { messageId: string }) => request<WahaMessage>(`${messagePath(input)}?downloadMedia=true`),
     deleteMessage: (input: ChatInput & { messageId: string }) => request<void>(messagePath(input), 'DELETE'),
     sendText: (input: ChatInput & { text: string; linkPreview?: boolean; replyTo?: string }) => send('/api/sendText', { session: input.session, chatId: input.chatId, text: input.text, ...(input.linkPreview === undefined ? {} : { linkPreview: input.linkPreview }), ...(input.replyTo ? { reply_to: input.replyTo } : {}) }),
-    sendMedia: (input: ChatInput & BinaryFile & { kind: 'image' | 'video' | 'file'; caption?: string }) => send(`/api/${input.kind === 'image' ? 'sendImage' : input.kind === 'video' ? 'sendVideo' : 'sendFile'}`, { session: input.session, chatId: input.chatId, file: file(input), ...(input.caption === undefined ? {} : { caption: input.caption }) }),
+    sendMedia: (input: ChatInput & BinaryFile & { kind: 'image' | 'video' | 'file'; caption?: string }) => send(`/api/${input.kind === 'image' ? 'sendImage' : input.kind === 'video' ? 'sendVideo' : 'sendFile'}`, { session: input.session, chatId: input.chatId, file: file(input), ...(input.caption === undefined ? {} : { caption: input.caption }) },
+      // WAHA answers after uploading the file to WhatsApp: up to 25 MB needs more than a text message's 15 s.
+      Math.max(options.timeoutMs ?? 15_000, 120_000)),
     sendVoice: (input: ChatInput & BinaryFile) => send('/api/sendVoice', { session: input.session, chatId: input.chatId, file: file(input), convert: true }),
     sendContact: (input: ChatInput & { contacts: Array<{ fullName: string; phoneNumber: string; whatsappId?: string }> }) => send('/api/sendContactVcard', { session: input.session, chatId: input.chatId, contacts: input.contacts.map((contact) => ({ ...contact, vcard: null })) }),
     getGroups: (input: SessionInput & Page) => request<Record<string, unknown>>(`/api/${enc(input.session)}/groups${query({ limit: input.limit ?? 100, offset: input.offset ?? 0 })}`),

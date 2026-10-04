@@ -729,7 +729,8 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     return result;
   });
 
-  app.post("/conversations/:conversationId/messages", { bodyLimit: 12 * 1024 * 1024 }, async (request, reply) => {
+  // A 25 MB attachment travels as a data URL (4/3 of its size) inside JSON.
+  app.post("/conversations/:conversationId/messages", { bodyLimit: 36 * 1024 * 1024 }, async (request, reply) => {
     const params = createMessageParamsSchema.safeParse(request.params);
     const body = createMessageBodySchema.safeParse(request.body);
 
