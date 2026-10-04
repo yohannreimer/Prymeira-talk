@@ -1,0 +1,208 @@
+/*
+ * Atendimento, redesigned (approved preview, 04/10): calmer and closer to WhatsApp. Everything here is scoped to this
+ * screen (.talk-workspace-atendimento), so Supervision and other pages that reuse bubbles keep their look.
+ */
+.talk-workspace-atendimento {
+  --rd-out: #dcf3e4; --rd-out-ink: #17352b; --rd-out-meta: #6a8d7e;
+  --rd-thread: #eef2ef; --rd-dot: #dde5df; --rd-line: #e6ece8; --rd-hover: #f5f8f6;
+  --rd-live: #1fa855; --rd-attn: #c4412f; --rd-attn-soft: #fbe4e0; --rd-attn-bg: #fdf3f1;
+}
+
+/* ---------- List ---------- */
+.talk-workspace-atendimento .conversation-list { background: var(--color-surface-card); container-type: inline-size; container-name: rd-list; }
+.talk-workspace-atendimento .conversation-list .list-header { padding: 16px 16px 10px; }
+.talk-workspace-atendimento .conversation-list .list-header h1 { font-size: 1.25rem; letter-spacing: -.01em; }
+.talk-workspace-atendimento .conversation-list .eyebrow { display: none; }
+.talk-workspace-atendimento .inbox-header-icon { border-color: transparent; background: transparent; color: var(--color-text-secondary); }
+.talk-workspace-atendimento .inbox-header-icon:hover { background: var(--rd-hover); color: var(--color-text-primary); border-color: transparent; }
+.talk-workspace-atendimento .conversation-list .live-indicator { background: transparent; border: 0; color: var(--color-text-secondary); font-weight: 500; padding: 0 2px; }
+.talk-workspace-atendimento .conversation-list .live-indicator::before { background: var(--rd-live); }
+
+.talk-workspace-atendimento .inbox-search-field.is-permanent { margin: 0 14px 10px; height: 38px; border: 0; border-radius: 10px; background: var(--color-surface-page); }
+.talk-workspace-atendimento .inbox-search-field.is-permanent input { height: 38px; font-size: 13.5px; }
+.talk-workspace-atendimento .inbox-search-field.is-permanent svg { color: var(--color-text-muted); flex: none; }
+
+.talk-workspace-atendimento .inbox-filter-line { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 14px 8px; }
+.talk-workspace-atendimento .inbox-filter-line .channel-filter-row { display: flex; flex: 1 1 auto; min-width: 0; gap: 6px; padding: 0; overflow-x: auto; scrollbar-width: none; flex-wrap: nowrap; }
+.talk-workspace-atendimento .inbox-filter-line .channel-filter-row::-webkit-scrollbar { display: none; }
+.talk-workspace-atendimento .channel-filter-chip { flex: none; height: 28px; padding: 0 11px; border-radius: 14px; font-size: 12.5px; font-weight: 500; white-space: nowrap; box-shadow: none; }
+.talk-workspace-atendimento .channel-filter-chip.is-active { font-weight: 600; }
+.talk-workspace-atendimento .inbox-filter-line .inbox-quick-filters { display: flex; flex: none; gap: 2px; padding: 0 0 0 6px; margin: 0; border-left: 1px solid var(--rd-line); }
+.talk-workspace-atendimento .inbox-quick-filters button { display: inline-flex; align-items: center; gap: 5px; width: auto; height: 30px; padding: 0 8px; border: 1px solid transparent; border-radius: 15px; background: transparent; font-size: 12.5px; white-space: nowrap; }
+.talk-workspace-atendimento .inbox-quick-filters button.is-active { background: var(--color-brand-50); border-color: var(--color-brand-100); color: var(--color-brand-600); }
+.talk-workspace-atendimento .inbox-quick-filter-label { display: none; }
+@container rd-list (min-width: 560px) { .talk-workspace-atendimento .inbox-quick-filter-label { display: inline; } }
+@container rd-list (max-width: 559px) { .talk-workspace-atendimento .inbox-quick-filters button { width: 32px; padding: 0; justify-content: center; } }
+
+.talk-workspace-atendimento .attention-filter-row { gap: 18px; margin: 0; padding: 0 16px; border-bottom: 1px solid var(--rd-line); background: transparent; border-radius: 0; }
+.talk-workspace-atendimento .attention-filter-button { flex: none; height: auto; padding: 10px 0 9px; margin-bottom: -1px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; box-shadow: none; font-size: 13px; font-weight: 500; color: var(--color-text-secondary); }
+.talk-workspace-atendimento .attention-filter-button.is-active { background: transparent; color: var(--color-text-primary); font-weight: 600; border-bottom-color: var(--color-brand-600); box-shadow: none; }
+.talk-workspace-atendimento .attention-filter-button--human svg { color: var(--rd-attn); }
+.talk-workspace-atendimento .attention-filter-count.has-items { background: var(--rd-attn-soft); color: #a33a2c; }
+
+/* Rows instead of cards: a hairline between them, the selected one tinted. */
+.talk-workspace-atendimento .conversation-items { gap: 0; padding: 4px 0; }
+.talk-workspace-atendimento .conversation-card { border-radius: 0; box-shadow: none; background: transparent; transform: none; }
+.talk-workspace-atendimento .conversation-card::after { content: ''; position: absolute; left: 70px; right: 0; bottom: 0; border-bottom: 1px solid var(--rd-line); pointer-events: none; }
+.talk-workspace-atendimento .conversation-card:hover { background: var(--rd-hover); box-shadow: none; transform: none; }
+.talk-workspace-atendimento .conversation-card.is-selected { background: var(--color-brand-50); box-shadow: none; }
+.talk-workspace-atendimento .conversation-card:is(:hover, .is-selected)::after { border-color: transparent; }
+.talk-workspace-atendimento .conversation-card.needs-human-attention { background: var(--rd-attn-bg); box-shadow: inset 3px 0 0 var(--rd-attn); }
+.talk-workspace-atendimento .conversation-card-main { gap: 12px; padding: 10px 16px 10px 14px; }
+.talk-workspace-atendimento .conversation-avatar { width: 46px; height: 46px; }
+.talk-workspace-atendimento .conv-name-wrap strong { font-size: 14.5px; font-weight: 600; }
+.talk-workspace-atendimento .conv-sub-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.talk-workspace-atendimento .conversation-channel-origin { min-width: 0; font-size: 12px; font-weight: 400; color: var(--color-text-muted); }
+.talk-workspace-atendimento .conv-sub-line .conv-human-tag, .talk-workspace-atendimento .conv-sub-line .conv-review-tag { flex: none; font-size: 10.5px; padding: 1px 7px; border-radius: 8px; }
+.talk-workspace-atendimento .conv-sub-line .conv-human-tag { background: var(--rd-attn-soft); color: #a33a2c; border: 0; }
+.talk-workspace-atendimento .conversation-preview { font-size: 13px; color: var(--color-text-secondary); }
+.talk-workspace-atendimento .conv-time { font-size: 11.5px; }
+.talk-workspace-atendimento .conversation-card.has-unread .conv-time { color: var(--rd-live); font-weight: 600; }
+/* Unread counter at the bottom right, in WhatsApp green; the bookmark sits just left of it. */
+.talk-workspace-atendimento .conv-unread-badge { top: auto; bottom: 12px; right: 16px; transform: none; min-width: 20px; height: 20px; font-size: 11.5px; background: var(--rd-live); }
+.talk-workspace-atendimento .conversation-card-actions { top: auto; bottom: 9px; right: 12px; flex-direction: row; gap: 0; }
+.talk-workspace-atendimento .conversation-card.has-unread .conversation-card-actions { right: 42px; }
+.talk-workspace-atendimento .conversation-card-icon { width: 26px; height: 26px; border: 0; background: transparent; opacity: 0; transition: opacity .12s; }
+.talk-workspace-atendimento .conversation-card-icon svg { width: 15px; height: 15px; }
+.talk-workspace-atendimento .conversation-card:is(:hover, :focus-within) .conversation-card-icon,
+.talk-workspace-atendimento .conversation-card-icon.is-marked { opacity: 1; }
+@media (hover: none) { .talk-workspace-atendimento .conversation-card-icon { opacity: 1; } }
+.talk-workspace-atendimento .conversation-card-main { padding-right: 56px; }
+
+/* ---------- Conversation header ---------- */
+.talk-workspace-atendimento .chat-header { flex-wrap: nowrap; align-items: center; gap: 12px; padding: 10px 18px; background: var(--color-surface-card); border-bottom: 1px solid var(--rd-line); }
+.talk-workspace-atendimento .chat-header-avatar { width: 40px; height: 40px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--color-brand-100); color: var(--color-brand-600); font-size: 14px; font-weight: 700; }
+.talk-workspace-atendimento .chat-header-who { display: grid; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.talk-workspace-atendimento .chat-header-who .eyebrow { display: none; }
+.talk-workspace-atendimento .chat-header-who h2 { margin: 0; font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.talk-workspace-atendimento .chat-header-sub { font-size: 12.5px; color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.talk-workspace-atendimento .chat-header .conversation-ai-control { flex-wrap: nowrap; align-items: center; gap: 8px; flex: none; }
+.talk-workspace-atendimento .chat-mode-label { font-size: 12px; color: var(--color-text-muted); white-space: nowrap; }
+.talk-workspace-atendimento .chat-mode-switch { display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px; background: var(--color-surface-page); }
+.talk-workspace-atendimento .chat-mode-switch button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; border: 0; border-radius: 8px; background: transparent; color: var(--color-text-secondary); font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; }
+.talk-workspace-atendimento .chat-mode-switch button[aria-pressed="true"] { background: var(--color-surface-card); color: var(--color-text-primary); font-weight: 600; box-shadow: 0 1px 2px rgba(20, 40, 32, .12); cursor: default; }
+.talk-workspace-atendimento .chat-mode-switch button:disabled { cursor: wait; }
+.talk-workspace-atendimento .chat-mode-switch button[aria-pressed="false"]:hover:not(:disabled) { color: var(--color-text-primary); }
+.talk-workspace-atendimento .chat-header-menu { position: relative; }
+.talk-workspace-atendimento .chat-header-more { display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 9px; background: transparent; color: var(--color-text-secondary); cursor: pointer; }
+.talk-workspace-atendimento .chat-header-more:hover, .talk-workspace-atendimento .chat-header-more[aria-expanded="true"] { background: var(--rd-hover); color: var(--color-text-primary); }
+.talk-workspace-atendimento .chat-header-menu-pop { position: absolute; right: 0; top: 40px; z-index: 40; display: grid; min-width: 230px; padding: 6px; border: 1px solid var(--rd-line); border-radius: 12px; background: var(--color-surface-card); box-shadow: 0 14px 34px rgba(20, 45, 36, .16); }
+.talk-workspace-atendimento .chat-header-menu-pop button { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; font: inherit; font-size: 13px; color: var(--color-text-primary); text-align: left; cursor: pointer; }
+.talk-workspace-atendimento .chat-header-menu-pop button:hover:not(:disabled) { background: var(--rd-hover); }
+.talk-workspace-atendimento .chat-header-menu-pop button svg { color: var(--color-text-secondary); }
+/* The header adapts to the conversation's own width (the side menu or the list can squeeze it), never the window's. */
+.talk-workspace-atendimento .chat-panel { container-type: inline-size; container-name: rd-chat; }
+@container rd-chat (max-width: 760px) { .talk-workspace-atendimento .chat-mode-label { display: none; } }
+@container rd-chat (max-width: 560px) {
+  .talk-workspace-atendimento .chat-mode-switch button { width: 34px; padding: 0; justify-content: center; font-size: 0; gap: 0; }
+  .talk-workspace-atendimento .chat-mode-switch button svg { width: 15px; height: 15px; }
+  .talk-workspace-atendimento .chat-header { gap: 10px; padding: 10px 12px; }
+  .talk-workspace-atendimento .composer-quick-replies span { max-width: 0; opacity: 0; }
+  .talk-workspace-atendimento .composer-quick-replies { width: 34px; padding: 0; gap: 0; border-radius: 50%; }
+}
+
+/* ---------- Thread ---------- */
+.talk-workspace-atendimento .message-thread {
+  background-color: var(--rd-thread);
+  background-image: radial-gradient(var(--rd-dot) 1px, transparent 1.2px), radial-gradient(var(--rd-dot) 1px, transparent 1.2px);
+  background-size: 26px 26px; background-position: 0 0, 13px 13px;
+}
+.talk-workspace-atendimento .message-thread-content { gap: 0; }
+.talk-workspace-atendimento .thread-day { display: flex; justify-content: center; margin: 14px 0 8px; }
+.talk-workspace-atendimento .thread-day span { padding: 4px 12px; border-radius: 8px; background: rgba(255, 255, 255, .92); color: var(--color-text-secondary); font-size: 12px; font-weight: 500; box-shadow: 0 1px 1px rgba(20, 40, 32, .06); }
+/* Runs: messages from the same author sit close; a new author gets air. */
+.talk-workspace-atendimento .message-bubble { margin-top: 2px; }
+.talk-workspace-atendimento .message-bubble.is-run-start { margin-top: 10px; }
+.talk-workspace-atendimento .thread-day + .message-bubble { margin-top: 0; }
+.talk-workspace-atendimento .message-bubble:has(.message-reactions) { margin-bottom: 16px; }
+.talk-workspace-atendimento .msg-avatar { width: 30px; height: 30px; align-self: flex-end; }
+.talk-workspace-atendimento .msg-avatar.is-spacer { visibility: hidden; }
+.talk-workspace-atendimento .message-bubble .msg-bubble-body { box-shadow: 0 1px 1px rgba(20, 40, 32, .08); }
+.talk-workspace-atendimento .message-bubble.is-inbound .msg-bubble-body { border-radius: 10px; }
+.talk-workspace-atendimento .message-bubble.is-outbound .msg-bubble-body { border-radius: 10px; }
+.talk-workspace-atendimento .message-bubble.is-inbound:not(.is-run-start) .msg-bubble-body { border-top-left-radius: 4px; }
+.talk-workspace-atendimento .message-bubble.is-inbound:not(.is-run-end) .msg-bubble-body { border-bottom-left-radius: 4px; }
+.talk-workspace-atendimento .message-bubble.is-inbound.is-run-end .msg-bubble-body { border-bottom-left-radius: 2px; }
+.talk-workspace-atendimento .message-bubble.is-outbound:not(.is-run-start) .msg-bubble-body { border-top-right-radius: 4px; }
+.talk-workspace-atendimento .message-bubble.is-outbound:not(.is-run-end) .msg-bubble-body { border-bottom-right-radius: 4px; }
+.talk-workspace-atendimento .message-bubble.is-outbound.is-run-end .msg-bubble-body { border-bottom-right-radius: 2px; }
+.talk-workspace-atendimento .message-bubble p { font-size: 14px; }
+
+/* Our bubbles: light green with dark text, like WhatsApp. Everything inside is re-tinted for a light background. */
+.talk-workspace-atendimento .message-bubble.is-outbound .msg-bubble-body { background: var(--rd-out); color: var(--rd-out-ink); }
+.talk-workspace-atendimento .message-bubble.is-outbound p { color: var(--rd-out-ink); }
+.talk-workspace-atendimento .message-bubble.is-outbound time,
+.talk-workspace-atendimento .message-bubble.is-outbound .message-edited-label { color: var(--rd-out-meta); }
+.talk-workspace-atendimento .message-bubble.is-outbound .message-ticks { color: var(--rd-out-meta); }
+.talk-workspace-atendimento .message-bubble.is-outbound .message-ticks.is-read { color: #34a8dd; }
+.talk-workspace-atendimento .message-bubble.is-outbound .message-ticks.is-failed { color: #c0392b; }
+.talk-workspace-atendimento .message-bubble.is-outbound .message-quote { background: rgba(23, 53, 43, .07); }
+.talk-workspace-atendimento .message-bubble.is-outbound .message-quote strong { color: #7556e0; }
+.talk-workspace-atendimento .message-bubble.is-outbound .message-quote.is-mine strong { color: #06a07a; }
+.talk-workspace-atendimento .message-bubble.is-outbound .message-quote span { color: #54656f; }
+.talk-workspace-atendimento .message-bubble.is-outbound .message-file-card { background: rgba(255, 255, 255, .6); }
+.talk-workspace-atendimento .message-bubble.is-outbound .message-delete-action { color: var(--rd-out-meta); }
+.talk-workspace-atendimento .message-bubble.is-outbound .message-delete-action:hover { background: rgba(23, 53, 43, .08); color: var(--rd-out-ink); }
+.talk-workspace-atendimento .message-bubble.is-outbound .message-supervisor-label { background: #efe9fd; color: #5b3ab5; }
+.talk-workspace-atendimento .message-bubble.is-outbound .talk-attachment { color: var(--rd-out-ink); }
+.talk-workspace-atendimento .message-bubble.is-outbound .talk-voice-icon,
+.talk-workspace-atendimento .message-bubble.is-outbound .talk-voice-speed { color: #276253; background: rgba(23, 53, 43, .08); }
+.talk-workspace-atendimento .message-bubble.is-outbound .talk-voice-avatar-mic { color: #3e9f86; filter: drop-shadow(0 0 1px #fff) drop-shadow(0 0 1px #fff); }
+.talk-workspace-atendimento .message-bubble.is-outbound .talk-document-card { background: rgba(255, 255, 255, .62); }
+.talk-workspace-atendimento .message-bubble.is-outbound .talk-document-icon { color: #b94a46; }
+.talk-workspace-atendimento .message-bubble.is-outbound .talk-sticker-fallback { background: rgba(23, 53, 43, .06); color: var(--rd-out-meta); }
+.talk-workspace-atendimento .message-bubble.is-outbound .talk-shared-contact:hover { background: rgba(23, 53, 43, .05); }
+.talk-workspace-atendimento .message-bubble.is-outbound .talk-shared-contact-actions { border-top-color: rgba(23, 53, 43, .12); }
+.talk-workspace-atendimento .message-bubble.is-outbound .talk-shared-contact-actions button { background: rgba(255, 255, 255, .6); color: #1f5e4b; }
+.talk-workspace-atendimento .message-bubble.is-outbound .talk-shared-contact-actions button:hover:not(:disabled) { background: rgba(255, 255, 255, .9); }
+.talk-workspace-atendimento .message-bubble.is-outbound .talk-audio-transcript { border-top-color: rgba(23, 53, 43, .12); }
+/* Media never pushes past its bubble, even with the side menu open. */
+.talk-workspace-atendimento .msg-bubble-body > * { max-width: 100%; }
+.talk-workspace-atendimento .talk-voice-note { width: min(300px, 100%); }
+.talk-workspace-atendimento .talk-document-card { width: min(300px, 100%); }
+.talk-workspace-atendimento .talk-voice-track input { accent-color: var(--color-brand-600); }
+
+/* ---------- Composer ---------- */
+.talk-workspace-atendimento .composer { border-top: 0; background: var(--rd-thread); padding: 8px 14px 12px; }
+.talk-workspace-atendimento .composer-format-bar { align-self: flex-start; display: inline-flex; gap: 2px; margin: 0 0 6px 52px; padding: 3px; border: 0; border-radius: 10px; background: var(--color-surface-card); box-shadow: 0 1px 2px rgba(20, 40, 32, .1); }
+.talk-workspace-atendimento .composer-format-bar .composer-tool { width: 32px; height: 30px; font-size: 14px; }
+.talk-workspace-atendimento .composer-input-row { position: relative; align-items: flex-end; gap: 8px; padding: 0; }
+.talk-workspace-atendimento .composer-field { flex: 1; min-width: 0; display: flex; align-items: flex-end; gap: 2px; padding: 4px 5px; border-radius: 22px; background: var(--color-surface-card); box-shadow: 0 1px 2px rgba(20, 40, 32, .1); }
+.talk-workspace-atendimento .composer-field .composer-tool { flex: none; width: 36px; height: 36px; border-radius: 50%; color: var(--color-text-secondary); }
+.talk-workspace-atendimento .composer-field .composer-tool:hover:not(:disabled) { background: var(--rd-hover); color: var(--color-text-primary); }
+.talk-workspace-atendimento .composer-format-toggle { font-weight: 700; font-size: 14px; letter-spacing: -.02em; }
+.talk-workspace-atendimento .composer-format-toggle[aria-pressed="true"] { background: var(--color-brand-50); color: var(--color-brand-600); }
+.talk-workspace-atendimento .composer-field .composer-rich-shell { flex: 1; min-width: 0; align-self: center; }
+.talk-workspace-atendimento .composer-field .composer-rich-input { min-height: 24px; max-height: 220px; overflow-y: auto; padding: 6px 6px; font-size: 14.5px; line-height: 1.45; }
+.talk-workspace-atendimento .composer-quick-replies { flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 34px; margin: 1px 0; padding: 0 11px; border: 0; border-radius: 17px; background: var(--color-brand-50); color: var(--color-brand-600); font: inherit; font-size: 12.5px; font-weight: 600; white-space: nowrap; cursor: pointer; transition: padding .15s; }
+.talk-workspace-atendimento .composer-quick-replies:hover:not(:disabled) { background: var(--color-brand-100); }
+.talk-workspace-atendimento .composer-quick-replies span { display: inline-block; overflow: hidden; max-width: 140px; transition: max-width .18s, opacity .15s; }
+.talk-workspace-atendimento .composer-field.is-typing .composer-quick-replies { width: 34px; padding: 0; gap: 0; border-radius: 50%; }
+.talk-workspace-atendimento .composer-field.is-typing .composer-quick-replies span { max-width: 0; opacity: 0; }
+/* The round button: microphone when empty, send with text. */
+.talk-workspace-atendimento .composer-send,
+.talk-workspace-atendimento .composer-voice:not(.is-expanded) > .composer-tool { width: 46px; height: 46px; flex: none; border-radius: 50%; background: var(--color-brand-600); color: #fff; }
+.talk-workspace-atendimento .composer-send { background: var(--rd-live); }
+.talk-workspace-atendimento .composer-send:hover:not(:disabled) { background: #19914a; }
+.talk-workspace-atendimento .composer-voice:not(.is-expanded) > .composer-tool:hover:not(:disabled) { background: var(--color-brand-700); color: #fff; }
+.talk-workspace-atendimento .composer-voice:not(.is-expanded) > .composer-tool:disabled { opacity: .45; }
+.talk-workspace-atendimento .composer-voice-slot.is-hidden { display: none; }
+.talk-workspace-atendimento .composer-voice-slot { display: flex; }
+/* While recording, the recorder takes the whole line, like WhatsApp. */
+.talk-workspace-atendimento .composer-voice.is-expanded { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; min-width: 0; }
+.talk-workspace-atendimento .composer-voice.is-expanded .composer-recording { flex: 1; height: 100%; border-radius: 23px; background: var(--color-surface-card); box-shadow: 0 1px 2px rgba(20, 40, 32, .1); padding: 4px 6px 4px 14px; }
+.talk-workspace-atendimento .composer-voice .voice-error { position: absolute; left: 14px; bottom: calc(100% + 6px); margin: 0; }
+
+/* ---------- Side panel ---------- */
+.talk-workspace-atendimento .contact-panel { background: var(--color-surface-card); gap: 0; padding: 0; }
+.talk-workspace-atendimento .contact-panel .context-card { margin: 0; border: 0; border-radius: 0; box-shadow: none; background: transparent; padding: 14px 18px; border-bottom: 1px solid var(--rd-line); }
+.talk-workspace-atendimento .contact-panel .context-card:last-child { border-bottom: 0; }
+.talk-workspace-atendimento .contact-panel .context-card-title { font-size: 11px; letter-spacing: .06em; color: var(--color-text-muted); }
+.talk-workspace-atendimento .assistant-tabs { padding: 0 18px; gap: 18px; border-bottom: 1px solid var(--rd-line); background: var(--color-surface-card); }
+.talk-workspace-atendimento .assistant-tabs button[aria-pressed] { border-radius: 0; background: transparent; padding: 14px 0 12px; margin-bottom: -1px; border-bottom: 2px solid transparent; font-weight: 500; color: var(--color-text-secondary); }
+.talk-workspace-atendimento .assistant-tabs button[aria-pressed="true"] { color: var(--color-text-primary); font-weight: 600; border-bottom-color: var(--color-brand-600); }
+.talk-workspace-atendimento .assistant-panel { padding: 16px 18px; gap: 14px; }
+.talk-workspace-atendimento .assistant-reply { border: 1px solid var(--color-brand-100); border-radius: 12px; background: linear-gradient(180deg, var(--color-brand-50), var(--color-surface-card) 70%); }
+.talk-workspace-atendimento .assistant-reply > p:not(.assistant-warning):not(.assistant-caption) { padding: 10px 12px; border-radius: 10px; background: var(--rd-out); color: var(--rd-out-ink); }
+.talk-workspace-atendimento .assistant-orient-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; color: var(--color-brand-600); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.talk-workspace-atendimento .assistant-history { font-size: 12.5px; color: var(--color-text-secondary); }

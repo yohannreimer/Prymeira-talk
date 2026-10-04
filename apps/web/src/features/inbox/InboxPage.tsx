@@ -6,14 +6,16 @@ import { CATALOG_STALE_MS, MAX_MESSAGES, receiptStatus } from '../../app/session
 import { LocationMessage } from './LocationMessage';
 import { needsHumanAttention } from "@prymeira-talk/shared";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bookmark, Bot, Check, CheckCircle2, ShieldCheck, ContactRound, FileText, Forward, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
+import { Bookmark, Bot, Check, CheckCircle2, MoreVertical, Smile, Zap, ShieldCheck, ContactRound, FileText, Forward, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
 import { quotedPreview, threadWithReactions } from "./message-threading.js";
 import { MessageTicks } from "./MessageTicks";
 import { ConversationPreview } from "./ConversationPreview";
 import { QuoteContent } from "./QuoteMedia";
 import { AttachmentTray, type PendingAttachment } from "./AttachmentTray";
+import { messageDayLabel, threadPlacement } from './thread-layout';
+import './inbox-redesign.css';
 import type { ChangeEvent, DragEvent, FormEvent, SetStateAction } from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   apiCreateQuickReply,
   apiCreateConversationMessage,
@@ -67,7 +69,7 @@ import { AssistantPanel } from './AssistantPanel';
 import { useHandoffBrief } from './useHandoffBrief';
 import { ContactIdentityCard } from './ContactIdentityCard';
 import { ContactAvatar } from './ContactAvatar';
-import { ForwardDialog, canForward } from './ForwardDialog';
+import { ForwardDialog, canForward, displayPhone } from './ForwardDialog';
 import { InboxMedia, mediaCaption } from './InboxMedia';
 import { RichDraft, type RichDraftHandle } from './RichDraft';
 import { VoiceRecorder } from './VoiceRecorder';
@@ -517,6 +519,8 @@ function InboxPageContent() {
   const [forwardSelection, setForwardSelection] = useState<string[] | null>(null);
   const [forwardOpen, setForwardOpen] = useState(false);
   const [cardChatBusy, setCardChatBusy] = useState<string | null>(null);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const [formatOpen, setFormatOpen] = useState(false);
   const [pendingFiles, setPendingFiles] = useSessionState<PendingAttachment[]>(`draftFiles:${selectedConversationId ?? 'none'}`, []);
   const [activeAttachmentId, setActiveAttachmentId] = useState<string | null>(null);
   const [isSendingAttachments, setIsSendingAttachments] = useState(false);
@@ -732,7 +736,14 @@ function InboxPageContent() {
     selectedConversationIdRef.current = selectedConversationId;
   }, [selectedConversationId]);
   // A selection belongs to the conversation it was made in.
-  useEffect(() => { setForwardSelection(null); setForwardOpen(false); setPendingFill(null); }, [selectedConversationId]);
+  useEffect(() => { setForwardSelection(null); setForwardOpen(false); setPendingFill(null); setHeaderMenuOpen(false); }, [selectedConversationId]);
+  useEffect(() => {
+    if (!headerMenuOpen) return;
+    const close = (event: Event) => { if (!(event.target instanceof Element) || !event.target.closest('.chat-header-menu')) setHeaderMenuOpen(false); };
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setHeaderMenuOpen(false); };
+    document.addEventListener('mousedown', close); document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', onKey); };
+  }, [headerMenuOpen]);
   useEffect(() => {
     if (!forwardSelection || forwardOpen) return;
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setForwardSelection(null); };
@@ -1613,37 +1624,34 @@ function InboxPageContent() {
           <div className="inbox-list-header-actions"><button type="button" className="inbox-header-icon" aria-label="Nova conversa por número" title="Nova conversa por número" onClick={() => setNewConversationOpen(true)}><MessageSquarePlus size={18} /></button><button type="button" className="inbox-header-icon" aria-label="Enviar mensagem para várias pessoas" title="Enviar para várias pessoas" onClick={() => setQuickSendOpen(true)}><Users size={18} /></button><span className="live-indicator">{token ? "Online" : "Conectando"}</span></div>
         </header>
 
-        <div className="channel-filter-row" aria-label="Filtrar por canal">
-          {channelFilterOptions.map((option) => (
-            <button
-              className={[
-                "channel-filter-chip",
-                option.id === selectedChannelFilter ? "is-active" : ""
-              ].filter(Boolean).join(" ")}
-              key={option.id}
-              onClick={() => setSelectedChannelFilter(option.id)}
-              type="button"
-              aria-pressed={option.id === selectedChannelFilter}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="inbox-search-filters">
-          <InboxQuickFilters value={activeView} onChange={setActiveView} />
-          <button type="button" className={`inbox-search-toggle${searchOpen ? " is-active" : ""}`}
-            aria-label="Buscar conversa" title="Buscar conversa" aria-expanded={searchOpen}
-            onClick={() => { setSearchOpen((current) => !current); if (searchOpen) { setSearchDraft(""); setSearchQuery(""); } }}>
-            <Search size={18} strokeWidth={1.9} aria-hidden="true" />
-          </button>
-        </div>
-        {searchOpen ? <div className="inbox-search-field">
+        {/* Always-visible search, then the numbers and the quick filters on one line: names when the list is wide,
+            icons with a tooltip when it is narrow (never a second line). */}
+        <div className="inbox-search-field is-permanent">
           <Search size={16} aria-hidden="true" />
-          <input autoFocus aria-label="Nome ou telefone" placeholder="Nome ou telefone" value={searchDraft}
+          <input aria-label="Nome ou telefone" placeholder="Pesquisar nome ou telefone" value={searchDraft}
             onChange={(event) => setSearchDraft(event.target.value)} />
           {searchDraft ? <button type="button" aria-label="Limpar busca" onClick={() => setSearchDraft("")}><X size={16} /></button> : null}
-        </div> : null}
+        </div>
+        <div className="inbox-filter-line">
+          <div className="channel-filter-row" aria-label="Filtrar por canal">
+            {channelFilterOptions.map((option) => (
+              <button
+                className={[
+                  "channel-filter-chip",
+                  option.id === selectedChannelFilter ? "is-active" : ""
+                ].filter(Boolean).join(" ")}
+                key={option.id}
+                onClick={() => setSelectedChannelFilter(option.id)}
+                type="button"
+                aria-pressed={option.id === selectedChannelFilter}
+                title={option.label}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <InboxQuickFilters value={activeView} onChange={setActiveView} />
+        </div>
 
         <div className="attention-filter-row" role="group" aria-label="Visualização das conversas">
           <button
@@ -1712,7 +1720,9 @@ function InboxPageContent() {
               className={[
                 "conversation-card",
                 conversation.id === selectedConversationId ? "is-selected" : "",
-                showHumanAttention ? "needs-human-attention" : ""
+                showHumanAttention ? "needs-human-attention" : "",
+                conversation.unreadCount > 0 ? "has-unread" : "",
+                conversation.manualMarked ? "is-marked" : ""
               ].filter(Boolean).join(" ")}
               key={conversation.id}
             >
@@ -1753,18 +1763,18 @@ function InboxPageContent() {
                   <span className="conv-name-wrap">
                     <strong>{contactDisplayName(conversation)}</strong>
                     {conversation.isGroup ? <span className="conv-dept-tag"><Users size={12} aria-hidden="true" /> Grupo</span> : null}
-                    {conversation.departmentName ? (
-                      <span className="conv-dept-tag">{conversation.departmentName}</span>
-                    ) : null}
+                  </span>
+                  {/* Only workspaces with more than one number need to know which one the conversation came through.
+                      The attention and review tags sit on this line, so the name always keeps its room. */}
+                  {showChannelOrigin || conversationNeedsHuman || (activeView === "reply" && conversation.replyTriageDecision === "uncertain") ? <span className="conv-sub-line">
+                    {showChannelOrigin ? <span className="conversation-channel-origin">via {conversation.channelName ?? "Canal sem nome"}</span> : null}
                     {conversationNeedsHuman ? (
                       <span className="conv-human-tag">Humano necessário</span>
                     ) : null}
                     {activeView === "reply" && conversation.replyTriageDecision === "uncertain" && !conversationNeedsHuman ? (
                       <span className="conv-review-tag">Revisar</span>
                     ) : null}
-                  </span>
-                  {/* Only workspaces with more than one number need to know which one the conversation came through. */}
-                  {showChannelOrigin ? <span className="conversation-channel-origin">via {conversation.channelName ?? "Canal sem nome"}</span> : null}
+                  </span> : null}
                   </span>
                   <span className="conv-meta-right">
                     <ConversationCardTime value={conversationPreviewTime(conversation)} />
@@ -1818,6 +1828,10 @@ function InboxPageContent() {
     selectedConversationId, acknowledgedHandoffIds, actionBusyConversationId, loadMoreError, isLoadingMoreConversations,
     loadMoreConversations, session, getFreshToken, setSelectedConversationId, setSelectedConversationSnapshot,
     setActiveView, setSelectedChannelFilter, setSearchDraft, setSearchQuery, setSearchOpen, listQuery.refetch, beginPerformance, listScrollKey]);
+  // Typing must not repaint photos: the header photo only changes with the conversation.
+  const headerConversationId = selectedConversation?.id; const headerContactName = selectedConversation?.contactName;
+  const headerAvatar = useMemo(() => headerConversationId
+    ? <ContactAvatar conversationId={headerConversationId} name={headerContactName} className="chat-header-avatar" /> : null, [headerConversationId, headerContactName]);
   const historyView = useMemo(() => (
 selectedConversation ? (
           <div
@@ -1865,7 +1879,8 @@ selectedConversation ? (
             {!messageError && !isLoadingMessages && !isThreadTransitioning && visibleMessages.length === 0 ? (
               <p className="thread-note">Ainda não ha mensagens nesta conversa.</p>
             ) : null}
-            {thread.visible.map((message) => {
+            {thread.visible.map((message, index) => {
+              const placement = threadPlacement(thread.visible, index, Boolean(selectedConversation.isGroup));
               const isInbound = message.direction === "inbound";
               const isMedia = ['image', 'audio', 'file'].includes(message.type);
               // Plain text keeps its time on the last line, like WhatsApp; media, maps and cards keep it below.
@@ -1881,21 +1896,22 @@ selectedConversation ? (
               const senderName = selectedConversation.isGroup ? message.senderName ?? message.senderJid : selectedConversation.contactName;
               const picked = Boolean(forwardSelection?.includes(message.id));
               return (
+              <Fragment key={message.id}>
+              {placement.newDay ? <div className="thread-day" role="separator"><span>{messageDayLabel(message.createdAt)}</span></div> : null}
               <article
-                className={`message-bubble ${isInbound ? "is-inbound" : "is-outbound"}${forwardSelection ? ' is-selecting' : ''}${picked ? ' is-picked' : ''}${forwardSelection && !canForward(message) ? ' is-unpickable' : ''}`}
+                className={`message-bubble ${isInbound ? "is-inbound" : "is-outbound"}${placement.startsRun ? ' is-run-start' : ''}${placement.endsRun ? ' is-run-end' : ''}${forwardSelection ? ' is-selecting' : ''}${picked ? ' is-picked' : ''}${forwardSelection && !canForward(message) ? ' is-unpickable' : ''}`}
                 data-message-id={message.id}
-                key={message.id}
                 onClickCapture={forwardSelection ? (event) => { event.preventDefault(); event.stopPropagation(); actionsRef.current.toggleForwardPick(message); } : undefined}
               >
                 {forwardSelection ? <span className="message-pick" role="checkbox" aria-checked={picked} aria-label="Selecionar mensagem">{picked ? <Check size={13} strokeWidth={3} /> : null}</span> : null}
-                {isInbound ? (
+                {isInbound ? placement.endsRun ? (
                   <ContactAvatar conversationId={selectedConversation?.id} name={senderName} className="msg-avatar" />
-                ) : null}
+                ) : <span className="msg-avatar is-spacer" aria-hidden="true" /> : null}
                 <div className={`msg-bubble-body${inlineMeta ? ' has-inline-meta' : ''}`}>
                   {/* Internal only (never sent to the customer): the seller sees that their supervisor answered here. */}
                   {message.forwarded ? <span className="message-forwarded-label"><Forward size={12} aria-hidden="true" />Encaminhada</span> : null}
                   {message.sentBySupervisor ? <span className="message-supervisor-label" title="Mensagem enviada pelo supervisor pela tela de supervisão"><ShieldCheck size={12} aria-hidden="true" />Respondido pelo supervisor</span> : null}
-                  {selectedConversation.isGroup && isInbound ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
+                  {selectedConversation.isGroup && isInbound && placement.startsRun ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
                   {message.quoted ? (() => { const quote = quotedPreview(message.quoted, visibleMessages, selectedConversation.contactName ?? null); return (
                     <button type="button" className={`message-quote is-rich${quote.author === 'Você' ? ' is-mine' : ''}`} disabled={!quote.targetId}
                       aria-label={`Mensagem respondida de ${quote.author}`} onClick={() => quote.targetId && revealMessage(quote.targetId)}>
@@ -1950,6 +1966,7 @@ selectedConversation ? (
                   </div>
                 ) : null}
               </article>
+              </Fragment>
               );
             })}
             </div>
@@ -2200,34 +2217,49 @@ selectedConversation ? (
           onAdd={() => fileInputRef.current?.click()} onClose={() => setPendingFiles([])} onSend={() => void sendPendingAttachments()} /> : null}
         <header className="chat-header">
           <button className="assistant-mobile-back" type="button" onClick={() => setSelectedConversationId(null)}>Voltar</button>
-          <div>
+          {headerAvatar}
+          <div className="chat-header-who">
             <p className="eyebrow">Atendimento</p>
             <h2>
               {selectedConversation
                 ? contactDisplayName(selectedConversation)
                 : "Selecione uma conversa"}
             </h2>
+            {selectedConversation ? <small className="chat-header-sub">
+              {selectedConversation.isGroup ? 'Grupo do WhatsApp' : displayPhone(selectedConversation.contactPhone)}
+              {showChannelOrigin && selectedConversation.channelName ? <> <span aria-hidden="true">·</span> via {selectedConversation.channelName}</> : null}
+            </small> : null}
           </div>
           {selectedConversation ? (
             <div className="conversation-ai-control module-header-actions" aria-label={selectedConversation.isGroup ? "Atendimento do grupo" : "Controle da IA"}>
-              {!selectedConversation.isGroup && selectedConversation.channelProvider === 'evolution' && selectedConversation.contactPhone ? <button type="button" className="inbox-share-trigger" title="Enviar contato para outra pessoa" aria-label="Enviar contato para outra pessoa" onClick={() => setShareContactOpen(true)}><ContactRound size={17} /><Send size={12} /></button> : null}
               {selectedConversation.isGroup ? <span className="status-badge">Grupo</span> : <>
-              <span className="status-badge status-badge--bot">
-                {aiControlLabel(selectedConversation, assistant.data?.settings.mode)}
-              </span>
-              <button
-                className="secondary-button"
-                disabled={isRunningAction}
-                onClick={() => void toggleAiControl()}
-                type="button"
-              >
-                {aiControlActionLabel(selectedConversation)}
-              </button>
+              <span className="chat-mode-label">Quem responde</span>
+              {/* One switch for who answers. Each side runs the same action as before (assume or release the AI). */}
+              <div className="chat-mode-switch" role="group" aria-label={aiControlLabel(selectedConversation, assistant.data?.settings.mode)}>
+                <button type="button" aria-pressed={selectedConversation.aiControlStatus === "human_controlled"} disabled={isRunningAction}
+                  title="Você responde; a IA só sugere"
+                  onClick={() => { if (selectedConversation.aiControlStatus !== "human_controlled") void toggleAiControl(); }}><UserRound size={14} aria-hidden="true" />Humano</button>
+                <button type="button" aria-pressed={selectedConversation.aiControlStatus !== "human_controlled"} disabled={isRunningAction}
+                  title={aiControlLabel(selectedConversation, assistant.data?.settings.mode)}
+                  onClick={() => { if (selectedConversation.aiControlStatus === "human_controlled") void toggleAiControl(); }}><Bot size={14} aria-hidden="true" />IA</button>
+              </div>
               </>}
               <ConversationCampaignSource conversation={selectedConversation} />
-              <span className={`status-badge status-badge--${selectedConversation.status}`}>
+              {/* "Aberta" is the normal state: only a different one is worth a badge. */}
+              {selectedConversation.status !== 'open' ? <span className={`status-badge status-badge--${selectedConversation.status}`}>
                 {statusLabel(selectedConversation.status)}
-              </span>
+              </span> : null}
+              <div className="chat-header-menu">
+                <button type="button" className="chat-header-more" aria-label="Mais ações" aria-haspopup="menu" aria-expanded={headerMenuOpen}
+                  onClick={() => setHeaderMenuOpen(open => !open)}><MoreVertical size={18} aria-hidden="true" /></button>
+                {headerMenuOpen ? <div className="chat-header-menu-pop" role="menu" onClick={() => setHeaderMenuOpen(false)}>
+                  {selectedConversation.status !== 'closed' ? <button type="button" role="menuitem" disabled={isRunningAction}
+                    onClick={() => void actionsRef.current.runAction({ action: 'close_conversation' })}><CheckCircle2 size={16} aria-hidden="true" />Finalizar atendimento</button> : null}
+                  {!selectedConversation.isGroup && selectedConversation.channelProvider === 'evolution' && selectedConversation.contactPhone ? <button type="button" role="menuitem"
+                    onClick={() => setShareContactOpen(true)}><ContactRound size={16} aria-hidden="true" />Enviar contato</button> : null}
+                  <button type="button" role="menuitem" onClick={() => setForwardSelection([])}><Forward size={16} aria-hidden="true" />Selecionar mensagens</button>
+                </div> : null}
+              </div>
             </div>
           ) : null}
         </header>
@@ -2285,7 +2317,8 @@ selectedConversation ? (
             aria-label="Compositor de mensagem"
             onSubmit={handleSendMessage}
           >
-            <div className="composer-toolbar" aria-label="Ferramentas de formatação">
+            {/* Formatting on demand ("Aa"), like WhatsApp's: the same bold and italic as before. */}
+            {formatOpen ? <div className="composer-toolbar composer-format-bar" aria-label="Ferramentas de formatação">
               <button
                 type="button"
                 className="composer-tool"
@@ -2308,43 +2341,7 @@ selectedConversation ? (
               >
                 <em>I</em>
               </button>
-              <span className="composer-tool-divider" aria-hidden="true" />
-              <button
-                type="button"
-                className="composer-tool"
-                aria-label="Emoji"
-                disabled={!selectedConversation}
-                onClick={() => setShowEmojiPicker((current) => !current)}
-              >
-                😊
-              </button>
-              <button
-                type="button"
-                className="composer-tool"
-                aria-label="Anexo"
-                disabled={!selectedConversation}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Paperclip size={16} aria-hidden="true" />
-              </button>
-              <input
-                className="composer-file-input"
-                onChange={handleFileSelected}
-                ref={fileInputRef}
-                type="file"
-                multiple
-              />
-              <VoiceRecorder key={selectedConversationId ?? 'no-conversation'} disabled={!selectedConversation || isSending || Boolean(composerOrigin) || selectedConversation.channelProvider !== 'evolution'} onSend={file => sendAttachment(file, true)} />
-              <span className="composer-tool-spacer" aria-hidden="true" />
-              <button
-                type="button"
-                className="composer-quick-replies"
-                disabled={!selectedConversation}
-                onClick={() => setShowQuickReplies((current) => !current)}
-              >
-                Mensagens padrão
-              </button>
-            </div>
+            </div> : null}
             {showEmojiPicker ? (
               <div className="composer-emoji-picker" aria-label="Emojis">
                 {composerEmojis.map((emoji) => (
@@ -2369,15 +2366,71 @@ selectedConversation ? (
               </div>;
             })() : null}
             <div className="composer-input-row">
-              <RichDraft key={selectedConversationId ?? 'no-conversation'} ref={draftTextAreaRef} value={draft} disabled={!selectedConversation || isSending} onFormatChange={setDraftFormat} onChange={value => { setDraft(value); if (!value) setComposerOrigin(null); }} onPasteImage={file => stageAttachments([file])} onKeyCommand={handleComposerKey} />
-              <button
+              <div className={`composer-field${draft ? ' is-typing' : ''}`}>
+                <button
+                  type="button"
+                  className="composer-tool"
+                  aria-label="Emoji"
+                  title="Emojis"
+                  disabled={!selectedConversation}
+                  onClick={() => setShowEmojiPicker((current) => !current)}
+                >
+                  <Smile size={19} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="composer-tool"
+                  aria-label="Anexo"
+                  title="Anexar arquivos"
+                  disabled={!selectedConversation}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Paperclip size={18} aria-hidden="true" />
+                </button>
+                <input
+                  className="composer-file-input"
+                  onChange={handleFileSelected}
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                />
+                <button
+                  type="button"
+                  className="composer-tool composer-format-toggle"
+                  aria-label="Formatação"
+                  title="Negrito e itálico"
+                  aria-expanded={formatOpen}
+                  aria-pressed={formatOpen}
+                  disabled={!selectedConversation}
+                  onClick={() => setFormatOpen(open => !open)}
+                >
+                  Aa
+                </button>
+                <RichDraft key={selectedConversationId ?? 'no-conversation'} ref={draftTextAreaRef} value={draft} disabled={!selectedConversation || isSending} onFormatChange={setDraftFormat} onChange={value => { setDraft(value); if (!value) setComposerOrigin(null); }} onPasteImage={file => stageAttachments([file])} onKeyCommand={handleComposerKey} />
+                <button
+                  type="button"
+                  className="composer-quick-replies"
+                  aria-label="Mensagens padrão"
+                  title="Mensagens padrão (ou digite / na caixa)"
+                  disabled={!selectedConversation}
+                  onClick={() => setShowQuickReplies((current) => !current)}
+                >
+                  <Zap size={15} aria-hidden="true" /><span>Mensagens padrão</span>
+                </button>
+              </div>
+              {/* WhatsApp's round button: the microphone while the box is empty, send once there is text. The recorder
+                  stays mounted so a recording in progress is never lost; it covers the line while recording. */}
+              <div className={`composer-voice-slot${draft.trim() ? ' is-hidden' : ''}`}>
+                <VoiceRecorder key={selectedConversationId ?? 'no-conversation'} disabled={!selectedConversation || isSending || Boolean(composerOrigin) || selectedConversation.channelProvider !== 'evolution'} onSend={file => sendAttachment(file, true)} />
+              </div>
+              {draft.trim() ? <button
                 className="composer-send"
                 disabled={!selectedConversation || !draft.trim() || isSending}
                 type="submit"
                 aria-label="Enviar mensagem"
               >
-                →
-              </button>
+                <Send size={18} aria-hidden="true" />
+              </button> : null}
             </div>
           </form>
         </div>

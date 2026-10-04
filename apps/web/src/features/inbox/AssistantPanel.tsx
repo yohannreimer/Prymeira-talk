@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Check, LockKeyhole, MessageSquareText, Pencil, RefreshCw, Send, UserRound } from 'lucide-react';
+import { Check, LockKeyhole, MessageSquareText, Pencil, Plus, RefreshCw, Send, UserRound } from 'lucide-react';
 import type { AssistantConversationDto, AssistantSuggestionDto } from '@prymeira-talk/shared';
 import { HandoffBrief } from './HandoffBrief';
 import type { HandoffBriefDto } from '../../../../../packages/shared/src/assistant';
@@ -23,6 +23,8 @@ export function AssistantPanel({ data, error, loading, lastFromUs, humanControll
   const [localError, setLocalError] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
   const [replace, setReplace] = useState(false);
+  /** The guidance box stays folded until asked for: the panel shows the state and its action first. */
+  const [orientOpen, setOrientOpen] = useState(false);
   const busy = useRef(false);
   const suggestion = data?.suggestion;
   const paused = (humanControlled || data?.humanControlled) && !data?.humanSupport;
@@ -63,7 +65,8 @@ export function AssistantPanel({ data, error, loading, lastFromUs, humanControll
         {ready ? <div className="assistant-reply-actions"><button className="assistant-primary" type="button" disabled={sending} onClick={() => void send()}><Send size={15} />{sending ? 'Confirmando envio…' : 'Enviar resposta'}</button><button type="button" disabled={sending} onClick={() => { if (draftExists) setReplace(true); else onEdit(suggestion, false); }}><Pencil size={14} />Editar no campo</button></div> : <p className="assistant-caption">{generating ? 'Atualizando com as novas mensagens.' : suggestion.sendStatus === 'uncertain' ? 'Envio sem confirmação. Confira a conversa antes de reenviar.' : data.status === 'sent' ? 'Confira o status da mensagem na conversa.' : 'A conversa mudou desde esta sugestão. Atualize para usar as mensagens novas.'}</p>}
         {replace ? <div className="assistant-confirm"><p>Substituir o texto que você já escreveu?</p><button type="button" onClick={() => { onEdit(suggestion, true); setReplace(false); }}>Substituir rascunho</button><button type="button" onClick={() => setReplace(false)}>Manter meu texto</button></div> : null}
       </section> : null}
-      {!paused ? <form className="assistant-guidance" onSubmit={e => { e.preventDefault(); void generate(instruction.trim() || undefined); }}><label htmlFor="assistant-instruction">Orientar a IA <LockKeyhole size={12} /></label><textarea id="assistant-instruction" rows={3} maxLength={2000} value={instruction} onChange={e => setInstruction(e.target.value)} placeholder={awaitingCustomer ? 'Opcional. Ex.: lembre do orçamento enviado ontem.' : 'Ex.: seja mais direto e peça as medidas que faltam.'} disabled={generating || sending} /><div className="assistant-guidance-footer"><span>Não é enviado ao cliente</span><button type="submit" disabled={generating || sending}><RefreshCw size={14} />{awaitingCustomer ? (followUp ? 'Ajustar follow-up' : 'Sugerir follow-up') : suggestion && ready ? 'Ajustar sugestão' : 'Gerar sugestão'}</button></div></form> : null}
+      {!paused ? <form className="assistant-guidance" onSubmit={e => { e.preventDefault(); void generate(instruction.trim() || undefined); }}>{orientOpen || instruction ? <><label htmlFor="assistant-instruction">Orientar a IA <LockKeyhole size={12} /></label><textarea id="assistant-instruction" rows={3} maxLength={2000} value={instruction} onChange={e => setInstruction(e.target.value)} placeholder={awaitingCustomer ? 'Opcional. Ex.: lembre do orçamento enviado ontem.' : 'Ex.: seja mais direto e peça as medidas que faltam.'} disabled={generating || sending} autoFocus={orientOpen && !instruction} /></>
+        : <button type="button" className="assistant-orient-toggle" onClick={() => setOrientOpen(true)}><Plus size={14} aria-hidden="true" />Orientar a IA</button>}<div className="assistant-guidance-footer"><span>Não é enviado ao cliente</span><button type="submit" disabled={generating || sending}><RefreshCw size={14} />{awaitingCustomer ? (followUp ? 'Ajustar follow-up' : 'Sugerir follow-up') : suggestion && ready ? 'Ajustar sugestão' : 'Gerar sugestão'}</button></div></form> : null}
       {data.error && data.status === 'failed' && !paused && !generating ? <p className="assistant-alert">{data.error}</p> : null}
       <details className="assistant-history"><summary>Histórico de revisões <span>{data.history.length}</span></summary>{data.history.length ? data.history.map(item => <article key={item.id}><div><strong>Revisão {item.revision}</strong><time>{new Date(item.createdAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</time></div>{item.instruction ? <p className="assistant-history-instruction">Orientação: {item.instruction}</p> : null}<p>{item.body}</p>{item.finalBody ? <><span className="assistant-eyebrow"><Check size={12} /> Texto aprovado por {item.actorName ?? 'vendedor'}</span><p>{item.finalBody}</p></> : null}</article>) : <p>As sugestões e suas alterações aparecerão aqui.</p>}</details>
     </>}
