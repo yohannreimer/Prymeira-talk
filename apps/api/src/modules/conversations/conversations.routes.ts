@@ -733,19 +733,20 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
 
   /** One outbound path for the seller and for a supervisor answering in their place: same agent pause, delivery,
    * triage, follow-ups and realtime. Only where the workspace comes from, and the message's marks, differ. */
-  async function createMessage(request: FastifyRequest, reply: FastifyReply, scope: { workspaceId: string; conversationId: string; metadata?: Record<string, unknown> },
-    body: { data: z.infer<typeof createMessageBodySchema> }) {
+  const sent = (code: number, payload: unknown) => ({ code, payload });
+  async function createMessage(request: FastifyRequest, scope: { workspaceId: string; conversationId: string; metadata?: Record<string, unknown> },
+    body: { data: z.infer<typeof createMessageBodySchema> }): Promise<{ code: number; payload: unknown }> {
 
     let contactCard: { fullName: string; phoneNumber: string } | undefined;
     if (body.data.contactCard) {
       if (options.evolution?.mode !== "real" || !options.evolution.client?.sendContact) {
-        return reply.code(409).send({ code: "CONTACT_CARD_NOT_SUPPORTED", error: "O envio de contatos não está disponível neste canal." });
+        return sent(409, { code: "CONTACT_CARD_NOT_SUPPORTED", error: "O envio de contatos não está disponível neste canal." });
       }
       const source = await app.prisma.conversation.findFirst({
         where: { id: body.data.contactCard.sourceConversationId, workspaceId: scope.workspaceId },
         select: { contact: { select: { name: true, phone: true } } }
       });
-      if (!source?.contact.phone) return reply.code(404).send({ error: "Contato de origem não encontrado." });
+      if (!source?.contact.phone) return sent(404, { error: "Contato de origem não encontrado." });
       contactCard = {
         fullName: source.contact.name?.trim() || source.contact.phone,
         phoneNumber: source.contact.phone
@@ -808,13 +809,11 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     });
 
     if (!result) {
-      return reply
-        .code(404)
-        .send({ code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
+      return sent(404, { code: "CONVERSATION_NOT_FOUND", error: "Conversation not found." });
     }
 
     if (result instanceof OutboundMessageValidationError) {
-      return reply.code(result.statusCode).send({ code: result.code, error: result.message });
+      return sent(result.statusCode, { code: result.code, error: result.message });
     }
 
     if (result instanceof EvolutionClientError) {
@@ -853,20 +852,20 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
           });
           if (channel) app.realtime.publish({ type: "channel.updated", workspaceId: scope.workspaceId, payload: toChannelDto(channel) });
         }
-        return reply.code(502).send({
+        return sent(502, {
           code: "EVOLUTION_CONNECTION_CLOSED",
           error: "A conexão do WhatsApp fechou durante o envio. Confira a conversa do destinatário antes de tentar novamente e reconecte o canal em Canais se o problema continuar."
         });
       }
 
-      return reply.code(502).send({
+      return sent(502, {
         code: "EVOLUTION_SEND_FAILED",
         error: "A Evolution recusou o envio. Tente novamente após conferir a conexão do canal."
       });
     }
 
     if (result instanceof MetaClientError) {
-      return reply.code(502).send({
+      return sent(502, {
         code: "META_SEND_FAILED",
         error: "Meta did not accept the outbound message."
       });
@@ -924,7 +923,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       payload: result.conversation
     });
 
-    return reply.code(201).send(result.message);
+    return sent(201, result.message);
   }
 
   // A 25 MB attachment travels as a data URL (4/3 of its size) inside JSON.
@@ -934,7 +933,8 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     if (!params.success || !body.success) {
       return reply.code(400).send({ error: "Invalid conversation message request." });
     }
-    return createMessage(request, reply, { workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId }, body);
+    const result = await createMessage(request, { workspaceId: request.talk.workspaceId, conversationId: params.data.conversationId }, body);
+    return reply.code(result.code).send(result.payload);
   });
 
   // A supervisor may answer a customer of a seller they supervise (text only). The message goes out through the
@@ -953,7 +953,48 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
       throw error;
     }
     const grant = grants.find(item => item.workspace_id === params.data.workspaceId);
-    return createMessage(request, reply, { workspaceId: params.data.workspaceId, conversationId: params.data.conversationId,
+    const result = await createMessage(request, { workspaceId: params.data.workspaceId, conversationId: params.data.conversationId,
       metadata: { supervisorReply: { supervisorCustomerId: grant?.supervisor_customer_id ?? null, at: new Date().toISOString() } } }, body);
+    return reply.code(result.code).send(result.payload);
+  });
+
+  // Forward, like WhatsApp: the same text or file goes out again to up to five other conversations, each through its
+  // own channel. The customer receives a normal message; Talk marks it "Encaminhada" for the team.
+  app.post("/conversations/:conversationId/messages/:messageId/forward", async (request, reply) => {
+    const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
+    const body = z.object({ targetConversationIds: z.array(z.string().uuid()).min(1).max(5) }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: "Escolha até 5 conversas para encaminhar." });
+    const workspaceId = request.talk.workspaceId;
+    const source = await app.prisma.message.findFirst({
+      where: { workspaceId, conversationId: params.data.conversationId, id: params.data.messageId },
+      select: { type: true, body: true, metadata: true }
+    });
+    const metadata = source?.metadata && typeof source.metadata === "object" && !Array.isArray(source.metadata) ? source.metadata as Record<string, unknown> : {};
+    if (!source || metadata.deletedAt) return reply.code(404).send({ error: "Mensagem não encontrada." });
+    const attachment = metadata.attachment && typeof metadata.attachment === "object" ? metadata.attachment as Record<string, unknown> : {};
+    let payload: z.infer<typeof createMessageBodySchema>;
+    if (["image", "audio", "file"].includes(source.type)) {
+      let media: { bytes: Buffer; mimeType: string };
+      try { media = await mediaService.media(workspaceId, params.data.conversationId, params.data.messageId); }
+      catch { return reply.code(409).send({ code: "FORWARD_MEDIA_UNAVAILABLE", error: "Não foi possível abrir este arquivo para encaminhar." }); }
+      const caption = typeof attachment.caption === "string" && attachment.caption.trim() ? attachment.caption.trim().slice(0, 4000) : undefined;
+      const extension = media.mimeType.split("/")[1]?.split(/[;+]/)[0] || "bin";
+      const fileName = typeof attachment.fileName === "string" && attachment.fileName.trim() ? attachment.fileName.trim().slice(0, 240) : `arquivo.${extension}`;
+      payload = { attachment: { fileName, mimetype: media.mimeType, mediaUrl: `data:${media.mimeType};base64,${media.bytes.toString("base64")}` }, ...(caption ? { body: caption } : {}) };
+    } else if ((source.type === "text" || source.type === "template") && source.body?.trim() && !metadata.location && !metadata.contactCard && !metadata.contactCards) {
+      payload = { body: source.body.trim().slice(0, 4000) };
+    } else {
+      return reply.code(409).send({ code: "FORWARD_NOT_SUPPORTED", error: "Este tipo de mensagem ainda não pode ser encaminhado." });
+    }
+    const targets = [...new Set(body.data.targetConversationIds)];
+    const results: Array<{ conversationId: string; ok: boolean; error?: string }> = [];
+    for (const conversationId of targets) {
+      const result = await createMessage(request, { workspaceId, conversationId,
+        metadata: { forwarded: { fromConversationId: params.data.conversationId, fromMessageId: params.data.messageId, at: new Date().toISOString() } } }, { data: payload });
+      const error = result.code >= 400 && result.payload && typeof result.payload === "object" ? (result.payload as { error?: unknown }).error : undefined;
+      results.push(result.code < 400 ? { conversationId, ok: true } : { conversationId, ok: false, error: typeof error === "string" ? error : "Falha ao enviar." });
+    }
+    request.log.info({ event: "message_forwarded", workspaceId, messageId: params.data.messageId, targets: targets.length, failed: results.filter(item => !item.ok).length }, "Message forwarded.");
+    return reply.code(results.some(item => item.ok) ? 200 : 502).send({ results });
   });
 };

@@ -6,7 +6,7 @@ import { CATALOG_STALE_MS, MAX_MESSAGES, receiptStatus } from '../../app/session
 import { LocationMessage } from './LocationMessage';
 import { needsHumanAttention } from "@prymeira-talk/shared";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bookmark, Bot, CheckCircle2, ShieldCheck, ContactRound, FileText, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
+import { Bookmark, Bot, CheckCircle2, ShieldCheck, ContactRound, FileText, Forward, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
 import { quotedPreview, threadWithReactions } from "./message-threading.js";
 import { MessageTicks } from "./MessageTicks";
 import { ConversationPreview } from "./ConversationPreview";
@@ -63,6 +63,7 @@ import { AssistantPanel } from './AssistantPanel';
 import { useHandoffBrief } from './useHandoffBrief';
 import { ContactIdentityCard } from './ContactIdentityCard';
 import { ContactAvatar } from './ContactAvatar';
+import { ForwardDialog, canForward } from './ForwardDialog';
 import { InboxMedia, mediaCaption } from './InboxMedia';
 import { RichDraft, type RichDraftHandle } from './RichDraft';
 import { VoiceRecorder } from './VoiceRecorder';
@@ -508,6 +509,7 @@ function InboxPageContent() {
   const textSendQueue = useRef(new Map<string, Promise<unknown>>());
   /** The message being replied to (WhatsApp quote); only for messages that have a WhatsApp id. */
   const [replyTarget, setReplyTarget] = useState<MessageDto | null>(null);
+  const [forwardTarget, setForwardTarget] = useState<MessageDto | null>(null);
   const [pendingFiles, setPendingFiles] = useSessionState<PendingAttachment[]>(`draftFiles:${selectedConversationId ?? 'none'}`, []);
   const [activeAttachmentId, setActiveAttachmentId] = useState<string | null>(null);
   const [isSendingAttachments, setIsSendingAttachments] = useState(false);
@@ -1789,6 +1791,7 @@ selectedConversation ? (
                 ) : null}
                 <div className={`msg-bubble-body${inlineMeta ? ' has-inline-meta' : ''}`}>
                   {/* Internal only (never sent to the customer): the seller sees that their supervisor answered here. */}
+                  {message.forwarded ? <span className="message-forwarded-label"><Forward size={12} aria-hidden="true" />Encaminhada</span> : null}
                   {message.sentBySupervisor ? <span className="message-supervisor-label" title="Mensagem enviada pelo supervisor pela tela de supervisão"><ShieldCheck size={12} aria-hidden="true" />Respondido pelo supervisor</span> : null}
                   {selectedConversation.isGroup && isInbound ? <strong className="group-message-sender">{message.senderName?.trim() || message.senderJid?.split('@')[0] || 'Participante'}</strong> : null}
                   {message.quoted ? (() => { const quote = quotedPreview(message.quoted, visibleMessages, selectedConversation.contactName ?? null); return (
@@ -1819,12 +1822,18 @@ selectedConversation ? (
                     </div>
                   ) : null}
                 </div>
-                {canReply || canDelete ? (
+                {canReply || canDelete || canForward(message) ? (
                   <div className="message-actions">
                     {canReply ? (
                       <button type="button" className="message-action" title="Responder" aria-label="Responder esta mensagem"
                         onClick={() => { setReplyTarget(message); draftTextAreaRef.current?.focus(); }}>
                         <Reply size={15} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                    {canForward(message) ? (
+                      <button type="button" className="message-action" title="Encaminhar" aria-label="Encaminhar esta mensagem"
+                        onClick={() => setForwardTarget(message)}>
+                        <Forward size={15} aria-hidden="true" />
                       </button>
                     ) : null}
                     {canDelete ? (
@@ -2264,6 +2273,8 @@ selectedConversation ? (
 
       {sidebarView}
 
+      {forwardTarget && selectedConversation ? <ForwardDialog message={forwardTarget} sourceConversationId={selectedConversation.id} conversations={conversations}
+        getToken={getToken} onClose={() => setForwardTarget(null)} onSent={(notice) => { setForwardTarget(null); setSendNotice(notice); }} /> : null}
       {shareContactOpen && selectedConversation ? <ShareContactDialog source={selectedConversation} getToken={getToken} onClose={() => setShareContactOpen(false)} onSent={(name, contextImages) => { setShareContactOpen(false); setSendNotice(contextImages ? `Contato e histórico enviados para ${name}.` : `Contato enviado para ${name}; a conversa ainda não tem mensagens para compartilhar.`); setConversationReloadKey((current) => current + 1); }} /> : null}
       {newConversationOpen ? <NewConversationDialog channels={channels} getToken={getToken} onClose={() => setNewConversationOpen(false)} onOpened={(conversation) => {
         setNewConversationOpen(false);

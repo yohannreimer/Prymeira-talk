@@ -451,6 +451,8 @@ export const messageSchema = z.object({
   editedAt: z.string().datetime().optional(),
   /** Sent by the seller's supervisor from the supervision view: the seller sees who answered. */
   sentBySupervisor: z.boolean().optional(),
+  /** Forwarded from another conversation in Talk (shown to the team as "Encaminhada"). */
+  forwarded: z.boolean().optional(),
   deletedAt: z.string().datetime().optional(),
   /** WhatsApp's id of this message (stanza id): replies and reactions point to it. */
   whatsappId: z.string().optional(),
