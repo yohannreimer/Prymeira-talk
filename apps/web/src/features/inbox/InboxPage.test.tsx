@@ -262,7 +262,8 @@ describe("outboundStatusLabel", () => {
 
   it("shows sending only for optimistic pending messages", () => {
     expect(outboundStatusLabel(outboundMessage)).toBeNull();
-    expect(outboundStatusLabel({ ...outboundMessage, id: "optimistic-1" })).toBe("Enviando...");
+    // Sending is the clock in the ticks' place, not a label under the bubble.
+    expect(outboundStatusLabel({ ...outboundMessage, id: "optimistic-1" })).toBeNull();
   });
 
   it("shows failed outbound messages", () => {

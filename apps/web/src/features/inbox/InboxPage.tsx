@@ -368,7 +368,7 @@ function isVideoMediaUrl(mediaUrl: string) {
 
 export function outboundStatusLabel(message: Pick<MessageDto, "direction" | "id" | "status">) {
   if (message.direction !== "outbound") return null;
-  if (message.status === "pending" && isOptimisticMessage(message)) return "Enviando...";
+  // Sending shows WhatsApp's clock in place of the ticks, not a line under the bubble that makes it grow and shrink.
   if (message.status === "failed") return "Falhou";
   return null;
 }
@@ -904,6 +904,11 @@ function InboxPageContent() {
   const beginPerformance = useTalkPerformance(selectedConversationId, selectedConversation?.id ?? null, messagesQuery.data);
   const visibleMessages = messagesConversationId === selectedConversationId ? messages : EMPTY_MESSAGES;
   const thread = useMemo(() => threadWithReactions(visibleMessages), [visibleMessages]);
+  // Who wrote last (a failed send or a note is not a reply): the assistant panel follows it the moment we send.
+  const lastFromUs = useMemo(() => {
+    const last = [...thread.visible].reverse().find(message => message.type !== 'system' && message.type !== 'internal_note' && message.status !== 'failed' && !message.deletedAt);
+    return last ? last.direction === 'outbound' : undefined;
+  }, [thread.visible]);
   useEffect(() => { setReplyTarget(current => current && current.conversationId !== selectedConversationId ? null : current); }, [selectedConversationId]);
   const handoffEnabled = Boolean(selectedConversation && !selectedConversation.isGroup && needsHumanAttention(selectedConversation));
   const handoff = useHandoffBrief(selectedConversationId, handoffEnabled, selectedConversation?.lastMessageAt, getToken);
@@ -1767,7 +1772,7 @@ selectedConversation ? (
               const meta = <>
                 {message.editedAt ? <span className="message-edited-label">Editada</span> : null}
                 <time>{formatMessageTime(message.createdAt)}</time>
-                {!isInbound && ['sent', 'delivered', 'read'].includes(message.status) ? <MessageTicks status={message.status} /> : null}
+                {!isInbound ? <MessageTicks status={message.status} /> : null}
               </>;
               const canReply = selectedConversation.channelProvider === 'evolution' && Boolean(message.whatsappId) && !message.deletedAt && message.type !== 'system';
               const canDelete = selectedConversation.channelProvider === 'evolution' && !selectedConversation.isGroup && message.direction === 'outbound' &&
@@ -1864,7 +1869,7 @@ selectedConversation ? (
         </> : <>
         <div className="assistant-tabs"><button type="button" aria-pressed={assistantTab === 'contact'} onClick={() => setAssistantTab('contact')}>Contato</button><button type="button" aria-pressed={assistantTab === 'assistant'} onClick={() => setAssistantTab('assistant')}>IA de apoio{handoffBrief ? <span className="assistant-tab-dot is-handoff" /> : assistant.data?.status === 'ready' ? <span className="assistant-tab-dot" /> : null}</button><button ref={assistantCloseRef} className="assistant-drawer-close" aria-label="Fechar apoio" type="button" onClick={() => { setAssistantOpen(false); assistantTriggerRef.current?.focus(); }}><X size={18} /></button></div>
         {handoff.error ? <p className="error-note" role="status">{handoff.error} <button type="button" onClick={handoff.refresh}>Tentar novamente</button></p> : null}
-        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} loading={assistant.loading} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} handoffBrief={handoffBrief} handoffCompleted={Boolean(selectedConversation?.handoffActionCompletedAt)} handoffFeedback={handoffFeedback} handoffBusy={isRunningAction} onCompleteHandoff={() => { void actionsRef.current.runAction({ action: 'complete_handoff_action' }); }} onReopenHandoff={() => { void actionsRef.current.runAction({ action: 'reopen_handoff_action' }); }} onReanalyzeHandoff={() => { void actionsRef.current.runAction({ action: 'reanalyze_handoff_reply' }); }} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={(...args) => actionsRef.current.sendSuggestion(...args)} onEdit={(...args) => actionsRef.current.editSuggestion(...args)} /> : <>
+        {assistantTab === 'assistant' ? <AssistantPanel key={selectedConversationId ?? 'none'} data={assistant.data} error={assistant.error} loading={assistant.loading} lastFromUs={lastFromUs} humanControlled={selectedConversation?.aiControlStatus === 'human_controlled'} handoffBrief={handoffBrief} handoffCompleted={Boolean(selectedConversation?.handoffActionCompletedAt)} handoffFeedback={handoffFeedback} handoffBusy={isRunningAction} onCompleteHandoff={() => { void actionsRef.current.runAction({ action: 'complete_handoff_action' }); }} onReopenHandoff={() => { void actionsRef.current.runAction({ action: 'reopen_handoff_action' }); }} onReanalyzeHandoff={() => { void actionsRef.current.runAction({ action: 'reanalyze_handoff_reply' }); }} draftExists={Boolean(draft.trim())} sending={isSending} onGenerate={assistant.request} onSend={(...args) => actionsRef.current.sendSuggestion(...args)} onEdit={(...args) => actionsRef.current.editSuggestion(...args)} /> : <>
         {isLoadingContext ? <p className="thread-note" role="status">Atualizando contato…</p> : null}
         {/* Card identidade */}
         {selectedConversation ? <ContactIdentityCard key={selectedConversation.contactId}

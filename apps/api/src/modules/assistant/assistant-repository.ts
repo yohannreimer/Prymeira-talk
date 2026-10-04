@@ -47,6 +47,11 @@ export function createAssistantRepository(prisma: PrismaClient) {
       await prisma.assistantConversationState.updateMany({ where: { status: { not: 'generating' }, leaseUntil: { lt: now } }, data: { leaseToken: null, leaseUntil: null } });
       return prisma.assistantConversationState.findMany({ where: { status: 'pending', leaseToken: null, scheduledAt: { lte: now } }, orderBy: { scheduledAt: 'asc' }, take: 2 });
     },
+    /** An automatic suggestion that lost its turn (the seller answered first) ends quietly: no error on screen. */
+    async dismiss(state: AssistantConversationState, leaseToken: string) {
+      await prisma.assistantConversationState.updateMany({ where: { id: state.id, workspaceId: state.workspaceId, leaseToken },
+        data: { status: 'stale', lastError: null, scheduledAt: null } });
+    },
     async releaseLease(state: AssistantConversationState, leaseToken: string) {
       await prisma.assistantConversationState.updateMany({ where: { id: state.id, workspaceId: state.workspaceId, leaseToken }, data: { leaseToken: null, leaseUntil: null } });
     },

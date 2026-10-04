@@ -31,8 +31,9 @@ export function createAssistantScheduler(prisma: PrismaClient, dependencies: {
           await dependencies.prepareContext?.(state.workspaceId, state.conversationId);
           const context = await loadContext(prisma, state.workspaceId, state.conversationId);
           // Automatic suggestions answer the customer; after our own message only a requested follow-up is generated.
+          // (The seller may have answered from the phone, which does not cancel the pending one: it ends quietly.)
           if (!state.requestedById && context.messages.at(-1)?.direction !== 'inbound') {
-            await repository.fail(state, token, 'O cliente já recebeu uma resposta. Aguarde uma nova mensagem.');
+            await repository.dismiss(state, token);
             return;
           }
           const result = await generate(context, state.instruction);

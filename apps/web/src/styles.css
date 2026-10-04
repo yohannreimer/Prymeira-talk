@@ -8685,3 +8685,4 @@ select:disabled {
 .assistant-fade, .assistant-caption, .assistant-suggestion, .assistant-reply-actions { animation: assistant-fade-in 180ms ease-out; }
 @keyframes assistant-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .assistant-fade, .assistant-caption, .assistant-suggestion, .assistant-reply-actions, .assistant-loading, .message-thread-skeleton { animation: none; opacity: 1; } }
+.assistant-reply.is-preparing .assistant-loading.is-inline { padding: 8px 0 2px; }

@@ -60,7 +60,12 @@ export const assistantInboxRoutes: FastifyPluginAsync<{ scheduler?: AssistantSch
     let status = assistantDraftStatusSchema.catch('stale').parse(state?.status ?? 'stale');
     if (humanControlled && !humanSupport) status = 'paused';
     if (status === 'ready' && history[0]?.contextKey !== context?.contextKey) status = 'stale';
-    return { settings, status, humanControlled, humanSupport, awaitingCustomer, suggestion: history[0] ?? null, history, agentName: context?.agent.name ?? null, error: state?.lastError ?? null, currentContextKey: context?.contextKey ?? null } satisfies AssistantConversationDto;
+    // After our own last message only a follow-up the seller asked for is shown as in progress (or failed); a leftover
+    // automatic suggestion is not, so the panel never says "preparing" or "failed" for something nobody requested.
+    const requested = Boolean(state?.requestedById);
+    if (awaitingCustomer && !requested && (status === 'pending' || status === 'generating' || status === 'failed')) status = 'stale';
+    const error = awaitingCustomer && !requested ? null : state?.lastError ?? null;
+    return { settings, status, humanControlled, humanSupport, awaitingCustomer, suggestion: history[0] ?? null, history, agentName: context?.agent.name ?? null, error, currentContextKey: context?.contextKey ?? null } satisfies AssistantConversationDto;
   });
   app.get('/assistant/conversations/:conversationId/handoff-brief', async request => {
     const { conversationId } = params.parse(request.params);
