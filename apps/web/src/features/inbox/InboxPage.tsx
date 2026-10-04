@@ -21,6 +21,7 @@ import {
   apiCreateCrmLead,
   apiDeleteQuickReply,
   apiGetContactNameInsight,
+  ApiRequestError,
   apiQuickReplyVariant,
   apiSaveContactNameInsight,
   apiImportQuickReplies,
@@ -1349,7 +1350,13 @@ function InboxPageContent() {
         )
       );
     } catch (sendError) {
-      recordSendFailure(targetConversationId, optimisticMessage.id, sendError, 'Não foi possível enviar o arquivo.', caption, file);
+      // A voice note stays in the recorder to try again (never in the attachment tray as a document); a refused one
+      // leaves no failed bubble behind.
+      if (voice) {
+        const refused = sendError instanceof ApiRequestError && Boolean(sendError.code) && sendError.code !== 'EVOLUTION_CONNECTION_CLOSED';
+        if (refused) session.updateMessages(targetConversationId, current => current.filter(message => message.id !== optimisticMessage.id));
+        else recordSendFailure(targetConversationId, optimisticMessage.id, sendError, 'Não foi possível enviar o áudio.', '');
+      } else recordSendFailure(targetConversationId, optimisticMessage.id, sendError, 'Não foi possível enviar o arquivo.', caption, file);
       throw sendError;
     } finally {
       setIsSending(false);
