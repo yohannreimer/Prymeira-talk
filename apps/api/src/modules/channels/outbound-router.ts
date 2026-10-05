@@ -37,7 +37,7 @@ type Command =
 
 export function createOutboundRouter(options: {
   base: EvolutionClient;
-  waha: Pick<WahaClient, 'sendText' | 'sendMedia' | 'sendVoice' | 'sendContact'> & Partial<Pick<WahaClient, 'deleteMessage' | 'editMessage'>> | null;
+  waha: Pick<WahaClient, 'sendText' | 'sendMedia' | 'sendVoice' | 'sendContact'> & Partial<Pick<WahaClient, 'deleteMessage' | 'editMessage' | 'getContactProfilePicture' | 'checkNumber' | 'getGroup'>> | null;
   db: Db;
   journal: OutboundDispatchJournal;
   probe?: DeliveryProbe;
@@ -209,6 +209,45 @@ export function createOutboundRouter(options: {
       await waha!.editMessage!({ session: alternative.sessionName, chatId: chat, messageId: `true_${chat}_${input.id}`, text: input.text });
     }
   };
+  /** The number's WAHA session when it is connected and proven on the same phone, and whether Evolution is up. */
+  async function reader(instanceName: string) {
+    const channel = waha ? await loadChannel(instanceName).catch(() => null) : null;
+    if (!channel || (options.routes && !options.routes(channel.workspaceId))) return null;
+    const secondary = (channel.connections as ConnectionRef[]).find(connection => connection.provider === 'waha' && connection.status === 'connected' && connection.eligible);
+    return secondary ? { session: secondary.sessionName, evolutionUp: channel.connections.some(connection => connection.provider === 'evolution' && connection.status === 'connected') } : null;
+  }
+  /** Reads (pictures, numbers, groups) the same way through either session: WAHA answers while Evolution is down,
+   * and also when Evolution fails. */
+  async function read<T>(instanceName: string, evolution: (() => Promise<T>) | undefined, viaWaha: ((session: string) => Promise<T>) | null) {
+    const alternative = viaWaha ? await reader(instanceName) : null;
+    if (alternative && (!alternative.evolutionUp || !evolution)) return viaWaha!(alternative.session);
+    if (!evolution) throw new Error('READ_UNAVAILABLE');
+    try { return await evolution(); } catch (error) { if (!alternative) throw error; return viaWaha!(alternative.session); }
+  }
+  if (base.fetchProfilePicture || waha?.getContactProfilePicture) router.fetchProfilePicture = input => read(input.instanceName,
+    base.fetchProfilePicture ? () => base.fetchProfilePicture!(input) : undefined,
+    waha?.getContactProfilePicture ? async session => {
+      const result = await waha.getContactProfilePicture!({ session, contactId: chatId(input.number) });
+      const url = typeof result?.profilePictureURL === 'string' ? result.profilePictureURL : null;
+      return url && url.startsWith('https://') ? url : null;
+    } : null);
+  if (base.getGroupInfo || waha?.getGroup) router.getGroupInfo = input => read(input.instanceName,
+    base.getGroupInfo ? () => base.getGroupInfo!(input) : undefined,
+    waha?.getGroup ? async session => {
+      const group = await waha.getGroup!({ session, groupId: input.groupJid }) as { subject?: unknown; name?: unknown } | null;
+      const subject = [group?.subject, group?.name].find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+      return { subject: subject?.trim() ?? null };
+    } : null);
+  if (base.checkWhatsappNumbersAvailability || waha?.checkNumber) router.checkWhatsappNumbersAvailability = input => read(input.instanceName,
+    base.checkWhatsappNumbersAvailability ? () => base.checkWhatsappNumbersAvailability!(input) : undefined,
+    waha?.checkNumber ? async session => {
+      const numbers = [];
+      for (const phone of input.numbers) {
+        const result = await waha.checkNumber!({ session, phone: phone.replace(/\D/g, '') });
+        numbers.push({ phone, available: result?.numberExists === true, ...(typeof result?.chatId === 'string' ? { jid: result.chatId.replace('@c.us', '@s.whatsapp.net') } : {}) });
+      }
+      return { numbers, raw: { provider: 'waha' } };
+    } : null);
   if (base.sendAudio) router.sendAudio = input => route(input.instanceName, { kind: 'audio', destination: input.number, text: null, input }, () => base.sendAudio!(input));
   if (base.sendContact) router.sendContact = input => route(input.instanceName, { kind: 'contact', destination: input.number, text: null, input }, () => base.sendContact!(input));
   return router;

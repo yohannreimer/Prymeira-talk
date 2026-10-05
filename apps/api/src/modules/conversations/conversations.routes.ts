@@ -23,6 +23,7 @@ import {
 import { inboxHandoffWhere } from "./conversations.service.js";
 import type { PrismaLike } from "./conversations.service.js";
 import { createInboxMediaService } from './inbox-media.js';
+import { deploymentPhotoStore } from './photo-store.js';
 import { transcribeInboundAudio } from '../agents/inbound-media.js';
 import { resolveOpenAiCompatibleSettings } from '../agents/ai-provider-settings.js';
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
@@ -166,7 +167,7 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
   app,
   options
 ) => {
-  const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client, durable: options.durableMedia ?? null });
+  const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client, durable: options.durableMedia ?? null, photos: deploymentPhotoStore() });
   app.post('/conversations/:conversationId/messages/:messageId/delete-for-everyone', async (request, reply) => {
     const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
     if (!params.success) return reply.code(400).send({ error: 'Mensagem inválida.' });

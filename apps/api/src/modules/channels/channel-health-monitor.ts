@@ -26,6 +26,8 @@ export function createChannelHealthMonitor(options: {
   agreementWindowMs?: number;
   now?: () => Date;
   onWriterChange?: (change: WriterChange) => void | Promise<void>;
+  /** The channel's own status changed to follow its connections (to publish it to open screens). */
+  onStatusChange?: (change: { workspaceId: string; channelId: string }) => void | Promise<void>;
   logger?: { warn(fields: Record<string, unknown>, message: string): void; info?(fields: Record<string, unknown>, message: string): void };
 }) {
   const { db } = options;
@@ -154,11 +156,27 @@ export function createChannelHealthMonitor(options: {
     return { changed: false };
   }
 
+  /** The channel is connected while any of its numbers' sessions can be used: Evolution, or a WAHA proven on the same
+   * phone. A dropped Evolution no longer shows the whole channel as disconnected (and hides it from campaigns, leads
+   * and automations) while WAHA keeps receiving and sending. */
+  async function reconcileStatus(channel: { workspaceId: string; id: string; status: string }) {
+    const rows = await db.channelConnection.findMany({ where: { workspaceId: channel.workspaceId, channelId: channel.id }, select: { provider: true, status: true, eligible: true } });
+    const status = logicalChannelStatus(rows);
+    if (!status || status === channel.status) return;
+    const changed = await db.channel.updateMany({ where: { workspaceId: channel.workspaceId, id: channel.id, status: channel.status as never }, data: { status } });
+    if (changed.count) {
+      options.logger?.info?.({ channelId: channel.id, from: channel.status, to: status }, 'Channel status follows its connections');
+      try { await options.onStatusChange?.({ workspaceId: channel.workspaceId, channelId: channel.id }); } catch { /* the next read shows it */ }
+    }
+  }
+
   async function tick() {
     if (running) return;
     running = true;
     try {
-      const channels = await db.channel.findMany({ where: { provider: 'evolution', redundancyEnabled: true }, select: { id: true, workspaceId: true } });
+      // Every WhatsApp number is probed (a single-connection channel too: its number and health are otherwise never
+      // confirmed); only channels with redundancy are evaluated for a writer change.
+      const channels = await db.channel.findMany({ where: { provider: 'evolution', archivedAt: null }, select: { id: true, workspaceId: true, status: true } });
       for (const channel of channels) {
         try {
           const connections = await db.channelConnection.findMany({ where: { workspaceId: channel.workspaceId, channelId: channel.id }, select: { id: true } });
@@ -168,6 +186,7 @@ export function createChannelHealthMonitor(options: {
             });
           }
           await evaluate(channel);
+          await reconcileStatus(channel);
         } catch (error) { options.logger?.warn({ err: error, channelId: channel.id }, 'Channel health evaluation failed'); }
       }
     } finally { running = false; }
@@ -180,3 +199,12 @@ export function createChannelHealthMonitor(options: {
   };
 }
 export type ChannelHealthMonitor = ReturnType<typeof createChannelHealthMonitor>;
+
+/** connected when a usable session exists (Evolution connected, or WAHA connected and eligible, i.e. proven on the
+ * channel's phone); otherwise what Evolution says; null when there is nothing to follow. */
+export function logicalChannelStatus(connections: Array<{ provider: string; status: string; eligible: boolean }>) {
+  const primary = connections.find(connection => connection.provider === 'evolution');
+  const waha = connections.find(connection => connection.provider === 'waha');
+  if (primary?.status === 'connected' || (waha?.status === 'connected' && waha.eligible)) return 'connected' as const;
+  return primary ? primary.status as 'connected' | 'connecting' | 'disconnected' | 'failed' : null;
+}

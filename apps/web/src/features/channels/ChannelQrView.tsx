@@ -14,7 +14,7 @@ export function ChannelQrView({ qrCode, expiresAt, provider }: { qrCode?: string
   }, []);
   useEffect(() => {
     let cancelled = false; setGenerated(null); setError(false);
-    if (source?.kind === 'payload') void QRCode.toDataURL(source.payload, { errorCorrectionLevel: 'M', margin: 3, scale: 9, color: { dark: '#13291f', light: '#ffffff' } })
+    if (source?.kind === 'payload') void QRCode.toDataURL(source.payload, { errorCorrectionLevel: 'M', margin: 3, scale: 9, color: { dark: '#000000', light: '#ffffff' } })
       .then((data) => { if (!cancelled) setGenerated(data); }).catch(() => { if (!cancelled) setError(true); });
     return () => { cancelled = true; };
   }, [source]);

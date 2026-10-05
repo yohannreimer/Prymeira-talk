@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { createContactsService } from "./contacts.service.js";
 import { createInboxMediaService } from "../conversations/inbox-media.js";
+import { deploymentPhotoStore } from '../conversations/photo-store.js';
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { resolveOpenAiCompatibleSettings } from "../agents/ai-provider-settings.js";
 import { createOpenAiCompatibleAgentProvider } from "../agents/provider-gateway.js";
@@ -69,7 +70,7 @@ function sendPhoneConflict(reply: FastifyReply) {
 
 export const contactsRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntime }> = async (app, options) => {
   const service = createContactsService(app.prisma);
-  const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client });
+  const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client, photos: deploymentPhotoStore() });
 
   // How to address the contact in a quick reply ({primeiro_nome}, {empresa}): saved answer, plain-name rule, or one AI read.
   app.post("/contacts/:contactId/name-insight", async (request, reply) => {

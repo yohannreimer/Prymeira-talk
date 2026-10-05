@@ -634,6 +634,10 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
         const channel = await app.prisma.channel.findFirst({ where: { workspaceId: change.workspaceId, id: change.channelId } });
         if (channel) app.realtime.publish({ type: 'channel.updated', workspaceId: change.workspaceId, payload: await connections.describe(channel) });
       },
+      onStatusChange: async (change) => {
+        const channel = await app.prisma.channel.findFirst({ where: { workspaceId: change.workspaceId, id: change.channelId } });
+        if (channel) app.realtime.publish({ type: 'channel.updated', workspaceId: change.workspaceId, payload: await connections.describe(channel) });
+      },
       logger: app.log
     });
     healthMonitor.start();

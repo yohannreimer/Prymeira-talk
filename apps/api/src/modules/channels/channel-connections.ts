@@ -447,7 +447,8 @@ export async function applyAuthenticatedConnectionObservation(tx: Prisma.Transac
     const primaryPhone = normalizeWhatsappPhone(primary?.verifiedPhoneNumber);
     const secondaryPhone = normalizeWhatsappPhone(secondary?.verifiedPhoneNumber);
     const pairedSecondary = Boolean(primary && secondary && primaryPhone && primaryPhone === secondaryPhone && secondary.lastHealthyAt && primary.lifecycleGeneration % 2 === 0 && secondary.lifecycleGeneration % 2 === 0);
-    const logicalStatus = primary?.status === 'connected' || (pairedSecondary && secondary?.status === 'connected') ? 'connected' : primary?.status ?? channel.status;
+    // An eligible WAHA is proven on the channel's phone: it keeps the channel connected while Evolution is down.
+    const logicalStatus = primary?.status === 'connected' || (secondary?.status === 'connected' && (pairedSecondary || secondary.eligible)) ? 'connected' : primary?.status ?? channel.status;
     if (channel.status !== logicalStatus)
         await tx.channel.update({ where: { workspaceId_id: { workspaceId: source.workspaceId, id: source.channelId } }, data: { status: logicalStatus } });
     return { applied: true, reason: null, connectionId: connection.id, status, qr: event.control === 'qr' ? { private: true, observedAt: source.observedAt } : null };

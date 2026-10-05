@@ -188,14 +188,15 @@ describe.skipIf(!databaseUrl)('channel health on PostgreSQL', () => {
   });
 
   describe('tick', () => {
-    it('probes both connections of every redundant channel, survives a failing probe, and skips legacy channels', async () => {
+    it('probes the connections of every channel (one with a single connection too) and survives a failing probe', async () => {
       const f = await fixture(), legacy = await fixture({ redundancy: false });
       const probe = vi.fn(async (scope: { connectionId: string }) => { if (scope.connectionId === f.evolution.id) throw new Error('provider down'); });
       const warn = vi.fn();
       await createChannelHealthMonitor({ db, probe, logger: { warn } }).tick();
       const probed = probe.mock.calls.map(([scope]) => scope.connectionId);
       expect(probed).toEqual(expect.arrayContaining([f.evolution.id, f.waha.id]));
-      expect(probed).not.toContain(legacy.evolution.id);
+      // Without redundancy its number and health were never confirmed (Vendas 06 on 05/10): it is probed as well.
+      expect(probed).toContain(legacy.evolution.id);
       expect(warn).toHaveBeenCalledWith(expect.objectContaining({ connectionId: f.evolution.id }), 'Connection probe failed');
     });
   });

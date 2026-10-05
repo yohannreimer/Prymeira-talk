@@ -10,6 +10,7 @@ import { resolveAgentMedia, type AgentMediaPolicy } from '../agents/agent-media-
 import { prepareAudioPlayback } from '../agents/audio-transcription.js';
 import { renderPdfPreview } from './pdf-preview.js';
 import type { MessageMediaService } from './message-media.js';
+import type { PhotoStore } from './photo-store.js';
 
 type Media = { bytes: Buffer; mimeType: string; pageCount?: number };
 import { audioMimeTypes as audio, documentMimeTypes as documents, imageMimeTypes as images, isEncryptedWhatsappUrl, MAX_SERVE_MEDIA_BYTES } from './media-policy.js';
@@ -26,6 +27,8 @@ export function createInboxMediaService(options: {
   /** Durable private copy, when the deployment has one. It wins over any provider fetch; a missing or
    * unreadable copy falls back to the legacy path, so enabling it can never make an attachment disappear. */
   durable?: Pick<MessageMediaService, 'read'> | null;
+  /** Saved profile pictures: shown when the provider cannot answer, refreshed when it can. */
+  photos?: PhotoStore | null;
 }) {
   const resolve = options.resolve ?? resolveAgentMedia;
   const convert = options.convert ?? prepareAudioPlayback;
@@ -59,6 +62,30 @@ export function createInboxMediaService(options: {
     pending.set(key, job);
     try { return await job; } finally { pending.delete(key); }
   }
+  const PHOTO_FRESH_MS = 24 * 3_600_000;
+  /**
+   * A WhatsApp profile picture: the saved copy while it is recent, otherwise asked to the provider (Evolution, or
+   * WAHA through the router) and saved again. When the provider cannot answer, or answers with a link that no longer
+   * opens, the last saved copy is shown instead of an empty avatar.
+   */
+  async function profilePhoto(workspaceId: string, instanceName: string | null, number: string, fallbackUrl: string | null = null, onFreshUrl?: (url: string) => Promise<unknown>): Promise<Media | null> {
+    const saved = number ? await options.photos?.read(workspaceId, number).catch(() => null) ?? null : null;
+    if (saved && Date.now() - saved.savedAt < PHOTO_FRESH_MS) return { bytes: saved.bytes, mimeType: saved.mimeType };
+    let url: string | null = null;
+    if (instanceName && number && options.client?.fetchProfilePicture) {
+      try { url = await options.client.fetchProfilePicture({ instanceName, number }); } catch { /* the saved copy answers */ }
+    }
+    for (const candidate of [url, saved ? null : fallbackUrl]) {
+      if (!candidate) continue;
+      try {
+        const media = await resolve({ mediaUrl: candidate, policy: photoPolicy });
+        if (number) await options.photos?.write(workspaceId, number, { bytes: media.bytes, mimeType: media.mimeType }).catch(() => undefined);
+        if (candidate === url && url !== fallbackUrl) await onFreshUrl?.(url).catch(() => undefined);
+        return { bytes: media.bytes, mimeType: media.mimeType };
+      } catch { /* an expired link: try the next source */ }
+    }
+    return saved ? { bytes: saved.bytes, mimeType: saved.mimeType } : null;
+  }
   async function conversation(workspaceId: string, id: string) {
     const result = await options.prisma.conversation.findFirst({
       where: { workspaceId, id },
@@ -83,22 +110,8 @@ export function createInboxMediaService(options: {
         orderBy: { updatedAt: 'desc' }, select: { providerKey: true }
       });
       const providerKey = conversationChannel?.channel.providerKey ?? fallbackChannel?.providerKey;
-      return cached(`contact-photo:${workspaceId}:${contactId}:${providerKey ?? ''}`, async () => {
-        let freshUrl: string | null = null;
-        if (providerKey && options.client?.fetchProfilePicture) {
-          try { freshUrl = await options.client.fetchProfilePicture({ instanceName: providerKey, number: contact.phone }); }
-          catch { /* A saved picture may still be available. */ }
-        }
-        const url = freshUrl ?? contact.avatarUrl;
-        if (!url) return null;
-        try {
-          const media = await resolve({ mediaUrl: url, policy: photoPolicy });
-          if (freshUrl && freshUrl !== contact.avatarUrl) {
-            await options.prisma.$executeRaw`UPDATE contacts SET avatar_url = ${freshUrl} WHERE workspace_id = ${workspaceId} AND id = ${contactId}::uuid`.catch(() => undefined);
-          }
-          return { bytes: media.bytes, mimeType: media.mimeType };
-        } catch { return null; }
-      });
+      return cached(`contact-photo:${workspaceId}:${contactId}:${providerKey ?? ''}`, () => profilePhoto(workspaceId, providerKey ?? null, contact.phone, contact.avatarUrl,
+        fresh => options.prisma.$executeRaw`UPDATE contacts SET avatar_url = ${fresh} WHERE workspace_id = ${workspaceId} AND id = ${contactId}::uuid`));
     },
     async preview(workspaceId: string, conversationId: string, messageId: string, page: number): Promise<Media> {
       if (!Number.isInteger(page) || page < 1 || page > 2000) throw new Error('INVALID_PDF_PAGE');
@@ -160,25 +173,15 @@ export function createInboxMediaService(options: {
     },
     async photo(workspaceId: string, conversationId: string) {
       const owner = await conversation(workspaceId, conversationId);
-      if (owner.channel.provider !== 'evolution' || !options.client?.fetchProfilePicture) return null;
-      return cached(`photo:${workspaceId}:${conversationId}:${owner.channel.providerKey}`, async () => {
-        const url = await options.client!.fetchProfilePicture!({ instanceName: owner.channel.providerKey, number: owner.contact.phone });
-        if (!url) return null;
-        const media = await resolve({ mediaUrl: url, policy: photoPolicy });
-        return { bytes: media.bytes, mimeType: media.mimeType };
-      });
+      if (owner.channel.provider !== 'evolution') return null;
+      return cached(`photo:${workspaceId}:${conversationId}:${owner.channel.providerKey}`, () => profilePhoto(workspaceId, owner.channel.providerKey, owner.contact.phone));
     },
     /** The WhatsApp picture of a number shared in a contact card, read through the conversation's channel. */
     async photoForPhone(workspaceId: string, conversationId: string, phone: string) {
       const owner = await conversation(workspaceId, conversationId);
       const number = phone.replace(/\D/g, '');
-      if (owner.channel.provider !== 'evolution' || number.length < 8 || !options.client?.fetchProfilePicture) return null;
-      return cached(`card-photo:${workspaceId}:${owner.channel.providerKey}:${number}`, async () => {
-        const url = await options.client!.fetchProfilePicture!({ instanceName: owner.channel.providerKey, number });
-        if (!url) return null;
-        const media = await resolve({ mediaUrl: url, policy: photoPolicy });
-        return { bytes: media.bytes, mimeType: media.mimeType };
-      });
+      if (owner.channel.provider !== 'evolution' || number.length < 8) return null;
+      return cached(`card-photo:${workspaceId}:${owner.channel.providerKey}:${number}`, () => profilePhoto(workspaceId, owner.channel.providerKey, number));
     },
     /** The connected number's own WhatsApp picture, shown on voice notes we sent. */
     async channelPhoto(workspaceId: string, channelId: string) {
@@ -187,13 +190,8 @@ export function createInboxMediaService(options: {
       });
       if (!channel) throw new Error('NOT_FOUND');
       const number = channel.phoneNumber?.replace(/\D/g, '');
-      if (channel.provider !== 'evolution' || !number || !options.client?.fetchProfilePicture) return null;
-      return cached(`channel-photo:${workspaceId}:${channelId}:${channel.providerKey}`, async () => {
-        const url = await options.client!.fetchProfilePicture!({ instanceName: channel.providerKey, number });
-        if (!url) return null;
-        const media = await resolve({ mediaUrl: url, policy: photoPolicy });
-        return { bytes: media.bytes, mimeType: media.mimeType };
-      });
+      if (channel.provider !== 'evolution' || !number) return null;
+      return cached(`channel-photo:${workspaceId}:${channelId}:${channel.providerKey}`, () => profilePhoto(workspaceId, channel.providerKey, number));
     }
   };
 }

@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { supervisionUnreadPeriodSchema } from "@prymeira-talk/shared";
 import { createInboxMediaService } from "../conversations/inbox-media.js";
+import { deploymentPhotoStore } from "../conversations/photo-store.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { SupervisionError } from "./supervision-access.js";
 import { createSupervisionService } from "./supervision.service.js";
@@ -32,7 +33,7 @@ function parse<T>(schema: z.ZodType<T>, data: unknown): T {
 
 export const supervisionRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntime }> = async (app, options) => {
   const service = createSupervisionService(app.prisma);
-  const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client });
+  const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client, photos: deploymentPhotoStore() });
   app.addHook("preHandler", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     if (request.method !== "GET") throw new SupervisionError(403, "A supervisão permite somente consulta.");
