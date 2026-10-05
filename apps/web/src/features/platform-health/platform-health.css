@@ -1,0 +1,65 @@
+.health-page { min-height: 100vh; color: var(--color-text-primary); background: var(--color-surface-page); }
+.health-page button { cursor: pointer; font: inherit; }
+.health-page button:disabled { cursor: wait; opacity: .6; }
+.health-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 72px; padding: 12px 36px; background: white; border-bottom: 1px solid var(--color-border); }
+.health-brand { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--color-text-secondary); flex-wrap: wrap; }
+.health-brand strong { font-size: 21px; letter-spacing: -.6px; color: var(--color-text-primary); }
+.health-brand-mark { display: grid; place-items: center; width: 38px; height: 38px; color: white; background: var(--color-brand-600); border-radius: 10px; }
+.health-refresh { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--color-text-secondary); }
+.health-refresh button { display: flex; align-items: center; gap: 7px; padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 8px; background: white; color: var(--color-brand-600); font-weight: 600; }
+.health-refresh .is-refreshing { animation: health-spin 1s linear infinite; }
+@keyframes health-spin { to { transform: rotate(360deg); } }
+.health-content { max-width: 1540px; margin: 0 auto; padding: 26px 36px 48px; }
+.health-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 26px; }
+.health-summary > span, .health-summary > button { display: inline-flex; align-items: center; gap: 7px; padding: 9px 14px; border: 1px solid var(--color-border); border-radius: 10px; background: white; font-size: 13px; color: var(--color-text-secondary); }
+.health-summary strong { font-size: 17px; color: var(--color-text-primary); }
+.health-summary > button.is-active { border-color: var(--color-brand-600); color: var(--color-brand-600); box-shadow: 0 0 0 1px var(--color-brand-600) inset; }
+.health-summary .is-ok svg { color: #1a8f5c; }
+.health-summary .is-warning svg { color: #c27c0e; }
+.health-summary .is-critical svg { color: #d03b3b; }
+.health-search { display: flex; align-items: center; gap: 8px; margin-left: auto; padding: 0 12px; height: 40px; min-width: 260px; border: 1px solid var(--color-border); border-radius: 10px; background: white; color: var(--color-text-secondary); }
+.health-search input { flex: 1; border: 0; outline: none; background: transparent; font: inherit; font-size: 13px; color: var(--color-text-primary); }
+.health-workspace { margin-bottom: 28px; }
+.health-workspace h2 { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; font-size: 15px; }
+.health-workspace h2 small { font-size: 12px; font-weight: 500; color: var(--color-text-secondary); }
+.health-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
+.health-card { display: grid; gap: 14px; padding: 16px 18px; border: 1px solid var(--color-border); border-left-width: 4px; border-radius: 12px; background: white; box-shadow: var(--shadow-card); }
+.health-card.is-ok { border-left-color: #1a8f5c; }
+.health-card.is-warning { border-left-color: #e3a008; }
+.health-card.is-critical { border-left-color: #d03b3b; }
+.health-card header { display: flex; align-items: flex-start; justify-content: space-between; flex-direction: row-reverse; gap: 10px; }
+.health-card header div { display: grid; gap: 2px; min-width: 0; }
+.health-card header strong { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.health-card header small { font-size: 12px; color: var(--color-text-secondary); }
+.health-level { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+.health-level.is-ok { background: #e6f6ee; color: #12744a; }
+.health-level.is-warning { background: #fdf3dc; color: #95600a; }
+.health-level.is-critical { background: #fbe7e7; color: #b42f2f; }
+.health-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.health-pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--color-border); border-radius: 8px; font-size: 12.5px; font-weight: 600; }
+.health-pill small { font-weight: 500; color: var(--color-text-secondary); }
+.health-pill i { width: 8px; height: 8px; border-radius: 50%; background: #9aa5ad; }
+.health-pill.is-up i { background: #1a8f5c; box-shadow: 0 0 0 3px #1a8f5c26; }
+.health-pill.is-warn i { background: #e3a008; box-shadow: 0 0 0 3px #e3a00826; }
+.health-pill.is-down i { background: #d03b3b; box-shadow: 0 0 0 3px #d03b3b26; }
+.health-pill.is-missing { border-style: dashed; color: var(--color-text-secondary); }
+.health-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 0; }
+.health-stats div { display: grid; gap: 3px; }
+.health-stats dt { font-size: 10.5px; color: var(--color-text-secondary); }
+.health-stats dd { margin: 0; font-size: 14px; font-weight: 600; }
+.health-issues { display: grid; gap: 6px; margin: 0; padding: 10px 12px; list-style: none; border-radius: 8px; background: var(--color-surface-subtle, #f6f7f8); }
+.health-issues li { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; line-height: 1.4; }
+.health-issues li svg { flex: none; margin-top: 1px; }
+.health-issues li.is-warning svg { color: #c27c0e; }
+.health-issues li.is-critical svg { color: #d03b3b; }
+.health-fine { margin: 0; font-size: 12.5px; color: #12744a; }
+.health-empty, .health-error { padding: 30px; text-align: center; color: var(--color-text-secondary); }
+.health-error { color: #b42f2f; }
+.health-denied { display: grid; justify-items: center; gap: 8px; max-width: 420px; margin: 80px auto; text-align: center; color: var(--color-text-secondary); }
+.health-denied h2 { margin: 0; color: var(--color-text-primary); }
+@media (max-width: 720px) {
+  .health-header, .health-content { padding-left: 16px; padding-right: 16px; }
+  .health-search { min-width: 0; width: 100%; margin-left: 0; }
+  .health-grid { grid-template-columns: 1fr; }
+  .health-stats { grid-template-columns: repeat(2, 1fr); }
+}

@@ -33,8 +33,11 @@ const modules = {
   ajustes: lazy(moduleLoaders.ajustes),
 };
 const SupervisionPage = lazy(() => import('../features/supervision/SupervisionPage').then(module => ({ default: module.SupervisionPage })));
-function isSupervisionRoute() {
-  return new URLSearchParams(window.location.search).get("module") === "supervisao";
+const PlatformHealthPage = lazy(() => import('../features/platform-health/PlatformHealthPage').then(module => ({ default: module.PlatformHealthPage })));
+/** Standalone pages outside the workspace shell: a manager's supervision and the product owner's health board. */
+function standaloneRoute() {
+  const module = new URLSearchParams(window.location.search).get("module");
+  return module === "supervisao" || module === "saude" ? module : null;
 }
 
 function renderModule(moduleKey: TalkModuleKey) {
@@ -44,15 +47,16 @@ function renderModule(moduleKey: TalkModuleKey) {
 function prefetchModule(moduleKey: TalkModuleKey) { void moduleLoaders[moduleKey]().catch(() => {}); }
 
 export function App() {
-  const [supervision, setSupervision] = useState(isSupervisionRoute);
+  const [standalone, setStandalone] = useState(standaloneRoute);
   useEffect(() => {
-    const update = () => setSupervision(isSupervisionRoute());
+    const update = () => setStandalone(standaloneRoute());
     window.addEventListener("popstate", update);
     return () => window.removeEventListener("popstate", update);
   }, []);
   return (
     <AuthGate>
-      {supervision ? <Suspense fallback={<div className="center-state">Carregando supervisão…</div>}><SupervisionPage /></Suspense> : <TalkSessionProvider><TalkSuiteShell renderModule={renderModule} prefetchModule={prefetchModule} /></TalkSessionProvider>}
+      {standalone === "saude" ? <Suspense fallback={<div className="center-state">Carregando saúde dos números…</div>}><PlatformHealthPage /></Suspense>
+        : standalone === "supervisao" ? <Suspense fallback={<div className="center-state">Carregando supervisão…</div>}><SupervisionPage /></Suspense> : <TalkSessionProvider><TalkSuiteShell renderModule={renderModule} prefetchModule={prefetchModule} /></TalkSessionProvider>}
     </AuthGate>
   );
 }

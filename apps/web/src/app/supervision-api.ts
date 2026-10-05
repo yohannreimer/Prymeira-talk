@@ -68,3 +68,22 @@ export async function apiSupervisionMedia(workspaceId: string, conversationId: s
 export async function apiSupervisionPreview(workspaceId: string, conversationId: string, messageId: string, page: number, getToken: GetToken, signal?: AbortSignal): Promise<{ imageUrl: string; pages: number }> {
   return (await request(`${conversationPath(workspaceId, conversationId)}/messages/${encodeURIComponent(messageId)}/preview?page=${page}`, getToken, signal)).json();
 }
+
+export type PlatformHealthLevel = "ok" | "warning" | "critical";
+export type PlatformHealthConnection = {
+  provider: "evolution" | "waha"; status: string; health: string; eligible: boolean; verifiedPhone: string | null;
+  lastError: string | null; lastHealthyAt: string | null; lastCheckedAt: string | null; consecutiveFailures: number;
+  lastEventAt: string | null; events1h: number;
+};
+export type PlatformHealthChannel = {
+  workspaceId: string; workspaceName: string | null; channelId: string; name: string; phone: string | null; status: string;
+  connections: PlatformHealthConnection[];
+  traffic: { lastInboundAt: string | null; lastOutboundAt: string | null; inbound1h: number; inbound24h: number; outbound24h: number };
+  acks: { pending: number; sent: number; delivered: number; read: number; failed: number };
+  history: { status: string | null; completedAt: string | null };
+  level: PlatformHealthLevel; issues: Array<{ level: Exclude<PlatformHealthLevel, "ok">; text: string }>;
+};
+/** The product owner's health board of every customer's numbers (Hub admins only). */
+export async function apiPlatformHealth(getToken: GetToken, signal?: AbortSignal) {
+  return await (await request("/supervision/admin/health", getToken, signal)).json() as { generatedAt: string; channels: PlatformHealthChannel[] };
+}

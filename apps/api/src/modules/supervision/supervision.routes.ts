@@ -5,6 +5,7 @@ import { createInboxMediaService } from "../conversations/inbox-media.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { SupervisionError } from "./supervision-access.js";
 import { createSupervisionService } from "./supervision.service.js";
+import { collectPlatformHealth } from "./platform-health.js";
 
 const querySchema = z.object({
   status: z.enum(["active", "closed", "all"]).default("active"),
@@ -40,6 +41,11 @@ export const supervisionRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntim
     if (request.supervision?.kind !== "admin") throw new SupervisionError(403, "Acesso administrativo necessário.");
     const query = parse(z.object({ workspaceId: z.string().uuid() }).strict(), request.query);
     return service.channels(query.workspaceId);
+  });
+  // The product owner's health board: every customer's numbers, Hub admins only (validated on /admin/session).
+  app.get("/supervision/admin/health", async request => {
+    if (request.supervision?.kind !== "admin") throw new SupervisionError(403, "Acesso administrativo necessário.");
+    return collectPlatformHealth(app.prisma);
   });
   app.get("/supervision/summary", async request => {
     const query = parse(z.object({ unreadPeriod: supervisionUnreadPeriodSchema.default("all") }).strict(), request.query);
