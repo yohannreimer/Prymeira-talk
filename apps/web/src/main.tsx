@@ -3,6 +3,7 @@ import { App } from "./app/App";
 import { AuthProvider } from "./app/auth";
 import { TalkLandingPage } from "./app/TalkLandingPage";
 import { TalkAccessDenied } from "./app/TalkAccessDenied";
+import { UpdateBanner } from "./app/update-banner";
 import "./styles.css";
 
 const { pathname } = window.location;
@@ -20,8 +21,12 @@ if (pathname === "/landing") {
   );
 } else {
   createRoot(document.getElementById("root")!).render(
-    <AuthProvider>
-      <App />
-    </AuthProvider>
+    <>
+      {/* Outside the login so even a signed-out or broken screen learns that a new release is out. */}
+      <UpdateBanner />
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </>
   );
 }
