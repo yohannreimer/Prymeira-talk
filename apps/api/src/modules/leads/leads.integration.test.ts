@@ -56,6 +56,8 @@ describe("Leads integrated API flow", () => {
     const messageSend = vi.fn();
     const importedContacts = new Map<string, string>();
     app.decorate("prisma", {
+      // A Google Maps list: Base própria's region rule does not apply.
+      leadList: { findFirst: vi.fn(async () => ({ source: "google_maps" })) },
       lead: { count: vi.fn(async ({ where }: { where: { workspaceId: string; listId: string; id: { in: string[] } } }) =>
         where.workspaceId === workspaceA && where.listId === listId
           ? where.id.in.filter((id) => id === leadId).length : 0) },

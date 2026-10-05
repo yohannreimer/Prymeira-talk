@@ -34,7 +34,7 @@ async function setup() {
   const leadCount = vi.fn(async ({ where }: { where: { workspaceId: string; listId: string; id: { in: string[] } } }) =>
     where.workspaceId === workspaceA && where.listId === listId
       ? where.id.in.filter((id) => id === leadId).length : 0);
-  app.decorate("prisma", { lead: { count: leadCount }, message: { create: sendMessage } } as never);
+  app.decorate("prisma", { lead: { count: leadCount }, leadList: { findFirst: vi.fn(async () => ({ source: "google_maps" })) }, message: { create: sendMessage } } as never);
   app.addHook("onRequest", async (request) => {
     const workspaceId = request.headers["x-workspace"];
     const role = request.headers["x-role"];
