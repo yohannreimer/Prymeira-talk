@@ -39,4 +39,8 @@ describe('number health', () => {
     expect(assessChannel(channel({ status: 'disconnected', connections: [connection('evolution', { status: 'disconnected' })] }), now).issues.slice(0, 2).map(issue => issue.level))
       .toEqual(['critical', 'critical']);
   });
+  it('Evolution down while a proven WAHA carries the number is attention, not critical', () => {
+    const result = assessChannel(channel({ connections: [connection('evolution', { status: 'disconnected', eligible: false, lastEventAt: null }), connection('waha')] }), now);
+    expect(result).toEqual({ level: 'warning', issues: [{ level: 'warning', text: 'Evolution desconectada — o número segue funcionando pelo WAHA' }] });
+  });
 });

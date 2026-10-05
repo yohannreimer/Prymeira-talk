@@ -37,6 +37,7 @@ const ERRORS: Record<string, string> = {
 export function assessChannel(channel: Omit<ChannelHealthView, "level" | "issues">, now: number): Pick<ChannelHealthView, "level" | "issues"> {
   const issues: ChannelHealthView["issues"] = [];
   if (channel.status !== "connected") issues.push({ level: "critical", text: "Canal desconectado no Talk" });
+  // (With a proven WAHA the channel itself stays connected, see logicalChannelStatus.)
   const evolution = channel.connections.find(connection => connection.provider === "evolution");
   const waha = channel.connections.find(connection => connection.provider === "waha");
   for (const [provider, connection] of [["evolution", evolution], ["waha", waha]] as const) {
@@ -45,7 +46,10 @@ export function assessChannel(channel: Omit<ChannelHealthView, "level" | "issues
       continue;
     }
     const name = providerName(provider);
-    if (connection.status !== "connected") issues.push({ level: provider === "evolution" ? "critical" : "warning", text: `${name} desconectada${connection.lastError ? ` (${ERRORS[connection.lastError] ?? connection.lastError})` : ""}` });
+    // Evolution down is critical only when nothing else carries the number: a proven WAHA keeps it working.
+    const covered = provider === "evolution" && waha?.status === "connected" && waha.eligible;
+    if (connection.status !== "connected") issues.push({ level: provider === "evolution" && !covered ? "critical" : "warning",
+      text: `${name} desconectada${connection.lastError ? ` (${ERRORS[connection.lastError] ?? connection.lastError})` : ""}${covered ? " — o número segue funcionando pelo WAHA" : ""}` });
     else if (connection.lastError && ERRORS[connection.lastError]) issues.push({ level: "critical", text: `${name} ${ERRORS[connection.lastError]}` });
     else if (connection.health === "degraded" || connection.health === "unhealthy") issues.push({ level: "warning", text: `${name} instável${connection.lastError ? `: ${connection.lastError}` : ""}` });
     else if (connection.status === "connected" && !connection.eligible) issues.push({ level: "warning", text: `${name} conectada mas fora de uso (não verificada)` });
