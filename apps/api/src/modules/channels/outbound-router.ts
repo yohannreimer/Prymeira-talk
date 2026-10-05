@@ -37,7 +37,7 @@ type Command =
 
 export function createOutboundRouter(options: {
   base: EvolutionClient;
-  waha: Pick<WahaClient, 'sendText' | 'sendMedia' | 'sendVoice' | 'sendContact'> & Partial<Pick<WahaClient, 'deleteMessage'>> | null;
+  waha: Pick<WahaClient, 'sendText' | 'sendMedia' | 'sendVoice' | 'sendContact'> & Partial<Pick<WahaClient, 'deleteMessage' | 'editMessage'>> | null;
   db: Db;
   journal: OutboundDispatchJournal;
   probe?: DeliveryProbe;
@@ -195,6 +195,18 @@ export function createOutboundRouter(options: {
       if (!alternative) throw error;
       const chat = chatId(input.remoteJid.replace('@s.whatsapp.net', '@c.us'));
       await waha!.deleteMessage!({ session: alternative.sessionName, chatId: chat, messageId: `true_${chat}_${input.id}` });
+    }
+  };
+  // Edit: same fallback as delete, through the WAHA connection of the same number.
+  if (base.editMessage) router.editMessage = async input => {
+    try { return await base.editMessage!(input); }
+    catch (error) {
+      const channel = waha?.editMessage ? await loadChannel(input.instanceName) : null;
+      if (!channel || (options.routes && !options.routes(channel.workspaceId))) throw error;
+      const alternative = writerCandidates(channel).find(connection => connection.provider === 'waha') as ConnectionRef | undefined;
+      if (!alternative) throw error;
+      const chat = chatId(input.remoteJid.replace('@s.whatsapp.net', '@c.us'));
+      await waha!.editMessage!({ session: alternative.sessionName, chatId: chat, messageId: `true_${chat}_${input.id}`, text: input.text });
     }
   };
   if (base.sendAudio) router.sendAudio = input => route(input.instanceName, { kind: 'audio', destination: input.number, text: null, input }, () => base.sendAudio!(input));

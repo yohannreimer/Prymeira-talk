@@ -83,6 +83,13 @@ export interface SendTextResult {
   raw: unknown;
 }
 
+export interface EditMessageInput {
+  instanceName: string;
+  id: string;
+  remoteJid: string;
+  text: string;
+}
+
 export interface DeleteMessageInput {
   instanceName: string;
   id: string;
@@ -168,6 +175,7 @@ export interface CheckWhatsappNumbersAvailabilityResult {
 export interface EvolutionClient {
   getInstanceIdentity?(input: ConnectInstanceInput): Promise<string | null>;
   deleteMessageForEveryone?(input: DeleteMessageInput): Promise<void>;
+  editMessage?(input: EditMessageInput): Promise<void>;
   getGroupInfo?(input: { instanceName: string; groupJid: string }): Promise<{ subject: string | null }>;
   sendAudio?(input: { instanceName: string; number: string; audio: string }): Promise<SendMediaResult>;
   fetchProfilePicture?(input: { instanceName: string; number: string }): Promise<string | null>;
@@ -546,6 +554,12 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       await del(`/chat/deleteMessageForEveryone/${encodeURIComponent(input.instanceName)}`, {
         id: input.id, remoteJid: input.remoteJid, fromMe: input.fromMe
       });
+    },
+    async editMessage(input) {
+      // Evolution 2.x: POST /chat/updateMessage with the sent message's key and the new text.
+      await post(`/chat/updateMessage/${encodeURIComponent(input.instanceName)}`, {
+        number: input.remoteJid, key: { remoteJid: input.remoteJid, fromMe: true, id: input.id }, text: input.text
+      }, 15_000);
     },
     async checkWhatsappNumbersAvailability(input) {
       const responseBody = await post(

@@ -1,0 +1,25 @@
+/* WhatsApp's crop tool, over the attachment preview. */
+.image-cropper { position: absolute; inset: 0; z-index: 5; display: grid; grid-template-rows: 1fr auto; background: #0b141a; color: #e9edef; }
+.image-cropper-stage { display: grid; place-items: center; min-height: 0; overflow: hidden; container-type: size; }
+.image-cropper-frame { position: relative; touch-action: none; user-select: none; }
+.image-cropper-frame img { display: block; max-width: calc(100cqw - 48px); max-height: calc(100cqh - 48px); pointer-events: none; }
+.image-cropper-rect { position: absolute; box-shadow: 0 0 0 9999px #0b141ab3; outline: 2px solid #fff; outline-offset: -2px; cursor: move; }
+.image-cropper-frame { overflow: hidden; }
+.image-cropper-grid { position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(to right, transparent calc(33.33% - .5px), #ffffff66 calc(33.33% - .5px), #ffffff66 calc(33.33% + .5px), transparent calc(33.33% + .5px), transparent calc(66.66% - .5px), #ffffff66 calc(66.66% - .5px), #ffffff66 calc(66.66% + .5px), transparent calc(66.66% + .5px)),
+    linear-gradient(to bottom, transparent calc(33.33% - .5px), #ffffff66 calc(33.33% - .5px), #ffffff66 calc(33.33% + .5px), transparent calc(33.33% + .5px), transparent calc(66.66% - .5px), #ffffff66 calc(66.66% - .5px), #ffffff66 calc(66.66% + .5px), transparent calc(66.66% + .5px)); }
+.image-cropper-handle { position: absolute; width: 22px; height: 22px; border: 0 solid #fff; }
+.image-cropper-handle.is-nw { top: 0; left: 0; border-width: 4px 0 0 4px; cursor: nwse-resize; }
+.image-cropper-handle.is-ne { top: 0; right: 0; border-width: 4px 4px 0 0; cursor: nesw-resize; }
+.image-cropper-handle.is-sw { bottom: 0; left: 0; border-width: 0 0 4px 4px; cursor: nesw-resize; }
+.image-cropper-handle.is-se { bottom: 0; right: 0; border-width: 0 4px 4px 0; cursor: nwse-resize; }
+.image-cropper-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px 18px; }
+.image-cropper-aspects { display: flex; flex-wrap: wrap; gap: 6px; }
+.image-cropper-aspects button { padding: 6px 12px; border: 1px solid #ffffff33; border-radius: 16px; background: transparent; color: #d1d7db; font: inherit; font-size: 13px; cursor: pointer; }
+.image-cropper-aspects button.is-active { border-color: #00a884; background: #00a88426; color: #e9edef; }
+.image-cropper-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.image-cropper-icon { display: grid; place-items: center; width: 38px; height: 38px; border: 0; border-radius: 50%; background: #ffffff1a; color: #e9edef; cursor: pointer; }
+.image-cropper-done { display: inline-flex; align-items: center; gap: 6px; padding: 9px 16px; border: 0; border-radius: 20px; background: #00a884; color: #fff; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+.image-cropper button:disabled { opacity: .6; cursor: default; }
+.image-cropper-error { position: absolute; left: 50%; bottom: 76px; transform: translateX(-50%); margin: 0; padding: 6px 12px; border-radius: 8px; background: #3b1f22; color: #ffb4b4; font-size: 13px; }
+.attachment-tray-crop { position: absolute; top: 14px; left: 64px; z-index: 2; display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 50%; background: #ffffff1a; color: #e9edef; cursor: pointer; }

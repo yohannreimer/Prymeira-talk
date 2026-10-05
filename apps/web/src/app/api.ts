@@ -2569,6 +2569,16 @@ export async function apiDeleteMessageForEveryone(
     { method: 'POST' }, (data) => messageSchema.parse(data), 'Não foi possível apagar a mensagem para todos.');
 }
 
+export async function apiEditMessage(
+  conversationId: string,
+  messageId: string,
+  body: string,
+  getToken: () => Promise<string | null>
+): Promise<MessageDto> {
+  return fetchJson(getToken, `/conversations/${conversationId}/messages/${messageId}/edit`,
+    { method: 'POST', body: JSON.stringify({ body }) }, (data) => messageSchema.parse(data), 'Não foi possível editar a mensagem.');
+}
+
 export type ForwardResult = { results: Array<{ conversationId: string; ok: boolean; sent: number; error?: string }>; total: number };
 export async function apiForwardMessages(
   conversationId: string,

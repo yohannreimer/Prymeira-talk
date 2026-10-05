@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { FileText, LoaderCircle, Plus, Send, Trash2, Video, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Crop, FileText, LoaderCircle, Plus, Send, Trash2, Video, X } from 'lucide-react';
+import { ImageCropper } from './ImageCropper';
 import './attachment-tray.css';
 
 export type PendingAttachment = { id: string; file: File; caption: string };
@@ -18,13 +19,16 @@ function size(file: File) {
  * WhatsApp's attachment preview: the chosen files open over the chat, each with its own caption, a strip of thumbnails
  * to switch between them (and drop one), "+" to add more, and one button that sends them all, one message per file.
  */
-export function AttachmentTray({ items, activeId, recipient, sending, onSelect, onCaption, onRemove, onAdd, onClose, onSend }: {
+export function AttachmentTray({ items, activeId, recipient, sending, onSelect, onCaption, onRemove, onAdd, onClose, onSend, onReplace }: {
   items: PendingAttachment[]; activeId: string | null; recipient: string; sending: boolean;
   onSelect: (id: string) => void; onCaption: (id: string, caption: string) => void; onRemove: (id: string) => void;
   onAdd: () => void; onClose: () => void; onSend: () => void;
+  /** Swaps a file for its edited version (a cropped or turned picture). */
+  onReplace?: (id: string, file: File) => void;
 }) {
-  // Previews follow the set of files, not the captions: typing must not reload a video or flash the pictures.
-  const filesKey = items.map(item => item.id).join('|');
+  const [cropping, setCropping] = useState(false);
+  // Previews follow the files, not the captions: typing must not reload a video or flash the pictures.
+  const filesKey = items.map(item => `${item.id}:${item.file.size}:${item.file.lastModified}`).join('|');
   const urls = useMemo(() => new Map(items.filter(item => kindOf(item.file) !== 'file').map(item => [item.id, URL.createObjectURL(item.file)])), [filesKey]);
   useEffect(() => () => { for (const url of urls.values()) URL.revokeObjectURL(url); }, [urls]);
   const active = items.find(item => item.id === activeId) ?? items[0];
@@ -32,9 +36,14 @@ export function AttachmentTray({ items, activeId, recipient, sending, onSelect, 
   useEffect(() => { caption.current?.focus(); }, [active?.id]);
   if (!active) return null;
   const kind = kindOf(active.file), url = urls.get(active.id);
+  // Animated GIFs would lose their animation in a canvas: only still pictures are cropped.
+  const croppable = Boolean(onReplace) && kind === 'image' && active.file.type !== 'image/gif';
   return <div className="attachment-tray" role="dialog" aria-label="Anexos para enviar"
-    onKeyDown={event => { if (event.key === 'Escape' && !sending) onClose(); }}>
+    onKeyDown={event => { if (event.key === 'Escape' && !sending && !cropping) onClose(); }}>
     <button type="button" className="attachment-tray-close" aria-label="Cancelar envio dos anexos" disabled={sending} onClick={onClose}><X size={22} /></button>
+    {croppable ? <button type="button" className="attachment-tray-crop" aria-label="Recortar imagem" title="Recortar e girar" disabled={sending} onClick={() => setCropping(true)}><Crop size={20} /></button> : null}
+    {cropping && croppable ? <ImageCropper key={active.id} file={active.file} onCancel={() => setCropping(false)}
+      onDone={file => { onReplace!(active.id, file); setCropping(false); }} /> : null}
     <div className="attachment-tray-stage">
       {kind === 'image' && url ? <img src={url} alt={active.file.name} />
         : kind === 'video' && url ? <video src={url} controls playsInline muted />

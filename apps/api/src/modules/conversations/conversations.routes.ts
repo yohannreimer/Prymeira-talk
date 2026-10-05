@@ -223,6 +223,56 @@ export const conversationsRoutes: FastifyPluginAsync<ConversationsRoutesOptions>
     if (conversation) app.realtime.publish({ type: 'conversation.updated', workspaceId, payload: toConversationDto(conversation) });
     return dto;
   });
+  // WhatsApp lets the sender edit a text for 15 minutes; Talk asks a little less so the edit never arrives late.
+  const EDIT_WINDOW_MS = 14.5 * 60_000;
+  app.post('/conversations/:conversationId/messages/:messageId/edit', async (request, reply) => {
+    const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
+    const body = z.object({ body: z.string().trim().min(1).max(4096) }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'Escreva o novo texto da mensagem.' });
+    const workspaceId = request.talk.workspaceId;
+    const record = await app.prisma.message.findFirst({
+      where: { id: params.data.messageId, conversationId: params.data.conversationId, workspaceId },
+      include: { conversation: { include: { channel: true, contact: true } } }
+    });
+    if (!record) return reply.code(404).send({ error: 'Mensagem não encontrada.' });
+    const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
+      ? record.metadata as Record<string, unknown> : {};
+    if (record.body === body.data.body) return toMessageDto(record);
+    const client = options.evolution?.client;
+    const reference = record.direction === 'outbound' ? await replyReference(app.prisma, workspaceId, record.conversationId, record.id) : null;
+    if (options.evolution?.mode !== 'real' || !client?.editMessage || record.conversation.channel.provider !== 'evolution'
+      || record.conversation.contact.isGroup || record.direction !== 'outbound' || record.type !== 'text' || typeof metadata.deletedAt === 'string'
+      || !reference || record.status === 'pending' || record.status === 'failed') {
+      return reply.code(409).send({ error: 'Esta mensagem não pode ser editada.' });
+    }
+    if (Date.now() - record.createdAt.getTime() > EDIT_WINDOW_MS) return reply.code(409).send({ error: 'O WhatsApp só deixa editar até 15 minutos depois do envio.' });
+    const phone = record.conversation.contact.phone;
+    const remoteJid = /^\d+@lid$/.test(phone) ? phone : /^\d{8,15}$/.test(phone) ? `${phone}@s.whatsapp.net` : null;
+    if (!remoteJid) return reply.code(409).send({ error: 'Destino do WhatsApp inválido.' });
+    try {
+      await client.editMessage({ instanceName: record.conversation.channel.providerKey, id: reference.id, remoteJid, text: body.data.body });
+    } catch (error) {
+      request.log.warn({ err: error, messageId: record.id }, 'Evolution failed to edit message.');
+      return reply.code(502).send({ error: 'O WhatsApp não confirmou a edição. A mensagem continua como estava.' });
+    }
+    const updated = await app.prisma.message.update({ where: { id: record.id }, data: {
+      body: body.data.body, metadata: { ...metadata, editedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
+    await app.prisma.conversation.updateMany({
+      where: { id: record.conversationId, workspaceId, lastMessageAt: record.createdAt },
+      data: { lastMessagePreview: body.data.body.slice(0, 500) }
+    });
+    const conversation = await app.prisma.conversation.findUnique({
+      where: { workspaceId_id: { workspaceId, id: record.conversationId } },
+      include: { assignedUser: { select: { displayName: true } },
+        channel: { select: { displayName: true, phoneNumber: true, provider: true } },
+        contact: { select: { name: true, phone: true, isGroup: true } },
+        department: { select: { name: true } } }
+    });
+    const dto = toMessageDto(updated);
+    app.realtime.publish({ type: 'message.updated', workspaceId, payload: dto });
+    if (conversation) app.realtime.publish({ type: 'conversation.updated', workspaceId, payload: toConversationDto(conversation) });
+    return dto;
+  });
   app.post('/conversations/:conversationId/messages/:messageId/recognize-contact', async (request, reply) => {
     const params = z.object({ conversationId: z.string().uuid(), messageId: z.string().uuid() }).safeParse(request.params);
     if (!params.success) return reply.code(400).send({ error: 'Mensagem inválida.' });

@@ -194,6 +194,7 @@ export function createWahaClient(options: { baseUrl: string; apiKey: string; fet
     /** Legacy unvalidated API. Canonical callers must use findMessageExact. */
     getMessage: (input: ChatInput & { messageId: string }) => request<WahaMessage>(`${messagePath(input)}?downloadMedia=true`),
     deleteMessage: (input: ChatInput & { messageId: string }) => request<void>(messagePath(input), 'DELETE'),
+    editMessage: (input: ChatInput & { messageId: string; text: string }) => request<void>(messagePath(input), 'PUT', { text: input.text, linkPreview: false }),
     sendText: (input: ChatInput & { text: string; linkPreview?: boolean; replyTo?: string }) => send('/api/sendText', { session: input.session, chatId: input.chatId, text: input.text, ...(input.linkPreview === undefined ? {} : { linkPreview: input.linkPreview }), ...(input.replyTo ? { reply_to: input.replyTo } : {}) }),
     sendMedia: (input: ChatInput & BinaryFile & { kind: 'image' | 'video' | 'file'; caption?: string }) => send(`/api/${input.kind === 'image' ? 'sendImage' : input.kind === 'video' ? 'sendVideo' : 'sendFile'}`, { session: input.session, chatId: input.chatId, file: file(input), ...(input.caption === undefined ? {} : { caption: input.caption }) },
       // WAHA answers after uploading the file to WhatsApp: up to 25 MB needs more than a text message's 15 s.

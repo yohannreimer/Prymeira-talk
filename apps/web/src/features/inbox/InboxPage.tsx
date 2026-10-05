@@ -6,7 +6,7 @@ import { CATALOG_STALE_MS, MAX_MESSAGES, receiptStatus } from '../../app/session
 import { LocationMessage } from './LocationMessage';
 import { needsHumanAttention } from "@prymeira-talk/shared";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
-import { Bookmark, Bot, Check, CheckCircle2, MoreVertical, Smile, Zap, ShieldCheck, ContactRound, FileText, Forward, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
+import { Bookmark, Bot, Check, Pencil, CheckCircle2, MoreVertical, Smile, Zap, ShieldCheck, ContactRound, FileText, Forward, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
 import { mentionNames, parsePixKey, parsePoll, quotedPreview, threadWithReactions, withMentionNames } from "./message-threading.js";
 import { PixKeyAction, PollMessage } from "./RichMessages";
 import { MessageTicks } from "./MessageTicks";
@@ -21,6 +21,7 @@ import {
   apiCreateQuickReply,
   apiCreateConversationMessage,
   apiDeleteMessageForEveryone,
+  apiEditMessage,
   apiCreateCrmLead,
   apiDeleteQuickReply,
   apiGetContactNameInsight,
@@ -354,6 +355,9 @@ function fileToDataUrl(file: File) {
   });
 }
 
+/** WhatsApp accepts an edit for 15 minutes after sending; Talk offers it a little less so it never arrives late. */
+const EDIT_WINDOW_MS = 14.5 * 60_000;
+
 export function messageDisplayText(message: Pick<MessageDto, "body" | "type">) {
   if (message.body?.trim()) {
     return message.body;
@@ -520,6 +524,9 @@ function InboxPageContent() {
   const textSendQueue = useRef(new Map<string, Promise<unknown>>());
   /** The message being replied to (WhatsApp quote); only for messages that have a WhatsApp id. */
   const [replyTarget, setReplyTarget] = useState<MessageDto | null>(null);
+  // A sent text being edited: the composer holds its new text and Enviar saves the edit instead of sending.
+  const [editTarget, setEditTarget] = useState<MessageDto | null>(null);
+  useEffect(() => { setEditTarget(null); }, [selectedConversationId]);
   /** Messages picked to forward (WhatsApp's selection mode); null when not selecting. */
   const [forwardSelection, setForwardSelection] = useState<string[] | null>(null);
   const [forwardOpen, setForwardOpen] = useState(false);
@@ -1140,6 +1147,20 @@ function InboxPageContent() {
     event.preventDefault();
 
     if (!selectedConversationId || !draft.trim()) return;
+    if (editTarget && editTarget.conversationId === selectedConversationId) {
+      if (isSending) return;
+      const target = editTarget, conversationId = selectedConversationId, body = draft.trim();
+      setIsSending(true);
+      try {
+        const updated = await apiEditMessage(conversationId, target.id, body, getFreshToken);
+        session.updateMessages(conversationId, current => current.map(item => item.id === updated.id ? updated : item));
+        setConversations(current => current.map(item => item.id === conversationId && item.lastMessageAt === target.createdAt ? { ...item, lastMessagePreview: updated.body } : item));
+        setEditTarget(null); setDraft(''); setMessageError(null);
+      } catch (error) {
+        setMessageError(error instanceof Error ? error.message : 'Não foi possível editar a mensagem.');
+      } finally { setIsSending(false); }
+      return;
+    }
     if (composerOrigin) {
       if (isSending) return;
       if (originNeedsReview) { setMessageError('Chegaram novas informações. Revise o rascunho antes de enviar.'); return; }
@@ -1426,6 +1447,13 @@ function InboxPageContent() {
 
   useEffect(() => { setHandoffFeedback(null); }, [selectedConversationId]);
 
+  function startEditing(message: MessageDto) {
+    setReplyTarget(null);
+    setEditTarget(message);
+    setDraft(message.body ?? '');
+    draftTextAreaRef.current?.focus();
+  }
+
   async function deleteMessageForEveryone(message: MessageDto) {
     if (!selectedConversationId || deletingMessageId ||
       !window.confirm('Apagar esta mensagem para todos no WhatsApp?')) return;
@@ -1634,9 +1662,9 @@ function InboxPageContent() {
     setForwardSelection(current => !current ? [message.id] : current.includes(message.id) ? current.filter(id => id !== message.id)
       : current.length >= 20 ? current : [...current, message.id]);
   }
-  const actionsRef = useRef({ handleManualMark, handleDismissReply, handleUndoDismiss, deleteMessageForEveryone,
+  const actionsRef = useRef({ handleManualMark, handleDismissReply, handleUndoDismiss, deleteMessageForEveryone, startEditing,
     runAction, handleCreateLead, resetSelectedConversation, handleRemoveTag, saveContactName, handleAddTag, handleAddNote, sendSuggestion, editSuggestion, openCardChat, toggleForwardPick });
-  actionsRef.current = { handleManualMark, handleDismissReply, handleUndoDismiss, deleteMessageForEveryone,
+  actionsRef.current = { handleManualMark, handleDismissReply, handleUndoDismiss, deleteMessageForEveryone, startEditing,
     runAction, handleCreateLead, resetSelectedConversation, handleRemoveTag, saveContactName, handleAddTag, handleAddNote, sendSuggestion, editSuggestion, openCardChat, toggleForwardPick };
   const conversationListView = useMemo(() => (
 <section className="conversation-list" aria-label="Atendimento">
@@ -1931,6 +1959,8 @@ selectedConversation ? (
               const canReply = selectedConversation.channelProvider === 'evolution' && Boolean(message.whatsappId) && !message.deletedAt && message.type !== 'system';
               const canDelete = selectedConversation.channelProvider === 'evolution' && !selectedConversation.isGroup && message.direction === 'outbound' &&
                 Boolean(message.providerMessageId || message.whatsappId) && !message.deletedAt && ['sent', 'delivered', 'read'].includes(message.status);
+              // WhatsApp lets the sender edit a text for 15 minutes.
+              const canEdit = canDelete && message.type === 'text' && Date.now() - new Date(message.createdAt).getTime() < EDIT_WINDOW_MS;
               const senderName = selectedConversation.isGroup ? message.senderName ?? message.senderJid : selectedConversation.contactName;
               const picked = Boolean(forwardSelection?.includes(message.id));
               return (
@@ -1983,11 +2013,11 @@ selectedConversation ? (
                     </div>
                   ) : null}
                 </div>
-                {!forwardSelection && (canReply || canDelete || canForward(message)) ? (
+                {!forwardSelection && (canReply || canDelete || canEdit || canForward(message)) ? (
                   <div className="message-actions">
                     {canReply ? (
                       <button type="button" className="message-action" title="Responder" aria-label="Responder esta mensagem"
-                        onClick={() => { setReplyTarget(message); draftTextAreaRef.current?.focus(); }}>
+                        onClick={() => { if (editTarget) { setEditTarget(null); setDraft(''); } setReplyTarget(message); draftTextAreaRef.current?.focus(); }}>
                         <Reply size={15} aria-hidden="true" />
                       </button>
                     ) : null}
@@ -1995,6 +2025,12 @@ selectedConversation ? (
                       <button type="button" className="message-action" title="Encaminhar" aria-label="Encaminhar esta mensagem"
                         onClick={() => actionsRef.current.toggleForwardPick(message)}>
                         <Forward size={15} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                    {canEdit ? (
+                      <button type="button" className="message-action" title="Editar" aria-label="Editar esta mensagem"
+                        onClick={() => actionsRef.current.startEditing(message)}>
+                        <Pencil size={15} aria-hidden="true" />
                       </button>
                     ) : null}
                     {canDelete ? (
@@ -2255,7 +2291,8 @@ selectedConversation ? (
           onCaption={(id, caption) => setPendingFiles(current => current.map(item => item.id === id ? { ...item, caption } : item))}
           onRemove={id => { const index = pendingFiles.findIndex(item => item.id === id); const rest = pendingFiles.filter(item => item.id !== id);
             setPendingFiles(rest); setActiveAttachmentId(rest[Math.min(index, rest.length - 1)]?.id ?? null); }}
-          onAdd={() => fileInputRef.current?.click()} onClose={() => setPendingFiles([])} onSend={() => void sendPendingAttachments()} /> : null}
+          onAdd={() => fileInputRef.current?.click()} onClose={() => setPendingFiles([])} onSend={() => void sendPendingAttachments()}
+          onReplace={(id, file) => setPendingFiles(current => current.map(item => item.id === id ? { ...item, file } : item))} /> : null}
         <header className="chat-header">
           <button className="assistant-mobile-back" type="button" onClick={() => setSelectedConversationId(null)}>Voltar</button>
           {headerAvatar}
@@ -2397,6 +2434,12 @@ selectedConversation ? (
                     {emoji}
                   </button>
                 ))}
+              </div>
+            ) : null}
+            {editTarget && editTarget.conversationId === selectedConversationId ? (
+              <div className="composer-reply composer-editing" role="status">
+                <div className="message-quote is-rich"><span className="composer-editing-label"><Pencil size={12} aria-hidden="true" />Editando mensagem</span><span className="composer-editing-text">{editTarget.body}</span></div>
+                <button type="button" aria-label="Cancelar edição" onClick={() => { setEditTarget(null); setDraft(''); }}><X size={14} aria-hidden="true" /></button>
               </div>
             ) : null}
             {replyTarget && replyTarget.conversationId === selectedConversationId ? (() => {
