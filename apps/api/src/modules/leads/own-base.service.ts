@@ -36,6 +36,17 @@ function titleCase(value: string) {
 }
 const clean = (value: string | undefined) => value?.trim() ? value.trim() : null;
 
+/** One spelling per city ("Corupa" and "Corupá" are one city): the accented one wins, then alphabetical order. */
+export function uniqueCities(values: Iterable<string>) {
+  const byKey = new Map<string, string>();
+  for (const value of values) {
+    const key = cityKey(value), current = byKey.get(key);
+    if (!key) continue;
+    if (!current || (/[^\x00-\x7F]/.test(value) && !/[^\x00-\x7F]/.test(current))) byKey.set(key, value);
+  }
+  return [...byKey.values()].sort((a, b) => a.localeCompare(b, "pt-BR"));
+}
+
 /** The phones of a row: valid WhatsApp-style numbers first (with 55), the rest kept for review. */
 export function splitPhones(values: string[]) {
   const valid: string[] = [], review: string[] = [];
@@ -120,7 +131,8 @@ export function createOwnBaseService(prisma: Db) {
           const cities = seen.get(region) ?? new Set<string>(); if (city) cities.add(city); seen.set(region, cities);
         }
         const cnpj = (row.cnpj ?? "").replace(/\D/g, "");
-        const dedupe = cnpj.length === 14 ? `cnpj:${cnpj}` : valid[0] ? `phone:${phoneKey(valid[0])}` : `name:${cityKey(row.company)}:${index}`;
+        // Same company = same CNPJ, or same name and phone. A shared phone alone (an accountant, a family) is not enough.
+        const dedupe = cnpj.length === 14 ? `cnpj:${cnpj}` : `name:${cityKey(row.company)}:${valid[0] ? phoneKey(valid[0]) : `row${index}`}`;
         return { workspaceId: input.workspaceId, listId: list!.id, source: "own_base" as const, sourceDedupeKey: dedupe,
           companyName: row.company.trim(), cnpj: cnpj.length === 14 ? cnpj : null, city, state: clean(row.state)?.toUpperCase() ?? null,
           category: clean(row.activity), email: clean(row.email), phones: valid, normalizedPhone: valid[0] ?? null, region,
@@ -137,7 +149,7 @@ export function createOwnBaseService(prisma: Db) {
         let order = count;
         for (const [name, cities] of seen) {
           const existing = await tx.leadRegion.findUnique({ where: { workspaceId_name: { workspaceId: input.workspaceId, name } } });
-          const merged = [...new Set([...(Array.isArray(existing?.cities) ? existing!.cities as string[] : []), ...cities])].sort((a, b) => a.localeCompare(b, "pt-BR"));
+          const merged = uniqueCities([...(Array.isArray(existing?.cities) ? existing!.cities as string[] : []), ...cities]);
           if (existing) await tx.leadRegion.update({ where: { id: existing.id }, data: { cities: merged } });
           else await tx.leadRegion.create({ data: { workspaceId: input.workspaceId, name, cities: merged, sortOrder: order++ } });
         }
@@ -173,7 +185,7 @@ export function createOwnBaseService(prisma: Db) {
         prisma.$queryRaw<Array<{ id: string; company: string; normalized_phone: string | null; phones: unknown; city: string | null; region: string | null;
           sent_at: Date | null; campaign: string | null; replied_at: Date | null }>>(Prisma.sql`
           ${base} SELECT * FROM rows ${filterWhere(input.filter)}
-          ORDER BY company, id LIMIT ${input.pageSize} OFFSET ${(input.page - 1) * input.pageSize}`),
+          ORDER BY lower(regexp_replace(company, '^[^[:alnum:]]+', '')), id LIMIT ${input.pageSize} OFFSET ${(input.page - 1) * input.pageSize}`),
         prisma.$queryRaw<Array<{ never: bigint; sent: bigint; replied: bigint; all: bigint }>>(Prisma.sql`
           ${base} SELECT count(*) FILTER (WHERE sent_at IS NULL) AS never, count(*) FILTER (WHERE sent_at IS NOT NULL) AS sent,
             count(*) FILTER (WHERE replied_at IS NOT NULL) AS replied, count(*) AS "all" FROM rows`)
@@ -197,7 +209,7 @@ export function createOwnBaseService(prisma: Db) {
       if (mine !== null && input.region !== mine) throw new LeadsDomainError("LEAD_INVALID_TRANSITION", "Você só pode criar listas na sua região.");
       const rows = await prisma.$queryRaw<Array<{ id: string; k: string }>>(Prisma.sql`
         ${enriched(input.workspaceId, input.listId, input.region, input.q)}
-        SELECT id, k FROM rows ${filterWhere(input.filter)} ORDER BY company, id LIMIT ${MAX_LEAD_BULK_SELECTION_SIZE + 1}`);
+        SELECT id, k FROM rows ${filterWhere(input.filter)} ORDER BY lower(regexp_replace(company, '^[^[:alnum:]]+', '')), id LIMIT ${MAX_LEAD_BULK_SELECTION_SIZE + 1}`);
       if (rows.length > MAX_LEAD_BULK_SELECTION_SIZE) throw new LeadsDomainError("LEAD_LIMIT_EXCEEDED", `Selecione até ${MAX_LEAD_BULK_SELECTION_SIZE} empresas por lista.`);
       return { ids: rows.map(row => row.id), verifiableIds: rows.filter(row => row.k).map(row => row.id) };
     },
@@ -224,7 +236,7 @@ export function createOwnBaseService(prisma: Db) {
         const keep = new Set(next.map(region => region.name));
         await tx.leadRegion.deleteMany({ where: { workspaceId, name: { notIn: [...keep] } } });
         for (const [index, region] of next.entries()) {
-          const cities = [...new Set(region.cities.map(city => titleCase(city.trim())).filter(Boolean))];
+          const cities = uniqueCities(region.cities.map(city => titleCase(city.trim())));
           const existing = current.find(row => row.name === region.name);
           const data = { cities, seller: region.seller?.trim() || null, isMine: region.isMine, sortOrder: index };
           if (existing) await tx.leadRegion.update({ where: { id: existing.id }, data });

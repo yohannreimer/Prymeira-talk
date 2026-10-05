@@ -1,5 +1,15 @@
 import { abortable, assertReadAccess, withReadDeadline } from './read-request';
 import {
+  leadRegionSchema,
+  ownBaseImportResultSchema,
+  ownBaseLeadPageSchema,
+  ownBaseOverviewSchema,
+  type LeadRegionDto,
+  type OwnBaseFilter,
+  type OwnBaseImportResult,
+  type OwnBaseLeadPage,
+  type OwnBaseOverview,
+  type OwnBaseRow,
   agentPackageSchema,
   channelFollowupConfigSchema,
   aiAgentSchema,
@@ -4213,8 +4223,8 @@ export function apiImportLeadContacts(getToken: TokenProvider, listId: string, s
   return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/contacts/import`, { method: "POST", body: JSON.stringify({ selectedLeadIds }) }, value => leadContactImportResultSchema.parse(value), "Não foi possível cadastrar contatos.");
 }
 
-export function apiCreateLeadCampaignDraft(getToken: TokenProvider, listId: string, selectedLeadIds: string[], messageBody: string | undefined, originalSelectedLeadIds?: string[]): Promise<LeadCampaignDraftResult> {
-  return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/campaign-drafts`, { method: "POST", body: JSON.stringify({ selectedLeadIds, ...(messageBody?.trim() ? { messageBody: messageBody.trim() } : {}), originalSelectedLeadIds }) }, value => leadCampaignDraftResultSchema.parse(value), "Não foi possível criar o rascunho.");
+export function apiCreateLeadCampaignDraft(getToken: TokenProvider, listId: string, selectedLeadIds: string[], messageBody: string | undefined, originalSelectedLeadIds?: string[], name?: string): Promise<LeadCampaignDraftResult> {
+  return fetchJson(getToken, `/leads/lists/${leadPath(listId)}/campaign-drafts`, { method: "POST", body: JSON.stringify({ selectedLeadIds, ...(messageBody?.trim() ? { messageBody: messageBody.trim() } : {}), originalSelectedLeadIds, ...(name?.trim() ? { name: name.trim() } : {}) }) }, value => leadCampaignDraftResultSchema.parse(value), "Não foi possível criar o rascunho.");
 }
 
 export function apiGetLeadComposerDraft(getToken: TokenProvider, conversationId: string): Promise<LeadComposerDraft | null> {
@@ -4255,4 +4265,32 @@ export async function apiCompareChannelHistory(getToken: () => Promise<string | 
   const response = await fetch(`${apiUrl}/channels/${encodeURIComponent(channelId)}/history-comparison`, { headers: { Authorization: `Bearer ${token}` } });
   if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Não foi possível comparar o histórico'));
   return await response.json() as HistoryComparison;
+}
+
+// ---- Leads · Base própria ----
+export type OwnBaseView = { region?: string | null; filter: OwnBaseFilter; q?: string };
+function ownBaseQuery(view: OwnBaseView, extra: Record<string, string> = {}) {
+  const params = new URLSearchParams(extra);
+  if (view.region !== undefined) params.set("region", view.region === null ? "__none__" : view.region);
+  params.set("filter", view.filter);
+  if (view.q?.trim()) params.set("q", view.q.trim());
+  return params.toString();
+}
+export function apiOwnBaseOverview(getToken: TokenProvider, listId?: string): Promise<OwnBaseOverview> {
+  return fetchJson(getToken, `/leads/own-base${listId ? `?listId=${encodeURIComponent(listId)}` : ""}`, {}, value => ownBaseOverviewSchema.parse(value), "Não foi possível carregar a base própria.");
+}
+export function apiOwnBaseLeads(getToken: TokenProvider, listId: string, view: OwnBaseView, page: number): Promise<OwnBaseLeadPage> {
+  return fetchJson(getToken, `/leads/own-base/${leadPath(listId)}/leads?${ownBaseQuery(view, { page: String(page), pageSize: "50" })}`, {}, value => ownBaseLeadPageSchema.parse(value), "Não foi possível carregar as empresas.");
+}
+export function apiOwnBaseSelection(getToken: TokenProvider, listId: string, view: OwnBaseView): Promise<{ ids: string[]; verifiableIds: string[] }> {
+  return fetchJson(getToken, `/leads/own-base/${leadPath(listId)}/selection?${ownBaseQuery(view)}`, {}, value => leadSelectionSchema.parse(value), "Não foi possível selecionar as empresas.");
+}
+export function apiOwnBaseImport(getToken: TokenProvider, input: { listId?: string; name: string; fileName: string; rows: OwnBaseRow[]; done: boolean }): Promise<OwnBaseImportResult> {
+  return fetchJson(getToken, "/leads/own-base/import", { method: "POST", body: JSON.stringify(input) }, value => ownBaseImportResultSchema.parse(value), "Não foi possível subir esta parte da planilha.");
+}
+export function apiGetLeadRegions(getToken: TokenProvider): Promise<LeadRegionDto[]> {
+  return fetchJson(getToken, "/leads/regions", {}, value => (value as { regions: unknown[] }).regions.map(region => leadRegionSchema.parse(region)), "Não foi possível carregar as regiões.");
+}
+export function apiSaveLeadRegions(getToken: TokenProvider, regions: LeadRegionDto[]): Promise<LeadRegionDto[]> {
+  return fetchJson(getToken, "/leads/regions", { method: "PUT", body: JSON.stringify({ regions }) }, value => (value as { regions: unknown[] }).regions.map(region => leadRegionSchema.parse(region)), "Não foi possível salvar as regiões.");
 }

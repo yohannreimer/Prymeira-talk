@@ -37,14 +37,17 @@ describe.skipIf(!url)('Base própria on PostgreSQL', () => {
     expect(first).toMatchObject({ saved: 3, withoutPhone: 1, total: 3 });
     await service.importRows({ workspaceId, listId: first.listId, name: 'Leads Unificados', fileName: 'Leads.xlsx', done: true, rows: [
       { company: 'Adalberto Maas Junior', phones: ['+554733750720'], city: 'CORUPA', region: 'Jaraguá e região' },
+      { company: 'Metalúrgica Corupá', phones: ['+554733751111'], city: 'Corupá', region: 'Jaraguá e região' },
       { company: '2 Rios', phones: ['+554730439617'] },
+      // A different company on the same phone (an accountant's number): kept apart.
+      { company: 'Academia Alvorada', phones: ['+554730439617'] },
       // The same company again (same CNPJ): updated, not duplicated.
       { company: '3R Ferramentaria', phones: ['+554730312531'], city: 'Araquari', region: 'Joinville / Araquari / Garuva', cnpj: '07.515.534/0001-08' }
     ] });
-    expect(await db.lead.count({ where: { workspaceId } })).toBe(5);
+    expect(await db.lead.count({ where: { workspaceId } })).toBe(7);
     expect(await service.listRegions(workspaceId)).toEqual([
       { name: 'Joinville / Araquari / Garuva', cities: ['Araquari', 'Joinville'], seller: null, isMine: false },
-      { name: 'Jaraguá e região', cities: ['Corupa'], seller: null, isMine: false }
+      { name: 'Jaraguá e região', cities: ['Corupá'], seller: null, isMine: false }
     ]);
 
     // A campaign already reached Ferraço (stored with the 9th digit missing) and it answered afterwards.
@@ -62,9 +65,9 @@ describe.skipIf(!url)('Base própria on PostgreSQL', () => {
     expect(all.items.find(item => item.company === 'Ferraço Joinville')).toMatchObject({ lastDispatch: { at: sentAt.toISOString(), campaign: 'Promo Chapa Preta' }, repliedAt: '2026-10-01T12:00:00.000Z' });
     expect((await service.page({ workspaceId, listId: first.listId, region: joinville, filter: 'never', page: 1, pageSize: 50 })).items.map(item => item.company))
       .toEqual(['3R Ferramentaria', 'Abrastech']);
-    expect((await service.page({ workspaceId, listId: first.listId, region: null, filter: 'all', page: 1, pageSize: 50 })).items.map(item => item.company)).toEqual(['2 Rios']);
+    expect((await service.page({ workspaceId, listId: first.listId, region: null, filter: 'all', page: 1, pageSize: 50 })).items.map(item => item.company)).toEqual(['2 Rios', 'Academia Alvorada']);
     const overview = await service.overview(workspaceId);
-    expect(overview.regions.map(region => [region.region, region.total, region.dispatched])).toEqual([[joinville, 3, 1], ['Jaraguá e região', 1, 0], [null, 1, 0]]);
+    expect(overview.regions.map(region => [region.region, region.total, region.dispatched])).toEqual([[joinville, 3, 1], ['Jaraguá e região', 2, 0], [null, 2, 0]]);
 
     // Joinville becomes this workspace's region: other regions are read only, here and on the server.
     await service.saveRegions(workspaceId, [
@@ -78,7 +81,7 @@ describe.skipIf(!url)('Base própria on PostgreSQL', () => {
     await expect(service.assertSelectable(workspaceId, first.listId, mine.ids)).resolves.toBeUndefined();
     const jaragua = (await db.lead.findMany({ where: { workspaceId, region: 'Jaraguá e região' } })).map(lead => lead.id);
     await expect(service.assertSelectable(workspaceId, first.listId, [...mine.ids, ...jaragua])).rejects.toMatchObject({ code: 'LEAD_INVALID_TRANSITION' });
-    // Corupá with an accent still files "CORUPA".
-    expect(jaragua).toHaveLength(1);
+    // "CORUPA" and "Corupá" are the same city.
+    expect(jaragua).toHaveLength(2);
   });
 });
