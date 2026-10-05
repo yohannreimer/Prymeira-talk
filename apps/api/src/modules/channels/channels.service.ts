@@ -86,7 +86,9 @@ export interface PrismaLike {
       data: { channelId: null };
     }): Promise<{ count: number }>;
   };
-  $transaction<T>(fn: (tx: Pick<PrismaLike, "channel" | "leadWhatsappVerification">) => Promise<T>): Promise<T>;
+  /** Ingress receipts of a channel being deleted (the ingress refuses to let a channel go while they exist). */
+  ingressReceipt?: { deleteMany(args: { where: { workspaceId: string; channelId: string } }): Promise<{ count: number }> };
+  $transaction<T>(fn: (tx: Pick<PrismaLike, "channel" | "leadWhatsappVerification" | "ingressReceipt">) => Promise<T>): Promise<T>;
   integrationConfig: {
     findUnique(args: {
       where: { workspaceId_provider: { workspaceId: string; provider: string } };
@@ -621,6 +623,9 @@ export function createChannelsService(
       // The WAHA session (second connection) is stopped and removed before the channel rows go.
       if (physical && channel.provider === 'evolution') await physical.deleteSecondary(channel as unknown as Channel);
       await prisma.$transaction(async (tx) => {
+        // The ingress keeps its receipts (and, through them, deliveries and applications) per channel and refuses to let a
+        // channel go while they exist: removing the channel removes its receipts first, in the same transaction.
+        await tx.ingressReceipt?.deleteMany({ where: { workspaceId: input.workspaceId, channelId: input.channelId } });
         // Lead verifications only record which channel checked the number; keep them, unlinked.
         await tx.leadWhatsappVerification.updateMany({
           where: { workspaceId: input.workspaceId, channelId: input.channelId },
