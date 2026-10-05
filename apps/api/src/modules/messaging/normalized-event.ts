@@ -60,7 +60,8 @@ export type NormalizedMessagingEvent = BaseEvent & (
       encrypted: { ivBase64: string; payloadBase64: string; senderJids: string[] }; order: SourceOrder }
   | { kind: 'revoke'; target: WhatsAppMessageKey; action: WhatsAppMessageKey; order: SourceOrder }
   | { kind: 'receipt'; target: WhatsAppMessageKey; status: MessageDto['status']; providerStatus: string | number; recipient: string | null; order: SourceOrder }
-  | { kind: 'control'; control: 'connection'; status: ChannelDto['status'] }
+  /** phone: the account the session says it is logged in as (Evolution's wuid on open), digits only. */
+  | { kind: 'control'; control: 'connection'; status: ChannelDto['status']; phone?: string | null }
   | { kind: 'control'; control: 'qr'; qrCode: string }
 );
 export type NormalizationResult = { kind: 'accepted'; event: NormalizedMessagingEvent }

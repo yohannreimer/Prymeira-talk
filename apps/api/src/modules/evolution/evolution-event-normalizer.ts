@@ -69,7 +69,9 @@ export function normalizeEvolutionWebhook(context: TrustedMessagingContext, inpu
     const state = data.state ?? data.status;
     if (typeof state !== 'string') return { kind: 'invalid', reason: 'invalid_connection_state' };
     const status = state === 'open' || state === 'connected' ? 'connected' : state === 'connecting' ? 'connecting' : ['close', 'closed', 'disconnected'].includes(state) ? 'disconnected' : 'failed';
-    return { kind: 'accepted', event: { ...base, kind: 'control', control: 'connection', status } };
+    // On open Evolution names the logged-in account (wuid): the number this session really is.
+    const phone = status === 'connected' ? /^(\d{8,15})(?::\d+)?@s\.whatsapp\.net$/.exec(string(data.wuid) ?? '')?.[1] ?? null : null;
+    return { kind: 'accepted', event: { ...base, kind: 'control', control: 'connection', status, ...(phone ? { phone } : {}) } };
   }
   if (eventName === 'qrcode.updated') {
     const qrCode = extractQrCode(data);

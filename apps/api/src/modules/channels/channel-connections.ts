@@ -430,8 +430,14 @@ export async function applyAuthenticatedConnectionObservation(tx: Prisma.Transac
     const connection = await tx.channelConnection.findUniqueOrThrow({ where: { id: source.connectionId } });
     const channel = await tx.channel.findUniqueOrThrow({ where: { id: source.channelId } });
     const status = event.control === 'qr' ? 'connecting' : event.status;
+    // Evolution reconnects in place (connecting, then open a second later). The primary is back in use when it says it
+    // is open as the same account, like the periodic probe decides; a different or unknown account waits for the probe.
+    // The WAHA secondary always waits: it is only usable once its number is proven against the primary.
+    const observedPhone = event.control === 'connection' ? normalizeWhatsappPhone(event.phone ?? null) : null;
+    const knownPhone = normalizeWhatsappPhone(connection.verifiedPhoneNumber);
+    const primaryBack = status === 'connected' && connection.provider === 'evolution' && observedPhone !== null && (knownPhone === null || knownPhone === observedPhone);
     await tx.channelConnection.update({ where: { workspaceId_id: { workspaceId: source.workspaceId, id: connection.id } }, data: { status,
-            ...(status === 'connected' ? {} : { eligible: false, health: 'unknown', lastHealthyAt: null }),
+            ...(status === 'connected' ? primaryBack ? { eligible: true, verifiedPhoneNumber: observedPhone } : {} : { eligible: false, health: 'unknown', lastHealthyAt: null }),
             ...(status === 'disconnected' || status === 'failed' ? { disconnectedAt: new Date(source.observedAt) } : {}) } });
     // Physical secondary QR never hides/replaces primary state. The logical channel
     // observes connected if any current physical session remains connected.
