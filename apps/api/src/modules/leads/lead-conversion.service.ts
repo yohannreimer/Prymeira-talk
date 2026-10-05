@@ -129,7 +129,9 @@ function currentPhoneState(input: {
 function sourceTag(source: LeadSource) {
   return source === "google_maps"
     ? { name: "Origem: Lead Google", color: "#1c6653" }
-    : { name: "Origem: Lead Receita", color: "#6b4bb5" };
+    : source === "own_base"
+      ? { name: "Origem: Base própria", color: "#5b6b63" }
+      : { name: "Origem: Lead Receita", color: "#6b4bb5" };
 }
 
 function toIso(value: Date | string) {

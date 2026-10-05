@@ -102,6 +102,7 @@ enum CampaignStatus {
 enum LeadSource {
   google_maps
   receita_federal
+  own_base
 }
 
 enum LeadJobStatus {
@@ -221,16 +222,16 @@ model UserProfile {
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
-  assignedConversations Conversation[] @relation("AssignedUserConversations")
-  aiControlUpdates      Conversation[] @relation("AiControlUpdatedByConversations")
-  sentMessages          Message[]      @relation("UserSentMessages")
-  contactNotes          ContactNote[]  @relation("ContactNoteCreatedBy")
-  departmentMemberships DepartmentMember[]
-  assistantRequests AssistantConversationState[]
-  assistantSuggestions AssistantSuggestion[]
-  assistantSends AssistantSuggestionSend[]
-  sentConversationFollowups ConversationFollowup[] @relation("ConversationFollowupSentBy")
-  cancelledConversationFollowups ConversationFollowup[] @relation("ConversationFollowupCancelledBy")
+  assignedConversations          Conversation[]               @relation("AssignedUserConversations")
+  aiControlUpdates               Conversation[]               @relation("AiControlUpdatedByConversations")
+  sentMessages                   Message[]                    @relation("UserSentMessages")
+  contactNotes                   ContactNote[]                @relation("ContactNoteCreatedBy")
+  departmentMemberships          DepartmentMember[]
+  assistantRequests              AssistantConversationState[]
+  assistantSuggestions           AssistantSuggestion[]
+  assistantSends                 AssistantSuggestionSend[]
+  sentConversationFollowups      ConversationFollowup[]       @relation("ConversationFollowupSentBy")
+  cancelledConversationFollowups ConversationFollowup[]       @relation("ConversationFollowupCancelledBy")
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, clerkUserId])
@@ -268,88 +269,88 @@ model ConversationInboxTriage {
 }
 
 model Channel {
-  id              String          @id @default(uuid()) @db.Uuid
-  workspaceId     String          @map("workspace_id")
-  provider        ChannelProvider
-  providerKey     String          @map("provider_key")
-  phoneNumber     String?         @map("phone_number")
-  displayName     String?         @map("display_name")
-  status          ChannelStatus   @default(disconnected)
-  connectionLifecycleGeneration Int @default(0) @map("connection_lifecycle_generation")
-  redundancyEnabled Boolean       @default(false) @map("redundancy_enabled")
-  activeConnectionId String?       @map("active_connection_id") @db.Uuid
-  encryptedConfig Json            @default("{}") @map("encrypted_config")
-  followupConfig  Json            @default("{}") @map("followup_config")
-  historyImportStatus String?      @map("history_import_status")
-  historyImportNextAt DateTime?    @map("history_import_next_at")
-  historyImportLeaseToken String?  @map("history_import_lease_token") @db.Uuid
-  historyImportLeaseUntil DateTime? @map("history_import_lease_until")
-  historyImportAttempts Int        @default(0) @map("history_import_attempts")
-  historyImportCompletedAt DateTime? @map("history_import_completed_at")
-  archivedAt      DateTime?       @map("archived_at")
-  createdAt       DateTime        @default(now()) @map("created_at")
-  updatedAt       DateTime        @updatedAt @map("updated_at")
+  id                            String          @id @default(uuid()) @db.Uuid
+  workspaceId                   String          @map("workspace_id")
+  provider                      ChannelProvider
+  providerKey                   String          @map("provider_key")
+  phoneNumber                   String?         @map("phone_number")
+  displayName                   String?         @map("display_name")
+  status                        ChannelStatus   @default(disconnected)
+  connectionLifecycleGeneration Int             @default(0) @map("connection_lifecycle_generation")
+  redundancyEnabled             Boolean         @default(false) @map("redundancy_enabled")
+  activeConnectionId            String?         @map("active_connection_id") @db.Uuid
+  encryptedConfig               Json            @default("{}") @map("encrypted_config")
+  followupConfig                Json            @default("{}") @map("followup_config")
+  historyImportStatus           String?         @map("history_import_status")
+  historyImportNextAt           DateTime?       @map("history_import_next_at")
+  historyImportLeaseToken       String?         @map("history_import_lease_token") @db.Uuid
+  historyImportLeaseUntil       DateTime?       @map("history_import_lease_until")
+  historyImportAttempts         Int             @default(0) @map("history_import_attempts")
+  historyImportCompletedAt      DateTime?       @map("history_import_completed_at")
+  archivedAt                    DateTime?       @map("archived_at")
+  createdAt                     DateTime        @default(now()) @map("created_at")
+  updatedAt                     DateTime        @updatedAt @map("updated_at")
 
-  conversations  Conversation[]
-  connections    ChannelConnection[]
-  contactBoards  ContactBoardChannel[]
-  departmentRules DepartmentChannelRule[]
+  conversations             Conversation[]
+  connections               ChannelConnection[]
+  contactBoards             ContactBoardChannel[]
+  departmentRules           DepartmentChannelRule[]
   leadWhatsappVerifications LeadWhatsappVerification[]
+  ingressReceipts           IngressReceipt[]
+  canonicalAddresses        CanonicalAddress[]
+  canonicalChats            CanonicalChat[]
+  canonicalObservations     CanonicalObservation[]
+  canonicalAliases          CanonicalNativeAlias[]
+  outboundDispatches        OutboundDispatch[]
+  outboundIntents           OutboundIntent[]
+  outboundAttempts          OutboundAttempt[]
+  outboundResults           OutboundResult[]
+  outboundBindings          OutboundBinding[]
+  outboundCorrelations      OutboundCorrelation[]
+  outboundRecertifications  OutboundRecertification[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, provider, providerKey])
+  @@unique([workspaceId, id, provider])
   @@index([workspaceId, status])
   @@index([historyImportStatus, historyImportNextAt])
   @@map("channels")
-  ingressReceipts IngressReceipt[]
-  canonicalAddresses CanonicalAddress[]
-  canonicalChats CanonicalChat[]
-  canonicalObservations CanonicalObservation[]
-  canonicalAliases CanonicalNativeAlias[]
-  @@unique([workspaceId, id, provider])
-  outboundDispatches OutboundDispatch[]
-  outboundIntents OutboundIntent[]
-  outboundAttempts OutboundAttempt[]
-  outboundResults OutboundResult[]
-  outboundBindings OutboundBinding[]
-  outboundCorrelations OutboundCorrelation[]
-  outboundRecertifications OutboundRecertification[]
 }
 
 model ChannelConnection {
-  id                  String                    @id @default(uuid()) @db.Uuid
-  workspaceId         String                    @map("workspace_id")
-  channelId           String                    @map("channel_id") @db.Uuid
-  provider            ChannelConnectionProvider
-  lifecycleGeneration Int                       @default(0) @map("lifecycle_generation")
-  sessionName         String                    @map("session_name")
-  status              ChannelStatus             @default(disconnected)
-  health              ChannelConnectionHealth    @default(unknown)
-  verifiedPhoneNumber String?                   @map("verified_phone_number")
-  eligible            Boolean                   @default(false)
-  lastCheckedAt       DateTime?                 @map("last_checked_at")
-  lastHealthyAt       DateTime?                 @map("last_healthy_at")
-  failureStartedAt    DateTime?                 @map("failure_started_at")
-  consecutiveFailures Int                      @default(0) @map("consecutive_failures")
-  lastError           String?                   @map("last_error")
-  connectedAt         DateTime?                 @map("connected_at")
-  disconnectedAt      DateTime?                 @map("disconnected_at")
+  id                    String                    @id @default(uuid()) @db.Uuid
+  workspaceId           String                    @map("workspace_id")
+  channelId             String                    @map("channel_id") @db.Uuid
+  provider              ChannelConnectionProvider
+  lifecycleGeneration   Int                       @default(0) @map("lifecycle_generation")
+  sessionName           String                    @map("session_name")
+  status                ChannelStatus             @default(disconnected)
+  health                ChannelConnectionHealth   @default(unknown)
+  verifiedPhoneNumber   String?                   @map("verified_phone_number")
+  eligible              Boolean                   @default(false)
+  lastCheckedAt         DateTime?                 @map("last_checked_at")
+  lastHealthyAt         DateTime?                 @map("last_healthy_at")
+  failureStartedAt      DateTime?                 @map("failure_started_at")
+  consecutiveFailures   Int                       @default(0) @map("consecutive_failures")
+  lastError             String?                   @map("last_error")
+  connectedAt           DateTime?                 @map("connected_at")
+  disconnectedAt        DateTime?                 @map("disconnected_at")
   /// Gap recovery checkpoint: provider messages up to this instant were read back and reconciled (next run overlaps it).
-  recoveredThroughAt  DateTime?                 @map("recovered_through_at")
+  recoveredThroughAt    DateTime?                 @map("recovered_through_at")
   /// When this connection's own history was imported to complement the other connection's (WAHA after Evolution).
-  historyImportedAt   DateTime?                 @map("history_imported_at")
-  createdAt           DateTime                  @default(now()) @map("created_at")
-  updatedAt           DateTime                  @updatedAt @map("updated_at")
-  channel             Channel                   @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  historyImportedAt     DateTime?                 @map("history_imported_at")
+  createdAt             DateTime                  @default(now()) @map("created_at")
+  updatedAt             DateTime                  @updatedAt @map("updated_at")
+  channel               Channel                   @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  canonicalObservations CanonicalObservation[]
+  canonicalAliases      CanonicalNativeAlias[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, channelId, provider])
   @@unique([workspaceId, provider, sessionName])
+  @@unique([workspaceId, channelId, provider, id])
   @@index([status, health, lastCheckedAt])
   @@map("channel_connections")
-  canonicalObservations CanonicalObservation[]
-  canonicalAliases CanonicalNativeAlias[]
-  @@unique([workspaceId, channelId, provider, id])
 }
 
 model Contact {
@@ -367,13 +368,13 @@ model Contact {
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
-  conversations      Conversation[]
-  boardMemberships   ContactBoardMembership[]
-  notes              ContactNote[]
-  campaignRecipients CampaignRecipient[]
-  contactTags        ContactTag[]
+  conversations        Conversation[]
+  boardMemberships     ContactBoardMembership[]
+  notes                ContactNote[]
+  campaignRecipients   CampaignRecipient[]
+  contactTags          ContactTag[]
   broadcastListMembers BroadcastListMember[]
-  leadProvenances    LeadContactProvenance[]
+  leadProvenances      LeadContactProvenance[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, phone])
@@ -384,25 +385,25 @@ model Contact {
 }
 
 model Department {
-  id                       String                     @id @default(uuid()) @db.Uuid
-  workspaceId              String                     @map("workspace_id")
-  name                     String
-  description              String?
-  routingOrder             Int                        @default(0) @map("routing_order")
-  distributionMode         DepartmentDistributionMode @default(manual) @map("distribution_mode")
-  businessHours            Json                       @default("{}") @map("business_hours")
-  slaFirstResponseMinutes  Int?                       @map("sla_first_response_minutes")
-  slaResolutionMinutes     Int?                       @map("sla_resolution_minutes")
-  fallbackDepartmentId     String?                    @map("fallback_department_id") @db.Uuid
-  lastAssignedMemberId     String?                    @map("last_assigned_member_id") @db.Uuid
-  createdAt                DateTime                   @default(now()) @map("created_at")
-  updatedAt                DateTime                   @updatedAt @map("updated_at")
+  id                      String                     @id @default(uuid()) @db.Uuid
+  workspaceId             String                     @map("workspace_id")
+  name                    String
+  description             String?
+  routingOrder            Int                        @default(0) @map("routing_order")
+  distributionMode        DepartmentDistributionMode @default(manual) @map("distribution_mode")
+  businessHours           Json                       @default("{}") @map("business_hours")
+  slaFirstResponseMinutes Int?                       @map("sla_first_response_minutes")
+  slaResolutionMinutes    Int?                       @map("sla_resolution_minutes")
+  fallbackDepartmentId    String?                    @map("fallback_department_id") @db.Uuid
+  lastAssignedMemberId    String?                    @map("last_assigned_member_id") @db.Uuid
+  createdAt               DateTime                   @default(now()) @map("created_at")
+  updatedAt               DateTime                   @updatedAt @map("updated_at")
 
-  conversations Conversation[]
-  members       DepartmentMember[]
-  channelRules  DepartmentChannelRule[]
-  fallbackDepartment Department?  @relation("DepartmentFallback", fields: [workspaceId, fallbackDepartmentId], references: [workspaceId, id], onDelete: SetNull)
-  fallbackFor         Department[] @relation("DepartmentFallback")
+  conversations      Conversation[]
+  members            DepartmentMember[]
+  channelRules       DepartmentChannelRule[]
+  fallbackDepartment Department?             @relation("DepartmentFallback", fields: [workspaceId, fallbackDepartmentId], references: [workspaceId, id], onDelete: SetNull)
+  fallbackFor        Department[]            @relation("DepartmentFallback")
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, name])
@@ -447,50 +448,60 @@ model DepartmentChannelRule {
 }
 
 model Conversation {
-  prospectingOrigin CampaignProspectingReservation?
-  id                             String               @id @default(uuid()) @db.Uuid
-  workspaceId                    String               @map("workspace_id")
-  channelId                      String               @map("channel_id") @db.Uuid
-  contactId                      String               @map("contact_id") @db.Uuid
-  status                         ConversationStatus   @default(open)
-  assignedUserId                 String?              @map("assigned_user_id") @db.Uuid
-  departmentId                   String?              @map("department_id") @db.Uuid
-  lastMessageAt                  DateTime?            @map("last_message_at")
-  lastMessagePreview             String?              @map("last_message_preview")
-  lastMessagePreviewAt           DateTime?            @map("last_message_preview_at")
-  customerServiceWindowExpiresAt DateTime?            @map("customer_service_window_expires_at")
-  unreadCount                    Int                  @default(0) @map("unread_count")
-  hiddenUntilReply               Boolean              @default(false) @map("hidden_until_reply")
-  priority                       ConversationPriority @default(normal)
-  aiControlStatus                AiControlStatus      @default(agent_allowed) @map("ai_control_status")
-  aiControlUpdatedAt             DateTime?            @map("ai_control_updated_at")
-  aiControlUpdatedById           String?              @map("ai_control_updated_by_id") @db.Uuid
-  activeAgentSessionId           String?              @map("active_agent_session_id") @db.Uuid
+  prospectingOrigin              CampaignProspectingReservation?
+  id                             String                          @id @default(uuid()) @db.Uuid
+  workspaceId                    String                          @map("workspace_id")
+  channelId                      String                          @map("channel_id") @db.Uuid
+  contactId                      String                          @map("contact_id") @db.Uuid
+  status                         ConversationStatus              @default(open)
+  assignedUserId                 String?                         @map("assigned_user_id") @db.Uuid
+  departmentId                   String?                         @map("department_id") @db.Uuid
+  lastMessageAt                  DateTime?                       @map("last_message_at")
+  lastMessagePreview             String?                         @map("last_message_preview")
+  lastMessagePreviewAt           DateTime?                       @map("last_message_preview_at")
+  customerServiceWindowExpiresAt DateTime?                       @map("customer_service_window_expires_at")
+  unreadCount                    Int                             @default(0) @map("unread_count")
+  hiddenUntilReply               Boolean                         @default(false) @map("hidden_until_reply")
+  priority                       ConversationPriority            @default(normal)
+  aiControlStatus                AiControlStatus                 @default(agent_allowed) @map("ai_control_status")
+  aiControlUpdatedAt             DateTime?                       @map("ai_control_updated_at")
+  aiControlUpdatedById           String?                         @map("ai_control_updated_by_id") @db.Uuid
+  activeAgentSessionId           String?                         @map("active_agent_session_id") @db.Uuid
   /// Set when an authority resolution made another conversation operate this chat: hidden from lists, history shown in the operating one.
-  retiredIntoConversationId      String?              @map("retired_into_conversation_id") @db.Uuid
-  createdAt                      DateTime             @default(now()) @map("created_at")
-  updatedAt                      DateTime             @updatedAt @map("updated_at")
+  retiredIntoConversationId      String?                         @map("retired_into_conversation_id") @db.Uuid
+  createdAt                      DateTime                        @default(now()) @map("created_at")
+  updatedAt                      DateTime                        @updatedAt @map("updated_at")
 
-  assignedUser UserProfile?      @relation("AssignedUserConversations", fields: [workspaceId, assignedUserId], references: [workspaceId, id], onDelete: NoAction)
-  aiControlUpdatedBy UserProfile? @relation("AiControlUpdatedByConversations", fields: [workspaceId, aiControlUpdatedById], references: [workspaceId, id], onDelete: NoAction)
-  activeAgentSession AiAgentSession? @relation("ActiveAgentSessionConversation", fields: [workspaceId, activeAgentSessionId], references: [workspaceId, id], onDelete: SetNull)
-  channel      Channel           @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
-  contact      Contact           @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
-  department   Department?       @relation(fields: [workspaceId, departmentId], references: [workspaceId, id], onDelete: NoAction)
-  messages     Message[]
-  tags         ConversationTag[]
-  contactNotes ContactNote[]     @relation("ContactNoteConversation")
-  aiSessions   AiAgentSession[]  @relation("AiAgentSessionConversation")
-  aiRuns       AiAgentRun[]
-  aiPendingReplies AiAgentPendingReply[]
-  followups    ConversationFollowup[]
+  assignedUser           UserProfile?                       @relation("AssignedUserConversations", fields: [workspaceId, assignedUserId], references: [workspaceId, id], onDelete: NoAction)
+  aiControlUpdatedBy     UserProfile?                       @relation("AiControlUpdatedByConversations", fields: [workspaceId, aiControlUpdatedById], references: [workspaceId, id], onDelete: NoAction)
+  activeAgentSession     AiAgentSession?                    @relation("ActiveAgentSessionConversation", fields: [workspaceId, activeAgentSessionId], references: [workspaceId, id], onDelete: SetNull)
+  channel                Channel                            @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  contact                Contact                            @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  department             Department?                        @relation(fields: [workspaceId, departmentId], references: [workspaceId, id], onDelete: NoAction)
+  messages               Message[]
+  tags                   ConversationTag[]
+  contactNotes           ContactNote[]                      @relation("ContactNoteConversation")
+  aiSessions             AiAgentSession[]                   @relation("AiAgentSessionConversation")
+  aiRuns                 AiAgentRun[]
+  aiPendingReplies       AiAgentPendingReply[]
+  followups              ConversationFollowup[]
   improvementSuggestions AiAgentImprovement[]
-  assistantState AssistantConversationState?
-  assistantSuggestions AssistantSuggestion[]
-  inboxTriage ConversationInboxTriage?
+  assistantState         AssistantConversationState?
+  assistantSuggestions   AssistantSuggestion[]
+  inboxTriage            ConversationInboxTriage?
+  canonicalMembers       CanonicalChatMember[]
+  canonicalOperations    CanonicalChat[]
+  authorityResolutions   CanonicalChatAuthorityResolution[]
+  canonicalIdentities    CanonicalMessageIdentity[]
+  outboundIntents        OutboundIntent[]
+  outboundCorrelations   OutboundCorrelation[]
+  ingressProgress        IngressEventProgress[]
+  ingressEffects         IngressEffect[]
+  previewOwner           ConversationPreviewOwner?
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, channelId, contactId])
+  @@unique([workspaceId, channelId, id])
   @@index([workspaceId, status, lastMessageAt])
   @@index([workspaceId, hiddenUntilReply, status, lastMessageAt], map: "conversations_workspace_hidden_status_activity_idx")
   @@index([workspaceId, assignedUserId])
@@ -498,16 +509,6 @@ model Conversation {
   @@index([workspaceId, activeAgentSessionId])
   @@index([workspaceId, retiredIntoConversationId], map: "conversations_workspace_retired_into_idx")
   @@map("conversations")
-  canonicalMembers CanonicalChatMember[]
-  canonicalOperations CanonicalChat[]
-  authorityResolutions CanonicalChatAuthorityResolution[]
-  canonicalIdentities CanonicalMessageIdentity[]
-  @@unique([workspaceId, channelId, id])
-  outboundIntents OutboundIntent[]
-  outboundCorrelations OutboundCorrelation[]
-  ingressProgress IngressEventProgress[]
-  ingressEffects IngressEffect[]
-  previewOwner ConversationPreviewOwner?
 }
 
 model Message {
@@ -527,27 +528,27 @@ model Message {
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
 
-  conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
-  sentBy       UserProfile? @relation("UserSentMessages", fields: [workspaceId, sentByUserId], references: [workspaceId, id], onDelete: NoAction)
-  assistantInputs AssistantConversationState[]
-  assistantSends AssistantSuggestionSend[]
-  anchoredFollowups ConversationFollowup[] @relation("ConversationFollowupAnchorMessage")
-  improvementSuggestions AiAgentImprovement[] @relation("AiAgentImprovementSourceMessage")
-  media MessageMedia?
+  conversation              Conversation                 @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  sentBy                    UserProfile?                 @relation("UserSentMessages", fields: [workspaceId, sentByUserId], references: [workspaceId, id], onDelete: NoAction)
+  assistantInputs           AssistantConversationState[]
+  assistantSends            AssistantSuggestionSend[]
+  anchoredFollowups         ConversationFollowup[]       @relation("ConversationFollowupAnchorMessage")
+  improvementSuggestions    AiAgentImprovement[]         @relation("AiAgentImprovementSourceMessage")
+  media                     MessageMedia?
+  canonicalIdentities       CanonicalMessageIdentity[]
+  outboundIntents           OutboundIntent[]
+  outboundCorrelations      OutboundCorrelation[]
+  ingressProgress           IngressEventProgress[]
+  ingressEffects            IngressEffect[]
+  ownedConversationPreviews ConversationPreviewOwner[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, providerEventId])
   @@unique([workspaceId, providerMessageId])
+  @@unique([workspaceId, conversationId, id])
   @@index([workspaceId, conversationId, createdAt])
   @@index([workspaceId, conversationId, ingestedAt(sort: Desc), createdAt(sort: Desc)], map: "messages_assistant_context_order_idx")
   @@map("messages")
-  canonicalIdentities CanonicalMessageIdentity[]
-  @@unique([workspaceId, conversationId, id])
-  outboundIntents OutboundIntent[]
-  outboundCorrelations OutboundCorrelation[]
-  ingressProgress IngressEventProgress[]
-  ingressEffects IngressEffect[]
-  ownedConversationPreviews ConversationPreviewOwner[]
 }
 
 model Tag {
@@ -560,10 +561,10 @@ model Tag {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  conversations       ConversationTag[]
+  conversations      ConversationTag[]
   contactTags        ContactTag[]
-  allowedAgents       AiAgentAllowedTag[]
-  boardStageTriggers  ContactBoardStageTag[]
+  allowedAgents      AiAgentAllowedTag[]
+  boardStageTriggers ContactBoardStageTag[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, name])
@@ -624,6 +625,23 @@ model LeadList {
   @@map("lead_lists")
 }
 
+/// Base própria regions of a workspace: a name, the cities in it and whose it is. The workspace's own region
+/// ("Sua região") is the only one its people may build dispatch lists from; the others are read only.
+model LeadRegion {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  name        String
+  cities      Json     @default("[]")
+  seller      String?
+  isMine      Boolean  @default(false) @map("is_mine")
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, name])
+  @@map("lead_regions")
+}
+
 model Lead {
   id               String     @id @default(uuid()) @db.Uuid
   workspaceId      String     @map("workspace_id")
@@ -651,6 +669,8 @@ model Lead {
   longitude        Float?
   sourceUrl        String?    @map("source_url")
   sourceSnapshot   Json       @default("{}") @map("source_snapshot")
+  /// Base própria: the region the company belongs to (from the spreadsheet or the workspace's city map).
+  region           String?
   createdAt        DateTime   @default(now()) @map("created_at")
   updatedAt        DateTime   @updatedAt @map("updated_at")
 
@@ -665,6 +685,7 @@ model Lead {
   @@index([workspaceId, cnpj])
   @@index([workspaceId, normalizedPhone])
   @@index([workspaceId, sourceExternalId])
+  @@index([workspaceId, listId, region])
   @@map("leads")
 }
 
@@ -686,7 +707,7 @@ model LeadJob {
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
-  list LeadList @relation(fields: [workspaceId, listId], references: [workspaceId, id], onDelete: Cascade)
+  list      LeadList       @relation(fields: [workspaceId, listId], references: [workspaceId, id], onDelete: Cascade)
   artifacts LeadArtifact[]
 
   @@unique([workspaceId, id])
@@ -768,13 +789,13 @@ model LeadContactProvenance {
 }
 
 model ContactBoard {
-  id          String   @id @default(uuid()) @db.Uuid
-  workspaceId String   @map("workspace_id")
-  name        String
-  description String?
-  isPrimaryPipeline Boolean @default(false) @map("is_primary_pipeline")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id                String   @id @default(uuid()) @db.Uuid
+  workspaceId       String   @map("workspace_id")
+  name              String
+  description       String?
+  isPrimaryPipeline Boolean  @default(false) @map("is_primary_pipeline")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
   stages      ContactBoardStage[]
   memberships ContactBoardMembership[]
@@ -807,16 +828,16 @@ model ContactBoardStage {
 }
 
 model ContactBoardMembership {
-  id          String   @id @default(uuid()) @db.Uuid
-  workspaceId String   @map("workspace_id")
-  contactId   String   @map("contact_id") @db.Uuid
-  boardId     String   @map("board_id") @db.Uuid
-  stageId     String   @map("stage_id") @db.Uuid
-  isPrimary   Boolean  @default(false) @map("is_primary")
+  id                String                 @id @default(uuid()) @db.Uuid
+  workspaceId       String                 @map("workspace_id")
+  contactId         String                 @map("contact_id") @db.Uuid
+  boardId           String                 @map("board_id") @db.Uuid
+  stageId           String                 @map("stage_id") @db.Uuid
+  isPrimary         Boolean                @default(false) @map("is_primary")
   lastMovedBy       ContactBoardMoveSource @default(manual) @map("last_moved_by")
   lastRuleAppliedAt DateTime?              @map("last_rule_applied_at")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdAt         DateTime               @default(now()) @map("created_at")
+  updatedAt         DateTime               @updatedAt @map("updated_at")
 
   contact Contact           @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
   board   ContactBoard      @relation(fields: [workspaceId, boardId], references: [workspaceId, id], onDelete: Cascade)
@@ -955,31 +976,31 @@ model MetaMessageTemplate {
 }
 
 model Campaign {
-  id          String          @id @default(uuid()) @db.Uuid
-  workspaceId String          @map("workspace_id")
-  name        String
-  status      CampaignStatus  @default(draft)
-  audience    Json            @default("{}")
-  messageBody String          @map("message_body")
-  prospectingAgentId String? @map("prospecting_agent_id") @db.Uuid
-  prospectingContext String? @map("prospecting_context")
-  templates   Json            @default("[]")
-  fallbackName String         @default("cliente") @map("fallback_name")
-  cadence     Json            @default("{}")
-  scheduledAt DateTime?       @map("scheduled_at")
-  activationKey String?       @map("activation_key")
-  confirmedBy String?         @map("confirmed_by")
-  confirmedAt DateTime?       @map("confirmed_at")
-  channelId   String?         @map("channel_id") @db.Uuid
-  startMode   String?         @map("start_mode")
-  timeZone    String          @default("America/Sao_Paulo") @map("time_zone")
-  hideFromInboxUntilReply Boolean @default(false) @map("hide_from_inbox_until_reply")
-  mode        IntegrationMode @default(simulated)
-  createdAt   DateTime        @default(now()) @map("created_at")
-  updatedAt   DateTime        @updatedAt @map("updated_at")
+  id                      String          @id @default(uuid()) @db.Uuid
+  workspaceId             String          @map("workspace_id")
+  name                    String
+  status                  CampaignStatus  @default(draft)
+  audience                Json            @default("{}")
+  messageBody             String          @map("message_body")
+  prospectingAgentId      String?         @map("prospecting_agent_id") @db.Uuid
+  prospectingContext      String?         @map("prospecting_context")
+  templates               Json            @default("[]")
+  fallbackName            String          @default("cliente") @map("fallback_name")
+  cadence                 Json            @default("{}")
+  scheduledAt             DateTime?       @map("scheduled_at")
+  activationKey           String?         @map("activation_key")
+  confirmedBy             String?         @map("confirmed_by")
+  confirmedAt             DateTime?       @map("confirmed_at")
+  channelId               String?         @map("channel_id") @db.Uuid
+  startMode               String?         @map("start_mode")
+  timeZone                String          @default("America/Sao_Paulo") @map("time_zone")
+  hideFromInboxUntilReply Boolean         @default(false) @map("hide_from_inbox_until_reply")
+  mode                    IntegrationMode @default(simulated)
+  createdAt               DateTime        @default(now()) @map("created_at")
+  updatedAt               DateTime        @updatedAt @map("updated_at")
 
   prospectingReservations CampaignProspectingReservation[]
-  recipients CampaignRecipient[]
+  recipients              CampaignRecipient[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, activationKey])
@@ -1017,29 +1038,29 @@ model BroadcastListMember {
 }
 
 model CampaignRecipient {
-  id          String   @id @default(uuid()) @db.Uuid
-  workspaceId String   @map("workspace_id")
-  campaignId  String   @map("campaign_id") @db.Uuid
-  contactId   String?  @map("contact_id") @db.Uuid
-  audienceKey String?  @map("audience_key")
-  providerMessageId String? @map("provider_message_id")
-  status      String
-  result      Json     @default("{}")
-  contactSnapshot Json @default("{}") @map("contact_snapshot")
-  scheduledAt DateTime? @map("scheduled_at")
-  sentAt      DateTime? @map("sent_at")
-  attempts    Int      @default(0)
-  errorMessage String? @map("error_message")
-  phoneSnapshot String? @map("phone_snapshot")
-  channelId String? @map("channel_id") @db.Uuid
-  sequenceNumber Int? @map("sequence_number")
-  gapSeconds Int? @map("gap_seconds")
-  pauseSeconds Int? @map("pause_seconds")
-  leaseToken String? @map("lease_token") @db.Uuid
-  leaseExpiresAt DateTime? @map("lease_expires_at")
-  verifiedAt DateTime? @map("verified_at")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id                String    @id @default(uuid()) @db.Uuid
+  workspaceId       String    @map("workspace_id")
+  campaignId        String    @map("campaign_id") @db.Uuid
+  contactId         String?   @map("contact_id") @db.Uuid
+  audienceKey       String?   @map("audience_key")
+  providerMessageId String?   @map("provider_message_id")
+  status            String
+  result            Json      @default("{}")
+  contactSnapshot   Json      @default("{}") @map("contact_snapshot")
+  scheduledAt       DateTime? @map("scheduled_at")
+  sentAt            DateTime? @map("sent_at")
+  attempts          Int       @default(0)
+  errorMessage      String?   @map("error_message")
+  phoneSnapshot     String?   @map("phone_snapshot")
+  channelId         String?   @map("channel_id") @db.Uuid
+  sequenceNumber    Int?      @map("sequence_number")
+  gapSeconds        Int?      @map("gap_seconds")
+  pauseSeconds      Int?      @map("pause_seconds")
+  leaseToken        String?   @map("lease_token") @db.Uuid
+  leaseExpiresAt    DateTime? @map("lease_expires_at")
+  verifiedAt        DateTime? @map("verified_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   campaign Campaign @relation(fields: [workspaceId, campaignId], references: [workspaceId, id], onDelete: Cascade)
   contact  Contact? @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
@@ -1084,13 +1105,13 @@ model AiAgent {
   createdAt      DateTime       @default(now()) @map("created_at")
   updatedAt      DateTime       @updatedAt @map("updated_at")
 
-  knowledgeSources AiKnowledgeSource[]
-  sessions         AiAgentSession[]
-  runs             AiAgentRun[]
-  pendingReplies   AiAgentPendingReply[]
-  followups        ConversationFollowup[]
-  allowedTags      AiAgentAllowedTag[]
-  assistantSuggestions AssistantSuggestion[]
+  knowledgeSources       AiKnowledgeSource[]
+  sessions               AiAgentSession[]
+  runs                   AiAgentRun[]
+  pendingReplies         AiAgentPendingReply[]
+  followups              ConversationFollowup[]
+  allowedTags            AiAgentAllowedTag[]
+  assistantSuggestions   AssistantSuggestion[]
   improvementSuggestions AiAgentImprovement[]
 
   @@unique([workspaceId, id])
@@ -1099,25 +1120,25 @@ model AiAgent {
 }
 
 model AssistantConversationState {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  conversationId String @map("conversation_id") @db.Uuid
-  revision Int @default(1)
-  lastMessageId String? @map("last_message_id") @db.Uuid
-  status String @default("pending")
-  firstPendingAt DateTime @map("first_pending_at")
-  scheduledAt DateTime? @map("scheduled_at")
-  leaseToken String? @map("lease_token") @db.Uuid
-  leaseUntil DateTime? @map("lease_until")
-  requestedById String? @map("requested_by_id") @db.Uuid
-  instruction String?
-  attempts Int @default(0)
-  lastError String? @map("last_error")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
-  lastMessage Message? @relation(fields: [workspaceId, lastMessageId], references: [workspaceId, id], onDelete: NoAction)
-  requestedBy UserProfile? @relation(fields: [workspaceId, requestedById], references: [workspaceId, id], onDelete: NoAction)
+  id             String       @id @default(uuid()) @db.Uuid
+  workspaceId    String       @map("workspace_id")
+  conversationId String       @map("conversation_id") @db.Uuid
+  revision       Int          @default(1)
+  lastMessageId  String?      @map("last_message_id") @db.Uuid
+  status         String       @default("pending")
+  firstPendingAt DateTime     @map("first_pending_at")
+  scheduledAt    DateTime?    @map("scheduled_at")
+  leaseToken     String?      @map("lease_token") @db.Uuid
+  leaseUntil     DateTime?    @map("lease_until")
+  requestedById  String?      @map("requested_by_id") @db.Uuid
+  instruction    String?
+  attempts       Int          @default(0)
+  lastError      String?      @map("last_error")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  conversation   Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  lastMessage    Message?     @relation(fields: [workspaceId, lastMessageId], references: [workspaceId, id], onDelete: NoAction)
+  requestedBy    UserProfile? @relation(fields: [workspaceId, requestedById], references: [workspaceId, id], onDelete: NoAction)
 
   @@unique([workspaceId, conversationId])
   @@index([status, scheduledAt])
@@ -1125,23 +1146,23 @@ model AssistantConversationState {
 }
 
 model AssistantSuggestion {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  conversationId String @map("conversation_id") @db.Uuid
-  agentId String @map("agent_id") @db.Uuid
-  actorUserId String? @map("actor_user_id") @db.Uuid
-  revision Int
-  contextKey String @map("context_key")
-  agentHash String @map("agent_hash")
-  body String
-  instruction String?
-  warnings Json @default("[]")
-  proposedActions Json @default("{}") @map("proposed_actions")
-  createdAt DateTime @default(now()) @map("created_at")
-  conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
-  agent AiAgent @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: NoAction)
-  actor UserProfile? @relation(fields: [workspaceId, actorUserId], references: [workspaceId, id], onDelete: NoAction)
-  send AssistantSuggestionSend?
+  id              String                   @id @default(uuid()) @db.Uuid
+  workspaceId     String                   @map("workspace_id")
+  conversationId  String                   @map("conversation_id") @db.Uuid
+  agentId         String                   @map("agent_id") @db.Uuid
+  actorUserId     String?                  @map("actor_user_id") @db.Uuid
+  revision        Int
+  contextKey      String                   @map("context_key")
+  agentHash       String                   @map("agent_hash")
+  body            String
+  instruction     String?
+  warnings        Json                     @default("[]")
+  proposedActions Json                     @default("{}") @map("proposed_actions")
+  createdAt       DateTime                 @default(now()) @map("created_at")
+  conversation    Conversation             @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  agent           AiAgent                  @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: NoAction)
+  actor           UserProfile?             @relation(fields: [workspaceId, actorUserId], references: [workspaceId, id], onDelete: NoAction)
+  send            AssistantSuggestionSend?
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, conversationId, revision])
@@ -1152,15 +1173,15 @@ model AssistantSuggestion {
 /// What the AI suggested next to what the seller actually replied (typed in Talk, edited, accepted or sent from
 /// the phone), recorded when a ready suggestion was on screen. Training material only; nothing reads it yet.
 model AssistantReplySample {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  conversationId String @map("conversation_id") @db.Uuid
-  suggestionId String @map("suggestion_id") @db.Uuid
-  messageId String @map("message_id") @db.Uuid
-  source String
-  suggestedBody String @map("suggested_body")
-  replyBody String @map("reply_body")
-  createdAt DateTime @default(now()) @map("created_at")
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id")
+  conversationId String   @map("conversation_id") @db.Uuid
+  suggestionId   String   @map("suggestion_id") @db.Uuid
+  messageId      String   @map("message_id") @db.Uuid
+  source         String
+  suggestedBody  String   @map("suggested_body")
+  replyBody      String   @map("reply_body")
+  createdAt      DateTime @default(now()) @map("created_at")
 
   @@unique([workspaceId, messageId])
   @@index([workspaceId, createdAt])
@@ -1168,20 +1189,20 @@ model AssistantReplySample {
 }
 
 model AssistantSuggestionSend {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  requestKey String @map("request_key") @db.Uuid
-  suggestionId String @unique @map("suggestion_id") @db.Uuid
-  bodyHash String @map("body_hash")
-  finalBody String @map("final_body")
-  actorUserId String @map("actor_user_id") @db.Uuid
-  messageId String? @map("message_id") @db.Uuid
-  status String @default("pending")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  suggestion AssistantSuggestion @relation(fields: [workspaceId, suggestionId], references: [workspaceId, id], onDelete: Cascade)
-  actor UserProfile @relation(fields: [workspaceId, actorUserId], references: [workspaceId, id], onDelete: NoAction)
-  message Message? @relation(fields: [workspaceId, messageId], references: [workspaceId, id], onDelete: NoAction)
+  id           String              @id @default(uuid()) @db.Uuid
+  workspaceId  String              @map("workspace_id")
+  requestKey   String              @map("request_key") @db.Uuid
+  suggestionId String              @unique @map("suggestion_id") @db.Uuid
+  bodyHash     String              @map("body_hash")
+  finalBody    String              @map("final_body")
+  actorUserId  String              @map("actor_user_id") @db.Uuid
+  messageId    String?             @map("message_id") @db.Uuid
+  status       String              @default("pending")
+  createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
+  suggestion   AssistantSuggestion @relation(fields: [workspaceId, suggestionId], references: [workspaceId, id], onDelete: Cascade)
+  actor        UserProfile         @relation(fields: [workspaceId, actorUserId], references: [workspaceId, id], onDelete: NoAction)
+  message      Message?            @relation(fields: [workspaceId, messageId], references: [workspaceId, id], onDelete: NoAction)
 
   @@unique([workspaceId, requestKey])
   @@unique([workspaceId, suggestionId])
@@ -1225,29 +1246,29 @@ model AiKnowledgeSource {
 }
 
 model AiAgentImprovement {
-  id                      String   @id @default(uuid()) @db.Uuid
-  workspaceId             String   @map("workspace_id")
-  agentId                 String   @map("agent_id") @db.Uuid
-  conversationId          String   @map("conversation_id") @db.Uuid
-  sourceMessageId         String   @map("source_message_id") @db.Uuid
-  status                  String   @default("pending")
-  kind                    String
-  title                   String
-  content                 String
-  rationale               String?
-  sourceCustomerMessage   String   @map("source_customer_message")
-  sourceHumanReply        String   @map("source_human_reply")
-  detector                Json     @default("{}")
-  clarificationAnswers    Json     @default("{}") @map("clarification_answers")
-  clarificationNormalization Json @default("{}") @map("clarification_normalization")
-  reviewedAt              DateTime? @map("reviewed_at")
-  acceptedKnowledgeSourceId String? @map("accepted_knowledge_source_id") @db.Uuid
-  createdAt               DateTime @default(now()) @map("created_at")
-  updatedAt               DateTime @updatedAt @map("updated_at")
+  id                         String    @id @default(uuid()) @db.Uuid
+  workspaceId                String    @map("workspace_id")
+  agentId                    String    @map("agent_id") @db.Uuid
+  conversationId             String    @map("conversation_id") @db.Uuid
+  sourceMessageId            String    @map("source_message_id") @db.Uuid
+  status                     String    @default("pending")
+  kind                       String
+  title                      String
+  content                    String
+  rationale                  String?
+  sourceCustomerMessage      String    @map("source_customer_message")
+  sourceHumanReply           String    @map("source_human_reply")
+  detector                   Json      @default("{}")
+  clarificationAnswers       Json      @default("{}") @map("clarification_answers")
+  clarificationNormalization Json      @default("{}") @map("clarification_normalization")
+  reviewedAt                 DateTime? @map("reviewed_at")
+  acceptedKnowledgeSourceId  String?   @map("accepted_knowledge_source_id") @db.Uuid
+  createdAt                  DateTime  @default(now()) @map("created_at")
+  updatedAt                  DateTime  @updatedAt @map("updated_at")
 
   agent         AiAgent      @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
-  conversation  Conversation  @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
-  sourceMessage Message       @relation("AiAgentImprovementSourceMessage", fields: [workspaceId, sourceMessageId], references: [workspaceId, id], onDelete: Cascade)
+  conversation  Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  sourceMessage Message      @relation("AiAgentImprovementSourceMessage", fields: [workspaceId, sourceMessageId], references: [workspaceId, id], onDelete: Cascade)
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, sourceMessageId])
@@ -1257,30 +1278,30 @@ model AiAgentImprovement {
 }
 
 model AiAgentSession {
-  sourceCampaignId String? @map("source_campaign_id") @db.Uuid
-  sourceRecipientId String? @map("source_recipient_id") @db.Uuid
-  firstResponseMessageId String? @map("first_response_message_id") @db.Uuid
-  firstResponseAt DateTime? @map("first_response_at")
-  prospectingGeneration String? @map("prospecting_generation") @db.Uuid
-  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  workspaceId    String               @map("workspace_id")
-  agentId        String               @map("agent_id") @db.Uuid
-  conversationId String               @map("conversation_id") @db.Uuid
-  status         AiAgentSessionStatus @default(active)
-  messageCount   Int                  @default(0) @map("message_count")
-  lastRunAt      DateTime?            @map("last_run_at")
-  handoffReason  String?              @map("handoff_reason")
-  handoffActionCompletedAt DateTime?  @map("handoff_action_completed_at")
-  metadata       Json                 @default("{}")
-  createdAt      DateTime             @default(now()) @map("created_at")
-  updatedAt      DateTime             @updatedAt @map("updated_at")
+  sourceCampaignId         String?              @map("source_campaign_id") @db.Uuid
+  sourceRecipientId        String?              @map("source_recipient_id") @db.Uuid
+  firstResponseMessageId   String?              @map("first_response_message_id") @db.Uuid
+  firstResponseAt          DateTime?            @map("first_response_at")
+  prospectingGeneration    String?              @map("prospecting_generation") @db.Uuid
+  id                       String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId              String               @map("workspace_id")
+  agentId                  String               @map("agent_id") @db.Uuid
+  conversationId           String               @map("conversation_id") @db.Uuid
+  status                   AiAgentSessionStatus @default(active)
+  messageCount             Int                  @default(0) @map("message_count")
+  lastRunAt                DateTime?            @map("last_run_at")
+  handoffReason            String?              @map("handoff_reason")
+  handoffActionCompletedAt DateTime?            @map("handoff_action_completed_at")
+  metadata                 Json                 @default("{}")
+  createdAt                DateTime             @default(now()) @map("created_at")
+  updatedAt                DateTime             @updatedAt @map("updated_at")
 
-  agent        AiAgent      @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
-  conversation           Conversation   @relation("AiAgentSessionConversation", fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  agent                  AiAgent                @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
+  conversation           Conversation           @relation("AiAgentSessionConversation", fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
   runs                   AiAgentRun[]
   pendingReplies         AiAgentPendingReply[]
   followups              ConversationFollowup[]
-  activeForConversations Conversation[] @relation("ActiveAgentSessionConversation")
+  activeForConversations Conversation[]         @relation("ActiveAgentSessionConversation")
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, agentId, conversationId])
@@ -1289,22 +1310,22 @@ model AiAgentSession {
 }
 
 model AiAgentPendingReply {
-  claimToken     String? @map("claim_token") @db.Uuid
-  prospectingGeneration String? @map("prospecting_generation") @db.Uuid
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  workspaceId    String    @map("workspace_id")
-  conversationId String    @map("conversation_id") @db.Uuid
-  agentId        String    @map("agent_id") @db.Uuid
-  sessionId      String?   @map("session_id") @db.Uuid
-  lastMessageId  String    @map("last_message_id") @db.Uuid
-  instruction    String?
-  scheduledAt    DateTime  @map("scheduled_at")
-  status         String    @default("pending")
-  attempts       Int       @default(0)
-  lockedAt       DateTime? @map("locked_at")
-  lastError      String?   @map("last_error")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  claimToken            String?   @map("claim_token") @db.Uuid
+  prospectingGeneration String?   @map("prospecting_generation") @db.Uuid
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId           String    @map("workspace_id")
+  conversationId        String    @map("conversation_id") @db.Uuid
+  agentId               String    @map("agent_id") @db.Uuid
+  sessionId             String?   @map("session_id") @db.Uuid
+  lastMessageId         String    @map("last_message_id") @db.Uuid
+  instruction           String?
+  scheduledAt           DateTime  @map("scheduled_at")
+  status                String    @default("pending")
+  attempts              Int       @default(0)
+  lockedAt              DateTime? @map("locked_at")
+  lastError             String?   @map("last_error")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
 
   agent        AiAgent         @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
   conversation Conversation    @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
@@ -1318,31 +1339,31 @@ model AiAgentPendingReply {
 }
 
 model ConversationFollowup {
-  id                String                   @id @default(uuid()) @db.Uuid
-  workspaceId       String                   @map("workspace_id")
-  conversationId    String                   @map("conversation_id") @db.Uuid
-  agentId           String                   @map("agent_id") @db.Uuid
-  sessionId         String?                  @map("session_id") @db.Uuid
+  id                String                     @id @default(uuid()) @db.Uuid
+  workspaceId       String                     @map("workspace_id")
+  conversationId    String                     @map("conversation_id") @db.Uuid
+  agentId           String                     @map("agent_id") @db.Uuid
+  sessionId         String?                    @map("session_id") @db.Uuid
   kind              ConversationFollowupKind
   status            ConversationFollowupStatus @default(scheduled)
-  activeKey         String?                  @map("active_key")
-  stepIndex         Int                      @default(0) @map("step_index")
-  anchorMessageId   String                   @map("anchor_message_id") @db.Uuid
-  anchorMessageAt   DateTime                 @map("anchor_message_at")
-  anchorIngestedAt  DateTime                 @map("anchor_ingested_at")
-  scheduledAt       DateTime                 @map("scheduled_at")
-  lockedAt          DateTime?                @map("locked_at")
-  attempts          Int                      @default(0)
-  decision          Json                     @default("{}")
-  draftBody         String?                  @map("draft_body")
-  finalBody         String?                  @map("final_body")
+  activeKey         String?                    @map("active_key")
+  stepIndex         Int                        @default(0) @map("step_index")
+  anchorMessageId   String                     @map("anchor_message_id") @db.Uuid
+  anchorMessageAt   DateTime                   @map("anchor_message_at")
+  anchorIngestedAt  DateTime                   @map("anchor_ingested_at")
+  scheduledAt       DateTime                   @map("scheduled_at")
+  lockedAt          DateTime?                  @map("locked_at")
+  attempts          Int                        @default(0)
+  decision          Json                       @default("{}")
+  draftBody         String?                    @map("draft_body")
+  finalBody         String?                    @map("final_body")
   reason            String?
-  sentByUserId      String?                  @map("sent_by_user_id") @db.Uuid
-  sentAt            DateTime?                @map("sent_at")
-  cancelledAt       DateTime?                @map("cancelled_at")
-  cancelledByUserId String?                  @map("cancelled_by_user_id") @db.Uuid
-  createdAt         DateTime                 @default(now()) @map("created_at")
-  updatedAt         DateTime                 @updatedAt @map("updated_at")
+  sentByUserId      String?                    @map("sent_by_user_id") @db.Uuid
+  sentAt            DateTime?                  @map("sent_at")
+  cancelledAt       DateTime?                  @map("cancelled_at")
+  cancelledByUserId String?                    @map("cancelled_by_user_id") @db.Uuid
+  createdAt         DateTime                   @default(now()) @map("created_at")
+  updatedAt         DateTime                   @updatedAt @map("updated_at")
 
   conversation  Conversation    @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
   agent         AiAgent         @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: NoAction)
@@ -1360,22 +1381,22 @@ model ConversationFollowup {
 
 model AiAgentRun {
   id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  workspaceId    String            @map("workspace_id")
-  agentId        String            @map("agent_id") @db.Uuid
-  sessionId      String?           @map("session_id") @db.Uuid
-  conversationId String?           @map("conversation_id") @db.Uuid
-  trigger        AiAgentRunTrigger
-  input          Json              @default("{}")
-  contextSummary Json              @default("{}") @map("context_summary")
-  knowledgeMatches Json            @default("[]") @map("knowledge_matches")
-  output         Json              @default("{}")
-  actions        Json              @default("[]")
-  status         AiAgentRunStatus
-  model          String
-  confidence     Float?
-  costEstimate   Json              @default("{}") @map("cost_estimate")
-  errorMessage   String?           @map("error_message")
-  createdAt      DateTime          @default(now()) @map("created_at")
+  workspaceId      String            @map("workspace_id")
+  agentId          String            @map("agent_id") @db.Uuid
+  sessionId        String?           @map("session_id") @db.Uuid
+  conversationId   String?           @map("conversation_id") @db.Uuid
+  trigger          AiAgentRunTrigger
+  input            Json              @default("{}")
+  contextSummary   Json              @default("{}") @map("context_summary")
+  knowledgeMatches Json              @default("[]") @map("knowledge_matches")
+  output           Json              @default("{}")
+  actions          Json              @default("[]")
+  status           AiAgentRunStatus
+  model            String
+  confidence       Float?
+  costEstimate     Json              @default("{}") @map("cost_estimate")
+  errorMessage     String?           @map("error_message")
+  createdAt        DateTime          @default(now()) @map("created_at")
 
   agent        AiAgent         @relation(fields: [workspaceId, agentId], references: [workspaceId, id], onDelete: Cascade)
   session      AiAgentSession? @relation(fields: [workspaceId, sessionId], references: [workspaceId, id], onDelete: SetNull)
@@ -1457,27 +1478,28 @@ model AuditLog {
 // A reservation remains after uncertain sends and handoff, so another campaign or
 // attendance automation cannot silently take over a bound conversation.
 model CampaignProspectingReservation {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  contactId String @map("contact_id") @db.Uuid
-  conversationId String @map("conversation_id") @db.Uuid
-  campaignId String @map("campaign_id") @db.Uuid
-  recipientId String @map("recipient_id") @db.Uuid
-  agentId String @map("agent_id") @db.Uuid
-  generation String @default(uuid()) @db.Uuid
-  status String @default("sending")
-  dispatchStartedAt DateTime @map("dispatch_started_at")
-  dispatchIntentAt DateTime? @map("dispatch_intent_at")
-  confirmedAt DateTime? @map("confirmed_at")
-  pendingInboundMessageId String? @map("pending_inbound_message_id") @db.Uuid
-  pendingInboundAt DateTime? @map("pending_inbound_at")
-  latestInboundMessageId String? @map("latest_inbound_message_id") @db.Uuid
-  latestInboundAt DateTime? @map("latest_inbound_at")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
-  campaign Campaign @relation(fields: [workspaceId, campaignId], references: [workspaceId, id], onDelete: Restrict)
+  id                      String       @id @default(uuid()) @db.Uuid
+  workspaceId             String       @map("workspace_id")
+  channelId               String       @map("channel_id") @db.Uuid
+  contactId               String       @map("contact_id") @db.Uuid
+  conversationId          String       @map("conversation_id") @db.Uuid
+  campaignId              String       @map("campaign_id") @db.Uuid
+  recipientId             String       @map("recipient_id") @db.Uuid
+  agentId                 String       @map("agent_id") @db.Uuid
+  generation              String       @default(uuid()) @db.Uuid
+  status                  String       @default("sending")
+  dispatchStartedAt       DateTime     @map("dispatch_started_at")
+  dispatchIntentAt        DateTime?    @map("dispatch_intent_at")
+  confirmedAt             DateTime?    @map("confirmed_at")
+  pendingInboundMessageId String?      @map("pending_inbound_message_id") @db.Uuid
+  pendingInboundAt        DateTime?    @map("pending_inbound_at")
+  latestInboundMessageId  String?      @map("latest_inbound_message_id") @db.Uuid
+  latestInboundAt         DateTime?    @map("latest_inbound_at")
+  createdAt               DateTime     @default(now()) @map("created_at")
+  updatedAt               DateTime     @updatedAt @map("updated_at")
+  conversation            Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  campaign                Campaign     @relation(fields: [workspaceId, campaignId], references: [workspaceId, id], onDelete: Restrict)
+
   @@unique([workspaceId, channelId, contactId])
   @@unique([workspaceId, conversationId])
   @@unique([workspaceId, recipientId])
@@ -1489,212 +1511,231 @@ model CampaignProspectingReservation {
 // Unbounded native IDs/tuples are never B-tree keys. Hashes are non-unique buckets;
 // the transactional store compares every complete tuple under its workspace lock.
 model CanonicalAddress {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  redirectId String? @map("redirect_id") @db.Uuid
-  state String @default("active")
-  reviewReason String? @map("review_reason")
-  createdAt DateTime @default(now()) @map("created_at")
-  channel Channel @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
-  redirect CanonicalAddress? @relation("AddressRedirect", fields: [workspaceId, channelId, redirectId], references: [workspaceId, channelId, id], onDelete: NoAction)
-  redirected CanonicalAddress[] @relation("AddressRedirect")
-  aliases CanonicalAddressAlias[]
-  chats CanonicalChat[]
-  senders CanonicalMessageIdentity[]
+  id           String                     @id @default(uuid()) @db.Uuid
+  workspaceId  String                     @map("workspace_id")
+  channelId    String                     @map("channel_id") @db.Uuid
+  redirectId   String?                    @map("redirect_id") @db.Uuid
+  state        String                     @default("active")
+  reviewReason String?                    @map("review_reason")
+  createdAt    DateTime                   @default(now()) @map("created_at")
+  channel      Channel                    @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  redirect     CanonicalAddress?          @relation("AddressRedirect", fields: [workspaceId, channelId, redirectId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  redirected   CanonicalAddress[]         @relation("AddressRedirect")
+  aliases      CanonicalAddressAlias[]
+  chats        CanonicalChat[]
+  senders      CanonicalMessageIdentity[]
+
   @@unique([workspaceId, channelId, id])
   @@map("canonical_addresses")
 }
+
 model CanonicalAddressAlias {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  addressId String @map("address_id") @db.Uuid
-  address String @db.VarChar(100)
+  id              String           @id @default(uuid()) @db.Uuid
+  workspaceId     String           @map("workspace_id")
+  channelId       String           @map("channel_id") @db.Uuid
+  addressId       String           @map("address_id") @db.Uuid
+  address         String           @db.VarChar(100)
   addressIdentity CanonicalAddress @relation(fields: [workspaceId, channelId, addressId], references: [workspaceId, channelId, id], onDelete: Cascade)
+
   @@unique([workspaceId, channelId, address])
   @@map("canonical_address_aliases")
 }
+
 model CanonicalAddressEvidence {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  observationId String @map("observation_id") @db.Uuid
-  lid String @db.VarChar(100)
-  pn String @db.VarChar(100)
-  role String
-  source String
-  observation CanonicalObservation @relation(fields: [workspaceId, channelId, observationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  id            String               @id @default(uuid()) @db.Uuid
+  workspaceId   String               @map("workspace_id")
+  channelId     String               @map("channel_id") @db.Uuid
+  observationId String               @map("observation_id") @db.Uuid
+  lid           String               @db.VarChar(100)
+  pn            String               @db.VarChar(100)
+  role          String
+  source        String
+  observation   CanonicalObservation @relation(fields: [workspaceId, channelId, observationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+
   @@unique([observationId, lid, pn, role, source])
   @@map("canonical_address_evidence")
 }
+
 model CanonicalChat {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  addressId String @map("address_id") @db.Uuid
-  state String @default("active")
-  reviewReason String? @map("review_reason")
-  operationConversationId String? @map("operation_conversation_id") @db.Uuid
-  revision Int @default(0)
-  channel Channel @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
-  address CanonicalAddress @relation(fields: [workspaceId, channelId, addressId], references: [workspaceId, channelId, id], onDelete: Cascade)
-  operationConversation Conversation? @relation(fields: [workspaceId, channelId, operationConversationId], references: [workspaceId, channelId, id], onDelete: NoAction)
-  members CanonicalChatMember[]
-  messages CanonicalMessageIdentity[]
-  authorityResolution CanonicalChatAuthorityResolution?
+  id                       String                            @id @default(uuid()) @db.Uuid
+  workspaceId              String                            @map("workspace_id")
+  channelId                String                            @map("channel_id") @db.Uuid
+  addressId                String                            @map("address_id") @db.Uuid
+  state                    String                            @default("active")
+  reviewReason             String?                           @map("review_reason")
+  operationConversationId  String?                           @map("operation_conversation_id") @db.Uuid
+  revision                 Int                               @default(0)
+  channel                  Channel                           @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  address                  CanonicalAddress                  @relation(fields: [workspaceId, channelId, addressId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  operationConversation    Conversation?                     @relation(fields: [workspaceId, channelId, operationConversationId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  members                  CanonicalChatMember[]
+  messages                 CanonicalMessageIdentity[]
+  authorityResolution      CanonicalChatAuthorityResolution?
+  outboundIntents          OutboundIntent[]
+  outboundRecertifications OutboundRecertification[]
+
   @@unique([workspaceId, channelId, id])
   @@unique([workspaceId, channelId, addressId])
   @@map("canonical_chats")
-  outboundIntents OutboundIntent[]
-  outboundRecertifications OutboundRecertification[]
 }
+
 /// An operator's explicit choice of which existing conversation operates a chat that several conversations claim.
 /// It holds only while the members are exactly those that existed when it was made.
 model CanonicalChatAuthorityResolution {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  chatId String @map("chat_id") @db.Uuid
-  conversationId String @map("conversation_id") @db.Uuid
-  memberConversationIds Json @map("member_conversation_ids")
-  resolvedBy String @map("resolved_by")
-  createdAt DateTime @default(now()) @map("created_at")
-  chat CanonicalChat @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: Cascade, map: "canonical_chat_authority_resolutions_chat_fkey")
-  conversation Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade, map: "canonical_chat_authority_resolutions_conversation_fkey")
+  id                    String        @id @default(uuid()) @db.Uuid
+  workspaceId           String        @map("workspace_id")
+  channelId             String        @map("channel_id") @db.Uuid
+  chatId                String        @map("chat_id") @db.Uuid
+  conversationId        String        @map("conversation_id") @db.Uuid
+  memberConversationIds Json          @map("member_conversation_ids")
+  resolvedBy            String        @map("resolved_by")
+  createdAt             DateTime      @default(now()) @map("created_at")
+  chat                  CanonicalChat @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: Cascade, map: "canonical_chat_authority_resolutions_chat_fkey")
+  conversation          Conversation  @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade, map: "canonical_chat_authority_resolutions_conversation_fkey")
+
   @@unique([workspaceId, channelId, chatId], map: "canonical_chat_authority_resolutions_chat_key")
   @@map("canonical_chat_authority_resolutions")
 }
+
 model CanonicalChatMember {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  chatId String @map("chat_id") @db.Uuid
-  conversationId String @map("conversation_id") @db.Uuid
-  source String
-  chat CanonicalChat @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: Cascade)
-  conversation Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  id             String        @id @default(uuid()) @db.Uuid
+  workspaceId    String        @map("workspace_id")
+  channelId      String        @map("channel_id") @db.Uuid
+  chatId         String        @map("chat_id") @db.Uuid
+  conversationId String        @map("conversation_id") @db.Uuid
+  source         String
+  chat           CanonicalChat @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  conversation   Conversation  @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+
   @@unique([workspaceId, channelId, chatId, conversationId])
   @@map("canonical_chat_members")
 }
+
 model CanonicalMessageIdentity {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  chatId String @map("chat_id") @db.Uuid
-  senderAddressId String? @map("sender_address_id") @db.Uuid
-  conversationId String @map("conversation_id") @db.Uuid
-  messageId String @unique @map("message_id") @db.Uuid
-  identityFormat String @map("identity_format")
-  providerScope String @map("provider_scope")
-  rawId String @map("raw_id")
-  direction MessageDirection
-  tupleHash String @map("tuple_hash") @db.VarChar(64)
-  fullTuple Json @map("full_tuple")
-  state String @default("active")
-  contentState String @default("ready") @map("content_state")
-  revisionVersion Int @default(0) @map("revision_version")
-  currentRevision Json? @map("current_revision")
-  initialMode String @map("initial_mode")
-  chat CanonicalChat @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: Cascade)
-  sender CanonicalAddress? @relation(fields: [workspaceId, channelId, senderAddressId], references: [workspaceId, channelId, id], onDelete: NoAction)
-  conversation Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
-  message Message @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: Cascade)
-  receipts CanonicalRecipientReceipt[]
-  actions CanonicalAction[]
-  aliases CanonicalNativeAlias[]
-  observations CanonicalObservation[]
+  id               String                      @id @default(uuid()) @db.Uuid
+  workspaceId      String                      @map("workspace_id")
+  channelId        String                      @map("channel_id") @db.Uuid
+  chatId           String                      @map("chat_id") @db.Uuid
+  senderAddressId  String?                     @map("sender_address_id") @db.Uuid
+  conversationId   String                      @map("conversation_id") @db.Uuid
+  messageId        String                      @unique @map("message_id") @db.Uuid
+  identityFormat   String                      @map("identity_format")
+  providerScope    String                      @map("provider_scope")
+  rawId            String                      @map("raw_id")
+  direction        MessageDirection
+  tupleHash        String                      @map("tuple_hash") @db.VarChar(64)
+  fullTuple        Json                        @map("full_tuple")
+  state            String                      @default("active")
+  contentState     String                      @default("ready") @map("content_state")
+  revisionVersion  Int                         @default(0) @map("revision_version")
+  currentRevision  Json?                       @map("current_revision")
+  initialMode      String                      @map("initial_mode")
+  chat             CanonicalChat               @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  sender           CanonicalAddress?           @relation(fields: [workspaceId, channelId, senderAddressId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  conversation     Conversation                @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  message          Message                     @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: Cascade)
+  receipts         CanonicalRecipientReceipt[]
+  actions          CanonicalAction[]
+  aliases          CanonicalNativeAlias[]
+  observations     CanonicalObservation[]
+  outboundBindings OutboundBinding[]
+
   @@unique([workspaceId, channelId, id])
   @@index([workspaceId, channelId, tupleHash])
   @@index([workspaceId, channelId, chatId])
   @@map("canonical_message_identities")
-  outboundBindings OutboundBinding[]
 }
+
 model CanonicalNativeAlias {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  channelProvider ChannelProvider @map("channel_provider")
-  provider String
+  id                 String                     @id @default(uuid()) @db.Uuid
+  workspaceId        String                     @map("workspace_id")
+  channelId          String                     @map("channel_id") @db.Uuid
+  channelProvider    ChannelProvider            @map("channel_provider")
+  provider           String
   connectionProvider ChannelConnectionProvider? @map("connection_provider")
-  connectionId String? @map("connection_id") @db.Uuid
-  identityId String? @map("identity_id") @db.Uuid
-  lookupHash String? @map("lookup_hash") @db.VarChar(64)
-  tupleHash String @map("tuple_hash") @db.VarChar(64)
-  fullTuple Json @map("full_tuple")
-  state String @default("unresolved")
-  channel Channel @relation(fields: [workspaceId, channelId, channelProvider], references: [workspaceId, id, provider], onDelete: Cascade)
-  connection ChannelConnection? @relation(fields: [workspaceId, channelId, connectionProvider, connectionId], references: [workspaceId, channelId, provider, id], onDelete: NoAction)
-  identity CanonicalMessageIdentity? @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: NoAction)
-  observations CanonicalObservation[]
+  connectionId       String?                    @map("connection_id") @db.Uuid
+  identityId         String?                    @map("identity_id") @db.Uuid
+  lookupHash         String?                    @map("lookup_hash") @db.VarChar(64)
+  tupleHash          String                     @map("tuple_hash") @db.VarChar(64)
+  fullTuple          Json                       @map("full_tuple")
+  state              String                     @default("unresolved")
+  channel            Channel                    @relation(fields: [workspaceId, channelId, channelProvider], references: [workspaceId, id, provider], onDelete: Cascade)
+  connection         ChannelConnection?         @relation(fields: [workspaceId, channelId, connectionProvider, connectionId], references: [workspaceId, channelId, provider, id], onDelete: NoAction)
+  identity           CanonicalMessageIdentity?  @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  observations       CanonicalObservation[]
+  outboundBindings   OutboundBinding[]
+
   @@unique([workspaceId, channelId, id])
   @@index([workspaceId, channelId, tupleHash])
   @@index([workspaceId, channelId, lookupHash])
   @@map("canonical_native_aliases")
-  outboundBindings OutboundBinding[]
 }
+
 model CanonicalObservation {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  channelProvider ChannelProvider @map("channel_provider")
-  provider String
-  connectionProvider ChannelConnectionProvider? @map("connection_provider")
-  connectionId String? @map("connection_id") @db.Uuid
-  identityId String? @map("identity_id") @db.Uuid
-  aliasId String? @map("alias_id") @db.Uuid
-  receiptHash String @map("receipt_hash") @db.VarChar(64)
-  receiptTuple Json @map("receipt_tuple")
-  providerEventId String? @map("provider_event_id")
-  kind String
-  eventType String @map("event_type")
-  mode String
-  source String?
-  sessionName String @map("session_name")
-  lifecycleGeneration Int @map("lifecycle_generation")
-  receivedAt DateTime @map("received_at")
-  currentRevision Json? @map("current_revision")
-  sourceOrder Json @map("source_order")
-  resolutionEvidence Json? @map("resolution_evidence")
-  payload Json
-  state String @default("held")
-  reason String?
-  channel Channel @relation(fields: [workspaceId, channelId, channelProvider], references: [workspaceId, id, provider], onDelete: Cascade)
-  connection ChannelConnection? @relation(fields: [workspaceId, channelId, connectionProvider, connectionId], references: [workspaceId, channelId, provider, id], onDelete: NoAction)
-  identity CanonicalMessageIdentity? @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: NoAction)
-  alias CanonicalNativeAlias? @relation(fields: [workspaceId, channelId, aliasId], references: [workspaceId, channelId, id], onDelete: NoAction)
-  actions CanonicalAction[]
-  evidence CanonicalAddressEvidence[]
+  id                  String                     @id @default(uuid()) @db.Uuid
+  workspaceId         String                     @map("workspace_id")
+  channelId           String                     @map("channel_id") @db.Uuid
+  channelProvider     ChannelProvider            @map("channel_provider")
+  provider            String
+  connectionProvider  ChannelConnectionProvider? @map("connection_provider")
+  connectionId        String?                    @map("connection_id") @db.Uuid
+  identityId          String?                    @map("identity_id") @db.Uuid
+  aliasId             String?                    @map("alias_id") @db.Uuid
+  receiptHash         String                     @map("receipt_hash") @db.VarChar(64)
+  receiptTuple        Json                       @map("receipt_tuple")
+  providerEventId     String?                    @map("provider_event_id")
+  kind                String
+  eventType           String                     @map("event_type")
+  mode                String
+  source              String?
+  sessionName         String                     @map("session_name")
+  lifecycleGeneration Int                        @map("lifecycle_generation")
+  receivedAt          DateTime                   @map("received_at")
+  currentRevision     Json?                      @map("current_revision")
+  sourceOrder         Json                       @map("source_order")
+  resolutionEvidence  Json?                      @map("resolution_evidence")
+  payload             Json
+  state               String                     @default("held")
+  reason              String?
+  channel             Channel                    @relation(fields: [workspaceId, channelId, channelProvider], references: [workspaceId, id, provider], onDelete: Cascade)
+  connection          ChannelConnection?         @relation(fields: [workspaceId, channelId, connectionProvider, connectionId], references: [workspaceId, channelId, provider, id], onDelete: NoAction)
+  identity            CanonicalMessageIdentity?  @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  alias               CanonicalNativeAlias?      @relation(fields: [workspaceId, channelId, aliasId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  actions             CanonicalAction[]
+  evidence            CanonicalAddressEvidence[]
+  ingressProgress     IngressEventProgress[]
+
   @@unique([workspaceId, channelId, id])
   @@index([workspaceId, channelId, receiptHash])
   @@index([workspaceId, channelId, state])
   @@index([workspaceId, channelId, identityId, state, kind, id])
   @@map("canonical_observations")
-  ingressProgress IngressEventProgress[]
 }
 
 // Every action owns its ingress observation; payload/provenance remain immutable there.
 model CanonicalAction {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  observationId String @unique @map("observation_id") @db.Uuid
-  identityId String? @map("identity_id") @db.Uuid
-  kind String
-  nativeTargetHash String? @map("native_target_hash") @db.VarChar(64)
-  targetHash String @map("target_hash") @db.VarChar(64)
-  target Json
-  actionKey Json? @map("action_key")
-  actionHash String? @map("action_hash") @db.VarChar(64)
-  actionLookupHash String? @map("action_lookup_hash") @db.VarChar(64)
-  actionTuple Json? @map("action_tuple")
-  state String @default("pending")
-  reason String?
-  attempts Int @default(0)
-  appliedAt DateTime? @map("applied_at")
-  evidence Json?
-  observation CanonicalObservation @relation(fields: [workspaceId, channelId, observationId], references: [workspaceId, channelId, id], onDelete: Cascade)
-  identity CanonicalMessageIdentity? @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  id               String                    @id @default(uuid()) @db.Uuid
+  workspaceId      String                    @map("workspace_id")
+  channelId        String                    @map("channel_id") @db.Uuid
+  observationId    String                    @unique @map("observation_id") @db.Uuid
+  identityId       String?                   @map("identity_id") @db.Uuid
+  kind             String
+  nativeTargetHash String?                   @map("native_target_hash") @db.VarChar(64)
+  targetHash       String                    @map("target_hash") @db.VarChar(64)
+  target           Json
+  actionKey        Json?                     @map("action_key")
+  actionHash       String?                   @map("action_hash") @db.VarChar(64)
+  actionLookupHash String?                   @map("action_lookup_hash") @db.VarChar(64)
+  actionTuple      Json?                     @map("action_tuple")
+  state            String                    @default("pending")
+  reason           String?
+  attempts         Int                       @default(0)
+  appliedAt        DateTime?                 @map("applied_at")
+  evidence         Json?
+  observation      CanonicalObservation      @relation(fields: [workspaceId, channelId, observationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  identity         CanonicalMessageIdentity? @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  ingressProgress  IngressEventProgress[]
+
   @@unique([workspaceId, channelId, id])
   @@index([workspaceId, channelId, targetHash, state, id])
   @@index([workspaceId, channelId, nativeTargetHash, state, id])
@@ -1704,386 +1745,405 @@ model CanonicalAction {
   @@index([workspaceId, channelId, actionHash])
   @@index([workspaceId, channelId, actionLookupHash])
   @@map("canonical_actions")
-  ingressProgress IngressEventProgress[]
 }
 
 // Group receipts never upgrade Message.status: there is no certified member denominator.
 model CanonicalRecipientReceipt {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  identityId String @map("identity_id") @db.Uuid
-  recipient String @db.VarChar(100)
-  status MessageStatus
-  played Boolean @default(false)
-  identity CanonicalMessageIdentity @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  id          String                   @id @default(uuid()) @db.Uuid
+  workspaceId String                   @map("workspace_id")
+  channelId   String                   @map("channel_id") @db.Uuid
+  identityId  String                   @map("identity_id") @db.Uuid
+  recipient   String                   @db.VarChar(100)
+  status      MessageStatus
+  played      Boolean                  @default(false)
+  identity    CanonicalMessageIdentity @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: Cascade)
+
   @@unique([workspaceId, channelId, identityId, recipient])
   @@map("canonical_recipient_receipts")
 }
 
-
 // Disconnected persistent send frontier. Requests and evidence are immutable;
 // states are operational projections, never proof of transport acceptance.
 model OutboundIntent {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  conversationId String @map("conversation_id") @db.Uuid
-  messageId String @unique @map("message_id") @db.Uuid
-  chatId String @map("chat_id") @db.Uuid
-  ordinal Int @default(autoincrement())
-  originKind String @map("origin_kind") @db.VarChar(40)
-  originId String @map("origin_id") @db.VarChar(256)
-  actionOrdinal Int @map("action_ordinal")
-  requestKey String @map("request_key") @db.VarChar(256)
-  request Json
-  domainFences Json @map("domain_fences")
-  authorityRevision Int @map("authority_revision")
-  state String @default("prepared")
-  reason String?
-  createdAt DateTime @default(now()) @map("created_at")
-  channel Channel @relation(fields: [workspaceId,channelId], references: [workspaceId,id], onDelete: Cascade)
-  conversation Conversation @relation(fields: [workspaceId,channelId,conversationId], references: [workspaceId,channelId,id], onDelete: Cascade)
-  message Message @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: NoAction)
-  chat CanonicalChat @relation(fields: [workspaceId,channelId,chatId], references: [workspaceId,channelId,id], onDelete: NoAction)
-  attempts OutboundAttempt[]
-  bindings OutboundBinding[]
-  @@unique([workspaceId,channelId,id])
-  @@unique([workspaceId,channelId,originKind,originId,actionOrdinal,requestKey])
-  @@index([workspaceId,channelId,chatId,state,ordinal])
-  @@map("outbound_intents")
+  id                       String                    @id @default(uuid()) @db.Uuid
+  workspaceId              String                    @map("workspace_id")
+  channelId                String                    @map("channel_id") @db.Uuid
+  conversationId           String                    @map("conversation_id") @db.Uuid
+  messageId                String                    @unique @map("message_id") @db.Uuid
+  chatId                   String                    @map("chat_id") @db.Uuid
+  ordinal                  Int                       @default(autoincrement())
+  originKind               String                    @map("origin_kind") @db.VarChar(40)
+  originId                 String                    @map("origin_id") @db.VarChar(256)
+  actionOrdinal            Int                       @map("action_ordinal")
+  requestKey               String                    @map("request_key") @db.VarChar(256)
+  request                  Json
+  domainFences             Json                      @map("domain_fences")
+  authorityRevision        Int                       @map("authority_revision")
+  state                    String                    @default("prepared")
+  reason                   String?
+  createdAt                DateTime                  @default(now()) @map("created_at")
+  channel                  Channel                   @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  conversation             Conversation              @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  message                  Message                   @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: NoAction)
+  chat                     CanonicalChat             @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  attempts                 OutboundAttempt[]
+  bindings                 OutboundBinding[]
   outboundRecertifications OutboundRecertification[]
+
+  @@unique([workspaceId, channelId, id])
+  @@unique([workspaceId, channelId, originKind, originId, actionOrdinal, requestKey])
+  @@index([workspaceId, channelId, chatId, state, ordinal])
+  @@map("outbound_intents")
 }
+
 model OutboundAttempt {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  intentId String @map("intent_id") @db.Uuid
-  token String @unique @default(uuid()) @db.Uuid
-  source Json
-  domainFences Json @map("domain_fences")
-  chatId String @map("chat_id") @db.Uuid
-  authorityRevision Int @map("authority_revision")
-  phase String @default("dispatching")
-  createdAt DateTime @default(now()) @map("created_at")
-  channel Channel @relation(fields: [workspaceId,channelId], references: [workspaceId,id], onDelete: Cascade)
-  intent OutboundIntent @relation(fields: [workspaceId,channelId,intentId], references: [workspaceId,channelId,id], onDelete: Cascade)
-  results OutboundResult[]
-  bindings OutboundBinding[]
-  @@unique([workspaceId,channelId,id])
-  @@index([workspaceId,channelId,intentId,createdAt])
+  id                String            @id @default(uuid()) @db.Uuid
+  workspaceId       String            @map("workspace_id")
+  channelId         String            @map("channel_id") @db.Uuid
+  intentId          String            @map("intent_id") @db.Uuid
+  token             String            @unique @default(uuid()) @db.Uuid
+  source            Json
+  domainFences      Json              @map("domain_fences")
+  chatId            String            @map("chat_id") @db.Uuid
+  authorityRevision Int               @map("authority_revision")
+  phase             String            @default("dispatching")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  channel           Channel           @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  intent            OutboundIntent    @relation(fields: [workspaceId, channelId, intentId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  results           OutboundResult[]
+  bindings          OutboundBinding[]
+
+  @@unique([workspaceId, channelId, id])
+  @@unique([workspaceId, channelId, intentId, id])
+  @@index([workspaceId, channelId, intentId, createdAt])
   @@map("outbound_attempts")
-  @@unique([workspaceId,channelId,intentId,id])
 }
+
 model OutboundResult {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  attemptId String @map("attempt_id") @db.Uuid
-  resultKey String @map("result_key") @db.VarChar(256)
-  outcome String
-  evidence Json
-  createdAt DateTime @default(now()) @map("created_at")
-  channel Channel @relation(fields: [workspaceId,channelId], references: [workspaceId,id], onDelete: Cascade)
-  attempt OutboundAttempt @relation(fields: [workspaceId,channelId,attemptId], references: [workspaceId,channelId,id], onDelete: Cascade)
-  bindings OutboundBinding[]
-  @@unique([workspaceId,channelId,id])
-  @@unique([workspaceId,channelId,attemptId,resultKey])
+  id          String            @id @default(uuid()) @db.Uuid
+  workspaceId String            @map("workspace_id")
+  channelId   String            @map("channel_id") @db.Uuid
+  attemptId   String            @map("attempt_id") @db.Uuid
+  resultKey   String            @map("result_key") @db.VarChar(256)
+  outcome     String
+  evidence    Json
+  createdAt   DateTime          @default(now()) @map("created_at")
+  channel     Channel           @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  attempt     OutboundAttempt   @relation(fields: [workspaceId, channelId, attemptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  bindings    OutboundBinding[]
+
+  @@unique([workspaceId, channelId, id])
+  @@unique([workspaceId, channelId, attemptId, resultKey])
+  @@unique([workspaceId, channelId, attemptId, id])
   @@map("outbound_results")
-  @@unique([workspaceId,channelId,attemptId,id])
 }
+
 model OutboundBinding {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  intentId String @map("intent_id") @db.Uuid
-  attemptId String @map("attempt_id") @db.Uuid
-  resultId String @map("result_id") @db.Uuid
-  identityId String @map("identity_id") @db.Uuid
-  aliasId String @map("alias_id") @db.Uuid
-  source Json
-  key Json
-  proof Json
-  createdAt DateTime @default(now()) @map("created_at")
-  channel Channel @relation(fields: [workspaceId,channelId], references: [workspaceId,id], onDelete: Cascade)
-  intent OutboundIntent @relation(fields: [workspaceId,channelId,intentId], references: [workspaceId,channelId,id], onDelete: Cascade)
-  attempt OutboundAttempt @relation(fields: [workspaceId,channelId,intentId,attemptId], references: [workspaceId,channelId,intentId,id], onDelete: Cascade)
-  result OutboundResult @relation(fields: [workspaceId,channelId,attemptId,resultId], references: [workspaceId,channelId,attemptId,id], onDelete: NoAction)
-  identity CanonicalMessageIdentity @relation(fields: [workspaceId,channelId,identityId], references: [workspaceId,channelId,id], onDelete: NoAction)
-  alias CanonicalNativeAlias @relation(fields: [workspaceId,channelId,aliasId], references: [workspaceId,channelId,id], onDelete: NoAction)
-  @@unique([workspaceId,channelId,id])
-  @@index([workspaceId,channelId,intentId])
+  id          String                   @id @default(uuid()) @db.Uuid
+  workspaceId String                   @map("workspace_id")
+  channelId   String                   @map("channel_id") @db.Uuid
+  intentId    String                   @map("intent_id") @db.Uuid
+  attemptId   String                   @map("attempt_id") @db.Uuid
+  resultId    String                   @map("result_id") @db.Uuid
+  identityId  String                   @map("identity_id") @db.Uuid
+  aliasId     String                   @map("alias_id") @db.Uuid
+  source      Json
+  key         Json
+  proof       Json
+  createdAt   DateTime                 @default(now()) @map("created_at")
+  channel     Channel                  @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  intent      OutboundIntent           @relation(fields: [workspaceId, channelId, intentId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  attempt     OutboundAttempt          @relation(fields: [workspaceId, channelId, intentId, attemptId], references: [workspaceId, channelId, intentId, id], onDelete: Cascade)
+  result      OutboundResult           @relation(fields: [workspaceId, channelId, attemptId, resultId], references: [workspaceId, channelId, attemptId, id], onDelete: NoAction)
+  identity    CanonicalMessageIdentity @relation(fields: [workspaceId, channelId, identityId], references: [workspaceId, channelId, id], onDelete: NoAction)
+  alias       CanonicalNativeAlias     @relation(fields: [workspaceId, channelId, aliasId], references: [workspaceId, channelId, id], onDelete: NoAction)
+
+  @@unique([workspaceId, channelId, id])
+  @@index([workspaceId, channelId, intentId])
   @@map("outbound_bindings")
 }
+
 model OutboundCorrelation {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  conversationId String @map("conversation_id") @db.Uuid
-  messageId String @map("message_id") @db.Uuid
-  tupleHash String @map("tuple_hash") @db.VarChar(64)
-  fullTuple Json @map("full_tuple")
-  proof Json
-  state String
-  createdAt DateTime @default(now()) @map("created_at")
-  channel Channel @relation(fields: [workspaceId,channelId], references: [workspaceId,id], onDelete: Cascade)
-  conversation Conversation @relation(fields: [workspaceId,channelId,conversationId], references: [workspaceId,channelId,id], onDelete: Cascade)
-  message Message @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: NoAction)
-  @@unique([workspaceId,channelId,id])
-  @@index([workspaceId,channelId,tupleHash])
+  id             String       @id @default(uuid()) @db.Uuid
+  workspaceId    String       @map("workspace_id")
+  channelId      String       @map("channel_id") @db.Uuid
+  conversationId String       @map("conversation_id") @db.Uuid
+  messageId      String       @map("message_id") @db.Uuid
+  tupleHash      String       @map("tuple_hash") @db.VarChar(64)
+  fullTuple      Json         @map("full_tuple")
+  proof          Json
+  state          String
+  createdAt      DateTime     @default(now()) @map("created_at")
+  channel        Channel      @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  conversation   Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  message        Message      @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: NoAction)
+
+  @@unique([workspaceId, channelId, id])
+  @@index([workspaceId, channelId, tupleHash])
   @@map("outbound_correlations")
 }
 
 // Explicit pre-I/O recovery preserves the original request and Message UUID.
 // Recertifications are append-only and can never rearm a crossed frontier.
 model OutboundRecertification {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  intentId String @map("intent_id") @db.Uuid
-  chatId String @map("chat_id") @db.Uuid
-  ordinal Int @default(autoincrement())
-  authorityRevision Int @map("authority_revision")
-  source Json
-  domainFences Json @map("domain_fences")
-  proof Json
-  createdAt DateTime @default(now()) @map("created_at")
-  channel Channel @relation(fields: [workspaceId,channelId], references: [workspaceId,id], onDelete: Cascade)
-  intent OutboundIntent @relation(fields: [workspaceId,channelId,intentId], references: [workspaceId,channelId,id], onDelete: Cascade)
-  chat CanonicalChat @relation(fields: [workspaceId,channelId,chatId], references: [workspaceId,channelId,id], onDelete: NoAction)
-  @@unique([workspaceId,channelId,id])
-  @@index([workspaceId,channelId,intentId,ordinal])
+  id                String         @id @default(uuid()) @db.Uuid
+  workspaceId       String         @map("workspace_id")
+  channelId         String         @map("channel_id") @db.Uuid
+  intentId          String         @map("intent_id") @db.Uuid
+  chatId            String         @map("chat_id") @db.Uuid
+  ordinal           Int            @default(autoincrement())
+  authorityRevision Int            @map("authority_revision")
+  source            Json
+  domainFences      Json           @map("domain_fences")
+  proof             Json
+  createdAt         DateTime       @default(now()) @map("created_at")
+  channel           Channel        @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  intent            OutboundIntent @relation(fields: [workspaceId, channelId, intentId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  chat              CanonicalChat  @relation(fields: [workspaceId, channelId, chatId], references: [workspaceId, channelId, id], onDelete: NoAction)
+
+  @@unique([workspaceId, channelId, id])
+  @@index([workspaceId, channelId, intentId, ordinal])
   @@map("outbound_recertifications")
 }
 
 // Stage 1A transport journal. Immutable receipt/source facts do not grant current
 // operational authority. pending_application is an obligation, never completion.
 model IngressReceipt {
-  id String @id @db.Uuid
-  ordinal BigInt @unique @default(autoincrement())
-  workspaceId String @map("workspace_id")
-  channelId String @db.Uuid @map("channel_id")
-  stageVersion Int @map("stage_version")
-  transportNamespace String @map("transport_namespace")
-  source Json
-  authentication String
-  authenticatedDigest String @map("authenticated_digest")
-  rawRef String @map("raw_ref")
-  rawDigest String @map("raw_digest")
-  eventRef String @map("event_ref")
-  eventDigest String @map("event_digest")
-  eventCount Int @map("event_count")
-  createdAt DateTime @default(now()) @map("created_at")
-  channel Channel @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Restrict)
-  delivery IngressDelivery?
-  application IngressApplication?
-  frontier IngressFrontier[]
-  attempts IngressPublishAttempt[]
+  id                  String                  @id @db.Uuid
+  ordinal             BigInt                  @unique @default(autoincrement())
+  workspaceId         String                  @map("workspace_id")
+  channelId           String                  @map("channel_id") @db.Uuid
+  stageVersion        Int                     @map("stage_version")
+  transportNamespace  String                  @map("transport_namespace")
+  source              Json
+  authentication      String
+  authenticatedDigest String                  @map("authenticated_digest")
+  rawRef              String                  @map("raw_ref")
+  rawDigest           String                  @map("raw_digest")
+  eventRef            String                  @map("event_ref")
+  eventDigest         String                  @map("event_digest")
+  eventCount          Int                     @map("event_count")
+  createdAt           DateTime                @default(now()) @map("created_at")
+  channel             Channel                 @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Restrict)
+  delivery            IngressDelivery?
+  application         IngressApplication?
+  frontier            IngressFrontier[]
+  attempts            IngressPublishAttempt[]
+  eventProgress       IngressEventProgress[]
+
   @@unique([workspaceId, channelId, id])
   @@index([workspaceId, channelId, ordinal])
   @@map("ingress_receipts")
-  eventProgress IngressEventProgress[]
 }
 
 model IngressDelivery {
-  receiptId String @id @db.Uuid @map("receipt_id")
-  workspaceId String @map("workspace_id")
-  channelId String @db.Uuid @map("channel_id")
-  state String @default("staged")
-  confirmedAt DateTime? @map("confirmed_at")
-  consumedAt DateTime? @map("consumed_at")
-  leaseToken String? @db.Uuid @map("lease_token")
-  leaseUntil DateTime? @map("lease_until")
-  nextAttemptAt DateTime @default(now()) @map("next_attempt_at")
-  failures Int @default(0)
-  recoveries Int @default(0)
-  lastError String? @map("last_error")
-  receipt IngressReceipt @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  receiptId     String         @id @map("receipt_id") @db.Uuid
+  workspaceId   String         @map("workspace_id")
+  channelId     String         @map("channel_id") @db.Uuid
+  state         String         @default("staged")
+  confirmedAt   DateTime?      @map("confirmed_at")
+  consumedAt    DateTime?      @map("consumed_at")
+  leaseToken    String?        @map("lease_token") @db.Uuid
+  leaseUntil    DateTime?      @map("lease_until")
+  nextAttemptAt DateTime       @default(now()) @map("next_attempt_at")
+  failures      Int            @default(0)
+  recoveries    Int            @default(0)
+  lastError     String?        @map("last_error")
+  receipt       IngressReceipt @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+
   @@unique([workspaceId, channelId, receiptId])
   @@index([state, nextAttemptAt, leaseUntil])
   @@map("ingress_deliveries")
 }
 
 model IngressApplication {
-  receiptId String @id @db.Uuid @map("receipt_id")
-  workspaceId String @map("workspace_id")
-  channelId String @db.Uuid @map("channel_id")
-  state String @default("pending_application")
-  createdAt DateTime @default(now()) @map("created_at")
+  receiptId   String         @id @map("receipt_id") @db.Uuid
+  workspaceId String         @map("workspace_id")
+  channelId   String         @map("channel_id") @db.Uuid
+  state       String         @default("pending_application")
+  createdAt   DateTime       @default(now()) @map("created_at")
   // Filled only by the later canonical transaction, not the transport consumer.
-  appliedAt DateTime? @map("applied_at")
-  receipt IngressReceipt @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  appliedAt   DateTime?      @map("applied_at")
+  receipt     IngressReceipt @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+
   @@unique([workspaceId, channelId, receiptId])
   @@index([workspaceId, channelId, state, createdAt])
   @@map("ingress_applications")
 }
 
 model IngressFrontier {
-  id BigInt @id @default(autoincrement())
-  receiptId String @db.Uuid @map("receipt_id")
-  workspaceId String @map("workspace_id")
-  channelId String @db.Uuid @map("channel_id")
-  eventIndex Int @map("event_index")
-  chatAddress String? @map("chat_address")
+  id            BigInt                @id @default(autoincrement())
+  receiptId     String                @map("receipt_id") @db.Uuid
+  workspaceId   String                @map("workspace_id")
+  channelId     String                @map("channel_id") @db.Uuid
+  eventIndex    Int                   @map("event_index")
+  chatAddress   String?               @map("chat_address")
   // Exact adapter key only; no text, media, credentials or binary.
-  exactKey Json? @map("exact_key")
-  kind String
-  receipt IngressReceipt @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  exactKey      Json?                 @map("exact_key")
+  kind          String
+  receipt       IngressReceipt        @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  eventProgress IngressEventProgress?
+
   @@unique([receiptId, eventIndex])
+  @@unique([workspaceId, channelId, receiptId, eventIndex], map: "ingress_frontiers_scope_event_key")
   @@index([workspaceId, channelId, chatAddress, id])
   @@map("ingress_frontiers")
-  eventProgress IngressEventProgress?
-  @@unique([workspaceId, channelId, receiptId, eventIndex], map: "ingress_frontiers_scope_event_key")
 }
 
 model IngressPublishAttempt {
-  id String @id @db.Uuid
-  receiptId String @db.Uuid @map("receipt_id")
-  workspaceId String @map("workspace_id")
-  channelId String @db.Uuid @map("channel_id")
+  id          String         @id @db.Uuid
+  receiptId   String         @map("receipt_id") @db.Uuid
+  workspaceId String         @map("workspace_id")
+  channelId   String         @map("channel_id") @db.Uuid
   destination String
-  outcome String @default("pending")
-  errorCode String? @map("error_code")
-  createdAt DateTime @default(now()) @map("created_at")
-  settledAt DateTime? @map("settled_at")
-  receipt IngressReceipt @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  outcome     String         @default("pending")
+  errorCode   String?        @map("error_code")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  settledAt   DateTime?      @map("settled_at")
+  receipt     IngressReceipt @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade)
+
   @@index([receiptId, createdAt])
   @@map("ingress_publish_attempts")
 }
 
 model IngressQuarantine {
-  id String @id @db.Uuid
-  rawRef String @map("raw_ref")
-  rawDigest String @map("raw_digest")
-  reason String
+  id        String   @id @db.Uuid
+  rawRef    String   @map("raw_ref")
+  rawDigest String   @map("raw_digest")
+  reason    String
   createdAt DateTime @default(now()) @map("created_at")
+
   @@map("ingress_quarantines")
 }
 
-
 // Private stage 1B progress. Held includes unsupported/incomplete facts; it is not understood content.
 model IngressEventProgress {
-  workspaceId String @map("workspace_id")
-  channelId String @db.Uuid @map("channel_id")
-  receiptId String @db.Uuid @map("receipt_id")
-  eventIndex Int @map("event_index")
-  state String
-  reason String?
-  observationId String? @db.Uuid @map("observation_id")
-  actionId String? @db.Uuid @map("action_id")
-  conversationId String? @db.Uuid @map("conversation_id")
-  messageId String? @db.Uuid @map("message_id")
-  result Json
-  committedAt DateTime @default(now()) @map("committed_at")
-  receipt IngressReceipt @relation(fields: [workspaceId,channelId,receiptId], references: [workspaceId,channelId,id], onDelete: Cascade, map: "ingress_progress_receipt_fkey")
-  frontier IngressFrontier @relation(fields: [workspaceId,channelId,receiptId,eventIndex], references: [workspaceId,channelId,receiptId,eventIndex], onDelete: Cascade, map: "ingress_progress_frontier_fkey")
-  observation CanonicalObservation? @relation(fields: [workspaceId,channelId,observationId], references: [workspaceId,channelId,id], onDelete: NoAction, map: "ingress_progress_observation_fkey")
-  action CanonicalAction? @relation(fields: [workspaceId,channelId,actionId], references: [workspaceId,channelId,id], onDelete: NoAction, map: "ingress_progress_action_fkey")
-  conversation Conversation? @relation(fields: [workspaceId,channelId,conversationId], references: [workspaceId,channelId,id], onDelete: NoAction, map: "ingress_progress_conversation_fkey")
-  message Message? @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: NoAction, map: "ingress_progress_message_fkey")
-  effects IngressEffect[]
+  workspaceId     String                       @map("workspace_id")
+  channelId       String                       @map("channel_id") @db.Uuid
+  receiptId       String                       @map("receipt_id") @db.Uuid
+  eventIndex      Int                          @map("event_index")
+  state           String
+  reason          String?
+  observationId   String?                      @map("observation_id") @db.Uuid
+  actionId        String?                      @map("action_id") @db.Uuid
+  conversationId  String?                      @map("conversation_id") @db.Uuid
+  messageId       String?                      @map("message_id") @db.Uuid
+  result          Json
+  committedAt     DateTime                     @default(now()) @map("committed_at")
+  receipt         IngressReceipt               @relation(fields: [workspaceId, channelId, receiptId], references: [workspaceId, channelId, id], onDelete: Cascade, map: "ingress_progress_receipt_fkey")
+  frontier        IngressFrontier              @relation(fields: [workspaceId, channelId, receiptId, eventIndex], references: [workspaceId, channelId, receiptId, eventIndex], onDelete: Cascade, map: "ingress_progress_frontier_fkey")
+  observation     CanonicalObservation?        @relation(fields: [workspaceId, channelId, observationId], references: [workspaceId, channelId, id], onDelete: NoAction, map: "ingress_progress_observation_fkey")
+  action          CanonicalAction?             @relation(fields: [workspaceId, channelId, actionId], references: [workspaceId, channelId, id], onDelete: NoAction, map: "ingress_progress_action_fkey")
+  conversation    Conversation?                @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: NoAction, map: "ingress_progress_conversation_fkey")
+  message         Message?                     @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: NoAction, map: "ingress_progress_message_fkey")
+  effects         IngressEffect[]
   recertification IngressEventRecertification?
-  @@id([receiptId,eventIndex])
-  @@unique([workspaceId,channelId,receiptId,eventIndex], map: "ingress_event_progress_scope_event_key")
-  @@index([workspaceId,channelId,state,committedAt], map: "ingress_event_progress_scope_state_idx")
+
+  @@id([receiptId, eventIndex])
+  @@unique([workspaceId, channelId, receiptId, eventIndex], map: "ingress_event_progress_scope_event_key")
+  @@index([workspaceId, channelId, state, committedAt], map: "ingress_event_progress_scope_state_idx")
   @@map("ingress_event_progress")
 }
 
 // Every row is a real pending obligation. Stage 1C owns handlers and completion.
 model IngressEffect {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @db.Uuid @map("channel_id")
-  receiptId String @db.Uuid @map("receipt_id")
-  eventIndex Int @map("event_index")
-  conversationId String? @db.Uuid @map("conversation_id")
-  messageId String? @db.Uuid @map("message_id")
-  kind String
-  logicalKey String @map("logical_key")
-  cause Json
-  frozen Json
-  state String @default("pending")
-  createdAt DateTime @default(now()) @map("created_at")
-  attempts Int @default(0)
-  lockedBy String? @map("locked_by")
-  leaseUntil DateTime? @map("lease_until") @db.Timestamptz
-  nextAttemptAt DateTime @default(now()) @map("next_attempt_at") @db.Timestamptz
-  lastErrorCode String? @map("last_error_code")
-  completedAt DateTime? @map("completed_at") @db.Timestamptz
-  result Json?
-  progress IngressEventProgress @relation(fields: [workspaceId,channelId,receiptId,eventIndex], references: [workspaceId,channelId,receiptId,eventIndex], onDelete: Cascade, map: "ingress_effects_progress_fkey")
-  conversation Conversation? @relation(fields: [workspaceId,channelId,conversationId], references: [workspaceId,channelId,id], onDelete: NoAction, map: "ingress_effects_conversation_fkey")
-  message Message? @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: NoAction, map: "ingress_effects_message_fkey")
-  @@unique([workspaceId,channelId,logicalKey,kind], map: "ingress_effects_scope_logical_kind_key")
-  @@index([state,createdAt])
-  @@index([state,nextAttemptAt,createdAt], map: "ingress_effects_claim_idx")
+  id             String               @id @default(uuid()) @db.Uuid
+  workspaceId    String               @map("workspace_id")
+  channelId      String               @map("channel_id") @db.Uuid
+  receiptId      String               @map("receipt_id") @db.Uuid
+  eventIndex     Int                  @map("event_index")
+  conversationId String?              @map("conversation_id") @db.Uuid
+  messageId      String?              @map("message_id") @db.Uuid
+  kind           String
+  logicalKey     String               @map("logical_key")
+  cause          Json
+  frozen         Json
+  state          String               @default("pending")
+  createdAt      DateTime             @default(now()) @map("created_at")
+  attempts       Int                  @default(0)
+  lockedBy       String?              @map("locked_by")
+  leaseUntil     DateTime?            @map("lease_until") @db.Timestamptz
+  nextAttemptAt  DateTime             @default(now()) @map("next_attempt_at") @db.Timestamptz
+  lastErrorCode  String?              @map("last_error_code")
+  completedAt    DateTime?            @map("completed_at") @db.Timestamptz
+  result         Json?
+  progress       IngressEventProgress @relation(fields: [workspaceId, channelId, receiptId, eventIndex], references: [workspaceId, channelId, receiptId, eventIndex], onDelete: Cascade, map: "ingress_effects_progress_fkey")
+  conversation   Conversation?        @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: NoAction, map: "ingress_effects_conversation_fkey")
+  message        Message?             @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: NoAction, map: "ingress_effects_message_fkey")
+
+  @@unique([workspaceId, channelId, logicalKey, kind], map: "ingress_effects_scope_logical_kind_key")
+  @@index([state, createdAt])
+  @@index([state, nextAttemptAt, createdAt], map: "ingress_effects_claim_idx")
   @@map("ingress_effects")
 }
 
 // Private proof of which Message supplies the existing conversation preview cache.
 // Writers without proof invalidate this row; legacy cache contents are not inferred.
 model ConversationPreviewOwner {
-  conversationId String @id @db.Uuid @map("conversation_id")
-  workspaceId String @map("workspace_id")
-  channelId String @db.Uuid @map("channel_id")
-  messageId String @db.Uuid @map("message_id")
-  conversation Conversation @relation(fields:[workspaceId,channelId,conversationId], references:[workspaceId,channelId,id], onDelete:Cascade, map:"conversation_preview_owners_conversation_fkey")
-  message Message @relation(fields:[workspaceId,conversationId,messageId], references:[workspaceId,conversationId,id], onDelete:Cascade, map:"conversation_preview_owners_message_fkey")
-  @@unique([workspaceId,channelId,conversationId],map:"conversation_preview_owners_scope_key")
-  @@index([workspaceId,conversationId,messageId],map:"conversation_preview_owners_message_idx")
+  conversationId String       @id @map("conversation_id") @db.Uuid
+  workspaceId    String       @map("workspace_id")
+  channelId      String       @map("channel_id") @db.Uuid
+  messageId      String       @map("message_id") @db.Uuid
+  conversation   Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade, map: "conversation_preview_owners_conversation_fkey")
+  message        Message      @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: Cascade, map: "conversation_preview_owners_message_fkey")
+
+  @@unique([workspaceId, channelId, conversationId], map: "conversation_preview_owners_scope_key")
+  @@index([workspaceId, conversationId, messageId], map: "conversation_preview_owners_message_idx")
   @@map("conversation_preview_owners")
 }
 
 // Prepared attachment of one message. Original bytes and the playback derivative live in
 // the private media store; only references and integrity digests are persisted here.
 model MessageMedia {
-  messageId String @id @map("message_id") @db.Uuid
-  workspaceId String @map("workspace_id")
-  conversationId String @map("conversation_id") @db.Uuid
-  state String @default("pending")
-  sourceKind String? @map("source_kind")
-  mimeType String? @map("mime_type")
-  sizeBytes Int? @map("size_bytes")
-  sha256 String?
-  originalRef String? @map("original_ref")
-  playbackRef String? @map("playback_ref")
-  playbackMimeType String? @map("playback_mime_type")
-  playbackSha256 String? @map("playback_sha256")
-  errorCode String? @map("error_code")
-  attempts Int @default(0)
-  transcriptionState String? @map("transcription_state")
-  transcriptionToken String? @map("transcription_token") @db.Uuid
+  messageId               String    @id @map("message_id") @db.Uuid
+  workspaceId             String    @map("workspace_id")
+  conversationId          String    @map("conversation_id") @db.Uuid
+  state                   String    @default("pending")
+  sourceKind              String?   @map("source_kind")
+  mimeType                String?   @map("mime_type")
+  sizeBytes               Int?      @map("size_bytes")
+  sha256                  String?
+  originalRef             String?   @map("original_ref")
+  playbackRef             String?   @map("playback_ref")
+  playbackMimeType        String?   @map("playback_mime_type")
+  playbackSha256          String?   @map("playback_sha256")
+  errorCode               String?   @map("error_code")
+  attempts                Int       @default(0)
+  transcriptionState      String?   @map("transcription_state")
+  transcriptionToken      String?   @map("transcription_token") @db.Uuid
   transcriptionLeaseUntil DateTime? @map("transcription_lease_until") @db.Timestamptz
-  transcriptionAttempts Int @default(0) @map("transcription_attempts")
-  transcriptionErrorCode String? @map("transcription_error_code")
-  transcribedAt DateTime? @map("transcribed_at") @db.Timestamptz
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz
-  message Message @relation(fields: [workspaceId,conversationId,messageId], references: [workspaceId,conversationId,id], onDelete: Cascade, map: "message_media_message_fkey")
-  @@unique([workspaceId,conversationId,messageId], map: "message_media_scope_key")
-  @@index([workspaceId,conversationId,state], map: "message_media_scope_idx")
+  transcriptionAttempts   Int       @default(0) @map("transcription_attempts")
+  transcriptionErrorCode  String?   @map("transcription_error_code")
+  transcribedAt           DateTime? @map("transcribed_at") @db.Timestamptz
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt               DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+  message                 Message   @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: Cascade, map: "message_media_message_fkey")
+
+  @@unique([workspaceId, conversationId, messageId], map: "message_media_scope_key")
+  @@index([workspaceId, conversationId, state], map: "message_media_scope_idx")
   @@map("message_media")
 }
 
 // One logical send routed through the outbound router. Records the physical connection that carried it
 // and sends whose outcome is uncertain (reviewed by an operator, never resent automatically).
 model OutboundDispatch {
-  id String @id @default(uuid()) @db.Uuid
-  workspaceId String @map("workspace_id")
-  channelId String @map("channel_id") @db.Uuid
-  kind String
-  destination String
-  preview String?
-  state String @default("sending")
-  connectionId String? @map("connection_id") @db.Uuid
-  providerMessageId String? @map("provider_message_id")
-  attempts Json @default("[]")
-  errorCode String? @map("error_code")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz
-  resolvedAt DateTime? @map("resolved_at") @db.Timestamptz
-  resolvedBy String? @map("resolved_by")
-  channel Channel @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade, map: "outbound_dispatches_channel_fkey")
+  id                String    @id @default(uuid()) @db.Uuid
+  workspaceId       String    @map("workspace_id")
+  channelId         String    @map("channel_id") @db.Uuid
+  kind              String
+  destination       String
+  preview           String?
+  state             String    @default("sending")
+  connectionId      String?   @map("connection_id") @db.Uuid
+  providerMessageId String?   @map("provider_message_id")
+  attempts          Json      @default("[]")
+  errorCode         String?   @map("error_code")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+  resolvedAt        DateTime? @map("resolved_at") @db.Timestamptz
+  resolvedBy        String?   @map("resolved_by")
+  channel           Channel   @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade, map: "outbound_dispatches_channel_fkey")
+
   @@index([workspaceId, channelId, createdAt(sort: Desc)], map: "outbound_dispatches_scope_idx")
   @@map("outbound_dispatches")
 }
@@ -2091,19 +2151,20 @@ model OutboundDispatch {
 /// Append-only record that a held `stale_source` event was certified later, under the then-current source. The
 /// progress row itself stays immutable; this row is the proof of what happened afterwards.
 model IngressEventRecertification {
-  workspaceId String @map("workspace_id")
-  channelId String @db.Uuid @map("channel_id")
-  receiptId String @db.Uuid @map("receipt_id")
-  eventIndex Int @map("event_index")
-  outcome String
-  reason String?
-  observationId String? @db.Uuid @map("observation_id")
-  conversationId String? @db.Uuid @map("conversation_id")
-  messageId String? @db.Uuid @map("message_id")
-  result Json
-  certifiedAt DateTime @default(now()) @map("certified_at")
-  progress IngressEventProgress @relation(fields: [workspaceId,channelId,receiptId,eventIndex], references: [workspaceId,channelId,receiptId,eventIndex], onDelete: Cascade, map: "ingress_recertification_progress_fkey")
-  @@id([receiptId,eventIndex])
-  @@unique([workspaceId,channelId,receiptId,eventIndex], map: "ingress_recertification_scope_event_key")
+  workspaceId    String               @map("workspace_id")
+  channelId      String               @map("channel_id") @db.Uuid
+  receiptId      String               @map("receipt_id") @db.Uuid
+  eventIndex     Int                  @map("event_index")
+  outcome        String
+  reason         String?
+  observationId  String?              @map("observation_id") @db.Uuid
+  conversationId String?              @map("conversation_id") @db.Uuid
+  messageId      String?              @map("message_id") @db.Uuid
+  result         Json
+  certifiedAt    DateTime             @default(now()) @map("certified_at")
+  progress       IngressEventProgress @relation(fields: [workspaceId, channelId, receiptId, eventIndex], references: [workspaceId, channelId, receiptId, eventIndex], onDelete: Cascade, map: "ingress_recertification_progress_fkey")
+
+  @@id([receiptId, eventIndex])
+  @@unique([workspaceId, channelId, receiptId, eventIndex], map: "ingress_recertification_scope_event_key")
   @@map("ingress_event_recertifications")
 }

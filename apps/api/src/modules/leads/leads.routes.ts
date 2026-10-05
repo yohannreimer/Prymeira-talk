@@ -32,6 +32,8 @@ import { LeadSourceUnavailableError } from "./cnpj.repository.js";
 import { LeadConversionError, createLeadConversionService } from "./lead-conversion.service.js";
 import { LeadsDomainError } from "./leads.repository.js";
 import { MAX_CSV_BYTES, createLeadsService } from "./leads.service.js";
+import { createOwnBaseService } from "./own-base.service.js";
+import { leadRegionsUpdateSchema, ownBaseFilterSchema, ownBaseImportRequestSchema, ownBaseImportResultSchema, ownBaseLeadPageSchema, ownBaseOverviewSchema, leadRegionSchema } from "@prymeira-talk/shared";
 
 const listParamsSchema = z.object({ listId: uuidSchema });
 const jobParamsSchema = z.object({ jobId: uuidSchema });
@@ -87,6 +89,7 @@ function csvBytes(value: string) {
 export const leadsRoutes: FastifyPluginAsync<LeadsRoutesOptions> = async (app, options) => {
   const service = options.service;
   const conversion = options.conversionService ?? createLeadConversionService(app.prisma);
+  const ownBase = createOwnBaseService(app.prisma);
   if (!service) throw new Error("Leads routes require a Leads service.");
 
   app.addHook("preHandler", async (request, reply) => {
@@ -244,10 +247,42 @@ export const leadsRoutes: FastifyPluginAsync<LeadsRoutesOptions> = async (app, o
     return reply.code(202).send(leadWhatsappVerificationResponseSchema.parse(result));
   });
 
+  // ---- Base própria ----
+  const ownBaseView = z.object({
+    // "__none__" = companies without a region; absent = every region.
+    region: z.string().trim().max(120).optional().transform(value => value === undefined ? undefined : value === "__none__" ? null : value),
+    filter: ownBaseFilterSchema.default("never"),
+    q: z.string().trim().max(120).optional()
+  });
+  app.post("/leads/own-base/import", { bodyLimit: 4_000_000 }, async (request, reply) => {
+    const body = ownBaseImportRequestSchema.parse(request.body);
+    return reply.code(201).send(ownBaseImportResultSchema.parse(await ownBase.importRows({ workspaceId: request.talk.workspaceId, ...body })));
+  });
+  app.get("/leads/own-base", async (request) => {
+    const { listId } = z.object({ listId: z.string().uuid().optional() }).parse(request.query);
+    return ownBaseOverviewSchema.parse(await ownBase.overview(request.talk.workspaceId, listId));
+  });
+  app.get("/leads/own-base/:listId/leads", async (request) => {
+    const { listId } = listParamsSchema.parse(request.params);
+    const query = ownBaseView.extend({ page: z.coerce.number().int().min(1).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(50) }).parse(request.query);
+    return ownBaseLeadPageSchema.parse(await ownBase.page({ workspaceId: request.talk.workspaceId, listId, ...query }));
+  });
+  app.get("/leads/own-base/:listId/selection", async (request) => {
+    const { listId } = listParamsSchema.parse(request.params);
+    return leadSelectionSchema.parse(await ownBase.selection({ workspaceId: request.talk.workspaceId, listId, ...ownBaseView.parse(request.query) }));
+  });
+  app.get("/leads/regions", async (request) => ({ regions: z.array(leadRegionSchema).parse(await ownBase.listRegions(request.talk.workspaceId)) }));
+  app.put("/leads/regions", async (request, reply) => {
+    if (!canPerform(request.talk.role, "campaign.manage")) return reply.code(403).send({ code: "LEAD_MANAGE_FORBIDDEN", error: "Só gestores alteram as regiões." });
+    const body = leadRegionsUpdateSchema.parse(request.body);
+    return { regions: await ownBase.saveRegions(request.talk.workspaceId, body.regions) };
+  });
+
   app.post("/leads/lists/:listId/contacts/import", async (request, reply) => {
     const { listId } = selectionParamsSchema.parse(request.params);
     const body = leadContactImportRequestSchema.parse(request.body);
     await assertSelection(request.talk.workspaceId, listId, body.selectedLeadIds);
+    await ownBase.assertSelectable(request.talk.workspaceId, listId, body.selectedLeadIds);
     return reply.code(201).send(leadContactImportResultSchema.parse(await conversion.importSelectedLeads({
       workspaceId: request.talk.workspaceId,
       selectedLeadIds: body.selectedLeadIds,
@@ -259,6 +294,7 @@ export const leadsRoutes: FastifyPluginAsync<LeadsRoutesOptions> = async (app, o
     const { listId } = selectionParamsSchema.parse(request.params);
     const body = leadCampaignDraftRequestSchema.parse(request.body);
     await assertSelection(request.talk.workspaceId, listId, body.selectedLeadIds);
+    await ownBase.assertSelectable(request.talk.workspaceId, listId, body.selectedLeadIds);
     if (body.originalSelectedLeadIds) {
       await assertSelection(request.talk.workspaceId, listId, body.originalSelectedLeadIds);
     }

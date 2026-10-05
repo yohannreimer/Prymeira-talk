@@ -5,7 +5,7 @@ const normalizedCnpjPattern = /^[0-9A-Z]{12}[0-9]{2}$/;
 
 export const uuidSchema = z.string().uuid();
 
-export const leadSourceSchema = z.enum(["google_maps", "receita_federal"]);
+export const leadSourceSchema = z.enum(["google_maps", "receita_federal", "own_base"]);
 export type LeadSource = z.infer<typeof leadSourceSchema>;
 
 export const leadJobStatusSchema = z.enum(["queued", "running", "completed", "partial", "failed"]);
@@ -446,3 +446,87 @@ export const leadCampaignDraftResultSchema = z.object({
   contactCount: z.number().int().positive()
 });
 export type LeadCampaignDraftResult = z.infer<typeof leadCampaignDraftResultSchema>;
+
+// ---- Base própria: the workspace's own spreadsheets, by region ----
+
+export const MAX_OWN_BASE_IMPORT_ROWS = 1000;
+/** One company of an imported spreadsheet, already mapped to Talk's columns in the browser. */
+export const ownBaseRowSchema = z.object({
+  company: z.string().trim().min(1).max(200),
+  phones: z.array(z.string().trim().min(1).max(40)).max(10),
+  contact: z.string().trim().max(160).optional(),
+  email: z.string().trim().max(200).optional(),
+  cnpj: z.string().trim().max(30).optional(),
+  city: z.string().trim().max(120).optional(),
+  state: z.string().trim().max(2).optional(),
+  region: z.string().trim().max(120).optional(),
+  activity: z.string().trim().max(200).optional(),
+  originList: z.string().trim().max(200).optional(),
+  notes: z.string().trim().max(1000).optional()
+});
+export type OwnBaseRow = z.infer<typeof ownBaseRowSchema>;
+export const ownBaseImportRequestSchema = z.object({
+  listId: uuidSchema.optional(),
+  name: z.string().trim().min(1).max(160),
+  fileName: z.string().trim().min(1).max(260),
+  rows: z.array(ownBaseRowSchema).min(1).max(MAX_OWN_BASE_IMPORT_ROWS),
+  /** The last chunk of the file: the list is marked complete. */
+  done: z.boolean().default(false)
+});
+export const ownBaseImportResultSchema = z.object({
+  listId: uuidSchema,
+  saved: z.number().int().nonnegative(),
+  withoutPhone: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative()
+});
+export type OwnBaseImportResult = z.infer<typeof ownBaseImportResultSchema>;
+
+export const leadRegionSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  cities: z.array(z.string().trim().min(1).max(120)).max(200),
+  seller: z.string().trim().max(120).nullable(),
+  isMine: z.boolean()
+});
+export type LeadRegionDto = z.infer<typeof leadRegionSchema>;
+export const leadRegionsUpdateSchema = z.object({ regions: z.array(leadRegionSchema).max(60) })
+  .refine(value => value.regions.filter(region => region.isMine).length <= 1, { message: "Only one region can be yours." })
+  .refine(value => new Set(value.regions.map(region => region.name.toLowerCase())).size === value.regions.length, { message: "Region names must be unique." });
+
+/** A region of one base, with what the list shows beside it. region null = companies without a region. */
+export const ownBaseRegionSummarySchema = z.object({
+  region: z.string().nullable(),
+  seller: z.string().nullable(),
+  isMine: z.boolean(),
+  total: z.number().int().nonnegative(),
+  dispatched: z.number().int().nonnegative()
+});
+export const ownBaseOverviewSchema = z.object({
+  list: z.object({ id: uuidSchema, name: z.string(), total: z.number().int().nonnegative(), createdAt: z.string().datetime() }).nullable(),
+  regions: z.array(ownBaseRegionSummarySchema),
+  hasMyRegion: z.boolean()
+});
+export type OwnBaseOverview = z.infer<typeof ownBaseOverviewSchema>;
+
+export const ownBaseFilterSchema = z.enum(["never", "sent", "replied", "all"]);
+export type OwnBaseFilter = z.infer<typeof ownBaseFilterSchema>;
+export const ownBaseLeadSchema = z.object({
+  id: uuidSchema,
+  company: z.string(),
+  phone: z.string().nullable(),
+  otherPhones: z.number().int().nonnegative(),
+  city: z.string().nullable(),
+  region: z.string().nullable(),
+  lastDispatch: z.object({ at: z.string().datetime(), campaign: z.string() }).nullable(),
+  repliedAt: z.string().datetime().nullable()
+});
+export type OwnBaseLead = z.infer<typeof ownBaseLeadSchema>;
+export const ownBaseLeadPageSchema = z.object({
+  items: z.array(ownBaseLeadSchema),
+  total: z.number().int().nonnegative(),
+  page: z.number().int().positive(),
+  pageSize: z.number().int().positive(),
+  counts: z.object({ never: z.number().int().nonnegative(), sent: z.number().int().nonnegative(), replied: z.number().int().nonnegative(), all: z.number().int().nonnegative() }),
+  /** Only the workspace's own region (or every region while none is chosen) can become a dispatch list. */
+  selectable: z.boolean()
+});
+export type OwnBaseLeadPage = z.infer<typeof ownBaseLeadPageSchema>;
