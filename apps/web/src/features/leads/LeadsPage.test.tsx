@@ -159,7 +159,7 @@ describe("LeadsPage", () => {
     expect(api.apiVerifyLeadWhatsapp.mock.calls[1]?.[2]).toEqual(ids.slice(250));
   });
 
-  it("uses the complete selection when creating a campaign draft", async () => {
+  it("creates the dispatch list from the complete selection, without asking for a message (written in Disparos)", async () => {
     const ids = Array.from({ length: 30 }, (_, index) => `00000000-0000-4000-8000-${(index + 2).toString().padStart(12, "0")}`);
     api.apiGetLeadResults.mockResolvedValue({ items: ids.slice(0, 25).map(id => ({ ...lead, id })), page: 1, pageSize: 25, total: 30 });
     api.apiGetLeadSelection.mockResolvedValue({ ids, verifiableIds: ids });
@@ -167,15 +167,12 @@ describe("LeadsPage", () => {
     api.apiCreateLeadCampaignDraft.mockResolvedValue({ campaignId: list.id, contactCount: 30 });
     await render();
     await act(async () => container.querySelector<HTMLInputElement>('[aria-label="Selecionar todos os resultados da lista"]')!.click());
-    await click("Criar lote de disparo");
-    const textarea = container.querySelector<HTMLTextAreaElement>(".leads-dialog textarea")!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Olá!");
-      textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+    await click("Criar lista de disparo");
+    expect(container.querySelector(".leads-dialog textarea")).toBeNull();
     await click("Confirmar 30");
     expect(api.apiImportLeadContacts).toHaveBeenCalledWith(getToken, list.id, ids);
-    expect(api.apiCreateLeadCampaignDraft).toHaveBeenCalledWith(getToken, list.id, ids, "Olá!", ids);
+    expect(api.apiCreateLeadCampaignDraft).toHaveBeenCalledWith(getToken, list.id, ids, undefined, ids);
+    expect(container.textContent).toContain("Abrir em Disparos");
   });
 
   it("skips selected leads without a valid phone during WhatsApp verification", async () => {

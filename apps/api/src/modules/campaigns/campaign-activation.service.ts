@@ -6,7 +6,7 @@ import { DEFAULT_CAMPAIGN_CADENCE, drawGap, nextCampaignInstant, type CampaignCa
 export class CampaignActivationError extends Error {
   constructor(public code: "CAMPAIGN_NOT_FOUND" | "CAMPAIGN_NOT_DRAFT" |
     "CAMPAIGN_PREVIEW_CHANGED" | "CAMPAIGN_NO_ELIGIBLE_RECIPIENTS" |
-    "CAMPAIGN_SCHEDULE_INVALID" | "CAMPAIGN_CADENCE_INVALID", message: string) {
+    "CAMPAIGN_SCHEDULE_INVALID" | "CAMPAIGN_CADENCE_INVALID" | "CAMPAIGN_MESSAGE_REQUIRED", message: string) {
     super(message);
   }
 }
@@ -62,6 +62,10 @@ export function createCampaignActivationService(prisma: PrismaClient, options: {
       if (prior.activationKey === input.idempotencyKey) return prior;
       if (prior.status !== "draft") throw new CampaignActivationError("CAMPAIGN_NOT_DRAFT",
         "Esta campanha já foi ativada.");
+      // A list created in Leads arrives without a message: it is written in Disparos before anything is sent.
+      const templates = Array.isArray(prior.templates) ? prior.templates.filter((value) => typeof value === "string" && value.trim()) : [];
+      if (!prior.messageBody.trim() && !templates.length) throw new CampaignActivationError("CAMPAIGN_MESSAGE_REQUIRED",
+        "Escreva a mensagem do disparo antes de agendar.");
       if (input.preview.audienceHash !== input.expectedAudienceHash) {
         throw new CampaignActivationError("CAMPAIGN_PREVIEW_CHANGED",
           "Os destinatários ou a mensagem mudaram. Verifique novamente.");

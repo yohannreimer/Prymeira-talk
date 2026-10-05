@@ -518,14 +518,10 @@ export function createLeadConversionService(
           messageBody = reply.body.trim();
         }
         if (!messageBody) {
+          // The list is created here; the message, its variations and the pace are written in Disparos. A single
+          // message the leads already share is kept as a starting point, otherwise the draft starts empty.
           const snapshots = [...new Set(provenances.map((row) => row.suggestedMessage?.trim()).filter(Boolean))];
-          if (snapshots.length !== 1) {
-            throw new LeadConversionError(
-              "LEAD_CAMPAIGN_COMMON_BODY_REQUIRED",
-              "Selected leads have different message snapshots; choose one common body."
-            );
-          }
-          messageBody = snapshots[0]!;
+          messageBody = snapshots.length === 1 ? snapshots[0]! : "";
         }
         if (messageBody.length > 2000) {
           throw new LeadConversionError("LEAD_SELECTION_INVALID", "Campaign body is too long.");

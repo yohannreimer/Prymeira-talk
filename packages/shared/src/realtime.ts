@@ -126,7 +126,8 @@ const campaignSchema = z.object({
   name: z.string().min(1),
   status: z.enum(["draft", "scheduled", "sending", "paused", "completed", "failed", "canceled", "needs_attention"]),
   audience: z.unknown(),
-  messageBody: z.string().min(1),
+  // A list created in Leads is a draft without a message until it is written in Disparos.
+  messageBody: z.string(),
   scheduledAt: z.string().datetime().nullable(),
   timeZone: z.string().optional(),
   hideFromInboxUntilReply: z.boolean().optional(),

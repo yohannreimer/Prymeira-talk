@@ -486,7 +486,7 @@ describe("lead conversion", () => {
     expect(tx.campaign.create).not.toHaveBeenCalled();
   });
 
-  it("requires an explicit common body when selected snapshots differ", async () => {
+  it("creates the list without a message when the selected snapshots differ: it is written in Disparos", async () => {
     const { prisma, tx } = createPrisma();
     tx.leadContactProvenance.findMany.mockResolvedValue([
       { id: ids.provenance1, leadId: ids.lead1, contactId: ids.contact1, suggestedMessage: "Corpo A", contact: record() },
@@ -495,8 +495,8 @@ describe("lead conversion", () => {
     const service = createLeadConversionService(prisma as never);
 
     await expect(service.createCampaignDraftFromLeads({ workspaceId: "workspace-a", selectedLeadIds: [ids.lead1, ids.lead2] }))
-      .rejects.toMatchObject({ code: "LEAD_CAMPAIGN_COMMON_BODY_REQUIRED" } satisfies Partial<LeadConversionError>);
-    expect(tx.campaign.create).not.toHaveBeenCalled();
+      .resolves.toMatchObject({ status: "draft", contactCount: 2 });
+    expect(tx.campaign.create).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({ messageBody: "" }) }));
 
     await expect(service.createCampaignDraftFromLeads({
       workspaceId: "workspace-a",

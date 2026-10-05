@@ -4,6 +4,6 @@ export function LeadActionsBar({ count, busy, onVerify, onImport, onCampaign }: 
   return <div className="leads-actions-bar" aria-live="polite"><strong>{count} selecionado{count === 1 ? "" : "s"}</strong><div>
     <button type="button" className="secondary-button" disabled={!count || busy} onClick={onVerify}><CircleCheck size={16} /> Verificar WhatsApp</button>
     <button type="button" className="secondary-button" disabled={!count || busy} onClick={onImport}><UserPlus size={16} /> Cadastrar contatos</button>
-    <button type="button" className="primary-button" disabled={!count || busy} onClick={onCampaign}><Send size={16} /> Criar lote de disparo</button>
+    <button type="button" className="primary-button" disabled={!count || busy} onClick={onCampaign}><Send size={16} /> Criar lista de disparo</button>
   </div></div>;
 }
