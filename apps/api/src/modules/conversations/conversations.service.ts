@@ -684,16 +684,18 @@ function mapMessageDto(record: MessageRecord, publicTalkUrl?: string): MessageDt
   };
 }
 
-/** WhatsApp id, quote and reaction stored by the canonical writer (metadata.whatsapp/quoted/reaction). */
+/** WhatsApp id, quote, reaction and poll vote stored by the canonical writer (metadata.whatsapp/quoted/reaction/pollVote). */
 function whatsappPresentation(metadata: Record<string, unknown>, providerMessageId: string | null) {
   const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
   const text = (v: unknown, max: number) => typeof v === 'string' && v ? v.slice(0, max) : null;
-  const whatsapp = object(metadata.whatsapp), quoted = object(metadata.quoted), reaction = object(metadata.reaction);
+  const whatsapp = object(metadata.whatsapp), quoted = object(metadata.quoted), reaction = object(metadata.reaction), pollVote = object(metadata.pollVote);
   const whatsappId = text(whatsapp.id, 200) ?? (providerMessageId && !providerMessageId.includes('_') && !providerMessageId.startsWith('wamid.') ? providerMessageId : null);
   return {
     ...(whatsappId ? { whatsappId } : {}),
     ...(text(quoted.id, 200) ? { quoted: { whatsappId: text(quoted.id, 200)!, participant: text(quoted.participant, 100), body: text(quoted.body, 500) } } : {}),
-    ...(text(reaction.targetId, 200) ? { reaction: { targetWhatsappId: text(reaction.targetId, 200)!, emoji: text(reaction.emoji, 32) } } : {})
+    ...(text(reaction.targetId, 200) ? { reaction: { targetWhatsappId: text(reaction.targetId, 200)!, emoji: text(reaction.emoji, 32) } } : {}),
+    ...(text(pollVote.targetId, 200) ? { pollVote: { targetWhatsappId: text(pollVote.targetId, 200)!,
+      options: Array.isArray(pollVote.options) ? pollVote.options.map(option => text(option, 100)).filter((option): option is string => Boolean(option)).slice(0, 12) : null } } : {})
   };
 }
 

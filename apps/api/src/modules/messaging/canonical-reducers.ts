@@ -145,6 +145,24 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     }
     const resolved = await resolveActionTarget(tx, event);
     let reason = resolved.reason;
+    // Messages without a canonical identity (Talk's own sends through Evolution, messages from before the writer) used
+    // to lose every ack and stay on one tick. The ack may still advance the one 1:1 outbound message of this channel
+    // carrying that stanza id: status only, forward only, never content.
+    if (!resolved.identity && event.kind === 'receipt' && (reason === 'target_missing' || reason === 'incomplete_target_identity')
+      && event.target.rawId && event.target.direction !== 'inbound') {
+      const legacy = await tx.message.findMany({ where: { workspaceId: scope.workspaceId, direction: 'outbound', providerMessageId: event.target.rawId,
+        conversation: { channelId: scope.channelId, contact: { isGroup: false } } }, take: 2 });
+      if (legacy.length === 1) {
+        const stored = legacy[0]!, ranks = { failed: 0, pending: 0, sent: 1, delivered: 2, read: 3 } as const;
+        const status = String(event.providerStatus).toLowerCase() === 'played' ? 'read' : event.status;
+        Object.assign(result, { messageId: stored.id, conversationId: stored.conversationId });
+        if (ranks[status] > ranks[stored.status as keyof typeof ranks]) {
+          await tx.message.update({ where: { id: stored.id }, data: { status } });
+          result.changes.push('message_status_advanced');
+        }
+        reason = undefined;
+      }
+    }
     if (resolved.identity) {
       const identity = resolved.identity;
       Object.assign(result, { identityId: identity.id, messageId: identity.messageId, conversationId: identity.conversationId, chatId: identity.chatId });

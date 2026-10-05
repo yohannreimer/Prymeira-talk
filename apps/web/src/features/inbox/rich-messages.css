@@ -1,0 +1,15 @@
+.poll-message { display: grid; gap: 8px; min-width: 220px; max-width: 320px; padding: 2px 0 4px; }
+.poll-message-title { display: flex; align-items: center; gap: 6px; font-size: 14.5px; line-height: 1.35; }
+.poll-message-title svg { color: #00a884; flex: none; }
+.poll-message ul { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.poll-message li { display: grid; gap: 5px; }
+.poll-message-option { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.poll-message-option small { margin-left: auto; color: #667781; font-size: 12.5px; }
+.poll-message-dot { display: inline-grid; place-items: center; width: 17px; height: 17px; border: 1.5px solid #8696a0; border-radius: 50%; flex: none; }
+.poll-message li.is-mine .poll-message-dot { background: #00a884; border-color: #00a884; color: #fff; }
+.poll-message-bar { display: block; height: 5px; margin-left: 25px; border-radius: 3px; background: rgba(134, 150, 160, 0.25); overflow: hidden; }
+.poll-message-bar span { display: block; height: 100%; border-radius: 3px; background: #00a884; transition: width 0.2s ease; }
+.poll-message-total { color: #667781; font-size: 12px; }
+.pix-key-action { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; margin-top: 6px; padding: 7px 10px;
+  border: 0; border-top: 1px solid rgba(134, 150, 160, 0.25); background: transparent; color: #027eb5; font: inherit; font-size: 13.5px; font-weight: 500; cursor: pointer; }
+.pix-key-action:hover { background: rgba(2, 126, 181, 0.06); }

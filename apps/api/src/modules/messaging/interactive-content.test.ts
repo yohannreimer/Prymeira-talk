@@ -24,6 +24,21 @@ describe('business and interactive messages read like WhatsApp shows them', () =
     expect(interactiveMessageText({ eventMessage: { name: 'Aniversário', description: 'Às 20h' } })).toBe('📅 Evento: Aniversário\nÀs 20h');
     expect(interactiveMessageText({ groupInviteMessage: { groupName: 'Padel' } })).toBe('👥 Convite para o grupo Padel');
   });
+  it('reads a shared Pix key (payment_info) from Evolution and from GOWS', () => {
+    const params = JSON.stringify({ currency: 'BRL', total_amount: { value: 0, offset: 100 }, payment_settings: [{ type: 'pix_static_code',
+      pix_static_code: { merchant_name: 'MALAH GESTORA FINANCEIRA', key: 'financeiro@villefer.com.br', key_type: 'EMAIL' } }] });
+    const expected = '💠 Chave Pix\nMALAH GESTORA FINANCEIRA\nE-mail: financeiro@villefer.com.br';
+    expect(extractMessageContent({ interactiveMessage: { nativeFlowMessage: { buttons: [{ name: 'payment_info', buttonParamsJson: params }] } } })).toMatchObject({ type: 'text', body: expected });
+    // Shape observed in production (GOWS 2026.9.1): the proto oneof wrapper and buttonParamsJSON.
+    const gows = gowsMessageToWpp({ id: 'false_1@lid_A', from: '1@lid', fromMe: false, _data: { Info: { ID: 'A', Chat: '1@lid', IsFromMe: false },
+      Message: { interactiveMessage: { InteractiveMessage: { NativeFlowMessage: { buttons: [{ name: 'payment_info', buttonParamsJSON: params.replace('"value":0', '"value":12345') }] } } } } } });
+    expect(wahaContent(gows).content.body).toBe('💠 Chave Pix\nMALAH GESTORA FINANCEIRA\nValor: R$\u00a0123,45\nE-mail: financeiro@villefer.com.br');
+  });
+  it('GOWS: an encrypted poll vote is a vote on its poll', () => {
+    const gows = gowsMessageToWpp({ id: 'true_1@g.us_V', from: '1@g.us', fromMe: true, _data: { Info: { ID: 'V', Chat: '1@g.us', IsFromMe: true },
+      Message: { pollUpdateMessage: { pollCreationMessageKey: { ID: 'POLL1' }, vote: { encPayload: 'x' } } } } });
+    expect(wahaContent(gows).content).toMatchObject({ type: 'system', body: 'Votou na enquete', pollVote: { targetId: 'POLL1', options: null } });
+  });
   it('Evolution: a template with its text only in an interactive template is no longer "Template recebido sem texto"', () => {
     const template = { templateMessage: { hydratedTemplate: { documentMessage: { fileName: 'Fatura.pdf' }, hydratedContentText: '' }, interactiveMessageTemplate: { body: { text: 'Sua fatura chegou' } } } };
     expect(extractMessageContent(template)).toMatchObject({ type: 'template', body: '📄 Fatura.pdf\nSua fatura chegou' });

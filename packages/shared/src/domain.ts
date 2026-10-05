@@ -460,6 +460,8 @@ export const messageSchema = z.object({
   quoted: z.object({ whatsappId: z.string(), participant: z.string().nullable(), body: z.string().nullable() }).optional(),
   /** This message is a reaction (emoji null = removed) to the message with this WhatsApp id; shown on that message. */
   reaction: z.object({ targetWhatsappId: z.string(), emoji: z.string().nullable() }).optional(),
+  /** This message is a vote on the poll with this WhatsApp id (options null = vote not readable); counted on that poll. */
+  pollVote: z.object({ targetWhatsappId: z.string(), options: z.array(z.string()).nullable() }).optional(),
   createdAt: z.string().datetime()
 });
 export type MessageDto = z.infer<typeof messageSchema>;

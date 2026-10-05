@@ -70,6 +70,9 @@ function wppModel(payload: Record<string, unknown>, info: Record<string, unknown
     const contacts = Array.isArray(record(message.contactsArrayMessage).contacts) ? record(message.contactsArrayMessage).contacts as unknown[] : [];
     return { ...base, type: 'multi_vcard', body: '', vcardList: contacts.map(c => ({ displayName: record(c).displayName, vcard: record(c).vcard })) };
   }
+  // GOWS delivers the vote encrypted: it is a vote on that poll, options unknown.
+  const pollTargetId = string(record(record(message.pollUpdateMessage).pollCreationMessageKey).id);
+  if (pollTargetId) return { ...base, type: 'poll_vote', body: '', pollTargetId };
   // Business templates, buttons, lists, polls, events, invites: the text WhatsApp shows for them.
   const rich = interactiveMessageText(message);
   if (rich) return { ...base, type: 'chat', body: rich };

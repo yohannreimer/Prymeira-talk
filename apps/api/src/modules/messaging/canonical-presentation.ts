@@ -33,6 +33,7 @@ export function presentationMetadata(event: MessageEvent) {
     ...(event.content.location ? { location: event.content.location } : {}),
     ...(event.content.quoted ? { quoted: event.content.quoted } : {}),
     ...(event.content.reaction ? { reaction: event.content.reaction } : {}),
+    ...(event.content.pollVote ? { pollVote: event.content.pollVote } : {}),
     ...(event.media?.hasMedia ? { canonicalPreparation: { status: 'pending' } } : {}) };
 }
 /** Compare factual cards/location independently of summary labels and media.

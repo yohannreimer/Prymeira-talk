@@ -42,6 +42,9 @@ export function wahaContent(payload: Record<string, unknown>, raw = record(paylo
     const body = [location.isLive ? 'Localização compartilhada — Última posição recebida' : 'Localização compartilhada', location.name, location.address, locationMapUrl(location)].filter(Boolean).join('\n');
     return { content: { ...text(body), location }, attachment, media };
   }
+  if (type === 'poll_vote' && string(raw.pollTargetId)) {
+    return { content: { ...text('Votou na enquete', 'system'), pollVote: { targetId: string(raw.pollTargetId)!, options: null } }, attachment, media };
+  }
   if (type === 'vcard' || type === 'multi_vcard') {
     const cards = type === 'multi_vcard' && Array.isArray(raw.vcardList) ? raw.vcardList.slice(0, 50) : [{ displayName: raw.vcardFormattedName, vcard: raw.body }];
     const contactCards = cards.map(parseContactCard).filter((value): value is NonNullable<typeof value> => value !== null);

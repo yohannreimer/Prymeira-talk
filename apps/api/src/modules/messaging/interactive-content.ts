@@ -23,6 +23,29 @@ function headerMedia(source: Obj) {
   return null;
 }
 
+const PIX_KEY_TYPES: Record<string, string> = { EMAIL: 'E-mail', PHONE: 'Telefone', CPF: 'CPF', CNPJ: 'CNPJ', EVP: 'Chave aleatória' };
+/**
+ * The Pix key a WhatsApp Business account shares from its payment settings (a native flow `payment_info` button with
+ * `pix_static_code`). WhatsApp draws it as a card with "Copiar chave Pix"; Talk reads it as the merchant, the key and,
+ * when the charge has one, the amount.
+ */
+function pixPayment(buttons: unknown[]) {
+  for (const button of buttons) {
+    if (text(obj(button).name) !== 'payment_info') continue;
+    let params: Obj;
+    try { params = obj(JSON.parse(text(obj(button).buttonParamsJson) ?? '')); } catch { continue; }
+    const pix = list(params.payment_settings).map(setting => obj(obj(setting).pix_static_code)).find(code => text(code.key));
+    if (!pix) continue;
+    const amount = obj(params.total_amount), value = typeof amount.value === 'number' ? amount.value : 0;
+    const offset = typeof amount.offset === 'number' && amount.offset > 0 ? amount.offset : 100;
+    const keyType = PIX_KEY_TYPES[text(pix.key_type)?.toUpperCase() ?? ''] ?? 'Chave';
+    return lines('💠 Chave Pix', text(pix.merchant_name),
+      value > 0 ? `Valor: ${(value / offset).toLocaleString('pt-BR', { style: 'currency', currency: text(params.currency) ?? 'BRL' })}` : null,
+      `${keyType}: ${text(pix.key)}`);
+  }
+  return null;
+}
+
 function nativeFlowLabel(button: unknown) {
   const params = text(obj(button).buttonParamsJson);
   if (!params) return null;
@@ -50,9 +73,12 @@ export function interactiveMessageText(message: unknown): string | null {
       })));
   }
 
-  const interactive = obj(m.interactiveMessage);
+  // GOWS keeps the proto oneof wrapper: interactiveMessage.interactiveMessage.
+  const outer = obj(m.interactiveMessage), interactive = Object.keys(obj(outer.interactiveMessage)).length ? obj(outer.interactiveMessage) : outer;
   if (Object.keys(interactive).length) {
     const header = obj(interactive.header);
+    const pix = pixPayment(list(obj(interactive.nativeFlowMessage).buttons));
+    if (pix) return lines(text(obj(interactive.body).text), pix);
     return lines(headerMedia(header), text(header.title), text(header.subtitle), text(obj(interactive.body).text), text(obj(interactive.footer).text),
       buttons(list(obj(interactive.nativeFlowMessage).buttons).map(nativeFlowLabel)),
       Object.keys(obj(interactive.collectionMessage)).length || Object.keys(obj(interactive.shopStorefrontMessage)).length ? '🛍️ Catálogo' : null);

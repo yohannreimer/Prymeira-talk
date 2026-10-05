@@ -400,6 +400,28 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
     expect(await db.message.findUnique({ where: { id: created.messageId! } })).toMatchObject({ body: 'hello' });
   });
 
+  it('advances a 1:1 outbound message with no canonical identity from a flat Evolution ack, never a group one', async () => {
+    // Production 05/10: Talk's own sends through Evolution have no identity, so every ack was held and they kept one tick.
+    const c = await context();
+    const send = async (phone: string, isGroup: boolean, id: string) => {
+      const contact = await db.contact.create({ data: { workspaceId: c.workspaceId, phone, isGroup } });
+      const conversation = await db.conversation.create({ data: { workspaceId: c.workspaceId, channelId: c.channelId, contactId: contact.id } });
+      return db.message.create({ data: { workspaceId: c.workspaceId, conversationId: conversation.id, direction: 'outbound', type: 'text', body: 'oi', status: 'sent', providerMessageId: id } });
+    };
+    const direct = await send('5547999990001', false, '3EB0LEGACY1'), group = await send('120000-200@g.us', true, '3EB0LEGACY2');
+    const ack = (keyId: string, remoteJid: string, status: string) => {
+      const result = normalizeEvolutionWebhook(c, { event: 'messages.update', data: { keyId, remoteJid, fromMe: true, status, messageId: 'row' } });
+      if (result.kind !== 'accepted') throw new Error('Expected receipt');
+      return persist(result.event);
+    };
+    expect((await ack('3EB0LEGACY1', '5547999990001@s.whatsapp.net', 'DELIVERY_ACK')).changes).toEqual(['message_status_advanced']);
+    expect((await ack('3EB0LEGACY1', '5547999990001@s.whatsapp.net', 'READ')).outcome).toBe('enriched');
+    expect(await ack('3EB0LEGACY1', '5547999990001@s.whatsapp.net', 'DELIVERY_ACK')).toMatchObject({ outcome: 'duplicate', changes: [] });
+    expect(await db.message.findUnique({ where: { id: direct.id } })).toMatchObject({ status: 'read' });
+    expect((await ack('3EB0LEGACY2', '120000-200@g.us', 'READ')).outcome).toBe('held');
+    expect(await db.message.findUnique({ where: { id: group.id } })).toMatchObject({ status: 'sent' });
+  });
+
   it('retries a receipt with no normalized target only after an exact WAHA alias arrives', async () => {
     const c = await context(undefined, undefined, 'waha'), original = msg(c);
     const target = { ...original.key, rawId: null, chatAddress: null, direction: null, senderParticipant: null, nativeChatAddress: null, nativeSenderParticipant: null };

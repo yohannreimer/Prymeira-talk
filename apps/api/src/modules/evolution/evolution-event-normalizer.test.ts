@@ -116,6 +116,20 @@ describe('Evolution shared event adapter', () => {
     expect(result.providerStatus).toBe(status);
     expect(result.target).toMatchObject({ rawId: 'A_B', chatAddress: null, direction: null, senderParticipant: null });
   });
+  it('scopes the flat Evolution 2.x receipt (keyId, remoteJid, fromMe on data) to its chat and direction', () => {
+    // Shape observed in production on 05/10: without this every Evolution ack stayed held as incomplete_target_identity.
+    const result = normalize({ keyId: '3EB0E02555118C51C8FBA8', remoteJid: '43487198244972@lid', fromMe: true, status: 'DELIVERY_ACK',
+      instanceId: 'i', messageId: 'cmuvemuuecfe0514i30w8yvqn' }, 'messages.update');
+    if (result.kind !== 'receipt') throw new Error('Expected receipt');
+    expect(result.status).toBe('delivered');
+    expect(result.target).toMatchObject({ rawId: '3EB0E02555118C51C8FBA8', chatAddress: '43487198244972@lid', direction: 'outbound', senderParticipant: '' });
+  });
+  it('reads a poll vote as a vote on its poll, never as an unreadable message', () => {
+    const vote = normalize({ key: { remoteJid: '1203@g.us', fromMe: true, id: 'V1', participant: '230794412974089@lid' }, messageType: 'pollUpdateMessage',
+      message: { pollUpdateMessage: { pollCreationMessageKey: { remoteJid: '1203@g.us', fromMe: false, id: 'POLL1' }, vote: { encPayload: {}, selectedOptions: ['Não'] } } } });
+    if (vote.kind !== 'message') throw new Error('Expected message');
+    expect(vote.content).toMatchObject({ type: 'system', body: 'Votou em: Não', pollVote: { targetId: 'POLL1', options: ['Não'] } });
+  });
   it('extracts connection and QR controls', () => {
     expect(normalize({ state: 'open' }, 'CONNECTION_UPDATE')).toMatchObject({ kind: 'control', control: 'connection', status: 'connected' });
     expect(normalize({ qrcode: { base64: 'qr-value' } }, 'QRCODE_UPDATED')).toMatchObject({ kind: 'control', control: 'qr', qrCode: 'qr-value' });

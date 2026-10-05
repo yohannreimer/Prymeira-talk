@@ -7,7 +7,8 @@ import { LocationMessage } from './LocationMessage';
 import { needsHumanAttention } from "@prymeira-talk/shared";
 import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
 import { Bookmark, Bot, Check, CheckCircle2, MoreVertical, Smile, Zap, ShieldCheck, ContactRound, FileText, Forward, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
-import { quotedPreview, threadWithReactions } from "./message-threading.js";
+import { mentionNames, parsePixKey, parsePoll, quotedPreview, threadWithReactions, withMentionNames } from "./message-threading.js";
+import { PixKeyAction, PollMessage } from "./RichMessages";
 import { MessageTicks } from "./MessageTicks";
 import { ConversationPreview } from "./ConversationPreview";
 import { QuoteContent } from "./QuoteMedia";
@@ -1003,6 +1004,7 @@ function InboxPageContent() {
   const beginPerformance = useTalkPerformance(selectedConversationId, selectedConversation?.id ?? null, messagesQuery.data);
   const visibleMessages = messagesConversationId === selectedConversationId ? messages : EMPTY_MESSAGES;
   const thread = useMemo(() => threadWithReactions(visibleMessages), [visibleMessages]);
+  const mentions = useMemo(() => mentionNames(visibleMessages), [visibleMessages]);
   // Who wrote last (a failed send or a note is not a reply): the assistant panel follows it the moment we send.
   const lastFromUs = useMemo(() => {
     const last = [...thread.visible].reverse().find(message => message.type !== 'system' && message.type !== 'internal_note' && message.status !== 'failed' && !message.deletedAt);
@@ -1920,7 +1922,7 @@ selectedConversation ? (
               const isInbound = message.direction === "inbound";
               const isMedia = ['image', 'audio', 'file'].includes(message.type);
               // Plain text keeps its time on the last line, like WhatsApp; media, maps and cards keep it below.
-              const inlineMeta = !isMedia && !message.location && !message.contactCards?.length;
+              const inlineMeta = !isMedia && !message.location && !message.contactCards?.length && !parsePoll(message.body);
               const meta = <>
                 {message.editedAt ? <span className="message-edited-label">Editada</span> : null}
                 <time>{formatMessageTime(message.createdAt)}</time>
@@ -1960,11 +1962,14 @@ selectedConversation ? (
                       avatarName={message.type !== 'audio' ? undefined : isInbound ? senderName : selectedConversation.channelName ?? 'Você'} />
                     {mediaCaption(message) ? <p><WhatsappText text={mediaCaption(message)!} /></p> : null}
                     {attachmentReadNotice(message) && !message.attachment?.isGif ? <details className="talk-audio-transcript"><summary>Leitura pela IA indisponível</summary><p>Você pode abrir o anexo acima. A leitura pela IA não foi concluída.</p></details> : null}
-                  </> : message.location ? <LocationMessage location={message.location} /> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} conversationId={selectedConversation.id} onSelect={setSelectedContactCard} /> : (
-                    <p className="message-text"><WhatsappText text={messageDisplayText(message)} /><span className="message-meta-spacer" aria-hidden="true">{meta}</span>
+                  </> : message.location ? <LocationMessage location={message.location} /> : message.contactCards?.length ? <ContactCardMessage cards={message.contactCards} conversationId={selectedConversation.id} onSelect={setSelectedContactCard} /> : parsePoll(message.body) ? <>
+                    <PollMessage poll={parsePoll(message.body)!} tally={message.whatsappId ? thread.polls.get(message.whatsappId) : undefined} />
+                  </> : (
+                    <p className="message-text"><WhatsappText text={selectedConversation.isGroup ? withMentionNames(messageDisplayText(message), mentions) : messageDisplayText(message)} /><span className="message-meta-spacer" aria-hidden="true">{meta}</span>
                       <span className="message-bubble-meta">{meta}</span></p>
                   )}
                   {inlineMeta ? null : <div className="message-bubble-meta">{meta}</div>}
+                  {!isMedia && parsePixKey(message.body) ? <PixKeyAction pixKey={parsePixKey(message.body)!} /> : null}
                   {message.contactCards?.length && !message.location ? <ContactCardActions cards={message.contactCards} busy={cardChatBusy === message.id}
                     onChat={card => { void actionsRef.current.openCardChat(card, message.id); }} /> : null}
                   {outboundStatusLabel(message) ? (

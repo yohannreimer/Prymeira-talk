@@ -22,6 +22,9 @@ export interface NormalizedContent {
   quoted?: { id: string; participant: string | null; body: string | null };
   /** A reaction (empty emoji = reaction removed) to the message with this stanza id. Presentation only. */
   reaction?: { targetId: string; emoji: string | null };
+  /** A vote on the poll with this stanza id: the options picked ([] = vote removed), or null when the provider only
+   * delivers the encrypted vote. Presentation only: WhatsApp shows votes as counts on the poll, never as messages. */
+  pollVote?: { targetId: string; options: string[] | null };
 }
 export interface AttachmentPresentation {
   fileName?: string; caption?: string; mimeType?: string; durationSeconds?: number;

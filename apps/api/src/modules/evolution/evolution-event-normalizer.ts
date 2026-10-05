@@ -39,6 +39,18 @@ export function reactionOf(message: Record<string, unknown>) {
   const reaction = record(message.reactionMessage), targetId = string(record(reaction.key).id);
   return targetId ? { targetId, emoji: string(reaction.text) } : null;
 }
+/** A pollUpdateMessage: the poll's stanza id and the options picked. Evolution decrypts the vote into
+ * vote.selectedOptions; without it the vote is still a vote (options unknown), never an unreadable message. */
+export function pollVoteOf(message: Record<string, unknown>) {
+  const update = record(message.pollUpdateMessage), targetId = string(record(update.pollCreationMessageKey).id);
+  if (!targetId) return null;
+  const selected = record(update.vote).selectedOptions;
+  const options = Array.isArray(selected) ? selected.filter((option): option is string => typeof option === 'string').slice(0, 12) : null;
+  return { targetId, options };
+}
+export function pollVoteBody(options: string[] | null) {
+  return options === null ? 'Votou na enquete' : options.length ? `Votou em: ${options.join(', ')}` : 'Removeu o voto';
+}
 /** Shared adapter is opt-in for the canonical writer. Legacy handlers keep their existing helpers. */
 export function normalizeEvolutionWebhook(context: TrustedMessagingContext, input: unknown): NormalizationResult {
   const envelope = record(input), data = record(envelope.data);
@@ -97,7 +109,10 @@ export function normalizeEvolutionWebhook(context: TrustedMessagingContext, inpu
     if (typeof data.status !== 'string' && typeof data.status !== 'number') return { kind: 'invalid', reason: 'invalid_receipt' };
     // Baileys WAProto WebMessageInfo.Status: ERROR=0, PLAYED=5. Keep legacy route mapping unchanged.
     const status = String(data.status) === '5' ? 'read' : String(data.status) === '0' ? 'failed' : mapEvolutionMessageStatus(data.status as string | number | undefined);
-    const target = keyOf({ ...rawKey, id: rawKey.id ?? data.keyId ?? data.id ?? data.messageId });
+    // Evolution 2.x sends the receipt flat (keyId, remoteJid, fromMe on data, no data.key). Those are the provider's own
+    // fields for the acked message, so they scope it like a key would; data.messageId is Evolution's row id, a last resort.
+    const flat = Object.keys(rawKey).length ? rawKey : { remoteJid: data.remoteJid, fromMe: data.fromMe, participant: data.participant };
+    const target = keyOf({ ...flat, id: rawKey.id ?? data.keyId ?? data.id ?? data.messageId });
     return status && target.nativeId ? { kind: 'accepted', event: { ...base, kind: 'receipt', target, status, providerStatus: data.status, recipient: null, order: order(null) } } : { kind: 'invalid', reason: 'invalid_receipt' };
   }
   if (eventName !== 'messages.upsert') return { kind: 'ignored', reason: 'unsupported_event' };
@@ -120,6 +135,8 @@ export function normalizeEvolutionWebhook(context: TrustedMessagingContext, inpu
   }
   const reaction = reactionOf(message);
   if (reaction) content = { ...content, reaction };
+  const pollVote = pollVoteOf(message);
+  if (pollVote) content = { type: 'system', body: pollVoteBody(pollVote.options), preview: pollVoteBody(pollVote.options), mediaUrl: null, pollVote };
   const quoted = quotedOf(message, data);
   if (quoted) content = { ...content, quoted };
   const media: MediaSourceDescriptor | null = kind ? { kind, hasMedia: true, url: content.mediaUrl, state: content.mediaUrl ? 'available' : 'pending' } : null;
