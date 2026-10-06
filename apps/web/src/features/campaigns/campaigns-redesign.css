@@ -1,0 +1,154 @@
+/*
+ * Disparos in the Atendimento's language (same as Leads · Base própria): off-white page, white panes split by
+ * hairlines, rows instead of cards, neutral selection; green only for the one primary action and the app rail.
+ * Warnings (amber) and errors (red) keep their colour because they ask for action.
+ */
+.campaigns-page {
+  --cp-line: var(--color-border, #e3e6e2); --cp-hair: #eef0ed; --cp-hover: #f7f8f7; --cp-selected: #eff1ef;
+  --cp-ink: var(--color-text-primary, #1e2a25); --cp-muted: var(--color-text-secondary, #6d7d75); --cp-faint: #9aa19c;
+  background: var(--color-surface-page);
+  color: var(--cp-ink);
+}
+
+/* ---------- Home: the list of campaigns ---------- */
+.campaigns-hub { gap: 14px; padding: 0 clamp(18px, 3vw, 42px) 32px; }
+.campaigns-head { display: flex; justify-content: space-between; align-items: end; gap: 16px; padding: 28px 0 4px; }
+.campaigns-head h1 { margin: 0 0 4px; font-size: clamp(26px, 2.6vw, 34px); line-height: 1.1; letter-spacing: -.04em; }
+.campaigns-head p { margin: 0; color: var(--cp-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.campaigns-hub .campaign-inline-note { margin: 0; }
+.campaigns-list { background: var(--color-surface-card, #fff); border: 1px solid var(--cp-line); border-radius: 12px; overflow: auto; }
+.campaigns-list table { width: 100%; border-collapse: collapse; min-width: 620px; font-size: 14px; }
+.campaigns-list th { text-align: left; font-size: 12px; font-weight: 500; color: var(--cp-muted); padding: 11px 18px; border-bottom: 1px solid var(--cp-line); }
+.campaigns-list td { padding: 12px 18px; border-bottom: 1px solid var(--cp-hair); vertical-align: middle; }
+.campaigns-list tbody tr { cursor: pointer; }
+.campaigns-list tbody tr:hover td { background: var(--cp-hover); }
+.campaigns-list tbody tr:last-child td { border-bottom: 0; }
+.campaigns-open { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--cp-ink); text-align: left; cursor: pointer; }
+.campaigns-open:focus-visible { outline: 2px solid var(--cp-ink); outline-offset: 3px; border-radius: 4px; }
+.campaigns-muted { color: var(--cp-muted); font-size: 13px; white-space: nowrap; }
+.campaigns-status { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; white-space: nowrap; }
+.campaigns-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--cp-faint); }
+.campaigns-status.is-active::before { background: #5b8fc4; }
+.campaigns-status.is-done::before { background: #2f9e64; }
+.campaigns-status.is-attention { color: #9a6206; } .campaigns-status.is-attention::before { background: #d39a2c; }
+.campaigns-actions { width: 48px; text-align: right; }
+.campaigns-delete { display: inline-grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 7px; background: none; color: var(--cp-muted); cursor: pointer; }
+.campaigns-delete:hover, .campaigns-delete:focus-visible { background: #fdf1ef; color: #a33a2c; }
+.campaigns-delete:disabled { opacity: .5; cursor: wait; }
+.campaigns-empty { display: grid; justify-items: center; gap: 6px; margin: 0; padding: 48px 18px; color: var(--cp-muted); text-align: center; }
+.campaigns-empty strong { color: var(--cp-ink); }
+
+/* ---------- Editor: steps, panel, blocks ---------- */
+.campaigns-page.guided-campaign { background: var(--color-surface-page); }
+.campaigns-page .guided-campaign-header { background: transparent; padding: 24px clamp(18px, 3vw, 42px) 4px; }
+.campaigns-page .guided-campaign-header h1 { letter-spacing: -.04em; }
+.campaigns-page .guided-campaign-header .eyebrow { color: var(--cp-muted); letter-spacing: .08em; font-size: 11px; }
+.campaigns-page .guided-campaign-steps { margin-top: 14px; gap: 0; border-bottom: 1px solid var(--cp-line); }
+.campaigns-page .guided-campaign-steps span { color: var(--cp-muted); font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 11px 14px; }
+.campaigns-page .guided-campaign-steps b { border-color: var(--cp-line); color: var(--cp-muted); font-weight: 600; width: 22px; height: 22px; }
+.campaigns-page .guided-campaign-steps .is-current { color: var(--cp-ink); font-weight: 600; border-bottom-color: var(--cp-ink); }
+.campaigns-page .guided-campaign-steps .is-current b { background: var(--cp-ink); border-color: var(--cp-ink); color: #fff; }
+.campaigns-page .guided-campaign-steps .is-done { color: var(--cp-ink); }
+.campaigns-page .guided-campaign-steps .is-done b { background: var(--cp-selected); border-color: var(--cp-line); color: var(--cp-ink); }
+.campaigns-page .guided-campaign-panel { margin-top: 18px; border: 1px solid var(--cp-line); border-radius: 12px; box-shadow: none; gap: 20px; }
+.campaigns-page .guided-campaign-panel-heading { color: var(--cp-ink); }
+.campaigns-page .guided-campaign-panel-heading > svg { color: var(--cp-faint); }
+.campaigns-page .guided-campaign-panel-heading h2 { font-size: clamp(1.15rem, 1.7vw, 1.4rem); letter-spacing: -.025em; }
+.campaigns-page .guided-campaign-panel-heading p { color: var(--cp-muted); }
+.campaigns-page .guided-campaign-kicker { color: var(--cp-muted); font-weight: 600; letter-spacing: .08em; }
+
+/* Boxes that were tinted green become plain rows with a hairline. */
+.campaigns-page :is(.guided-campaign-source, .guided-campaign-safety, .guided-campaign-hidden-option, .guided-campaign-custom-cadence, .message-variations) {
+  background: var(--color-surface-card, #fff); border: 1px solid var(--cp-line); border-radius: 10px; color: var(--cp-ink);
+}
+.campaigns-page :is(.guided-campaign-source, .guided-campaign-safety) > svg { color: var(--cp-muted); flex: none; }
+.campaigns-page :is(.guided-campaign-source, .guided-campaign-safety) span,
+.campaigns-page .guided-campaign-hidden-option small, .campaigns-page .message-name-helper small { color: var(--cp-muted); }
+.campaigns-page .guided-campaign-hidden-option { margin: 4px 0; }
+.campaigns-page .guided-campaign-hidden-option strong { color: var(--cp-ink); font-weight: 600; }
+.campaigns-page .guided-campaign-hidden-option input, .campaigns-page .campaign-review-confirmation input { accent-color: var(--cp-ink); }
+.campaigns-page .guided-campaign-source-choice label { border-color: var(--cp-line); color: var(--cp-ink); }
+.campaigns-page .guided-campaign-source-choice label:has(input:checked) { background: var(--cp-selected); border-color: #b9c0bb; }
+.campaigns-page .guided-campaign-source-choice input { accent-color: var(--cp-ink); }
+.campaigns-page .guided-campaign-list-choice { background: var(--color-surface-card, #fff); border: 1px solid var(--cp-line); border-radius: 10px; }
+.campaigns-page .guided-campaign-list-icon { background: var(--cp-selected); color: var(--cp-muted); border-radius: 10px; }
+.campaigns-page .guided-campaign-list-choice span { color: var(--cp-muted); font-weight: 600; letter-spacing: .08em; }
+.campaigns-page .guided-campaign-list-choice strong { color: var(--cp-ink); }
+.campaigns-page .guided-campaign-list-choice small { color: var(--cp-muted); }
+.campaigns-page .guided-campaign-switch-list { color: var(--cp-ink); font-weight: 500; text-decoration-color: var(--cp-line); }
+.campaigns-page .guided-campaign-upload { border: 1px dashed #c9cfca; border-radius: 10px; color: var(--cp-ink); }
+.campaigns-page .message-variations-heading { color: var(--cp-ink); }
+.campaigns-page .message-variation { border-top-color: var(--cp-hair); }
+.campaigns-page .campaign-guidance-note { background: none; padding: 0; color: var(--cp-muted); font-size: 13px; }
+.campaigns-page .guided-campaign-actions { border-top-color: var(--cp-line); padding-top: 18px; }
+.campaigns-page .campaign-toast { background: var(--color-surface-card, #fff); border: 1px solid var(--cp-line); color: var(--cp-ink); }
+
+/* Review */
+.campaigns-page .campaign-review-summary > div { background: var(--color-surface-card, #fff); border: 1px solid var(--cp-line); border-radius: 10px; color: var(--cp-muted); padding: 16px; }
+.campaigns-page .campaign-review-summary strong { color: var(--cp-ink); font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+.campaigns-page .campaign-review-summary .is-ready { background: var(--color-surface-card, #fff); }
+.campaigns-page .campaign-review-summary .is-ready strong { color: #2f7d55; }
+.campaigns-page .campaign-review-details { border-color: var(--cp-line); border-radius: 10px; }
+.campaigns-page .campaign-review-details div { border-top-color: var(--cp-hair); }
+.campaigns-page .campaign-review-details dt { color: var(--cp-muted); }
+.campaigns-page .campaign-review-details dd { color: var(--cp-ink); font-weight: 500; }
+.campaigns-page .campaign-review-message span { color: var(--cp-muted); font-weight: 500; }
+/* The message looks like the WhatsApp bubble it will become, not a dark green block. */
+.campaigns-page .campaign-review-message p { background: #f4f5f3; color: var(--cp-ink); border: 1px solid var(--cp-hair); border-radius: 10px; padding: 14px 16px; }
+.campaigns-page .campaign-review-sample strong { color: var(--cp-ink); }
+.campaigns-page .campaign-review-confirmation { border-color: var(--cp-line); border-radius: 10px; }
+.campaigns-page .guided-campaign-uncertain { border-radius: 10px; }
+
+/* ---------- Ritmo de envio ---------- */
+.campaign-rhythm { display: grid; gap: 14px; padding-top: 18px; border-top: 1px solid var(--cp-line); }
+.campaign-rhythm-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+.campaign-rhythm h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.campaign-segmented { display: inline-flex; padding: 3px; border-radius: 9px; background: var(--cp-selected); }
+.campaign-segmented button { border: 0; background: none; border-radius: 7px; padding: 6px 12px; font: inherit; font-size: 13px; color: var(--cp-muted); cursor: pointer; }
+.campaign-segmented button.is-on { background: var(--color-surface-card, #fff); color: var(--cp-ink); font-weight: 600; box-shadow: 0 1px 2px rgba(20, 30, 25, .1); }
+.campaign-rhythm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px 22px; }
+.campaign-rhythm-grid label, .campaign-rhythm-days { display: grid; gap: 6px; align-content: start; }
+.campaign-rhythm-grid label > span:first-child, .campaign-rhythm-days > span { font-size: 12.5px; color: var(--cp-muted); }
+.campaign-rhythm-range { display: flex; align-items: center; gap: 8px; }
+.campaign-rhythm-range input { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--cp-line); border-radius: 8px; font: inherit; color: var(--cp-ink); background: var(--color-surface-card, #fff); font-variant-numeric: tabular-nums; }
+.campaign-rhythm-range em { font-style: normal; color: var(--cp-muted); font-size: 13px; }
+.campaign-rhythm-days > div { display: flex; flex-wrap: wrap; gap: 4px; }
+.campaign-rhythm-days button { min-width: 42px; padding: 7px 8px; border: 1px solid var(--cp-line); border-radius: 8px; background: var(--color-surface-card, #fff); font: inherit; font-size: 12.5px; color: var(--cp-muted); cursor: pointer; }
+.campaign-rhythm-days button.is-on { background: var(--cp-ink); border-color: var(--cp-ink); color: #fff; font-weight: 600; }
+.campaign-rhythm-note { margin: 0; font-size: 13px; line-height: 1.5; color: var(--cp-muted); }
+.campaign-rhythm-warning { margin: 0; font-size: 13px; color: #a33a2c; }
+.campaign-rhythm-calendar { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--cp-line); border-radius: 10px; }
+.campaign-rhythm-calendar p { margin: 0; font-size: 13.5px; line-height: 1.5; }
+.campaign-rhythm-calendar ol { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.campaign-rhythm-calendar li { display: inline-flex; gap: 6px; align-items: baseline; padding: 5px 9px; border-radius: 7px; background: var(--cp-selected); font-size: 12.5px; color: var(--cp-muted); }
+.campaign-rhythm-calendar li b { color: var(--cp-ink); font-variant-numeric: tabular-nums; }
+.campaign-rhythm-calendar li.is-more { background: none; }
+.campaign-rhythm-calendar small { color: var(--cp-faint); font-size: 12px; }
+
+/* ---------- Acompanhamento por dia e por cidade ---------- */
+.campaign-tracking { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.campaign-tracking section { border: 1px solid var(--cp-line); border-radius: 10px; overflow: hidden; min-width: 0; }
+.campaign-tracking header { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--cp-line); }
+.campaign-tracking h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.campaign-tracking header span { font-size: 12.5px; color: var(--cp-muted); }
+.campaign-tracking table { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.campaign-tracking th { text-align: left; font-size: 12px; font-weight: 500; color: var(--cp-muted); padding: 8px 16px; border-bottom: 1px solid var(--cp-hair); }
+.campaign-tracking td { padding: 8px 16px; border-bottom: 1px solid var(--cp-hair); }
+.campaign-tracking th:not(:first-child), .campaign-tracking td:not(:first-child) { text-align: right; }
+.campaign-tracking tr:last-child td { border-bottom: 0; }
+.campaign-tracking tr.is-future td { color: var(--cp-muted); }
+.campaign-tracking tr.is-today td { font-weight: 600; }
+.campaign-tracking td em { margin-left: 7px; font-style: normal; font-weight: 500; font-size: 11.5px; color: var(--cp-muted); }
+.campaign-tracking td small { color: var(--cp-faint); font-size: 11.5px; margin-left: 3px; }
+
+@media (max-width: 680px) {
+  .campaigns-head { flex-direction: column; align-items: stretch; }
+  .campaigns-head .primary-button { justify-content: center; }
+  .campaign-rhythm-head { flex-direction: column; align-items: stretch; }
+  .campaign-segmented { display: flex; } .campaign-segmented button { flex: 1; }
+}
+
+/* The live counters (na fila · enviadas · pendentes · precisam atenção) on one line; "Voltar" stays a small button. */
+.campaigns-page .campaign-review-summary:has(> div:nth-child(4)) { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.campaigns-page .guided-campaign-header > div > .secondary-button { justify-self: start; width: auto; }
+@media (max-width: 680px) { .campaigns-page .campaign-review-summary:has(> div:nth-child(4)) { grid-template-columns: 1fr 1fr; } }

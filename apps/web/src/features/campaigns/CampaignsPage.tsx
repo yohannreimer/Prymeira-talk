@@ -4,6 +4,7 @@ import { CalendarClock, Gauge, Play, Plus, RefreshCw, Save, Send, Trash2, Upload
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { readSheet } from "read-excel-file/browser";
 import { GuidedCampaignEditor } from "./GuidedCampaignEditor";
+import "./campaigns-redesign.css";
 import {
   apiCreateCampaign,
   apiDeleteCampaignDraft,
@@ -965,12 +966,17 @@ export function CampaignsPage() {
   }
 
   if (viewMode === "hub") {
+    const tone = (status: CampaignDto["status"]) => status === "completed" ? "done"
+      : status === "sending" || status === "scheduled" ? "active"
+      : status === "paused" || status === "needs_attention" ? "attention" : "idle";
+    const origin = (campaign: CampaignDto) => campaign.audience.origin === "leads" ? "Lista de Leads"
+      : campaign.audience.type === "list" ? "Lista de contatos" : campaign.audience.type === "imported" ? "Planilha importada" : "Board do CRM";
     return (
-      <section className="module-page campaigns-page" aria-label="Disparos">
-        <header className="module-header">
+      <section className="module-page campaigns-page campaigns-hub" aria-label="Disparos">
+        <header className="campaigns-head">
           <div>
-            <p className="eyebrow">Prymeira Talk</p>
             <h1>Disparos</h1>
+            <p>{campaigns.length} {campaigns.length === 1 ? "campanha" : "campanhas"} · {sendingCount} enviando · {scheduledCount} {scheduledCount === 1 ? "agendada" : "agendadas"} · {completedCount} {completedCount === 1 ? "concluída" : "concluídas"}</p>
           </div>
           <button className="primary-button" type="button" onClick={createDraft}>
             <Plus size={16} aria-hidden="true" />
@@ -978,70 +984,33 @@ export function CampaignsPage() {
           </button>
         </header>
 
-        <div className="contacts-stats-row" aria-label="Resumo de disparos">
-          <span className="contacts-stat">
-            <strong>{campaigns.length}</strong>
-            <span>Campanhas</span>
-          </span>
-          <span className="contacts-stat">
-            <strong>{scheduledCount}</strong>
-            <span>Agendadas</span>
-          </span>
-          <span className="contacts-stat">
-            <strong>{sendingCount}</strong>
-            <span>Enviando</span>
-          </span>
-          <span className="contacts-stat">
-            <strong>{completedCount}</strong>
-            <span>Concluidas</span>
-          </span>
-        </div>
-
         {error ? <p className="error-note campaign-inline-note">{error}</p> : null}
         {notice ? <p className="success-note campaign-inline-note" role="status">{notice}</p> : null}
 
-        <div className="campaign-hub-grid">
-          <button className="campaign-create-card" type="button" onClick={createDraft}>
-            <span className="campaign-create-icon">
-              <Send size={26} aria-hidden="true" />
-            </span>
-            <strong>Criar novo disparo</strong>
-            <span>Importe uma lista, escreva templates e configure o ritmo antes de enviar.</span>
-          </button>
-
-          {isLoading ? (
-            <div className="module-panel campaign-empty-panel">Carregando campanhas...</div>
-          ) : campaigns.length === 0 ? (
-            <div className="module-panel campaign-empty-panel">
-              <strong>Nenhum disparo criado</strong>
-              <span>Comece por um rascunho e valide tudo em simulação.</span>
-            </div>
-          ) : (
-            campaigns.map((campaign) => (
-              <div className="campaign-hub-card" key={campaign.id}>
-                <button className="campaign-hub-open" onClick={() => openCampaign(campaign)} type="button">
-                  <span className={`status-badge status-badge--${
-                    campaign.status === "completed" ? "open" :
-                    campaign.status === "scheduled" || campaign.status === "sending" ? "waiting" : "closed"
-                  }`}>
-                    {statusLabel(campaign.status)}
-                  </span>
-                  <strong>{campaign.name}</strong>
-                  <span>{campaign.audience.type === 'list' ? 'Lista de contatos' : campaign.audience.type === "imported" ? "Lista importada" : "Board do CRM"}</span>
-                  <small>{formatDateTime(campaign.scheduledAt)}</small>
-                </button>
-                {campaign.status === "draft" ? (
-                  <button className="campaign-hub-delete" type="button"
-                    aria-label={`Excluir rascunho ${campaign.name}`}
-                    title="Excluir rascunho"
-                    disabled={deletingCampaignId !== null}
-                    onClick={() => void deleteDraft(campaign)}>
-                    <Trash2 size={17} aria-hidden="true" />
-                  </button>
-                ) : null}
-              </div>
-            ))
-          )}
+        <div className="campaigns-list">
+          {isLoading ? <p className="campaigns-empty">Carregando campanhas…</p>
+            : campaigns.length === 0 ? <div className="campaigns-empty"><strong>Nenhum disparo criado</strong>
+              <span>Crie um disparo aqui ou monte uma lista em Leads e use “Criar lista de disparo”.</span></div>
+            : <table>
+              <thead><tr><th>Disparo</th><th>Contatos</th><th>Situação</th><th>Início</th><th aria-label="Ações" /></tr></thead>
+              <tbody>{campaigns.map((campaign) => (
+                <tr key={campaign.id} onClick={() => openCampaign(campaign)}>
+                  <td><button className="campaigns-open" type="button" onClick={(event) => { event.stopPropagation(); openCampaign(campaign); }}>{campaign.name}</button></td>
+                  <td className="campaigns-muted">{origin(campaign)}</td>
+                  <td><span className={`campaigns-status is-${tone(campaign.status)}`}>{statusLabel(campaign.status)}</span></td>
+                  <td className="campaigns-muted">{campaign.scheduledAt ? formatDateTime(campaign.scheduledAt) : "–"}</td>
+                  <td className="campaigns-actions">{campaign.status === "draft" ? (
+                    <button className="campaigns-delete" type="button"
+                      aria-label={`Excluir rascunho ${campaign.name}`}
+                      title="Excluir rascunho"
+                      disabled={deletingCampaignId !== null}
+                      onClick={(event) => { event.stopPropagation(); void deleteDraft(campaign); }}>
+                      <Trash2 size={16} aria-hidden="true" />
+                    </button>
+                  ) : null}</td>
+                </tr>
+              ))}</tbody>
+            </table>}
         </div>
       </section>
     );

@@ -174,4 +174,63 @@ describe.skipIf(!safe)("campaign queue with disposable PostgreSQL", () => {
     expect(sendText).toHaveBeenCalledTimes(1);
     expect(await worker.processOne()).toBe(false);
   });
+
+  it("spreads over days: a daily cap the worker respects, weekends skipped, and tracking by day and city", async () => {
+    const dailyChannelId = randomUUID();
+    await prisma.channel.create({ data: { id: dailyChannelId, workspaceId,
+      provider: "evolution", providerKey: `test-${dailyChannelId}`, status: "connected" } });
+    const campaign = await prisma.campaign.create({ data: { workspaceId,
+      name: "Base própria por dia", audience: { type: "imported", rows: [] },
+      messageBody: "Olá", templates: ["Olá"], cadence: { minDelaySeconds: 60,
+        maxDelaySeconds: 120, batchSize: 20, pauseMinSeconds: 900, pauseMaxSeconds: 1200,
+        windowStart: "09:00", windowEnd: "18:00", dailyMin: 2, dailyMax: 2, weekdays: [1, 2, 3, 4, 5] } } });
+    current = new Date("2026-09-25T12:00:00.000Z"); // Friday 09:00 São Paulo
+    const phones = ["5547311111111", "5547322222222", "5547333333333"];
+    const preview = await previewCampaignAudience({ campaign, channelId: dailyChannelId,
+      contacts: phones.map((phone, index) => ({ contactId: null, audienceKey: phone, name: null, phone,
+        fields: index < 2 ? { cidade: "Joinville" } : { cidade: "Araquari" } })),
+      verify: async (numbers) => numbers.map((phone) => ({ phone, available: true })), now });
+    await createCampaignActivationService(prisma, { now }).activate({ workspaceId, campaignId: campaign.id,
+      actorId: "test-user", idempotencyKey: randomUUID(), channelId: dailyChannelId, startMode: "now",
+      scheduledAt: null, timeZone: "America/Sao_Paulo", confirmation: true,
+      expectedAudienceHash: preview.audienceHash, preview });
+    const planned = await prisma.campaignRecipient.findMany({ where: { campaignId: campaign.id }, orderBy: { sequenceNumber: "asc" } });
+    // Two on Friday, the third on Monday (not Saturday).
+    expect(planned.map((row) => row.scheduledAt!.toISOString().slice(0, 10))).toEqual(["2026-09-25", "2026-09-25", "2026-09-28"]);
+
+    // Even if all three were due today (a resume, a rollover), the worker stops at the daily maximum.
+    await prisma.campaignRecipient.updateMany({ where: { campaignId: campaign.id }, data: { scheduledAt: current } });
+    // Other tests' queues are finished first so only this campaign is due.
+    await prisma.campaignRecipient.updateMany({ where: { workspaceId, status: "pending", NOT: { campaignId: campaign.id } }, data: { status: "canceled" } });
+    const worker = createCampaignWorker({ prisma, evolution: { sendText, checkWhatsappNumbersAvailability }, now });
+    // Walk Friday: each step jumps to when the number may send again (the planned gaps are hours apart).
+    for (let step = 0; step < 4; step += 1) {
+      await worker.processOne();
+      const throttle = await prisma.campaignChannelThrottle.findUniqueOrThrow({ where: {
+        workspaceId_channelId: { workspaceId, channelId: dailyChannelId } } });
+      const due = await prisma.campaignRecipient.findFirst({ where: { campaignId: campaign.id, status: "pending" }, orderBy: { scheduledAt: "asc" } });
+      const next = Math.max(throttle.nextAvailableAt?.getTime() ?? 0, due?.scheduledAt?.getTime() ?? 0, current.getTime()) + 1_000;
+      if (next > new Date("2026-09-25T21:00:00.000Z").getTime()) break; // Friday 18:00
+      current = new Date(next);
+    }
+    expect(await prisma.campaignRecipient.count({ where: { campaignId: campaign.id, status: "sent" } })).toBe(2);
+    const waiting = await prisma.campaignRecipient.findFirstOrThrow({ where: { campaignId: campaign.id, status: "pending" } });
+    expect(waiting.scheduledAt?.toISOString()).toBe("2026-09-28T12:00:00.000Z"); // Monday 09:00
+
+    // The first company answered.
+    const first = await prisma.campaignRecipient.findFirstOrThrow({ where: { campaignId: campaign.id, phoneSnapshot: phones[0] } });
+    const contact = await prisma.contact.findFirstOrThrow({ where: { workspaceId, phone: phones[0] } });
+    const conversation = await prisma.conversation.findFirstOrThrow({ where: { workspaceId, channelId: dailyChannelId, contactId: contact.id } });
+    await prisma.message.create({ data: { workspaceId, conversationId: conversation.id, direction: "inbound", type: "text",
+      status: "delivered", body: "Oi, quero saber", createdAt: new Date(first.sentAt!.getTime() + 60_000) } });
+    const progress = await createCampaignControlsService(prisma, { now }).progress(workspaceId, campaign.id);
+    expect(progress.days).toEqual([
+      { day: "2026-09-25", sent: 2, planned: 0, replied: 1 },
+      { day: "2026-09-28", sent: 0, planned: 1, replied: 0 }
+    ]);
+    expect(progress.cities).toEqual([
+      { city: "Joinville", total: 2, sent: 2, replied: 1 },
+      { city: "Araquari", total: 1, sent: 0, replied: 0 }
+    ]);
+  });
 });

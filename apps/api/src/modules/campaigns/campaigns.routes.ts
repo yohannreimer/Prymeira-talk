@@ -49,7 +49,10 @@ const cadenceSchema = z.object({
   pauseMinSeconds: z.number().min(0).max(86_400),
   pauseMaxSeconds: z.number().min(0).max(86_400),
   windowStart: z.string().optional(),
-  windowEnd: z.string().optional()
+  windowEnd: z.string().optional(),
+  dailyMin: z.number().int().min(1).max(500).optional(),
+  dailyMax: z.number().int().min(1).max(500).optional(),
+  weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7).optional()
 });
 
 const createCampaignBodySchema = z.object({

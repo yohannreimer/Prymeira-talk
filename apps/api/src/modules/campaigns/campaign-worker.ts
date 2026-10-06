@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { EvolutionClient } from "../evolution/evolution.client.js";
 import { whatsappPhoneCandidates } from "../leads/lead-whatsapp-numbers.js";
-import { DEFAULT_CAMPAIGN_CADENCE, drawPause, nextCampaignInstant,
+import { DEFAULT_CAMPAIGN_CADENCE, drawPause, isDailyCadence, localDayStart, nextCampaignInstant, nextDayStart,
   type CampaignCadence, type Draw } from "./campaign-cadence.js";
 import { createCampaignWorkerRepository } from "./campaign-worker.repository.js";
 
@@ -38,6 +38,15 @@ export function createCampaignWorker(input: {
     if (legal > current) {
       await repository.returnPending({ id: job.id, leaseToken: token, scheduledAt: legal });
       return true;
+    }
+    // Spread over days: never more than the daily maximum, even when yesterday's leftovers roll over.
+    if (isDailyCadence(cadence)) {
+      const sentToday = await repository.sentSince(job.workspaceId, job.campaignId, localDayStart(current, job.campaign.timeZone));
+      if (sentToday >= cadence.dailyMax!) {
+        await repository.returnPending({ id: job.id, leaseToken: token,
+          scheduledAt: nextDayStart(current, job.campaign.timeZone, cadence) });
+        return true;
+      }
     }
     const snapshot = job.contactSnapshot && typeof job.contactSnapshot === "object" &&
       !Array.isArray(job.contactSnapshot) ? job.contactSnapshot : {};
@@ -126,7 +135,8 @@ export function createCampaignWorker(input: {
     const sentAt = now();
     const throttle = await repository.throttle(job.workspaceId, job.channelId);
     const afterAttempts = throttle.attemptsSincePause + 1;
-    const pauseSeconds = drawPause(cadence, input.draw, afterAttempts);
+    // A day's messages are already spaced across the window; the batch pause is for same-day sends.
+    const pauseSeconds = isDailyCadence(cadence) ? 0 : drawPause(cadence, input.draw, afterAttempts);
     const nextAvailableAt = nextCampaignInstant(sentAt,
       (job.gapSeconds ?? cadence.minDelaySeconds) + pauseSeconds,
       job.campaign.timeZone, cadence);

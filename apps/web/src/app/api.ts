@@ -327,6 +327,11 @@ export interface CampaignCadenceDto {
   pauseMaxSeconds: number;
   windowStart?: string;
   windowEnd?: string;
+  /** Spread over days: between dailyMin and dailyMax messages per day (e.g. 38–42). */
+  dailyMin?: number;
+  dailyMax?: number;
+  /** Days allowed to send, 0 = Sunday. Absent = every day. */
+  weekdays?: number[];
 }
 
 export interface CampaignDto {
@@ -400,7 +405,13 @@ export interface CampaignProgressDto {
   failed: number;
   uncertain: number;
   nextScheduledAt: string | null;
+  /** Day by day (campaign time zone): sent, still planned and replies. */
+  days?: CampaignProgressDayDto[];
+  /** By the company's city (Base própria / Leads), "Sem cidade" otherwise. */
+  cities?: CampaignProgressCityDto[];
 }
+export interface CampaignProgressDayDto { day: string; sent: number; planned: number; replied: number }
+export interface CampaignProgressCityDto { city: string; total: number; sent: number; replied: number }
 
 export interface CampaignSendResultDto {
   mode: "simulated" | "real";
@@ -949,7 +960,9 @@ function parseCampaignCadence(data: unknown): CampaignCadenceDto {
     pauseMinSeconds: Number(payload?.pauseMinSeconds ?? 300),
     pauseMaxSeconds: Number(payload?.pauseMaxSeconds ?? 900),
     ...(typeof payload?.windowStart === "string" ? { windowStart: payload.windowStart } : {}),
-    ...(typeof payload?.windowEnd === "string" ? { windowEnd: payload.windowEnd } : {})
+    ...(typeof payload?.windowEnd === "string" ? { windowEnd: payload.windowEnd } : {}),
+    ...(typeof payload?.dailyMax === "number" ? { dailyMin: Number(payload.dailyMin ?? payload.dailyMax), dailyMax: payload.dailyMax } : {}),
+    ...(Array.isArray(payload?.weekdays) && payload.weekdays.length ? { weekdays: payload.weekdays.map(Number) } : {})
   };
 }
 

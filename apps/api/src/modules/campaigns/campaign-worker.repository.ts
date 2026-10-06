@@ -254,6 +254,11 @@ export function createCampaignWorkerRepository(prisma: PrismaClient, options: {
       });
     },
 
+    /** Messages of this campaign sent since an instant (the daily quota). */
+    async sentSince(workspaceId: string, campaignId: string, since: Date) {
+      return prisma.campaignRecipient.count({ where: { workspaceId, campaignId, status: "sent", sentAt: { gte: since } } });
+    },
+
     async throttle(workspaceId: string, channelId: string) {
       return prisma.campaignChannelThrottle.findUniqueOrThrow({
         where: { workspaceId_channelId: { workspaceId, channelId } }

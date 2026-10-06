@@ -1,4 +1,5 @@
 import type { CampaignAudiencePreviewDto, CampaignCadenceDto } from "../../app/api";
+import { estimateDays, isDaily, shortDay, weekdaysLabel } from "./campaign-rhythm";
 
 const reasonLabel: Record<CampaignAudiencePreviewDto["excluded"][number]["reason"], string> = {
   missing_phone: "Sem telefone válido",
@@ -26,6 +27,7 @@ export function CampaignReview(props: {
   }, {});
   const samples = preview.eligible.filter((row, index, rows) =>
     rows.findIndex((other) => other.message === row.message) === index).slice(0, 5);
+  const days = estimateDays(preview.eligible.length, props.cadence, preview.effectiveStartAt ? new Date(preview.effectiveStartAt) : new Date());
   const notImported = preview.selectedCount === null ? 0 : Math.max(0,
     preview.selectedCount - preview.eligible.length - preview.excluded.length);
   return <div className="campaign-review">
@@ -50,9 +52,15 @@ export function CampaignReview(props: {
       {props.prospectingContext && <div><dt>Contexto da oferta</dt><dd>{props.prospectingContext}</dd></div>}
       <div><dt>Canal de envio</dt><dd>{props.channelName}</dd></div>
       <div><dt>Início</dt><dd>{props.startLabel}</dd></div>
-      <div><dt>Intervalo entre mensagens</dt><dd>{props.cadence.minDelaySeconds / 60} a {props.cadence.maxDelaySeconds / 60} minutos, sorteado a cada envio</dd></div>
-      <div><dt>Pausas</dt><dd>{props.cadence.pauseMinSeconds / 60} a {props.cadence.pauseMaxSeconds / 60} minutos após cada {props.cadence.batchSize} tentativas</dd></div>
-      <div><dt>Horário permitido</dt><dd>{props.cadence.windowStart} às {props.cadence.windowEnd}</dd></div>
+      {isDaily(props.cadence) ? <>
+        <div><dt>Ritmo</dt><dd>{props.cadence.dailyMin} a {props.cadence.dailyMax} por dia, espalhadas ao longo do horário</dd></div>
+        <div><dt>Dias e horário</dt><dd>{weekdaysLabel(props.cadence.weekdays)}, das {props.cadence.windowStart} às {props.cadence.windowEnd}</dd></div>
+        {days.length ? <div><dt>Previsão</dt><dd>cerca de {days.length} {days.length === 1 ? "dia" : "dias"}, até {shortDay(days.at(-1)!.date)}</dd></div> : null}
+      </> : <>
+        <div><dt>Intervalo entre mensagens</dt><dd>{props.cadence.minDelaySeconds / 60} a {props.cadence.maxDelaySeconds / 60} minutos, sorteado a cada envio</dd></div>
+        <div><dt>Pausas</dt><dd>{props.cadence.pauseMinSeconds / 60} a {props.cadence.pauseMaxSeconds / 60} minutos após cada {props.cadence.batchSize} tentativas</dd></div>
+        <div><dt>Horário permitido</dt><dd>{props.cadence.windowStart} às {props.cadence.windowEnd}</dd></div>
+      </>}
     </dl>
     <div className="campaign-review-message"><span>Mensagem que será enviada</span><p>{props.message}</p>
       {preview.eligible[0] && <><span>Exemplo preenchido para {preview.eligible[0].name || "um contato"}</span>

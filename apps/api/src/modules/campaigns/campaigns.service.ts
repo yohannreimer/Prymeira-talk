@@ -224,6 +224,9 @@ export interface CampaignCadenceDto {
   pauseMaxSeconds: number;
   windowStart?: string;
   windowEnd?: string;
+  dailyMin?: number;
+  dailyMax?: number;
+  weekdays?: number[];
 }
 
 export class CampaignsServiceError extends Error {
@@ -278,7 +281,10 @@ function cadenceToJson(cadence: CampaignCadenceDto): Prisma.InputJsonObject {
     pauseMinSeconds: cadence.pauseMinSeconds,
     pauseMaxSeconds: cadence.pauseMaxSeconds,
     windowStart: cadence.windowStart,
-    windowEnd: cadence.windowEnd
+    windowEnd: cadence.windowEnd,
+    dailyMin: cadence.dailyMin,
+    dailyMax: cadence.dailyMax,
+    weekdays: cadence.weekdays
   }) as Prisma.InputJsonObject;
 }
 
@@ -538,8 +544,19 @@ function normalizeCadence(value: unknown): CampaignCadenceDto {
     pauseMinSeconds: numberValue("pauseMinSeconds", 300),
     pauseMaxSeconds: numberValue("pauseMaxSeconds", 900),
     windowStart: stringValue("windowStart"),
-    windowEnd: stringValue("windowEnd")
+    windowEnd: stringValue("windowEnd"),
+    ...dailyCadence(payload)
   });
+}
+
+/** "Espalhar em vários dias": kept only when complete and sensible, so a broken draft falls back to same-day sending. */
+function dailyCadence(payload: Record<string, unknown>) {
+  const dailyMax = typeof payload.dailyMax === "number" && Number.isInteger(payload.dailyMax) && payload.dailyMax > 0 ? payload.dailyMax : undefined;
+  const dailyMin = dailyMax && typeof payload.dailyMin === "number" && Number.isInteger(payload.dailyMin) && payload.dailyMin > 0
+    ? Math.min(payload.dailyMin, dailyMax) : dailyMax;
+  const weekdays = Array.isArray(payload.weekdays)
+    ? [...new Set(payload.weekdays.filter((day): day is number => Number.isInteger(day) && day >= 0 && day <= 6))].sort() : [];
+  return { ...(dailyMax ? { dailyMin, dailyMax } : {}), ...(weekdays.length ? { weekdays } : {}) };
 }
 
 interface ResolvedCampaignContact {

@@ -1,7 +1,7 @@
 import { validateProspectingAgent } from "../prospecting/prospecting-policy.js";
 import type { PrismaClient } from "@prisma/client";
 import type { AudiencePreview } from "./campaign-audience-preview.js";
-import { DEFAULT_CAMPAIGN_CADENCE, drawGap, nextCampaignInstant, type CampaignCadence } from "./campaign-cadence.js";
+import { DEFAULT_CAMPAIGN_CADENCE, drawGap, isDailyCadence, nextCampaignInstant, planDailySchedule, type CampaignCadence } from "./campaign-cadence.js";
 
 export class CampaignActivationError extends Error {
   constructor(public code: "CAMPAIGN_NOT_FOUND" | "CAMPAIGN_NOT_DRAFT" |
@@ -43,6 +43,15 @@ function cadenceFrom(value: unknown): CampaignCadence {
       cadence.windowStart >= cadence.windowEnd) {
     throw new CampaignActivationError("CAMPAIGN_CADENCE_INVALID",
       "Revise o ritmo: intervalo de 30 a 3600 segundos, pausa de até 3600 segundos e janela diária válida.");
+  }
+  if (cadence.weekdays !== undefined && (!Array.isArray(cadence.weekdays) || !cadence.weekdays.length ||
+      cadence.weekdays.some((day) => !Number.isInteger(day) || day < 0 || day > 6))) {
+    throw new CampaignActivationError("CAMPAIGN_CADENCE_INVALID", "Escolha pelo menos um dia da semana para enviar.");
+  }
+  if (isDailyCadence(cadence) && (!Number.isInteger(cadence.dailyMax) || cadence.dailyMax! > 500 ||
+      !Number.isInteger(cadence.dailyMin ?? cadence.dailyMax) || (cadence.dailyMin ?? cadence.dailyMax!) < 1 ||
+      (cadence.dailyMin ?? cadence.dailyMax!) > cadence.dailyMax!)) {
+    throw new CampaignActivationError("CAMPAIGN_CADENCE_INVALID", "Revise quantas mensagens por dia: de 1 a 500, com o mínimo até o máximo.");
   }
   return cadence;
 }
@@ -112,8 +121,12 @@ export function createCampaignActivationService(prisma: PrismaClient, options: {
                 ? "scheduled" : "sending" } });
           }
           let scheduledAt = effectiveStart;
+          // Spread over days: each day's quota (e.g. 38–42) spaced across the window, on the allowed weekdays.
+          const daily = isDailyCadence(cadence) ? planDailySchedule({ start: effectiveStart,
+            count: input.preview.eligible.length, timeZone: input.timeZone, cadence, draw: options.draw }) : null;
           const recipients = input.preview.eligible.map((contact, index) => {
-            const gapSeconds = drawGap(cadence, options.draw);
+            if (daily) scheduledAt = daily[index]!.scheduledAt;
+            const gapSeconds = daily ? daily[index]!.gapSeconds : drawGap(cadence, options.draw);
             const row = { workspaceId: input.workspaceId, campaignId: input.campaignId,
               contactId: contact.contactId, audienceKey: contact.normalizedPhone,
               phoneSnapshot: contact.normalizedPhone, channelId: input.channelId,
@@ -121,7 +134,7 @@ export function createCampaignActivationService(prisma: PrismaClient, options: {
               status: "pending", scheduledAt,
               contactSnapshot: { name: contact.name, phone: contact.phone,
                 fields: contact.fields, message: contact.message }, result: {} };
-            if (gapSeconds > 0) scheduledAt = nextCampaignInstant(scheduledAt, gapSeconds,
+            if (!daily && gapSeconds > 0) scheduledAt = nextCampaignInstant(scheduledAt, gapSeconds,
               input.timeZone, cadence);
             return row;
           });

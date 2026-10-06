@@ -14,6 +14,10 @@ import { CampaignReview } from "./CampaignReview";
 import { MessageVariations } from "./MessageVariations";
 import { buildTemplates, initialVariations, missingPlaceholders } from "./message-variations";
 import { BroadcastListDialog } from './BroadcastListDialog';
+import { CampaignRhythm } from "./CampaignRhythm";
+import { CampaignTracking } from "./CampaignTracking";
+import { isDaily, withDaily } from "./campaign-rhythm";
+import "./campaigns-redesign.css";
 
 type ImportedRow = { name?: string; phone: string; fields: Record<string, string> };
 type Stage = 1 | 2 | 3;
@@ -94,8 +98,10 @@ export function GuidedCampaignEditor(props: {
     props.campaign?.scheduledAt ? "scheduled" : "now");
   const [scheduledAt, setScheduledAt] = useState(localDateTime(props.campaign?.scheduledAt ?? null,
     props.campaign?.timeZone ?? "America/Sao_Paulo"));
-  const [cadence, setCadence] = useState<CampaignCadenceDto>(props.campaign
-    ? props.campaign.cadence : SAFE_CADENCE);
+  // A list from Leads (Base própria, Google Maps…) starts spread over days: ~40 a day on weekdays.
+  const [cadence, setCadence] = useState<CampaignCadenceDto>(() => !props.campaign ? SAFE_CADENCE
+    : props.campaign.status === "draft" && props.campaign.audience.origin === "leads" && !isDaily(props.campaign.cadence)
+      ? withDaily(SAFE_CADENCE) : props.campaign.cadence);
   const [customizing, setCustomizing] = useState(false);
   const [timeZone, setTimeZone] = useState(props.campaign?.timeZone ?? "America/Sao_Paulo");
   const [preview, setPreview] = useState<CampaignAudiencePreviewDto | null>(null);
@@ -237,6 +243,9 @@ export function GuidedCampaignEditor(props: {
     if (stage === 1) { if (source === 'list' && !listId) { setError('Escolha ou crie uma lista de contatos.'); return; }
       if (!channelId) { setError("Escolha o número que enviará as mensagens."); return; }
       setError(null); setStage(2); return; }
+    if (isDaily(cadence) && (cadence.dailyMin ?? 0) > (cadence.dailyMax ?? 0)) {
+      setError("No ritmo por dia, o mínimo precisa ser menor ou igual ao máximo."); return;
+    }
     setBusy(true); setError(null);
     try {
       if (startMode === "scheduled" && (!scheduledAt ||
@@ -310,6 +319,8 @@ export function GuidedCampaignEditor(props: {
     finally { setBusy(false); }
   }
 
+  const audienceSize = isLeadDraft || source === "imported" ? rows.length || null
+    : source === "list" ? selectedList?.memberCount ?? null : null;
   const startLabel = preview?.effectiveStartAt
     ? `${new Intl.DateTimeFormat("pt-BR", { dateStyle: "full", timeStyle: "short", timeZone })
       .format(new Date(preview.effectiveStartAt))} (${timeZone})`
@@ -348,7 +359,8 @@ export function GuidedCampaignEditor(props: {
       </div><p className="campaign-guidance-note">{progress.nextScheduledAt ?
         `Próxima tentativa prevista: ${new Date(progress.nextScheduledAt).toLocaleString("pt-BR")}.` :
         "Não há próxima tentativa agendada."} {progress.uncertain > 0 &&
-        `${progress.uncertain} envio com resultado incerto: confira no WhatsApp antes de qualquer nova ação.`}</p></>}
+        `${progress.uncertain} envio com resultado incerto: confira no WhatsApp antes de qualquer nova ação.`}</p>
+        <CampaignTracking progress={progress} /></>}
       {skippedRows.length > 0 && <div className="guided-campaign-uncertain"><h3>Contatos ignorados</h3>
         {skippedRows.map((row) => <div className="guided-campaign-uncertain-row" key={row.id}>
           <strong>{row.contactName || "Contato"}</strong><span>{row.contactPhone}</span>
@@ -458,6 +470,9 @@ export function GuidedCampaignEditor(props: {
           <input list="campaign-time-zones" value={timeZone} onChange={(event) => setTimeZone(event.target.value)} />
           <datalist id="campaign-time-zones"><option value="America/Sao_Paulo" /><option value="America/Manaus" />
             <option value="America/Recife" /><option value="America/Cuiaba" /><option value="America/Rio_Branco" /></datalist></label>
+        <CampaignRhythm cadence={cadence} onChange={(next) => { setCadence(next); setPreview(null); }}
+          audienceSize={audienceSize} start={startMode === "scheduled" && scheduledAt ? new Date(scheduledAt) : new Date()}
+          sameDay={<>
         <div className="guided-campaign-safety"><ShieldCheck size={22} /><div><strong>Ritmo padrão moderado</strong>
           <span>Intervalos variados de 2 a 5 minutos; pausa variada de 15 a 20 minutos a cada 20 tentativas; envios apenas das 9h às 20h. Isso reduz o volume, mas não garante proteção contra bloqueios.</span></div></div>
         <div className="guided-campaign-cadence-actions"><button type="button" className="secondary-button"
@@ -471,7 +486,7 @@ export function GuidedCampaignEditor(props: {
             ["batchSize", "Pausar após quantas tentativas"],
             ["pauseMinSeconds", "Pausa mínima (segundos)"],
             ["pauseMaxSeconds", "Pausa máxima (segundos)"]
-          ] as Array<[keyof CampaignCadenceDto, string]>).map(([key, label]) => <label className="form-field" key={key}>
+          ] as Array<["minDelaySeconds" | "maxDelaySeconds" | "batchSize" | "pauseMinSeconds" | "pauseMaxSeconds", string]>).map(([key, label]) => <label className="form-field" key={key}>
             <span>{label}</span><input type="number" min={0} step={1} value={cadence[key] ?? 0}
               onChange={(event) => setCadence((value) => ({ ...value, [key]: Number(event.target.value) }))} />
           </label>)}
@@ -483,6 +498,7 @@ export function GuidedCampaignEditor(props: {
         {(cadence.minDelaySeconds !== 120 || cadence.maxDelaySeconds !== 300 || cadence.batchSize !== 20 ||
           cadence.pauseMinSeconds !== 900 || cadence.pauseMaxSeconds !== 1200 ||
           cadence.windowEnd !== "20:00") && !customizing && <p className="campaign-guidance-note">Este rascunho usa ritmo personalizado. Revise os valores ou escolha o padrão moderado.</p>}
+          </>} />
       </>}
       {stage === 3 && preview && <><div className="guided-campaign-panel-heading"><div><span className="guided-campaign-kicker">ETAPA 3 DE 3</span>
         <h2>Revise antes de confirmar</h2><p>Somente os números com WhatsApp confirmado entrarão na fila.</p></div></div>
