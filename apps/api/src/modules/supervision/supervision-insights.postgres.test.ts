@@ -67,6 +67,20 @@ describe.skipIf(!databaseUrl)("supervision insights on PostgreSQL", () => {
     expect(page.conversations.find(row => row.contactName === "Esperando")?.waitingSince).toBe(at(90).toISOString());
     expect(page.conversations.find(row => row.contactName === "Respondido")?.waitingSince).toBeNull();
   });
+  it("'não precisa responder' takes a customer out of the queue until they write again; undo brings them back", async () => {
+    const service = createSupervisionService(prisma, () => now);
+    const waiting = async () => (await service.list(grants, { waiting: true })).conversations.map(row => [row.contactName, row.waitingSince]);
+    await service.setWaitingDismissed(grants, workspaceId, ids.Esperando!, true);
+    expect(await waiting()).toEqual([]);
+    expect((await service.summary(grants)).sellers[0]).toMatchObject({ waitingCount: 0 });
+    const next = await prisma.message.create({ data: { workspaceId, conversationId: ids.Esperando!, direction: "inbound", type: "text",
+      status: "delivered", body: "e aí?", createdAt: at(5) } });
+    expect(await waiting()).toEqual([["Esperando", at(5).toISOString()]]);
+    await prisma.message.delete({ where: { id: next.id } });
+    await service.setWaitingDismissed(grants, workspaceId, ids.Esperando!, false);
+    expect(await waiting()).toEqual([["Esperando", at(90).toISOString()]]);
+    await expect(service.setWaitingDismissed(grants, workspaceId, randomUUID(), true)).rejects.toMatchObject({ statusCode: 404 });
+  });
   it("starts the team's day at midnight in Brazil", () => {
     expect(saoPauloDayStart(new Date("2026-10-04T02:30:00Z")).toISOString()).toBe("2026-10-03T03:00:00.000Z");
     expect(saoPauloDayStart(new Date("2026-10-04T03:30:00Z")).toISOString()).toBe("2026-10-04T03:00:00.000Z");

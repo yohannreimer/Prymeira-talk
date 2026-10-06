@@ -62,6 +62,10 @@ export async function apiSupervisionThread(workspaceId: string, conversationId: 
 export async function apiSupervisionReply(workspaceId: string, conversationId: string, text: string, getToken: GetToken) {
   return messageSchema.parse(await (await request(`${conversationPath(workspaceId, conversationId)}/messages`, getToken, undefined, { body: text })).json());
 }
+/** "Não precisa responder": the customer leaves the waiting queue until they write again (`false` undoes it). */
+export async function apiSupervisionDismissWaiting(workspaceId: string, conversationId: string, dismissed: boolean, getToken: GetToken) {
+  return await (await request(`${conversationPath(workspaceId, conversationId)}/waiting`, getToken, undefined, { dismissed })).json() as { dismissed: boolean };
+}
 export async function apiSupervisionMedia(workspaceId: string, conversationId: string, messageId: string, getToken: GetToken, signal?: AbortSignal) {
   return (await request(`${conversationPath(workspaceId, conversationId)}/messages/${encodeURIComponent(messageId)}/media`, getToken, signal)).blob();
 }

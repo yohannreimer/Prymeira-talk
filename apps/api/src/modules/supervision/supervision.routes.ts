@@ -31,12 +31,18 @@ function parse<T>(schema: z.ZodType<T>, data: unknown): T {
   return result.data;
 }
 
+/** The one write besides answering: marking a customer as not needing an answer. */
+const waitingMarkPath = /^\/supervision\/workspaces\/[^/]+\/conversations\/[^/]+\/waiting$/;
+function isWaitingMark(request: FastifyRequest) {
+  return request.method === "POST" && waitingMarkPath.test(request.url.split("?")[0]!);
+}
+
 export const supervisionRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntime }> = async (app, options) => {
   const service = createSupervisionService(app.prisma);
   const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client, photos: deploymentPhotoStore() });
   app.addHook("preHandler", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
-    if (request.method !== "GET") throw new SupervisionError(403, "A supervisão permite somente consulta.");
+    if (request.method !== "GET" && !isWaitingMark(request)) throw new SupervisionError(403, "A supervisão permite somente consulta.");
   });
   app.get("/supervision/admin/channels", async request => {
     if (request.supervision?.kind !== "admin") throw new SupervisionError(403, "Acesso administrativo necessário.");
@@ -58,6 +64,11 @@ export const supervisionRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntim
   app.get(`${base}/messages`, async request => {
     const params = parse(threadParams, request.params);
     return service.thread(grants(request), params.workspaceId, params.conversationId);
+  });
+  app.post(`${base}/waiting`, async request => {
+    const params = parse(threadParams, request.params);
+    const body = parse(z.object({ dismissed: z.boolean() }).strict(), request.body);
+    return service.setWaitingDismissed(grants(request), params.workspaceId, params.conversationId, body.dismissed);
   });
   app.get(`${base}/messages/:messageId/media`, async (request, reply) => {
     const params = parse(mediaParams, request.params);

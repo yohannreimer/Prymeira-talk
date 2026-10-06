@@ -183,6 +183,12 @@ button.supervision-tile:hover { border-color:#b7d3c8; box-shadow:0 6px 18px #245
 .supervision-thread-header p { font-size:12.5px; margin:0; }
 .supervision-thread-flags { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
 .supervision-thread-flags .supervision-wait { margin-left:0; }
+.supervision-dismiss { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border:1px solid var(--color-border); border-radius:999px; background:white; color:#3d4a5c; font-size:11.5px; font-weight:600; cursor:pointer; }
+.supervision-dismiss:hover:not(:disabled) { border-color:#9aa5b5; color:#1f2a37; }
+.supervision-dismiss:disabled { opacity:.6; cursor:default; }
+.supervision-dismissed { display:inline-flex; flex-wrap:wrap; align-items:center; gap:6px; font-size:11.5px; color:#4c5d79; }
+.supervision-dismissed button { padding:0; border:0; background:none; color:var(--color-brand-600); font-size:11.5px; font-weight:600; text-decoration:underline; cursor:pointer; }
+.supervision-dismissed em, .supervision-dismiss-error { font-style:normal; font-size:11.5px; color:#ad3424; }
 .supervision-thread-header .supervision-next-action { margin:2px 0 0; }
 .supervision-history { background:#efeae2; }
 .supervision-message { font-size:13.5px; border:0; border-radius:10px; box-shadow:0 1px 1px #0b141a1f; padding:8px 11px 6px; }

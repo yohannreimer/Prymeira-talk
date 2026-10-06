@@ -180,6 +180,18 @@ export function createSupervisionService(prisma: Store, clock: () => Date = () =
       return { conversation: (await withWaiting([conversation], grants))[0]!, messages: messages.map(toMessageDto) };
     },
 
+    /** "Não precisa responder": the customer's messages so far stop counting as waiting (a greeting, an automatic
+     * welcome); their next message waits again. Undo clears the mark. Nothing is sent and the seller's inbox is untouched. */
+    async setWaitingDismissed(grants: SupervisionGrant[], workspaceId: string, conversationId: string, dismissed: boolean) {
+      await this.authorizedConversation(grants, workspaceId, conversationId);
+      // Up to the latest customer message, not "now": a message arriving after the click still waits.
+      const latest = dismissed ? await prisma.message.findFirst({ where: { workspaceId, conversationId, direction: "inbound" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }], select: { createdAt: true } }) : null;
+      await prisma.conversation.update({ where: { workspaceId_id: { workspaceId, id: conversationId } },
+        data: { waitingDismissedAt: dismissed ? latest?.createdAt ?? clock() : null } });
+      return { dismissed };
+    },
+
     async channels(workspaceId: string) {
       const channels = await prisma.channel.findMany({ where: { workspaceId, archivedAt: null },
         select: { id: true, workspaceId: true, displayName: true, phoneNumber: true },

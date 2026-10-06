@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupervisionConversation, SupervisionPage as QueuePage, SupervisionSummary, SupervisionThread, MessageDto } from "@prymeira-talk/shared";
 import { SupervisionPage } from "./SupervisionPage";
-import { apiSupervisionConversations, apiSupervisionSummary, apiSupervisionThread, apiSupervisionMedia, apiSupervisionReply, SupervisionApiError } from "../../app/supervision-api";
+import { apiSupervisionConversations, apiSupervisionSummary, apiSupervisionThread, apiSupervisionMedia, apiSupervisionReply, apiSupervisionDismissWaiting, SupervisionApiError } from "../../app/supervision-api";
 import { apiGetAudioTranscription, apiGetInboxMedia } from "../../app/api";
 
 const getToken = vi.hoisted(() => vi.fn(async () => "supervisor-token"));
@@ -12,7 +12,7 @@ vi.mock("../../app/auth", () => ({ useTalkAuth: () => ({ getToken }) }));
 vi.mock("../../app/supervision-api", async importOriginal => ({
   ...await importOriginal<typeof import("../../app/supervision-api")>(),
   apiSupervisionConversations: vi.fn(), apiSupervisionSummary: vi.fn(), apiSupervisionThread: vi.fn(),
-  apiSupervisionMedia: vi.fn(), apiSupervisionPreview: vi.fn(), apiSupervisionReply: vi.fn()
+  apiSupervisionMedia: vi.fn(), apiSupervisionPreview: vi.fn(), apiSupervisionReply: vi.fn(), apiSupervisionDismissWaiting: vi.fn()
 }));
 vi.mock("../../app/api", () => ({ apiGetAudioTranscription: vi.fn(), apiGetInboxMedia: vi.fn(), apiGetPdfPreview: vi.fn(), apiGetVideoPoster: vi.fn() }));
 
@@ -186,6 +186,19 @@ describe("supervisão somente de leitura", () => {
     await click(container.querySelector<HTMLButtonElement>('[aria-label="Enviar resposta do supervisor"]')!);
     expect(apiSupervisionReply).toHaveBeenCalledWith("workspace-1", "c1", "Oi, aqui é o gerente", expect.any(Function));
     expect(box.value).toBe("");
+  });
+  it("takes a fake 'waiting' (a greeting, an automatic welcome) out of the queue, with undo, without sending anything", async () => {
+    const waiting = conversation("c1", { waitingSince: "2026-09-29T14:00:00.000Z" });
+    vi.mocked(apiSupervisionConversations).mockResolvedValue({ conversations: [waiting], nextCursor: null });
+    vi.mocked(apiSupervisionThread).mockResolvedValue({ conversation: waiting, messages: [message({ body: "Bom dia!" })] });
+    vi.mocked(apiSupervisionDismissWaiting).mockImplementation(async (_w, _c, dismissed) => ({ dismissed }));
+    await render(); await open();
+    await click(button("Não precisa responder"));
+    expect(apiSupervisionDismissWaiting).toHaveBeenCalledWith("workspace-1", "c1", true, expect.any(Function));
+    expect(container.textContent).toContain("Fora de “esperando resposta” até o cliente escrever de novo");
+    await click(button("Desfazer"));
+    expect(apiSupervisionDismissWaiting).toHaveBeenLastCalledWith("workspace-1", "c1", false, expect.any(Function));
+    expect(apiSupervisionReply).not.toHaveBeenCalled();
   });
   it("searches every conversation by customer name or phone", async () => {
     await render();

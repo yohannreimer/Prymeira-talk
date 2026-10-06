@@ -32,6 +32,8 @@ export type WaitingRow = { conversation_id: string; workspace_id: string; seller
  * Conversations whose customer is waiting for an answer: active, one-to-one, the last written message is the
  * customer's, and it arrived in the last 7 days (older silence is a lost lead, not a queue). `waiting_since` is the
  * first unanswered customer message, so a customer who wrote three times is waiting since the first one.
+ * Messages a supervisor marked as "não precisa responder" (a greeting, an automatic welcome) no longer count; the
+ * customer waits again only from their next message.
  */
 export async function waitingConversations(prisma: Raw, grants: SupervisionGrant[], now: Date, conversationIds?: string[]) {
   if (!grants.length) return [];
@@ -39,7 +41,7 @@ export async function waitingConversations(prisma: Raw, grants: SupervisionGrant
   return prisma.$queryRaw<WaitingRow[]>`
     WITH s AS (${scope(grants)}),
     conv AS (
-      SELECT c.id, c.workspace_id, s.seller_id FROM conversations c
+      SELECT c.id, c.workspace_id, s.seller_id, c.waiting_dismissed_at FROM conversations c
       JOIN s ON s.workspace_id = c.workspace_id AND s.channel_id = c.channel_id
       JOIN contacts ct ON ct.id = c.contact_id
       WHERE c.status IN ('open', 'pending') AND c.hidden_until_reply = false AND c.retired_into_conversation_id IS NULL
@@ -55,8 +57,9 @@ export async function waitingConversations(prisma: Raw, grants: SupervisionGrant
     CROSS JOIN LATERAL (
       SELECT min(m.created_at) AS waiting_since FROM messages m
       WHERE m.workspace_id = conv.workspace_id AND m.conversation_id = conv.id AND m.direction = 'inbound' AND ${written("m")}
-        AND m.created_at > coalesce((SELECT max(o.created_at) FROM messages o WHERE o.workspace_id = conv.workspace_id
-          AND o.conversation_id = conv.id AND o.direction = 'outbound' AND ${written("o")}), '-infinity'::timestamp)
+        AND m.created_at > greatest(coalesce((SELECT max(o.created_at) FROM messages o WHERE o.workspace_id = conv.workspace_id
+          AND o.conversation_id = conv.id AND o.direction = 'outbound' AND ${written("o")}), '-infinity'::timestamp),
+          coalesce(conv.waiting_dismissed_at, '-infinity'::timestamp))
     ) w
     WHERE last.direction = 'inbound' AND w.waiting_since IS NOT NULL
     ORDER BY w.waiting_since ASC

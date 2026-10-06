@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Clock3, Eye, Headphones, Hourglass, ListTodo, MailWarning, MessageSquareText, RefreshCw, Search, Send, ShieldCheck, Sparkles, X } from "lucide-react";
+import { ArrowLeft, CheckCheck, Clock3, Eye, Headphones, Hourglass, ListTodo, MailWarning, MessageSquareText, RefreshCw, Search, Send, ShieldCheck, Sparkles, X } from "lucide-react";
 import { needsHumanAttention, type SupervisionConversation, type MessageDto, type SupervisionUnreadPeriod } from "@prymeira-talk/shared";
 import type { SupervisionSummary } from "@prymeira-talk/shared";
 import { useTalkAuth } from "../../app/auth";
 import { readConfigValue } from "../../app/runtime-config";
-import { apiSupervisionMedia, apiSupervisionPreview, apiSupervisionReply } from "../../app/supervision-api";
+import { apiSupervisionDismissWaiting, apiSupervisionMedia, apiSupervisionPreview, apiSupervisionReply } from "../../app/supervision-api";
 import { InboxMedia, mediaCaption, type InboxMediaTransport } from "../inbox/InboxMedia";
 import { LocationMessage } from "../inbox/LocationMessage";
 import { contactDisplayName } from "../inbox/conversation-display";
@@ -70,6 +70,25 @@ function PendingAlert({ conversation }: { conversation: SupervisionConversation 
 function WaitBadge({ since, now }: { since: string | null | undefined; now: number }) {
   const label = waitLabel(since, now);
   return label ? <span className={`supervision-wait is-${waitTone(since, now)}`}><Hourglass size={12} aria-hidden="true" />esperando há {label}</span> : null;
+}
+/** Many "waiting" customers only sent a greeting or an automatic welcome. The supervisor takes them out of the queue;
+ * they come back only if the customer writes again. Nothing is sent to anyone. */
+function WaitingDismiss({ conversation, getToken, onChanged }: { conversation: SupervisionConversation; getToken: () => Promise<string | null>; onChanged: () => void }) {
+  const [dismissed, setDismissed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function mark(value: boolean) {
+    setBusy(true); setError(null);
+    try { await apiSupervisionDismissWaiting(conversation.workspaceId, conversation.id, value, getToken); setDismissed(value); onChanged(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível alterar. Tente novamente."); }
+    finally { setBusy(false); }
+  }
+  if (dismissed) return <span className="supervision-dismissed" role="status"><CheckCheck size={13} aria-hidden="true" />Fora de “esperando resposta” até o cliente escrever de novo
+    <button type="button" onClick={() => void mark(false)} disabled={busy}>Desfazer</button>{error ? <em role="alert">{error}</em> : null}</span>;
+  if (!conversation.waitingSince) return null;
+  return <><button type="button" className="supervision-dismiss" onClick={() => void mark(true)} disabled={busy}
+    title="Ex.: só um bom dia ou uma mensagem automática. Volta se o cliente escrever de novo.">
+    <CheckCheck size={13} aria-hidden="true" />{busy ? "Salvando…" : "Não precisa responder"}</button>{error ? <em className="supervision-dismiss-error" role="alert">{error}</em> : null}</>;
 }
 function NextAction({ text }: { text?: string | null }) {
   return text ? <p className="supervision-next-action"><Sparkles size={13} aria-hidden="true" /><span><strong>Próxima ação:</strong> {text}</span></p> : null;
@@ -290,7 +309,8 @@ export function SupervisionPage() {
               {displayedConversation ? <><header className="supervision-thread-header"><div>
                   <h2>{contactDisplayName(displayedConversation)}</h2>
                   <p>{[displayedConversation.contactPhone, `Atendido por ${sellerLabel(displayedConversation)}`, displayedConversation.channelPhoneNumber].filter(Boolean).join(" · ")}</p>
-                  <div className="supervision-thread-flags"><WaitBadge since={displayedConversation.waitingSince} now={now} /><PendingAlert conversation={displayedConversation} /></div>
+                  <div className="supervision-thread-flags"><WaitBadge since={displayedConversation.waitingSince} now={now} />
+                    <WaitingDismiss conversation={displayedConversation} getToken={getToken} onChanged={view.refresh} /><PendingAlert conversation={displayedConversation} /></div>
                   <NextAction text={displayedConversation.nextActionText} />
                 </div><button type="button" aria-label="Fechar conversa" onClick={() => view.selectConversation(null)}><X size={20} /></button></header>
                 {view.threadError ? <div className="supervision-error" role="alert">{view.threadError}<button type="button" onClick={view.refresh}>Tentar novamente</button></div> : null}

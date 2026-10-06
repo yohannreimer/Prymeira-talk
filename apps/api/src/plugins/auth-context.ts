@@ -200,8 +200,9 @@ export const authContextPlugin = fp(
 
       if (supervisionPath) {
         reply.header("Cache-Control", "private, no-store");
-        // Read only, except one action: a supervisor answering a customer in a seller's conversation.
-        const supervisorReply = request.method === "POST" && /^\/supervision\/workspaces\/[^/]+\/conversations\/[^/]+\/messages$/.test(pathname);
+        // Read only, except two actions: a supervisor answering a customer in a seller's conversation, and marking a
+        // customer as not needing an answer.
+        const supervisorReply = request.method === "POST" && /^\/supervision\/workspaces\/[^/]+\/conversations\/[^/]+\/(messages|waiting)$/.test(pathname);
         if (request.method !== "GET" && !supervisorReply) {
           throw new SupervisionError(403, "A supervisão permite somente consulta.");
         }

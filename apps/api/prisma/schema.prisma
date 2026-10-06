@@ -469,6 +469,8 @@ model Conversation {
   activeAgentSessionId           String?                         @map("active_agent_session_id") @db.Uuid
   /// Set when an authority resolution made another conversation operate this chat: hidden from lists, history shown in the operating one.
   retiredIntoConversationId      String?                         @map("retired_into_conversation_id") @db.Uuid
+  /// A supervisor marked the customer's last messages as not needing an answer; a newer customer message waits again.
+  waitingDismissedAt             DateTime?                       @map("waiting_dismissed_at")
   createdAt                      DateTime                        @default(now()) @map("created_at")
   updatedAt                      DateTime                        @updatedAt @map("updated_at")
 
