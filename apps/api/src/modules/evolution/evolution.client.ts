@@ -33,6 +33,9 @@ export interface CreateEvolutionClientOptions {
   baseUrl: string;
   apiKey: string;
   fetch?: typeof fetch;
+  /** How long a number's connected phone is remembered (default 10 min). */
+  identityTtlMs?: number;
+  now?: () => number;
 }
 
 export interface CreateInstanceInput {
@@ -478,6 +481,12 @@ async function parseResponseBody(response: Response, maxBytes?: number) {
 export function createEvolutionClient(options: CreateEvolutionClientOptions): EvolutionClientWithAvailability {
   const baseUrl = options.baseUrl.replace(/\/$/, "");
   const fetchImpl = options.fetch ?? globalThis.fetch;
+  const clock = options.now ?? Date.now;
+  const identityTtlMs = options.identityTtlMs ?? 10 * 60_000;
+  /** Evolution's fetchInstances counts every message, contact and chat of the number (a full table read on its
+   * database). The health monitor asks for the phone every 15 s, so it is remembered for a while; a number that is
+   * not connected forgets it at once, so a new scan is always verified again. */
+  const identities = new Map<string, { phone: string | null; at: number }>();
 
   async function post(path: string, body: unknown, timeoutMs?: number) {
     const response = await fetchImpl(`${baseUrl}${path}`, {
@@ -541,14 +550,19 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
 
   return {
     async getInstanceIdentity(input) {
+      const cached = identities.get(input.instanceName);
+      if (cached && cached.phone && clock() - cached.at < identityTtlMs) return cached.phone;
       const raw = await get(`/instance/fetchInstances?instanceName=${encodeURIComponent(input.instanceName)}`, 8000);
       const entries = Array.isArray(raw) ? raw : [raw];
+      let phone: string | null = null;
       for (const entry of entries) {
         const nested = getRecord(entry, 'instance');
         const name = getString(entry, 'name') ?? getString(entry, 'instanceName') ?? getString(nested, 'instanceName');
-        if (name === input.instanceName) return getString(entry, 'ownerJid') ?? getString(nested, 'ownerJid') ?? getString(nested, 'owner') ?? null;
+        if (name === input.instanceName) { phone = getString(entry, 'ownerJid') ?? getString(nested, 'ownerJid') ?? getString(nested, 'owner') ?? null; break; }
       }
-      return null;
+      if (phone) identities.set(input.instanceName, { phone, at: clock() });
+      else identities.delete(input.instanceName);
+      return phone;
     },
     async deleteMessageForEveryone(input) {
       await del(`/chat/deleteMessageForEveryone/${encodeURIComponent(input.instanceName)}`, {
@@ -609,6 +623,7 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       return `data:${mime};base64,${base64.replace(/^data:[^,]+,/, '').replace(/\s/g, '')}`;
     },
     async createInstance(input) {
+      identities.delete(input.instanceName);
       const responseBody = await post("/instance/create", {
         instanceName: input.instanceName,
         integration: "WHATSAPP-BAILEYS",
@@ -624,6 +639,7 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     },
 
     async connectInstance(input) {
+      identities.delete(input.instanceName);
       const responseBody = await get(`/instance/connect/${encodeURIComponent(input.instanceName)}`);
 
       return {
@@ -634,12 +650,14 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     },
 
     async logoutInstance(input) {
+      identities.delete(input.instanceName);
       await remove(`/instance/logout/${encodeURIComponent(input.instanceName)}`);
     },
 
     async getConnectionState(input) {
       const responseBody = await get(`/instance/connectionState/${encodeURIComponent(input.instanceName)}`);
       const state = getString(getRecord(responseBody, "instance"), "state") ?? getString(responseBody, "state");
+      if (state !== "open") identities.delete(input.instanceName);
       return state === "open" || state === "connecting" || state === "close" ? state : null;
     },
 

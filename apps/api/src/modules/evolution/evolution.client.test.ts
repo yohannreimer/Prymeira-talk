@@ -719,3 +719,31 @@ describe("Evolution client", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://evolution.invalid/chat/whatsappNumbers/instance");
   });
 });
+
+describe("connected phone (fetchInstances counts every message on Evolution's database)", () => {
+  it("asks once per 10 minutes, and again at once after the number disconnects or reconnects", async () => {
+    let clock = 0;
+    let state = "open";
+    let owner = "554799990001@s.whatsapp.net";
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(url.includes("/connectionState/")
+      ? { instance: { state } } : [{ name: "vendas5", ownerJid: owner }]), { status: 200, headers: { "content-type": "application/json" } }));
+    const client = createEvolutionClient({ baseUrl: "https://evolution.invalid", apiKey: "key", fetch: fetchMock as never, now: () => clock });
+    const identityCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).includes("fetchInstances")).length;
+
+    expect(await client.getInstanceIdentity!({ instanceName: "vendas5" })).toBe(owner);
+    clock += 15_000;
+    expect(await client.getInstanceIdentity!({ instanceName: "vendas5" })).toBe(owner);
+    expect(identityCalls()).toBe(1);
+
+    clock += 10 * 60_000;
+    await client.getInstanceIdentity!({ instanceName: "vendas5" });
+    expect(identityCalls()).toBe(2);
+
+    // The number dropped and was scanned with another phone: never the old answer.
+    state = "close";
+    await client.getConnectionState({ instanceName: "vendas5" });
+    owner = "554799990002@s.whatsapp.net";
+    expect(await client.getInstanceIdentity!({ instanceName: "vendas5" })).toBe(owner);
+    expect(identityCalls()).toBe(3);
+  });
+});
