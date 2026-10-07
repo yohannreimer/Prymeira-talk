@@ -46,6 +46,8 @@ export interface AuthContextPluginOptions {
   };
   requireProductAccess?: RequireProductAccess;
   fetch?: Fetch;
+  /** How long an allowed access is reused for the same token (default 30 s; 0 asks the Hub on every request). */
+  accessCacheMs?: number;
 }
 
 class AuthBoundaryError extends Error {
@@ -180,7 +182,10 @@ export const authContextPlugin = fp(
     app.decorateRequest("talk");
     app.decorateRequest("supervision");
     const fetchAccess = options.fetch ?? fetch;
-    const validateAccess = createAccessSingleflight<unknown>();
+    // An allowed answer is reused for 30 s by the same token (a removed member loses access within 30 s);
+    // denials and Hub failures are always asked again.
+    const validateAccess = createAccessSingleflight<unknown>({ keepMs: options.accessCacheMs ?? 30_000,
+      keep: (value) => Boolean(value && typeof value === "object" && (value as { allowed?: unknown }).allowed === true) });
     const requireAccess =
       options.requireProductAccess ??
       ((productKey: string, input: { accountApiUrl: string; clerkToken: string; signal?: AbortSignal }) =>

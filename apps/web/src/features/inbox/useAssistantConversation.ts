@@ -12,8 +12,10 @@ export function useAssistantConversation(conversationId: string | null, getToken
   const query = useQuery({ queryKey: key, enabled: Boolean(conversationId),
     queryFn: ({ signal }) => apiGetAssistantConversation(conversationId!, getToken, signal),
     retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
+    // A new message already refreshes it (contextTrigger), so an idle panel only checks every 20 s; each check loads the
+    // whole conversation context on the server. While a suggestion waits or is being written it follows closely.
     refetchInterval: query => query.state.error ? false
-      : query.state.data?.status === 'pending' || query.state.data?.status === 'generating' ? 2_000 : 5_000,
+      : query.state.data?.status === 'generating' ? 2_000 : query.state.data?.status === 'pending' ? 3_000 : 20_000,
     refetchIntervalInBackground: false
   });
   const active = useRef(conversationId); active.current = conversationId;

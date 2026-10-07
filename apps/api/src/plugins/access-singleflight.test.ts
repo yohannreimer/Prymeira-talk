@@ -56,7 +56,7 @@ it("enforces revocation on the next HTTP request after sharing an in-flight chec
   let revoked = false;
   const wait = new Promise<void>(resolve => {release = resolve;});
   const requireProductAccess = vi.fn(async () => {await wait; return {...allowed, allowed: !revoked};});
-  await app.register(authContextPlugin, {accountApiUrl: "https://hub.test", productKey: "talk", requireProductAccess});
+  await app.register(authContextPlugin, {accountApiUrl: "https://hub.test", productKey: "talk", requireProductAccess, accessCacheMs: 0});
   app.get("/test", async request => ({workspaceId: request.talk.workspaceId}));
   await app.ready();
   try {
@@ -73,4 +73,41 @@ it("enforces revocation on the next HTTP request after sharing an in-flight chec
     expect((await app.inject({url: "/test", headers})).statusCode).toBe(403);
     expect(requireProductAccess).toHaveBeenCalledTimes(2);
   } finally {await app.close();}
+});
+
+describe("allowed access kept for a short while", () => {
+  it("reuses an allowed answer for the same token until it expires; denials and failures are never kept", async () => {
+    let clock = 0;
+    const check = createAccessSingleflight<typeof allowed>({ keepMs: 30_000, keep: value => value.allowed, now: () => clock });
+    const validate = vi.fn(async () => allowed);
+    await check("talk", "hub", "token", validate);
+    await Promise.resolve();
+    clock += 29_000;
+    expect(await check("talk", "hub", "token", validate)).toEqual(allowed);
+    expect(validate).toHaveBeenCalledTimes(1);
+    expect(await check("talk", "hub", "other-token", validate)).toEqual(allowed);
+    expect(validate).toHaveBeenCalledTimes(2);
+    clock += 2_000;
+    const revoked = { ...allowed, allowed: false };
+    expect(await check("talk", "hub", "token", async () => revoked)).toEqual(revoked);
+    await Promise.resolve();
+    const again = vi.fn(async () => allowed);
+    await check("talk", "hub", "token", again);
+    expect(again).toHaveBeenCalledTimes(1);
+    await expect(check("talk", "hub", "broken", async () => { throw new Error("Hub down"); })).rejects.toThrow("Hub down");
+    expect(await check("talk", "hub", "broken", async () => allowed)).toEqual(allowed);
+  });
+
+  it("serves the next screens of the same login without asking the Hub again", async () => {
+    const app = Fastify();
+    const requireProductAccess = vi.fn(async () => allowed);
+    await app.register(authContextPlugin, {accountApiUrl: "https://hub.test", productKey: "talk", requireProductAccess});
+    app.get("/test", async request => ({workspaceId: request.talk.workspaceId}));
+    await app.ready();
+    try {
+      const headers = {authorization: "Bearer token"};
+      for (let index = 0; index < 3; index += 1) expect((await app.inject({url: "/test", headers})).statusCode).toBe(200);
+      expect(requireProductAccess).toHaveBeenCalledTimes(1);
+    } finally {await app.close();}
+  });
 });
