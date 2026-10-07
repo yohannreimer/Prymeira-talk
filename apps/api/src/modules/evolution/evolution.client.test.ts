@@ -741,7 +741,7 @@ describe("connected phone (fetchInstances counts every message on Evolution's da
 
     // The number dropped and was scanned with another phone: never the old answer.
     state = "close";
-    await client.getConnectionState({ instanceName: "vendas5" });
+    await client.getConnectionState!({ instanceName: "vendas5" });
     owner = "554799990002@s.whatsapp.net";
     expect(await client.getInstanceIdentity!({ instanceName: "vendas5" })).toBe(owner);
     expect(identityCalls()).toBe(3);
