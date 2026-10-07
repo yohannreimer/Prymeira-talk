@@ -40,6 +40,21 @@ export const MAX_CSV_ROWS = 5_000;
 const RECEITA_PAGE_SIZE = 100;
 const CSV_LOOKUP_BATCH_SIZE = 25;
 const GOOGLE_LEASE_MS = 300_000;
+/** A centre search with at least this many places scrolled fine; fewer may be Google's limited view. */
+const GOOGLE_FULL_LIST_ROWS = 25;
+/** Distance (km) from the centre to the four extra search areas: north, south, east and west. */
+const GOOGLE_AREA_OFFSET_KM = 5;
+
+/** The centre of the city, then four areas around it (Google ranks results by the map's position). */
+export function googleSearchPasses(input: { latitude: number; longitude: number }) {
+  const dLat = GOOGLE_AREA_OFFSET_KM / 111;
+  const dLon = GOOGLE_AREA_OFFSET_KM / (111 * Math.max(0.2, Math.cos((input.latitude * Math.PI) / 180)));
+  const round = (value: number) => Math.round(value * 1e6) / 1e6;
+  return [{ latitude: input.latitude, longitude: input.longitude }, ...[[dLat, 0], [-dLat, 0], [0, dLon], [0, -dLon]].map(([lat, lon]) => ({
+    latitude: round(Math.max(-90, Math.min(90, input.latitude + lat!))),
+    longitude: round(Math.max(-180, Math.min(180, input.longitude + lon!)))
+  }))];
+}
 const GOOGLE_MAX_CSV_ROWS = 5_000;
 const GOOGLE_UPSERT_BATCH_SIZE = 100;
 
@@ -746,73 +761,116 @@ export function createLeadsService(options: LeadsServiceOptions) {
         Number.isInteger(checkpoint.remoteGeneration) && checkpoint.remoteGeneration > 0
         ? checkpoint.remoteGeneration
         : 0;
-      const remoteName = `prymeira-${job.id}-g${remoteGeneration}`;
-      let remoteJobId = typeof checkpoint.remoteJobId === "string" ? checkpoint.remoteJobId : null;
-      let submittedAt = typeof checkpoint.remoteSubmittedAt === "string" ? new Date(checkpoint.remoteSubmittedAt) : null;
-      if (!remoteJobId) {
-        const recovered = await options.googleMapsClient.findJobByName(remoteName);
-        const remote = recovered ?? await options.googleMapsClient.createJob({
-          name: remoteName,
-          keywords: [`${input.data.niche} em ${input.data.city}, ${input.data.state}`],
-          latitude: input.data.latitude,
-          longitude: input.data.longitude,
-          maxTimeSeconds: input.data.maxTimeSeconds
-        });
-        remoteJobId = remote.id;
-        submittedAt = now();
-        checkpoint = {
-          ...checkpoint,
-          remoteJobId,
-          remoteStatus: "status" in remote ? remote.status : "queued",
-          remoteSubmittedAt: submittedAt.toISOString()
-        };
-        activeJob = await repository.fencedCheckpointJob(activeJob, { output: checkpoint as Prisma.InputJsonObject }, now(), GOOGLE_LEASE_MS);
-        publishJob({ ...toPublishedJob(activeJob), status: "running" });
-      }
-      if (!submittedAt || Number.isNaN(submittedAt.getTime())) submittedAt = now();
-      const deadline = submittedAt.getTime() + input.data.maxTimeSeconds * 1_000 + 30_000;
-      while (true) {
-        if (now().getTime() >= deadline) {
-          throw new GoogleMapsScraperError("TIMEOUT", "Google Maps scrape exceeded its overall timeout.", true);
-        }
-        const remote = await options.googleMapsClient.getJob(remoteJobId);
-        checkpoint = { ...checkpoint, remoteStatus: remote.status, remotePolledAt: now().toISOString() };
-        activeJob = await repository.fencedCheckpointJob(activeJob, { output: checkpoint as Prisma.InputJsonObject }, now(), GOOGLE_LEASE_MS);
-        if (remote.status === "failed") {
-          throw new GoogleMapsScraperError("REMOTE_FAILED", "Google Maps scraper reported a failed job.", true);
-        }
-        if (remote.status === "succeeded") break;
-        await sleep(Math.min(googlePollIntervalMs, Math.max(1, deadline - now().getTime())));
-      }
+      const passes = googleSearchPasses(input.data);
+      const keyword = `${input.data.niche} em ${input.data.city}, ${input.data.state}`;
+      let passIndex = typeof checkpoint.passIndex === "number" && Number.isInteger(checkpoint.passIndex) && checkpoint.passIndex > 0
+        ? Math.min(checkpoint.passIndex, passes.length) : 0;
+      let plannedPasses = typeof checkpoint.plannedPasses === "number" && Number.isInteger(checkpoint.plannedPasses)
+        ? Math.min(Math.max(checkpoint.plannedPasses, 1), passes.length) : passes.length;
+      let downloadedRows = typeof checkpoint.downloadedRows === "number" ? checkpoint.downloadedRows : 0;
+      let failedRows = typeof checkpoint.failedRows === "number" ? checkpoint.failedRows : 0;
+      const keys = new Set<string>();
 
-      const parsed = parseGoogleMapsCsv(await options.googleMapsClient.download(remoteJobId), {
-        workspaceId: job.workspaceId,
-        listId: job.listId,
-        city: input.data.city,
-        state: input.data.state
-      });
-      let processedCount = 0;
-      const expectedTotal = parsed.leads.length + parsed.failedCount;
-      for (let offset = 0; offset < parsed.leads.length; offset += GOOGLE_UPSERT_BATCH_SIZE) {
-        const batch = parsed.leads.slice(offset, offset + GOOGLE_UPSERT_BATCH_SIZE);
-        await repository.fencedUpsertLeads(activeJob, batch, now(), GOOGLE_LEASE_MS);
-        processedCount += batch.length;
-        await updateProgress(activeJob, {
+      /** One search on the scraper (centre, then the areas around it), from submit to rows saved in the list. */
+      const runPass = async (index: number) => {
+        const pass = passes[index]!;
+        // The centre keeps the original remote name, so searches started before this change still resume.
+        const remoteName = index === 0 ? `prymeira-${job.id}-g${remoteGeneration}` : `prymeira-${job.id}-g${remoteGeneration}-p${index}`;
+        let remoteJobId = typeof checkpoint.remoteJobId === "string" ? checkpoint.remoteJobId : null;
+        let submittedAt = typeof checkpoint.remoteSubmittedAt === "string" ? new Date(checkpoint.remoteSubmittedAt) : null;
+        if (!remoteJobId) {
+          const recovered = await options.googleMapsClient!.findJobByName(remoteName);
+          const remote = recovered ?? await options.googleMapsClient!.createJob({
+            name: remoteName,
+            keywords: [keyword],
+            latitude: pass.latitude,
+            longitude: pass.longitude,
+            maxTimeSeconds: input.data.maxTimeSeconds
+          });
+          remoteJobId = remote.id;
+          submittedAt = now();
+          checkpoint = {
+            ...checkpoint,
+            remoteJobId,
+            remoteStatus: "status" in remote ? remote.status : "queued",
+            remoteSubmittedAt: submittedAt.toISOString()
+          };
+          activeJob = await repository.fencedCheckpointJob(activeJob, { output: checkpoint as Prisma.InputJsonObject }, now(), GOOGLE_LEASE_MS);
+          publishJob({ ...toPublishedJob(activeJob), status: "running" });
+        }
+        if (!submittedAt || Number.isNaN(submittedAt.getTime())) submittedAt = now();
+        const deadline = submittedAt.getTime() + input.data.maxTimeSeconds * 1_000 + 30_000;
+        while (true) {
+          if (now().getTime() >= deadline) {
+            throw new GoogleMapsScraperError("TIMEOUT", "Google Maps scrape exceeded its overall timeout.", true);
+          }
+          const remote = await options.googleMapsClient!.getJob(remoteJobId);
+          checkpoint = { ...checkpoint, remoteStatus: remote.status, remotePolledAt: now().toISOString() };
+          activeJob = await repository.fencedCheckpointJob(activeJob, { output: checkpoint as Prisma.InputJsonObject }, now(), GOOGLE_LEASE_MS);
+          if (remote.status === "failed") {
+            throw new GoogleMapsScraperError("REMOTE_FAILED", "Google Maps scraper reported a failed job.", true);
+          }
+          if (remote.status === "succeeded") break;
+          await sleep(Math.min(googlePollIntervalMs, Math.max(1, deadline - now().getTime())));
+        }
+        const parsed = parseGoogleMapsCsv(await options.googleMapsClient!.download(remoteJobId), {
           workspaceId: job.workspaceId,
           listId: job.listId,
-          totalCount: expectedTotal,
-          processedCount,
-          failedCount: parsed.failedCount
+          city: input.data.city,
+          state: input.data.state
         });
+        // The same company found again from another area is saved once (same Google place).
+        const fresh = parsed.leads.filter((lead) => !keys.has(lead.sourceDedupeKey));
+        for (const lead of parsed.leads) keys.add(lead.sourceDedupeKey);
+        for (let offset = 0; offset < fresh.length; offset += GOOGLE_UPSERT_BATCH_SIZE) {
+          await repository.fencedUpsertLeads(activeJob, fresh.slice(offset, offset + GOOGLE_UPSERT_BATCH_SIZE), now(), GOOGLE_LEASE_MS);
+          await updateProgress(activeJob, {
+            workspaceId: job.workspaceId,
+            listId: job.listId,
+            totalCount: 0,
+            processedCount: keys.size,
+            failedCount: Math.max(failedRows, parsed.failedCount)
+          });
+        }
+        downloadedRows += parsed.totalCount;
+        // Broken rows cannot be matched across areas: keep the worst area's count instead of adding repeats.
+        failedRows = Math.max(failedRows, parsed.failedCount);
+        return parsed.leads.length;
+      };
+
+      while (passIndex < plannedPasses) {
+        let found = 0;
+        try {
+          found = await runPass(passIndex);
+        } catch (error) {
+          // The centre decides the search; an extra area that fails only means fewer extra companies.
+          if (passIndex === 0 || !(error instanceof GoogleMapsScraperError)) throw error;
+          plannedPasses = passIndex;
+          break;
+        }
+        // Google Maps now often shows visitors a "visualização limitada": the list stops near 20 places. A centre
+        // that came back short is searched again from the areas around it; a full list needs nothing more.
+        if (passIndex === 0) plannedPasses = found >= GOOGLE_FULL_LIST_ROWS ? 1 : passes.length;
+        passIndex += 1;
+        checkpoint = { ...checkpoint, passIndex, plannedPasses, downloadedRows, failedRows,
+          remoteJobId: null, remoteStatus: null, remoteSubmittedAt: null, remotePolledAt: null };
+        activeJob = await repository.fencedCheckpointJob(activeJob, { output: checkpoint as Prisma.InputJsonObject }, now(), GOOGLE_LEASE_MS);
       }
-      const failedCount = processedCount === 0 ? Math.max(parsed.failedCount, 1) : parsed.failedCount;
+
+      // Distinct companies in the list (also those saved before a restart).
+      const saved = await Promise.resolve()
+        .then(() => repository.listLeads({ workspaceId: job.workspaceId, listId: job.listId, page: 1, pageSize: 1 }))
+        .catch(() => null);
+      const processedCount = Math.max(typeof saved?.total === "number" ? saved.total : 0, keys.size);
+      const failedCount = processedCount === 0 ? Math.max(failedRows, 1) : failedRows;
       const totalCount = processedCount + failedCount;
       const status = processedCount === 0 ? "failed" : failedCount > 0 ? "partial" : "completed";
       return finishJob(activeJob, {
         status,
         output: {
           ...checkpoint,
-          downloadedRows: parsed.totalCount,
+          downloadedRows,
+          searchedAreas: plannedPasses,
           totalCount,
           processedCount,
           failedCount,

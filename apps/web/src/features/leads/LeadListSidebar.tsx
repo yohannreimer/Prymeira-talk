@@ -40,6 +40,6 @@ export function LeadListSidebar({
       <button type="button" className="leads-list-toggle" aria-expanded={expanded} onClick={onToggleExpanded}>{expanded ? "Mostrar menos" : "Ver todas"}</button>
       {expanded && hasMore && <button type="button" className="leads-list-more" disabled={loadingMore} onClick={onLoadMore}>{loadingMore ? "Carregando…" : "Carregar mais"}</button>}
     </div>}
-    {source === "google_maps" && <p className="leads-hint">A busca percorre uma área limitada para preservar a qualidade dos resultados.</p>}
+    {source === "google_maps" && <p className="leads-hint">Quando o Google mostra poucos resultados, a busca procura também nos bairros ao redor (norte, sul, leste e oeste). Pode levar de 10 a 15 minutos.</p>}
   </aside>;
 }
