@@ -55,8 +55,12 @@ outsider = User.objects.create_user(
     "xing-ci-outsider@example.invalid", secrets.token_urlsafe(24)
 )
 organization = Organization.objects.create(
-    name="Disposable Talk integration", slug="prymeira-digital"
+    # Native OrganizationSlugField overwrites an explicit slug on initial save.
+    # Its name must therefore produce the exact allowlisted disposable slug.
+    name="Prymeira Digital",
+    slug="prymeira-digital",
 )
+assert organization.slug == "prymeira-digital", "Disposable organization slug mismatch"
 membership = OrganizationUser.objects.create(
     user=user, organization=organization, role=OrganizationUserRole.MEMBER
 )
@@ -401,7 +405,9 @@ async def main():
         assert status == 401 and "events" not in body and b"www-authenticate" in headers
         assert (await rpc("events/list", token=outsider_bearer))[0] == 401
         status, body, _ = await rpc("server/discover")
-        assert status == 200 and body["result"]["supportedVersions"] == ["2026-07-28"]
+        assert status == 200 and body["result"]["supportedVersions"] == [
+            "2026-07-28"
+        ], f"Disposable discovery failed: status={status}, body={json.dumps(body)}"
         assert set(body["result"]["capabilities"]) == {"tools", "events"}
         status, body, _ = await rpc("events/list")
         assert (
