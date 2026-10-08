@@ -1,5 +1,9 @@
 import hashlib
 import importlib.util
+import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +16,32 @@ spec.loader.exec_module(installer)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_image_scripts_import_code_root_without_pythonpath(self):
+        for filename in ["smoke_image.py", "integration_image.py"]:
+            with self.subTest(script=filename), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                scripts = root / "xing-alerts-scripts"
+                scripts.mkdir()
+                shutil.copy(SCRIPT.parent / filename, scripts / filename)
+                (root / "glitchtip.py").write_text("")
+                (root / "django.py").write_text(
+                    "def setup():\n"
+                    "    import glitchtip\n"
+                    '    raise RuntimeError("authoritative_code_root_reached")\n'
+                )
+                env = dict(os.environ)
+                env.pop("PYTHONPATH", None)
+                env["XING_INTEGRATION_DISPOSABLE"] = "yes"
+                result = subprocess.run(
+                    [sys.executable, str(scripts / filename)],
+                    cwd=scripts,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertIn("authoritative_code_root_reached", result.stderr)
+
     def test_incompatible_base_fails_before_edit(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -2,10 +2,13 @@
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 
+# Scripts ship under /code/xing-alerts-scripts; resolve their authoritative code root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "glitchtip.settings")
-import django
+import django  # noqa: E402
 
 django.setup()
 from apps.mcp.server import mcp  # noqa: E402

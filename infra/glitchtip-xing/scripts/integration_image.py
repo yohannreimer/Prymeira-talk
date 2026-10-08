@@ -9,11 +9,14 @@ import hashlib
 import json
 import os
 import secrets
+import sys
 import tempfile
 import time
 import uuid
+from pathlib import Path
 from urllib.parse import urlencode
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 if os.environ.get("XING_INTEGRATION_DISPOSABLE") != "yes":
     raise RuntimeError("Disposable integration opt-in required")
 
