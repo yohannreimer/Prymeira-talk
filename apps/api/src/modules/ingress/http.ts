@@ -1,4 +1,5 @@
 import Fastify, { type FastifyRequest } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { deriveTrustedMessagingContext } from '../messaging/canonical-source.js';
 import { record } from '../messaging/whatsapp-identity.js';
@@ -112,7 +113,9 @@ export function createIngressHttp(options: IngressHttpOptions) {
         phase = 'normalization';
         try { payload = normalizeReceipt(source, input, enrichment); } catch { throw new HttpFailure(400, 'source_payload_mismatch'); }
         phase = 'stage';
+        const publicationToken = randomUUID();
         const receipt = await options.journal.stage({ transportNamespace: publisher.namespace, source, raw, payload,
+          publicationLease: { token: publicationToken, deadlineMs: publisher.deadlineMs },
           authentication: provider === 'evolution' ? 'evolution_constant_time_secret' : provider === 'waha' ? 'waha_raw_hmac_sha512' : 'meta_raw_hmac_sha256',
           reauthenticate: async tx => {
             await credential(tx, provider, workspaceId, request, raw);
@@ -120,7 +123,7 @@ export function createIngressHttp(options: IngressHttpOptions) {
             if (JSON.stringify(current) !== JSON.stringify(source)) throw new HttpFailure(409, 'source_changed');
           } });
         phase = 'publish';
-        await options.journal.publish(receipt.id, publisher);
+        await options.journal.publish(receipt.id, publisher, 'incoming', publicationToken);
         return reply.code(202).send({ ok: true, receiptId: receipt.id, state: 'pending_application' });
       } catch (error) {
         if (!(error instanceof HttpFailure) || error.status >= 500) {
