@@ -62,6 +62,8 @@ services:
     environment:
       NODE_ENV: production
       INGRESS_TRANSPORT_STAGE: production
+      GLITCHTIP_DSN: ${GLITCHTIP_DSN:-}
+      GLITCHTIP_RELEASE: ${IMAGE_TAG:-}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${PRYMEIRA_TALK_POSTGRES_PASSWORD}@${TALK_POSTGRES_HOST:-prymeira_talk_prymeira_talk_postgres}:5432/${POSTGRES_DB:-prymeira_talk}
       INGRESS_AMQP_URL: ${TALK_AMQP_URL}
       INGRESS_NAMESPACE: talk.prod.v1
@@ -123,6 +125,8 @@ services:
         max-file: "10"
     environment:
       NODE_ENV: production
+      GLITCHTIP_DSN: ${GLITCHTIP_DSN:-}
+      GLITCHTIP_RELEASE: ${IMAGE_TAG:-}
       INGRESS_TRANSPORT_STAGE: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${PRYMEIRA_TALK_POSTGRES_PASSWORD}@${TALK_POSTGRES_HOST:-prymeira_talk_prymeira_talk_postgres}:5432/${POSTGRES_DB:-prymeira_talk}
       INGRESS_AMQP_URL: ${TALK_AMQP_URL}

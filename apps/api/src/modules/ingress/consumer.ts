@@ -4,6 +4,7 @@ import { closeOwnedAmqpConnection } from './connection-close.js';
 import { randomUUID } from 'node:crypto';
 import { ConfirmedIngressPublisher, decodeReference, declareTransport, transportTopology } from './broker.js';
 import { IngressJournal } from './journal.js';
+import { reportFailure } from '../../observability/glitchtip.js';
 
 /** Original-channel ACK follows the selected milestone sink: stage 1A conserves
  * transport only; stage 1B commits complete per-event application and obligations. */
@@ -28,7 +29,7 @@ export class IngressTransportConsumer {
       for (const queue of [topology.incoming, topology.retry]) {
         await step(() => channel.consume(queue, message => {
           if (!message) { consumer.stopAccepting(); return; }
-          const work = consumer.deliver(message).catch(() => consumer.stopAccepting());
+          const work = consumer.deliver(message).catch(error => { reportFailure('transport_delivery', error); consumer.stopAccepting(); });
           consumer.inflight.add(work);
           void work.finally(() => consumer.inflight.delete(work));
         }, { noAck: false }));
@@ -67,13 +68,15 @@ export class IngressTransportConsumer {
     try {
       if (this.application) await this.application.apply(receipt.id);
       else await this.journal.handoff(receipt.id);
-    } catch {
+    } catch (error) {
+      reportFailure('application_retry', error);
       const failure = await this.journal.db.ingressDelivery.update({ where: { receiptId: receipt.id }, data: { failures: { increment: 1 }, lastError: 'application_handoff_failed' } });
       const publisher = this.publisher();
       if (!publisher?.ready) { this.stopAccepting(); return; }
       // No classic DLX. The replacement persistent message is mandatory-routed
       // and confirmed, and its evidence committed, BEFORE the original ACK.
       await this.journal.publish(receipt.id, publisher, failure.failures >= this.maxFailures ? 'dead' : 'retry');
+      if (failure.failures >= this.maxFailures) reportFailure('application_dead_letter', error);
       this.ack(message);
       return;
     }

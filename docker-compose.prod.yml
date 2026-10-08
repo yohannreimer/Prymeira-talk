@@ -46,6 +46,8 @@ services:
     environment:
       NODE_ENV: production
       API_HOST: 0.0.0.0
+      GLITCHTIP_DSN: ${GLITCHTIP_DSN:-}
+      GLITCHTIP_RELEASE: ${IMAGE_TAG:-}
       API_PORT: 3002
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${PRYMEIRA_TALK_POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-prymeira_talk}
       CORS_ORIGINS: https://talk.prymeiradigital.com.br

@@ -1,5 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { Prisma, type PrismaClient } from '@prisma/client';
+import { reportFailure } from '../../observability/glitchtip.js';
 
 /** Durable executor for `ingress_effects`. Rows are created in the same transaction as the Message
  * (stage 1B); this runner owns their lifecycle: pending -> running (lease) -> done | failed.
@@ -134,10 +135,13 @@ export function createEffectRunner(options: EffectRunnerOptions) {
     try {
       outcome = await handlers[effect.kind]!(effect, { signal });
     } catch (error) {
+      reportFailure('effect_handler', error);
       options.logger?.warn({ err: error, effectId: effect.id, kind: effect.kind }, 'Effect handler threw');
       outcome = { status: 'retry', errorCode: 'HANDLER_THREW' };
     } finally { clearInterval(heartbeat); }
     const changed = await finish(effect, outcome);
+    if (changed === 1 && outcome.status !== 'done' && (outcome.status === 'failed' || effect.attempts >= maxAttempts))
+      reportFailure('effect_exhausted', { code: outcome.errorCode });
     if (changed !== 1) options.logger?.warn({ effectId: effect.id, kind: effect.kind }, 'Effect lease was lost; result discarded');
     return true;
   }

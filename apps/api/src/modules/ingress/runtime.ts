@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { reportFailure } from '../../observability/glitchtip.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ConfirmedIngressPublisher, transportTopology } from './broker.js';
 import { IngressPrivateStore } from './private-store.js';
@@ -100,7 +101,7 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
           consumer = await IngressTransportConsumer.start({ url: config.amqpUrl, namespace: config.namespace, journal, publisher: () => publisher, signal: abort.signal, ...(stageAppliesReceipts(config.stage) ? { application: new IngressApplicationService(journal) } : {}) });
         }
         if (consume && !abort.signal.aborted && publisher.ready) await journal.recover(publisher);
-      } catch { /* Durable receipts remain pending; requests see explicit 503. */ }
+      } catch (error) { if (!abort.signal.aborted) reportFailure('transport_setup', error); /* Durable receipts remain pending; requests see explicit 503. */ }
       await delay(500, undefined, { signal: abort.signal }).catch(() => {});
     }
   })();
@@ -129,7 +130,7 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
     }
     const runner = createEffectRunner({ db, workerId: `ingress-${process.pid}-${Math.random().toString(36).slice(2, 8)}`, handlers: only, ...(config.allowAllWorkspaces ? {} : { workspaceIds: [...config.workspaceAllowlist] }),
       logger: { warn: (fields, message) => console.warn(message, fields) } });
-    return startEffectLoop(runner, { signal: abort.signal, onError: error => console.warn('Effect loop iteration failed', error) });
+    return startEffectLoop(runner, { signal: abort.signal, onError: error => { reportFailure('effect_loop', error); console.warn('Effect loop iteration failed', error); } });
   })() : null;
   // Events held as stale_source (they arrived while a connection was being paired or reset) are certified once the
   // connection is current again. Nothing is lost while it is not: the receipt and the held decision stay on record.
@@ -149,8 +150,10 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
         prepareMedia: mediaStore ? createSourceMediaPreparer({ media: createMessageMediaService({ db, store: mediaStore }), waha: wahaClient,
           evolution: config.evolutionApi ? createEvolutionClient(config.evolutionApi) : null, evolutionInstanceOf }) : undefined };
     }
-    const warnFor = (step: 'waha_history' | 'gap_recovery' | 'lid_resolution') => (error: unknown, connectionId: string) =>
+    const warnFor = (step: 'waha_history' | 'gap_recovery' | 'lid_resolution') => (error: unknown, connectionId: string) => {
+      reportFailure(step, error);
       console.warn(`Provider ${step} step failed`, { step, connectionId, error: error instanceof Error ? error.message : String(error) });
+    };
     let lastRecovery = 0;
     let historyRun: Promise<unknown> | null = null;
     while (!abort.signal.aborted) {
@@ -170,7 +173,7 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
         if (config.wahaHistoryImport && history.wahaLids) await resolveLidConversationsSweep(db, { lids: history.wahaLids }, { ...scope, onError: warnFor('lid_resolution') });
         if (config.gapRecovery && Date.now() - lastRecovery >= 5 * 60_000) { lastRecovery = Date.now(); await recoverGapsSweep(db, history, { ...scope, onError: warnFor('gap_recovery') }); }
       }
-      catch (error) { console.warn('Recertification sweep failed', error); }
+      catch (error) { reportFailure('recertification_sweep', error); console.warn('Recertification sweep failed', error); }
     }
     await historyRun;
     await historyBridge?.stop();
