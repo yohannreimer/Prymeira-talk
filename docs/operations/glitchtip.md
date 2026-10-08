@@ -32,16 +32,52 @@ No máximo 10 eventos/minuto/processo e uma repetição por ponto+código a cada
 minuto. Esgotar tentativas usa um grupo separado das falhas transitórias.
 Um erro no monitor não altera o resultado do processamento original.
 
-## Ativação e comprovação
+## Ativação observada em produção
 
-1. Recuperar acesso à conta existente; a nova senha deve ser definida pelo usuário.
+Em 08/10/2026, o acesso à conta existente foi recuperado pelo usuário e o projeto
+Node.js `prymeira-talk` foi criado. A imagem
+`add72b526add89b33475fb5a69c06f024ae994d0` foi implantada na API, ingress e
+ingress_worker. Eventos reais chegaram ao projeto com release e serviço corretos,
+sem um evento sintético que pudesse ser confundido com uma falha de cliente.
+A prontidão pública `/api/ready` respondeu `{"ok":true,"product":"talk"}`.
+
+As checagens de uptime foram desligadas com `GLITCHTIP_ENABLE_UPTIME=False`.
+Naquele momento havia somente os três monitores antigos do Baase; seus registros
+e históricos foram preservados. Isso também impede novas checagens de uptime
+do Talk até que a configuração seja reavaliada.
+
+A composição salva da aplicação principal estava atrás do estado em execução.
+Ela foi reconciliada para conservar as variáveis atuais, a montagem de mídia,
+limites de 2 CPUs/2 GB da API, frontend existente, banco e rotação dos logs antes
+de acrescentar o monitoramento. Não guardar cópias dessa composição com segredos
+em arquivos de documentação.
+
+## Entrega dos alertas ainda pendente
+
+O usuário escolheu a Dot Xing no Codex como destino. A captura no GlitchTip já
+funciona, mas a entrega à Xing não foi configurada nem comprovada. `EMAIL_URL`
+continua em `consolemail://`; não anunciar entrega por e-mail.
+
+O MCP nativo do GlitchTip oferece ferramentas de consulta e alteração de issues;
+ele permanece desabilitado e não demonstra suporte a MCP Events. Consulta por MCP
+e aviso disparado por evento são fluxos diferentes. Para alertas imediatos à Dot,
+será necessária uma ponte autenticada de webhook para um plugin com MCP Events,
+seguida de conexão/assinatura autorizada na Dot e teste de entrega. Limitar essa
+ponte ao projeto do Talk e aos dados operacionais permitidos.
+
+Referências: [MCP do GlitchTip](https://glitchtip.com/documentation/mcp/),
+[MCP Events em dots](https://developers.openai.com/plugins/build/mcp-events).
+
+## Alternativas e comprovação de entrega
+
+1. Preservar a conta existente; novas senhas são definidas pelo usuário.
 2. Configurar SMTP/Anymail válido, remetente autorizado e destinatário escolhido.
    Não redirecionar e-mails para um webhook desconhecido nem reutilizar credenciais
    de outro serviço sem autorização. Criar a regra de erro e uptime no projeto.
 3. Implantar a imagem contendo esta integração e configurar o DSN nos três serviços.
 4. Enviar um evento sintético sem dados de clientes ao projeto do Talk, verificar
-   recebimento, release e entrega do alerta ao destinatário. Isto ainda está pendente
-   enquanto acesso e envio de e-mail não estiverem resolvidos.
+   recebimento, release e entrega do alerta ao destinatário. A captura e release já
+   foram comprovadas com eventos reais; entrega externa continua pendente.
 5. Monitores de disponibilidade devem consultar endpoints públicos de saúde/readiness
    existentes. Um heartbeat do worker exige um checkpoint que prove progresso real;
    réplicas 1/1 ou apenas o ingresso HTTP disponível não comprovam processamento.
