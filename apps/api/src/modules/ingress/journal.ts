@@ -18,8 +18,11 @@ export class IngressJournal {
   /** Caller has verified the raw signature. Reauthenticate under the source locks
    * before commit; filesystem writes precede the SQL receipt and AMQP follows it. */
   async stage(input: { transportNamespace: string; source: TrustedMessagingContext; authentication: string; raw: Buffer; payload: ReceiptPayload;
+    publicationLease?: { token: string; deadlineMs: number };
     reauthenticate: (tx: Tx) => Promise<void> }) {
     this.assertAllowed(input.source.workspaceId);
+    if (input.publicationLease && (!/^[a-f0-9-]{36}$/.test(input.publicationLease.token)
+      || !Number.isSafeInteger(input.publicationLease.deadlineMs) || input.publicationLease.deadlineMs < 50 || input.publicationLease.deadlineMs > 30000)) throw new Error('Invalid initial publication lease');
     const authenticatedDigest = createHash('sha256').update(input.raw).digest('hex');
     const sanitizedRaw = Buffer.from(JSON.stringify(stripEnvelopeCredentials(JSON.parse(input.raw.toString('utf8')))));
     const raw = await this.files.put(sanitizedRaw), events = await this.files.put(Buffer.from(JSON.stringify(stripEnvelopeCredentials(input.payload))));
@@ -42,7 +45,12 @@ export class IngressJournal {
       const receipt = await tx.ingressReceipt.create({ data: { id, ...scope, stageVersion: 1, transportNamespace: input.transportNamespace, source: json({ ...source, acceptedFacts }),
         authentication: input.authentication, authenticatedDigest, rawRef: raw.ref, rawDigest: raw.digest, eventRef: events.ref, eventDigest: events.digest,
         eventCount: input.payload.events.length } });
-      await tx.ingressDelivery.create({ data: { ...scope, receiptId: id } });
+      // Reserve the first publish atomically with the receipt. The recovery
+      // sweep must not claim it in the gap between stage() and HTTP publish().
+      // A process crash leaves a durable receipt whose lease expires normally.
+      await tx.ingressDelivery.create({ data: { ...scope, receiptId: id,
+        ...(input.publicationLease ? { leaseToken: input.publicationLease.token,
+          leaseUntil: new Date(Date.now() + input.publicationLease.deadlineMs + 10000) } : {}) } });
       for (const [eventIndex, result] of input.payload.events.entries()) {
         const key = result.kind === 'accepted' ? eventKey(result.event) : null;
         await tx.ingressFrontier.create({ data: { ...scope, receiptId: id, eventIndex,
@@ -56,12 +64,13 @@ export class IngressJournal {
     const receipt = await this.db.ingressReceipt.findUniqueOrThrow({ where: { id: receiptId } });
     this.assertAllowed(receipt.workspaceId);
     if (receipt.transportNamespace !== publisher.namespace) throw new Error('Ingress transport namespace mismatch');
-    if (!leaseToken) {
-      leaseToken = randomUUID();
-      const claim = await this.db.ingressDelivery.updateMany({ where: { receiptId, OR: [{ leaseUntil: null }, { leaseUntil: { lt: new Date() } }] },
-        data: { leaseToken, leaseUntil: new Date(Date.now() + publisher.deadlineMs + 10000) } });
-      if (!claim.count) throw new IngressBackpressure('publication_in_progress');
-    }
+    const now = new Date(), existingToken = leaseToken;
+    leaseToken ??= randomUUID();
+    const claim = await this.db.ingressDelivery.updateMany({ where: { receiptId,
+      ...(existingToken ? { leaseToken: existingToken, leaseUntil: { gt: now } }
+        : { OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] }) },
+      data: { leaseToken, leaseUntil: new Date(now.getTime() + publisher.deadlineMs + 10000) } });
+    if (!claim.count) throw new IngressBackpressure('publication_in_progress');
     const id = randomUUID(), scope = { workspaceId: receipt.workspaceId, channelId: receipt.channelId };
     await this.db.ingressPublishAttempt.create({ data: { id, receiptId, ...scope, destination } });
     try {

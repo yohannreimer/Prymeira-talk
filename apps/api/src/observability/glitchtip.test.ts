@@ -15,6 +15,15 @@ describe('private error reporting', () => {
     expect(failureCode({ code: 'PRIVATE_TOKEN', message: 'customer text' })).toBe('UNEXPECTED_ERROR');
     expect(failureCode('customer text')).toBe('UNEXPECTED_ERROR');
   });
+  it('keeps known provider, initialization, broker and media failures distinguishable', () => {
+    expect(failureCode({ errorCode: 'P1001', message: 'PRIVATE SQL' })).toBe('P1001');
+    expect(failureCode('Evolution API request failed with status 404')).toBe('EVOLUTION_HTTP_404');
+    expect(failureCode(new Error('HISTORY_DUPLICATE_MESSAGE'))).toBe('HISTORY_DUPLICATE_MESSAGE');
+    expect(failureCode({ code: 'publish_deadline' })).toBe('INGRESS_PUBLISH_DEADLINE');
+    expect(failureCode({ code: 'MEDIA_UNAVAILABLE' })).toBe('MEDIA_UNAVAILABLE');
+    expect(privateEvent({ tags: { failure_point: 'effect_exhausted', failure_code: 'MEDIA_UNAVAILABLE' } })?.tags?.failure_code).toBe('MEDIA_UNAVAILABLE');
+    expect(failureCode('PRIVATE customer message')).toBe('UNEXPECTED_ERROR');
+  });
   it('rebuilds fatal events without request, user, exception text, breadcrumbs or contexts', () => {
     const output = privateEvent({ event_id: '123', release: 'ceceeceddd525904e67f64519a03adacb66f89ab',
       request: { url: 'https://private/token', headers: { Authorization: 'PRIVATE_TOKEN' }, data: 'customer text' },

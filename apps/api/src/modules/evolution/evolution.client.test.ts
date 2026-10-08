@@ -1,6 +1,48 @@
 import { describe, expect, it, vi } from "vitest";
 import { EvolutionClientError, createEvolutionClient } from "./evolution.client.js";
 import { createEvolutionRuntime } from "./evolution-runtime.js";
+import { AgentMediaError } from '../agents/agent-media-resolver.js';
+import { createMessageMediaService } from '../conversations/message-media.js';
+
+describe('Evolution media size handling', () => {
+  it('cancels an oversized provider response and reports a permanent size limit', async () => {
+    const cancel = vi.fn();
+    const chunk = new Uint8Array(1024 * 1024);
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) { if (sent++ < 50) controller.enqueue(chunk); else controller.close(); },
+      cancel
+    });
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key',
+      fetch: vi.fn(async () => new Response(body, { status: 201 })) as typeof fetch });
+    const error = await client.fetchMedia!({ instanceName: 'instance', id: 'media' }).catch(error => error);
+    expect(error).toBeInstanceOf(AgentMediaError);
+    expect(error.code).toBe('MEDIA_TOO_LARGE');
+    expect(cancel).toHaveBeenCalledOnce();
+    const put = vi.fn();
+    const media = createMessageMediaService({
+      db: { message: { findFirst: vi.fn(async () => ({ id: 'media', conversationId: 'conversation', type: 'file', mediaUrl: null })) },
+        messageMedia: { upsert: vi.fn(async () => ({ state: 'pending' })), update: vi.fn() } } as never,
+      store: { put } as never
+    });
+    await expect(media.prepare({ workspaceId: 'workspace', messageId: 'media',
+      fetchers: [{ name: 'evolution', fetch: async () => { throw error; } }] }))
+      .resolves.toEqual({ state: 'limit_exceeded', errorCode: 'MEDIA_TOO_LARGE', retryable: false });
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it('keeps unavailable media distinct from a size limit', async () => {
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key',
+      fetch: vi.fn(async () => Response.json({ mimetype: 'video/mp4' })) as typeof fetch });
+    await expect(client.fetchMedia!({ instanceName: 'instance', id: 'media' })).rejects.toThrow('MEDIA_UNAVAILABLE');
+  });
+
+  it('still returns valid media below the response limit', async () => {
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key',
+      fetch: vi.fn(async () => Response.json({ mimetype: 'video/mp4', base64: 'eA==' })) as typeof fetch });
+    await expect(client.fetchMedia!({ instanceName: 'instance', id: 'media' })).resolves.toBe('data:video/mp4;base64,eA==');
+  });
+});
 
 describe("createEvolutionRuntime", () => {
   it("uses simulated mode when EVOLUTION_MODE is simulated", () => {

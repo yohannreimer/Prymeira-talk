@@ -16,6 +16,16 @@ function setup(passes: unknown[][] = [[row('old'), row('anchor', end.getTime())]
 }
 const input = { instanceName: 'Diogo', anchorId: 'anchor', from, to: end };
 describe('read-only Evolution history', () => {
+  it('accepts byte-equivalent duplicate history rows, but never conflicting messages or identities', async () => {
+    const original = row('anchor');
+    const sourceFor = (records: unknown[]) => createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'test',
+      fetch: vi.fn(async () => new Response(JSON.stringify({ messages: { records, pages: 1 } }))) });
+    const lookup = { instanceName: 'Diogo', id: 'anchor' };
+    expect((await sourceFor([original, { ...original, databaseOnlyId: 'copy' }]).findMessage(lookup))?.key.id).toBe('anchor');
+    await expect(sourceFor([original, { ...original, message: { conversation: 'conflict' } }]).findMessage(lookup)).rejects.toThrow('HISTORY_DUPLICATE_MESSAGE');
+    await expect(sourceFor([original, row('anchor', end.getTime() - 1000, '999@s.whatsapp.net')]).findMessage(lookup)).rejects.toThrow('HISTORY_DUPLICATE_MESSAGE');
+    await expect(sourceFor([original, { ...original, key: { ...original.key, fromMe: true } }]).findMessage(lookup)).rejects.toThrow('HISTORY_DUPLICATE_MESSAGE');
+  });
   it('loads one exact provider message to recover its edit secret', async () => {
     const { source, fetchMock } = setup();
     const result = await source.findMessage({ instanceName: 'Diogo', id: 'anchor' });

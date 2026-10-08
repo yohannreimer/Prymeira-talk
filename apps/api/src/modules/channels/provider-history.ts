@@ -150,7 +150,9 @@ export async function pairedConnections(prisma: PrismaClient, input: { workspace
   for (const connection of connections) byChannel.set(connection.channelId, [...(byChannel.get(connection.channelId) ?? []), connection]);
   return connections.filter(connection => {
     if (connection.lifecycleGeneration % 2 !== 0) return false; // A QR/logout operation is in flight.
-    if (connection.provider === 'evolution') return true;
+    // A failed provider probe can retain the last connected status. Eligibility is
+    // the current proof: do not keep polling history for an unavailable instance.
+    if (connection.provider === 'evolution') return connection.eligible;
     // A WAHA session whose engine is not connected, or that stopped receiving, is not read: it would only time out.
     if (!connection.eligible) return false;
     const primary = byChannel.get(connection.channelId)?.find(c => c.provider === 'evolution');
