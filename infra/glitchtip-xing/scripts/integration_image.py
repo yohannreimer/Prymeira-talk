@@ -62,8 +62,9 @@ membership = OrganizationUser.objects.create(
 )
 project = Project.objects.create(id=3, name="pra-talk", organization=organization)
 Project.objects.create(id=2, name="baase-api", organization=organization)
-key = ProjectKey.objects.filter(project=project).first()
-assert key is not None
+# Native Project.save creates a key only when pk is initially absent. This
+# fixture supplies the allowlisted project ID explicitly, so create its key too.
+key = ProjectKey.objects.create(project=project, name="Disposable CI ingest")
 bearer = secrets.token_urlsafe(32)
 outsider_bearer = secrets.token_urlsafe(32)
 for token, owner in [(bearer, user.pk), (outsider_bearer, outsider.pk)]:
