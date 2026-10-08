@@ -4,6 +4,32 @@ import { IngressApplicationService } from './application.js';
 const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ receiptId: `r${i}`, eventIndex: 0 }));
 
 describe('recertification sweep', () => {
+  it('continues after a failed event and retries it after backoff without discarding its receipt', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const findMany = vi.fn().mockImplementation(async (args: { where: { reason?: unknown } }) => args.where.reason ? [] : rows(3));
+      const service = new IngressApplicationService({ db: { ingressEventProgress: { findMany } } } as never);
+      const recertify = vi.spyOn(service, 'recertify').mockImplementation(async (id: string) => {
+        if (id === 'r0') throw Object.assign(new Error('private message content must not enter logs'), { code: 'InvalidArg' });
+        return { state: 'applied' } as never;
+      });
+      expect(await service.recertifyPending({ limit: 3 })).toEqual({ examined: 3, applied: 2 });
+      expect(recertify.mock.calls.map(call => call[0])).toEqual(['r0', 'r1', 'r2']);
+      expect(warn).toHaveBeenCalledWith('Recertification event failed', { receiptId: 'r0', eventIndex: 0, code: 'InvalidArg' });
+      recertify.mockClear();
+      await service.recertifyPending({ limit: 3 });
+      expect(recertify.mock.calls.map(call => call[0])).toEqual(['r1', 'r2']);
+      vi.advanceTimersByTime(10 * 60_000);
+      recertify.mockResolvedValue({ state: 'applied' });
+      recertify.mockClear();
+      expect(await service.recertifyPending({ limit: 3 })).toEqual({ examined: 3, applied: 3 });
+      expect(recertify.mock.calls[0]![0]).toBe('r0');
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
   it('an event that stays invalid waits its backoff instead of blocking the events behind it', async () => {
     // The main queue has four; the WAHA-proof queue is empty.
     const findMany = vi.fn().mockImplementation(async (args: { where: { reason?: unknown } }) => args.where.reason ? [] : rows(4));

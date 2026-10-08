@@ -1,4 +1,5 @@
 import { refreshOwnedConversationPreviewInTransaction, selectConversationPreviewInTransaction } from '../messaging/conversation-preview.js';
+import { wellFormedPresentation } from '../messaging/well-formed-presentation.js';
 import { groupFallbackName } from '../evolution/evolution-normalizer.js';
 import { validateEvolutionIdentityDeclarations, validateWahaIdentityDeclarations } from '../messaging/identity-declarations.js';
 import { Prisma, type IngressReceipt } from '@prisma/client';
@@ -88,7 +89,7 @@ export class IngressApplicationService {
                 }
                 // The digest-verified adapter payload supplies content/keys only. Immutable
                 // authenticated source overwrites any embedded caller/context fields.
-                const event = { ...item.event, context: source };
+                const event = wellFormedPresentation({ ...item.event, context: source });
                 if (event.kind === 'control') {
                     const result = await applyAuthenticatedConnectionObservation(tx, event);
                     await tx.ingressEventProgress.create({ data: { ...scope, state: result.applied ? 'applied' : 'held', reason: result.reason, result: json(result) } });
@@ -218,7 +219,7 @@ export class IngressApplicationService {
                 if (!a || !b || a !== b || !secondary?.lastHealthyAt || !primary || primary.lifecycleGeneration % 2 !== 0)
                     return { state: 'still_stale' as const };
             }
-            const event = { ...item.event, context: current };
+            const event = wellFormedPresentation({ ...item.event, context: current });
             const result = await this.store.persistInTransaction(tx, event, { receiptKey: `${receiptId}:${eventIndex}` });
             if (result.outcome === 'held')
                 return record_('held', result.reconciliationReasons[0] ?? 'held', { observationId: result.observationId }, result);
@@ -261,15 +262,25 @@ export class IngressApplicationService {
             if ((this.recertifyRetryAt.get(key) ?? 0) > now) continue;
             if (examined >= limit) break;
             examined++;
-            const outcome = await this.recertify(row.receiptId, row.eventIndex);
-            if (outcome.state === 'applied') applied++;
-            if (outcome.state === 'still_invalid' || outcome.state === 'still_stale') this.recertifyRetryAt.set(key, now + RECERTIFY_BACKOFF_MS);
-            else this.recertifyRetryAt.delete(key);
+            try {
+                const outcome = await this.recertify(row.receiptId, row.eventIndex);
+                if (outcome.state === 'applied') applied++;
+                if (outcome.state === 'still_invalid' || outcome.state === 'still_stale') this.recertifyRetryAt.set(key, now + RECERTIFY_BACKOFF_MS);
+                else this.recertifyRetryAt.delete(key);
+            } catch (error) {
+                // The per-event transaction rolled back; keep the immutable receipt pending.
+                // Back off this event so one malformed message cannot abort/starve the sweep.
+                this.recertifyRetryAt.set(key, now + RECERTIFY_BACKOFF_MS);
+                const code = record(error).code;
+                console.warn('Recertification event failed', { receiptId: row.receiptId, eventIndex: row.eventIndex,
+                    code: typeof code === 'string' && /^[A-Za-z0-9_]{1,40}$/.test(code) ? code : 'recertification_error' });
+            }
         }
         return { examined, applied };
     }
     /** Everything that follows a successful canonical persist. Shared by first application and recertification. */
     private async afterPersist(tx: Tx, receipt: IngressReceipt, eventIndex: number, event: Exclude<NormalizedMessagingEvent, { kind: 'control' }>, result: CanonicalStoreResult, source: TrustedMessagingContext) {
+        event = wellFormedPresentation(event);
         if (result.conversationId)
             await lockProspectingConversation(tx, source.workspaceId, result.conversationId);
         if (event.kind === 'message' && result.messageId && result.conversationId && result.outcome !== 'held')

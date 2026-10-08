@@ -1,4 +1,5 @@
 import { createOutboundObservationGate } from './outbound-observation-gate.js';
+import { wellFormedPresentation } from './well-formed-presentation.js';
 import { enterCanonicalWorkspaceTransaction } from './canonical-boundary.js';
 import type { CanonicalObservation } from '@prisma/client';
 import { createCanonicalReads, resolveProviderReferenceInTransaction } from './canonical-resolution.js';
@@ -376,6 +377,7 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
     digest, lockAndScope, resolveActionTarget, revisionTuple, address, graph, pendingTargetWhere
   });
   async function persistObservationInTransaction(tx: Tx, event: NormalizedMessagingEvent, options: CanonicalStoreOptions, replay?: { observation: CanonicalObservation; staleFact: boolean; known: boolean }): Promise<CanonicalStoreResult> {
+    event = wellFormedPresentation(event);
     const c = event.context, scope = scopeOf(c);
     if (c.provider === 'meta_official' && (event.addressMappings.length || (event.kind !== 'control' && (event.kind === 'message' ? event.key : event.target).identityFormat !== 'provider_native'))) throw new Error('Official Meta requires its own native namespace');
     if (!event.providerEventId && !options.receiptKey) throw new Error('Stable ingress receiptKey required');
