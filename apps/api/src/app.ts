@@ -1,6 +1,7 @@
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
+import { reportFailure } from './observability/glitchtip.js';
 import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
@@ -106,7 +107,14 @@ export interface CreateAppOptions {
 }
 
 export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
-  const app = Fastify({ logger: options.logger ?? true, trustProxy: true });
+  const app = Fastify({ logger: options.logger === false ? false : { hooks: {
+    logMethod(args, method, level) {
+      const fields = args[0] as { err?: { statusCode?: number } } | undefined;
+      if (level >= 40 && fields && typeof fields === 'object' && fields.err
+        && !(fields.err.statusCode && fields.err.statusCode < 500)) reportFailure('api', fields.err);
+      return method.apply(this, args);
+    }
+  } }, trustProxy: true });
   await app.register(inboxTimingPlugin);
   const allowedCorsOrigins = env.CORS_ORIGINS.split(",")
     .map((origin) => origin.trim())
@@ -137,6 +145,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
 
   app.setErrorHandler((error, _request, reply) => {
     const maybeHttpError = error as Error & { statusCode?: number };
+    if (!maybeHttpError.statusCode || maybeHttpError.statusCode >= 500) reportFailure('api', error);
     if (maybeHttpError.statusCode === 429) {
       return reply.status(429).send({
         error: {

@@ -1,5 +1,6 @@
 import { refreshOwnedConversationPreviewInTransaction, selectConversationPreviewInTransaction } from '../messaging/conversation-preview.js';
 import { wellFormedPresentation } from '../messaging/well-formed-presentation.js';
+import { reportFailure } from '../../observability/glitchtip.js';
 import { groupFallbackName } from '../evolution/evolution-normalizer.js';
 import { validateEvolutionIdentityDeclarations, validateWahaIdentityDeclarations } from '../messaging/identity-declarations.js';
 import { Prisma, type IngressReceipt } from '@prisma/client';
@@ -269,6 +270,7 @@ export class IngressApplicationService {
                 else this.recertifyRetryAt.delete(key);
             } catch (error) {
                 // The per-event transaction rolled back; keep the immutable receipt pending.
+                reportFailure('recertification_event', error);
                 // Back off this event so one malformed message cannot abort/starve the sweep.
                 this.recertifyRetryAt.set(key, now + RECERTIFY_BACKOFF_MS);
                 const code = record(error).code;

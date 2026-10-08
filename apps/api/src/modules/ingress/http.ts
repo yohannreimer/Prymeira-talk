@@ -7,6 +7,7 @@ import { normalizeReceipt } from './normalization.js';
 import { IngressJournal } from './journal.js';
 import type { ConfirmedIngressPublisher } from './broker.js';
 import type { WahaLidResolver } from '../waha/waha-lid-resolver.js';
+import { reportFailure } from '../../observability/glitchtip.js';
 
 type Provider = 'evolution' | 'waha' | 'meta_official';
 class HttpFailure extends Error { constructor(readonly status: number, message: string) { super(message); } }
@@ -40,6 +41,7 @@ export function createIngressHttp(options: IngressHttpOptions) {
     const failure = error as { statusCode?: number };
     if (failure.statusCode === 413) return reply.code(413).send({ error: 'payload_too_large' });
     if (failure.statusCode === 415) return reply.code(415).send({ error: 'json_required' });
+    reportFailure('ingress_http', error);
     return reply.code(503).send({ error: 'ingress_unavailable' });
   });
   async function credential(tx: Prisma.TransactionClient, provider: Provider, workspaceId: string, request: FastifyRequest, raw: Buffer) {
@@ -116,6 +118,7 @@ export function createIngressHttp(options: IngressHttpOptions) {
         await options.journal.publish(receipt.id, publisher);
         return reply.code(202).send({ ok: true, receiptId: receipt.id, state: 'pending_application' });
       } catch (error) {
+        if (!(error instanceof HttpFailure) || error.status >= 500) reportFailure('ingress_http', error);
         return reply.code(error instanceof HttpFailure ? error.status : 503).send({ error: error instanceof HttpFailure ? error.message : 'ingress_unavailable' });
       }
     });
