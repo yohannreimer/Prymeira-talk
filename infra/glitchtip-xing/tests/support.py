@@ -6,7 +6,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from xing_alerts.config import Config
 
-CONFIG = Config(organization="prymeira-digital", project_id=3, project_name="pra-talk")
+CONFIG = Config(
+    organization="prymeira-digital", project_id=3, project_name="prymeira-talk"
+)
 SECRET = "whsec_" + base64.b64encode(b"a" * 32).decode()
 SECRET2 = "whsec_" + base64.b64encode(b"b" * 32).decode()
 URL = "https://receiver.example/events/callback"
@@ -24,7 +26,7 @@ def payload(issue=42):
                 "image_url": PRIVATE,
                 "title_link": f"{CONFIG.base_url}/prymeira-digital/issues/{issue}",
                 "fields": [
-                    {"title": "Project", "value": "pra-talk"},
+                    {"title": "Project", "value": "prymeira-talk"},
                     {"title": "Failure_point", "value": "transport_delivery"},
                     {"title": "Failure_code", "value": "ECONNRESET"},
                     {"title": "Service", "value": "api"},

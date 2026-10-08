@@ -16,12 +16,13 @@ class PrivacyTests(unittest.TestCase):
         self.assertEqual(events[0]["timestamp"], "1970-01-01T00:16:40Z")
 
     def test_other_project_mixed_payload_rejected_atomically(self):
-        data = payload()
-        other = copy.deepcopy(data["attachments"][0])
-        other["fields"][0]["value"] = "other-project"
-        data["attachments"].append(other)
-        with self.assertRaises(InvalidPayload):
-            normalize(data, CONFIG, 1000)
+        for name in ["pra-talk", "other-project"]:
+            data = payload()
+            other = copy.deepcopy(data["attachments"][0])
+            other["fields"][0]["value"] = name
+            data["attachments"].append(other)
+            with self.subTest(name=name), self.assertRaises(InvalidPayload):
+                normalize(data, CONFIG, 1000)
 
     def test_hostile_urls_never_survive(self):
         for suffix in [

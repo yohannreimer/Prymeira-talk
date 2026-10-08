@@ -42,7 +42,7 @@ class Protocol:
     def definition(self):
         return {
             "name": EVENT_NAME,
-            "description": "A sanitized native GlitchTip operational alert for pra-talk. Includes new and reopened issues; repeated open issues are suppressed by GlitchTip.",
+            "description": "A sanitized native GlitchTip operational alert for prymeira-talk. Includes new and reopened issues; repeated open issues are suppressed by GlitchTip.",
             "delivery": ["webhook"],
             "inputSchema": {
                 "type": "object",

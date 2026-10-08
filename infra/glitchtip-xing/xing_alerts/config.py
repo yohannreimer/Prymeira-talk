@@ -23,8 +23,9 @@ class Config:
             raise ValueError("invalid organization configuration")
         if type(self.project_id) is not int or self.project_id <= 0:
             raise ValueError("invalid project configuration")
-        if self.project_name != "pra-talk" or self.base_url != RESOURCE.removesuffix(
-            "/mcp"
+        if (
+            self.project_name != "prymeira-talk"
+            or self.base_url != RESOURCE.removesuffix("/mcp")
         ):
             raise ValueError("Talk-only configuration required")
 
@@ -43,7 +44,7 @@ class Config:
         return cls(
             organization=os.environ["XING_ORGANIZATION_SLUG"],
             project_id=int(os.environ["XING_PROJECT_ID"]),
-            project_name=os.environ.get("XING_PROJECT_NAME", "pra-talk"),
+            project_name=os.environ.get("XING_PROJECT_NAME", "prymeira-talk"),
             state_path=os.environ.get(
                 "XING_STATE_PATH", "/var/lib/xing-alerts/state.sqlite3"
             ),

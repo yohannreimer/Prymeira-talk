@@ -29,7 +29,7 @@ os.environ.update(
     XING_EVENTS_ENABLED="true",
     XING_ORGANIZATION_SLUG="prymeira-digital",
     XING_PROJECT_ID="3",
-    XING_PROJECT_NAME="pra-talk",
+    XING_PROJECT_NAME="prymeira-talk",
     XING_WEBHOOK_TOKEN=secrets.token_urlsafe(32),
     XING_STATE_PATH=state_directory.name + "/state.sqlite3",
 )
@@ -64,7 +64,7 @@ assert organization.slug == "prymeira-digital", "Disposable organization slug mi
 membership = OrganizationUser.objects.create(
     user=user, organization=organization, role=OrganizationUserRole.MEMBER
 )
-project = Project.objects.create(id=3, name="pra-talk", organization=organization)
+project = Project.objects.create(id=3, name="prymeira-talk", organization=organization)
 Project.objects.create(id=2, name="baase-api", organization=organization)
 # Native Project.save creates a key only when pk is initially absent. This
 # fixture supplies the allowlisted project ID explicitly, so create its key too.

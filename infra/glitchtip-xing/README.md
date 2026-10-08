@@ -30,7 +30,7 @@ Required when activating:
 - `GLITCHTIP_URL=https://glitchtip.prymeiradigital.com.br`.
 - `XING_ORGANIZATION_SLUG`: exact existing Talk organization slug.
 - `XING_PROJECT_ID`: exact numeric Talk project ID.
-- `XING_PROJECT_NAME=pra-talk`: exact native project display name.
+- `XING_PROJECT_NAME=prymeira-talk`: exact native project display name.
 - `XING_WEBHOOK_TOKEN_FILE=/run/secrets/xing_webhook_token`: Docker secret with a
   randomly generated URL-safe token of at least 32 bytes (43+ characters).
   `XING_WEBHOOK_TOKEN` is accepted for disposable tests; prefer the file.
