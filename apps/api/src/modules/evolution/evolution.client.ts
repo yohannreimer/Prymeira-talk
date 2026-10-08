@@ -1,3 +1,5 @@
+import { AgentMediaError } from '../agents/agent-media-resolver.js';
+
 const EVOLUTION_EVENTS = [
   "QRCODE_UPDATED",
   "CONNECTION_UPDATE",
@@ -616,10 +618,18 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
       }
     },
     async fetchMedia(input) {
-      const data = await post(`/chat/getBase64FromMediaMessage/${encodeURIComponent(input.instanceName)}`, { message: { key: { id: input.id } }, convertToMp4: false }, 15000);
+      const data = await post(`/chat/getBase64FromMediaMessage/${encodeURIComponent(input.instanceName)}`, { message: { key: { id: input.id } }, convertToMp4: false }, 15000).catch(error => {
+        // This endpoint embeds the attachment as base64. Repeating a download cannot shrink it;
+        // preserve the bounded response and let the media service stop permanent size failures.
+        if (error instanceof Error && error.message === 'EVOLUTION_RESPONSE_LIMIT') {
+          throw new AgentMediaError('MEDIA_TOO_LARGE', 'Provider media exceeds the response size limit.');
+        }
+        throw error;
+      });
       const base64 = getString(data, 'base64');
       const mime = getString(data, 'mimetype')?.split(';')[0].trim().toLowerCase();
-      if (!base64 || !mime || base64.length > 36 * 1024 * 1024) throw new Error('MEDIA_UNAVAILABLE');
+      if (!base64 || !mime) throw new Error('MEDIA_UNAVAILABLE');
+      if (base64.length > 36 * 1024 * 1024) throw new AgentMediaError('MEDIA_TOO_LARGE', 'Provider media exceeds the response size limit.');
       return `data:${mime};base64,${base64.replace(/^data:[^,]+,/, '').replace(/\s/g, '')}`;
     },
     async createInstance(input) {
