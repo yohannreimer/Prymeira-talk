@@ -82,6 +82,19 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
     expect(second).toMatchObject({ outcome: 'duplicate', observationId: first.observationId, messageId: first.messageId, allowOperationalEffects: false });
     expect(await db.canonicalObservation.count({ where: { workspaceId: c.workspaceId } })).toBe(1);
   });
+  it('saves malformed display text without losing valid emoji or changing message identity on redelivery', async () => {
+    const c = await context(), event = msg(c, 'unicode-fixture');
+    event.content.body = event.content.preview = 'Olá 🧑🏽‍💻 \ud800 X \udfff';
+    event.pushName = 'Cliente \ud800';
+    const original = structuredClone(event);
+    const first = await persist(event, 'unicode-receipt');
+    expect(first.outcome).toBe('created');
+    expect(await db.message.findUniqueOrThrow({ where: { id: first.messageId! } })).toMatchObject({ body: 'Olá 🧑🏽‍💻 � X �' });
+    const observation = await db.canonicalObservation.findUniqueOrThrow({ where: { id: first.observationId } });
+    expect(observation.payload).toMatchObject({ content: { body: 'Olá 🧑🏽‍💻 � X �' }, key: event.key });
+    expect(await persist(event, 'unicode-receipt')).toMatchObject({ outcome: 'duplicate', observationId: first.observationId, messageId: first.messageId });
+    expect(event).toEqual(original);
+  });
   it('compares full tuples even when every hash collides and accepts arbitrarily long native IDs', async () => {
     const c = await context(), collisionStore = createCanonicalStore({ hash: () => '0'.repeat(64) });
     const a = await collisionStore.persist(db, msg(c, 'X'.repeat(12000)), { receiptKey: 'Y'.repeat(12000) });
