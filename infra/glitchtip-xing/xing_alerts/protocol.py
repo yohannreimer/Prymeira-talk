@@ -1,9 +1,71 @@
 import math
+import logging
 import time
 from .config import EVENT_NAME
 from .delivery import CallbackError, decode_secret, validate_url
 from .outbox import CapacityError, subscription_id
 from .privacy import POINTS, SERVICES, iso_time
+
+logger = logging.getLogger("xing_alerts")
+MODERN_VERSION = "2026-07-28"
+LEGACY_VERSION = "2025-11-25"
+VERSION_KEY = "io.modelcontextprotocol/protocolVersion"
+CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities"
+CLIENT_KEY = "io.modelcontextprotocol/clientInfo"
+METHOD_FIELDS = {
+    "server/discover": {"protocolVersion", "capabilities", "clientInfo"},
+    "initialize": {"protocolVersion", "capabilities", "clientInfo"},
+    "notifications/initialized": set(), "ping": set(),
+    "events/list": {"cursor"}, "tools/list": {"cursor"},
+    "tools/call": {"name", "arguments"},
+    "events/subscribe": {"name", "arguments", "delivery", "cursor", "ttlMs"},
+    "events/unsubscribe": {"name", "arguments", "delivery"},
+}
+
+
+def request_metadata(params):
+    """Validate common protocol metadata, never application arguments/delivery."""
+    if not isinstance(params, dict):
+        raise RPCError()
+    if "_meta" not in params:
+        return None
+    meta = params["_meta"]
+    if not isinstance(meta, dict):
+        raise RPCError()
+    if "progressToken" in meta and (
+        type(meta["progressToken"]) not in (str, int, float)
+        or isinstance(meta["progressToken"], float) and not math.isfinite(meta["progressToken"])
+    ):
+        raise RPCError()
+    if VERSION_KEY not in meta:
+        # Legacy request metadata has no per-request protocol version.
+        return None
+    version = meta[VERSION_KEY]
+    if not isinstance(version, str):
+        raise RPCError()
+    if version not in (MODERN_VERSION, LEGACY_VERSION):
+        raise RPCError(-32022, "Unsupported protocol version", {
+            "supported": [MODERN_VERSION, LEGACY_VERSION], "requested": version,
+        })
+    if version == MODERN_VERSION and not isinstance(meta.get(CAPABILITIES_KEY), dict):
+        raise RPCError()
+    if CLIENT_KEY in meta:
+        client = meta[CLIENT_KEY]
+        if not isinstance(client, dict) or not all(isinstance(client.get(k), str) for k in ("name", "version")):
+            raise RPCError()
+    return version
+
+
+def shape(value):
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        return "string"
+    return "scalar"
 
 
 class RPCError(ValueError):
@@ -30,6 +92,28 @@ class Protocol:
         self.auth = auth
         self.verifier = verifier
         self.now = now
+        self.diagnostic_at = {}
+
+    def diagnose(self, method, params):
+        # Fixed method inventory and one record per method/minute. No raw keys,
+        # metadata values, identities, tool arguments, callback URLs or secrets.
+        if method not in METHOD_FIELDS:
+            return
+        at = time.monotonic()
+        if at - self.diagnostic_at.get(method, float("-inf")) < 60:
+            return
+        self.diagnostic_at[method] = at
+        fields = params if isinstance(params, dict) else {}
+        meta = fields.get("_meta")
+        common = meta if isinstance(meta, dict) else {}
+        version = common.get(VERSION_KEY)
+        label = "modern" if version == MODERN_VERSION else "legacy" if version == LEGACY_VERSION else "unknown" if VERSION_KEY in common else "absent"
+        logger.info(
+            "xing_bridge_rpc_shape method=%s params=%s meta_present=%s meta=%s version=%s capabilities=%s client=%s arguments=%s unknown_count=%d",
+            method, shape(params), "_meta" in fields, shape(meta), label,
+            shape(common.get(CAPABILITIES_KEY)), shape(common.get(CLIENT_KEY)),
+            shape(fields.get("arguments")), len(set(fields) - METHOD_FIELDS[method] - {"_meta"}),
+        )
 
     def arguments(self, args):
         exact_object(args, {"projectId"}, {"projectId"})
@@ -80,8 +164,15 @@ class Protocol:
     async def dispatch(self, method, params, bearer):
         # Applies equally to discovery, tools, errors, notifications and legacy calls.
         principal = await self.auth.authenticate(bearer)
-        if not isinstance(params, dict):
-            raise RPCError()
+        self.diagnose(method, params)
+        version = request_metadata(params)
+        functional = {key: value for key, value in params.items() if key != "_meta"}
+        result = await self._dispatch_functional(method, functional, bearer, principal)
+        if version == MODERN_VERSION:
+            result = {"resultType": "complete", **result}
+        return result
+
+    async def _dispatch_functional(self, method, params, bearer, principal):
         if method == "server/discover":
             exact_object(params, {"protocolVersion", "capabilities", "clientInfo"})
             return {

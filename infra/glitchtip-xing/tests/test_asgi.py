@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 from dataclasses import replace
 from pathlib import Path
-from support import CONFIG, PRIVATE, payload, FakeAuth, FakeTransport
+from support import CONFIG, PRIVATE, MODERN_META, payload, FakeAuth, FakeTransport
 from xing_alerts.asgi import Bridge
 from xing_alerts.delivery import Verifier, Worker
 from xing_alerts.outbox import Store
@@ -135,6 +135,73 @@ class ASGITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (await self.request("/mcp", b"{", headers))[1]["error"]["code"], -32700
         )
+
+    async def test_modern_metadata_discovery_and_status_through_http(self):
+        for method, params in [
+            ("server/discover", {}), ("events/list", {}),
+            ("tools/call", {"name": "get_alert_delivery_status", "arguments": {}}),
+        ]:
+            headers = [(b"authorization", b"Bearer test-bearer"),
+                       (b"MCP-Protocol-Version", b"2026-07-28"),
+                       (b"Mcp-Method", method.encode())]
+            if method == "tools/call":
+                # Standard Base64 sentinel encoding is legal even for ASCII.
+                headers.append((b"Mcp-Name", b"=?base64?Z2V0X2FsZXJ0X2RlbGl2ZXJ5X3N0YXR1cw==?="))
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method,
+                               "params": {**params, "_meta": MODERN_META}}).encode()
+            status, data, _ = await self.request("/mcp", body, headers)
+            self.assertEqual(status, 200)
+            self.assertEqual(data["result"]["resultType"], "complete")
+
+    async def test_modern_http_header_mismatch_and_unsupported_version(self):
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "get_alert_delivery_status", "arguments": {}, "_meta": MODERN_META}}
+        base = [(b"authorization", b"Bearer test-bearer"),
+                (b"mcp-protocol-version", b"2026-07-28"),
+                (b"mcp-method", b"tools/call"),
+                (b"mcp-name", b"get_alert_delivery_status")]
+        for headers in [base[:1], base[:-1], base + [base[1]],
+                        [*base[:2], (b"mcp-method", b"events/list"), base[3]],
+                        [*base[:3], (b"mcp-name", b"different")],
+                        [*base[:3], (b"mcp-name", b"=?base64?invalid!?=")],
+                        [base[0], (b"mcp-protocol-version", b"2025-11-25"), *base[2:]]]:
+            with self.subTest(headers=headers):
+                status, data, _ = await self.request("/mcp", json.dumps(body).encode(), headers)
+                self.assertEqual(status, 400)
+                self.assertEqual(data["error"]["code"], -32020)
+        body["params"]["_meta"] = {**MODERN_META, "io.modelcontextprotocol/protocolVersion": "1900-01-01"}
+        headers = [base[0], (b"mcp-protocol-version", b"1900-01-01"), *base[2:]]
+        status, data, _ = await self.request("/mcp", json.dumps(body).encode(), headers)
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"]["code"], -32022)
+
+    async def test_diagnostics_bounded_shapes_only_after_authentication(self):
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": {"name": PRIVATE, "arguments": {"private_key": PRIVATE},
+                                      "_meta": {"private_key": PRIVATE}, "unknown_private_key": PRIVATE}}).encode()
+        with self.assertLogs("xing_alerts", level="INFO") as captured:
+            for _ in range(3):
+                await self.request("/mcp", body, [(b"authorization", b"Bearer test-bearer")])
+            await self.request("/mcp", body)
+        self.assertEqual(len(captured.output), 1)
+        self.assertNotIn(PRIVATE, str(captured.output))
+        self.assertNotIn("private_key", str(captured.output))
+        self.assertIn("unknown_count=1", str(captured.output))
+        self.assertEqual(set(self.protocol.diagnostic_at), {"tools/call"})
+
+    async def test_modern_unknown_method_and_missing_metadata_do_not_fall_back(self):
+        base = [(b"authorization", b"Bearer test-bearer"),
+                (b"mcp-protocol-version", b"2026-07-28"),
+                (b"mcp-method", b"unsupported")]
+        body = {"jsonrpc": "2.0", "id": 1, "method": "unsupported",
+                "params": {"_meta": MODERN_META}}
+        status, data, _ = await self.request("/mcp", json.dumps(body).encode(), base)
+        self.assertEqual(status, 404)
+        self.assertEqual(data["error"]["code"], -32601)
+        body["params"] = {}
+        status, data, _ = await self.request("/mcp", json.dumps(body).encode(), base)
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"]["code"], -32020)
 
     async def test_persistence_failure_not_acknowledged_and_logs_only_category(self):
         with patch.object(self.store, "enqueue", side_effect=OSError(PRIVATE)):

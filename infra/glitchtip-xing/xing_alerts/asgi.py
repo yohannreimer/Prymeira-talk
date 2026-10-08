@@ -1,6 +1,8 @@
 """Append-only ASGI wrapper. The original application's lifespan remains owner."""
 
 import asyncio
+import base64
+import binascii
 import hmac
 import json
 import logging
@@ -8,7 +10,7 @@ import time
 from .auth import Unauthorized
 from .config import RESOURCE, enabled
 from .privacy import InvalidPayload, normalize
-from .protocol import RPCError
+from .protocol import RPCError, MODERN_VERSION, LEGACY_VERSION, VERSION_KEY
 
 logger = logging.getLogger("xing_alerts")
 
@@ -48,6 +50,37 @@ def parse_json(body):
     return json.loads(
         body, object_pairs_hook=object_pairs, parse_constant=invalid_constant
     )
+
+
+def validate_modern_headers(data, headers):
+    """MCP 2.0 body metadata is authoritative; mirrors must agree."""
+    params = data.get("params")
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    version = meta.get(VERSION_KEY) if isinstance(meta, dict) else None
+    versions = [value for key, value in headers if key.lower() == b"mcp-protocol-version"]
+    modern = version is not None and version != LEGACY_VERSION or MODERN_VERSION.encode() in versions
+    if not modern:
+        return False
+
+    def value(name, encoded=False):
+        values = [value for key, value in headers if key.lower() == name]
+        try:
+            if len(values) != 1:
+                raise ValueError()
+            raw = values[0].decode("ascii")
+            if not raw or raw.strip() != raw or any(ord(char) < 32 or ord(char) > 126 for char in raw):
+                raise ValueError()
+            if encoded and raw.startswith("=?base64?") and raw.endswith("?="):
+                raw = base64.b64decode(raw[9:-2], validate=True).decode("utf-8")
+            return raw
+        except (ValueError, UnicodeError, binascii.Error):
+            raise RPCError(-32020, "Header mismatch") from None
+
+    if value(b"mcp-protocol-version") != version or value(b"mcp-method") != data["method"]:
+        raise RPCError(-32020, "Header mismatch")
+    if data["method"] == "tools/call" and value(b"mcp-name", encoded=True) != params.get("name"):
+        raise RPCError(-32020, "Header mismatch")
+    return True
 
 
 async def reply(send, status, value, headers=()):
@@ -199,6 +232,7 @@ class Bridge:
             await reply(send, 202, {"accepted": accepted})
             return
         request_id = None
+        modern = False
         try:
             if (
                 not isinstance(data, dict)
@@ -212,6 +246,8 @@ class Bridge:
                 request_id is not None and not isinstance(request_id, (str, int))
             ):
                 raise RPCError(-32600, "Invalid Request")
+            self.protocol.diagnose(data["method"], data.get("params", {}))
+            modern = validate_modern_headers(data, headers)
             result = await self.protocol.dispatch(
                 data["method"], data.get("params", {}), bearer
             )
@@ -227,7 +263,8 @@ class Bridge:
             value = {"code": error.code, "message": error.message}
             if error.data is not None:
                 value["data"] = error.data
-            await reply(send, 200, {"jsonrpc": "2.0", "id": request_id, "error": value})
+            status = 400 if error.code in (-32020, -32022) else 404 if modern and error.code == -32601 else 200
+            await reply(send, status, {"jsonrpc": "2.0", "id": request_id, "error": value})
         except Exception:
             logger.warning("xing_bridge_rpc_failure")
             await reply(

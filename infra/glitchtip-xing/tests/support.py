@@ -13,6 +13,13 @@ SECRET = "whsec_" + base64.b64encode(b"a" * 32).decode()
 SECRET2 = "whsec_" + base64.b64encode(b"b" * 32).decode()
 URL = "https://receiver.example/events/callback"
 PRIVATE = "customer +5511999999999 token_password_do_not_forward"
+MODERN_META = {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientCapabilities": {},
+    "io.modelcontextprotocol/clientInfo": {"name": "ExampleClient", "version": "1.0.0"},
+    "progressToken": "test-progress",
+    "com.example/requestId": "opaque-test-value",
+}
 
 
 def payload(issue=42):

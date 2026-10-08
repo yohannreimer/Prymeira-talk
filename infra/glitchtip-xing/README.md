@@ -53,6 +53,20 @@ logs fixed categories only, never URLs, bodies, credentials or exception text.
 Authenticated JSON-RPC POST `/mcp` implements MCP 2.0 discovery version
 `2026-07-28`, event list/subscribe/unsubscribe and tools list/call. The event name
 is `talk.operational_alert`; arguments must be exactly `{"projectId": <Talk ID>}`.
+Modern requests carry `params._meta` with
+`io.modelcontextprotocol/protocolVersion: "2026-07-28"` and an object-valued
+`io.modelcontextprotocol/clientCapabilities`. Optional client information,
+progress tokens and opaque extension metadata are accepted at that RPC boundary.
+Metadata never bypasses validation inside tool/event arguments or delivery
+objects. Modern successful results include `resultType: "complete"`.
+HTTP requires matching `MCP-Protocol-Version` and `Mcp-Method` headers, plus
+`Mcp-Name` for tool calls (including standard Base64 sentinel encoding).
+Missing, duplicate or inconsistent mirrors return HTTP 400 / `-32020`;
+unsupported versions return HTTP 400 / `-32022`. Legacy `2025-11-25` tool
+initialization remains supported and advertises only the status tool. Events
+are discovered through modern `server/discover`; legacy initialization does
+not advertise them.
+
 The payload includes only the approved failure point/code, service, hexadecimal
 release (or null), configured project ID and an exact own issue URL. The envelope
 timestamp is **webhook receipt time**: upstream general webhooks do not include
@@ -97,6 +111,16 @@ pending/accepted/failed/cancelled counts and active subscription count. HTTP
 acceptance is **not** proof of processing or a visible notification in Dot.
 Invalid bridge setup fails closed for its state and keeps upstream ingest running.
 
+Authenticated RPC shape diagnostics use the `xing_alerts` logger at INFO level,
+at most once per known method per 60 seconds (nine fixed slots). They include
+only fixed method/version labels, types/presence of common metadata and arguments,
+and the count of unknown outer fields. Unknown method names, raw field names,
+values, arguments, identities, tokens and callback URLs are never logged.
+These records can confirm whether a rescan reaches modern discovery and event
+listing; official-schema regression tests alone cannot establish which fields
+a particular Dot actually sent. After an image update, rescan the plugin and
+verify `talk.operational_alert` appears before testing a real subscription.
+
 ## Local verification and integration gates
 
 Use an isolated environment; dependencies are already present in the pinned image:
@@ -118,3 +142,7 @@ notification and CPU observations. No production activation is performed here.
 
 References: [GlitchTip v6.1.8 source](https://gitlab.com/glitchtip/glitchtip-backend/-/tree/v6.1.8)
 and [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events).
+Protocol metadata and HTTP binding references:
+[MCP 2026-07-28 schema](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/schema/2026-07-28/schema.ts),
+[official discovery request](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/schema/2026-07-28/examples/DiscoverRequest/server-discover-request.json)
+and [Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).

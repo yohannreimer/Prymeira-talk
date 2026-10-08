@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from support import CONFIG, SECRET, SECRET2, URL, FakeAuth, FakeTransport, payload
+from support import CONFIG, SECRET, SECRET2, URL, MODERN_META, FakeAuth, FakeTransport, payload
 from xing_alerts.auth import Authenticator, Unauthorized
 from xing_alerts.config import RESOURCE, EVENT_NAME
 from xing_alerts.delivery import Verifier, Worker
@@ -114,6 +114,78 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.rpc("events/unsubscribe", args), {})
         self.assertFalse(self.store.get_subscription(first["id"])["active"])
         self.assertEqual(await self.rpc("events/unsubscribe", args), {})
+
+    async def test_standard_metadata_discovery_catalog_status_and_subscription(self):
+        # MCP 2026-07-28 official DiscoverRequest and RequestParams shapes.
+        for method, functional in [
+            ("server/discover", {}),
+            ("tools/list", {}),
+            ("events/list", {"cursor": None}),
+            ("tools/call", {"name": "get_alert_delivery_status", "arguments": {}}),
+            ("events/subscribe", self.params()),
+            ("ping", {}),
+        ]:
+            with self.subTest(method=method):
+                result = await self.rpc(method, {**functional, "_meta": MODERN_META})
+                self.assertEqual(result["resultType"], "complete")
+        discovery = await self.rpc("server/discover", {"_meta": MODERN_META})
+        self.assertEqual(discovery["capabilities"], {"tools": {}, "events": {}})
+        self.assertEqual(
+            (await self.rpc("events/list", {"_meta": MODERN_META}))["events"][0]["name"],
+            EVENT_NAME,
+        )
+        params = self.params()
+        params.pop("ttlMs")
+        params["delivery"].pop("secret")
+        result = await self.rpc("events/unsubscribe", {**params, "_meta": MODERN_META})
+        self.assertEqual(result, {"resultType": "complete"})
+
+    async def test_metadata_only_at_rpc_boundary_and_functional_keys_stay_strict(self):
+        for method, params in [
+            ("tools/call", {"name": "get_alert_delivery_status", "arguments": {"_meta": {}}}),
+            ("tools/call", {"name": "get_alert_delivery_status", "unexpected": True}),
+            ("events/list", {"unexpected": True}),
+            ("events/subscribe", {**self.params(), "arguments": {"projectId": 3, "_meta": {}}}),
+            ("events/subscribe", {**self.params(), "delivery": {**self.params()["delivery"], "_meta": {}}}),
+            ("events/subscribe", {**self.params(), "unexpected": True}),
+        ]:
+            with self.subTest(method=method, params=params), self.assertRaises(RPCError):
+                await self.rpc(method, {**params, "_meta": MODERN_META})
+        self.assertEqual(self.transport.calls, [])
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM subscriptions").fetchone()[0], 0)
+
+    async def test_metadata_types_and_unsupported_version(self):
+        for meta in [None, [], "invalid", {**MODERN_META, "io.modelcontextprotocol/clientCapabilities": []},
+                     {**MODERN_META, "io.modelcontextprotocol/protocolVersion": None},
+                     {**MODERN_META, "progressToken": True}]:
+            with self.subTest(meta=meta), self.assertRaises(RPCError):
+                await self.rpc("server/discover", {"_meta": meta})
+        with self.assertRaises(RPCError) as failure:
+            await self.rpc("server/discover", {"_meta": {**MODERN_META, "io.modelcontextprotocol/protocolVersion": "1900-01-01"}})
+        self.assertEqual(failure.exception.code, -32022)
+        self.assertEqual(failure.exception.data["supported"], ["2026-07-28", "2025-11-25"])
+        # Legacy common request metadata also permits progress and vendor metadata.
+        status = await self.rpc("tools/call", {"name": "get_alert_delivery_status", "_meta": {"progressToken": 1}})
+        self.assertFalse(status["isError"])
+
+    async def test_modern_metadata_auth_and_diagnostic_inventory_bound(self):
+        self.auth.allowed = False
+        with self.assertNoLogs("xing_alerts", level="INFO"):
+            with self.assertRaises(Unauthorized):
+                await self.rpc("server/discover", {"_meta": MODERN_META})
+        self.assertEqual(self.protocol.diagnostic_at, {})
+        self.auth.allowed = True
+        for index in range(100):
+            with self.assertRaises(RPCError):
+                await self.rpc("unknown-private-method-" + str(index), {"_meta": MODERN_META})
+        self.assertEqual(self.protocol.diagnostic_at, {})
+        from unittest.mock import patch
+        with patch("xing_alerts.protocol.time.monotonic", side_effect=[0, 59, 60]):
+            with self.assertLogs("xing_alerts", level="INFO") as captured:
+                for _ in range(3):
+                    await self.rpc("server/discover", {"_meta": MODERN_META})
+        self.assertEqual(len(captured.output), 2)
+        self.assertEqual(set(self.protocol.diagnostic_at), {"server/discover"})
 
     async def test_strict_scope_args_and_finite_token_bounded_ttl(self):
         for changed in [
