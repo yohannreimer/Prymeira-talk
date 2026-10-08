@@ -19,6 +19,10 @@ export function createChannelHealthMonitor(options: {
   /** `refresh` of the channel connections service: one probe of one connection. */
   probe: (scope: { workspaceId: string; channelId: string; connectionId: string }) => Promise<unknown>;
   intervalMs?: number;
+  /** Longest wait for one probe (default 20 s). A provider that never answers must not stop every other check. */
+  probeTimeoutMs?: number;
+  /** A round still running after this long (default 3 min) is considered stuck and the next one may start. */
+  stuckTickMs?: number;
   stableMs?: number;
   lossThreshold?: number;
   lossWindowMs?: number;
@@ -38,8 +42,20 @@ export function createChannelHealthMonitor(options: {
   const lossWindowMs = options.lossWindowMs ?? 2 * 60_000;
   const graceMs = options.graceMs ?? 10_000;
   const agreementWindowMs = options.agreementWindowMs ?? 10 * 60_000;
+  const probeTimeoutMs = options.probeTimeoutMs ?? 20_000;
+  const stuckTickMs = options.stuckTickMs ?? 3 * 60_000;
   let timer: ReturnType<typeof setInterval> | null = null;
   let running = false;
+  let tickStartedAt = 0;
+
+  /** One probe, given up after `probeTimeoutMs` (it counts as a failed probe; a late answer is fenced by the service). */
+  function probeWithin(scope: { workspaceId: string; channelId: string; connectionId: string }) {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      Promise.resolve().then(() => options.probe(scope)),
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error(`Connection probe timed out after ${probeTimeoutMs} ms`)), probeTimeoutMs); timeout.unref?.(); })
+    ]).finally(() => clearTimeout(timeout));
+  }
   /** When each connection's current unbroken healthy period began. In memory on purpose: a restart restarts the
    * ten-minute proof, which can only delay a return to the primary, never hasten it. */
   const healthySince = new Map<string, Date>();
@@ -171,8 +187,13 @@ export function createChannelHealthMonitor(options: {
   }
 
   async function tick() {
-    if (running) return;
+    // 07/10: one probe never answered while the server was throttled and the monitor stopped checking every number
+    // for hours. Probes now time out; a round that is still stuck long after is abandoned so checks resume.
+    if (running && Date.now() - tickStartedAt < stuckTickMs) return;
+    if (running) options.logger?.warn({ startedAt: new Date(tickStartedAt).toISOString() }, 'Channel health round looked stuck; starting a new one');
     running = true;
+    tickStartedAt = Date.now();
+    const round = tickStartedAt;
     try {
       // Every WhatsApp number is probed (a single-connection channel too: its number and health are otherwise never
       // confirmed); only channels with redundancy are evaluated for a writer change.
@@ -181,7 +202,7 @@ export function createChannelHealthMonitor(options: {
         try {
           const connections = await db.channelConnection.findMany({ where: { workspaceId: channel.workspaceId, channelId: channel.id }, select: { id: true } });
           for (const connection of connections) {
-            await options.probe({ workspaceId: channel.workspaceId, channelId: channel.id, connectionId: connection.id }).catch((error: unknown) => {
+            await probeWithin({ workspaceId: channel.workspaceId, channelId: channel.id, connectionId: connection.id }).catch((error: unknown) => {
               options.logger?.warn({ err: error, channelId: channel.id, connectionId: connection.id }, 'Connection probe failed');
             });
           }
@@ -189,7 +210,7 @@ export function createChannelHealthMonitor(options: {
           await reconcileStatus(channel);
         } catch (error) { options.logger?.warn({ err: error, channelId: channel.id }, 'Channel health evaluation failed'); }
       }
-    } finally { running = false; }
+    } finally { if (tickStartedAt === round) running = false; }
   }
 
   return {
