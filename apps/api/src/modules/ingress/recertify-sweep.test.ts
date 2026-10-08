@@ -5,7 +5,8 @@ const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ receiptId: `r
 
 describe('recertification sweep', () => {
   it('an event that stays invalid waits its backoff instead of blocking the events behind it', async () => {
-    const findMany = vi.fn().mockResolvedValue(rows(4));
+    // The main queue has four; the WAHA-proof queue is empty.
+    const findMany = vi.fn().mockImplementation(async (args: { where: { reason?: unknown } }) => args.where.reason ? [] : rows(4));
     const service = new IngressApplicationService({ db: { ingressEventProgress: { findMany } } } as never);
     const recertify = vi.spyOn(service, 'recertify').mockImplementation(async (receiptId: string) =>
       (receiptId === 'r0' || receiptId === 'r1' ? { state: 'still_invalid', reason: 'x' } : { state: 'applied' }) as never);
@@ -18,9 +19,18 @@ describe('recertification sweep', () => {
     const findMany = vi.fn().mockResolvedValue([]);
     await new IngressApplicationService({ db: { ingressEventProgress: { findMany } } } as never).recertifyPending({});
     const reasons = findMany.mock.calls[0]![0].where.OR[1].reason.in;
-    expect(reasons).toEqual(expect.arrayContaining(['legacy_identity_requires_adoption', 'target_missing', 'contradictory_sender_declarations',
-      // WAHA messages received while the connection was not yet proven again (applied once it is, never to another number).
-      'waha_identity_unverified']));
+    expect(reasons).toEqual(expect.arrayContaining(['legacy_identity_requires_adoption', 'target_missing', 'contradictory_sender_declarations']));
+    // WAHA messages received while the connection was not yet proven again (applied once it is, never to another number).
+    expect(findMany.mock.calls[1]![0].where.reason.in).toEqual(['waha_identity_unverified']);
+  });
+  it('WAHA messages waiting for proof have their own queue: old holds that never resolve cannot starve them', async () => {
+    const stuck = Array.from({ length: 1000 }, (_, i) => ({ receiptId: `old${i}`, eventIndex: 0 }));
+    const findMany = vi.fn().mockImplementation(async (args: { where: { reason?: unknown } }) => args.where.reason ? [{ receiptId: 'waha1', eventIndex: 0 }] : stuck);
+    const service = new IngressApplicationService({ db: { ingressEventProgress: { findMany } } } as never);
+    const recertify = vi.spyOn(service, 'recertify').mockImplementation(async (receiptId: string) =>
+      (receiptId === 'waha1' ? { state: 'applied' } : { state: 'still_invalid', reason: 'x' }) as never);
+    expect(await service.recertifyPending({ limit: 4 })).toEqual({ examined: 4, applied: 1 });
+    expect(recertify.mock.calls[0]![0]).toBe('waha1');
   });
 });
 

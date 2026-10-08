@@ -235,9 +235,23 @@ export class IngressApplicationService {
     }
     /** Certifies every event waiting for a current source on this workspace scope. Returns how many were applied. */
     async recertifyPending(input: { workspaceIds?: readonly string[]; limit?: number }) {
-        const rows = await this.journal.db.ingressEventProgress.findMany({ where: { recertification: { is: null },
-            OR: [{ state: 'pending_recertification', reason: 'stale_source' }, { state: 'held', reason: { in: [...IDENTITY_HOLD_REASONS, ...REPLAYABLE_HOLDS, ...WAHA_AUTHORITY_HOLDS] } }],
-            ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}) }, orderBy: { committedAt: 'asc' }, take: 1000, select: { receiptId: true, eventIndex: true } });
+        const scope = input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {};
+        const select = { receiptId: true, eventIndex: true } as const;
+        const [main, authority] = await Promise.all([
+            this.journal.db.ingressEventProgress.findMany({ where: { recertification: { is: null },
+                OR: [{ state: 'pending_recertification', reason: 'stale_source' }, { state: 'held', reason: { in: [...IDENTITY_HOLD_REASONS, ...REPLAYABLE_HOLDS] } }],
+                ...scope }, orderBy: { committedAt: 'asc' }, take: 1000, select }),
+            // Their own queue: thousands of holds that never resolve (contradictory declarations) would otherwise fill the
+            // 1000 oldest places and these would never be reached.
+            this.journal.db.ingressEventProgress.findMany({ where: { recertification: { is: null }, state: 'held', reason: { in: WAHA_AUTHORITY_HOLDS }, ...scope },
+                orderBy: { committedAt: 'asc' }, take: 1000, select })
+        ]);
+        // Interleaved, so each sweep reaches both queues.
+        const rows: typeof main = [];
+        for (let index = 0; index < Math.max(main.length, authority.length); index++) {
+            if (authority[index]) rows.push(authority[index]!);
+            if (main[index]) rows.push(main[index]!);
+        }
         // Oldest first, but an event that stays invalid (not recorded, so it would be read again) waits its backoff
         // instead of holding the first places of the queue forever.
         const limit = input.limit ?? 50, now = Date.now();
