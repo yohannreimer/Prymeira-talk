@@ -52,6 +52,7 @@ jobs:
         run: |
           env_args=(-e DATABASE_URL -e SECRET_KEY -e GLITCHTIP_URL -e VALKEY_URL -e ALLOWED_HOSTS -e GLITCHTIP_ENABLE_MCP -e GLITCHTIP_EMBED_WORKER -e XING_EVENTS_ENABLED -e XING_ORGANIZATION_SLUG -e XING_PROJECT_ID -e XING_PROJECT_NAME -e XING_WEBHOOK_TOKEN -e XING_INTEGRATION_DISPOSABLE)
           docker run --rm --network host "${env_args[@]}" --entrypoint python xing-bridge:test manage.py migrate --noinput
+          docker run --rm --network host "${env_args[@]}" --entrypoint python xing-bridge:test manage.py createcachetable
           docker run --rm --network host "${env_args[@]}" --entrypoint python xing-bridge:test /code/xing-alerts-scripts/smoke_image.py
           docker run --rm --network host "${env_args[@]}" --entrypoint python xing-bridge:test /code/xing-alerts-scripts/integration_image.py
       - name: Publish verified commit image
