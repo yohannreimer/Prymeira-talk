@@ -46,7 +46,7 @@ jobs:
           XING_EVENTS_ENABLED: 'true'
           XING_ORGANIZATION_SLUG: prymeira-digital
           XING_PROJECT_ID: '3'
-          XING_PROJECT_NAME: pra-talk
+          XING_PROJECT_NAME: prymeira-talk
           XING_WEBHOOK_TOKEN: disposable_ci_url_safe_webhook_token_1234567890
           XING_INTEGRATION_DISPOSABLE: 'yes'
         run: |
