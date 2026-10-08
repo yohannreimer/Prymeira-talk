@@ -117,3 +117,58 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(
             self.store.db.execute("SELECT COUNT(*) FROM dedup").fetchone()[0], 0
         )
+
+    def test_batch_reserves_all_completed_history_slots_and_keeps_pending(self):
+        self.store.max_events = 3
+        self.store.max_pending = 10
+        self.store.deactivate(self.sid, "12")
+        for issue in range(40, 43):
+            self.store.enqueue(normalize(payload(issue), CONFIG, 1000), 1000 + issue)
+        retained = self.store.db.execute(
+            "SELECT id FROM events ORDER BY created"
+        ).fetchall()
+        self.subscribe()
+        self.assertEqual(
+            self.store.enqueue(
+                normalize(payload(43), CONFIG, 1100)
+                + normalize(payload(44), CONFIG, 1100),
+                1100,
+            ),
+            2,
+        )
+        remaining = {row[0] for row in self.store.db.execute("SELECT id FROM events")}
+        self.assertNotIn(retained[0][0], remaining)
+        self.assertNotIn(retained[1][0], remaining)
+        self.assertIn(retained[2][0], remaining)
+        pending = {
+            row[0]
+            for row in self.store.db.execute(
+                "SELECT event_id FROM deliveries WHERE state='pending'"
+            )
+        }
+        self.store.enqueue(normalize(payload(45), CONFIG, 1101), 1101)
+        self.assertTrue(
+            pending.issubset(
+                {row[0] for row in self.store.db.execute("SELECT id FROM events")}
+            )
+        )
+        before = list(self.store.db.iterdump())
+        with self.assertRaises(CapacityError):
+            self.store.enqueue(normalize(payload(46), CONFIG, 1102), 1102)
+        self.assertEqual(list(self.store.db.iterdump()), before)
+
+    def test_failed_batch_restores_evicted_completed_history(self):
+        self.store.max_events = 3
+        self.store.deactivate(self.sid, "12")
+        for issue in range(40, 43):
+            self.store.enqueue(normalize(payload(issue), CONFIG, 1000), 1000)
+        self.subscribe()
+        self.store.max_pending = 1
+        before = list(self.store.db.iterdump())
+        with self.assertRaises(CapacityError):
+            self.store.enqueue(
+                normalize(payload(43), CONFIG, 1001)
+                + normalize(payload(44), CONFIG, 1001),
+                1001,
+            )
+        self.assertEqual(list(self.store.db.iterdump()), before)

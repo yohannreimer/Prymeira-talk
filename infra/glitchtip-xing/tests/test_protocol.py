@@ -19,7 +19,11 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
         allowed = AsyncMock(return_value=True)
         auth = Authenticator(provider, CONFIG, allowed, lambda: 1000)
         token = SimpleNamespace(
-            client_id="12", resource=RESOURCE, scopes=["event:read"], expires_at=2000
+            client_id="oauth-client",
+            user_id="12",
+            resource=RESOURCE,
+            scopes=["event:read"],
+            expires_at=2000,
         )
         provider.load_access_token.return_value = token
         self.assertEqual((await auth.authenticate("test")).owner, "12")
@@ -32,7 +36,8 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
             ("expires_at", None),
             ("expires_at", 999),
             ("expires_at", float("nan")),
-            ("client_id", "nonnumeric"),
+            ("user_id", "nonnumeric"),
+            ("user_id", None),
         ]:
             original = getattr(token, attr)
             setattr(token, attr, bad)

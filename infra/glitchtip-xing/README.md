@@ -9,6 +9,13 @@ routes remain GlitchTip's. Only `event:read` is supported; legacy broad tokens a
 API tokens without resource/expiry cannot subscribe. OAuth issuer/resource are
 `https://glitchtip.prymeiradigital.com.br/mcp`.
 
+Refresh secrets issued here are encrypted envelopes bound to the exact resource
+and OAuth client using a purpose-derived key from Django's existing `SECRET_KEY`.
+Native rotation and database revocation still own the underlying refresh token.
+Refreshing works after the original access cache expires. Unwrapped legacy refresh
+secrets require a new authorization. Access tokens carry the OAuth client ID for
+revocation separately from the user ID used for current project permissions.
+
 ## Configuration (disabled by default)
 
 Build context: `docker build -t glitchtip-xing:6.1.8 infra/glitchtip-xing`.

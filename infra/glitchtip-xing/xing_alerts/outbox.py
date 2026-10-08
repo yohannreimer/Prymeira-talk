@@ -149,14 +149,17 @@ class Store:
             (now - self.retention,),
         )
         self.db.execute("DELETE FROM dedup WHERE expires<=?", (now,))
-        # Delete oldest completed history as needed; pending work is never evicted.
+
+    def _reserve_events(self, slots):
+        # Delete only enough oldest completed history for the entire new batch.
+        # This runs inside enqueue's transaction; a later failure restores history.
         count = self.db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-        if count >= self.max_events:
+        if count + slots > self.max_events:
             self.db.execute(
                 """DELETE FROM events WHERE id IN (SELECT id FROM events
                 WHERE NOT EXISTS (SELECT 1 FROM deliveries WHERE event_id=events.id AND state='pending')
-                ORDER BY created LIMIT ?)""",
-                (count - self.max_events + 1,),
+                ORDER BY created,id LIMIT ?)""",
+                (count + slots - self.max_events,),
             )
 
     def prune(self, now):
@@ -187,6 +190,7 @@ class Store:
                     continue
                 seen.add(identity)
                 new.append((identity, alert))
+            self._reserve_events(len(new))
             pending = self.db.execute(
                 "SELECT COUNT(*) FROM deliveries WHERE state='pending'"
             ).fetchone()[0]

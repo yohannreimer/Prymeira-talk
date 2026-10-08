@@ -43,7 +43,7 @@ from django.core.cache import cache  # noqa: E402
 from apps.organizations_ext.models import Organization, OrganizationUser  # noqa: E402
 from apps.organizations_ext.constants import OrganizationUserRole  # noqa: E402
 from apps.projects.models import Project, ProjectKey  # noqa: E402
-from apps.oauth.provider import _access_cache_key  # noqa: E402
+from apps.oauth.provider import _access_cache_key, _grant_cache_key  # noqa: E402
 from xing_alerts.config import RESOURCE  # noqa: E402
 from xing_alerts.asgi import Bridge  # noqa: E402
 
@@ -72,6 +72,7 @@ for token, owner in [(bearer, user.pk), (outsider_bearer, outsider.pk)]:
         json.dumps(
             {
                 "user_id": owner,
+                "client_id": "disposable-fixture-client",
                 "scopes": ["event:read"],
                 "expires_at": int(time.time()) + 3600,
                 "resource": RESOURCE,
@@ -87,10 +88,12 @@ assert isinstance(application, Bridge), (
 )
 
 
-async def request(path, method="GET", data=None, token=None, query=b""):
+async def request(path, method="GET", data=None, token=None, query=b"", form=None):
     incoming = asyncio.Queue()
     body = (
-        data
+        urlencode(form).encode()
+        if form is not None
+        else data
         if isinstance(data, bytes)
         else json.dumps(data).encode()
         if data is not None
@@ -102,7 +105,14 @@ async def request(path, method="GET", data=None, token=None, query=b""):
         (b"content-length", str(len(body)).encode()),
     ]
     if body:
-        headers.append((b"content-type", b"application/json"))
+        headers.append(
+            (
+                b"content-type",
+                b"application/x-www-form-urlencoded"
+                if form is not None
+                else b"application/json",
+            )
+        )
     if token:
         headers.append((b"authorization", ("Bearer " + token).encode()))
     scope = {
@@ -141,6 +151,223 @@ async def rpc(method, params=None, token=bearer):
         token,
     )
     return status, json.loads(body), headers
+
+
+async def native_oauth_flow(client, challenge):
+    """Exercise the installed native provider through actual SDK HTTP handlers."""
+    from django.conf import settings
+    from apps.oauth.models import OAuthRefreshToken
+    from xing_alerts.mcp_server import ReadOnlyOAuthProvider, ResourceBoundRefreshToken
+    from xing_alerts.oauth import RefreshCodec
+    from xing_alerts.delivery import Worker
+
+    code = secrets.token_urlsafe(32)
+    now = int(time.time())
+    # This is the native post-consent grant shape. Browser/consent stays untouched.
+    grant_data = {
+        "user_id": user.pk,
+        "client_id": client["client_id"],
+        "scopes": ["event:read"],
+        "expires_at": now + 300,
+        "code_challenge": challenge,
+        "redirect_uri": "https://receiver.example/oauth",
+        "redirect_uri_provided_explicitly": True,
+        "resource": RESOURCE,
+    }
+    await cache.aset(_grant_cache_key(code), json.dumps(grant_data), 300)
+    status, body, _ = await request(
+        "/mcp/token",
+        "POST",
+        form={
+            "client_id": client["client_id"],
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://receiver.example/oauth",
+            "code_verifier": "disposable-verifier-abcdefghijklmnopqrstuvwxyz",
+            "resource": RESOURCE,
+        },
+    )
+    assert status == 200, "Native authorization-code exchange failed"
+    first = json.loads(body)
+    assert first["refresh_token"].startswith("xing_rt_")
+    loaded = await ReadOnlyOAuthProvider().load_access_token(first["access_token"])
+    assert loaded.client_id == client["client_id"] and loaded.user_id == str(user.pk)
+    assert (await rpc("events/list", token=first["access_token"]))[0] == 200
+    client_info = await ReadOnlyOAuthProvider().get_client(client["client_id"])
+    codec = RefreshCodec(settings.SECRET_KEY)
+    plaintext = codec.unwrap(first["refresh_token"], client["client_id"], time.time())
+    native_row = await OAuthRefreshToken.objects.aget(
+        application_id=client["client_id"], is_revoked=False
+    )
+    assert native_row.token_digest == hashlib.sha256(plaintext.encode()).hexdigest()
+    assert (
+        native_row.token_digest
+        != hashlib.sha256(first["refresh_token"].encode()).hexdigest()
+    )
+    form = {
+        "client_id": client["client_id"],
+        "grant_type": "refresh_token",
+        "resource": RESOURCE,
+    }
+    assert (
+        await request("/mcp/token", "POST", form={**form, "refresh_token": plaintext})
+    )[0] == 400
+    assert (
+        await request(
+            "/mcp/token",
+            "POST",
+            form={
+                **form,
+                "refresh_token": first["refresh_token"],
+                "scope": "event:write",
+            },
+        )
+    )[0] == 400
+    assert (
+        await ReadOnlyOAuthProvider().load_refresh_token(
+            client_info.model_copy(update={"client_id": "other-client"}),
+            first["refresh_token"],
+        )
+        is None
+    )
+    # The original access cache can expire/disappear before the durable refresh.
+    await cache.adelete(_access_cache_key(first["access_token"]))
+    rebound = await ReadOnlyOAuthProvider().load_refresh_token(
+        client_info, first["refresh_token"]
+    )
+    assert (
+        isinstance(rebound, ResourceBoundRefreshToken) and rebound.resource == RESOURCE
+    )
+    status, body, _ = await request(
+        "/mcp/token", "POST", form={**form, "refresh_token": first["refresh_token"]}
+    )
+    assert status == 200, "Refresh must survive missing original access cache"
+    second = json.loads(body)
+    assert second["refresh_token"] != first["refresh_token"]
+    assert (
+        await ReadOnlyOAuthProvider().load_refresh_token(
+            client_info, first["refresh_token"]
+        )
+        is None
+    )
+    refreshed = await ReadOnlyOAuthProvider().load_access_token(second["access_token"])
+    assert refreshed.resource == RESOURCE and refreshed.scopes == ["event:read"]
+    assert (await rpc("events/list", token=second["access_token"]))[0] == 200
+    # Rotate again with the previous access cache still present; native rotation deletes it.
+    status, body, _ = await request(
+        "/mcp/token", "POST", form={**form, "refresh_token": second["refresh_token"]}
+    )
+    assert status == 200
+    third = json.loads(body)
+    assert await cache.aget(_access_cache_key(second["access_token"])) is None
+    assert (await rpc("events/list", token=second["access_token"]))[0] == 401
+    assert (await rpc("events/list", token=third["access_token"]))[0] == 200
+    other_client = client_info.model_copy(
+        update={"client_id": "disposable-other-" + uuid.uuid4().hex}
+    )
+    await ReadOnlyOAuthProvider().register_client(other_client)
+    assert (
+        await request(
+            "/mcp/revoke",
+            "POST",
+            form={
+                "client_id": other_client.client_id,
+                "client_secret": "",
+                "token_type_hint": "access_token",
+                "token": third["access_token"],
+            },
+        )
+    )[0] == 200
+    assert await cache.aget(_access_cache_key(third["access_token"])) is not None
+
+    # Queue work in the future, so the background worker cannot dispatch it.
+    delivery_at = time.time() + 300
+    sid = "sub_disposable-revocation"
+    import base64
+
+    application.store.subscribe(
+        sid,
+        str(user.pk),
+        "https://receiver.example/events",
+        "whsec_" + base64.b64encode(b"a" * 32).decode(),
+        third["access_token"],
+        delivery_at + 300,
+        time.time(),
+    )
+    application.store.enqueue(
+        [{"timestamp": "2026-10-08T00:00:00Z", "projectId": 3, "issueId": 123}],
+        delivery_at,
+    )
+    status, _, _ = await request(
+        "/mcp/revoke",
+        "POST",
+        form={
+            "client_id": client["client_id"],
+            "client_secret": "",
+            "token_type_hint": "access_token",
+            "token": third["access_token"],
+        },
+    )
+    assert status == 200
+    assert await cache.aget(_access_cache_key(third["access_token"])) is None, (
+        "SDK access revocation must delete native cache"
+    )
+    assert (
+        await ReadOnlyOAuthProvider().load_refresh_token(
+            client_info, third["refresh_token"]
+        )
+        is None
+    )
+    assert (await rpc("events/list", token=third["access_token"]))[0] == 401
+
+    class NoNetwork:
+        async def post(self, *args):
+            raise AssertionError("Revoked subscription must never deliver")
+
+    await Worker(
+        application.store, application.protocol.auth, NoNetwork(), lambda: delivery_at
+    ).once()
+    assert not application.store.get_subscription(sid)["active"]
+    assert application.store.status(str(user.pk), delivery_at)["pending"] == 0
+    # Wrapped refresh-token revocation also reaches the native database and cache.
+    code = secrets.token_urlsafe(32)
+    await cache.aset(_grant_cache_key(code), json.dumps(grant_data), 300)
+    status, body, _ = await request(
+        "/mcp/token",
+        "POST",
+        form={
+            "client_id": client["client_id"],
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://receiver.example/oauth",
+            "code_verifier": "disposable-verifier-abcdefghijklmnopqrstuvwxyz",
+            "resource": RESOURCE,
+        },
+    )
+    assert status == 200
+    fourth = json.loads(body)
+    assert (
+        await request(
+            "/mcp/revoke",
+            "POST",
+            form={
+                "client_id": client["client_id"],
+                "client_secret": "",
+                "token_type_hint": "refresh_token",
+                "token": fourth["refresh_token"],
+            },
+        )
+    )[0] == 200
+    assert await cache.aget(_access_cache_key(fourth["access_token"])) is None
+    assert (
+        await ReadOnlyOAuthProvider().load_refresh_token(
+            client_info, fourth["refresh_token"]
+        )
+        is None
+    )
+    print(
+        "native OAuth code exchange, durable refresh/rotation, SDK access revoke and delivery cancellation: passed"
+    )
 
 
 async def main():
@@ -244,6 +471,7 @@ async def main():
         assert (
             status in (302, 303, 307) and b"/oauth/authorize/" in headers[b"location"]
         )
+        await native_oauth_flow(client, challenge)
         status, body, _ = await request("/_health/")
         assert status == 200 and body == b"ok"
         status, body, _ = await request("/")

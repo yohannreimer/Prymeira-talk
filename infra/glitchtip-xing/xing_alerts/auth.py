@@ -48,7 +48,7 @@ class Authenticator:
         if token is None:
             raise Unauthorized()
         expiry = getattr(token, "expires_at", None)
-        owner = getattr(token, "client_id", None)
+        owner = getattr(token, "user_id", None)
         scopes = getattr(token, "scopes", None)
         if (
             getattr(token, "resource", None) != RESOURCE
