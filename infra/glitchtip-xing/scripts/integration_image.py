@@ -44,7 +44,7 @@ from apps.organizations_ext.models import Organization, OrganizationUser  # noqa
 from apps.organizations_ext.constants import OrganizationUserRole  # noqa: E402
 from apps.projects.models import Project, ProjectKey  # noqa: E402
 from apps.oauth.provider import _access_cache_key, _grant_cache_key  # noqa: E402
-from xing_alerts.config import RESOURCE  # noqa: E402
+from xing_alerts.config import RESOURCE, EVENT_NAME  # noqa: E402
 from xing_alerts.asgi import Bridge  # noqa: E402
 
 User = get_user_model()
@@ -93,7 +93,9 @@ assert isinstance(application, Bridge), (
 )
 
 
-async def request(path, method="GET", data=None, token=None, query=b"", form=None):
+async def request(
+    path, method="GET", data=None, token=None, query=b"", form=None, mcp_headers=()
+):
     incoming = asyncio.Queue()
     body = (
         urlencode(form).encode()
@@ -120,6 +122,7 @@ async def request(path, method="GET", data=None, token=None, query=b"", form=Non
         )
     if token:
         headers.append((b"authorization", ("Bearer " + token).encode()))
+    headers.extend(mcp_headers)
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -148,14 +151,57 @@ async def request(path, method="GET", data=None, token=None, query=b"", form=Non
     return start["status"], body, dict(start["headers"])
 
 
-async def rpc(method, params=None, token=bearer):
+async def rpc(method, params=None, token=bearer, modern=False):
+    params = dict(params or {})
+    mcp_headers = []
+    if modern:
+        params["_meta"] = {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {
+                "name": "DisposableImageIntegration", "version": "1.0.0"
+            },
+        }
+        mcp_headers = [
+            (b"mcp-protocol-version", b"2026-07-28"),
+            (b"mcp-method", method.encode("ascii")),
+        ]
+        if method == "tools/call":
+            mcp_headers.append((b"mcp-name", params["name"].encode("ascii")))
     status, body, headers = await request(
         "/mcp",
         "POST",
-        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}},
+        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
         token,
+        mcp_headers=mcp_headers,
     )
     return status, json.loads(body), headers
+
+
+async def modern_catalog(token):
+    """Use native OAuth tokens on the installed bridge with official MCP2 shapes."""
+    status, body, _ = await rpc("server/discover", token=token, modern=True)
+    assert status == 200 and "error" not in body, "Modern discovery failed"
+    discovery = body["result"]
+    assert discovery["resultType"] == "complete"
+    assert discovery["supportedVersions"] == ["2026-07-28"]
+    assert set(discovery["capabilities"]) == {"tools", "events"}
+    status, body, _ = await rpc("events/list", token=token, modern=True)
+    assert status == 200 and "error" not in body, "Modern event catalog failed"
+    catalog = body["result"]
+    assert catalog["resultType"] == "complete"
+    assert [event["name"] for event in catalog["events"]] == [EVENT_NAME]
+    assert catalog["events"][0]["inputSchema"]["properties"]["projectId"]["const"] == 3
+    status, body, _ = await rpc(
+        "tools/call",
+        {"name": "get_alert_delivery_status", "arguments": {}},
+        token=token,
+        modern=True,
+    )
+    assert status == 200 and "error" not in body, "Modern status call failed"
+    result = body["result"]
+    assert result["resultType"] == "complete" and result["isError"] is False
+    assert result["structuredContent"]["activeSubscriptions"] == 0
 
 
 async def native_oauth_flow(client, challenge):
@@ -198,6 +244,7 @@ async def native_oauth_flow(client, challenge):
     loaded = await ReadOnlyOAuthProvider().load_access_token(first["access_token"])
     assert loaded.client_id == client["client_id"] and loaded.user_id == str(user.pk)
     assert (await rpc("events/list", token=first["access_token"]))[0] == 200
+    await modern_catalog(first["access_token"])
     client_info = await ReadOnlyOAuthProvider().get_client(client["client_id"])
     codec = RefreshCodec(settings.SECRET_KEY)
     plaintext = codec.unwrap(first["refresh_token"], client["client_id"], time.time())
@@ -258,6 +305,7 @@ async def native_oauth_flow(client, challenge):
     refreshed = await ReadOnlyOAuthProvider().load_access_token(second["access_token"])
     assert refreshed.resource == RESOURCE and refreshed.scopes == ["event:read"]
     assert (await rpc("events/list", token=second["access_token"]))[0] == 200
+    await modern_catalog(second["access_token"])
     # Rotate again with the previous access cache still present; native rotation deletes it.
     status, body, _ = await request(
         "/mcp/token", "POST", form={**form, "refresh_token": second["refresh_token"]}
@@ -371,7 +419,7 @@ async def native_oauth_flow(client, challenge):
         is None
     )
     print(
-        "native OAuth code exchange, durable refresh/rotation, SDK access revoke and delivery cancellation: passed"
+        "native OAuth code exchange, MCP2 metadata/HTTP discovery/catalog/status, durable refresh/rotation, SDK access revoke and delivery cancellation: passed"
     )
 
 

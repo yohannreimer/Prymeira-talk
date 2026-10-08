@@ -58,6 +58,21 @@ def validate_modern_headers(data, headers):
     meta = params.get("_meta") if isinstance(params, dict) else None
     version = meta.get(VERSION_KEY) if isinstance(meta, dict) else None
     versions = [value for key, value in headers if key.lower() == b"mcp-protocol-version"]
+    if versions:
+        try:
+            if len(versions) != 1:
+                raise ValueError()
+            declared = versions[0].decode("ascii")
+            if not declared or any(ord(char) < 33 or ord(char) > 126 for char in declared):
+                raise ValueError()
+        except (ValueError, UnicodeError):
+            raise RPCError(-32020, "Header mismatch") from None
+        if declared not in (MODERN_VERSION, LEGACY_VERSION):
+            # An explicit unsupported HTTP version must not execute as legacy
+            # just because the caller omitted the corresponding body metadata.
+            raise RPCError(-32022, "Unsupported protocol version", {
+                "supported": [MODERN_VERSION, LEGACY_VERSION], "requested": declared,
+            })
     modern = version is not None and version != LEGACY_VERSION or MODERN_VERSION.encode() in versions
     if not modern:
         return False

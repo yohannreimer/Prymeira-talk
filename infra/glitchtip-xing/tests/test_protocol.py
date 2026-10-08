@@ -1,9 +1,10 @@
 import json
+import logging
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from support import CONFIG, SECRET, SECRET2, URL, MODERN_META, FakeAuth, FakeTransport, payload
 from xing_alerts.auth import Authenticator, Unauthorized
 from xing_alerts.config import RESOURCE, EVENT_NAME
@@ -179,13 +180,32 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RPCError):
                 await self.rpc("unknown-private-method-" + str(index), {"_meta": MODERN_META})
         self.assertEqual(self.protocol.diagnostic_at, {})
-        from unittest.mock import patch
         with patch("xing_alerts.protocol.time.monotonic", side_effect=[0, 59, 60]):
             with self.assertLogs("xing_alerts", level="INFO") as captured:
                 for _ in range(3):
                     await self.rpc("server/discover", {"_meta": MODERN_META})
         self.assertEqual(len(captured.output), 2)
         self.assertEqual(set(self.protocol.diagnostic_at), {"server/discover"})
+
+    def test_protocol_diagnostic_visible_with_native_warning_root(self):
+        from xing_alerts.protocol import logger
+        # Python propagation checks handler levels, not ancestor logger levels.
+        # Native console handler has no level; emulate it without enabling root.
+        records = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        parent = logging.getLogger("xing_alerts")
+        parent.addHandler(handler)
+        try:
+            with patch.object(logging.root, "level", logging.WARNING), patch.object(parent, "level", logging.WARNING):
+                self.assertEqual(logger.getEffectiveLevel(), logging.INFO)
+                self.protocol.diagnose("server/discover", {"_meta": MODERN_META})
+                self.assertEqual(logging.root.level, logging.WARNING)
+        finally:
+            parent.removeHandler(handler)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].name, "xing_alerts.protocol")
+        self.assertIn("version=modern", records[0].getMessage())
 
     async def test_strict_scope_args_and_finite_token_bounded_ttl(self):
         for changed in [

@@ -203,6 +203,24 @@ class ASGITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 400)
         self.assertEqual(data["error"]["code"], -32020)
 
+    async def test_explicit_unsupported_http_version_cannot_execute_as_legacy(self):
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": {"name": "get_alert_delivery_status", "arguments": {}}}).encode()
+        auth = (b"authorization", b"Bearer test-bearer")
+        unsupported = (b"mcp-protocol-version", b"1900-01-01")
+        with patch.object(self.store, "status", side_effect=AssertionError("Must not execute")):
+            status, data, _ = await self.request("/mcp", body, [auth, unsupported])
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"]["code"], -32022)
+        for versions in [[unsupported, unsupported],
+                         [(b"mcp-protocol-version", b"2025-11-25")] * 2,
+                         [(b"mcp-protocol-version", b"invalid\xff")]]:
+            status, data, _ = await self.request("/mcp", body, [auth, *versions])
+            self.assertEqual(status, 400)
+            self.assertEqual(data["error"]["code"], -32020)
+        self.assertEqual((await self.request("/mcp", body, [auth]))[0], 200)
+        self.assertEqual((await self.request("/mcp", body, [auth, (b"mcp-protocol-version", b"2025-11-25")]))[0], 200)
+
     async def test_persistence_failure_not_acknowledged_and_logs_only_category(self):
         with patch.object(self.store, "enqueue", side_effect=OSError(PRIVATE)):
             with self.assertLogs("xing_alerts", level="WARNING") as captured:

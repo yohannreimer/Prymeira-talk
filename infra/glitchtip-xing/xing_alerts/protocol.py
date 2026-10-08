@@ -6,7 +6,10 @@ from .delivery import CallbackError, decode_secret, validate_url
 from .outbox import CapacityError, subscription_id
 from .privacy import POINTS, SERVICES, iso_time
 
-logger = logging.getLogger("xing_alerts")
+logger = logging.getLogger("xing_alerts.protocol")
+# Native GlitchTip root defaults to WARNING. Enable only these bounded, fixed
+# shape records; do not enable INFO/DEBUG globally or for HTTP/OAuth libraries.
+logger.setLevel(logging.INFO)
 MODERN_VERSION = "2026-07-28"
 LEGACY_VERSION = "2025-11-25"
 VERSION_KEY = "io.modelcontextprotocol/protocolVersion"

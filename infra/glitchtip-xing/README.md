@@ -111,7 +111,8 @@ pending/accepted/failed/cancelled counts and active subscription count. HTTP
 acceptance is **not** proof of processing or a visible notification in Dot.
 Invalid bridge setup fails closed for its state and keeps upstream ingest running.
 
-Authenticated RPC shape diagnostics use the `xing_alerts` logger at INFO level,
+Authenticated RPC shape diagnostics use the dedicated `xing_alerts.protocol`
+logger explicitly set to INFO, retaining the native global WARNING level,
 at most once per known method per 60 seconds (nine fixed slots). They include
 only fixed method/version labels, types/presence of common metadata and arguments,
 and the count of unknown outer fields. Unknown method names, raw field names,
