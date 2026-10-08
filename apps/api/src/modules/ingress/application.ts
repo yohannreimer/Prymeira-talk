@@ -21,6 +21,10 @@ import { IngressJournal } from './journal.js';
 type Tx = Prisma.TransactionClient;
 // Identity rules that may since have been corrected: the authenticated raw is read again under today's rules.
 const IDENTITY_HOLD_REASONS = ['contradictory_sender_declarations', 'contradictory_chat_declarations', 'contradictory_direction_declarations', 'contradictory_stanza_declarations'];
+// A WAHA message that arrived while its connection was not proven against the primary (e.g. 07/10: a WAHA reconnect
+// cleared the proof and the probe that restores it was stuck). The raw is kept; once the same number is proven again
+// on both connections it is applied as recovered traffic (no agent or automation runs). Another number never gets it.
+const WAHA_AUTHORITY_HOLDS = ['waha_identity_unverified'];
 // Held inside the canonical store until a later fact (a journaled Talk send, a message that arrives later): the same
 // observation is replayed, never re-normalized into a second one (that would be a receipt-key conflict).
 /** An event that is still invalid or still waiting for its source is retried after this, so it never blocks the queue. */
@@ -149,7 +153,8 @@ export class IngressApplicationService {
             // Held by an identity rule that may since have been corrected (e.g. Evolution 2.4's empty participant).
             const identityHeld = progress?.state === 'held' && IDENTITY_HOLD_REASONS.includes(progress.reason ?? '');
             const storeHeld = progress?.state === 'held' && REPLAYABLE_HOLDS.includes(progress.reason ?? '') && Boolean(progress.observationId);
-            if (!progress || (!staleSource && !identityHeld && !storeHeld))
+            const authorityHeld = progress?.state === 'held' && WAHA_AUTHORITY_HOLDS.includes(progress.reason ?? '') && original.provider === 'waha';
+            if (!progress || (!staleSource && !identityHeld && !storeHeld && !authorityHeld))
                 return { state: 'not_pending' as const };
             if (await tx.ingressEventRecertification.findUnique({ where: { receiptId_eventIndex: { receiptId, eventIndex } } }))
                 return { state: 'already_certified' as const };
@@ -231,7 +236,7 @@ export class IngressApplicationService {
     /** Certifies every event waiting for a current source on this workspace scope. Returns how many were applied. */
     async recertifyPending(input: { workspaceIds?: readonly string[]; limit?: number }) {
         const rows = await this.journal.db.ingressEventProgress.findMany({ where: { recertification: { is: null },
-            OR: [{ state: 'pending_recertification', reason: 'stale_source' }, { state: 'held', reason: { in: [...IDENTITY_HOLD_REASONS, ...REPLAYABLE_HOLDS] } }],
+            OR: [{ state: 'pending_recertification', reason: 'stale_source' }, { state: 'held', reason: { in: [...IDENTITY_HOLD_REASONS, ...REPLAYABLE_HOLDS, ...WAHA_AUTHORITY_HOLDS] } }],
             ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}) }, orderBy: { committedAt: 'asc' }, take: 1000, select: { receiptId: true, eventIndex: true } });
         // Oldest first, but an event that stays invalid (not recorded, so it would be read again) waits its backoff
         // instead of holding the first places of the queue forever.

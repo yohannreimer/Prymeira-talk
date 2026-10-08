@@ -18,7 +18,9 @@ describe('recertification sweep', () => {
     const findMany = vi.fn().mockResolvedValue([]);
     await new IngressApplicationService({ db: { ingressEventProgress: { findMany } } } as never).recertifyPending({});
     const reasons = findMany.mock.calls[0]![0].where.OR[1].reason.in;
-    expect(reasons).toEqual(expect.arrayContaining(['legacy_identity_requires_adoption', 'target_missing', 'contradictory_sender_declarations']));
+    expect(reasons).toEqual(expect.arrayContaining(['legacy_identity_requires_adoption', 'target_missing', 'contradictory_sender_declarations',
+      // WAHA messages received while the connection was not yet proven again (applied once it is, never to another number).
+      'waha_identity_unverified']));
   });
 });
 
