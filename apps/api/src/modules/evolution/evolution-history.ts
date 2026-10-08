@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { completeProviderKey, fullProviderKeyMatches, explicitAddressMatch, exactMediaLimit, type MediaPurpose } from '../messaging/provider-exact.js';
 import { normalizeChatAddress, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 import { usableContactName } from '../contacts/contact-name.js';
+import { stable } from '../messaging/canonical-values.js';
 
 export type HistoryRecord = {
   key: { id: string; remoteJid: string; remoteJidAlt?: string; participant?: string; participantAlt?: string; fromMe: boolean };
@@ -242,9 +243,13 @@ export function createEvolutionHistorySource(options: { baseUrl: string; apiKey:
         where: { key: { id: input.id } }, page: 1, offset: 10
       });
       if (!record(data) || !record(data.messages) || !Array.isArray(data.messages.records)) throw new Error('HISTORY_SHAPE');
-      const matches = data.messages.records.filter((item) => record(item) && record(item.key) && item.key.id === input.id);
-      if (matches.length > 1) throw new Error('HISTORY_DUPLICATE_MESSAGE');
-      return matches.length ? parse(matches[0]) : null;
+      const matches = data.messages.records.filter((item) => record(item) && record(item.key) && item.key.id === input.id).map(parse);
+      // Evolution may return the same WhatsApp observation under multiple DB row
+      // IDs. Only equivalent validated records collapse; another chat, direction,
+      // participant, timestamp or content remains ambiguous and is never chosen.
+      const unique = new Map(matches.map(item => [stable(item), item]));
+      if (unique.size > 1) throw new Error('HISTORY_DUPLICATE_MESSAGE');
+      return unique.values().next().value ?? null;
     },
     async hasPriorMessages(input: { instanceName: string; remoteJid: string; excludeMessageId?: string | null; before?: Date }): Promise<boolean> {
       if (!direct(input.remoteJid)) throw new Error('HISTORY_IDENTITY');

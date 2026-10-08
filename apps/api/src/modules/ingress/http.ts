@@ -7,10 +7,10 @@ import { normalizeReceipt } from './normalization.js';
 import { IngressJournal } from './journal.js';
 import type { ConfirmedIngressPublisher } from './broker.js';
 import type { WahaLidResolver } from '../waha/waha-lid-resolver.js';
-import { reportFailure } from '../../observability/glitchtip.js';
+import { failureCode, reportFailure } from '../../observability/glitchtip.js';
 
 type Provider = 'evolution' | 'waha' | 'meta_official';
-class HttpFailure extends Error { constructor(readonly status: number, message: string) { super(message); } }
+class HttpFailure extends Error { constructor(readonly status: number, message: string) { super(message); } get code() { return this.message; } }
 export interface IngressHttpOptions {
   stage?: 'isolated-1a' | 'isolated-1b' | string;
   db: PrismaClient; journal: IngressJournal; publisher: () => ConfirmedIngressPublisher | null;
@@ -90,6 +90,7 @@ export function createIngressHttp(options: IngressHttpOptions) {
   }
   function register(provider: Provider, path: string) {
     app.post(path, async (request, reply) => {
+      let phase = 'authentication';
       try {
         const params = request.params as { workspaceId: string; connectionId?: string }, workspaceId = params.workspaceId;
         if (!options.workspaceAllowlist.has(workspaceId)) throw new HttpFailure(403, 'workspace_not_allowlisted');
@@ -102,12 +103,15 @@ export function createIngressHttp(options: IngressHttpOptions) {
         const publisher = options.publisher();
         if (!publisher?.ready) throw new HttpFailure(503, 'publisher_backpressure');
         const observedAt = new Date().toISOString();
+        phase = 'source';
         // A plain read: the source is re-checked under the shared source fence when the receipt is staged.
         const source = await options.db.$transaction(tx => sourceFor(tx, provider, workspaceId, input, observedAt, params.connectionId), { isolationLevel: 'ReadCommitted' });
         // Bounded and cached; a failed lookup is no proof (the event is still accepted, as before).
         const enrichment = provider === 'waha' && options.wahaLids ? { verifiedLidMappings: await options.wahaLids.resolve(source.sessionName, input).catch(() => []) } : undefined;
         let payload;
+        phase = 'normalization';
         try { payload = normalizeReceipt(source, input, enrichment); } catch { throw new HttpFailure(400, 'source_payload_mismatch'); }
+        phase = 'stage';
         const receipt = await options.journal.stage({ transportNamespace: publisher.namespace, source, raw, payload,
           authentication: provider === 'evolution' ? 'evolution_constant_time_secret' : provider === 'waha' ? 'waha_raw_hmac_sha512' : 'meta_raw_hmac_sha256',
           reauthenticate: async tx => {
@@ -115,10 +119,13 @@ export function createIngressHttp(options: IngressHttpOptions) {
             const current = await sourceFor(tx, provider, workspaceId, input, observedAt, params.connectionId);
             if (JSON.stringify(current) !== JSON.stringify(source)) throw new HttpFailure(409, 'source_changed');
           } });
+        phase = 'publish';
         await options.journal.publish(receipt.id, publisher);
         return reply.code(202).send({ ok: true, receiptId: receipt.id, state: 'pending_application' });
       } catch (error) {
-        if (!(error instanceof HttpFailure) || error.status >= 500) reportFailure('ingress_http', error);
+        if (!(error instanceof HttpFailure) || error.status >= 500) {
+          if (reportFailure('ingress_http', error)) console.warn('Ingress request failed', { phase, code: failureCode(error) });
+        }
         return reply.code(error instanceof HttpFailure ? error.status : 503).send({ error: error instanceof HttpFailure ? error.message : 'ingress_unavailable' });
       }
     });
