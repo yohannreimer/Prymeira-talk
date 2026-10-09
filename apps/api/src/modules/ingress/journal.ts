@@ -140,6 +140,10 @@ export class IngressJournal {
     transportTopology(scope.namespace);
     this.assertAllowed(scope.workspaceId);
     const { namespace, ...receiptScope } = scope;
+    const receipt = await this.db.ingressReceipt.findFirst({ where: { id: scope.receiptId, workspaceId: scope.workspaceId, channelId: scope.channelId, transportNamespace: namespace } });
+    if (!receipt) return { count: 0 };
+    await this.files.read(receipt.rawRef, receipt.rawDigest);
+    await this.readPayload(receipt.id);
     return this.db.ingressDelivery.updateMany({ where: { ...receiptScope, state: 'dead_letter', receipt: { transportNamespace: namespace } }, data: {
       state: 'staged', failures: 0, recoveries: { increment: 1 }, nextAttemptAt: new Date(), lastError: null, leaseToken: null, leaseUntil: null } });
   }

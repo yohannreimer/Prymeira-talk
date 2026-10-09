@@ -2040,6 +2040,7 @@ model IngressEventProgress {
   message         Message?                     @relation(fields: [workspaceId, conversationId, messageId], references: [workspaceId, conversationId, id], onDelete: NoAction, map: "ingress_progress_message_fkey")
   effects         IngressEffect[]
   recertification IngressEventRecertification?
+  retry           IngressRecertificationRetry?
 
   @@id([receiptId, eventIndex])
   @@unique([workspaceId, channelId, receiptId, eventIndex], map: "ingress_event_progress_scope_event_key")
@@ -2169,4 +2170,23 @@ model IngressEventRecertification {
   @@id([receiptId, eventIndex])
   @@unique([workspaceId, channelId, receiptId, eventIndex], map: "ingress_recertification_scope_event_key")
   @@map("ingress_event_recertifications")
+}
+
+// Mutable scheduling metadata is separate from conserved ingress facts.
+model IngressRecertificationRetry {
+  workspaceId   String               @map("workspace_id")
+  channelId     String               @map("channel_id") @db.Uuid
+  receiptId     String               @map("receipt_id") @db.Uuid
+  eventIndex    Int                  @map("event_index")
+  nextAttemptAt DateTime             @map("next_attempt_at") @db.Timestamptz
+  leaseToken    String?              @map("lease_token") @db.Uuid
+  attempts      Int                  @default(0)
+  lastOutcome   String?              @map("last_outcome")
+  updatedAt     DateTime             @default(now()) @map("updated_at") @db.Timestamptz
+  progress      IngressEventProgress @relation(fields: [workspaceId, channelId, receiptId, eventIndex], references: [workspaceId, channelId, receiptId, eventIndex], onDelete: Cascade, map: "ingress_recertification_retry_progress_fkey")
+
+  @@id([receiptId, eventIndex])
+  @@unique([workspaceId, channelId, receiptId, eventIndex], map: "ingress_recertification_retry_scope_key")
+  @@index([nextAttemptAt])
+  @@map("ingress_recertification_retries")
 }

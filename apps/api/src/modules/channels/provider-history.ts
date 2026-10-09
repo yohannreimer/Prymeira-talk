@@ -145,11 +145,11 @@ export async function recoverConnectionGap(prisma: PrismaClient, deps: ProviderH
 
 /** A WAHA connection may only read history for a channel when it is proven to be the same number as Evolution. */
 export async function pairedConnections(prisma: PrismaClient, input: { workspaceIds?: readonly string[] }) {
-  const connections = await prisma.channelConnection.findMany({ where: { status: 'connected', ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}) } });
+  const connections = await prisma.channelConnection.findMany({ where: { channel: { archivedAt: null }, OR: [{ status: 'connected' }, { provider: 'evolution', verifiedPhoneNumber: { not: null } }], ...(input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {}) } });
   const byChannel = new Map<string, ChannelConnection[]>();
   for (const connection of connections) byChannel.set(connection.channelId, [...(byChannel.get(connection.channelId) ?? []), connection]);
   return connections.filter(connection => {
-    if (connection.lifecycleGeneration % 2 !== 0) return false; // A QR/logout operation is in flight.
+    if (connection.status !== 'connected' || connection.lifecycleGeneration % 2 !== 0) return false; // A QR/logout operation is in flight.
     // A failed provider probe can retain the last connected status. Eligibility is
     // the current proof: do not keep polling history for an unavailable instance.
     if (connection.provider === 'evolution') return connection.eligible;
@@ -157,13 +157,14 @@ export async function pairedConnections(prisma: PrismaClient, input: { workspace
     if (!connection.eligible) return false;
     const primary = byChannel.get(connection.channelId)?.find(c => c.provider === 'evolution');
     const a = normalizeWhatsappPhone(primary?.verifiedPhoneNumber), b = normalizeWhatsappPhone(connection.verifiedPhoneNumber);
-    return !!a && a === b && !!connection.lastHealthyAt;
+    return !!a && a === b && !!connection.lastHealthyAt && !!primary && primary.lifecycleGeneration % 2 === 0;
   });
 }
 
-export async function recoverGapsSweep(prisma: PrismaClient, deps: ProviderHistoryDeps, input: { workspaceIds?: readonly string[]; onError?: (error: unknown, connectionId: string) => void } = {}) {
+export async function recoverGapsSweep(prisma: PrismaClient, deps: ProviderHistoryDeps, input: { workspaceIds?: readonly string[]; deferWahaUntilImported?: boolean; onError?: (error: unknown, connectionId: string) => void } = {}) {
   let recovered = 0;
   for (const connection of await pairedConnections(prisma, input)) {
+    if (input.deferWahaUntilImported && connection.provider === 'waha' && !connection.historyImportedAt) continue;
     try { recovered += (await recoverConnectionGap(prisma, deps, connection)).recovered; }
     catch (error) { input.onError?.(error, connection.id); }
   }
