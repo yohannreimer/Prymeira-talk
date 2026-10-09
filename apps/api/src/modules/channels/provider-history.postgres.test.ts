@@ -6,7 +6,7 @@ import type { WahaMessage } from '../waha/waha.client.js';
 import { importChatCanonical } from './channel-history-canonical.js';
 import { normalizeChatAddress } from '../messaging/whatsapp-identity.js';
 import { rolloutDiagnostics } from './rollout-diagnostics.js';
-import { compareProviderHistories, importConnectionHistory, recoverConnectionGap, wahaChatAddress, wahaHistorySweep, type ProviderHistoryDeps } from './provider-history.js';
+import { pairedConnections, compareProviderHistories, importConnectionHistory, recoverConnectionGap, wahaChatAddress, wahaHistorySweep, type ProviderHistoryDeps } from './provider-history.js';
 
 const databaseUrl = process.env.MESSAGING_TEST_DATABASE_URL;
 const PHONE = '5547999990003', PN = `${PHONE}@s.whatsapp.net`, CUS = `${PHONE}@c.us`, LID = '323456789012345@lid';
@@ -50,6 +50,15 @@ describe.skipIf(!databaseUrl)('provider history and gap recovery on PostgreSQL',
       getMessages: vi.fn(async ({ chatId }: { chatId: string }) => input.waha?.[chatId] ?? []) }
   } as unknown as ProviderHistoryDeps);
 
+  it('keeps healthy same-number WAHA recoverable when Evolution is disconnected, but not during its new pairing', async () => {
+    const f = await fixture();
+    await db.channelConnection.update({ where: { id: f.evolution.id }, data: { status: 'disconnected', eligible: false } });
+    expect((await pairedConnections(db, { workspaceIds: [f.workspaceId] })).map(c => c.id)).toEqual([f.waha.id]);
+    await db.channelConnection.update({ where: { id: f.evolution.id }, data: { lifecycleGeneration: 1 } });
+    expect(await pairedConnections(db, { workspaceIds: [f.workspaceId] })).toEqual([]);
+    await db.channelConnection.update({ where: { id: f.evolution.id }, data: { lifecycleGeneration: 2, verifiedPhoneNumber: '5511999990000' } });
+    expect(await pairedConnections(db, { workspaceIds: [f.workspaceId] })).toEqual([]);
+  });
   it('WAHA history only adds what Evolution lacked, and never creates a conversation for an unproven LID chat', async () => {
     const f = await fixture();
     const day = 86_400_000;

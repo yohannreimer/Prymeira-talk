@@ -1,3 +1,6 @@
+import { eligibleEvolutionMediaInstance } from './media-fallback.js';
+import { createSweepObserver } from './sweep-observer.js';
+import { createIdleBackoff, createSweepCadence } from './idle-backoff.js';
 import { PrismaClient } from '@prisma/client';
 import { reportFailure } from '../../observability/glitchtip.js';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -86,8 +89,10 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
   const files = new IngressPrivateStore(config.privateRoot); await files.initialize();
   const journal = new IngressJournal(db, files, config.allowAllWorkspaces ? undefined : config.workspaceAllowlist), abort = new AbortController();
   let publisher: ConfirmedIngressPublisher | null = null, consumer: IngressTransportConsumer | null = null;
+  const transportIdle = createIdleBackoff(500, 5_000);
   const loop = (async () => {
     while (!abort.signal.aborted) {
+      let published = 0;
       try {
         if (!publisher?.alive) {
           await publisher?.close();
@@ -100,9 +105,9 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
           if (abort.signal.aborted) break;
           consumer = await IngressTransportConsumer.start({ url: config.amqpUrl, namespace: config.namespace, journal, publisher: () => publisher, signal: abort.signal, ...(stageAppliesReceipts(config.stage) ? { application: new IngressApplicationService(journal) } : {}) });
         }
-        if (consume && !abort.signal.aborted && publisher.ready) await journal.recover(publisher);
+        if (consume && !abort.signal.aborted && publisher.ready) published = await journal.recover(publisher);
       } catch (error) { if (!abort.signal.aborted) reportFailure('transport_setup', error); /* Durable receipts remain pending; requests see explicit 503. */ }
-      await delay(500, undefined, { signal: abort.signal }).catch(() => {});
+      await delay(transportIdle.next(published > 0), undefined, { signal: abort.signal }).catch(() => {});
     }
   })();
   // Durable effects this process can run on its own: realtime.connection (the QR code only exists in the
@@ -110,12 +115,7 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
   // with a media store configured, media.prepare. Every other effect runs in the API process.
   let bridge: ReturnType<typeof createRealtimeBridge> | null = null;
   /** The Evolution instance of the channel a message belongs to: the media fallback when WAHA cannot give the bytes. */
-  const evolutionInstanceOf = async (workspaceId: string, messageId: string) => {
-    const message = await db.message.findFirst({ where: { workspaceId, id: messageId }, select: { conversation: { select: { channelId: true } } } });
-    if (!message?.conversation.channelId) return null;
-    const connection = await db.channelConnection.findFirst({ where: { workspaceId, channelId: message.conversation.channelId, provider: 'evolution' }, select: { sessionName: true } });
-    return connection?.sessionName ?? null;
-  };
+  const evolutionInstanceOf = (workspaceId: string, messageId: string) => eligibleEvolutionMediaInstance(db, workspaceId, messageId);
   const effects = consume && stageAppliesReceipts(config.stage) ? (async () => {
     bridge = createRealtimeBridge({ databaseUrl: config.databaseUrl, hub: createRealtimeHub(), logger: { warn: (fields, message) => console.warn(message, fields) } });
     await bridge.start();
@@ -154,26 +154,28 @@ export async function createIngressRuntime(config: RuntimeConfig, consume: boole
       reportFailure(step, error);
       console.warn(`Provider ${step} step failed`, { step, connectionId, error: error instanceof Error ? error.message : String(error) });
     };
-    let lastRecovery = 0;
+    const due = createSweepCadence();
+    const observer = createSweepObserver();
     let historyRun: Promise<unknown> | null = null;
     while (!abort.signal.aborted) {
       await delay(30_000, undefined, { signal: abort.signal }).catch(() => {});
       if (abort.signal.aborted) break;
       try {
         const scope = config.allowAllWorkspaces ? {} : { workspaceIds: [...config.workspaceAllowlist] };
-        await application.recertifyPending(scope);
-        await autoResolvePending(db, scope); // Old duplicate conversations: the phone-number default decides.
+        await observer.run('recertification', 'recertification_sweep', () => application.recertifyPending(scope));
+        if (due('authority', 60_000)) await observer.run('authority', 'recertification_sweep', () => autoResolvePending(db, scope)); // Old duplicate conversations: the phone-number default decides.
         // A first WAHA history import can take many minutes (GOWS brings the phone's whole sync); it runs on its own,
-        // one at a time, so recertification, LID resolution and gap recovery keep their 30 s rhythm meanwhile.
-        if (config.wahaHistoryImport && !historyRun) {
-          historyRun = wahaHistorySweep(db, history, { ...scope, onError: warnFor('waha_history') })
+        // one at a time. Background graph/history scans have their own bounded cadence.
+        if (config.wahaHistoryImport && !historyRun && due('history', 5 * 60_000)) {
+          historyRun = observer.run('history', 'waha_history', () => wahaHistorySweep(db, history, { ...scope, onError: warnFor('waha_history') }))
             .catch(error => warnFor('waha_history')(error, '*')).finally(() => { historyRun = null; });
         }
         // Conversations known only by a LID (Evolution history without a phone) get their number from WAHA.
-        if (config.wahaHistoryImport && history.wahaLids) await resolveLidConversationsSweep(db, { lids: history.wahaLids }, { ...scope, onError: warnFor('lid_resolution') });
-        if (config.gapRecovery && Date.now() - lastRecovery >= 5 * 60_000) { lastRecovery = Date.now(); await recoverGapsSweep(db, history, { ...scope, onError: warnFor('gap_recovery') }); }
+        if (config.wahaHistoryImport && history.wahaLids && due('lids', 5 * 60_000)) await observer.run('lids', 'lid_resolution', () => resolveLidConversationsSweep(db, { lids: history.wahaLids! }, { ...scope, onError: warnFor('lid_resolution') }));
+        if (config.gapRecovery && due('gaps', 5 * 60_000)) { await observer.run('gaps', 'gap_recovery', () => recoverGapsSweep(db, history, { ...scope, deferWahaUntilImported: config.wahaHistoryImport, onError: warnFor('gap_recovery') })); }
       }
       catch (error) { reportFailure('recertification_sweep', error); console.warn('Recertification sweep failed', error); }
+      observer.flush();
     }
     await historyRun;
     await historyBridge?.stop();

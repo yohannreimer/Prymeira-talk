@@ -3,6 +3,7 @@ import { wellFormedPresentation } from '../messaging/well-formed-presentation.js
 import { reportFailure } from '../../observability/glitchtip.js';
 import { groupFallbackName } from '../evolution/evolution-normalizer.js';
 import { validateEvolutionIdentityDeclarations, validateWahaIdentityDeclarations } from '../messaging/identity-declarations.js';
+import { claimRecertification, finishRecertification, selectRecertificationCandidates } from './recertification-queue.js';
 import { Prisma, type IngressReceipt } from '@prisma/client';
 import { enterCanonicalTransaction, enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
 import { deriveTrustedMessagingContext, StaleMessagingSourceError } from '../messaging/canonical-source.js';
@@ -29,8 +30,6 @@ const IDENTITY_HOLD_REASONS = ['contradictory_sender_declarations', 'contradicto
 const WAHA_AUTHORITY_HOLDS = ['waha_identity_unverified'];
 // Held inside the canonical store until a later fact (a journaled Talk send, a message that arrives later): the same
 // observation is replayed, never re-normalized into a second one (that would be a receipt-key conflict).
-/** An event that is still invalid or still waiting for its source is retried after this, so it never blocks the queue. */
-const RECERTIFY_BACKOFF_MS = 10 * 60_000;
 type MessageEvent = Extract<NormalizedMessagingEvent, {
     kind: 'message';
 }>;
@@ -42,11 +41,13 @@ export class IngressApplicationService {
     private readonly store = createCanonicalStore();
     private readonly assistant;
     constructor(readonly journal: IngressJournal) { this.assistant = createAssistantRepository(journal.db); }
-    private readonly recertifyRetryAt = new Map<string, number>();
     async apply(receiptId: string) {
         const { receipt, payload } = await this.journal.readPayload(receiptId);
         const raw = JSON.parse((await this.journal.files.read(receipt.rawRef, receipt.rawDigest)).toString('utf8')) as unknown;
-        const source = this.source(receipt);
+        const originalSource = this.source(receipt);
+        const recovered = (await this.journal.db.ingressDelivery.findUniqueOrThrow({ where: { receiptId }, select: { recoveries: true } })).recoveries > 0;
+        // An operator transport replay never replays old autonomous behavior. The receipt itself stays immutable.
+        const source: TrustedMessagingContext = recovered && originalSource.mode === 'live' ? { ...originalSource, mode: 'recovered_live' } : originalSource;
         // Chats that two existing conversations claim: decided by the phone-number default once this receipt is stored.
         const contested = new Map<string, { workspaceId: string; channelId: string; chatId: string }>();
         for (const [eventIndex, item] of payload.events.entries()) {
@@ -74,6 +75,15 @@ export class IngressApplicationService {
                     await tx.ingressEventProgress.create({ data: { ...scope, state: 'pending_recertification', reason: 'stale_source', result: json({ kind: item.kind, source, certification: 'immutable_authenticated_receipt', reason: 'stale_source' }) } });
                     return;
                 }
+                if (recovered && source.connectionId) {
+                    const physical = await tx.channelConnection.findUniqueOrThrow({ where: { id: source.connectionId } });
+                    const accepted = normalizeWhatsappPhone(record(record(receipt.source).acceptedFacts).verifiedPhoneNumber as string | null | undefined);
+                    const current = normalizeWhatsappPhone(physical.verifiedPhoneNumber);
+                    if (!accepted || !current || accepted !== current || physical.status !== 'connected') {
+                        await tx.ingressEventProgress.create({ data: { ...scope, state: 'pending_recertification', reason: 'stale_source', result: json({ kind: item.kind, certification: 'immutable_authenticated_receipt', reason: 'stale_source' }) } });
+                        return;
+                    }
+                }
                 // Revalidate conserved raw declarations as well as new adapter output.
                 // Old queued receipts keep their original blobs/source; contradictions
                 // cannot gain domain authority from a formerly preferred sender field.
@@ -92,6 +102,10 @@ export class IngressApplicationService {
                 // authenticated source overwrites any embedded caller/context fields.
                 const event = wellFormedPresentation({ ...item.event, context: source });
                 if (event.kind === 'control') {
+                    if (recovered) {
+                        await tx.ingressEventProgress.create({ data: { ...scope, state: 'ignored', reason: 'historical_connection_event', result: json({ kind: 'control', reason: 'historical_connection_event' }) } });
+                        return;
+                    }
                     const result = await applyAuthenticatedConnectionObservation(tx, event);
                     await tx.ingressEventProgress.create({ data: { ...scope, state: result.applied ? 'applied' : 'held', reason: result.reason, result: json(result) } });
                     if (result.applied)
@@ -111,6 +125,7 @@ export class IngressApplicationService {
                 if (result.outcome === 'held' && result.chatId && result.reconciliationReasons.includes('multiple_conversation_authorities'))
                     contested.set(result.chatId, { workspaceId: receipt.workspaceId, channelId: receipt.channelId, chatId: result.chatId });
                 await this.afterPersist(tx, receipt, eventIndex, event, result, source);
+                if (recovered && source.mode === 'recovered_live') await this.recoveredPresentation(tx, receipt, event, result, source);
             }, { isolationLevel: 'ReadCommitted', timeout: 15000 });
         }
         for (const chat of contested.values())
@@ -151,7 +166,7 @@ export class IngressApplicationService {
         return this.journal.db.$transaction(async (tx) => {
             await enterCanonicalWorkspaceTransaction(tx, receipt.workspaceId);
             const progress = await tx.ingressEventProgress.findUnique({ where: { receiptId_eventIndex: { receiptId, eventIndex } } });
-            const staleSource = progress?.state === 'pending_recertification' && progress.reason === 'stale_source';
+            const staleSource = progress?.state === 'pending_recertification' && ['stale_source', 'waha_pairing_changed'].includes(progress.reason ?? '');
             // Held by an identity rule that may since have been corrected (e.g. Evolution 2.4's empty participant).
             const identityHeld = progress?.state === 'held' && IDENTITY_HOLD_REASONS.includes(progress.reason ?? '');
             const storeHeld = progress?.state === 'held' && REPLAYABLE_HOLDS.includes(progress.reason ?? '') && Boolean(progress.observationId);
@@ -167,10 +182,13 @@ export class IngressApplicationService {
                 if (!replayed || replayed.outcome === 'held')
                     return { state: 'still_invalid' as const, reason: replayed?.reconciliationReasons.at(-1) ?? 'not_replayable' };
                 const observation = await tx.canonicalObservation.findUniqueOrThrow({ where: { id: replayed.observationId } });
-                const event = observation.payload as unknown as Exclude<NormalizedMessagingEvent, { kind: 'control' }>;
-                await this.afterPersist(tx, receipt, eventIndex, event, replayed, event.context);
+                const originalEvent = observation.payload as unknown as Exclude<NormalizedMessagingEvent, { kind: 'control' }>;
+                const event = { ...originalEvent, context: { ...originalEvent.context, mode: 'recovered_live' as const } };
+                const recoveredResult = { ...replayed, allowOperationalEffects: false };
+                await this.afterPersist(tx, receipt, eventIndex, event, recoveredResult, event.context);
+                await this.recoveredPresentation(tx, receipt, event, recoveredResult, event.context);
                 await tx.ingressEventRecertification.create({ data: { ...scope, outcome: 'applied', reason: null, observationId: replayed.observationId,
-                    conversationId: replayed.conversationId, messageId: replayed.messageId, result: json(replayed) } });
+                    conversationId: replayed.conversationId, messageId: replayed.messageId, result: json(recoveredResult) } });
                 return { state: 'applied' as const };
             }
             let current: TrustedMessagingContext;
@@ -225,60 +243,45 @@ export class IngressApplicationService {
             if (result.outcome === 'held')
                 return record_('held', result.reconciliationReasons[0] ?? 'held', { observationId: result.observationId }, result);
             await this.afterPersist(tx, receipt, eventIndex, event, result, current);
-            if (event.kind === 'message' && result.outcome === 'created' && result.messageId && result.conversationId) {
-                const message = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
-                if (message.direction === 'inbound')
-                    await tx.conversation.update({ where: { workspaceId_id: { workspaceId: receipt.workspaceId, id: result.conversationId } }, data: { unreadCount: { increment: 1 }, hiddenUntilReply: false } });
-                await selectConversationPreviewInTransaction(tx, current, { conversationId: result.conversationId, messageId: message.id, preview: event.content.preview, selection: 'new_message' });
-                await tx.conversation.updateMany({ where: { workspaceId: receipt.workspaceId, id: result.conversationId, OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: message.createdAt } }] }, data: { lastMessageAt: message.createdAt } });
-            }
+            await this.recoveredPresentation(tx, receipt, event, result, current);
             return record_('applied', null, { observationId: result.observationId, conversationId: result.conversationId, messageId: result.messageId }, result);
         }, { isolationLevel: 'ReadCommitted', timeout: 30000 });
     }
     /** Certifies every event waiting for a current source on this workspace scope. Returns how many were applied. */
     async recertifyPending(input: { workspaceIds?: readonly string[]; limit?: number }) {
-        const scope = input.workspaceIds ? { workspaceId: { in: [...input.workspaceIds] } } : {};
-        const select = { receiptId: true, eventIndex: true } as const;
-        const [main, authority] = await Promise.all([
-            this.journal.db.ingressEventProgress.findMany({ where: { recertification: { is: null },
-                OR: [{ state: 'pending_recertification', reason: 'stale_source' }, { state: 'held', reason: { in: [...IDENTITY_HOLD_REASONS, ...REPLAYABLE_HOLDS] } }],
-                ...scope }, orderBy: { committedAt: 'asc' }, take: 1000, select }),
-            // Their own queue: thousands of holds that never resolve (contradictory declarations) would otherwise fill the
-            // 1000 oldest places and these would never be reached.
-            this.journal.db.ingressEventProgress.findMany({ where: { recertification: { is: null }, state: 'held', reason: { in: WAHA_AUTHORITY_HOLDS }, ...scope },
-                orderBy: { committedAt: 'asc' }, take: 1000, select })
-        ]);
-        // Interleaved, so each sweep reaches both queues.
-        const rows: typeof main = [];
-        for (let index = 0; index < Math.max(main.length, authority.length); index++) {
-            if (authority[index]) rows.push(authority[index]!);
-            if (main[index]) rows.push(main[index]!);
-        }
-        // Oldest first, but an event that stays invalid (not recorded, so it would be read again) waits its backoff
-        // instead of holding the first places of the queue forever.
-        const limit = input.limit ?? 50, now = Date.now();
+        const limit = Math.min(100, Math.max(1, Math.floor(input.limit ?? 50)));
+        const rows = await selectRecertificationCandidates(this.journal.db, input.workspaceIds, limit);
         let applied = 0, examined = 0;
+        const started = Date.now();
         for (const row of rows) {
-            const key = `${row.receiptId}:${row.eventIndex}`;
-            if ((this.recertifyRetryAt.get(key) ?? 0) > now) continue;
-            if (examined >= limit) break;
+            if (examined >= limit || (examined > 0 && Date.now() - started >= 10_000)) break;
+            const claim = await claimRecertification(this.journal.db, row);
+            if (!claim) continue; // Another worker owns this event until its bounded lease expires.
             examined++;
+            let state = 'error';
             try {
                 const outcome = await this.recertify(row.receiptId, row.eventIndex);
+                state = outcome.state;
                 if (outcome.state === 'applied') applied++;
-                if (outcome.state === 'still_invalid' || outcome.state === 'still_stale') this.recertifyRetryAt.set(key, now + RECERTIFY_BACKOFF_MS);
-                else this.recertifyRetryAt.delete(key);
             } catch (error) {
-                // The per-event transaction rolled back; keep the immutable receipt pending.
                 reportFailure('recertification_event', error);
-                // Back off this event so one malformed message cannot abort/starve the sweep.
-                this.recertifyRetryAt.set(key, now + RECERTIFY_BACKOFF_MS);
                 const code = record(error).code;
                 console.warn('Recertification event failed', { receiptId: row.receiptId, eventIndex: row.eventIndex,
                     code: typeof code === 'string' && /^[A-Za-z0-9_]{1,40}$/.test(code) ? code : 'recertification_error' });
+            } finally {
+                await finishRecertification(this.journal.db, row, claim, state);
             }
         }
         return { examined, applied };
+    }
+    private async recoveredPresentation(tx: Tx, receipt: IngressReceipt, event: Exclude<NormalizedMessagingEvent, { kind: 'control' }>, result: CanonicalStoreResult, source: TrustedMessagingContext) {
+        if (event.kind === 'message' && result.outcome === 'created' && result.messageId && result.conversationId) {
+            const message = await tx.message.findUniqueOrThrow({ where: { id: result.messageId } });
+            if (message.direction === 'inbound')
+                await tx.conversation.update({ where: { workspaceId_id: { workspaceId: receipt.workspaceId, id: result.conversationId } }, data: { unreadCount: { increment: 1 }, hiddenUntilReply: false } });
+            await selectConversationPreviewInTransaction(tx, source, { conversationId: result.conversationId, messageId: message.id, preview: event.content.preview, selection: 'new_message' });
+            await tx.conversation.updateMany({ where: { workspaceId: receipt.workspaceId, id: result.conversationId, OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: message.createdAt } }] }, data: { lastMessageAt: message.createdAt } });
+        }
     }
     /** Everything that follows a successful canonical persist. Shared by first application and recertification. */
     private async afterPersist(tx: Tx, receipt: IngressReceipt, eventIndex: number, event: Exclude<NormalizedMessagingEvent, { kind: 'control' }>, result: CanonicalStoreResult, source: TrustedMessagingContext) {

@@ -1,5 +1,5 @@
 import { randomUUID, createHmac } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { PrismaClient } from '@prisma/client';
 import amqp, { type ChannelModel } from 'amqplib';
@@ -386,6 +386,49 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
         expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
         expect((await db.ingressReceipt.findUniqueOrThrow({ where: { id } })).source).toMatchObject({ lifecycleGeneration: 0 });
     });
+    it('operator recovery preserves the receipt and displays messages without autonomous effects', async () => {
+        const f = await fixture();
+        await db.channelConnection.update({ where: { id: f.evo.id }, data: { status: 'connected' } });
+        const id = await f.send();
+        const before = await db.ingressReceipt.findUniqueOrThrow({ where: { id } });
+        await db.ingressDelivery.update({ where: { receiptId: id }, data: { state: 'dead_letter' } });
+        expect((await journal.recoverDeadLetter({ namespace: f.namespace, workspaceId: f.workspaceId, channelId: f.channel.id, receiptId: id })).count).toBe(1);
+        await service.apply(id); await service.apply(id);
+        expect(await db.ingressReceipt.findUniqueOrThrow({ where: { id } })).toEqual(before);
+        expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+        expect(await db.conversation.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ unreadCount: 1, lastMessagePreview: 'hello' });
+        const kinds = (await db.ingressEffect.findMany({ where: { receiptId: id } })).map(e => e.kind);
+        expect(kinds).toContain('realtime.message');
+        expect(kinds).not.toContain('agent.debounce'); expect(kinds).not.toContain('automation.occurrence'); expect(kinds).not.toContain('assistant.message');
+    });
+    it('operator replay keeps an original history receipt as history, without marking it unread', async () => {
+        const f = await fixture();
+        await db.channelConnection.update({ where: { id: f.evo.id }, data: { status: 'connected' } });
+        const receipt = await stage(f, { event: 'MESSAGES_UPSERT', instance: f.evo.sessionName, data: { key: { id: 'old-history', remoteJid: peer, fromMe: false }, message: { conversation: 'historical' }, messageTimestamp: 1700000000 } }, 'history');
+        await db.ingressDelivery.update({ where: { receiptId: receipt.id }, data: { state: 'dead_letter' } });
+        await journal.recoverDeadLetter({ namespace: f.namespace, workspaceId: f.workspaceId, channelId: f.channel.id, receiptId: receipt.id });
+        await service.apply(receipt.id);
+        expect(await db.conversation.findFirst({ where: { workspaceId: f.workspaceId } })).toMatchObject({ unreadCount: 0 });
+        expect(await db.ingressEffect.count({ where: { receiptId: receipt.id, kind: 'agent.debounce' } })).toBe(0);
+    });
+    it('operator recovery never applies a historical connection state or gives another number the message', async () => {
+        const f = await fixture();
+        await db.channelConnection.update({ where: { id: f.evo.id }, data: { status: 'connected' } });
+        const control = await f.send('evolution', { state: 'close' }, 'CONNECTION_UPDATE');
+        await db.ingressDelivery.update({ where: { receiptId: control }, data: { state: 'dead_letter' } });
+        await journal.recoverDeadLetter({ namespace: f.namespace, workspaceId: f.workspaceId, channelId: f.channel.id, receiptId: control });
+        await service.apply(control);
+        expect(await db.channelConnection.findUnique({ where: { id: f.evo.id } })).toMatchObject({ status: 'connected' });
+        expect(await db.ingressEventProgress.findFirst({ where: { receiptId: control } })).toMatchObject({ state: 'ignored', reason: 'historical_connection_event' });
+        const message = await f.send();
+        await db.ingressDelivery.update({ where: { receiptId: message }, data: { state: 'dead_letter' } });
+        await journal.recoverDeadLetter({ namespace: f.namespace, workspaceId: f.workspaceId, channelId: f.channel.id, receiptId: message });
+        await db.channelConnection.update({ where: { id: f.evo.id }, data: { verifiedPhoneNumber: '15559990000' } });
+        await service.apply(message);
+        expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+        expect(await service.recertify(message, 0)).toMatchObject({ state: 'held' });
+        expect(await db.ingressEventRecertification.findFirst({ where: { receiptId: message } })).toMatchObject({ reason: 'number_changed' });
+    });
     describe('recertification of events held as stale_source', () => {
         async function held(f: Awaited<ReturnType<typeof fixture>>, generation = 2) {
             const id = await f.send();
@@ -393,6 +436,34 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             await service.apply(id);
             return id;
         }
+        it('a corrupt old event does not block the next one and its backoff survives a new service instance', async () => {
+            const f = await fixture(), bad = await held(f, 2);
+            const receipt = await db.ingressReceipt.findUniqueOrThrow({ where: { id: bad } });
+            await writeFile(join(root, receipt.eventRef), 'fixture-integrity-failure');
+            const good = await f.send('evolution', { key: { id: 'next-good', remoteJid: peer, fromMe: false } });
+            await db.channelConnection.update({ where: { id: f.evo.id }, data: { lifecycleGeneration: 4 } });
+            await service.apply(good);
+            const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+            try {
+                expect(await service.recertifyPending({ workspaceIds: [f.workspaceId] })).toEqual({ examined: 2, applied: 1 });
+                expect(await new IngressApplicationService(journal).recertifyPending({ workspaceIds: [f.workspaceId] })).toEqual({ examined: 0, applied: 0 });
+                expect(await db.ingressRecertificationRetry.findFirst({ where: { receiptId: bad } })).toMatchObject({ lastOutcome: 'error', attempts: 1 });
+                expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+            } finally { warn.mockRestore(); }
+        });
+        it('recovers pairing-changed WAHA messages only when both verified numbers still agree', async () => {
+            const f = await fixture();
+            await db.channelConnection.update({ where: { id: f.waha.id }, data: { status: 'connected' } });
+            const id = await f.send('waha');
+            await db.channelConnection.update({ where: { id: f.evo.id }, data: { lifecycleGeneration: 2 } });
+            await service.apply(id);
+            expect(await db.ingressEventProgress.findFirst({ where: { receiptId: id } })).toMatchObject({ state: 'pending_recertification', reason: 'waha_pairing_changed' });
+            await db.channelConnection.update({ where: { id: f.evo.id }, data: { verifiedPhoneNumber: '15559990000' } });
+            expect(await service.recertify(id, 0)).toMatchObject({ state: 'still_stale' });
+            expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(0);
+            await db.channelConnection.update({ where: { id: f.evo.id }, data: { verifiedPhoneNumber: '15550008888' } });
+            expect(await service.recertifyPending({ workspaceIds: [f.workspaceId] })).toEqual({ examined: 1, applied: 1 });
+        });
         it('applies the message under the current source as recovered traffic, leaving the held fact untouched', async () => {
             const f = await fixture(), id = await held(f);
             expect(await service.recertify(id, 0)).toMatchObject({ state: 'applied' });
@@ -516,6 +587,7 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
             await consumer.close();
             expect(await db.ingressPublishAttempt.findMany({ where: { receiptId: id }, orderBy: { createdAt: 'asc' } })).toEqual(expect.arrayContaining([expect.objectContaining({ destination: 'retry', outcome: 'confirmed' }), expect.objectContaining({ destination: 'dead', outcome: 'confirmed' })]));
         });
+        await db.channelConnection.update({ where: { id: f.evo.id }, data: { status: 'connected' } });
         await journal.recoverDeadLetter({ namespace: f.namespace, workspaceId: f.workspaceId, channelId: f.channel.id, receiptId: id });
         await service.apply(id);
         expect(await db.message.count({ where: { workspaceId: f.workspaceId } })).toBe(1);

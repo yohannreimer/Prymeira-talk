@@ -1,3 +1,4 @@
+import { wahaNonConversationKind } from '../waha/waha-non-conversation.js';
 import type { AddressMappingEvidence } from './normalized-event.js';
 import { gowsEnvelopeToWpp } from '../waha/waha-gows.js';
 import { normalizeChatAddress, record, serialized, string } from './whatsapp-identity.js';
@@ -162,10 +163,11 @@ function wahaDeclarationBundles(input: unknown, verifiedMappings: ReadonlyArray<
             }
         }
     }
-    return [{ ...declarations, keys: [raw.id, payload.id], chats: [raw.chatId, payload.chatId, direction === true ? payload.to : direction === false ? payload.from : undefined] },
+    return [...(raw.gowsReceiptRoles === true ? [{ waha: true, participants: [raw.receiptRecipient, raw.receiptAuthor, raw.sender] }] : []), { ...declarations, keys: [raw.id, payload.id], chats: [raw.chatId, payload.chatId, direction === true ? payload.to : direction === false ? payload.from : undefined] },
         { waha: true, keys: [raw.latestEditMsgKey], senderPairs, chatPairs }];
 }
 export function validateWahaIdentityDeclarations(input: unknown, verifiedMappings: ReadonlyArray<AddressMappingEvidence> = []): string | null {
+    if (wahaNonConversationKind(input)) return null;
     for (const declarations of wahaDeclarationBundles(input, verifiedMappings)) {
         const reason = validate(declarations);
         if (reason)

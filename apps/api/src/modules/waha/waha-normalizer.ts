@@ -1,3 +1,4 @@
+import { wahaNonConversationKind } from './waha-non-conversation.js';
 import { usedWahaAddressMappings, validateWahaIdentityDeclarations } from '../messaging/identity-declarations.js';
 import type { MessageEditPatch, NormalizationResult, SourceOrder, TrustedMessagingContext } from '../messaging/normalized-event.js';
 import { normalizeChatAddress, parseWahaMessageKey, record, serialized, string, type WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
@@ -30,6 +31,8 @@ export function normalizeWahaEvent(context: TrustedMessagingContext, input: unkn
   /** Results from the caller's bounded, authenticated WAHA LID lookup; never webhook metadata. */
   verifiedLidMappings: ReadonlyArray<{ lid: string; pn: string }>;
 }): NormalizationResult {
+  const nonConversation = wahaNonConversationKind(input);
+  if (context.provider === 'waha' && nonConversation) return { kind: 'ignored', reason: nonConversation };
   input = gowsEnvelopeToWpp(input); // GOWS engine events, in the WPP shape these rules are written for.
   const envelope = record(input), payload = record(envelope.payload);
   const eventName = string(envelope.event);

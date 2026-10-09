@@ -37,6 +37,29 @@ describe('Evolution media size handling', () => {
     await expect(client.fetchMedia!({ instanceName: 'instance', id: 'media' })).rejects.toThrow('MEDIA_UNAVAILABLE');
   });
 
+  it('closes an explicitly non-media provider source without transient retries', async () => {
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key',
+      fetch: vi.fn(async () => Response.json({ status: 400, error: 'Bad Request',
+        response: { message: ['The message is not of the media type'] } }, { status: 400 })) as typeof fetch });
+    const error = await client.fetchMedia!({ instanceName: 'instance', id: 'media' }).catch(error => error);
+    expect(error).toBeInstanceOf(AgentMediaError);
+    expect(error.code).toBe('NOT_AN_ATTACHMENT');
+    const media = createMessageMediaService({
+      db: { message: { findFirst: vi.fn(async () => ({ id: 'media', conversationId: 'conversation', type: 'file', mediaUrl: null })) },
+        messageMedia: { upsert: vi.fn(async () => ({ state: 'pending' })), update: vi.fn() } } as never,
+      store: { put: vi.fn() } as never
+    });
+    await expect(media.prepare({ workspaceId: 'workspace', messageId: 'media',
+      fetchers: [{ name: 'evolution', fetch: async () => { throw error; } }] }))
+      .resolves.toEqual({ state: 'failed', errorCode: 'NOT_AN_ATTACHMENT', retryable: false });
+  });
+
+  it('keeps other provider 400 responses available for diagnosis and retry policy', async () => {
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key',
+      fetch: vi.fn(async () => Response.json({ response: { message: ['Connection closed'] } }, { status: 400 })) as typeof fetch });
+    await expect(client.fetchMedia!({ instanceName: 'instance', id: 'media' })).rejects.toBeInstanceOf(EvolutionClientError);
+  });
+
   it('still returns valid media below the response limit', async () => {
     const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key',
       fetch: vi.fn(async () => Response.json({ mimetype: 'video/mp4', base64: 'eA==' })) as typeof fetch });

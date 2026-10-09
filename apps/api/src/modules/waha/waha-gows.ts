@@ -1,6 +1,6 @@
 // Source contract: WAHA 2026.9.1 src/core/engines/gows/session.gows.core.ts (toWAMessage, receiptToMessageAck,
 // subscribeEngineEvents2) and waproto.ts. GOWS is WAHA's Go engine on whatsmeow (not Baileys, not a browser).
-import { record, string } from '../messaging/whatsapp-identity.js';
+import { normalizeChatAddress, record, string } from '../messaging/whatsapp-identity.js';
 import { interactiveMessageText } from '../messaging/interactive-content.js';
 
 /**
@@ -121,7 +121,17 @@ export function gowsEnvelopeToWpp(input: unknown): unknown {
     const receipt = record(payload._data);
     if (!Array.isArray(receipt.MessageIDs) && typeof receipt.Chat !== 'string') return input;
     // Receipts for our own messages carry fromMe=true; the chat is GOWS' `from` either way.
-    return { ...envelope, payload: { ...withChatConvention(payload, payload.fromMe, string(payload.from)), _data: {} } };
+    // GOWS participant/Sender is the ACK recipient, while MessageSender owns the target message. They can differ
+    // in groups. MessageIDs + MessageSender independently prove the native stanza; never infer it from text/time.
+    const targetSender = string(receipt.MessageSender), native = string(payload.id);
+    const serialized = native && /^(true|false)_([^_]+)_(.+)$/.exec(native);
+    const ids = Array.isArray(receipt.MessageIDs) ? receipt.MessageIDs.filter((id): id is string => typeof id === 'string') : [];
+    const rawId = serialized && ids.find(id => serialized[3] === id || (targetSender && serialized[3]!.startsWith(`${id}_`) && normalizeChatAddress(serialized[3]!.slice(id.length + 1)) === normalizeChatAddress(targetSender)));
+    const structured = rawId && serialized ? { _serialized: native, id: rawId, remote: receipt.Chat, fromMe: payload.fromMe, participant: targetSender } : payload.id;
+    return { ...envelope, payload: { ...withChatConvention(payload, payload.fromMe, string(payload.from)),
+      participant: targetSender, author: undefined,
+      _data: { gowsReceiptRoles: true, id: structured, chatId: receipt.Chat, participant: targetSender, sender: receipt.Sender,
+        receiptRecipient: payload.participant, receiptAuthor: payload.author } } };
   }
   return input;
 }

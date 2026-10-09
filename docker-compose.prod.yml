@@ -37,7 +37,7 @@ services:
         condition: on-failure
 
   prymeira_talk_api:
-    image: ghcr.io/${GHCR_OWNER:-yohannreimer}/prymeira-talk-api:${IMAGE_TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-yohannreimer}/prymeira-talk-api:${API_IMAGE_TAG:-${IMAGE_TAG:-latest}}
     logging:
       driver: json-file
       options:
@@ -47,7 +47,7 @@ services:
       NODE_ENV: production
       API_HOST: 0.0.0.0
       GLITCHTIP_DSN: ${GLITCHTIP_DSN:-}
-      GLITCHTIP_RELEASE: ${IMAGE_TAG:-}
+      GLITCHTIP_RELEASE: ${API_IMAGE_TAG:-${IMAGE_TAG:-}}
       API_PORT: 3002
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${PRYMEIRA_TALK_POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-prymeira_talk}
       CORS_ORIGINS: https://talk.prymeiradigital.com.br
