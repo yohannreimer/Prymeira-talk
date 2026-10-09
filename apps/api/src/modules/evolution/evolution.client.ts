@@ -619,6 +619,12 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
     },
     async fetchMedia(input) {
       const data = await post(`/chat/getBase64FromMediaMessage/${encodeURIComponent(input.instanceName)}`, { message: { key: { id: input.id } }, convertToMp4: false }, 15000).catch(error => {
+        // An explicit non-media response cannot improve through repeated downloads.
+        // Keep the original message and source, and close only the media obligation.
+        if (error instanceof EvolutionClientError && error.statusCode === 400 &&
+          collectStrings(error.responseBody).some(message => message.trim() === 'The message is not of the media type')) {
+          throw new AgentMediaError('NOT_AN_ATTACHMENT', 'Provider identifies this source as a non-media message.');
+        }
         // This endpoint embeds the attachment as base64. Repeating a download cannot shrink it;
         // preserve the bounded response and let the media service stop permanent size failures.
         if (error instanceof Error && error.message === 'EVOLUTION_RESPONSE_LIMIT') {

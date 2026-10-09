@@ -8,6 +8,7 @@ export type AgentMediaPolicy = {
 };
 
 export type AgentMediaErrorCode =
+  | "NOT_AN_ATTACHMENT"
   | "MEDIA_UNAVAILABLE"
   | "INVALID_MEDIA_URL"
   | "INVALID_BASE64"
