@@ -16,6 +16,7 @@ describe('Evolution shared event adapter', () => {
       mimetype: 'application/was', isAnimated: true, isLottie: true,
       contextInfo: { stanzaId: 'Q9', participant: '230794412974089@lid', quotedMessage: { conversation: 'Eu vou ser teu sócio' } } } } } } });
     if (sticker.kind !== 'message') throw new Error('Expected message');
+    expect(sticker.attachment.mimeType).toBe('application/was');
     expect(sticker.content).toMatchObject({ type: 'image', body: 'Figurinha recebida', preview: 'Figurinha recebida' });
     expect(sticker.content.quoted).toEqual({ id: 'Q9', participant: '230794412974089@lid', body: 'Eu vou ser teu sócio' });
     expect(sticker.media).toMatchObject({ kind: 'sticker', hasMedia: true });

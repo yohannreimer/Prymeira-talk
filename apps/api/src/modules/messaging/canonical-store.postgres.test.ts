@@ -66,6 +66,20 @@ describe.skipIf(!url)('canonical transactional store on PostgreSQL', () => {
     expect(await db.canonicalObservation.count({ where: { workspaceId: a.workspaceId } })).toBe(8);
     expect(await db.canonicalNativeAlias.count({ where: { workspaceId: a.workspaceId } })).toBe(2);
   });
+  it('keeps device-qualified Evolution and WAHA mirrors on one identity, with one set of effects and distinct native evidence', async () => {
+    const c = await context(), w = await context(c.workspaceId, c.channelId, 'waha');
+    const first = await persist(msg(c, 'DEVICE_MIRROR', '15550001111:12@s.whatsapp.net'));
+    const mirror = await persist(msg(w, 'DEVICE_MIRROR', PN));
+    expect(first).toMatchObject({ outcome: 'created', allowOperationalEffects: true });
+    expect(mirror).toMatchObject({ messageId: first.messageId, allowOperationalEffects: false });
+    expect(await db.message.count({ where: { workspaceId: c.workspaceId } })).toBe(1);
+    const aliases = await db.canonicalNativeAlias.findMany({ where: { identityId: first.identityId! } });
+    expect(aliases).toHaveLength(2);
+    expect(aliases.map(a => (a.fullTuple as unknown[])[6])).toEqual(expect.arrayContaining(['15550001111:12@s.whatsapp.net', PN]));
+    // Identical text is not identity: a genuinely different stanza remains a separate message.
+    expect((await persist(msg(w, 'OTHER_STANZA', PN))).messageId).not.toBe(first.messageId);
+    expect(await db.message.count({ where: { workspaceId: c.workspaceId } })).toBe(2);
+  });
   it('rolls back message, observation, contact and real effects together', async () => {
     const c = await context();
     await expect(db.$transaction(async tx => {

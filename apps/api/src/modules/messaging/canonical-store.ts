@@ -1,3 +1,4 @@
+import { isDomainlessEvolutionTarget } from '../evolution/evolution-receipt-key.js';
 import { createOutboundObservationGate } from './outbound-observation-gate.js';
 import { wellFormedPresentation } from './well-formed-presentation.js';
 import { enterCanonicalWorkspaceTransaction } from './canonical-boundary.js';
@@ -295,12 +296,32 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
   async function resolveActionTarget(tx: Tx, event: ActionEvent) {
     const scope = scopeOf(event.context), key = event.target;
     if (!complete(key)) {
-      if (!key.nativeId || event.context.provider !== 'waha') return { reason: 'incomplete_target_identity' };
+      const domainlessAck = event.context.provider === 'evolution' && event.kind === 'receipt'
+        && event.providerEventType === 'messages.update' && isDomainlessEvolutionTarget(key);
+      if (!key.nativeId || (event.context.provider !== 'waha' && !domainlessAck)) return { reason: 'incomplete_target_identity' };
       const prefix = nativeLookupTuple(event.context, key);
-      const aliases = await tx.canonicalNativeAlias.findMany({ where: { ...scope, lookupHash: digest(prefix), state: 'resolved', identityId: { not: null } } });
+      const aliases = await tx.canonicalNativeAlias.findMany({ where: { ...scope, lookupHash: digest(prefix), state: 'resolved', identityId: { not: null } }, ...(domainlessAck ? { take: 101 } : {}) });
+      if (domainlessAck && aliases.length > 100) return { reason: 'multiple_message_identities' };
+      const proven = new Set<string>();
+      if (domainlessAck) for (const alias of aliases) {
+        // The existing scope/identity/state/kind index plus LIMIT 1 avoids loading
+        // a history of duplicate observations to prove one exact native alias.
+        const evidence = await tx.canonicalObservation.findFirst({ where: { ...scope,
+          identityId: alias.identityId!, aliasId: alias.id, kind: 'message', provider: 'evolution', connectionId: event.context.connectionId,
+          sessionName: event.context.sessionName, lifecycleGeneration: event.context.lifecycleGeneration, state: 'resolved' }, select: { id: true } });
+        if (evidence) proven.add(alias.id);
+      }
       const matched = aliases.filter(alias => {
         const t = alias.fullTuple;
         if (!Array.isArray(t) || !equal(t.slice(1, 5), prefix) || t[0] !== key.identityFormat) return false;
+        if (domainlessAck) {
+          if (!proven.has(alias.id)) return false;
+          // Compare original address digits only with a demonstrated individual JID
+          // on this exact provider/connection/session. Never invent its lost namespace.
+          const nativeChat = typeof t[6] === 'string' ? /^(\d+)(?::\d+)?@(lid|c\.us|s\.whatsapp\.net)$/.exec(t[6]) : null;
+          return !!nativeChat && nativeChat[1] === key.nativeChatAddress && t[5] === key.rawId
+            && t[9] === 'outbound' && t[10] === '' && !!normalizeChatAddress(t[8]) && !String(t[8]).endsWith('@g.us');
+        }
         const known = [key.rawId, key.nativeChatAddress, key.nativeSenderParticipant, key.chatAddress, key.direction, key.senderParticipant];
         return known.every((value, index) => value === null || value === t[index + 5]);
       });
@@ -342,11 +363,23 @@ export function createCanonicalStore({ hash = sha }: { hash?: (value: string) =>
       identity.senderAddressId ? { OR: senders.map(a => field('senderParticipant', a.address)) } : field('senderParticipant', ''),
       ...(identity.identityFormat === 'provider_native' ? [{ observation: { provider: identity.providerScope } }] : [])
     ] };
-    const aliases = await tx.canonicalNativeAlias.findMany({ where: { ...scope, identityId: identity.id, state: 'resolved', provider: 'waha' } });
+    const aliases = await tx.canonicalNativeAlias.findMany({ where: { ...scope, identityId: identity.id, state: 'resolved', provider: { in: ['waha', 'evolution'] } } });
     const native: Prisma.CanonicalActionWhereInput[] = [];
     for (const alias of aliases) {
       const t = alias.fullTuple;
       if (!Array.isArray(t) || t.length !== 11 || typeof t[3] !== 'string') continue; // legacy objects are never authority
+      if (alias.provider === 'evolution') {
+        const nativeChat = typeof t[6] === 'string' ? /^(\d+)(?::\d+)?@(lid|c\.us|s\.whatsapp\.net)$/.exec(t[6]) : null;
+        if (!nativeChat || t[0] !== 'whatsapp_stanza' || t[4] !== t[5] || t[9] !== 'outbound' || t[10] !== '') continue;
+        // Exact indexed bucket only. The reducer rechecks current lifecycle,
+        // full alias proof and ambiguity before applying an ACK that arrived first.
+        native.push({ kind: 'receipt', nativeTargetHash: digest(t.slice(1, 5)), observation: {
+          provider: 'evolution', eventType: 'messages.update', connectionId: alias.connectionId, sessionName: t[3] }, AND: [
+          field('identityFormat', t[0]!), field('nativeId', t[4]!), field('rawId', t[5]!),
+          field('nativeChatAddress', nativeChat[1]!), field('chatAddress', null), field('direction', 'outbound'), field('senderParticipant', null)
+        ] });
+        continue;
+      }
       native.push({ nativeTargetHash: digest(t.slice(1, 5)), observation: { provider: 'waha', connectionId: alias.connectionId, sessionName: t[3] }, AND: [
         field('identityFormat', t[0]!), field('nativeId', t[4]!),
         ...['rawId', 'nativeChatAddress', 'nativeSenderParticipant', 'chatAddress', 'direction', 'senderParticipant'].map((name, index) => ({ OR: [field(name, null), field(name, t[index + 5]!)] }))

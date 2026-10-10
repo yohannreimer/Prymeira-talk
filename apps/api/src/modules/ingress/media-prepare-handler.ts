@@ -1,3 +1,4 @@
+import { AgentMediaError } from '../agents/agent-media-resolver.js';
 import type { WahaClient } from '../waha/waha.client.js';
 import type { EvolutionClient } from '../evolution/evolution.client.js';
 import type { MessageMediaService, ProviderFetcher } from '../conversations/message-media.js';
@@ -58,6 +59,14 @@ export function createMediaPrepareHandler(deps: {
  * number, and Evolution keeps the media keys of what it saw). */
 export function mediaFetchers(source: FrozenSource, deps: { waha: Pick<WahaClient, 'mediaExact'> | null; evolution: Pick<EvolutionClient, 'fetchMedia'> | null }, evolutionInstance: string | null = null) {
   const fetchers: ProviderFetcher[] = [];
+  // WhatsApp Lottie (.was) is neither a supported image nor an AI-readable attachment.
+  // Preserve the message; finish this media obligation explicitly as unsupported,
+  // without asking a provider endpoint that cannot supply it or downloading a URL.
+  if (source.mimeType?.split(';', 1)[0]?.trim().toLowerCase() === 'application/was') {
+    return { useStoredUrl: false, fetchers: [{ name: 'unsupported_lottie', async fetch() {
+      throw new AgentMediaError('UNSUPPORTED_MEDIA_TYPE', 'Lottie sticker media is not supported.');
+    } }] };
+  }
   const { key } = source;
   if (source.provider === 'waha') {
     if (deps.waha) {

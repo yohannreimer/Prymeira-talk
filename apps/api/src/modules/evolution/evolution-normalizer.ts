@@ -140,7 +140,7 @@ export function attachmentPresentation(message: unknown) {
   message = unwrapMessage(message);
   const fileName = readStringPath(message, ['documentMessage', 'fileName']);
   const caption = readFirstStringPath(message, [['documentMessage', 'caption'], ['imageMessage', 'caption'], ['videoMessage', 'caption']]);
-  const mimeType = readFirstStringPath(message, [['videoMessage', 'mimetype'], ['documentMessage', 'mimetype'], ['imageMessage', 'mimetype'], ['audioMessage', 'mimetype']]);
+  const mimeType = readFirstStringPath(message, [['videoMessage', 'mimetype'], ['documentMessage', 'mimetype'], ['imageMessage', 'mimetype'], ['audioMessage', 'mimetype'], ['stickerMessage', 'mimetype']]);
   const raw = message && typeof message === 'object' ? (message as Record<string, unknown>).audioMessage : null;
   const seconds = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).seconds : null;
   return {

@@ -32,3 +32,12 @@ describe('media for messages that did not come through an ingress receipt', () =
     expect(media.prepare).toHaveBeenCalledWith({ workspaceId: 'w', messageId: 'm', fetchers: [expect.objectContaining({ name: 'evolution' })], useStoredUrl: true });
   });
 });
+
+// A Lottie sticker is a real message, but not a supported image attachment.
+it('refuses known Lottie bytes before querying Evolution and without trusting a stored URL', async () => {
+  const evolution = { fetchMedia: vi.fn() };
+  const built = mediaFetchers({ provider: 'evolution', channelProvider: 'evolution', sessionName: 's', key, mimeType: 'application/was' }, { waha: null, evolution });
+  expect(built.useStoredUrl).toBe(false);
+  await expect(built.fetchers[0]!.fetch()).rejects.toMatchObject({ code: 'UNSUPPORTED_MEDIA_TYPE' });
+  expect(evolution.fetchMedia).not.toHaveBeenCalled();
+});
