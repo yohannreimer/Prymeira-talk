@@ -1,3 +1,4 @@
+import { isDomainlessEvolutionTarget } from '../evolution/evolution-receipt-key.js';
 import { refreshOwnedConversationPreviewInTransaction } from './conversation-preview.js';
 import { assertCurrentMessagingSource, StaleMessagingSourceError } from './canonical-source.js';
 import { Prisma, type CanonicalMessageIdentity, type Message } from '@prisma/client';
@@ -149,7 +150,8 @@ export function createCanonicalReducers({ digest, lockAndScope, resolveActionTar
     // to lose every ack and stay on one tick. The ack may still advance the one 1:1 outbound message of this channel
     // carrying that stanza id: status only, forward only, never content.
     if (!resolved.identity && event.kind === 'receipt' && (reason === 'target_missing' || reason === 'incomplete_target_identity')
-      && event.target.rawId && event.target.direction !== 'inbound') {
+      && event.target.rawId && event.target.direction !== 'inbound'
+      && !(event.context.provider === 'evolution' && isDomainlessEvolutionTarget(event.target))) {
       const legacy = await tx.message.findMany({ where: { workspaceId: scope.workspaceId, direction: 'outbound', providerMessageId: event.target.rawId,
         conversation: { channelId: scope.channelId, contact: { isGroup: false } } }, take: 2 });
       if (legacy.length === 1) {

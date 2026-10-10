@@ -1,3 +1,4 @@
+import { optimizePhoto } from './photo-optimization';
 import { abortable, withReadDeadline } from '../../app/read-request';
 import { useTalkPerformance, TalkPerformancePanel } from './talk-performance';
 import { useQuery } from '@tanstack/react-query';
@@ -536,6 +537,11 @@ function InboxPageContent() {
   const [pendingFiles, setPendingFiles] = useSessionState<PendingAttachment[]>(`draftFiles:${selectedConversationId ?? 'none'}`, []);
   const [activeAttachmentId, setActiveAttachmentId] = useState<string | null>(null);
   const [isSendingAttachments, setIsSendingAttachments] = useState(false);
+  const [attachmentProgress, setAttachmentProgress] = useState<{ targetId: string; text: string } | null>(null);
+  const inboxMounted = useRef(true);
+  const attachmentBatchBusy = useRef(false);
+  useEffect(() => { inboxMounted.current = true; return () => { inboxMounted.current = false; }; }, []);
+  const attachmentStatus = attachmentProgress?.targetId === selectedConversationId ? attachmentProgress.text : null;
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const dragDepthRef = useRef(0);
   const [isRunningAction, setIsRunningAction] = useState(false);
@@ -1244,7 +1250,7 @@ function InboxPageContent() {
     }
   }
 
-  function recordSendFailure(targetId: string, optimisticId: string, failure: unknown, fallback: string, text: string, file?: File) {
+  function recordSendFailure(targetId: string, optimisticId: string, failure: unknown, fallback: string, text: string, file?: File, sendOriginal?: boolean) {
     if (!session.isLive) return;
     session.updateMessages(targetId, current => current.map(message =>
       message.id === optimisticId && message.status === 'pending' ? { ...message, status: 'failed' } : message));
@@ -1255,7 +1261,7 @@ function InboxPageContent() {
     // A file that failed goes back to the attachment tray with its caption, so nothing typed is lost.
     if (file) {
       session.writeUI<PendingAttachment[]>(`draftFiles:${targetId}`, current => current.some(item => item.file === file) ? current
-        : [...current, { id: optimisticId, file, caption: text }], []);
+        : [...current, { id: optimisticId, file, caption: text, ...(sendOriginal ? { sendOriginal } : {}) }], []);
       return;
     }
     const hasNewFile = session.readUI<PendingAttachment[]>(`draftFiles:${targetId}`, []).length > 0;
@@ -1280,16 +1286,22 @@ function InboxPageContent() {
 
   async function sendPendingAttachments() {
     const targetId = selectedConversationId;
-    if (!targetId || isSendingAttachments) return;
+    if (!targetId || attachmentBatchBusy.current) return;
+    attachmentBatchBusy.current = true;
     setIsSendingAttachments(true);
     try {
       for (const item of session.readUI<PendingAttachment[]>(`draftFiles:${targetId}`, [])) {
         // Leaves the tray before it is sent; a failure puts it back (recordSendFailure) and stops the rest, in order.
         session.writeUI<PendingAttachment[]>(`draftFiles:${targetId}`, current => current.filter(entry => entry.id !== item.id), []);
-        try { await sendAttachment(item.file, false, item.caption.trim()); }
-        catch { break; }
+        try { await sendAttachment(item.file, false, item.caption.trim(), item.sendOriginal); }
+        catch {
+          // Preparation can finish after navigation, before any optimistic message exists. Keep the source too.
+          if (session.isLive) session.writeUI<PendingAttachment[]>(`draftFiles:${targetId}`, current => current.some(entry => entry.file === item.file)
+            ? current : [...current, item], []);
+          break;
+        }
       }
-    } finally { setIsSendingAttachments(false); }
+    } finally { attachmentBatchBusy.current = false; setIsSendingAttachments(false); }
   }
 
   function hasDraggedFiles(event: DragEvent<HTMLElement>) {
@@ -1324,7 +1336,7 @@ function InboxPageContent() {
     stageAttachments(files);
   }
 
-  async function sendAttachment(file: File, voice = false, captionOverride?: string) {
+  async function sendAttachment(file: File, voice = false, captionOverride?: string, sendOriginal = false) {
     if (!selectedConversationId || isSending) throw new Error('Aguarde o envio atual.');
     if (file.size > MAX_ATTACHMENT_BYTES) { setMessageError('Envie um arquivo de até 25 MB.'); throw new Error('Arquivo maior que 25 MB.'); }
     if (composerOrigin) { setMessageError('Envie primeiro o texto em revisão. Depois anexe o arquivo em uma nova mensagem.'); throw new Error('Texto em revisão.'); }
@@ -1338,84 +1350,94 @@ function InboxPageContent() {
     }
 
     const caption = voice ? '' : captionOverride ?? draft.trim();
-    const mediaUrl = await fileToDataUrl(file).catch((fileError: unknown) => {
-      setMessageError(fileError instanceof Error ? fileError.message : "Não foi possível ler o arquivo.");
-      return null;
-    });
-
-    if (!mediaUrl || selectedConversationIdRef.current !== targetConversationId) throw new Error('A conversa mudou ou o arquivo não pôde ser lido.');
-
-    const messageType: MessageDto["type"] = voice ? 'audio' : file.type.startsWith("image/") ? "image" : "file";
-    const body = voice ? 'Áudio enviado' : caption || file.name;
-    const optimisticMessage: MessageDto = {
-      id: optimisticMessageId(),
-      workspaceId: selectedConversation?.workspaceId ?? "",
-      conversationId: targetConversationId,
-      providerMessageId: null,
-      direction: "outbound",
-      type: messageType,
-      body,
-      mediaUrl,
-      status: "pending",
-      sentByUserId: null,
-      createdAt: new Date().toISOString()
-    };
-
+    let outgoingFile = file;
     setIsSending(true);
-    setMessageError(null);
-    session.writeUI(`sendFailure:${targetConversationId}`, null, null);
-    if (!voice && captionOverride === undefined) setDraft("");
-    session.updateMessages(targetConversationId, current => [...current, optimisticMessage]);
-    setConversations((current) =>
-      current.map((conversation) =>
-        conversation.id === targetConversationId
-          ? {
-              ...conversation,
-              lastMessageAt: optimisticMessage.createdAt,
-              lastMessagePreview: body
-            }
-          : conversation
-      )
-    );
-    scheduleMessageThreadScroll("auto");
-
     try {
-      const createdMessage = await apiCreateConversationMessage(
-        targetConversationId,
-        {
-          body: caption || undefined,
-          attachment: {
-            fileName: file.name,
-            mediaUrl,
-            mimetype: file.type || "application/octet-stream"
-          }
-        },
-        getFreshToken
-      );
+      if (!voice) {
+        setAttachmentProgress({ targetId: targetConversationId, text: `Preparando ${file.name}…` });
+        outgoingFile = (await optimizePhoto(file, sendOriginal)).file;
+      }
+      const mediaUrl = await fileToDataUrl(outgoingFile).catch((fileError: unknown) => {
+        setMessageError(fileError instanceof Error ? fileError.message : "Não foi possível ler o arquivo.");
+        return null;
+      });
+      if (!mediaUrl || !inboxMounted.current || !session.isLive || selectedConversationIdRef.current !== targetConversationId) {
+        throw new Error('A conversa mudou ou o arquivo não pôde ser lido.');
+      }
+      if (!voice) setAttachmentProgress({ targetId: targetConversationId, text: `Enviando ${file.name} (${(outgoingFile.size / 1024 / 1024).toFixed(1)} MB)…` });
 
-      session.updateMessages(targetConversationId, current => upsertMessage(current, createdMessage, optimisticMessage.id));
+      const messageType: MessageDto["type"] = voice ? 'audio' : outgoingFile.type.startsWith("image/") ? "image" : "file";
+      const body = voice ? 'Áudio enviado' : caption || file.name;
+      const optimisticMessage: MessageDto = {
+        id: optimisticMessageId(),
+        workspaceId: selectedConversation?.workspaceId ?? "",
+        conversationId: targetConversationId,
+        providerMessageId: null,
+        direction: "outbound",
+        type: messageType,
+        body,
+        mediaUrl,
+        status: "pending",
+        sentByUserId: null,
+        createdAt: new Date().toISOString()
+      };
+
+      setMessageError(null);
+      session.writeUI(`sendFailure:${targetConversationId}`, null, null);
+      if (!voice && captionOverride === undefined) setDraft("");
+      session.updateMessages(targetConversationId, current => [...current, optimisticMessage]);
       setConversations((current) =>
         current.map((conversation) =>
           conversation.id === targetConversationId
             ? {
                 ...conversation,
-                lastMessageAt: createdMessage.createdAt,
-                lastMessagePreview: createdMessage.body
+                lastMessageAt: optimisticMessage.createdAt,
+                lastMessagePreview: body
               }
             : conversation
         )
       );
-    } catch (sendError) {
-      // A voice note stays in the recorder to try again (never in the attachment tray as a document); a refused one
-      // leaves no failed bubble behind.
-      if (voice) {
-        const refused = sendError instanceof ApiRequestError && Boolean(sendError.code) && sendError.code !== 'EVOLUTION_CONNECTION_CLOSED';
-        if (refused) session.updateMessages(targetConversationId, current => current.filter(message => message.id !== optimisticMessage.id));
-        else recordSendFailure(targetConversationId, optimisticMessage.id, sendError, 'Não foi possível enviar o áudio.', '');
-      } else recordSendFailure(targetConversationId, optimisticMessage.id, sendError, 'Não foi possível enviar o arquivo.', caption, file);
-      throw sendError;
+      scheduleMessageThreadScroll("auto");
+
+      try {
+        const createdMessage = await apiCreateConversationMessage(
+          targetConversationId,
+          {
+            body: caption || undefined,
+            attachment: {
+              fileName: file.name,
+              mediaUrl,
+              mimetype: outgoingFile.type || "application/octet-stream"
+            }
+          },
+          getFreshToken
+        );
+
+        session.updateMessages(targetConversationId, current => upsertMessage(current, createdMessage, optimisticMessage.id));
+        setConversations((current) =>
+          current.map((conversation) =>
+            conversation.id === targetConversationId
+              ? {
+                  ...conversation,
+                  lastMessageAt: createdMessage.createdAt,
+                  lastMessagePreview: createdMessage.body
+                }
+              : conversation
+          )
+        );
+      } catch (sendError) {
+        // A voice note stays in the recorder to try again (never in the attachment tray as a document); a refused one
+        // leaves no failed bubble behind.
+        if (voice) {
+          const refused = sendError instanceof ApiRequestError && Boolean(sendError.code) && sendError.code !== 'EVOLUTION_CONNECTION_CLOSED';
+          if (refused) session.updateMessages(targetConversationId, current => current.filter(message => message.id !== optimisticMessage.id));
+          else recordSendFailure(targetConversationId, optimisticMessage.id, sendError, 'Não foi possível enviar o áudio.', '');
+        } else recordSendFailure(targetConversationId, optimisticMessage.id, sendError, 'Não foi possível enviar o arquivo.', caption, file, sendOriginal);
+        throw sendError;
+      }
     } finally {
       setIsSending(false);
+      setAttachmentProgress(null);
     }
   }
 
@@ -2287,8 +2309,9 @@ selectedConversation ? (
         onDrop={handleChatDrop}>
         {isDraggingFile ? <div className="chat-drop-overlay" aria-hidden="true"><UploadCloud size={34} />Solte para anexar à conversa</div> : null}
         {selectedConversation && pendingFiles.length ? <AttachmentTray items={pendingFiles} activeId={activeAttachmentId} recipient={contactDisplayName(selectedConversation)}
-          sending={isSendingAttachments} onSelect={setActiveAttachmentId}
+          sending={isSendingAttachments} preparationStatus={attachmentStatus} onSelect={setActiveAttachmentId}
           onCaption={(id, caption) => setPendingFiles(current => current.map(item => item.id === id ? { ...item, caption } : item))}
+          onOriginalChange={(id, sendOriginal) => setPendingFiles(current => current.map(item => item.id === id ? { ...item, sendOriginal } : item))}
           onRemove={id => { const index = pendingFiles.findIndex(item => item.id === id); const rest = pendingFiles.filter(item => item.id !== id);
             setPendingFiles(rest); setActiveAttachmentId(rest[Math.min(index, rest.length - 1)]?.id ?? null); }}
           onAdd={() => fileInputRef.current?.click()} onClose={() => setPendingFiles([])} onSend={() => void sendPendingAttachments()}
@@ -2389,6 +2412,7 @@ selectedConversation ? (
               }}
             />
           ) : null}
+          {attachmentStatus && !pendingFiles.length ? <p className="attachment-preparation-status" role="status">{attachmentStatus}</p> : null}
           <form
             aria-busy={isSending}
             className="composer"

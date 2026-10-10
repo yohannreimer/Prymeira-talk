@@ -5,10 +5,13 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConversationDto, MessageDto } from '@prymeira-talk/shared';
 import { InboxPage } from './InboxPage';
+import { optimizePhoto } from './photo-optimization';
 import { TalkSessionContext } from '../../app/session/TalkSessionProvider';
 import { TalkSession } from '../../app/session/talk-session';
 import { RealtimeConnection } from './realtime-connection';
 import { apiCreateConversationMessage, apiGetConversationMessages, apiGetConversations, apiGetAssistantConversation, apiGetConversationContext, apiMarkConversationRead, apiGetQuickReplies, apiGetContactNameInsight } from '../../app/api';
+
+vi.mock('./photo-optimization', async original => ({ ...await original<typeof import('./photo-optimization')>(), optimizePhoto: vi.fn(async (file: File) => ({ file, reason: 'unchanged' })) }));
 
 const renders = vi.hoisted(() => ({ media: vi.fn(), mediaMount: vi.fn(), mediaUnmount: vi.fn(), assistant: vi.fn(), avatar: vi.fn() }));
 vi.mock('./InboxMedia', () => ({ InboxMedia: ({ message }: { message: MessageDto }) => {
@@ -71,6 +74,7 @@ describe('Atendimento query/UI integration', () => {
   const sendTray = async () => { await act(async () => container.querySelector<HTMLButtonElement>('.attachment-tray-send')!.click()); await flush(); };
   const trayFiles = (id: string) => session.readUI<Array<{ file: File; caption: string }>>(`draftFiles:${id}`, []);
   beforeEach(() => {
+    vi.mocked(optimizePhoto).mockReset().mockImplementation(async file => ({ file, reason: 'unchanged' }));
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); vi.useFakeTimers();
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: vi.fn(), configurable: true });
     session = new TalkSession('user:session:w', 'w');
@@ -193,6 +197,80 @@ describe('Atendimento query/UI integration', () => {
     const sent = vi.mocked(apiCreateConversationMessage).mock.calls.map(([, body]) => [body.attachment?.fileName, body.body]);
     expect(sent).toEqual([['a.pdf', 'Proposta'], ['b.png', undefined], ['c.mp4', 'Vídeo da obra']]);
     expect(container.querySelector('.attachment-tray')).toBeNull(); expect(trayFiles('c1')).toEqual([]);
+  });
+  it('prepares three large photos sequentially and sends each once with its caption and JPEG MIME', async () => {
+    const read = vi.fn();
+    vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:image/jpeg;base64,YQ=='; readAsDataURL(file: File) { read(file); this.dispatchEvent(new Event('load')); } });
+    vi.mocked(optimizePhoto).mockImplementation(async file => ({ file: new File(['optimized'], file.name, { type: 'image/jpeg' }), reason: 'optimized' }));
+    vi.mocked(apiCreateConversationMessage).mockImplementation(async (id, input) => ({ ...message(id), id: input.attachment!.fileName, direction: 'outbound', status: 'sent' }));
+    await render();
+    const files = [1, 2, 3].map(i => new File([new Uint8Array(10 * 1024 * 1024)], `photo${i}.jpg`, { type: 'image/jpeg' }));
+    const input = container.querySelector<HTMLInputElement>('.composer-file-input')!;
+    Object.defineProperty(input, 'files', { value: files, configurable: true });
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
+    await caption('Legenda foto 1'); await sendTray();
+    expect(vi.mocked(optimizePhoto).mock.calls.map(([file, original]) => [file.name, original])).toEqual(files.map(f => [f.name, false]));
+    expect(read.mock.calls.map(([f]) => f.size)).toEqual([9, 9, 9]);
+    expect(vi.mocked(apiCreateConversationMessage).mock.calls.map(([id, body]) => [id, body.body, body.attachment?.fileName, body.attachment?.mimetype])).toEqual([
+      ['c1', 'Legenda foto 1', 'photo1.jpg', 'image/jpeg'], ['c1', undefined, 'photo2.jpg', 'image/jpeg'], ['c1', undefined, 'photo3.jpg', 'image/jpeg']]);
+    expect(trayFiles('c1')).toEqual([]); expect(files.map(f => f.size)).toEqual([10485760, 10485760, 10485760]);
+  });
+  it('ignores a repeated batch click while preparing and preserves identical independent photos', async () => {
+    vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:image/jpeg;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
+    let finish!: (value: Awaited<ReturnType<typeof optimizePhoto>>) => void;
+    vi.mocked(optimizePhoto).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    vi.mocked(apiCreateConversationMessage).mockImplementation(async (id) => ({ ...message(id), id: `sent-${vi.mocked(apiCreateConversationMessage).mock.calls.length}`, direction: 'outbound', status: 'sent' }));
+    await render(); const file = new File([new Uint8Array(600_000)], 'same.jpg', { type: 'image/jpeg' });
+    const input = container.querySelector<HTMLInputElement>('.composer-file-input')!; Object.defineProperty(input, 'files', { value: [file, file], configurable: true });
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
+    const send = container.querySelector<HTMLButtonElement>('.attachment-tray-send')!;
+    await act(async () => { send.click(); send.click(); }); await flush();
+    expect(optimizePhoto).toHaveBeenCalledOnce(); expect(apiCreateConversationMessage).not.toHaveBeenCalled();
+    await act(async () => finish({ file, reason: 'unchanged' })); await flush();
+    expect(apiCreateConversationMessage).toHaveBeenCalledTimes(2); expect(optimizePhoto).toHaveBeenCalledTimes(2);
+    const rows = session.client.getQueryData<MessageDto[]>(session.key('messages', 'c1'))!;
+    expect(rows.filter(row => row.direction === 'outbound').map(row => row.id)).toEqual(['sent-1', 'sent-2']);
+  });
+  it('retains original choice and original file when delivery fails after preparation', async () => {
+    vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:image/jpeg;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
+    vi.mocked(apiCreateConversationMessage).mockRejectedValueOnce(new Error('Falha do provedor'));
+    await render();
+    const file = new File([new Uint8Array(600_000)], 'original.jpg', { type: 'image/jpeg' });
+    const input = container.querySelector<HTMLInputElement>('.composer-file-input')!;
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
+    await act(async () => container.querySelector<HTMLButtonElement>('.attachment-tray-hd')!.click()); await flush();
+    await act(async () => container.querySelectorAll<HTMLInputElement>('.attachment-tray-quality input')[1]!.click()); await flush();
+    await caption('Detalhes importantes'); await sendTray();
+    expect(optimizePhoto).toHaveBeenCalledWith(file, true);
+    expect(session.readUI<unknown[]>('draftFiles:c1', [])).toEqual([expect.objectContaining({ file, caption: 'Detalhes importantes', sendOriginal: true })]);
+    expect(apiCreateConversationMessage).toHaveBeenCalledOnce();
+  });
+  it('restores source file and stops the batch if conversation changes during preparation', async () => {
+    vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:image/jpeg;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
+    let finish!: (value: Awaited<ReturnType<typeof optimizePhoto>>) => void;
+    vi.mocked(optimizePhoto).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await render(); await select('c2'); await select('c1');
+    const files = ['first', 'second'].map(name => new File([new Uint8Array(600_000)], `${name}.jpg`, { type: 'image/jpeg' }));
+    const input = container.querySelector<HTMLInputElement>('.composer-file-input')!;
+    Object.defineProperty(input, 'files', { value: files, configurable: true });
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush();
+    await caption('Conversa original'); await sendTray();
+    expect(container.textContent).toContain('Preparando first.jpg');
+    await select('c2'); expect(container.textContent).not.toContain('Preparando first.jpg');
+    await act(async () => finish({ file: files[0], reason: 'unchanged' })); await flush();
+    expect(apiCreateConversationMessage).not.toHaveBeenCalled();
+    expect(trayFiles('c1')).toEqual([expect.objectContaining({ file: files[1] }), expect.objectContaining({ file: files[0], caption: 'Conversa original' })]);
+  });
+  it('does not dispatch an attachment if the inbox unmounts during preparation', async () => {
+    vi.stubGlobal('FileReader', class extends EventTarget { result = 'data:image/jpeg;base64,YQ=='; readAsDataURL() { this.dispatchEvent(new Event('load')); } });
+    let finish!: (value: Awaited<ReturnType<typeof optimizePhoto>>) => void;
+    vi.mocked(optimizePhoto).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await render(); const file = new File([new Uint8Array(600_000)], 'source.jpg', { type: 'image/jpeg' });
+    const input = container.querySelector<HTMLInputElement>('.composer-file-input')!; Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true }))); await flush(); await sendTray(); await render(false);
+    await act(async () => finish({ file, reason: 'unchanged' })); await flush();
+    expect(apiCreateConversationMessage).not.toHaveBeenCalled(); expect(trayFiles('c1')).toEqual([expect.objectContaining({ file })]);
   });
   it("refreshes an open conversation silently, without a note that pushes the thread down and back", async () => {
     await render();

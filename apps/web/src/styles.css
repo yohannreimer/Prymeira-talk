@@ -8667,7 +8667,8 @@ select:disabled {
 /* Card title: the number it came through sits right under the name, not below the two-line time. */
 .conv-title-col { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
 .conv-title-col .conv-name-wrap { flex: 0 0 auto; }
-.message-ticks { flex-shrink: 0; color: var(--color-text-muted); }
+.message-ticks { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; flex: 0 0 15px; color: var(--color-text-muted); }
+.message-ticks > svg { flex-shrink: 0; }
 .message-ticks.is-read { color: #53bdeb; }
 .message-ticks.is-failed { color: #c0392b; }
 .message-bubble.is-outbound .message-ticks { color: rgba(255, 255, 255, 0.6); }

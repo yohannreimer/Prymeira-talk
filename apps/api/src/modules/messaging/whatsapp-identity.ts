@@ -24,8 +24,11 @@ export function serialized(value: unknown): string | null { return string(value)
 
 /** Never feed LID digits to phone normalization. */
 export function normalizeChatAddress(value: unknown): string | null {
-  const address = serialized(value);
-  if (!address || address.length > 100) return null;
+  const native = serialized(value);
+  if (!native || native.length > 100) return null;
+  // A device suffix qualifies an individual JID, not another person. Keep its namespace;
+  // bare digits and group/device combinations remain unresolved. Native keys stay untouched.
+  const address = native.replace(/^(\d+):\d+@(lid|c\.us|s\.whatsapp\.net)$/, '$1@$2');
   if (/^\d+@lid$/.test(address) || /^\d+(?:-\d+)?@g\.us$/.test(address)) return address;
   const phone = /^(\d{8,15})@(c\.us|s\.whatsapp\.net)$/.exec(address)?.[1];
   return phone ? `${normalizePhoneForStorage(phone)}@s.whatsapp.net` : null;

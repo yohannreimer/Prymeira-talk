@@ -1,3 +1,4 @@
+import { isDomainlessEvolutionAck } from '../evolution/evolution-receipt-key.js';
 import { wahaNonConversationKind } from '../waha/waha-non-conversation.js';
 import type { AddressMappingEvidence } from './normalized-event.js';
 import { gowsEnvelopeToWpp } from '../waha/waha-gows.js';
@@ -118,7 +119,7 @@ export function validateEvolutionIdentityDeclarations(input: unknown): string | 
     if (['connection.update', 'qrcode.updated'].includes(name))
         return null;
     const key = data.key ?? (name === 'messages.delete' ? data : undefined), native = record(key);
-    const reason = validate({ keys: [key], envelopes: [data], chats: [data.remoteJid, data.remoteJidAlt], directions: [data.fromMe],
+    const reason = validate({ keys: [key], envelopes: [data], chats: [isDomainlessEvolutionAck(name, data) ? undefined : data.remoteJid, data.remoteJidAlt], directions: [data.fromMe],
         senderPairs: [[data.participant ?? native.participant, data.participantAlt], [native.participant ?? data.participant, native.participantAlt]], chatPairs: [[data.remoteJid, data.remoteJidAlt]] });
     if (reason)
         return reason;

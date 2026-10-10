@@ -130,6 +130,10 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
   const isGif = Boolean(isVideo && message.attachment?.isGif);
   const [autoStart, setAutoStart] = useState(false);
   const { width: mediaWidth, height: mediaHeight } = message.attachment ?? {};
+  // Reserve image space before its bytes arrive. Unknown dimensions keep a fixed
+  // frame too; object-fit contains the complete photo without moving the history.
+  const imageAspect = Number.isFinite(mediaWidth) && Number.isFinite(mediaHeight) && mediaWidth! > 0 && mediaHeight! > 0
+    ? `${mediaWidth} / ${mediaHeight}` : isSticker ? '1 / 1' : '4 / 3';
   // Like WhatsApp: a clip keeps its shape, and a tall one is sized by its height, never stretched to the bubble width.
   const aspect = mediaWidth && mediaHeight ? { aspectRatio: `${mediaWidth} / ${mediaHeight}`,
     ...(mediaHeight > mediaWidth ? { width: `min(${Math.round(320 * mediaWidth / mediaHeight)}px, 58vw)`, minHeight: 0 } : {}) } : undefined;
@@ -298,7 +302,7 @@ export const InboxMedia = memo(function InboxMedia({ message, getToken, transpor
       </div>
     </> : isSticker && error ? <span className="talk-sticker-fallback" role="img" aria-label="Figurinha animada">
       <Sticker size={30} aria-hidden="true" /><small>Figurinha animada</small>
-    </span> : isImage ? <button className={`talk-image-preview${isSticker ? ' is-sticker' : ''}`} type="button" aria-label="Ampliar imagem" onClick={() => void open()}>
+    </span> : isImage ? <button className={`talk-image-preview${isSticker ? ' is-sticker' : ''}`} style={{ aspectRatio: imageAspect }} type="button" aria-label="Ampliar imagem" onClick={() => void open()}>
       {src && !error ? <img src={src} loading="lazy" decoding="async" alt={mediaCaption(message) || (isSticker ? 'Figurinha' : 'Imagem da conversa')} onError={() => setError(true)} /> : <span>{loading ? (isSticker ? 'Carregando figurinha…' : 'Carregando imagem…') : isSticker ? 'Figurinha' : 'Abrir imagem'}</span>}
     </button> : isGif ? <button type="button" className="talk-gif-preview" style={aspect} aria-label={videoPlaying ? 'Pausar GIF' : 'Tocar GIF'}
       onClick={() => { const element = video.current; if (element) void (element.paused ? element.play().catch(() => {}) : element.pause()); }}>

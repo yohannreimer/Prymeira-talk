@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import type { EvolutionHistorySource } from '../evolution/evolution-history.js';
 import { createChannelHistoryImporter, createChannelHistoryImportScheduler } from './channel-history-import.js';
@@ -11,6 +11,10 @@ const records = [
 ];
 
 describe('new channel history import', () => {
+  // Fixed historical fixtures must be tested against a fixed clock. Otherwise the
+  // real 15-day import cutoff eventually ages them out and invalidates these assertions.
+  beforeEach(() => { vi.spyOn(Date, 'now').mockReturnValue(1_790_000_120 * 1000); });
+  afterEach(() => { vi.restoreAllMocks(); });
   it('uses the phone conversation when a chat has both phone and LID identities', async () => {
     const lidJid = '123456789012345@lid';
     const phoneContact = { id: 'phone-contact', phone: '551199998888', name: null, avatarUrl: null };

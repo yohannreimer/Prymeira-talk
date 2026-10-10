@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Crop, FileText, LoaderCircle, Plus, Send, Trash2, Video, X } from 'lucide-react';
 import { ImageCropper } from './ImageCropper';
 import './attachment-tray.css';
+import { canOptimizePhoto } from './photo-optimization';
 
-export type PendingAttachment = { id: string; file: File; caption: string };
+export type PendingAttachment = { id: string; file: File; caption: string; sendOriginal?: boolean };
 
 function kindOf(file: File) {
   return file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'file';
@@ -19,14 +20,25 @@ function size(file: File) {
  * WhatsApp's attachment preview: the chosen files open over the chat, each with its own caption, a strip of thumbnails
  * to switch between them (and drop one), "+" to add more, and one button that sends them all, one message per file.
  */
-export function AttachmentTray({ items, activeId, recipient, sending, onSelect, onCaption, onRemove, onAdd, onClose, onSend, onReplace }: {
+export function AttachmentTray({ items, activeId, recipient, sending, onSelect, onCaption, onRemove, onAdd, onClose, onSend, onReplace, onOriginalChange, preparationStatus }: {
   items: PendingAttachment[]; activeId: string | null; recipient: string; sending: boolean;
   onSelect: (id: string) => void; onCaption: (id: string, caption: string) => void; onRemove: (id: string) => void;
   onAdd: () => void; onClose: () => void; onSend: () => void;
+  onOriginalChange?: (id: string, original: boolean) => void;
+  preparationStatus?: string | null;
   /** Swaps a file for its edited version (a cropped or turned picture). */
   onReplace?: (id: string, file: File) => void;
 }) {
   const [cropping, setCropping] = useState(false);
+  const [qualityOpen, setQualityOpen] = useState(false);
+  const quality = useRef<HTMLDivElement>(null);
+  const qualityButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!qualityOpen) return;
+    const dismiss = (event: PointerEvent) => { if (!quality.current?.contains(event.target as Node)) setQualityOpen(false); };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [qualityOpen]);
   // Previews follow the files, not the captions: typing must not reload a video or flash the pictures.
   const filesKey = items.map(item => `${item.id}:${item.file.size}:${item.file.lastModified}`).join('|');
   const urls = useMemo(() => new Map(items.filter(item => kindOf(item.file) !== 'file').map(item => [item.id, URL.createObjectURL(item.file)])), [filesKey]);
@@ -34,14 +46,33 @@ export function AttachmentTray({ items, activeId, recipient, sending, onSelect, 
   const active = items.find(item => item.id === activeId) ?? items[0];
   const caption = useRef<HTMLInputElement>(null);
   useEffect(() => { caption.current?.focus(); }, [active?.id]);
+  useEffect(() => { setQualityOpen(false); }, [active?.id, active?.file]);
   if (!active) return null;
   const kind = kindOf(active.file), url = urls.get(active.id);
   // Animated GIFs would lose their animation in a canvas: only still pictures are cropped.
   const croppable = Boolean(onReplace) && kind === 'image' && active.file.type !== 'image/gif';
   return <div className="attachment-tray" role="dialog" aria-label="Anexos para enviar"
-    onKeyDown={event => { if (event.key === 'Escape' && !sending && !cropping) onClose(); }}>
+    onKeyDown={event => { if (event.key === 'Escape') {
+      if (qualityOpen) { event.stopPropagation(); setQualityOpen(false); qualityButton.current?.focus(); }
+      else if (!sending && !cropping) onClose();
+    } }}>
     <button type="button" className="attachment-tray-close" aria-label="Cancelar envio dos anexos" disabled={sending} onClick={onClose}><X size={22} /></button>
     {croppable ? <button type="button" className="attachment-tray-crop" aria-label="Recortar imagem" title="Recortar e girar" disabled={sending} onClick={() => setCropping(true)}><Crop size={20} /></button> : null}
+    {canOptimizePhoto(active.file) && onOriginalChange ? <div ref={quality} className="attachment-tray-quality">
+      <button ref={qualityButton} type="button" className={`attachment-tray-hd${active.sendOriginal ? ' is-active' : ''}`}
+        aria-label={`Qualidade da foto: ${active.sendOriginal ? 'HD' : 'Padrão'}`} aria-expanded={qualityOpen} aria-haspopup="dialog"
+        title="Qualidade da foto" disabled={sending} onClick={() => setQualityOpen(open => !open)}>HD</button>
+      {qualityOpen ? <div className="attachment-tray-quality-menu" role="dialog" aria-label="Qualidade da foto">
+        <strong>Qualidade da foto</strong>
+        <div role="radiogroup" aria-label="Qualidade">
+          {[{ original: false, title: 'Padrão', detail: 'Arquivo menor, envio mais rápido' },
+            { original: true, title: 'HD', detail: `Qualidade original · ${size(active.file)}` }].map(option =>
+            <label key={option.title}><input type="radio" name={`photo-quality-${active.id}`} checked={Boolean(active.sendOriginal) === option.original}
+              disabled={sending} onChange={() => { onOriginalChange(active.id, option.original); setQualityOpen(false); qualityButton.current?.focus(); }} />
+              <span>{option.title}<small>{option.detail}</small></span></label>)}
+        </div>
+      </div> : null}
+    </div> : null}
     {cropping && croppable ? <ImageCropper key={active.id} file={active.file} onCancel={() => setCropping(false)}
       onDone={file => { onReplace!(active.id, file); setCropping(false); }} /> : null}
     <div className="attachment-tray-stage">
@@ -51,6 +82,7 @@ export function AttachmentTray({ items, activeId, recipient, sending, onSelect, 
           <strong>{active.file.name}</strong><small>{extension(active.file)} · {size(active.file)}</small></div>}
     </div>
     <div className="attachment-tray-bottom">
+      {preparationStatus ? <p className="attachment-preparation-status" role="status">{preparationStatus}</p> : null}
       <input ref={caption} className="attachment-tray-caption" placeholder="Adicione uma legenda..." value={active.caption} maxLength={1024}
         disabled={sending} onChange={event => onCaption(active.id, event.target.value)}
         onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !sending) { event.preventDefault(); onSend(); } }} />

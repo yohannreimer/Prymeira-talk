@@ -108,6 +108,62 @@ describe.skipIf(!url)('canonical persistent reducers on PostgreSQL', () => {
     expect(wrongNative).toMatchObject({ outcome: 'held', messageId: null });
   });
 
+  it('resolves truncated Evolution ACKs only through a current exact outbound direct alias; mirrored delivery stays one message', async () => {
+    const c = await context(), w = await context(c.workspaceId, c.channelId, 'waha');
+    const original = msg(c, 'DEVICE_ACK', LID); original.key.direction = 'outbound';
+    const created = await persist(original);
+    const mirrored = msg(w, 'DEVICE_ACK', LID); mirrored.key.direction = 'outbound';
+    const mirror = await persist(mirrored);
+    expect(mirror.messageId).toBe(created.messageId);
+    expect(mirror.allowOperationalEffects).toBe(false);
+    const normalized = normalizeEvolutionWebhook(c, { event: 'messages.update', data: { keyId: 'DEVICE_ACK', remoteJid: '700001', fromMe: true, status: 'READ' } });
+    if (normalized.kind !== 'accepted' || normalized.event.kind !== 'receipt') throw new Error('ACK fixture invalid');
+    const receipt = normalized.event;
+    const result = await persist(receipt, 'domainless-ack');
+    expect(result).toMatchObject({ outcome: 'enriched', messageId: created.messageId, allowOperationalEffects: false });
+    expect(await db.message.findUniqueOrThrow({ where: { id: created.messageId! } })).toMatchObject({ status: 'read', body: 'hello' });
+    expect(await db.message.count({ where: { workspaceId: c.workspaceId } })).toBe(1);
+    expect((await persist(receipt, 'domainless-ack')).outcome).toBe('duplicate');
+    const wrongChat = await persist({ ...receipt, target: { ...receipt.target, nativeChatAddress: '700002' } });
+    expect(wrongChat).toMatchObject({ outcome: 'held', messageId: null });
+    const otherChannel = await context(c.workspaceId);
+    expect(await persist({ ...receipt, context: otherChannel })).toMatchObject({ outcome: 'held', messageId: null });
+    // A new lifecycle cannot borrow an old session's proof, even with the same number/stanza.
+    await db.channelConnection.update({ where: { id: c.connectionId! }, data: { lifecycleGeneration: 2 } });
+    expect(await persist({ ...receipt, context: { ...c, lifecycleGeneration: 2 } })).toMatchObject({ outcome: 'held', messageId: null });
+  });
+  it('recovers a domain-less ACK that arrived before its original without another message or autonomous receipt effects', async () => {
+    const c = await context();
+    const r = normalizeEvolutionWebhook(c, { event: 'messages.update', data: { keyId: 'BEFORE_ORIGINAL', remoteJid: '700001', fromMe: true, status: 'READ' } });
+    if (r.kind !== 'accepted') throw new Error('ACK fixture invalid');
+    const pending = await persist(r.event, 'early-ack');
+    expect(pending).toMatchObject({ outcome: 'held', messageId: null, allowOperationalEffects: false });
+    const original = msg(c, 'BEFORE_ORIGINAL', LID); original.key.direction = 'outbound';
+    const created = await persist(original);
+    expect(await db.message.findUniqueOrThrow({ where: { id: created.messageId! } })).toMatchObject({ body: 'hello', status: 'read' });
+    expect(await db.canonicalObservation.findUniqueOrThrow({ where: { id: pending.observationId } })).toMatchObject({ state: 'resolved', identityId: created.identityId });
+    expect(await db.message.count({ where: { workspaceId: c.workspaceId } })).toBe(1);
+    expect(await persist(r.event, 'early-ack')).toMatchObject({ outcome: 'duplicate', allowOperationalEffects: false, messageId: created.messageId });
+  });
+  it('does not use an unproven legacy message or ambiguous PN/LID namespaces for a truncated ACK', async () => {
+    const c = await context();
+    const a = msg(c, 'AMBIG', LID); a.key.direction = 'outbound';
+    const b = msg(c, 'AMBIG', '70000100@lid'); b.key.direction = 'outbound';
+    await persist(a); await persist(b);
+    const r = normalizeEvolutionWebhook(c, { event: 'messages.update', data: { keyId: 'LEGACY', remoteJid: '700001', fromMe: true, status: 'READ' } });
+    if (r.kind !== 'accepted' || r.event.kind !== 'receipt') throw new Error('ACK fixture invalid');
+    const message = await db.message.findFirstOrThrow({ where: { workspaceId: c.workspaceId } });
+    await db.message.update({ where: { id: message.id }, data: { providerMessageId: 'LEGACY' } });
+    expect(await persist(r.event)).toMatchObject({ outcome: 'held', messageId: null });
+    expect(await db.message.findUniqueOrThrow({ where: { id: message.id } })).toMatchObject({ status: 'sent' });
+    // Same numeric user in PN and LID is not proof that these two namespaces are equivalent.
+    const pn = '15550009999@s.whatsapp.net', lid = '15550009999@lid';
+    for (const chat of [pn, lid]) { const m = msg(c, 'SAME_ID', chat); m.key.direction = 'outbound'; await persist(m); }
+    const ambiguous = normalizeEvolutionWebhook(c, { event: 'messages.update', data: { keyId: 'SAME_ID', remoteJid: '15550009999', fromMe: true, status: 'READ' } });
+    if (ambiguous.kind !== 'accepted') throw new Error('ACK fixture invalid');
+    expect(await persist(ambiguous.event)).toMatchObject({ outcome: 'held', messageId: null });
+  });
+
   it('applies one demonstrated text edit but holds competing edits without certified order', async () => {
     const c = await context(), original = msg(c), created = await persist(original);
     const first: NormalizedMessagingEvent = { ...original, kind: 'edit', target: original.key, action: msg(c, 'EDIT_1').key, patch: { field: 'body', body: 'corrected' } };

@@ -28,3 +28,15 @@
   .attachment-tray-bottom { padding: 0 12px 84px; }
   .attachment-tray-recipient { display: none; }
 }
+
+.attachment-tray-quality { position: absolute; top: 14px; right: 64px; z-index: 3; font-size: 14px; }
+.attachment-tray-hd { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid #8696a0; border-radius: 8px; background: #0b141acc; color: #e9edef; font: inherit; font-weight: 800; cursor: pointer; }
+.attachment-tray-hd.is-active { background: #00a884; border-color: #00a884; }
+.attachment-tray-hd:focus-visible { outline: 2px solid #e9edef; outline-offset: 3px; }
+.attachment-tray-quality-menu { position: absolute; top: 48px; right: 0; width: min(260px, calc(100vw - 84px)); box-sizing: border-box; padding: 16px; border: 1px solid #ffffff1a; border-radius: 12px; background: #202c33; box-shadow: 0 8px 24px #0006; }
+.attachment-tray-quality-menu strong { display: block; margin-bottom: 12px; }
+.attachment-tray-quality-menu label { display: flex; align-items: center; gap: 12px; padding: 10px 0; cursor: pointer; }
+.attachment-tray-quality-menu input { accent-color: #00a884; }
+.attachment-tray-quality-menu small { display: block; margin-top: 4px; color: #aebac1; font-size: 12px; }
+.attachment-preparation-status { margin: 0; padding: 8px 12px; font-size: 13px; color: #8696a0; overflow-wrap: anywhere; }
+.attachment-tray .attachment-preparation-status { color: #aebac1; padding: 0; }
