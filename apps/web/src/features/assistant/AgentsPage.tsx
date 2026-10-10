@@ -33,6 +33,7 @@ import {
   HelpCircle,
   Lightbulb,
   MessageSquare,
+  PackageOpen,
   Pencil,
   Plus,
   RefreshCw,
@@ -42,7 +43,8 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
-  UploadCloud
+  UploadCloud,
+  UserRound
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AgentPackagePanel } from "./AgentPackagePanel";
@@ -100,7 +102,7 @@ type KnowledgeUploadFormState = {
 };
 
 type KnowledgeInputMode = "file" | "text";
-type AgentDetailTab = "knowledge" | "improvements";
+type AgentDetailTab = "profile" | "capabilities" | "knowledge" | "improvements" | "test";
 type ImprovementFilter = AiAgentImprovementDto["status"] | "all";
 
 type ImprovementFormState = {
@@ -171,6 +173,18 @@ function emptyKnowledgeUploadForm(): KnowledgeUploadFormState {
 
 function emptyImprovementForm(): ImprovementFormState {
   return { title: "", content: "" };
+}
+
+const allowedActionGroups: Array<{ title: string; actions: AiAgentAllowedAction[] }> = [
+  { title: "Conversar com o cliente", actions: ["send_message", "send_attachment"] },
+  { title: "Organizar a conversa", actions: ["add_tag", "remove_tag", "change_priority", "create_internal_note"] },
+  { title: "Passar para o time", actions: ["assign_user", "assign_department", "request_handoff"] }
+];
+
+function agentInitials(name: string) {
+  const words = name.replace(/[^\p{L}\p{N}\s]/gu, " ").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "IA";
+  return words.slice(0, 2).map((word) => word[0]!.toUpperCase()).join("");
 }
 
 function agentStatusLabel(status: AiAgentDto["status"]) {
@@ -273,7 +287,7 @@ export function AgentsPage() {
     useState<KnowledgeUploadFormState>(emptyKnowledgeUploadForm);
   const [knowledgeInputMode, setKnowledgeInputMode] = useState<KnowledgeInputMode>("file");
   const [editingKnowledgeId, setEditingKnowledgeId] = useState<string | null>(null);
-  const [agentDetailTab, setAgentDetailTab] = useState<AgentDetailTab>("knowledge");
+  const [agentDetailTab, setAgentDetailTab] = useState<AgentDetailTab>("profile");
   const [improvements, setImprovements] = useState<AiAgentImprovementDto[]>([]);
   const [improvementFilter, setImprovementFilter] = useState<ImprovementFilter>("pending");
   const [editingImprovementId, setEditingImprovementId] = useState<string | null>(null);
@@ -297,6 +311,7 @@ export function AgentsPage() {
   const [isSendingTestMessage, setIsSendingTestMessage] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [isPackagePanelOpen, setIsPackagePanelOpen] = useState(false);
 
   const selectedAgent = useMemo(
     () => agents.find((agent) => agent.id === selectedAgentId) ?? null,
@@ -397,6 +412,16 @@ export function AgentsPage() {
     void loadImprovements(selectedAgentId);
   }, [getToken, selectedAgentId]);
 
+  function changeAgentType(type: AgentFormState["type"]) {
+    setAgentForm((current) => ({ ...current, type,
+      ...(!selectedAgent ? {
+        name: ["Agente de atendimento", "Agente de prospecção"].includes(current.name)
+          ? type === "prospecting" ? "Agente de prospecção" : "Agente de atendimento" : current.name,
+        systemPrompt: [defaultSystemPrompt, defaultProspectingPrompt].includes(current.systemPrompt)
+          ? type === "prospecting" ? defaultProspectingPrompt : defaultSystemPrompt : current.systemPrompt
+      } : {}) }));
+  }
+
   function startNewAgent() {
     if (isSendingTestMessage) return;
     testRequestGeneration.current += 1;
@@ -407,7 +432,7 @@ export function AgentsPage() {
     setKnowledge([]);
     setEditingKnowledgeId(null);
     setKnowledgeForm(emptyKnowledgeForm());
-    setAgentDetailTab("knowledge");
+    setAgentDetailTab("profile");
     setImprovements([]);
     setEditingImprovementId(null);
     setImprovementForm(emptyImprovementForm());
@@ -428,8 +453,9 @@ export function AgentsPage() {
     setAgentForm(agentFormFromAgent(agent));
     setEditingKnowledgeId(null);
     setKnowledgeForm(emptyKnowledgeForm());
-    setAgentDetailTab("knowledge");
-    setImprovements([]);
+    setAgentDetailTab("profile");
+    // Re-clicking the selected agent must not wipe its suggestions: the loader only re-runs when the id changes.
+    if (agent.id !== selectedAgentId) setImprovements([]);
     setEditingImprovementId(null);
     setImprovementForm(emptyImprovementForm());
     setClarificationDrafts({});
@@ -447,6 +473,10 @@ export function AgentsPage() {
     setNotice(null);
 
     try {
+      if (!agentForm.name.trim() || !agentForm.systemPrompt.trim()) {
+        setAgentDetailTab("profile");
+        throw new Error(!agentForm.name.trim() ? "Dê um nome para este agente." : "Escreva as instruções do agente.");
+      }
       if (agentForm.type === "prospecting") {
         if (!agentForm.prospectingGoal.trim()) throw new Error("Preencha Quando passar para o humano.");
         if (agentForm.prospectingGoal.trim().length > 2000) throw new Error("Quando passar para o humano deve ter até 2000 caracteres.");
@@ -1031,20 +1061,35 @@ export function AgentsPage() {
     setTestDebug(null);
   }
 
+  const isFormTab = agentDetailTab === "profile" || agentDetailTab === "capabilities";
+  const workspaceTabs: Array<{ id: AgentDetailTab; label: string; icon: typeof Bot; needsAgent: boolean; count?: number }> = [
+    { id: "profile", label: "Quem é o agente", icon: UserRound, needsAgent: false },
+    { id: "capabilities", label: "O que ele pode fazer", icon: ShieldCheck, needsAgent: false },
+    { id: "knowledge", label: "Conhecimento", icon: BookOpen, needsAgent: true, count: selectedAgent ? knowledge.length : undefined },
+    { id: "improvements", label: "Aprimoramentos", icon: Lightbulb, needsAgent: true, count: pendingImprovementCount || undefined },
+    { id: "test", label: "Testar", icon: MessageSquare, needsAgent: true }
+  ];
+
   return (
-    <section className="module-page" aria-label="Agentes">
-      <header className="module-header">
+    <section className="module-page agents-page" aria-label="Agentes">
+      <header className="agents-page__header">
         <div>
-          <p className="eyebrow">Prymeira Talk</p>
           <h1>Agentes</h1>
+          <p>Quem atende seus clientes no WhatsApp, o que cada um sabe e o que pode fazer sozinho.</p>
         </div>
         <div className="module-header-actions">
-          <span className={`status-badge status-badge--${isLoadingAgents ? "waiting" : "open"}`}>
-            {isLoadingAgents ? "Carregando" : `${agents.length} agentes`}
-          </span>
           <button className="secondary-button" type="button" onClick={() => void loadAgents()}>
             <RefreshCw size={14} />
             Atualizar
+          </button>
+          <button
+            className={`secondary-button${isPackagePanelOpen ? " is-active" : ""}`}
+            type="button"
+            aria-expanded={isPackagePanelOpen}
+            onClick={() => setIsPackagePanelOpen((current) => !current)}
+          >
+            <PackageOpen size={14} />
+            Importar ou exportar
           </button>
           <button className="primary-button" type="button" onClick={startNewAgent}>
             <Plus size={14} />
@@ -1053,277 +1098,377 @@ export function AgentsPage() {
         </div>
       </header>
 
-      {error ? <p className="error-note">{error}</p> : null}
-      {notice ? <p className="success-note">{notice}</p> : null}
+      {error ? <p className="error-note agents-page__note">{error}</p> : null}
+      {notice ? <p className="success-note agents-page__note">{notice}</p> : null}
 
-      <AgentPackagePanel
-        getToken={getToken}
-        selectedAgent={selectedAgent}
-        onImported={acceptImportedAgent}
-      />
+      {isPackagePanelOpen ? (
+        <AgentPackagePanel
+          getToken={getToken}
+          selectedAgent={selectedAgent}
+          onImported={acceptImportedAgent}
+        />
+      ) : null}
 
-      <div className="ops-grid">
-        <div className="module-panel">
-          <div className="panel-title-row">
-            <h2>Agentes configurados</h2>
-            <span>{isLoadingAgents ? "Sincronizando" : `${agents.length} total`}</span>
+      <div className="agents-layout">
+        <aside className="agents-roster" aria-label="Agentes configurados">
+          <div className="agents-roster__title">
+            <h2>Seus agentes</h2>
+            <span>{isLoadingAgents ? "Carregando" : agents.length === 1 ? "1 agente" : `${agents.length} agentes`}</span>
           </div>
 
-          {agents.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-state-icon">
-                <Bot size={24} />
-              </div>
-              <h3>Nenhum agente</h3>
-              <p>Crie o primeiro agente autônomo para usar em automações e atendimento.</p>
+          {!isLoadingAgents && agents.length === 0 ? (
+            <div className="agents-roster__empty">
+              <span className="agents-avatar agents-avatar--empty"><Bot size={18} /></span>
+              <strong>Nenhum agente ainda</strong>
+              <p>Crie o primeiro agente para responder seus clientes e usar em automações.</p>
             </div>
           ) : null}
 
-          <div className="assistant-log-list" aria-label="Lista de agentes">
+          <div className="agents-roster__list" aria-label="Lista de agentes">
             {agents.map((agent) => (
               <button
-                className="assistant-log-card"
+                className={`agents-roster__item${agent.id === selectedAgentId ? " is-selected" : ""}`}
                 key={agent.id}
                 onClick={() => selectAgent(agent)}
                 type="button"
                 aria-pressed={agent.id === selectedAgentId}
               >
-                <div className="assistant-log-header">
-                  <span className={`status-badge status-badge--${agent.status === "active" ? "open" : "closed"}`}>
-                    {agentStatusLabel(agent.status)}
+                <span className="agents-avatar" aria-hidden="true">{agentInitials(agent.name)}</span>
+                <span className="agents-roster__body">
+                  <strong title={agent.name}>{agent.name}</strong>
+                  <span>
+                    <i className={`agents-dot agents-dot--${agent.status === "active" ? "on" : "off"}`} aria-hidden="true" />
+                    {agentStatusLabel(agent.status)} · {agent.type === "prospecting" ? "Prospecção" : "Atendimento"}
                   </span>
-                  <span className="status-badge status-badge--bot">{agent.model}</span>
-                  <span className="status-badge">{agent.type === "prospecting" ? "Prospecção" : "Atendimento"}</span>
-                </div>
-                <strong>{agent.name}</strong>
-                <p className="assistant-log-result">{agent.systemPrompt}</p>
+                </span>
               </button>
             ))}
           </div>
-        </div>
 
-        <div className="module-form">
-          <form className="module-panel module-form" onSubmit={(event) => void saveAgent(event)}>
-            <div className="panel-title-row">
-              <h2>{selectedAgent ? "Editar agente" : "Novo agente"}</h2>
-              <span className="status-badge status-badge--bot">
-                <ShieldCheck size={12} />
-                {agentForm.allowedActions.length} ações permitidas
-              </span>
+          <button className="agents-roster__new" type="button" onClick={startNewAgent} aria-pressed={!selectedAgentId}>
+            <Plus size={15} />
+            Criar outro agente
+          </button>
+        </aside>
+
+        <div className="agents-workspace">
+          <div className="agents-hero">
+            <span className="agents-avatar agents-avatar--large" aria-hidden="true">
+              {selectedAgent ? agentInitials(agentForm.name || selectedAgent.name) : <Sparkles size={20} />}
+            </span>
+            <div className="agents-hero__body">
+              <div className="agents-hero__title">
+                <h2>{selectedAgent ? agentForm.name || selectedAgent.name : "Novo agente"}</h2>
+                <span className={`agents-state agents-state--${agentForm.status === "active" ? "on" : "off"}`}>
+                  {agentStatusLabel(agentForm.status)}
+                </span>
+              </div>
+              <p>
+                {agentForm.type === "prospecting" ? "Prospecção" : "Atendimento"}
+                {selectedAgent ? ` · ${selectedAgent.model}` : " · ainda não salvo"}
+              </p>
             </div>
-            <label className="form-field">Tipo de agente
-              <select value={agentForm.type} onChange={(event) => {
-                const type = event.target.value === "prospecting" ? "prospecting" : "attendance";
-                setAgentForm((current) => ({ ...current, type,
-                  ...(!selectedAgent ? {
-                    name: ["Agente de atendimento", "Agente de prospecção"].includes(current.name)
-                      ? type === "prospecting" ? "Agente de prospecção" : "Agente de atendimento" : current.name,
-                    systemPrompt: [defaultSystemPrompt, defaultProspectingPrompt].includes(current.systemPrompt)
-                      ? type === "prospecting" ? defaultProspectingPrompt : defaultSystemPrompt : current.systemPrompt
-                  } : {}) }));
-              }}>
-                <option value="attendance">Atendimento</option><option value="prospecting">Prospecção</option>
-              </select>
-              <small>{agentForm.type === "prospecting" ? "Acompanha respostas dos disparos associados a este agente. Você pode prepará-lo mesmo com o módulo desativado." : "Responde conversas de atendimento."}</small>
-            </label>
-            <label className="form-field">
-              Nome
-              <input
-                value={agentForm.name}
-                onChange={(event) => setAgentForm((current) => ({ ...current, name: event.target.value }))}
-                placeholder="Agente comercial"
-                required
-              />
-            </label>
-            <label className="form-field">
-              Status do agente
-              <select
-                value={agentForm.status}
-                onChange={(event) =>
-                  setAgentForm((current) => ({
-                    ...current,
-                    status: event.target.value as AiAgentDto["status"]
-                  }))
-                }
-              >
-                <option value="inactive">Inativo</option>
-                <option value="active">Ativo</option>
-              </select>
-            </label>
-            <label className="form-field">
-              Prompt do sistema
-              <textarea
-                value={agentForm.systemPrompt}
-                onChange={(event) => setAgentForm((current) => ({ ...current, systemPrompt: event.target.value }))}
-                required
-                rows={7}
-              />
-            </label>
-            {agentForm.type === "prospecting" && <>
-              <label className="form-field">Quando passar para o humano
-                <textarea required rows={4} maxLength={2000} value={agentForm.prospectingGoal}
-                  placeholder="Ex.: Quando o contato pedir uma proposta ou confirmar interesse em agendar uma conversa."
-                  onChange={(event) => setAgentForm((current) => ({ ...current, prospectingGoal: event.target.value }))} />
-                <small>Defina o resultado esperado e em quais situações o time deve assumir a conversa.</small>
-              </label>
-              <AgentFollowupConfigEditor value={agentForm.followupConfig}
-                onChange={(followupConfig) => setAgentForm((current) => ({ ...current, followupConfig }))} />
-            </>}
-            <label className="form-field">
-              Modo de resposta
-              <select aria-label="Modo de resposta" value={agentForm.reasoningEffort} onChange={(event) => setAgentForm((current) => ({ ...current, reasoningEffort: event.target.value === "low" ? "low" : "none" }))}>
-                <option value="none">Rápido</option>
-                <option value="low">Mais cuidadoso</option>
-              </select>
-              <small>Nos modelos GPT-5.6 e GPT-6, o modo cuidadoso usa raciocínio curto antes de responder. Pode aumentar o tempo e o consumo de tokens; não garante acerto.</small>
-            </label>
-            <label className="form-field form-field--checkbox">
-              <input
-                type="checkbox"
-                checked={agentForm.onlyNewConversations}
-                onChange={(event) => setAgentForm((current) => ({ ...current, onlyNewConversations: event.target.checked }))}
-              />
-              <span>Responder só conversas novas</span>
-              <small>Ligado: a IA só inicia em conversas sem histórico anterior no WhatsApp. Conversas antigas ficam como "Humano necessário" para o time atender.</small>
-            </label>
-            <section className="agent-tag-selector" aria-label="Ações permitidas">
-              <div className="panel-title-row compact">
-                <div>
-                  <h3>Ações permitidas</h3>
-                  <p>Selecione o que este agente pode executar.</p>
-                </div>
-                <span>{agentForm.allowedActions.length} selecionadas</span>
-              </div>
-              <div className="tag-option-grid">
-                {allowedActionLabels.map((action) => {
-                  const isSelected = agentForm.allowedActions.includes(action.value);
+            <dl className="agents-hero__stats">
+              <div><dt>Ações ligadas</dt><dd>{agentForm.allowedActions.length} de {allowedActionLabels.length}</dd></div>
+              <div><dt>Tags</dt><dd>{agentForm.allowedTagIds.length}</dd></div>
+              <div><dt>Fontes</dt><dd>{selectedAgent ? knowledge.length : "—"}</dd></div>
+            </dl>
+          </div>
 
-                  return (
-                    <label
-                      className={`tag-option-card${isSelected ? " is-selected" : ""}`}
-                      key={action.value}
-                    >
-                      <input
-                        checked={isSelected}
-                        onChange={() => toggleAllowedAction(action.value)}
-                        type="checkbox"
-                      />
-                      <span className="tag-option-card__body">
-                        <strong>{action.label}</strong>
-                        <span>{action.description}</span>
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            </section>
-            <section className="agent-tag-selector" aria-label="Tags permitidas">
-              <div className="panel-title-row compact">
-                <div>
-                  <h3>Tags permitidas</h3>
-                  <p>Selecione as tags que este agente pode aplicar.</p>
-                </div>
-                <span>{agentForm.allowedTagIds.length} selecionadas</span>
-              </div>
-
-              {tags.length === 0 ? (
-                <p className="list-note">Crie tags em Ajustes antes de selecionar.</p>
-              ) : (
-                <div className="tag-option-grid">
-                  {tags.map((tag) => {
-                    const isSelected = agentForm.allowedTagIds.includes(tag.id);
-
-                    return (
-                      <label
-                        className={`tag-option-card${isSelected ? " is-selected" : ""}`}
-                        key={tag.id}
-                        style={isSelected ? { borderColor: tag.color } : undefined}
-                      >
-                        <input
-                          checked={isSelected}
-                          onChange={() => toggleAllowedTag(tag.id)}
-                          type="checkbox"
-                        />
-                        <span
-                          className="settings-tag-swatch"
-                          style={{ backgroundColor: tag.color }}
-                          aria-hidden="true"
-                        />
-                        <span className="tag-option-card__body">
-                          <strong style={{ color: tag.color }}>{tag.name}</strong>
-                          <span>{tag.useGuide}</span>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
-            <button className="primary-button" type="submit" disabled={isSavingAgent}>
-              <Save size={15} />
-              {isSavingAgent ? "Salvando" : selectedAgent ? "Salvar alterações" : "Criar agente"}
-            </button>
-            {selectedAgent ? (
-              <section className="agent-danger-zone" aria-label="Excluir agente">
-                <div>
-                  <h3>Excluir agente</h3>
-                  <p>
-                    A exclusão remove a base de conhecimento e o histórico operacional deste agente.
-                    {selectedAgent.status === "active"
-                      ? " Inative e salve o agente antes de excluí-lo."
-                      : " Confira antes se automações ou canais ainda dependem dele."}
-                  </p>
-                </div>
+          <nav className="agents-tabs" aria-label="Conteúdo do agente" role="tablist">
+            {workspaceTabs.map((tab) => {
+              const Icon = tab.icon;
+              return (
                 <button
-                  className="secondary-button danger-button"
+                  className={agentDetailTab === tab.id ? "is-active" : ""}
+                  key={tab.id}
                   type="button"
-                  onClick={() => void deleteAgent()}
-                  disabled={
-                    isDeletingAgent ||
-                    isSavingAgent ||
-                    isSendingTestMessage ||
-                    selectedAgent.status !== "inactive"
-                  }
+                  role="tab"
+                  aria-selected={agentDetailTab === tab.id}
+                  onClick={() => setAgentDetailTab(tab.id)}
+                  disabled={tab.needsAgent && !selectedAgent}
+                  title={tab.needsAgent && !selectedAgent ? "Salve o agente para liberar" : undefined}
                 >
-                  <Trash2 size={15} />
-                  {isDeletingAgent ? "Excluindo" : "Excluir agente"}
+                  <Icon size={15} />
+                  {tab.label}
+                  {tab.count ? <span>{tab.count}</span> : null}
                 </button>
-              </section>
-            ) : null}
-          </form>
-
-          <nav className="agent-detail-tabs" aria-label="Conteúdo do agente" role="tablist">
-            <button
-              className={agentDetailTab === "knowledge" ? "is-active" : ""}
-              type="button"
-              role="tab"
-              aria-selected={agentDetailTab === "knowledge"}
-              onClick={() => setAgentDetailTab("knowledge")}
-            >
-              <BookOpen size={15} />
-              Conhecimento
-            </button>
-            <button
-              className={agentDetailTab === "improvements" ? "is-active" : ""}
-              type="button"
-              role="tab"
-              aria-selected={agentDetailTab === "improvements"}
-              onClick={() => setAgentDetailTab("improvements")}
-              disabled={!selectedAgent}
-            >
-              <Lightbulb size={15} />
-              Aprimoramentos
-              {pendingImprovementCount > 0 ? <span>{pendingImprovementCount}</span> : null}
-            </button>
+              );
+            })}
           </nav>
 
-          {agentDetailTab === "knowledge" ? (
-          <section className="module-panel agent-knowledge-panel" aria-label="Conhecimento">
-            <div className="panel-title-row">
-              <h2>Conhecimento</h2>
-              <span>{selectedAgent ? `${knowledge.length} fontes` : "Selecione um agente"}</span>
-            </div>
+          {isFormTab ? (
+            <form className="agents-form" onSubmit={(event) => void saveAgent(event)}>
+              {agentDetailTab === "profile" ? (
+                <div className="agents-columns">
+                  <div className="agents-column">
+                    <section className="agents-card">
+                      <header className="agents-card__header">
+                        <h3>Quem é este agente</h3>
+                        <p>O nome aparece para o time. O tipo define em quais conversas ele entra.</p>
+                      </header>
+                      <label className="form-field">
+                        Nome
+                        <input
+                          value={agentForm.name}
+                          onChange={(event) => setAgentForm((current) => ({ ...current, name: event.target.value }))}
+                          placeholder="Agente comercial"
+                          required
+                        />
+                      </label>
+                      <div className="form-field">
+                        Tipo de agente
+                        <div className="agents-choice" role="radiogroup" aria-label="Tipo de agente">
+                          {([
+                            ["attendance", "Atendimento", "Responde as conversas que chegam no WhatsApp."],
+                            ["prospecting", "Prospecção", "Acompanha as respostas dos disparos ligados a ele."]
+                          ] as const).map(([value, label, description]) => (
+                            <button
+                              className={`agents-choice__option${agentForm.type === value ? " is-selected" : ""}`}
+                              key={value}
+                              type="button"
+                              role="radio"
+                              aria-checked={agentForm.type === value}
+                              onClick={() => changeAgentType(value)}
+                            >
+                              <strong>{label}</strong>
+                              <span>{description}</span>
+                            </button>
+                          ))}
+                        </div>
+                        {agentForm.type === "prospecting" ? (
+                          <small>Você pode prepará-lo mesmo com o módulo de prospecção desativado.</small>
+                        ) : null}
+                      </div>
+                      <div className="form-field">
+                        Status do agente
+                        <div className="agents-choice" role="radiogroup" aria-label="Status do agente">
+                          {([
+                            ["active", "Ativo", "Atende de verdade, conforme as regras abaixo."],
+                            ["inactive", "Inativo", "Fica parado. Use para revisar com calma."]
+                          ] as const).map(([value, label, description]) => (
+                            <button
+                              className={`agents-choice__option${agentForm.status === value ? " is-selected" : ""}`}
+                              key={value}
+                              type="button"
+                              role="radio"
+                              aria-checked={agentForm.status === value}
+                              onClick={() => setAgentForm((current) => ({ ...current, status: value }))}
+                            >
+                              <strong>{label}</strong>
+                              <span>{description}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </section>
 
+                    <section className="agents-card">
+                      <header className="agents-card__header">
+                        <h3>Como ele responde</h3>
+                        <p>Velocidade da resposta e em quais conversas ele pode entrar.</p>
+                      </header>
+                      <label className="form-field">
+                        Modo de resposta
+                        <select aria-label="Modo de resposta" value={agentForm.reasoningEffort} onChange={(event) => setAgentForm((current) => ({ ...current, reasoningEffort: event.target.value === "low" ? "low" : "none" }))}>
+                          <option value="none">Rápido</option>
+                          <option value="low">Mais cuidadoso</option>
+                        </select>
+                        <small>Nos modelos GPT-5.6 e GPT-6, o modo cuidadoso usa raciocínio curto antes de responder. Pode aumentar o tempo e o consumo de tokens; não garante acerto.</small>
+                      </label>
+                      <label className="agents-switch-row">
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          checked={agentForm.onlyNewConversations}
+                          onChange={(event) => setAgentForm((current) => ({ ...current, onlyNewConversations: event.target.checked }))}
+                        />
+                        <span className="agents-switch-row__body">
+                          <strong>Responder só conversas novas</strong>
+                          <span>Ligado: a IA só inicia em conversas sem histórico anterior no WhatsApp. Conversas antigas ficam como "Humano necessário" para o time atender.</span>
+                        </span>
+                      </label>
+                    </section>
+
+                    {selectedAgent ? (
+                      <section className="agent-danger-zone" aria-label="Excluir agente">
+                        <div>
+                          <h3>Excluir agente</h3>
+                          <p>
+                            A exclusão remove a base de conhecimento e o histórico operacional deste agente.
+                            {selectedAgent.status === "active"
+                              ? " Inative e salve o agente antes de excluí-lo."
+                              : " Confira antes se automações ou canais ainda dependem dele."}
+                          </p>
+                        </div>
+                        <button
+                          className="secondary-button danger-button"
+                          type="button"
+                          onClick={() => void deleteAgent()}
+                          disabled={
+                            isDeletingAgent ||
+                            isSavingAgent ||
+                            isSendingTestMessage ||
+                            selectedAgent.status !== "inactive"
+                          }
+                        >
+                          <Trash2 size={15} />
+                          {isDeletingAgent ? "Excluindo" : "Excluir agente"}
+                        </button>
+                      </section>
+                    ) : null}
+                  </div>
+
+                  <div className="agents-column">
+                    <section className="agents-card">
+                      <header className="agents-card__header agents-card__header--split">
+                        <div>
+                          <h3>As instruções dele</h3>
+                          <p>Escreva como você explicaria o trabalho para um atendente novo.</p>
+                        </div>
+                        <span>{agentForm.systemPrompt.length} caracteres</span>
+                      </header>
+                      <label className="form-field">
+                        Prompt do sistema
+                        <textarea
+                          className="agents-prompt"
+                          value={agentForm.systemPrompt}
+                          onChange={(event) => setAgentForm((current) => ({ ...current, systemPrompt: event.target.value }))}
+                          required
+                          rows={14}
+                        />
+                      </label>
+                    </section>
+
+                    {agentForm.type === "prospecting" ? (
+                      <section className="agents-card">
+                        <header className="agents-card__header">
+                          <h3>Passar para uma pessoa</h3>
+                          <p>Defina o resultado esperado e em quais situações o time deve assumir a conversa.</p>
+                        </header>
+                        <label className="form-field">Quando passar para o humano
+                          <textarea required rows={4} maxLength={2000} value={agentForm.prospectingGoal}
+                            placeholder="Ex.: Quando o contato pedir uma proposta ou confirmar interesse em agendar uma conversa."
+                            onChange={(event) => setAgentForm((current) => ({ ...current, prospectingGoal: event.target.value }))} />
+                        </label>
+                        <AgentFollowupConfigEditor value={agentForm.followupConfig}
+                          onChange={(followupConfig) => setAgentForm((current) => ({ ...current, followupConfig }))} />
+                      </section>
+                    ) : null}
+                  </div>
+                </div>
+              ) : (
+                <div className="agents-columns">
+                  <div className="agents-column">
+                    <section className="agents-card" aria-label="Ações permitidas">
+                      <header className="agents-card__header agents-card__header--split">
+                        <div>
+                          <h3>Ações permitidas</h3>
+                          <p>Ligue só o que ele pode fazer sozinho. O que estiver desligado ele não faz, nem se o cliente pedir.</p>
+                        </div>
+                        <span>{agentForm.allowedActions.length} de {allowedActionLabels.length} ligadas</span>
+                      </header>
+                      {allowedActionGroups.map((group) => {
+                        const groupActions = allowedActionLabels.filter((action) => group.actions.includes(action.value));
+                        const enabledCount = groupActions.filter((action) => agentForm.allowedActions.includes(action.value)).length;
+
+                        return (
+                          <div className="agents-group" key={group.title}>
+                            <div className="agents-group__title">
+                              <strong>{group.title}</strong>
+                              <span>{enabledCount} de {groupActions.length}</span>
+                            </div>
+                            {groupActions.map((action) => (
+                              <label className="agents-switch-row" key={action.value}>
+                                <input
+                                  type="checkbox"
+                                  role="switch"
+                                  checked={agentForm.allowedActions.includes(action.value)}
+                                  onChange={() => toggleAllowedAction(action.value)}
+                                />
+                                <span className="agents-switch-row__body">
+                                  <strong>{action.label}</strong>
+                                  <span>{action.description}</span>
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </section>
+                  </div>
+
+                  <div className="agents-column">
+                    <section className="agents-card" aria-label="Tags permitidas">
+                      <header className="agents-card__header agents-card__header--split">
+                        <div>
+                          <h3>Tags permitidas</h3>
+                          <p>Selecione as tags que este agente pode aplicar.</p>
+                        </div>
+                        <span>{agentForm.allowedTagIds.length} selecionadas</span>
+                      </header>
+
+                      {tags.length === 0 ? (
+                        <p className="list-note">Crie tags em Ajustes antes de selecionar.</p>
+                      ) : (
+                        <div className="agents-tag-list">
+                          {tags.map((tag) => {
+                            const isSelected = agentForm.allowedTagIds.includes(tag.id);
+
+                            return (
+                              <label
+                                className={`agents-tag-option${isSelected ? " is-selected" : ""}`}
+                                key={tag.id}
+                                style={isSelected ? { borderColor: tag.color } : undefined}
+                              >
+                                <input
+                                  checked={isSelected}
+                                  onChange={() => toggleAllowedTag(tag.id)}
+                                  type="checkbox"
+                                />
+                                <span
+                                  className="settings-tag-swatch"
+                                  style={{ backgroundColor: tag.color }}
+                                  aria-hidden="true"
+                                />
+                                <span className="agents-tag-option__body">
+                                  <strong>{tag.name}</strong>
+                                  {tag.useGuide ? <span>{tag.useGuide}</span> : null}
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+                  </div>
+                </div>
+              )}
+
+              <div className="agents-savebar">
+                <span>
+                  {selectedAgent
+                    ? "As mudanças só valem depois de salvar."
+                    : "O agente só aparece na lista depois de criado."}
+                </span>
+                <button className="primary-button" type="submit" disabled={isSavingAgent}>
+                  <Save size={15} />
+                  {isSavingAgent ? "Salvando" : selectedAgent ? "Salvar alterações" : "Criar agente"}
+                </button>
+              </div>
+            </form>
+          ) : null}
+
+          {agentDetailTab === "knowledge" ? (
+            <div className="agents-columns" aria-label="Conhecimento">
+              <section className="agents-card">
+                <header className="agents-card__header agents-card__header--split">
+                  <div>
+                    <h3>O que ele já sabe</h3>
+                    <p>Documentos e respostas que o agente consulta antes de responder.</p>
+                  </div>
+                  <span>{knowledge.length === 1 ? "1 fonte" : `${knowledge.length} fontes`}</span>
+                </header>
             <div className="knowledge-source-list" aria-label="Fontes de conhecimento salvas">
               {isLoadingKnowledge ? <p className="list-note">Carregando conhecimento...</p> : null}
               {!isLoadingKnowledge && selectedAgent && knowledge.length === 0 ? (
@@ -1345,7 +1490,7 @@ export function AgentsPage() {
                           <span className="status-badge status-badge--bot">{categoryLabel}</span>
                         ) : null}
                         <span className={`status-badge status-badge--${source.status === "ready" ? "open" : "waiting"}`}>
-                          {source.status}
+                          {source.status === "ready" ? "Pronto" : source.status === "processing" ? "Processando" : "Falhou"}
                         </span>
                       </div>
                       <div className="knowledge-source-card__actions">
@@ -1383,7 +1528,9 @@ export function AgentsPage() {
                 );
               })}
             </div>
+              </section>
 
+              <section className="agents-card">
             <div className="knowledge-composer">
               <div className="panel-title-row compact">
                 <h3>{editingKnowledgeSource ? "Editar conhecimento" : "Adicionar conhecimento"}</h3>
@@ -1550,9 +1697,12 @@ export function AgentsPage() {
                 </form>
               )}
             </div>
-          </section>
-          ) : (
-            <section className="module-panel agent-improvements-panel" aria-label="Aprimoramentos do agente">
+              </section>
+            </div>
+          ) : null}
+
+          {agentDetailTab === "improvements" ? (
+            <section className="agents-card agent-improvements-panel" aria-label="Aprimoramentos do agente">
               <div className="panel-title-row">
                 <div>
                   <h2>Aprimoramentos</h2>
@@ -1818,92 +1968,100 @@ export function AgentsPage() {
                 })}
               </div>
             </section>
-          )}
+          ) : null}
 
-          <section className="module-panel agent-test-panel" aria-label="Teste do agente">
-            <div className="panel-title-row">
-              <div>
-                <h2>Teste do agente</h2>
-                <p>Conversa isolada para testar o prompt e as fontes salvas.</p>
-              </div>
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={resetTestChat}
-                disabled={isSendingTestMessage || (testMessages.length === 0 && !testMessageBody && !testFile)}
-              >
-                <RotateCcw size={14} />
-                Resetar teste
-              </button>
-            </div>
-
-            <div className="agent-test-chat" aria-label="Chat de teste do agente">
-              {testMessages.length === 0 ? (
-                <div className="agent-test-empty">
-                  <BookOpen size={18} />
-                  <span>Envie uma pergunta para validar como o agente usa o conhecimento.</span>
-                </div>
-              ) : null}
-              {testMessages.map((message, index) => (
-                <article
-                  className={`agent-test-message agent-test-message--${message.role}`}
-                  key={`${message.role}-${index}-${message.content.slice(0, 12)}`}
-                >
-                  <div className="assistant-log-header">
-                    <span className={`status-badge status-badge--${message.role === "user" ? "open" : "bot"}`}>
-                      {message.role === "user" ? "Você" : "Agente"}
-                    </span>
+          {agentDetailTab === "test" ? (
+            <div className="agents-columns agents-columns--test" aria-label="Teste do agente">
+              <section className="agents-card agent-test-panel">
+                <header className="agents-card__header agents-card__header--split">
+                  <div>
+                    <h3>Teste do agente</h3>
+                    <p>Converse como se fosse um cliente para ver como ele usa as instruções e o conhecimento.</p>
                   </div>
-                  <p className="assistant-log-result">{message.content}</p>
-                </article>
-              ))}
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={resetTestChat}
+                    disabled={isSendingTestMessage || (testMessages.length === 0 && !testMessageBody && !testFile)}
+                  >
+                    <RotateCcw size={14} />
+                    Resetar teste
+                  </button>
+                </header>
+
+                <div className="agent-test-chat" aria-label="Chat de teste do agente">
+                  {testMessages.length === 0 ? (
+                    <div className="agent-test-empty">
+                      <BookOpen size={18} />
+                      <span>Envie uma pergunta para validar como o agente usa o conhecimento.</span>
+                    </div>
+                  ) : null}
+                  {testMessages.map((message, index) => (
+                    <article
+                      className={`agent-test-message agent-test-message--${message.role}`}
+                      key={`${message.role}-${index}-${message.content.slice(0, 12)}`}
+                    >
+                      <span className="agent-test-message__author">{message.role === "user" ? "Você" : "Agente"}</span>
+                      <p>{message.content}</p>
+                    </article>
+                  ))}
+                </div>
+
+                <form className="agents-test-composer" onSubmit={(event) => void sendTestMessage(event)}>
+                  <label className="form-field">
+                    Mensagem de teste
+                    <textarea
+                      value={testMessageBody}
+                      onChange={(event) => setTestMessageBody(event.target.value)}
+                      placeholder="Oi, tudo bem?"
+                      disabled={!selectedAgent || isSendingTestMessage}
+                      rows={3}
+                    />
+                  </label>
+                  <div className="agents-test-composer__row">
+                    <label className="form-field agents-test-composer__file">
+                      Anexo de teste — PDF, imagem ou áudio (até 8 MB)
+                      <input key={testFileKey} type="file" aria-label="Anexo de teste"
+                        accept=".pdf,.png,.jpg,.jpeg,.webp,.mp3,.m4a,.wav,.ogg,.opus,.webm"
+                        disabled={!selectedAgent || isSendingTestMessage}
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0] ?? null;
+                          try {
+                            if (file) validateTestUpload(file);
+                            setTestFile(file); setError(null);
+                          } catch (error) {
+                            setTestFile(null); event.currentTarget.value = "";
+                            setError(error instanceof Error ? error.message : "Anexo inválido.");
+                          }
+                        }} />
+                    </label>
+                    <button
+                      className="primary-button"
+                      type="submit"
+                      disabled={!selectedAgent || (!testMessageBody.trim() && !testFile) || isSendingTestMessage}
+                    >
+                      <Send size={15} />
+                      {isSendingTestMessage ? "Enviando" : "Enviar teste"}
+                    </button>
+                  </div>
+                  {testFile ? <div className="muted">{testFile.name} · <button type="button" disabled={isSendingTestMessage} onClick={() => { setTestFile(null); setTestFileKey((value) => value + 1); }}>Remover anexo</button></div> : null}
+                </form>
+              </section>
+
+              <section className="agents-card">
+                <header className="agents-card__header">
+                  <h3>O que conferir</h3>
+                  <p>Simulação: não envia mensagens ao WhatsApp nem executa o repasse. Confira abaixo os dados lidos e o resumo proposto.</p>
+                </header>
+                {testDebug ? null : <p className="list-note">Depois do primeiro teste, aparecem aqui o que ele leu nos anexos e o repasse que faria.</p>}
+                <AgentTestInspection debug={testDebug} />
+                <details className="agent-test-debug">
+                  <summary>Logs do teste</summary>
+                  <pre>{formatAgentTestDebug(testDebug)}</pre>
+                </details>
+              </section>
             </div>
-
-            <p className="muted">Simulação: não envia mensagens ao WhatsApp nem executa o repasse. Confira abaixo os dados lidos e o resumo proposto.</p>
-            <AgentTestInspection debug={testDebug} />
-            <details className="agent-test-debug">
-              <summary>Logs do teste</summary>
-              <pre>{formatAgentTestDebug(testDebug)}</pre>
-            </details>
-
-            <form className="module-form" onSubmit={(event) => void sendTestMessage(event)}>
-              <label className="form-field">
-                Anexo de teste — PDF, imagem ou áudio (até 8 MB)
-                <input key={testFileKey} type="file" aria-label="Anexo de teste"
-                  accept=".pdf,.png,.jpg,.jpeg,.webp,.mp3,.m4a,.wav,.ogg,.opus,.webm"
-                  disabled={!selectedAgent || isSendingTestMessage}
-                  onChange={(event) => {
-                    const file = event.currentTarget.files?.[0] ?? null;
-                    try {
-                      if (file) validateTestUpload(file);
-                      setTestFile(file); setError(null);
-                    } catch (error) {
-                      setTestFile(null); event.currentTarget.value = "";
-                      setError(error instanceof Error ? error.message : "Anexo inválido.");
-                    }
-                  }} />
-              </label>
-              {testFile ? <div className="muted">{testFile.name} · <button type="button" disabled={isSendingTestMessage} onClick={() => { setTestFile(null); setTestFileKey((value) => value + 1); }}>Remover anexo</button></div> : null}
-              <label className="form-field">
-                Mensagem de teste
-                <textarea
-                  value={testMessageBody}
-                  onChange={(event) => setTestMessageBody(event.target.value)}
-                  placeholder="Oi, tudo bem?"
-                  disabled={!selectedAgent || isSendingTestMessage}
-                  rows={3}
-                />
-              </label>
-              <button
-                className="secondary-button"
-                type="submit"
-                disabled={!selectedAgent || (!testMessageBody.trim() && !testFile) || isSendingTestMessage}
-              >
-                <Send size={15} />
-                {isSendingTestMessage ? "Enviando" : "Enviar teste"}
-              </button>
-            </form>
-          </section>
+          ) : null}
         </div>
       </div>
     </section>

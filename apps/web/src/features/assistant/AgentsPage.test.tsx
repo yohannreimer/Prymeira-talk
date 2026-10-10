@@ -361,15 +361,27 @@ async function renderAgentsPageContainer() {
   };
 }
 
+async function openTab(page: Awaited<ReturnType<typeof renderAgentsPageContainer>>, name: string) {
+  const tab = findElement(
+    page.tree,
+    (element) => element.type === "button" && (element.props as { role?: string }).role === "tab" && hasText(element.props.children, name)
+  ) as ReactElement<{ onClick: () => void }> | null;
+  expect(tab).not.toBeNull();
+  tab?.props.onClick();
+  await page.settle();
+}
+
 describe("AgentsPage", () => {
   it("discards a previous agent response if an import changes the selected agent", async () => {
     const page = await renderAgentsPageContainer();
+    await openTab(page, "Testar");
     let resolveResponse: (value: unknown) => void = () => {};
     page.apiSendTestMock.mockImplementationOnce(() => new Promise((resolve) => { resolveResponse = resolve; }));
     const input = findElement(page.tree, (el) => el.type === "textarea" && (el.props as any).placeholder === "Oi, tudo bem?") as ReactElement<any>;
     input.props.onChange({ target: { value: "Dados exclusivos do agente A" } });
     (findElement(page.tree, (el) => el.type === "form" && hasText(el.props.children, "Mensagem de teste")) as ReactElement<any>).props.onSubmit({ preventDefault: vi.fn() });
     await page.settle();
+    (findButtonByName(page.tree, "Importar ou exportar") as ReactElement<any>).props.onClick();
     const packagePanel = findElement(page.tree, (el) => typeof (el.props as any).onImported === "function") as ReactElement<any>;
     packagePanel.props.onImported({ ...baseAgent, id: "agent-b", name: "Agente B" });
     resolveResponse({ message: { role: "assistant", content: "Resposta antiga do agente A" },
@@ -380,6 +392,7 @@ describe("AgentsPage", () => {
   });
   it("uploads a file once and retains extracted content for the next message", async () => {
     const page = await renderAgentsPageContainer();
+    await openTab(page, "Testar");
     const fileInput = findElement(page.tree, (el) => el.type === "input" && (el.props as any)["aria-label"] === "Anexo de teste") as ReactElement<any>;
     const bytes = new TextEncoder().encode("%PDF-test");
     fileInput.props.onChange({ currentTarget: { files: [{ name: "pedido.pdf", type: "application/pdf", size: bytes.length, arrayBuffer: async () => bytes.buffer }] } });
@@ -423,36 +436,67 @@ describe("AgentsPage", () => {
 
     expect(html).toContain("Agentes");
     expect(html).toContain("Novo agente");
+    expect(html).toContain("Importar ou exportar");
     expect(html).toContain("Status do agente");
     expect(html).toContain("Inativo");
     expect(html).toContain("Ativo");
     expect(html).toContain("Prompt do sistema");
-    expect(html).toContain("Ações permitidas");
-    expect(html).toContain("Enviar anexo");
     expect(html).toContain("Responder só conversas novas");
-    expect(html).toContain("Tags permitidas");
-    expect(html).toContain("Selecione as tags que este agente pode aplicar.");
-    expect(html).toContain("Teste do agente");
-    expect(html).toContain("Mensagem de teste");
-    expect(html).toContain("Anexo de teste");
-    expect(html).toContain("PDF, imagem ou áudio");
-    expect(html).toContain("não envia mensagens ao WhatsApp");
-    expect(html).toContain("Resetar teste");
-    expect(html).toContain("Logs do teste");
+    expect(html).toContain("Criar agente");
+    expect(html).toContain("O que ele pode fazer");
     expect(html).toContain("Conhecimento");
     expect(html).toContain("Aprimoramentos");
-    expect(html).toContain("Fontes de conhecimento salvas");
-    expect(html).toContain("Arquivo PDF ou TXT");
-    expect(html).toContain("Subir documento");
-    expect(html).toContain("Adicionar conhecimento");
-    expect(html).toContain("Preços");
-    expect(html).toContain("FAQ");
+    expect(html).toContain("Testar");
+  });
+
+  it("splits the selected agent's work into tabs without losing any control", async () => {
+    const page = await renderAgentsPageContainer();
+    const html = () => renderToStaticMarkup(<>{page.tree}</>);
+
+    expect(html()).toContain("As instruções dele");
+    await openTab(page, "O que ele pode fazer");
+    expect(html()).toContain("Ações permitidas");
+    expect(html()).toContain("Enviar anexo");
+    expect(html()).toContain("Tags permitidas");
+    expect(html()).toContain("Selecione as tags que este agente pode aplicar.");
+    expect(html()).toContain("Salvar alterações");
+
+    await openTab(page, "Conhecimento");
+    expect(html()).toContain("Fontes de conhecimento salvas");
+    expect(html()).toContain("Arquivo PDF ou TXT");
+    expect(html()).toContain("Subir documento");
+    expect(html()).toContain("Adicionar conhecimento");
+    expect(html()).toContain("Preços");
+    expect(html()).toContain("FAQ");
+
+    await openTab(page, "Testar");
+    expect(html()).toContain("Teste do agente");
+    expect(html()).toContain("Mensagem de teste");
+    expect(html()).toContain("Anexo de teste");
+    expect(html()).toContain("PDF, imagem ou áudio");
+    expect(html()).toContain("não envia mensagens ao WhatsApp");
+    expect(html()).toContain("Resetar teste");
+    expect(html()).toContain("Logs do teste");
+  });
+
+  it("keeps an agent's suggestions when it is clicked again in the list", async () => {
+    const page = await renderAgentsPageContainer();
+    const rosterItem = findElement(
+      page.tree,
+      (element) => element.type === "button" && (element.props as { "aria-pressed"?: boolean })["aria-pressed"] === true && hasText(element.props.children, "Agente comercial")
+    ) as ReactElement<{ onClick: () => void }> | null;
+    expect(rosterItem).not.toBeNull();
+    rosterItem?.props.onClick();
+    await page.settle();
+    await openTab(page, "Aprimoramentos");
+    expect(hasText(page.tree, "Complete o escopo antes de incluir")).toBe(true);
   });
 
   it("syncs refreshed selected agent tags before submitting updates", async () => {
     const page = await renderAgentsPageContainer();
 
     expect(page.apiGetTagsMock).toHaveBeenCalledTimes(1);
+    await openTab(page, "O que ele pode fazer");
     expect(hasText(page.tree, "Lead quente")).toBe(true);
 
     const tagsSection = findElement(
