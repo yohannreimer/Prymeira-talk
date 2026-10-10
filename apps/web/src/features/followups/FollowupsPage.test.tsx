@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   postpone: vi.fn(),
   cancel: vi.fn(),
   noFollowup: vi.fn(),
+  done: vi.fn(),
   realtimeHandler: null as ((event: RealtimeEvent) => void) | null
 }));
 
@@ -28,7 +29,8 @@ vi.mock("../../app/api", async (importOriginal) => {
     apiSendFollowup: mocks.send,
     apiPostponeFollowup: mocks.postpone,
     apiCancelFollowup: mocks.cancel,
-    apiMarkFollowupNoFollowup: mocks.noFollowup
+    apiMarkFollowupNoFollowup: mocks.noFollowup,
+    apiMarkFollowupDone: mocks.done
   };
 });
 vi.mock("../inbox/useRealtimeEvents", () => ({
@@ -61,6 +63,7 @@ const review: ConversationFollowupDto = {
   },
   purpose: "proposal_checkin",
   reasonCode: "jev_human_review",
+  analysis: null,
   createdAt: "2026-09-22T12:00:00.000Z",
   updatedAt: "2026-09-22T14:00:00.000Z"
 };
@@ -84,6 +87,32 @@ const cancelled: ConversationFollowupDto = {
   cancelledByUserId: null,
   reasonCode: null,
   updatedAt: "2026-09-22T14:45:00.000Z"
+};
+
+const analysis = {
+  situation: "waiting_customer" as const,
+  pendingItem: "Retorno sobre a proposta do portão",
+  nextStep: "Perguntar se avaliou a proposta",
+  timingNote: "Cliente disse: semana que vem",
+  rationale: "A Ana pediu para avaliar a proposta e ficou de retornar.",
+  confidence: 0.9
+};
+
+const reminder: ConversationFollowupDto = {
+  ...review,
+  id: "followup-reminder",
+  conversationId: "conversation-reminder",
+  kind: "seller_reminder",
+  draftBody: null,
+  reasonCode: "seller_reminder",
+  analysis: {
+    situation: "waiting_company",
+    pendingItem: "Falar com o Marcos, de compras: 47 99999-1234",
+    nextStep: null,
+    timingNote: null,
+    rationale: "A cliente passou o contato do comprador e a equipe ficou de ligar.",
+    confidence: 0.85
+  }
 };
 
 const conversation: ConversationDto = {
@@ -135,6 +164,7 @@ describe("FollowupsPage", () => {
     mocks.postpone.mockReset();
     mocks.cancel.mockReset();
     mocks.noFollowup.mockReset();
+    mocks.done.mockReset();
     mocks.realtimeHandler = null;
   });
 
@@ -294,7 +324,7 @@ describe("FollowupsPage", () => {
 
     await act(async () => buttonByText(container, "Enviar")?.click());
     const filterButtons = Array.from(container.querySelectorAll<HTMLButtonElement>(".followups-filters button"));
-    expect(filterButtons).toHaveLength(5);
+    expect(filterButtons).toHaveLength(6);
     expect(filterButtons.every((button) => button.disabled)).toBe(true);
 
     await act(async () => resolveSend({
@@ -441,6 +471,89 @@ describe("FollowupsPage", () => {
     expect(mocks.getConversations).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Vou verificar a proposta e retorno.");
     expect(container.textContent).not.toContain("Mensagem atual que não é a âncora");
+  });
+
+  it("leads an analysed card with what is pending, why, the draft and the timing", async () => {
+    mocks.list.mockResolvedValueOnce([{ ...review, analysis }]);
+    await renderPage();
+
+    const card = container.querySelector(".followup-card");
+    expect(card?.querySelector(".followup-pending")?.textContent).toBe(analysis.pendingItem);
+    expect(card?.querySelector(".followup-rationale")?.textContent).toBe(analysis.rationale);
+    expect(card?.querySelector(".followup-copy")?.textContent).toContain(review.draftBody);
+    expect(card?.querySelector(".followup-meta")?.textContent).toContain("Etapa 1");
+    expect(card?.querySelector(".followup-meta")?.textContent).toContain("Cliente disse: semana que vem");
+    expect(container.textContent).not.toContain("Mensagem âncora");
+    expect(container.textContent).not.toContain("Motivo:");
+    expect(buttonByText(container, "Editar e enviar")).not.toBeNull();
+  });
+
+  it("lists seller reminders apart, in amber, with no way to message the customer", async () => {
+    mocks.list.mockImplementation(async (_getToken, status: string) => status === "reminders" ? [reminder] : [review]);
+    mocks.done.mockResolvedValue({
+      ...reminder,
+      status: "cancelled",
+      reason: "seller_done",
+      cancelledAt: "2026-09-22T15:00:00.000Z",
+      cancelledByUserId: "user-1",
+      updatedAt: "2026-09-22T15:00:00.000Z"
+    });
+    await renderPage();
+    expect(container.textContent).not.toContain("Marcos");
+
+    await act(async () => buttonByText(container, "Lembretes")?.click());
+    await settle();
+
+    expect(mocks.list).toHaveBeenCalledWith(mocks.getToken, "reminders");
+    const card = container.querySelector(".followup-card");
+    expect(card?.classList.contains("followup-card-reminder")).toBe(true);
+    expect(card?.querySelector(".followup-pending")?.textContent).toBe("Falar com o Marcos, de compras: 47 99999-1234");
+    expect(card?.textContent).toContain("a equipe ficou de ligar");
+    expect(card?.textContent).toContain("Lembrete");
+    expect(buttonByText(container, "Enviar")).toBeNull();
+    expect(buttonByText(container, "Editar e enviar")).toBeNull();
+    expect(container.querySelector(".followup-copy")).toBeNull();
+    expect(buttonByText(container, "Abrir conversa")).not.toBeNull();
+    expect(buttonByText(container, "Não precisa")).not.toBeNull();
+
+    await act(async () => buttonByText(container, "Já fiz")?.click());
+    await settle();
+
+    expect(mocks.done).toHaveBeenCalledWith(mocks.getToken, reminder.id, reminder.updatedAt);
+    expect(container.textContent).toContain("Lembrete concluído.");
+    expect(container.textContent).not.toContain("Marcos");
+  });
+
+  it("opens the reminder's conversation in the inbox", async () => {
+    mocks.list.mockImplementation(async (_getToken, status: string) => status === "reminders" ? [reminder] : []);
+    const popstate = vi.fn();
+    window.addEventListener("popstate", popstate);
+    await renderPage();
+    await act(async () => buttonByText(container, "Lembretes")?.click());
+    await settle();
+
+    await act(async () => buttonByText(container, "Abrir conversa")?.click());
+
+    const url = new URL(window.location.href);
+    expect(url.searchParams.get("module")).toBe("atendimento");
+    expect(url.searchParams.get("conversation")).toBe(reminder.conversationId);
+    expect(popstate).toHaveBeenCalled();
+    window.removeEventListener("popstate", popstate);
+  });
+
+  it("keeps a realtime reminder out of the review queue", async () => {
+    await renderPage();
+    await act(async () => {
+      mocks.realtimeHandler?.({
+        type: "conversation_followup.updated",
+        workspaceId: reminder.workspaceId,
+        payload: reminder
+      });
+    });
+    await settle();
+
+    expect(container.textContent).not.toContain("Marcos");
+    expect(container.textContent).toContain("Ana Souza");
   });
 
   it("registers Follow-ups immediately after Atendimento", () => {

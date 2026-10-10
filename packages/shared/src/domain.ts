@@ -155,6 +155,11 @@ export const contactSchema = z.object({
   company: z.string().nullable(),
   atomicCrmContactId: z.string().nullable(),
   atomicCrmLeadId: z.string().nullable(),
+  /** AI-only marker: internal_personal contacts (colleagues, family, suppliers, carriers) never get a follow-up. */
+  followupAudience: z.object({
+    kind: z.enum(["customer", "internal_personal"]),
+    source: z.enum(["ai", "manual"])
+  }).nullable().default(null),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });
@@ -466,7 +471,8 @@ export const messageSchema = z.object({
 });
 export type MessageDto = z.infer<typeof messageSchema>;
 
-export const conversationFollowupKindSchema = z.enum(["qualification", "human_commercial"]);
+/** seller_reminder: the company owes the next step, so the card is a reminder for the seller, never a customer message. */
+export const conversationFollowupKindSchema = z.enum(["qualification", "human_commercial", "seller_reminder"]);
 export type ConversationFollowupKind = z.infer<typeof conversationFollowupKindSchema>;
 
 export const conversationFollowupStatusSchema = z.enum([
@@ -506,9 +512,22 @@ export const conversationFollowupReasonCodeSchema = z.enum([
   "context_unavailable",
   "handoff_required",
   "provider_reply_missing",
-  "audit_blocked"
+  "audit_blocked",
+  "seller_reminder",
+  "followup_brain_unavailable"
 ]);
 export type ConversationFollowupReasonCode = z.infer<typeof conversationFollowupReasonCodeSchema>;
+
+/** What the follow-up AI read in the conversation, shown on the card. */
+export const conversationFollowupAnalysisSchema = z.object({
+  situation: z.enum(["waiting_customer", "waiting_company", "closed", "no_pending"]),
+  pendingItem: z.string().nullable(),
+  nextStep: z.string().nullable(),
+  timingNote: z.string().nullable(),
+  rationale: z.string(),
+  confidence: z.number().min(0).max(1)
+});
+export type ConversationFollowupAnalysisDto = z.infer<typeof conversationFollowupAnalysisSchema>;
 
 const conversationFollowupBaseSchema = z.object({
   id: z.string().min(1),
@@ -534,6 +553,7 @@ const conversationFollowupBaseSchema = z.object({
   }),
   purpose: conversationFollowupPurposeSchema.nullable(),
   reasonCode: conversationFollowupReasonCodeSchema.nullable(),
+  analysis: conversationFollowupAnalysisSchema.nullable().default(null),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });

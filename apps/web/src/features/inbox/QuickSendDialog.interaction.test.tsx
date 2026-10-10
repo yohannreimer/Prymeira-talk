@@ -21,7 +21,7 @@ const channels: ChannelDto[] = [{ id: 'channel-1', workspaceId: 'workspace-1', p
 const contacts: ContactDto[] = Array.from({ length: 12 }, (_, index) => ({
   id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
   workspaceId: 'workspace-1', name: `Contato ${index + 1}`, phone: `554799999${String(index).padStart(4, '0')}`,
-  email: null, company: null, atomicCrmContactId: null, atomicCrmLeadId: null,
+  email: null, company: null, atomicCrmContactId: null, atomicCrmLeadId: null, followupAudience: null,
   createdAt: '2026-09-26T12:00:00.000Z', updatedAt: '2026-09-26T12:00:00.000Z'
 }));
 

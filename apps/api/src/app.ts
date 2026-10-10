@@ -24,6 +24,10 @@ import { createOpenAiAgentImprovementRuleWriter } from "./modules/agents/openai-
 import { createAgentReplyScheduler } from "./modules/agents/agent-reply-scheduler.js";
 import { createConversationFollowupScheduler } from "./modules/followups/conversation-followup-scheduler.js";
 import { createConversationFollowupsService } from "./modules/followups/conversation-followups.service.js";
+import { createFollowupBrain } from "./modules/followups/followup-brain.js";
+import { createFollowupAudioTranscriber } from "./modules/followups/followup-audio-transcriber.js";
+import { createInboxMediaService } from "./modules/conversations/inbox-media.js";
+import { deploymentPhotoStore } from "./modules/conversations/photo-store.js";
 import { createConversationFollowupRealtimePublisher } from "./modules/followups/conversation-followup-events.js";
 import { agentsRoutes } from "./modules/agents/agents.routes.js";
 import { agentPackageRoutes } from "./modules/agents/agent-package.routes.js";
@@ -351,6 +355,21 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   const jevImprovementDetector = env.JEV_API_KEY
     ? createJevAgentImprovementDetector({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
     : undefined;
+  const followupBrainApplies = (workspaceId: string) =>
+    env.FOLLOWUP_BRAIN_WORKSPACES.includes("*") || env.FOLLOWUP_BRAIN_WORKSPACES.includes(workspaceId);
+  const followupBrain = options.prismaEnabled === false || env.FOLLOWUP_BRAIN_WORKSPACES.length === 0
+    ? undefined
+    : createFollowupBrain({
+        prisma: app.prisma,
+        transcribeAudio: createFollowupAudioTranscriber({
+          prisma: app.prisma,
+          media: (() => {
+            const inboxMedia = createInboxMediaService({ prisma: app.prisma, client: evolutionRuntime.client, durable: durableMedia?.media ?? null, photos: deploymentPhotoStore() });
+            return (workspaceId: string, conversationId: string, messageId: string) => inboxMedia.media(workspaceId, conversationId, messageId);
+          })(),
+          transcriptions: durableMedia?.transcriptions
+        })
+      });
   const followupService =
     options.prismaEnabled === false
       ? undefined
@@ -359,6 +378,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           {
             publisher: followupPublisher,
             screeningRequired: true,
+            ...(followupBrain ? { brain: { appliesTo: followupBrainApplies } } : {}),
             eligibility: {
               async evaluate(candidate) {
                 try {
@@ -466,20 +486,20 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     : undefined;
 
   const followupRuntime =
-    options.prismaEnabled === false || !followupService || !followupOutbound || !env.JEV_API_KEY
+    options.prismaEnabled === false || !followupService || !followupOutbound || (!env.JEV_API_KEY && !followupBrain)
       ? undefined
       : createAgentFollowupRuntime({
           prisma: app.prisma as unknown as Parameters<typeof createAgentFollowupRuntime>[0]["prisma"],
           provider: createSimulatedAgentProvider(),
           allowFallbackProvider: false,
           followups: followupService,
-          jevFollowupDecision: createJevFollowupDecision({
-            apiKey: env.JEV_API_KEY,
-            model: env.JEV_MODEL
-          }),
+          jevFollowupDecision: env.JEV_API_KEY
+            ? createJevFollowupDecision({ apiKey: env.JEV_API_KEY, model: env.JEV_MODEL })
+            : { async decide() { throw new Error("JEV_FOLLOWUP_DECISION_UNAVAILABLE"); } },
           replyPreflight,
           outbound: followupOutbound,
-          publisher: followupPublisher
+          publisher: followupPublisher,
+          followupBrain
         });
   const conversationFollowupScheduler = followupService
     ? createConversationFollowupScheduler({

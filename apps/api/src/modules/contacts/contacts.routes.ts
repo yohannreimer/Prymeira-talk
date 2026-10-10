@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
-import { createContactsService } from "./contacts.service.js";
+import { createContactsService, publicFollowupAudience } from "./contacts.service.js";
+import { saveManualFollowupAudience } from "../followups/followup-contact-audience.js";
 import { createInboxMediaService } from "../conversations/inbox-media.js";
 import { deploymentPhotoStore } from '../conversations/photo-store.js';
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
@@ -104,6 +105,22 @@ export const contactsRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntime }
     return insight;
   });
 
+  // Only the follow-up AI reads this marker; the team can correct it from the contact panel.
+  app.get("/contacts/:contactId/followup-audience", async (request, reply) => {
+    const params = contactParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: "Contato inválido." });
+    const contact = await app.prisma.contact.findFirst({ where: { workspaceId: request.talk.workspaceId, id: params.data.contactId }, select: { customFields: true } });
+    if (!contact) return reply.code(404).send({ error: "Contato não encontrado." });
+    return { followupAudience: publicFollowupAudience(contact.customFields) };
+  });
+  app.put("/contacts/:contactId/followup-audience", async (request, reply) => {
+    const params = contactParamsSchema.safeParse(request.params);
+    const body = z.object({ kind: z.enum(["customer", "internal_personal"]) }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: "Dados inválidos." });
+    const saved = await saveManualFollowupAudience(app.prisma, { workspaceId: request.talk.workspaceId, contactId: params.data.contactId, kind: body.data.kind });
+    if (!saved) return reply.code(404).send({ error: "Contato não encontrado." });
+    return { followupAudience: { kind: saved.kind, source: saved.source } };
+  });
   app.get("/contacts/page", async (request, reply) => {
     const query = pageQuerySchema.safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: "Invalid contacts page request." });

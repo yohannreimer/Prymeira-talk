@@ -415,6 +415,61 @@ describe("conversation followups", () => {
     });
   });
 
+  describe("brain mode", () => {
+    const sellerConversation = { ...baseConversation, channelId: "channel_1", activeAgentSessionId: null, activeAgentSession: null, aiControlStatus: "human_controlled" };
+    const channel = { followupConfig, encryptedConfig: { assistant: { mode: "automatic", agentId: ids.agent } } };
+    const brain = { appliesTo: (workspaceId: string) => workspaceId === ids.workspace };
+
+    function brainPrisma(message: Record<string, unknown>, current: unknown = null) {
+      return buildPrisma({
+        conversation: { findUnique: vi.fn().mockResolvedValue(sellerConversation) },
+        aiAgentSession: { findFirst: vi.fn().mockResolvedValue(null) },
+        channel: { findUnique: vi.fn().mockResolvedValue(channel) },
+        message: { findFirst: vi.fn().mockResolvedValue({ ...baseMessage, createdAt: new Date(), ingestedAt: new Date(), ...message }) },
+        conversationFollowup: { findFirst: vi.fn().mockResolvedValue(current), updateMany: vi.fn().mockResolvedValue({ count: 1 }) }
+      });
+    }
+
+    it("a customer \"ok\" restarts a short quiet wait instead of ending the follow-up", async () => {
+      const previous = activeFollowup({ id: "previous", kind: "human_commercial", sessionId: null, status: "review" });
+      const prisma = brainPrisma({ direction: "inbound", body: "ok" }, previous);
+
+      const result = await createConversationFollowupsService(prisma, { brain, eligibility: { evaluate: vi.fn() } })
+        .observeConversationActivity({ workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.anchor, direction: "inbound", source: "customer" });
+
+      expect(result).toEqual({ status: "scheduled", followupId: ids.followup });
+      expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ id: "previous" }),
+        data: expect.objectContaining({ status: "cancelled", reason: "customer_replied" })
+      }));
+      expect(prisma.conversationFollowup.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+        kind: "human_commercial",
+        status: "scheduled",
+        anchorMessageId: ids.anchor,
+        decision: { mode: "brain" },
+        reason: "brain_quiet_wait"
+      }) });
+    });
+
+    it("does not restart the cadence for a follow-up the system itself sent", async () => {
+      const prisma = brainPrisma({ metadata: { source: "ai_agent", followupId: "sent_one" } });
+
+      await expect(createConversationFollowupsService(prisma, { brain })
+        .observeConversationActivity({ workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.anchor, direction: "outbound", source: "human" }))
+        .resolves.toEqual({ status: "ignored" });
+      expect(prisma.conversationFollowup.create).not.toHaveBeenCalled();
+    });
+
+    it("leaves conversations an AI agent is running on the regular flow", async () => {
+      const prisma = brainPrisma({});
+      prisma.conversation.findUnique = vi.fn().mockResolvedValue(baseConversation);
+
+      await createConversationFollowupsService(prisma, { brain })
+        .observeConversationActivity({ workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.anchor, direction: "outbound", source: "human" });
+      expect(prisma.conversationFollowup.create).not.toHaveBeenCalledWith({ data: expect.objectContaining({ reason: "brain_quiet_wait" }) });
+    });
+  });
+
   it("screens human conversations supported by a channel agent even without an active agent session", async () => {
     const conversation = { ...baseConversation, channelId: "channel_1", activeAgentSessionId: null, activeAgentSession: null, aiControlStatus: "human_controlled" };
     const prisma = buildPrisma({

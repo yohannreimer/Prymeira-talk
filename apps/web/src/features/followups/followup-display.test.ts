@@ -29,6 +29,7 @@ const reviewFollowup: ConversationFollowupDto = {
   },
   purpose: "missing_qualification",
   reasonCode: "jev_human_review",
+  analysis: null,
   createdAt: "2026-09-22T12:00:00.000Z",
   updatedAt: "2026-09-22T14:00:00.000Z"
 };
@@ -67,6 +68,24 @@ describe("followup display", () => {
     expect(followupReasonLabel(null, "review")).toBe("Revisão humana necessária antes de continuar.");
     expect(followupReasonLabel(null, "scheduled")).toBe("Aguardando o horário previsto para o próximo acompanhamento.");
     expect(followupReasonLabel(null)).toBeNull();
+  });
+
+  it("labels seller reminders and the follow-up brain outcomes", () => {
+    expect(followupKindLabel("seller_reminder")).toBe("Lembrete");
+    expect(followupReasonLabel("seller_done")).toBe("Lembrete concluído");
+    expect(followupReasonLabel("brain_closed")).toBe("Conversa encerrada");
+    expect(followupReasonLabel("brain_no_pending")).toBe("Nada pendente");
+    expect(followupReasonLabel("brain_internal_contact")).toBe("Contato interno ou pessoal");
+    expect(followupReasonLabel("seller_reminder")).toContain("lembrete");
+    expect(followupReasonLabel("followup_brain_unavailable")).toContain("indisponível");
+  });
+
+  it("separates seller reminders from the customer review queue", () => {
+    const reminder = { ...reviewFollowup, kind: "seller_reminder" as const };
+    expect(matchesFollowupFilter(reminder, "reminders")).toBe(true);
+    expect(matchesFollowupFilter(reminder, "review")).toBe(false);
+    expect(matchesFollowupFilter(reviewFollowup, "reminders")).toBe(false);
+    expect(matchesFollowupFilter({ ...reminder, status: "scheduled" }, "reminders")).toBe(false);
   });
 
   it("treats persisted stepIndex as one-based and legacy zero as step one", async () => {

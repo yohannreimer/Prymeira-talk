@@ -25,7 +25,7 @@ import {
   type ConversationFollowupPublisher
 } from "./conversation-followup-events.js";
 
-const FOLLOWUP_LIST_STATUSES = ["review", "scheduled", "sent", "cancelled"] as const;
+const FOLLOWUP_LIST_STATUSES = ["review", "reminders", "scheduled", "sent", "cancelled"] as const;
 const ACTIVE_MANUAL_STATUSES = ["scheduled", "review"] as const;
 const POSTPONE_BUSINESS_MINUTES = 60;
 
@@ -249,13 +249,18 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
         workspaceId: request.talk.workspaceId,
         status: query.data.status === "cancelled"
           ? { in: ["cancelled", "failed", "skipped", "expired"] }
-          : query.data.status,
+          : query.data.status === "reminders" ? "review" : query.data.status,
+        ...(query.data.status === "reminders" ? { kind: "seller_reminder" } : {}),
+        ...(query.data.status === "review" ? { NOT: { kind: "seller_reminder" } } : {}),
+        // A quiet wait is only "analyze this in 5 minutes"; it is not a follow-up yet.
+        ...(query.data.status === "scheduled" ? { NOT: { reason: "brain_quiet_wait" } } : {}),
+        // Screening and brain verdicts of "nothing to follow up" are not cancellations the team made.
         ...(query.data.status === "cancelled"
-          ? { NOT: { reason: { startsWith: "eligibility_" } } }
+          ? { NOT: [{ reason: { startsWith: "eligibility_" } }, { reason: { startsWith: "brain_" } }] }
           : {})
       },
       select: followupSelect,
-      orderBy: query.data.status === "review" || query.data.status === "scheduled"
+      orderBy: query.data.status === "review" || query.data.status === "reminders" || query.data.status === "scheduled"
         ? [{ scheduledAt: "asc" }, { createdAt: "asc" }]
         : [{ updatedAt: "desc" }],
       take: 100
@@ -585,6 +590,45 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
       }
     });
     return respondConditionalMutation({ prisma, workspaceId: request.talk.workspaceId, id: current.id, count: updated.count, reply, publisher });
+  });
+
+  // The seller did what the reminder asked.
+  app.post("/followups/:id/done", async (request, reply) => {
+    if (!requirePermission(request.talk.role, "conversation.reply", reply)) return reply;
+    const params = followupParamsSchema.safeParse(request.params);
+    const body = noFollowupBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ code: "FOLLOWUP_INVALID_REQUEST", error: "Invalid reminder request." });
+    }
+    const expectedUpdatedAt = new Date(body.data.expectedUpdatedAt);
+    const cancelledByUserId = await resolveActor(request);
+    const current = await revalidateForMutation({ workspaceId: request.talk.workspaceId, followupId: params.data.id, expectedUpdatedAt, reply });
+    if (!current) return reply;
+    if (!isManuallyActionable(current) || current.kind !== "seller_reminder") return stale(reply, current);
+
+    const updated = await prisma.conversationFollowup.updateMany({
+      where: manualActiveWhere(request.talk.workspaceId, current.id, expectedUpdatedAt),
+      data: { status: "cancelled", activeKey: null, lockedAt: null, cancelledAt: now(), cancelledByUserId, reason: "seller_done" }
+    });
+    return respondConditionalMutation({ prisma, workspaceId: request.talk.workspaceId, id: current.id, count: updated.count, reply, publisher });
+  });
+
+  // The active follow-up of one conversation, for the strip above the composer.
+  app.get("/conversations/:conversationId/followup", async (request, reply) => {
+    if (!requirePermission(request.talk.role, "conversation.read", reply)) return reply;
+    const params = z.object({ conversationId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ code: "FOLLOWUP_INVALID_CONVERSATION" });
+    const record = await prisma.conversationFollowup.findFirst({
+      where: {
+        workspaceId: request.talk.workspaceId,
+        conversationId: params.data.conversationId,
+        activeKey: "active",
+        status: { in: ["evaluating", "scheduled", "processing", "review"] },
+        NOT: { reason: "brain_quiet_wait" }
+      },
+      select: followupSelect
+    });
+    return { followup: record ? toConversationFollowupDto(record) : null };
   });
 
   app.post("/followups/:id/no-followup", async (request, reply) => {

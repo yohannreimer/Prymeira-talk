@@ -58,7 +58,7 @@ export type ConversationFollowupRecord = {
   conversationId: string;
   agentId: string;
   sessionId: string | null;
-  kind: "qualification" | "human_commercial";
+  kind: "qualification" | "human_commercial" | "seller_reminder";
   status: string;
   activeKey: string | null;
   stepIndex: number;
@@ -180,7 +180,13 @@ const MAX_UNIQUE_CONFLICT_RETRIES = 3;
 
 export function createConversationFollowupsService(
   prisma: ConversationFollowupsPrismaLike,
-  options: { publisher?: ConversationFollowupPublisher; eligibility?: FollowupEligibility; screeningRequired?: boolean } = {}
+  options: {
+    publisher?: ConversationFollowupPublisher;
+    eligibility?: FollowupEligibility;
+    screeningRequired?: boolean;
+    /** Workspaces where any message restarts a quiet wait and the follow-up brain decides after it. */
+    brain?: { appliesTo(workspaceId: string): boolean; quietMinutes?: number };
+  } = {}
 ) {
   const publish = (workspaceId: string, followupId: string) =>
     publishPersistedConversationFollowup({
@@ -193,6 +199,10 @@ export function createConversationFollowupsService(
   async function observeConversationActivity(
     input: ObserveConversationActivityInput
   ): Promise<ObserveConversationActivityResult> {
+    if (input.source !== "agent" && options.brain?.appliesTo(input.workspaceId)) {
+      const observed = await observeForBrain(input);
+      if (observed) return observed;
+    }
     if (input.direction === "inbound" && input.source === "customer") {
       const customerMessage = await findPersistedCustomerInboundMessage(prisma, input);
       if (!customerMessage?.ingestedAt) {
@@ -339,6 +349,74 @@ export function createConversationFollowupsService(
     return { status: "ignored" };
   }
 
+  /**
+   * Brain mode: every customer or seller message restarts the clock. The newest message becomes
+   * the anchor of a short quiet wait; the runtime analyzes the conversation once it stays quiet.
+   * Returns null when the conversation keeps the regular flow (an AI agent runs it, no agent set).
+   */
+  async function observeForBrain(input: ObserveConversationActivityInput): Promise<ObserveConversationActivityResult | null> {
+    const [conversation, message] = await Promise.all([
+      prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } } }),
+      prisma.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, id: input.messageId } })
+    ]);
+    if (!conversation || !message?.ingestedAt || conversation.status === "closed") return null;
+    if (conversation.activeAgentSessionId || await findProspectingReservation(prisma, input.workspaceId, conversation.id)) return null;
+    // Our own follow-up deliveries continue the cadence; they do not restart it.
+    if (isManagedFollowupDelivery(message)) return { status: "ignored" };
+    const now = new Date();
+    // History imports and late webhooks are not fresh activity.
+    if (now.getTime() - toDate(message.createdAt).getTime() > BRAIN_FRESH_MESSAGE_MS) return null;
+    const agent = await resolveConfiguredHumanAgent(prisma, conversation);
+    if (!agent) return null;
+    const plan = await loadPlan(prisma, input.workspaceId, conversation.channelId, agent.behaviorConfig, conversation.id);
+    if (!plan?.steps.length) return null;
+    const scheduledAt = calculateFollowupDueAt(now, options.brain?.quietMinutes ?? BRAIN_QUIET_MINUTES, plan);
+    const anchorIngestedAt = toDate(message.ingestedAt);
+    try {
+      const mutation = await prisma.$transaction(async (tx) => {
+        const current = await tx.conversationFollowup.findFirst({
+          where: { workspaceId: input.workspaceId, conversationId: input.conversationId, activeKey: "active" }
+        });
+        if (current && toDate(current.anchorIngestedAt) >= anchorIngestedAt) return { followup: current, replacedId: null, created: false };
+        let replacedId: string | null = null;
+        if (current) {
+          const replaced = await tx.conversationFollowup.updateMany({
+            where: { id: current.id, workspaceId: input.workspaceId, activeKey: "active" },
+            data: { status: "cancelled", activeKey: null, lockedAt: null, cancelledAt: now,
+              reason: message.direction === "inbound" ? "customer_replied" : "outbound_replaced" }
+          });
+          if (replaced.count === 1) replacedId = current.id;
+        }
+        const followup = await tx.conversationFollowup.create({
+          data: {
+            workspaceId: input.workspaceId,
+            conversationId: input.conversationId,
+            agentId: agent.id,
+            sessionId: null,
+            kind: "human_commercial",
+            status: "scheduled",
+            activeKey: "active",
+            stepIndex: 1,
+            anchorMessageId: message.id,
+            anchorMessageAt: toDate(message.createdAt),
+            anchorIngestedAt,
+            scheduledAt,
+            decision: { mode: "brain" },
+            reason: BRAIN_QUIET_REASON
+          }
+        });
+        return { followup, replacedId, created: true };
+      });
+      if (mutation.replacedId) await publish(input.workspaceId, mutation.replacedId);
+      if (mutation.created) await publish(input.workspaceId, mutation.followup.id);
+      return { status: "scheduled", followupId: mutation.followup.id };
+    } catch (error) {
+      // Another message of the same conversation won the race; its wait covers this one.
+      if (isUniqueConstraintError(error)) return { status: "ignored" };
+      throw error;
+    }
+  }
+
   async function evaluateCandidate(input: { workspaceId: string; followupId: string }): Promise<{ status: string }> {
     const lockedAt = new Date();
     const claim = await prisma.conversationFollowup.updateMany({
@@ -360,7 +438,7 @@ export function createConversationFollowupsService(
       );
       const decision = await options.eligibility.evaluate({
         workspaceId: input.workspaceId,
-        kind: followup.kind,
+        kind: followup.kind === "seller_reminder" ? "human_commercial" : followup.kind,
         anchorMessageId: followup.anchorMessageId,
         conversationMessages: context.messages
       });
@@ -477,7 +555,7 @@ export function createConversationFollowupsService(
       session.agentId === followup.agentId &&
       (conversation.activeAgentSessionId == null || conversation.activeAgentSessionId === session.id)
       ? session.agent : null;
-    const configuredAgent = followup.kind === "human_commercial" && !followup.sessionId && !conversation.activeAgentSessionId
+    const configuredAgent = isSellerOwnedKind(followup.kind) && !followup.sessionId && !conversation.activeAgentSessionId
       ? await resolveConfiguredHumanAgent(prisma, conversation) : null;
     const agent = sessionAgent ?? (configuredAgent?.id === followup.agentId ? configuredAgent : null);
     if (!agent) {
@@ -705,7 +783,7 @@ export function createConversationFollowupsService(
           anchorMessageAt: input.sentMessageAt ? toDate(input.sentMessageAt) : sentAt,
           anchorIngestedAt: sentAt,
           scheduledAt: nextScheduledAt,
-          decision: {},
+          decision: nextStepDecision(input.followup.decision),
           reason: "agent_followup_step"
         }
       });
@@ -774,7 +852,7 @@ export function createConversationFollowupsService(
           anchorMessageAt: input.sentAt,
           anchorIngestedAt: input.sentAt,
           scheduledAt,
-          decision: {},
+          decision: nextStepDecision(input.followup.decision),
           reason: "manual_followup_step"
         }
       });
@@ -793,6 +871,20 @@ export function createConversationFollowupsService(
     completeAutomaticFollowup,
     scheduleNextAfterManualSend
   };
+}
+
+const BRAIN_QUIET_MINUTES = 5;
+const BRAIN_QUIET_REASON = "brain_quiet_wait";
+const BRAIN_FRESH_MESSAGE_MS = 24 * 60 * 60_000;
+
+/** A step after a brain follow-up is analyzed again, with the previous attempts in view. */
+function nextStepDecision(decision: unknown) {
+  return asRecord(decision)?.mode === "brain" ? { mode: "brain" } : {};
+}
+
+/** Reminders belong to the same seller-owned flow as commercial follow-ups. */
+function isSellerOwnedKind(kind: ConversationFollowupRecord["kind"]) {
+  return kind === "human_commercial" || kind === "seller_reminder";
 }
 
 async function findNewerCompanyMessage(
@@ -1130,7 +1222,7 @@ function isCompatibleSession(
       session.workspaceId === workspaceId &&
       session.conversationId === conversationId &&
       (session.status === "active" ||
-        (kind === "human_commercial" && (session.status === "paused_by_human" || session.status === "handoff_requested"))) &&
+        (isSellerOwnedKind(kind) && (session.status === "paused_by_human" || session.status === "handoff_requested"))) &&
       session.agent?.workspaceId === workspaceId &&
       session.agent.status === "active"
   );

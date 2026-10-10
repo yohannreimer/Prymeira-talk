@@ -55,3 +55,18 @@ export async function saveAiFollowupAudience(
   });
   return true;
 }
+
+/** A team member's answer; it always wins over the AI's and the AI never changes it afterwards. */
+export async function saveManualFollowupAudience(
+  prisma: Db,
+  input: { workspaceId: string; contactId: string; kind: FollowupAudience["kind"]; now?: Date }
+) {
+  const contact = await prisma.contact.findFirst({ where: { workspaceId: input.workspaceId, id: input.contactId }, select: { customFields: true } });
+  if (!contact) return null;
+  const followupAudience: FollowupAudience = { kind: input.kind, source: "manual", reason: null, at: (input.now ?? new Date()).toISOString() };
+  await prisma.contact.updateMany({
+    where: { workspaceId: input.workspaceId, id: input.contactId },
+    data: { customFields: { ...record(contact.customFields), followupAudience } as Prisma.InputJsonValue }
+  });
+  return followupAudience;
+}

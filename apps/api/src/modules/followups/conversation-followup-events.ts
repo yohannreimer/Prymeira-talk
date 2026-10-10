@@ -1,4 +1,5 @@
 import {
+  conversationFollowupAnalysisSchema,
   conversationFollowupPurposeSchema,
   conversationFollowupReasonCodeSchema,
   conversationFollowupSchema,
@@ -14,7 +15,7 @@ export type ConversationFollowupPublicRecord = {
   workspaceId: string;
   conversationId: string;
   agentId: string;
-  kind: "qualification" | "human_commercial";
+  kind: "qualification" | "human_commercial" | "seller_reminder";
   status: string;
   activeKey?: string | null;
   stepIndex: number;
@@ -152,6 +153,7 @@ export function toConversationFollowupDto(
     },
     purpose: safePurpose(record.decision),
     reasonCode: isActiveStatus(record.status) ? safeActiveReason(record.reason) : null,
+    analysis: safeAnalysis(record.decision),
     createdAt: toIso(createdAt),
     updatedAt: toIso(updatedAt)
   };
@@ -195,6 +197,16 @@ function safePurpose(decision: unknown) {
   const parsed = conversationFollowupPurposeSchema.safeParse(
     (decision as Record<string, unknown>).purpose
   );
+  return parsed.success ? parsed.data : null;
+}
+
+/** Only the fields meant for the card; the rest of the AI's answer stays in the decision log. */
+function safeAnalysis(decision: unknown) {
+  if (!decision || typeof decision !== "object" || Array.isArray(decision)) return null;
+  const brain = (decision as Record<string, unknown>).brain;
+  if (!brain || typeof brain !== "object") return null;
+  const { situation, pendingItem, nextStep, timingNote, rationale, confidence } = brain as Record<string, unknown>;
+  const parsed = conversationFollowupAnalysisSchema.safeParse({ situation, pendingItem, nextStep, timingNote, rationale, confidence });
   return parsed.success ? parsed.data : null;
 }
 
@@ -244,7 +256,11 @@ function safeReason(
     "eligibility_proposal_response_pending",
     "eligibility_seller_action_pending",
     "eligibility_resolved_or_unclear",
-    "eligibility_unavailable"
+    "eligibility_unavailable",
+    "brain_closed",
+    "brain_no_pending",
+    "brain_internal_contact",
+    "seller_done"
   ]);
   if (reason && allowed.has(reason)) return reason;
   return status === "failed" ? "delivery_failed" : "system_cancelled";

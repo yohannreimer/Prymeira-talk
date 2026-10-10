@@ -16,3 +16,7 @@
 .contact-name-actions button { border: 1px solid var(--color-border); border-radius: 8px; padding: 8px 10px; background: var(--color-surface-card); color: var(--color-text-secondary); font-size: 12px; cursor: pointer; }
 .contact-name-actions .contact-name-save { background: var(--color-brand-600); border-color: var(--color-brand-600); color: white; }
 .contact-name-actions button:disabled, .contact-name-form input:disabled { opacity: .6; cursor: wait; }
+.contact-followup-audience { margin: 0; color: var(--color-text-secondary); font-size: 11px; line-height: 1.45; }
+.contact-followup-audience .contact-name-edit { padding: 0; font-size: 11px; }
+.contact-followup-audience .contact-name-edit:disabled { opacity: .6; cursor: wait; }
+.contact-followup-audience [role="alert"] { color: #a33232; }

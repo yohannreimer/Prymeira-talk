@@ -1697,7 +1697,8 @@ export function apiUndoReply(getToken: () => Promise<string | null>, conversatio
   return apiPostInboxTriageAction(getToken, conversationId, "reply-undo", { anchorMessageId });
 }
 
-export type FollowupListStatus = "review" | "scheduled" | "sent" | "cancelled";
+/** "reminders" lists the seller reminders (status review, kind seller_reminder); "review" no longer includes them. */
+export type FollowupListStatus = "review" | "reminders" | "scheduled" | "sent" | "cancelled";
 
 export async function apiGetChannelFollowupConfig(
   getToken: () => Promise<string | null>, channelId: string
@@ -1794,10 +1795,62 @@ export function apiMarkFollowupNoFollowup(
   );
 }
 
+/** Closes a seller reminder: the seller already did what was pending. */
+export function apiMarkFollowupDone(
+  getToken: () => Promise<string | null>,
+  id: string,
+  expectedUpdatedAt: string
+) {
+  return mutateFollowup(
+    getToken,
+    id,
+    "done",
+    { expectedUpdatedAt },
+    "Não foi possível concluir o lembrete"
+  );
+}
+
+/** The conversation's active follow-up (evaluating, scheduled, processing or review), or null. */
+export function apiGetConversationFollowup(
+  getToken: () => Promise<string | null>,
+  conversationId: string
+): Promise<ConversationFollowupDto | null> {
+  return fetchJson(getToken, `/conversations/${encodeURIComponent(conversationId)}/followup`, {}, (data) => {
+    const response = data as { followup?: unknown };
+    return response.followup ? conversationFollowupSchema.parse(response.followup) : null;
+  }, "Não foi possível carregar o follow-up da conversa.");
+}
+
+export type ContactFollowupAudience = ContactDto["followupAudience"];
+
+function parseContactFollowupAudience(data: unknown): ContactFollowupAudience {
+  const response = data as { followupAudience?: unknown };
+  return contactSchema.shape.followupAudience.parse(response.followupAudience ?? null);
+}
+
+export function apiGetContactFollowupAudience(
+  getToken: () => Promise<string | null>,
+  contactId: string
+): Promise<ContactFollowupAudience> {
+  return fetchJson(getToken, `/contacts/${encodeURIComponent(contactId)}/followup-audience`, {},
+    parseContactFollowupAudience, "Não foi possível carregar o contato.");
+}
+
+export function apiSetContactFollowupAudience(
+  getToken: () => Promise<string | null>,
+  contactId: string,
+  kind: "customer" | "internal_personal"
+): Promise<ContactFollowupAudience> {
+  return fetchJson(getToken, `/contacts/${encodeURIComponent(contactId)}/followup-audience`, {
+    method: "PUT",
+    body: JSON.stringify({ kind })
+  }, parseContactFollowupAudience, "Não foi possível atualizar o contato.");
+}
+
 async function mutateFollowup(
   getToken: () => Promise<string | null>,
   id: string,
-  action: "send" | "postpone" | "cancel" | "no-followup",
+  action: "send" | "postpone" | "cancel" | "no-followup" | "done",
   body: Record<string, unknown>,
   errorLabel: string
 ): Promise<ConversationFollowupDto> {

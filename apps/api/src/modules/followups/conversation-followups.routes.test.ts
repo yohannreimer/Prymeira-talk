@@ -26,7 +26,7 @@ type Followup = {
   conversationId: string;
   agentId: string;
   sessionId: string;
-  kind: "qualification" | "human_commercial";
+  kind: "qualification" | "human_commercial" | "seller_reminder";
   status: "scheduled" | "processing" | "review" | "sent" | "cancelled" | "failed" | "skipped" | "expired";
   activeKey: string | null;
   stepIndex: number;
@@ -104,7 +104,8 @@ function matches(value: unknown, where: Record<string, unknown>): boolean {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
   return Object.entries(where).every(([key, expected]) => {
-    if (key === "NOT") return !matches(record, expected as Record<string, unknown>);
+    if (key === "NOT") return (Array.isArray(expected) ? expected : [expected])
+      .every((condition) => !matches(record, condition as Record<string, unknown>));
     if (key === "conversation" && expected && typeof expected === "object") {
       const filter = expected as { is?: { channelId?: string } };
       return record.conversationId === ids.conversation && filter.is?.channelId === ids.channel;
@@ -454,7 +455,7 @@ describe("conversation follow-up review routes", () => {
         where: {
           workspaceId: ids.workspaceA,
           status: { in: ["cancelled", "failed", "skipped", "expired"] },
-          NOT: { reason: { startsWith: "eligibility_" } }
+          NOT: [{ reason: { startsWith: "eligibility_" } }, { reason: { startsWith: "brain_" } }]
         },
         orderBy: [{ updatedAt: "desc" }],
         take: 100
@@ -858,6 +859,49 @@ describe("conversation follow-up review routes", () => {
       });
       expect(suppressed.statusCode).toBe(200);
       expect(suppressed.json()).toEqual(expect.objectContaining({ status: "cancelled", reason: "no_followup", cancelledByUserId: "user_current" }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("lists seller reminders apart and closes one when the seller did it", async () => {
+    const reminder = followup({ kind: "seller_reminder", draftBody: null, reason: "seller_reminder",
+      decision: { mode: "brain", brain: { situation: "waiting_company", pendingItem: "Enviar a NF na terça", nextStep: null,
+        timingNote: "terça", rationale: "O vendedor prometeu a NF.", confidence: 0.9, suggestedMessage: "Lembrete: enviar a NF" } } });
+    const { app, db } = await buildRouteApp({ records: [reminder] });
+    try {
+      const reminders = await app.inject("/followups?status=reminders");
+      expect(reminders.json()).toEqual([expect.objectContaining({
+        kind: "seller_reminder",
+        analysis: { situation: "waiting_company", pendingItem: "Enviar a NF na terça", nextStep: null, timingNote: "terça",
+          rationale: "O vendedor prometeu a NF.", confidence: 0.9 }
+      })]);
+      expect((await app.inject("/followups?status=review")).json()).toEqual([]);
+
+      const strip = await app.inject(`/conversations/${ids.conversation}/followup`);
+      expect(strip.json().followup).toMatchObject({ id: ids.followup, kind: "seller_reminder" });
+
+      const done = await app.inject({
+        method: "POST",
+        url: `/followups/${ids.followup}/done`,
+        payload: { expectedUpdatedAt: expected(db.records[0]) }
+      });
+      expect(done.statusCode).toBe(200);
+      expect(done.json()).toEqual(expect.objectContaining({ status: "cancelled", reason: "seller_done" }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("only closes reminders as done", async () => {
+    const { app, db } = await buildRouteApp();
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/followups/${ids.followup}/done`,
+        payload: { expectedUpdatedAt: expected(db.records[0]) }
+      });
+      expect(response.statusCode).toBe(409);
     } finally {
       await app.close();
     }
