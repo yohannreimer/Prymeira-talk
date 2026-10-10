@@ -9,6 +9,7 @@ import {
   followupBrainSituationSchema,
   type FollowupBrainAnalysis
 } from "../src/modules/followups/followup-brain.js";
+import { isInternalPersonal } from "../src/modules/followups/followup-contact-audience.js";
 
 config({ path: resolve(import.meta.dirname, "../../../.env") });
 
@@ -90,15 +91,17 @@ async function sampleConversations(
     where: { workspaceId, status: { not: "closed" }, lastMessageAt: { lte: quietSince }, contact: { isGroup: false } },
     orderBy: { lastMessageAt: "desc" },
     take: limit,
-    include: { contact: { select: { name: true } } }
+    include: { contact: { select: { name: true, customFields: true } } }
   });
   for (const conversation of conversations) {
+    if (isInternalPersonal(conversation.contact?.customFields)) continue;
     try {
       const context = await buildConversationContext(prisma as unknown as Parameters<typeof buildConversationContext>[0], {
         workspaceId, conversationId: conversation.id, limit: 40
       });
       const analysis = await brain.analyze({
         workspaceId,
+        conversationId: conversation.id,
         conversationMessages: context.messages,
         previousAttempts: [],
         contactName: conversation.contact?.name ?? null,
