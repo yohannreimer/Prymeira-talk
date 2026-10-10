@@ -15,6 +15,7 @@
     "test:jev-live": "tsx scripts/test-jev-live.ts",
     "test:jev-villefer-package-live": "tsx scripts/test-jev-villefer-package-live.ts",
     "test:followups-villefer-live": "tsx scripts/test-followups-villefer-live.ts",
+    "eval:followup-brain": "tsx scripts/evaluate-followup-brain.ts",
     "compile:villefer-v1": "tsx scripts/compile-villefer-v1.ts",
     "prisma": "dotenv -e ../../.env -- prisma",
     "seed:demo": "dotenv -e ../../.env -- tsx prisma/seed-demo.ts"
