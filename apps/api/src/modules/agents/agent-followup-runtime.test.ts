@@ -221,6 +221,7 @@ function buildRuntime(overrides: Record<string, any> = {}) {
     replyPreflight,
     outbound: { createPendingOutboundMessage },
     publisher: overrides.publisher,
+    followupBrain: overrides.followupBrain,
     now: overrides.now ?? (() => now)
   });
 
@@ -238,6 +239,114 @@ function buildRuntime(overrides: Record<string, any> = {}) {
     recoverClaimedFollowup
   };
 }
+
+const brainAnalysis = {
+  contactType: "customer" as const,
+  situation: "waiting_customer" as const,
+  pendingItem: "Cliente ia confirmar a espessura",
+  kind: "missing_information" as const,
+  nextStep: "Perguntar a espessura",
+  timingNote: null,
+  suggestedMessage: "Oi Ana, conseguiu ver a espessura da chapa?",
+  risk: "none" as const,
+  confidence: 0.9,
+  rationale: "A empresa perguntou a espessura e a cliente não respondeu."
+};
+
+function brainHarness(followupOverrides: Record<string, unknown>, analysis: Record<string, unknown> = {}, extra: Record<string, any> = {}) {
+  const brainFollowup = { ...baseFollowup, kind: "human_commercial" as const, sessionId: null, status: "processing", lockedAt: now, ...followupOverrides };
+  const context = { ...validContext(), followup: brainFollowup, session: null };
+  const analyze = vi.fn().mockResolvedValue({ ...brainAnalysis, ...analysis });
+  const harness = buildRuntime({
+    revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context }),
+    conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, activeAgentSessionId: null, ...extra.conversation }) },
+    followupBrain: { analyze },
+    ...extra
+  });
+  return { ...harness, analyze };
+}
+
+describe("follow-up brain mode", () => {
+  it("after the quiet wait, schedules the customer follow-up for the cadence time with the suggestion ready", async () => {
+    const harness = brainHarness({ decision: { mode: "brain" }, reason: "brain_quiet_wait" });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "deferred" });
+    expect(harness.analyze).toHaveBeenCalledWith(expect.objectContaining({ conversationId: ids.conversation, agentRules: baseAgent.systemPrompt }));
+    expect(harness.decide).not.toHaveBeenCalled();
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: "scheduled",
+        scheduledAt: new Date("2026-09-22T13:00:00.000Z"),
+        reason: "brain_waiting_customer",
+        draftBody: brainAnalysis.suggestedMessage,
+        decision: expect.objectContaining({ mode: "brain", brain: expect.objectContaining({ step: 1, pendingItem: brainAnalysis.pendingItem }) })
+      })
+    }));
+  });
+
+  it("turns a company-owned step into a reminder for the seller right away", async () => {
+    const harness = brainHarness({ decision: { mode: "brain" }, reason: "brain_quiet_wait" }, {
+      situation: "waiting_company", suggestedMessage: "Lembrete: enviar a NF na terça.", pendingItem: "Enviar a NF na terça"
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "review" });
+    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ kind: "seller_reminder", status: "review", reason: "seller_reminder", draftBody: null })
+    }));
+  });
+
+  it("skips colleagues and personal contacts and remembers them as internal", async () => {
+    const contact = { findFirst: vi.fn().mockResolvedValue({ customFields: {} }), updateMany: vi.fn().mockResolvedValue({ count: 1 }) };
+    const harness = brainHarness({ decision: { mode: "brain" }, reason: "brain_quiet_wait" },
+      { contactType: "internal_personal", situation: "no_pending", confidence: 0.95 });
+    (harness.prisma as Record<string, unknown>).contact = contact;
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "skipped" });
+    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "skipped", reason: "brain_internal_contact" })
+    }));
+    expect(contact.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { customFields: { followupAudience: expect.objectContaining({ kind: "internal_personal", source: "ai" }) } }
+    }));
+  });
+
+  it("sends the prepared suggestion when the number allows automatic sending", async () => {
+    const harness = brainHarness({
+      decision: { mode: "brain", brain: { ...brainAnalysis, step: 1 } },
+      reason: "brain_waiting_customer"
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "sent" });
+    expect(harness.analyze).not.toHaveBeenCalled();
+    expect(harness.createPendingOutboundMessage).toHaveBeenCalledWith(expect.objectContaining({ body: brainAnalysis.suggestedMessage }));
+    expect(harness.completeAutomaticFollowup).toHaveBeenCalledWith(expect.objectContaining({ finalBody: brainAnalysis.suggestedMessage }));
+  });
+
+  it("leaves a commercial or unsure suggestion for the seller to review", async () => {
+    const harness = brainHarness({
+      decision: { mode: "brain", brain: { ...brainAnalysis, risk: "commercial", step: 1 } },
+      reason: "brain_waiting_customer"
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "review" });
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+  });
+
+  it("retries later when the analysis fails", async () => {
+    const harness = brainHarness({ decision: { mode: "brain" }, reason: "brain_quiet_wait" });
+    harness.analyze.mockRejectedValue(new Error("LUNA_ANALYSIS_HTTP_500"));
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "failed" });
+    expect(harness.recoverClaimedFollowup).toHaveBeenCalledWith(expect.objectContaining({ outcome: "retry" }));
+  });
+});
 
 describe("createAgentFollowupRuntime", () => {
   it("drafts a qualification follow-up for review when the number has no automatic-send opt-in", async () => {

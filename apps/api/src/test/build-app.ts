@@ -35,6 +35,7 @@ export async function buildApp(
       EVOLUTION_MODE: "simulated",
       EVOLUTION_WEBHOOK_SECRET: "test_secret",
       JEV_MODEL: "jev-latest",
+      FOLLOWUP_BRAIN_WORKSPACES: [],
       INBOX_TRIAGE_PRIMARY: "jev",
       INBOX_TRIAGE_ENABLED: false,
       CONTACT_NAME_RECOVERY_ENABLED: true,

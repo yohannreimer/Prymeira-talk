@@ -1,0 +1,19 @@
+/* Rides on .assistant-composer-origin (the strip above the composer); only the follow-up specifics live here. */
+.conversation-followup-strip { flex-wrap: nowrap; border-top: 1px solid var(--color-border); }
+.conversation-followup-strip > svg { flex: 0 0 auto; }
+.conversation-followup-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-followup-text strong { font-weight: 700; }
+.conversation-followup-actions { display: flex; flex: 0 0 auto; gap: 6px; }
+.conversation-followup-strip .conversation-followup-actions button { min-height: 30px; padding: 4px 9px; }
+.conversation-followup-strip button:disabled { cursor: wait; opacity: .55; }
+.conversation-followup-error { flex-basis: 100%; color: #a33232; }
+.conversation-followup-strip:has(.conversation-followup-error) { flex-wrap: wrap; }
+/* A reminder is for the seller, never a customer message: amber, like the reminder cards in Follow-ups. */
+.conversation-followup-strip.is-reminder { background: oklch(96% .035 85); color: oklch(39% .075 70); }
+.conversation-followup-strip.is-reminder button { color: oklch(39% .075 70); }
+@media (max-width: 760px) {
+  .conversation-followup-strip { flex-wrap: wrap; }
+  .conversation-followup-text { flex-basis: calc(100% - 24px); white-space: normal; }
+  .conversation-followup-actions { margin-left: auto; }
+  .conversation-followup-strip .conversation-followup-actions button { min-height: 44px; }
+}

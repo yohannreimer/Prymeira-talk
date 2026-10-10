@@ -8,7 +8,9 @@ import {
   type NormalizedConversationMessage
 } from "./conversation-context-builder.js";
 import { MAX_AUTOMATIC_FOLLOWUP_STEPS } from "../followups/conversation-followups.service.js";
-import { resolveFollowupPlan } from "../followups/channel-followup-plan.js";
+import { calculateFollowupDueAt, resolveFollowupPlan } from "../followups/channel-followup-plan.js";
+import type { FollowupBrain, FollowupBrainAnalysis } from "../followups/followup-brain.js";
+import { saveAiFollowupAudience } from "../followups/followup-contact-audience.js";
 import { nextBusinessStart } from "../followups/business-time.js";
 import {
   publishPersistedConversationFollowup,
@@ -97,8 +99,10 @@ export type AgentFollowupRuntimePrismaLike = ConversationContextBuilderPrismaLik
   };
   conversationFollowup: {
     findFirst?(args: unknown): Promise<ConversationFollowupPublicRecord | null>;
+    findMany?(args: unknown): Promise<Array<{ finalBody: string | null; sentAt: Date | string | null }>>;
     updateMany(args: unknown): Promise<{ count: number }>;
   };
+  contact?: Parameters<typeof saveAiFollowupAudience>[0]["contact"];
 };
 
 type FollowupLifecycle = {
@@ -154,9 +158,12 @@ export function createAgentFollowupRuntime(input: {
   replyPreflight?: AgentReplyPreflight;
   outbound: ConversationOutboundTextDelivery;
   publisher?: ConversationFollowupPublisher;
+  /** Single-call analysis for follow-ups created in brain mode (decision.mode === "brain"). */
+  followupBrain?: FollowupBrain;
   now?: () => Date;
 }) {
   const { prisma } = input;
+  const clock = input.now ?? (() => new Date());
 
   async function publish(followup: ConversationFollowupRecord) {
     if (!input.publisher || !prisma.conversationFollowup.findFirst) return;
@@ -213,6 +220,243 @@ export function createAgentFollowupRuntime(input: {
     if (updated.count === 1) await publish(input.followup);
   }
 
+  /**
+   * Brain mode: one AI reads the end of the quiet conversation and says what is open.
+   * The first run happens after the quiet wait; a customer follow-up then waits for the
+   * channel cadence, a company-owned step becomes a reminder for the seller right away.
+   */
+  async function runBrainFollowup(d: {
+    runInput: { workspaceId: string; followupId: string };
+    followup: ConversationFollowupRecord;
+    agent: AgentFollowupAgent;
+    conversation: FollowupConversation;
+    prospecting: Awaited<ReturnType<typeof findProspectingReservation>>;
+    claimToken: { lockedAt: Date };
+    plan: NonNullable<ReturnType<typeof resolveFollowupPlan>>;
+    onConfirmed: () => void;
+  }): Promise<AgentFollowupRuntimeResult> {
+    const { runInput, followup, agent, conversation, claimToken } = d;
+    const now = clock();
+    const stored = readBrainDecision(followup.decision);
+    let analysis: FollowupBrainAnalysis;
+    // A scheduled step keeps the analysis made for it: any new message would have replaced this follow-up.
+    if (stored?.brain && stored.brain.step === followup.stepIndex && followup.reason !== BRAIN_QUIET_REASON) {
+      analysis = stored.brain;
+    } else {
+      if (!input.followupBrain) {
+        await markReview({ followup, decision: { mode: "brain" }, reason: "followup_brain_unavailable" });
+        return { status: "review", followupId: followup.id };
+      }
+      try {
+        const context = await buildConversationContext(prisma, {
+          workspaceId: runInput.workspaceId, conversationId: followup.conversationId, limit: 60
+        });
+        const lastCustomerAt = context.messages.filter((message) => message.label === "cliente").at(-1)?.createdAt;
+        const previous = prisma.conversationFollowup.findMany
+          ? await prisma.conversationFollowup.findMany({
+              where: {
+                workspaceId: runInput.workspaceId,
+                conversationId: followup.conversationId,
+                status: "sent",
+                ...(lastCustomerAt ? { sentAt: { gt: new Date(lastCustomerAt) } } : {})
+              },
+              orderBy: { sentAt: "asc" },
+              take: 5,
+              select: { finalBody: true, sentAt: true }
+            })
+          : [];
+        analysis = await input.followupBrain.analyze({
+          workspaceId: runInput.workspaceId,
+          conversationId: followup.conversationId,
+          conversationMessages: context.messages,
+          previousAttempts: previous.flatMap((attempt) => attempt.finalBody && attempt.sentAt
+            ? [{ body: attempt.finalBody, sentAt: new Date(attempt.sentAt).toISOString() }] : []),
+          agentRules: agent.systemPrompt,
+          contactName: conversation.contact?.name ?? null,
+          now
+        });
+      } catch (error) {
+        const message = errorMessage(error);
+        await input.followups.recoverClaimedFollowup({
+          workspaceId: runInput.workspaceId,
+          followupId: followup.id,
+          claim: claimToken,
+          outcome: "retry",
+          reason: `followup_brain_failed: ${message}`
+        });
+        return { status: "failed", followupId: followup.id, message };
+      }
+      if (prisma.contact) {
+        await saveAiFollowupAudience({ contact: prisma.contact }, {
+          workspaceId: runInput.workspaceId,
+          contactId: conversation.contactId,
+          kind: analysis.contactType,
+          confidence: analysis.confidence,
+          reason: analysis.rationale
+        }).catch(() => false);
+      }
+    }
+    const decision = { mode: "brain", brain: { ...analysis, step: followup.stepIndex, analyzedAt: now.toISOString() } };
+
+    if (analysis.situation === "closed" || analysis.situation === "no_pending") {
+      const reason = analysis.contactType === "internal_personal"
+        ? "brain_internal_contact" : analysis.situation === "closed" ? "brain_closed" : "brain_no_pending";
+      await markSkipped(followup, decision, reason);
+      return { status: "skipped", followupId: followup.id };
+    }
+    if (analysis.situation === "waiting_company") {
+      const updated = await prisma.conversationFollowup.updateMany({
+        where: { workspaceId: followup.workspaceId, id: followup.id, activeKey: "active" },
+        data: { kind: "seller_reminder", status: "review", lockedAt: null, decision, reason: "seller_reminder", draftBody: null }
+      });
+      if (updated.count === 1) await publish(followup);
+      return { status: "review", followupId: followup.id };
+    }
+
+    const candidate = analysis.suggestedMessage?.trim();
+    if (followup.reason === BRAIN_QUIET_REASON) {
+      const firstStep = d.plan.steps[followup.stepIndex - 1];
+      const dueAt = firstStep ? calculateFollowupDueAt(new Date(followup.anchorMessageAt), firstStep.afterMinutes, d.plan) : now;
+      if (dueAt > now) {
+        const updated = await prisma.conversationFollowup.updateMany({
+          where: { workspaceId: followup.workspaceId, id: followup.id, activeKey: "active", status: "processing", lockedAt: claimToken.lockedAt },
+          data: { status: "scheduled", lockedAt: null, scheduledAt: dueAt, decision, reason: "brain_waiting_customer", draftBody: candidate ?? null }
+        });
+        if (updated.count === 1) await publish(followup);
+        return { status: "deferred", followupId: followup.id };
+      }
+    }
+    const automatic = d.plan.humanCommercialDelivery === "automatic" && analysis.risk === "none" &&
+      analysis.confidence >= BRAIN_AUTOMATIC_MIN_CONFIDENCE && followup.kind === "human_commercial";
+    if (!candidate || !automatic) {
+      await markReview({ followup, decision, reason: "brain_review", ...(candidate ? { draftBody: candidate } : {}) });
+      return { status: "review", followupId: followup.id };
+    }
+    return deliverAutomatically({
+      runInput, followup, agent, prospecting: d.prospecting, claimToken, candidate, decision,
+      eligible: (current, currentConversation, delivery) =>
+        delivery === "automatic" && current.kind === "human_commercial" && currentConversation.status !== "closed",
+      onConfirmed: d.onConfirmed
+    });
+  }
+
+  /** Sends an approved follow-up through the normal outbound path, inside business hours, and schedules the next step. */
+  async function deliverAutomatically(d: {
+    runInput: { workspaceId: string; followupId: string };
+    followup: ConversationFollowupRecord;
+    agent: AgentFollowupAgent;
+    prospecting: Awaited<ReturnType<typeof findProspectingReservation>>;
+    claimToken: { lockedAt: Date };
+    candidate: string;
+    decision: unknown;
+    eligible: (followup: ConversationFollowupRecord, conversation: FollowupConversation, delivery: "review" | "automatic" | undefined) => boolean;
+    onConfirmed: () => void;
+  }): Promise<AgentFollowupRuntimeResult> {
+    const { runInput, followup, agent, prospecting, claimToken, candidate, decision } = d;
+    const beforeDelivery = await input.followups.revalidateActiveFollowup(runInput);
+    if (beforeDelivery.status === "missing") {
+      return { status: "missing", followupId: runInput.followupId };
+    }
+    if (beforeDelivery.status === "cancelled") {
+      return { status: "cancelled", followupId: runInput.followupId, reason: beforeDelivery.reason };
+    }
+
+    const currentConversation = await loadConversation(prisma, runInput.workspaceId, beforeDelivery.context.followup.conversationId);
+    const currentFollowupConfig = currentConversation
+      ? resolveFollowupPlan(agent.behaviorConfig, currentConversation.channel?.followupConfig, !!prospecting)
+      : null;
+    if (!currentConversation || !currentFollowupConfig ||
+      !d.eligible(beforeDelivery.context.followup, currentConversation, currentFollowupConfig.humanCommercialDelivery)) {
+      await markReview({
+        followup: beforeDelivery.context.followup,
+        decision,
+        reason: "automatic_delivery_not_allowed",
+        draftBody: candidate
+      });
+      return { status: "review", followupId: beforeDelivery.context.followup.id };
+    }
+
+    const attemptedAt = (input.now ?? (() => new Date()))();
+    const permittedAt = nextBusinessStart({
+      from: attemptedAt,
+      timeZone: currentFollowupConfig.timeZone,
+      businessDays: currentFollowupConfig.businessDays,
+      businessHours: currentFollowupConfig.businessHours
+    });
+    if (permittedAt > attemptedAt) {
+      await input.followups.recoverClaimedFollowup({
+        workspaceId: runInput.workspaceId,
+        followupId: beforeDelivery.context.followup.id,
+        claim: claimToken,
+        outcome: "retry",
+        reason: "outside_business_hours",
+        scheduledAt: permittedAt
+      });
+      return { status: "deferred", followupId: beforeDelivery.context.followup.id };
+    }
+
+    if (prospecting && !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: followup.conversationId, agentId: agent.id, sessionId: followup.sessionId, expectedGeneration: prospecting.generation })) { await markSkipped(followup, { outcome: "skip" }, "prospecting_stopped"); return { status: "cancelled", followupId: followup.id, reason: "prospecting_stopped" }; }
+    let delivery;
+    try {
+      delivery = await input.outbound.createPendingOutboundMessage({
+        workspaceId: runInput.workspaceId,
+        conversationId: beforeDelivery.context.followup.conversationId,
+        body: candidate,
+        sentByUserId: null,
+        metadata: {
+          source: "ai_agent",
+          agentId: agent.id,
+          ...(prospecting ? { prospectingGeneration: prospecting.generation } : {}),
+          followupId: beforeDelivery.context.followup.id
+        }
+      });
+    } catch (error) {
+      const message = errorMessage(error);
+      await input.followups.recoverClaimedFollowup({
+        workspaceId: runInput.workspaceId,
+        followupId: beforeDelivery.context.followup.id,
+        claim: claimToken,
+        outcome: "failed",
+        reason: `outbound_delivery_failed: ${message}`
+      });
+      return { status: "failed", followupId: beforeDelivery.context.followup.id, message };
+    }
+
+    if (delivery.message.status !== "sent") {
+      await input.followups.recoverClaimedFollowup({
+        workspaceId: runInput.workspaceId,
+        followupId: beforeDelivery.context.followup.id,
+        claim: claimToken,
+        outcome: "failed",
+        reason: "outbound_delivery_unconfirmed"
+      });
+      return {
+        status: "failed",
+        followupId: beforeDelivery.context.followup.id,
+        message: "Outbound delivery was not confirmed."
+      };
+    }
+    d.onConfirmed();
+
+    const completion = await input.followups.completeAutomaticFollowup({
+      workspaceId: runInput.workspaceId,
+      followupId: beforeDelivery.context.followup.id,
+      followup: beforeDelivery.context.followup,
+      claim: claimToken,
+      agentBehaviorConfig: agent.behaviorConfig,
+      finalBody: candidate,
+      decision,
+      sentMessageId: delivery.message.id,
+      sentMessageAt: delivery.message.createdAt
+    });
+    if (completion.status === "not_active") {
+      return { status: "skipped", followupId: beforeDelivery.context.followup.id };
+    }
+    return completion.status === "scheduled"
+      ? { status: "sent", followupId: beforeDelivery.context.followup.id, nextFollowupId: completion.followupId }
+      : { status: "sent", followupId: beforeDelivery.context.followup.id };
+  }
+
   return {
     async runFollowup(runInput: {
       workspaceId: string;
@@ -261,6 +505,10 @@ export function createAgentFollowupRuntime(input: {
       if (!step) {
         await markSkipped(followup, { outcome: "skip", reason: "followup_step_unconfigured" }, "followup_step_unconfigured");
         return { status: "skipped", followupId: followup.id };
+      }
+      if (isBrainFollowup(followup)) {
+        return await runBrainFollowup({ runInput, followup, agent, conversation, prospecting, claimToken,
+          plan: followupConfig!, onConfirmed: () => { deliveryConfirmed = true; } });
       }
       const campaign = prospecting ? await (prisma as unknown as import('@prisma/client').PrismaClient).campaign.findFirst({ where: { workspaceId: runInput.workspaceId, id: prospecting.campaignId } }) : null;
       const effectiveSystemPrompt = prospecting ? buildProspectingInstructions(agent.systemPrompt, asRecord(agent.handoffConfig)?.prospectingGoal, campaign?.prospectingContext) : agent.systemPrompt;
@@ -329,7 +577,7 @@ export function createAgentFollowupRuntime(input: {
         decision = await input.jevFollowupDecision.decide({
           conversationMessages: conversationContext.messages,
           selectedKnowledge: selectedKnowledge.map(toJevKnowledge),
-          followupKind: followup.kind,
+          followupKind: followup.kind === "seller_reminder" ? "human_commercial" : followup.kind,
           step: followup.stepIndex,
           instruction: stepInstruction,
           aiControlStatus: conversation.aiControlStatus === "agent_allowed" ? "agent_allowed" : "human_controlled",
@@ -493,108 +741,12 @@ export function createAgentFollowupRuntime(input: {
         return { status: "review", followupId: followup.id };
       }
 
-      const beforeDelivery = await input.followups.revalidateActiveFollowup(runInput);
-      if (beforeDelivery.status === "missing") {
-        return { status: "missing", followupId: runInput.followupId };
-      }
-      if (beforeDelivery.status === "cancelled") {
-        return { status: "cancelled", followupId: runInput.followupId, reason: beforeDelivery.reason };
-      }
-
-      const currentConversation = await loadConversation(prisma, runInput.workspaceId, beforeDelivery.context.followup.conversationId);
-      const currentFollowupConfig = currentConversation
-        ? resolveFollowupPlan(agent.behaviorConfig, currentConversation.channel?.followupConfig, !!prospecting)
-        : null;
-      if (!currentConversation || !currentFollowupConfig ||
-        !isAutomaticallyEligible(decision, beforeDelivery.context.followup, currentConversation, currentFollowupConfig.humanCommercialDelivery, !!prospecting)) {
-        await markReview({
-          followup: beforeDelivery.context.followup,
-          decision,
-          reason: "automatic_delivery_not_allowed",
-          draftBody: candidate
-        });
-        return { status: "review", followupId: beforeDelivery.context.followup.id };
-      }
-
-      const attemptedAt = (input.now ?? (() => new Date()))();
-      const permittedAt = nextBusinessStart({
-        from: attemptedAt,
-        timeZone: currentFollowupConfig.timeZone,
-        businessDays: currentFollowupConfig.businessDays,
-        businessHours: currentFollowupConfig.businessHours
+      return await deliverAutomatically({
+        runInput, followup, agent, prospecting, claimToken, candidate, decision,
+        eligible: (current, currentConversation, delivery) =>
+          isAutomaticallyEligible(decision, current, currentConversation, delivery, !!prospecting),
+        onConfirmed: () => { deliveryConfirmed = true; }
       });
-      if (permittedAt > attemptedAt) {
-        await input.followups.recoverClaimedFollowup({
-          workspaceId: runInput.workspaceId,
-          followupId: beforeDelivery.context.followup.id,
-          claim: claimToken,
-          outcome: "retry",
-          reason: "outside_business_hours",
-          scheduledAt: permittedAt
-        });
-        return { status: "deferred", followupId: beforeDelivery.context.followup.id };
-      }
-
-      if (prospecting && !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: followup.conversationId, agentId: agent.id, sessionId: followup.sessionId, expectedGeneration: prospecting.generation })) { await markSkipped(followup, { outcome: "skip" }, "prospecting_stopped"); return { status: "cancelled", followupId: followup.id, reason: "prospecting_stopped" }; }
-      let delivery;
-      try {
-        delivery = await input.outbound.createPendingOutboundMessage({
-          workspaceId: runInput.workspaceId,
-          conversationId: beforeDelivery.context.followup.conversationId,
-          body: candidate,
-          sentByUserId: null,
-          metadata: {
-            source: "ai_agent",
-            agentId: agent.id,
-            ...(prospecting ? { prospectingGeneration: prospecting.generation } : {}),
-            followupId: beforeDelivery.context.followup.id
-          }
-        });
-      } catch (error) {
-        const message = errorMessage(error);
-        await input.followups.recoverClaimedFollowup({
-          workspaceId: runInput.workspaceId,
-          followupId: beforeDelivery.context.followup.id,
-          claim: claimToken,
-          outcome: "failed",
-          reason: `outbound_delivery_failed: ${message}`
-        });
-        return { status: "failed", followupId: beforeDelivery.context.followup.id, message };
-      }
-
-      if (delivery.message.status !== "sent") {
-        await input.followups.recoverClaimedFollowup({
-          workspaceId: runInput.workspaceId,
-          followupId: beforeDelivery.context.followup.id,
-          claim: claimToken,
-          outcome: "failed",
-          reason: "outbound_delivery_unconfirmed"
-        });
-        return {
-          status: "failed",
-          followupId: beforeDelivery.context.followup.id,
-          message: "Outbound delivery was not confirmed."
-        };
-      }
-      deliveryConfirmed = true;
-
-      const completion = await input.followups.completeAutomaticFollowup({
-        workspaceId: runInput.workspaceId,
-        followupId: beforeDelivery.context.followup.id,
-        followup: beforeDelivery.context.followup,
-        claim: claimToken,
-        agentBehaviorConfig: agent.behaviorConfig,
-        finalBody: candidate,
-        decision,
-        sentMessageId: delivery.message.id,
-        sentMessageAt: delivery.message.createdAt
-      });
-      if (completion.status === "not_active") {
-        return { status: "skipped", followupId: beforeDelivery.context.followup.id };
-      }
-      return completion.status === "scheduled"
-        ? { status: "sent", followupId: beforeDelivery.context.followup.id, nextFollowupId: completion.followupId }
-        : { status: "sent", followupId: beforeDelivery.context.followup.id };
       } catch (error) {
         const message = errorMessage(error);
         try {
@@ -614,6 +766,20 @@ export function createAgentFollowupRuntime(input: {
       }
     }
   };
+}
+
+const BRAIN_QUIET_REASON = "brain_quiet_wait";
+/** Automatic sending needs this much certainty; anything less goes to the seller for review. */
+const BRAIN_AUTOMATIC_MIN_CONFIDENCE = 0.8;
+
+function isBrainFollowup(followup: ConversationFollowupRecord) {
+  return asRecord(followup.decision)?.mode === "brain";
+}
+
+function readBrainDecision(decision: unknown) {
+  const record = asRecord(decision);
+  const brain = asRecord(record?.brain);
+  return brain ? { brain: brain as FollowupBrainAnalysis & { step?: number } } : null;
 }
 
 async function loadConversation(

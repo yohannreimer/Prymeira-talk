@@ -153,6 +153,7 @@ enum AiAgentSessionStatus {
 enum ConversationFollowupKind {
   qualification
   human_commercial
+  seller_reminder
 }
 
 enum ConversationFollowupStatus {

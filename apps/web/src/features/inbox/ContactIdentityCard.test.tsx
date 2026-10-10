@@ -19,6 +19,19 @@ describe('inbox contact identity', () => {
     const html = renderToStaticMarkup(<ContactIdentityCard contactId="c" name="<script>alert(1)</script>" phone={null} onSave={vi.fn()} />);
     expect(html).not.toContain('<script>');
   });
+  it('says when the follow-up AI treats the contact as internal or personal, with a way back', () => {
+    const html = renderToStaticMarkup(<ContactIdentityCard contactId="c" name="Marcos" phone={null} onSave={vi.fn()}
+      followupAudience={{ kind: 'internal_personal', source: 'ai' }} onMarkCustomer={vi.fn()} />);
+    expect(html).toContain('A IA trata este contato como interno ou pessoal e não sugere follow-up.');
+    expect(html).toContain('É cliente');
+  });
+  it('shows nothing about follow-up for a customer or an unknown audience', () => {
+    for (const followupAudience of [{ kind: 'customer' as const, source: 'manual' as const }, null, undefined]) {
+      const html = renderToStaticMarkup(<ContactIdentityCard contactId="c" name="Ana" phone={null} onSave={vi.fn()}
+        followupAudience={followupAudience} onMarkCustomer={vi.fn()} />);
+      expect(html).not.toContain('follow-up'); expect(html).not.toContain('É cliente');
+    }
+  });
   it('validates the trimmed name before saving', () => {
     expect(contactNameError('   ')).toBe('Digite o nome do contato.');
     expect(contactNameError('a'.repeat(201))).toBe('Use até 200 caracteres.');

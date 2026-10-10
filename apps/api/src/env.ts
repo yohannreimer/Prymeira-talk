@@ -63,6 +63,8 @@ export const envSchema = z
     WAHA_WEBHOOK_HMAC_KEY: z.preprocess((value) => (typeof value === 'string' && value.trim() === '' ? undefined : value), z.string().min(16).optional()),
     JEV_API_KEY: optionalNonEmptyString,
     JEV_MODEL: z.string().min(1).default("jev-latest"),
+    /** Workspaces on the new follow-up: comma-separated ids, "*" for all (default), or "off" to keep the old flow. */
+    FOLLOWUP_BRAIN_WORKSPACES: z.string().default("*").transform((value) => value.trim().toLowerCase() === "off" ? "" : value).transform((value) => value.split(",").map((item) => item.trim()).filter(Boolean)),
     INBOX_TRIAGE_PRIMARY: z.enum(["luna", "jev"]).default("jev"),
     INBOX_TRIAGE_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
     // Kill switch for the automatic contact name recovery job; on unless explicitly turned off.

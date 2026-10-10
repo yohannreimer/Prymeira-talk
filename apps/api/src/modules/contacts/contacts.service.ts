@@ -8,6 +8,7 @@ import {
   buildPhoneLookupCandidates,
   normalizePhoneForStorage
 } from "./phone-normalization.js";
+import { readFollowupAudience } from "../followups/followup-contact-audience.js";
 
 type DateLike = Date | string;
 
@@ -83,9 +84,15 @@ export function toContactDto(record: ContactRecord): ContactDto {
     company: record.company,
     atomicCrmContactId: record.atomicCrmContactId,
     atomicCrmLeadId: record.atomicCrmLeadId,
+    followupAudience: publicFollowupAudience(record.customFields),
     createdAt: toIsoString(record.createdAt),
     updatedAt: toIsoString(record.updatedAt)
   };
+}
+
+export function publicFollowupAudience(customFields: unknown) {
+  const audience = readFollowupAudience(customFields);
+  return audience ? { kind: audience.kind, source: audience.source } : null;
 }
 
 export function createContactsService(prisma: PrismaLike) {

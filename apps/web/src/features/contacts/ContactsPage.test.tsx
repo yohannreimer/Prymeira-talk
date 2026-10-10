@@ -10,6 +10,7 @@ const baseContact: ContactDto = {
   email: "ana@example.com",
   company: "Clínica Aurora",
   atomicCrmContactId: null,
+  followupAudience: null,
   atomicCrmLeadId: null,
   createdAt: "2026-05-21T00:00:00.000Z",
   updatedAt: "2026-05-21T00:00:00.000Z"

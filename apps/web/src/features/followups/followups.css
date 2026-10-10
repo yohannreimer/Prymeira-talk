@@ -269,6 +269,23 @@
   background: #aab6b0;
 }
 
+/* Reminders are for the seller, never a message to the customer: amber throughout so the two never look alike. */
+.followup-card-reminder {
+  border-color: rgba(183, 119, 35, 0.34);
+  background: linear-gradient(105deg, rgba(253, 244, 225, 0.96), rgba(255, 255, 255, 0.98) 42%);
+}
+
+.followup-card-reminder .followup-card-accent {
+  width: 4px;
+  background: var(--followups-amber);
+}
+
+.followup-card-reminder .followup-avatar {
+  border-color: rgba(183, 119, 35, 0.24);
+  color: #8d5b18;
+  background: #fbefd9;
+}
+
 .followup-card-main {
   padding: 19px 21px 17px 23px;
 }
@@ -351,6 +368,11 @@
   background: #fbefd9;
 }
 
+.followup-status-reminder {
+  color: #fff;
+  background: var(--followups-amber);
+}
+
 .followup-status-scheduled,
 .followup-status-processing {
   color: #356756;
@@ -372,6 +394,43 @@
   grid-template-columns: minmax(220px, 0.9fr) minmax(460px, 1.6fr);
   gap: 22px;
   margin-top: 16px;
+}
+
+.followup-analysis {
+  margin-top: 15px;
+}
+
+.followup-pending {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  color: var(--followups-ink);
+  font-size: 14px;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.followup-pending svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--followups-amber);
+}
+
+.followup-rationale {
+  margin: 5px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.followup-meta {
+  margin: 11px 0 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .followup-preview {

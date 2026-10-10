@@ -6,7 +6,7 @@ import { useSessionState, useTalkSession } from '../../app/session/TalkSessionPr
 import { CATALOG_STALE_MS, MAX_MESSAGES, receiptStatus } from '../../app/session/talk-session';
 import { LocationMessage } from './LocationMessage';
 import { needsHumanAttention } from "@prymeira-talk/shared";
-import type { ChannelDto, ConversationDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
+import type { ChannelDto, ConversationDto, ConversationFollowupDto, InboxView, MessageDto, RealtimeEvent, TagDto } from "@prymeira-talk/shared";
 import { Bookmark, Bot, Check, Pencil, CheckCircle2, MoreVertical, Smile, Zap, ShieldCheck, ContactRound, FileText, Forward, History, MessageCircleX, MessageSquare, MessageSquarePlus, Paperclip, Plus, Reply, Search, RotateCcw, Send, StickyNote, Trash2, TriangleAlert, UploadCloud, UserCheck, UserRound, Users, X } from "lucide-react";
 import { mentionNames, parsePixKey, parsePoll, quotedPreview, threadWithReactions, withMentionNames } from "./message-threading.js";
 import { PixKeyAction, PollMessage } from "./RichMessages";
@@ -71,6 +71,8 @@ import { useRealtimeEvents } from "./useRealtimeEvents";
 import { AssistantPanel } from './AssistantPanel';
 import { useHandoffBrief } from './useHandoffBrief';
 import { ContactIdentityCard } from './ContactIdentityCard';
+import { ConversationFollowupStrip, useConversationFollowup } from './ConversationFollowupStrip';
+import { useContactFollowupAudience } from './useContactFollowupAudience';
 import { ContactAvatar } from './ContactAvatar';
 import { ForwardDialog, canForward, displayPhone } from './ForwardDialog';
 import { InboxMedia, mediaCaption } from './InboxMedia';
@@ -572,6 +574,7 @@ function InboxPageContent() {
   const draftTextAreaRef = useRef<RichDraftHandle | null>(null);
   const [draftFormat, setDraftFormat] = useState({ bold: false, italic: false });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const applyFollowupRef = useRef<(followup: ConversationFollowupDto) => void>(() => undefined);
   const [acknowledgedHandoffIds, setAcknowledgedHandoffIds] = useState<Set<string>>(() => new Set());
   const getFreshToken = useCallback(async () => {
     const nextToken = await getToken();
@@ -976,6 +979,7 @@ function InboxPageContent() {
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     if (event.workspaceId !== session.workspaceId) return;
+    if (event.type === 'conversation_followup.updated') applyFollowupRef.current(event.payload);
     if (event.type === 'message.created' && event.payload.conversationId === selectedConversationIdRef.current) {
       if (!userReadingHistoryRef.current) scheduleMessageThreadScroll('auto');
       else setNewMessagesBelow(current => current + 1);
@@ -1024,6 +1028,15 @@ function InboxPageContent() {
     return last ? last.direction === 'outbound' : undefined;
   }, [thread.visible]);
   useEffect(() => { setReplyTarget(current => current && current.conversationId !== selectedConversationId ? null : current); }, [selectedConversationId]);
+  const conversationFollowup = useConversationFollowup(selectedConversation && !selectedConversation.isGroup ? selectedConversationId : null, getToken);
+  applyFollowupRef.current = conversationFollowup.apply;
+  const contactAudience = useContactFollowupAudience(selectedConversation && !selectedConversation.isGroup ? selectedConversation.contactId : null, getToken);
+  /** "Usar mensagem": the follow-up draft goes into the composer for the seller to adjust and send. */
+  function applyFollowupMessage(body: string) {
+    if (draft.trim()) insertDraftText(body);
+    else setDraft(body);
+    requestAnimationFrame(() => draftTextAreaRef.current?.focusEnd());
+  }
   const handoffEnabled = Boolean(selectedConversation && !selectedConversation.isGroup && needsHumanAttention(selectedConversation));
   const handoff = useHandoffBrief(selectedConversationId, handoffEnabled, selectedConversation?.lastMessageAt, getToken);
   const handoffBrief = useMemo(() => handoffEnabled ? handoff.data ?? {
@@ -2105,6 +2118,7 @@ selectedConversation ? (
           conversationId={selectedConversation.id}
           contactId={selectedConversation.contactId} name={selectedConversation.contactName ?? null}
           phone={selectedConversation.contactPhone ?? null} channelName={selectedConversation.channelName}
+          followupAudience={contactAudience.audience} onMarkCustomer={contactAudience.markCustomer}
           onSave={(...args) => actionsRef.current.saveContactName(...args)} /> : <div className="context-card">Nenhuma conversa</div>}
 
         {/* Card detalhes */}
@@ -2374,6 +2388,8 @@ selectedConversation ? (
             <button type="button" className="forward-select-go" disabled={!forwardSelection.length} onClick={() => setForwardOpen(true)}><Forward size={16} aria-hidden="true" />Encaminhar</button>
           </div> : null}
           {!selectedConversation?.isGroup ? <button ref={assistantTriggerRef} type="button" className="assistant-mobile-trigger" onClick={() => { setAssistantTab('assistant'); setAssistantOpen(true); }} disabled={!selectedConversation}><MessageSquare size={15} /> IA de apoio <span>{handoffBrief ? 'Próxima ação' : assistant.data?.status === 'ready' ? 'Sugestão pronta' : 'Abrir'}</span></button> : null}
+          {selectedConversation ? <ConversationFollowupStrip followup={conversationFollowup.followup} getToken={getToken}
+            onUseMessage={applyFollowupMessage} onUpdated={conversationFollowup.apply} /> : null}
           {composerOrigin ? <div className="assistant-composer-origin"><span>{originNeedsReview ? 'A conversa mudou. Confira o rascunho.' : 'Sugestão em edição. O texto enviado ficará registrado.'}</span>{originNeedsReview ? <button type="button" disabled={!assistant.data?.currentContextKey} onClick={() => setComposerOrigin(current => current && assistant.data?.currentContextKey ? { ...current, contextKey: assistant.data.currentContextKey } : current)}>Revisei o contexto</button> : null}</div> : null}
           {pendingFill && pendingFill.conversationId === selectedConversationId ? <QuickReplyFill title={pendingFill.reply.title} missing={pendingFill.missing}
             contactLabel={pendingFill.contactLabel} busy={fillBusy} error={fillError} onUse={answer => void fillQuickReply(answer)}

@@ -27,6 +27,7 @@ const reasonLabels: Record<string, string> = {
   manual_postponed: "Adiado pela equipe.",
   manual_delivery_uncertain: "O provedor pode ter recebido a mensagem; o reenvio foi bloqueado por segurança.",
   delivery_completion_failed: "A entrega foi confirmada, mas houve falha ao concluir o registro.",
+  retry_exhausted: "A geração do acompanhamento falhou repetidamente e foi interrompida.",
   max_steps_reached: "A sequência de acompanhamentos configurada foi concluída.",
   followup_not_needed: "O contexto não pede um novo contato.",
   jev_skip: "A análise indicou que não é necessário acompanhar agora.",
@@ -43,11 +44,23 @@ const reasonLabels: Record<string, string> = {
   context_unavailable: "O contexto da conversa não está disponível; revisão humana necessária.",
   handoff_required: "A resposta gerada exige atendimento humano.",
   provider_reply_missing: "O provedor não gerou uma resposta para revisão.",
-  audit_blocked: "A auditoria de segurança bloqueou o envio automático."
+  audit_blocked: "A auditoria de segurança bloqueou o envio automático.",
+  seller_reminder: "A próxima ação é da equipe: lembrete para o vendedor, sem mensagem ao cliente.",
+  followup_brain_unavailable: "A leitura da conversa pela IA está temporariamente indisponível.",
+  seller_done: "Lembrete concluído",
+  brain_closed: "Conversa encerrada",
+  brain_no_pending: "Nada pendente",
+  brain_internal_contact: "Contato interno ou pessoal"
 };
 
 export function followupKindLabel(kind: ConversationFollowupKind) {
+  if (kind === "seller_reminder") return "Lembrete";
   return kind === "qualification" ? "Qualificação" : "Comercial humano";
+}
+
+/** Reminders are for the seller (the company owes the next step), never a message to the customer. */
+export function isSellerReminder(followup: ConversationFollowupDto) {
+  return followup.kind === "seller_reminder";
 }
 export function followupStatusLabel(status: ConversationFollowupStatus) {
   const labels: Record<ConversationFollowupStatus, string> = {
@@ -134,5 +147,7 @@ export function matchesFollowupFilter(
     return terminalCancelledStatuses.has(followup.status) &&
       !("reason" in followup && followup.reason.startsWith("eligibility_"));
   }
+  if (filter === "reminders") return followup.status === "review" && isSellerReminder(followup);
+  if (filter === "review") return followup.status === "review" && !isSellerReminder(followup);
   return followup.status === filter;
 }
