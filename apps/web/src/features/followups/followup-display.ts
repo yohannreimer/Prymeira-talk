@@ -27,6 +27,7 @@ const reasonLabels: Record<string, string> = {
   manual_postponed: "Adiado pela equipe.",
   manual_delivery_uncertain: "O provedor pode ter recebido a mensagem; o reenvio foi bloqueado por segurança.",
   delivery_completion_failed: "A entrega foi confirmada, mas houve falha ao concluir o registro.",
+  retry_exhausted: "A geração do acompanhamento falhou repetidamente e foi interrompida.",
   max_steps_reached: "A sequência de acompanhamentos configurada foi concluída.",
   followup_not_needed: "O contexto não pede um novo contato.",
   jev_skip: "A análise indicou que não é necessário acompanhar agora.",

@@ -213,7 +213,7 @@ describe("conversation followups", () => {
     const scheduled = activeFollowup({ createdAt: anchorAt, updatedAt: new Date("2026-09-21T12:05:00.000Z") });
     const prisma = buildPrisma({
       conversationFollowup: {
-        findFirst: vi.fn().mockResolvedValueOnce(processing).mockResolvedValueOnce(scheduled),
+        findFirst: vi.fn().mockResolvedValueOnce(processing).mockResolvedValueOnce(processing).mockResolvedValueOnce(scheduled),
         updateMany: vi.fn().mockResolvedValue({ count: 1 })
       }
     });
@@ -1595,7 +1595,8 @@ describe("recoverClaimedFollowup", () => {
       followupId: ids.followup,
       claim: { lockedAt: claimLockedAt },
       outcome: "retry",
-      reason: "provider_generation_failed: provider down"
+      reason: "provider_generation_failed: provider down",
+      now: claimLockedAt
     })).resolves.toEqual({ status: "recovered" });
 
     expect(updateMany).toHaveBeenCalledWith({
@@ -1609,9 +1610,79 @@ describe("recoverClaimedFollowup", () => {
       data: {
         status: "scheduled",
         lockedAt: null,
-        reason: "provider_generation_failed: provider down"
+        reason: "provider_generation_failed: provider down",
+        scheduledAt: new Date(claimLockedAt.getTime() + 60_000),
+        decision: { transientRetries: 1 }
       }
     });
+  });
+
+  it("backs off further on each consecutive transient failure", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const findFirst = vi.fn().mockResolvedValue({ decision: { purpose: "proposal_checkin", transientRetries: 2 } });
+    const prisma = buildPrisma({ conversationFollowup: { updateMany, findFirst } });
+
+    await createConversationFollowupsService(prisma).recoverClaimedFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: claimLockedAt },
+      outcome: "retry",
+      reason: "provider_generation_failed: provider down",
+      now: claimLockedAt
+    });
+
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: "scheduled",
+        scheduledAt: new Date(claimLockedAt.getTime() + 30 * 60_000),
+        decision: { purpose: "proposal_checkin", transientRetries: 3 }
+      })
+    }));
+  });
+
+  it("stops retrying once the transient retry budget is spent", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const findFirst = vi.fn().mockResolvedValue({ decision: { transientRetries: 3 } });
+    const prisma = buildPrisma({ conversationFollowup: { updateMany, findFirst } });
+
+    await createConversationFollowupsService(prisma).recoverClaimedFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: claimLockedAt },
+      outcome: "retry",
+      reason: "provider_generation_failed: provider down"
+    });
+
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: {
+        status: "failed",
+        activeKey: null,
+        lockedAt: null,
+        reason: "retry_exhausted",
+        decision: { transientRetries: 3, lastError: "provider_generation_failed: provider down" }
+      }
+    }));
+  });
+
+  it("keeps an explicit retry time without spending the retry budget", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const findFirst = vi.fn();
+    const prisma = buildPrisma({ conversationFollowup: { updateMany, findFirst } });
+    const scheduledAt = new Date(claimLockedAt.getTime() + 12 * 60 * 60_000);
+
+    await createConversationFollowupsService(prisma).recoverClaimedFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: claimLockedAt },
+      outcome: "retry",
+      reason: "outside_business_hours",
+      scheduledAt
+    });
+
+    expect(findFirst).not.toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { status: "scheduled", lockedAt: null, reason: "outside_business_hours", scheduledAt }
+    }));
   });
 
   it("does not recover a record if its original lock token no longer matches", async () => {

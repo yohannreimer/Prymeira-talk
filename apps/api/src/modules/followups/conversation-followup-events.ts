@@ -239,6 +239,7 @@ function safeReason(
     "human_controlled",
     "session_context_changed",
     "delivery_completion_failed",
+    "retry_exhausted",
     "eligibility_customer_answer_pending",
     "eligibility_proposal_response_pending",
     "eligibility_seller_action_pending",

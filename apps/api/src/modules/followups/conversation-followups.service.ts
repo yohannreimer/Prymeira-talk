@@ -173,6 +173,7 @@ export type ClaimedFollowupRecoveryResult =
 
 export const MAX_AUTOMATIC_FOLLOWUP_STEPS = 10;
 export const DEFAULT_FOLLOWUP_PROCESSING_LEASE_MS = 10 * 60 * 1_000;
+export const FOLLOWUP_TRANSIENT_RETRY_DELAYS_MS = [1, 5, 30].map((minutes) => minutes * 60_000);
 
 const ACTIVE_FOLLOWUP_STATUSES: ActiveFollowupStatus[] = ["evaluating", "scheduled", "processing", "review"];
 const MAX_UNIQUE_CONFLICT_RETRIES = 3;
@@ -526,7 +527,33 @@ export function createConversationFollowupsService(
     outcome: "retry" | "failed";
     reason: string;
     scheduledAt?: Date;
+    now?: Date;
   }): Promise<ClaimedFollowupRecoveryResult> {
+    const failed = (reason: string) => ({ status: "failed", activeKey: null, lockedAt: null, reason });
+    let data: Record<string, unknown>;
+    if (input.outcome === "failed") {
+      data = failed(input.reason);
+    } else if (input.scheduledAt) {
+      data = { status: "scheduled", lockedAt: null, reason: input.reason, scheduledAt: input.scheduledAt };
+    } else {
+      // A transient failure without an explicit time must not be picked up
+      // again by the next poll: back off, and stop after a bounded number.
+      const current = await prisma.conversationFollowup.findFirst({
+        where: { workspaceId: input.workspaceId, id: input.followupId }
+      });
+      const decision = asRecord(current?.decision) ?? {};
+      const retries = typeof decision.transientRetries === "number" ? decision.transientRetries : 0;
+      const delayMs = FOLLOWUP_TRANSIENT_RETRY_DELAYS_MS[retries];
+      data = delayMs === undefined
+        ? { ...failed("retry_exhausted"), decision: { ...decision, lastError: input.reason } }
+        : {
+            status: "scheduled",
+            lockedAt: null,
+            reason: input.reason,
+            scheduledAt: new Date((input.now ?? new Date()).getTime() + delayMs),
+            decision: { ...decision, transientRetries: retries + 1 }
+          };
+    }
     const recovery = await prisma.conversationFollowup.updateMany({
       where: {
         workspaceId: input.workspaceId,
@@ -535,19 +562,7 @@ export function createConversationFollowupsService(
         status: "processing",
         lockedAt: input.claim.lockedAt
       },
-      data: input.outcome === "retry"
-        ? {
-            status: "scheduled",
-            lockedAt: null,
-            reason: input.reason,
-            ...(input.scheduledAt ? { scheduledAt: input.scheduledAt } : {})
-          }
-        : {
-            status: "failed",
-            activeKey: null,
-            lockedAt: null,
-            reason: input.reason
-          }
+      data
     });
     if (recovery.count !== 1) return { status: "not_active" };
     await publish(input.workspaceId, input.followupId);
