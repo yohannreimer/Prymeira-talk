@@ -47,6 +47,7 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
 async function mount(element: React.ReactNode) { await act(async () => root.render(element)); }
 function button(text: string) { return [...container.querySelectorAll("button")].find((item) => item.textContent?.includes(text))!; }
+function agentType(label: string) { return [...container.querySelectorAll('[aria-label="Tipo de agente"] button')].find((item) => item.textContent?.includes(label)) as HTMLButtonElement; }
 function field(label: string) { return [...container.querySelectorAll("label")].find((item) => item.textContent?.includes(label))!.querySelector("input, select, textarea") as HTMLInputElement; }
 async function click(element: Element) { await act(async () => (element as HTMLElement).click()); }
 async function change(element: HTMLInputElement, value: string) {
@@ -121,7 +122,7 @@ describe("prospecção nos fluxos de configuração", () => {
   });
   it("requires a handoff goal and saves a prospecting agent with an empty plan", async () => {
     mock.agents.mockResolvedValue([]); await mount(<AgentsPage />);
-    await change(field("Tipo de agente"), "prospecting");
+    await click(agentType("Prospecção"));
     expect(field("Prompt do sistema").value).toContain("prospecção");
     const form = field("Nome").closest("form")!;
     await act(async () => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
@@ -133,7 +134,7 @@ describe("prospecção nos fluxos de configuração", () => {
   });
   it("defaults legacy agents to attendance and preserves customized prompts on type changes", async () => {
     mock.agents.mockResolvedValue([{ ...agent, type: undefined }]); await mount(<AgentsPage />);
-    expect(field("Tipo de agente").value).toBe("attendance"); await change(field("Tipo de agente"), "prospecting");
+    expect(agentType("Atendimento").getAttribute("aria-checked")).toBe("true"); await click(agentType("Prospecção"));
     expect(field("Prompt do sistema").value).toBe("Prompt personalizado");
   });
   it("preserves stored closing data while editing other fields and caps steps at ten", async () => {
