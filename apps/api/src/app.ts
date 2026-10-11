@@ -6,6 +6,7 @@ import type { AppEnv } from "./env.js";
 import { authContextPlugin } from "./plugins/auth-context.js";
 import type { AuthContextPluginOptions } from "./plugins/auth-context.js";
 import { prismaPlugin } from "./plugins/prisma.js";
+import { resolveCurrentUserProfileId } from "./modules/conversations/current-user.js";
 import { inboxTimingPlugin } from "./plugins/inbox-timing.js";
 import { cnpjDatabasePlugin } from "./plugins/cnpj-database.js";
 import { createAgentFollowupRuntime } from "./modules/agents/agent-followup-runtime.js";
@@ -198,10 +199,27 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
       return reply.code(503).send({ ok: false, product: env.PRYMEIRA_PRODUCT_KEY });
     }
   });
-  app.get("/me", async (request) => ({
-    workspaceId: request.talk.workspaceId,
-    role: request.talk.role
-  }));
+  app.get("/me", async (request) => {
+    // The profile id lets the web app tell its own conversations apart (alerts for "mine or unassigned").
+    let userId: string | null = null;
+    if (app.hasDecorator("prisma")) {
+      try {
+        userId = await resolveCurrentUserProfileId({
+          prisma: app.prisma,
+          workspaceId: request.talk.workspaceId,
+          clerkUserId: request.talk.clerkUserId,
+          authorizationHeader: request.headers.authorization
+        });
+      } catch (error) {
+        request.log.warn({ err: error }, "Could not resolve the current user profile for /me");
+      }
+    }
+    return {
+      workspaceId: request.talk.workspaceId,
+      role: request.talk.role,
+      ...(userId ? { userId } : {})
+    };
+  });
 
   await app.register(realtimeRoutes, { bridgeDatabaseUrl: env.REALTIME_BRIDGE_ENABLED ? env.DATABASE_URL : undefined });
   const followupPublisher = createConversationFollowupRealtimePublisher(app.realtime);

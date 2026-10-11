@@ -360,10 +360,10 @@ export function TeamPage() {
 
   return (
     <section className="module-page team-page" aria-label="Equipe">
-      <header className="module-header">
+      <header className="module-header page-header">
         <div>
-          <p className="eyebrow">Prymeira Talk</p>
           <h1>Equipe</h1>
+          <p className="page-header-lede">Quem usa o Talk, o acesso de cada um e as filas de atendimento.</p>
         </div>
         <div className="module-header-actions">
           <span className={`status-badge status-badge--${isLoading ? "waiting" : "open"}`}>

@@ -404,6 +404,34 @@ select:disabled {
   gap: 10px;
 }
 
+.module-header.page-header {
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 28px 18px 8px;
+  background: transparent;
+  border-bottom: 0;
+}
+
+.module-header.page-header h1 {
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.page-header-lede {
+  margin: 4px 0 0;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+.page-header-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .module-header-actions {
   display: flex;
   align-items: center;
@@ -9144,3 +9172,11 @@ select:disabled {
 .agents-page .agent-improvement-card { border-radius: var(--radius-lg); }
 .agents-test-composer textarea { min-height: 88px; }
 .agents-page__header .module-header-actions { flex-wrap: wrap; flex-shrink: 1; }
+
+.rail-alerts {
+  flex: 0 0 auto;
+}
+
+.rail-alerts.is-muted {
+  color: rgba(255, 255, 255, 0.45);
+}

@@ -8,11 +8,16 @@ export const CATALOG_STALE_MS = 5 * 60_000;
 export const HISTORY_GC_MS = 10 * 60_000;
 export const MAX_HISTORIES = 30;
 export const MAX_MESSAGES = 100;
+const PENDING_ALERT_MS = 1_500;
 type LocalMessageChange = { type: 'local.messages'; conversationId: string; rows: MessageDto[]; removedIds: Set<string> };
 type FenceEvent = RealtimeEvent | LocalMessageChange;
 type Fence = { events: FenceEvent[]; queryHash?: string; finish(): void };
 type ReadCommit = { fence: Fence; apply(data: unknown): unknown };
 type ReadOptions = { signal?: AbortSignal; manualCommit?: boolean };
+/** Something a person may want to hear about: a customer wrote, or the AI handed a conversation to the team. */
+export type TalkAlert =
+  | { kind: 'message'; message: MessageDto; conversation?: ConversationDto }
+  | { kind: 'handoff'; conversation: ConversationDto; previous?: ConversationDto };
 
 export function receiptStatus(current: MessageDto['status'], incoming: MessageDto['status']) {
   const rank = { pending: 0, sent: 1, delivered: 2, read: 3, failed: -1 };
@@ -132,6 +137,9 @@ export class TalkSession {
   private unsubscribeCache: () => void;
   private attentionReads = new Set<{ channel: string; dirty: boolean }>();
   private contextContacts = new Map<string, string>();
+  private alertListeners = new Set<(alert: TalkAlert) => void>();
+  /** Messages for conversations not loaded yet wait briefly for the conversation update that follows them. */
+  private pendingAlerts = new Map<string, { message: MessageDto; timer: ReturnType<typeof setTimeout> }>();
   private histories = new Map<string, number>();
   private active: string | null = null;
   private prefetching = 0;
@@ -160,6 +168,40 @@ export class TalkSession {
   subscribeUI(key: string, listener: () => void) {
     const listeners = this.listeners.get(key) ?? new Set(); this.listeners.set(key, listeners); listeners.add(listener);
     return () => { listeners.delete(listener); };
+  }
+  subscribeAlerts(listener: (alert: TalkAlert) => void) {
+    this.alertListeners.add(listener);
+    return () => { this.alertListeners.delete(listener); };
+  }
+  /** Read before the event patches the cache: the list still shows the conversation as it was. */
+  private alertFor(event: RealtimeEvent, previous: ConversationDto | undefined): TalkAlert | null {
+    if (event.type === 'message.created') {
+      const message = event.payload;
+      if (message.direction !== 'inbound' || message.reaction || message.deletedAt || message.type === 'system' || message.type === 'internal_note') return null;
+      const conversation = this.findConversation(message.conversationId);
+      if (conversation) return { kind: 'message', message, conversation };
+      clearTimeout(this.pendingAlerts.get(message.conversationId)?.timer);
+      const timer = setTimeout(() => {
+        this.pendingAlerts.delete(message.conversationId);
+        this.emitAlert({ kind: 'message', message });
+      }, PENDING_ALERT_MS);
+      this.pendingAlerts.set(message.conversationId, { message, timer });
+      return null;
+    }
+    if (event.type === 'conversation.updated') {
+      const pending = this.pendingAlerts.get(event.payload.id);
+      if (pending) {
+        clearTimeout(pending.timer); this.pendingAlerts.delete(event.payload.id);
+        this.emitAlert({ kind: 'message', message: pending.message, conversation: event.payload });
+      }
+    }
+    if (event.type === 'conversation.updated' && needsHumanAttention(event.payload) && !(previous && needsHumanAttention(previous))) {
+      return { kind: 'handoff', conversation: event.payload, previous };
+    }
+    return null;
+  }
+  private emitAlert(alert: TalkAlert) {
+    if (!this.disposed) for (const listener of this.alertListeners) listener(alert);
   }
   setActive(id: string | null) { this.active = id; if (id) this.touch(id); }
   touch(id: string) {
@@ -307,6 +349,7 @@ export class TalkSession {
     if (event.workspaceId !== this.workspaceId || this.disposed) return;
     for (const fence of this.fences) fence.events.push(event);
     const previous = event.type === 'conversation.updated' ? this.findConversation(event.payload.id) : undefined;
+    const alert = this.alertListeners.size ? this.alertFor(event, previous) : null;
     for (const query of this.client.getQueryCache().findAll({ queryKey: this.key('messages') })) {
       const id = query.queryKey[3];
       const rows = query.state.data as MessageDto[] | undefined;
@@ -376,6 +419,7 @@ export class TalkSession {
         if (scope.view === 'unread' || scope.view === 'reply') this.scheduleInvalidation(query.queryHash);
       }
     }
+    if (alert) this.emitAlert(alert);
   }
   private scheduleInvalidation(hash: string) {
     this.pendingInvalidations.add(hash);
@@ -420,7 +464,9 @@ export class TalkSession {
     for (const timer of this.prefetchTimers.values()) clearTimeout(timer);
     this.prefetchTimers.clear(); void this.client.cancelQueries(); this.client.clear(); this.blobs.clear();
     for (const fence of this.fences) fence.finish();
-    this.readCommits = new WeakMap(); this.unsubscribeCache();
+    this.readCommits = new WeakMap(); this.unsubscribeCache(); this.alertListeners.clear();
+    for (const pending of this.pendingAlerts.values()) clearTimeout(pending.timer);
+    this.pendingAlerts.clear();
     this.ui.clear(); this.histories.clear(); this.fences.clear(); this.attentionReads.clear(); this.contextContacts.clear(); this.listeners.clear();
   }
 }

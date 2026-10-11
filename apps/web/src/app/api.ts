@@ -234,6 +234,8 @@ export interface ConversationActionResultDto {
 export interface CurrentTalkUserDto {
   workspaceId: string;
   role: "owner" | "manager" | "agent";
+  /** The signed-in person's profile in this workspace, when one exists. */
+  userId?: string;
 }
 
 export interface AgentTestChatMessageDto {

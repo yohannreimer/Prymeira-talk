@@ -731,17 +731,17 @@ export function AutomationsPageView({
 
   return (
     <section className="module-page automations-page" aria-label="Automações">
-      <header className="module-header">
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <div>
-            <p className="eyebrow">Prymeira Talk</p>
+      <header className="module-header page-header">
+        <div>
+          <div className="page-header-title">
             <h1>Automações</h1>
+            {automations.length > 0 ? (
+              <span className="status-badge status-badge--open">
+                {enabledCount} ativa{enabledCount !== 1 ? "s" : ""}
+              </span>
+            ) : null}
           </div>
-          {automations.length > 0 ? (
-            <span className="status-badge status-badge--open">
-              {enabledCount} ativa{enabledCount !== 1 ? "s" : ""}
-            </span>
-          ) : null}
+          <p className="page-header-lede">Fluxos que respondem, movem cards e avisam a equipe sozinhos.</p>
         </div>
         <button className="primary-button" type="button" onClick={onCreate}>
           <Plus size={16} aria-hidden="true" />

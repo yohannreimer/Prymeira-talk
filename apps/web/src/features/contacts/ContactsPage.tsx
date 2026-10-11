@@ -1303,10 +1303,10 @@ export function ContactsPage() {
 
   return (
     <ContactPhotoProvider getToken={getToken}><section className="module-page contacts-page" aria-label="Contatos">
-      <header className="module-header">
+      <header className="module-header page-header">
         <div>
-          <p className="eyebrow">Prymeira Talk</p>
           <h1>Contatos</h1>
+          <p className="page-header-lede">Todos os clientes e empresas com quem o time conversa.</p>
         </div>
         <button
           className="primary-button"
