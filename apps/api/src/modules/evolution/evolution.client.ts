@@ -79,6 +79,8 @@ export interface SendTextInput {
   number: string;
   text: string;
   linkPreview?: boolean;
+  /** Milliseconds WhatsApp shows "digitando..." before the message arrives. */
+  delay?: number;
   /** Reply to this WhatsApp message (stanza id; participant for a group member's message). */
   quoted?: { id: string; fromMe: boolean; participant?: string | null; body?: string | null };
 }
@@ -691,6 +693,7 @@ export function createEvolutionClient(options: CreateEvolutionClientOptions): Ev
         number: input.number,
         text: input.text,
         linkPreview: input.linkPreview ?? false,
+        ...(input.delay ? { delay: input.delay } : {}),
         // Evolution 2.x: the quoted message's key, and its text for the preview WhatsApp shows above the reply.
         ...(input.quoted ? { quoted: { key: { id: input.quoted.id, fromMe: input.quoted.fromMe, ...(input.quoted.participant ? { participant: input.quoted.participant } : {}) },
           message: { conversation: input.quoted.body ?? '' } } } : {})

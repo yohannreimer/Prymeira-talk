@@ -488,6 +488,7 @@ model Conversation {
   aiRuns                 AiAgentRun[]
   aiPendingReplies       AiAgentPendingReply[]
   followups              ConversationFollowup[]
+  meetingReminders       MeetingReminder[]
   improvementSuggestions AiAgentImprovement[]
   assistantState         AssistantConversationState?
   assistantSuggestions   AssistantSuggestion[]
@@ -935,6 +936,32 @@ model AutomationWebhookToken {
   @@unique([workspaceId, id])
   @@unique([workspaceId, ruleId])
   @@map("automation_webhook_tokens")
+}
+
+/// A message an agent sends before a call it booked ("Marcar call"). One row per
+/// reminder step; a reschedule cancels the pending rows and creates new ones.
+model MeetingReminder {
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @map("workspace_id")
+  conversationId  String    @map("conversation_id") @db.Uuid
+  agentId         String    @map("agent_id") @db.Uuid
+  eventId         String    @map("event_id")
+  meetingStartsAt DateTime  @map("meeting_starts_at")
+  minutesBefore   Int       @map("minutes_before")
+  dueAt           DateTime  @map("due_at")
+  messages        Json      @default("[]")
+  status          String    @default("scheduled")
+  lockedAt        DateTime? @map("locked_at")
+  sentAt          DateTime? @map("sent_at")
+  error           String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  conversation Conversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@index([status, dueAt])
+  @@index([workspaceId, conversationId, status])
+  @@map("meeting_reminders")
 }
 
 model AutomationRun {

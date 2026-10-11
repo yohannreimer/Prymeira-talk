@@ -1,5 +1,6 @@
-import { agentFollowupConfigSchema, type AgentFollowupConfig } from "@prymeira-talk/shared";
+import { agentFollowupConfigSchema, DEFAULT_MEETING_REMINDERS, readMeetingRemindersConfig, readReplyInBubbles, type AgentFollowupConfig, type MeetingRemindersConfig } from "@prymeira-talk/shared";
 import { AgentFollowupConfigEditor, emptyAgentFollowupConfig, validateAgentFollowupConfig } from "./AgentFollowupConfigEditor";
+import { MeetingRemindersEditor, validateMeetingReminders } from "./MeetingRemindersEditor";
 import { useTalkAuth } from "../../app/auth";
 import {
   apiCreateAgent,
@@ -87,6 +88,8 @@ type AgentFormState = {
   allowedTagIds: string[];
   reasoningEffort: "none" | "low";
   onlyNewConversations: boolean;
+  replyInBubbles: boolean;
+  meetingReminders: MeetingRemindersConfig;
 };
 
 type KnowledgeFormState = {
@@ -134,6 +137,8 @@ function emptyAgentForm(): AgentFormState {
     systemPrompt: defaultSystemPrompt,
     reasoningEffort: "none",
     onlyNewConversations: false,
+    replyInBubbles: false,
+    meetingReminders: DEFAULT_MEETING_REMINDERS,
     allowedActions: defaultAllowedActions,
     allowedTagIds: []
   };
@@ -150,6 +155,8 @@ function agentFormFromAgent(agent: AiAgentDto): AgentFormState {
     systemPrompt: agent.systemPrompt,
     reasoningEffort: agent.behaviorConfig.reasoningEffort === "low" ? "low" : "none",
     onlyNewConversations: agent.behaviorConfig.onlyNewConversations === true,
+    replyInBubbles: readReplyInBubbles(agent.behaviorConfig),
+    meetingReminders: readMeetingRemindersConfig(agent.behaviorConfig),
     allowedActions: agent.allowedActions,
     allowedTagIds: agent.allowedTags.map((tag) => tag.id)
   };
@@ -484,6 +491,10 @@ export function AgentsPage() {
         const followupError = validateAgentFollowupConfig(agentForm.followupConfig);
         if (followupError) throw new Error(followupError);
       }
+      if (agentForm.allowedActions.includes("schedule_meeting")) {
+        const remindersError = validateMeetingReminders(agentForm.meetingReminders);
+        if (remindersError) throw new Error(remindersError);
+      }
       const prospectingFields = { type: agentForm.type,
         ...(agentForm.type === "prospecting" ? { prospectingGoal: agentForm.prospectingGoal.trim(), followupConfig: agentForm.followupConfig } : {}) };
       if (selectedAgent) {
@@ -494,6 +505,8 @@ export function AgentsPage() {
           systemPrompt: agentForm.systemPrompt,
           reasoningEffort: agentForm.reasoningEffort,
           onlyNewConversations: agentForm.onlyNewConversations,
+          replyInBubbles: agentForm.replyInBubbles,
+          ...(agentForm.allowedActions.includes("schedule_meeting") ? { meetingReminders: agentForm.meetingReminders } : {}),
           allowedActions: agentForm.allowedActions,
           allowedTagIds: agentForm.allowedTagIds
         });
@@ -511,6 +524,8 @@ export function AgentsPage() {
         systemPrompt: agentForm.systemPrompt,
         reasoningEffort: agentForm.reasoningEffort,
         onlyNewConversations: agentForm.onlyNewConversations,
+        replyInBubbles: agentForm.replyInBubbles,
+        ...(agentForm.allowedActions.includes("schedule_meeting") ? { meetingReminders: agentForm.meetingReminders } : {}),
         allowedActions: agentForm.allowedActions,
         allowedTagIds: agentForm.allowedTagIds
       });
@@ -1289,6 +1304,18 @@ export function AgentsPage() {
                           <span>Ligado: a IA só inicia em conversas sem histórico anterior no WhatsApp. Conversas antigas ficam como "Humano necessário" para o time atender.</span>
                         </span>
                       </label>
+                      <label className="agents-switch-row">
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          checked={agentForm.replyInBubbles}
+                          onChange={(event) => setAgentForm((current) => ({ ...current, replyInBubbles: event.target.checked }))}
+                        />
+                        <span className="agents-switch-row__body">
+                          <strong>Responder em mensagens separadas</strong>
+                          <span>Ligado: cada parágrafo da resposta chega como uma mensagem, com "digitando..." antes, como uma pessoa escreve. Peça nas instruções para separar as partes com uma linha em branco.</span>
+                        </span>
+                      </label>
                     </section>
 
                     {selectedAgent ? (
@@ -1397,6 +1424,12 @@ export function AgentsPage() {
                         );
                       })}
                     </section>
+                    {agentForm.allowedActions.includes("schedule_meeting") ? (
+                      <MeetingRemindersEditor
+                        value={agentForm.meetingReminders}
+                        onChange={(meetingReminders) => setAgentForm((current) => ({ ...current, meetingReminders }))}
+                      />
+                    ) : null}
                   </div>
 
                   <div className="agents-column">

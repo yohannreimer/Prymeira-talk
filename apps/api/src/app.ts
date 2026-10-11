@@ -23,6 +23,7 @@ import { createLunaAgentImprovementDetector } from "./modules/agents/luna-agent-
 import { createOpenAiAgentImprovementRuleWriter } from "./modules/agents/openai-agent-improvement.js";
 import { createAgentReplyScheduler } from "./modules/agents/agent-reply-scheduler.js";
 import { createConversationFollowupScheduler } from "./modules/followups/conversation-followup-scheduler.js";
+import { createMeetingReminderPoller, createMeetingReminderService, type MeetingRemindersPrismaLike } from "./modules/agents/meeting-reminders.js";
 import { createConversationFollowupsService } from "./modules/followups/conversation-followups.service.js";
 import { createFollowupBrain } from "./modules/followups/followup-brain.js";
 import { createFollowupAudioTranscriber } from "./modules/followups/followup-audio-transcriber.js";
@@ -437,6 +438,32 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
         }
       );
   const handoffBriefService = options.prismaEnabled === false ? undefined : createHandoffBriefService(app.prisma);
+  const meetingScheduler = meetingSchedulerFromEnv(env);
+  const meetingReminders =
+    options.prismaEnabled === false || !meetingScheduler
+      ? undefined
+      : createMeetingReminderService({
+          prisma: app.prisma as unknown as MeetingRemindersPrismaLike,
+          evolution: evolutionRuntime,
+          meetingScheduler,
+          timeZone: env.MEETING_TIMEZONE,
+          realtime: app.realtime,
+          logger: app.log
+        });
+  const meetingReminderPoller = meetingReminders
+    ? createMeetingReminderPoller({
+        service: meetingReminders,
+        onError(error) {
+          app.log.error({ err: error }, "Meeting reminder polling failed.");
+        }
+      })
+    : undefined;
+  meetingReminderPoller?.start();
+  if (meetingReminderPoller) {
+    app.addHook("onClose", async () => {
+      await meetingReminderPoller.stop();
+    });
+  }
   const agentRuntime =
     options.prismaEnabled === false
       ? undefined
@@ -452,7 +479,8 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           followupService,
           inboxTriage,
           handoffBriefService,
-          meetingScheduler: meetingSchedulerFromEnv(env),
+          meetingScheduler,
+          meetingReminders,
           durableMedia: durableMedia?.media,
           transcriptions: durableMedia?.transcriptions
         });

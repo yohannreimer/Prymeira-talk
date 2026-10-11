@@ -59,8 +59,11 @@ No Portainer, nas variáveis do stack do `talk_api`:
 | `MEETING_DAYS_AHEAD` | não | `7` | Quantos dias à frente oferecer |
 | `MEETING_TITLE` | não | `Call Prymeira` | Título do evento (o nome do contato é somado) |
 
-Sem as três primeiras, a ação fica desligada e nada muda. Não há migração de
-banco nesta mudança.
+Sem as três primeiras, a ação fica desligada e nada muda.
+
+As mensagens antes da call (abaixo) guardam a programação na tabela
+`meeting_reminders`: rode `pnpm --filter @prymeira-talk/api migrate:deploy`
+(ou o passo de migração do deploy) ao subir esta versão.
 
 ## Ligar no agente
 
@@ -68,3 +71,33 @@ Em **Agentes**, abra o agente que atende o site, marque **Marcar call** em
 *Conversar com o cliente* e salve. Vale incluir nas instruções do agente quando
 ele deve propor a call, por exemplo: "Depois de entender a necessidade, convide
 para uma call de 15 minutos e ofereça os horários disponíveis".
+
+## Mensagens antes da call
+
+Com **Marcar call** ligado, a aba de ações do agente mostra o cartão
+**Mensagens antes da call**. Cada call que o agente marcar recebe essas
+mensagens no WhatsApp, sozinhas, no tempo configurado.
+
+- Por padrão vem um lembrete 1 hora antes: "Oi, {{primeiro_nome}}! Passando pra
+  lembrar da nossa call hoje às {{hora}}. Até já!".
+- Até 5 lembretes por call (por exemplo, 3 horas antes e 1 hora antes), cada um
+  com até 3 mensagens, enviadas em ordem.
+- Cada mensagem pode ter texto (links funcionam), um arquivo por link
+  (imagem, vídeo ou PDF; o texto vira a legenda) ou os dois.
+- No texto: `{{nome}}`, `{{primeiro_nome}}`, `{{dia}}`, `{{hora}}`,
+  `{{horario}}` (dia e hora juntos) e `{{link}}` (o link do Meet). Uma linha
+  como "Link: {{link}}" some quando a call não tem link.
+- Se a call for remarcada pelo agente, os lembretes da antiga são cancelados e
+  os novos seguem o novo horário. Antes de enviar, o Talk confere a agenda: se
+  a call foi apagada ou movida à mão, o lembrete não sai.
+- Lembretes cujo horário já passou na hora da marcação são pulados (uma call
+  marcada para daqui a 2 horas não recebe o de 3 horas antes).
+- A nota interna da marcação lista os lembretes programados, e cada mensagem
+  enviada aparece na conversa.
+
+## Responder em mensagens separadas
+
+Em **Como ele responde**, a opção **Responder em mensagens separadas** faz o
+agente mandar cada parágrafo da resposta como uma mensagem própria no
+WhatsApp (até 3), com "digitando..." antes de cada uma, como uma pessoa faria.
+O link da call, quando houver, vai na última.

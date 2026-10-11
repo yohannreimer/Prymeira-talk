@@ -5,7 +5,7 @@ import { isExplicitProspectingRefusal } from "../prospecting/prospecting-refusal
 import { reserveProspectingOutbound, dispatchProspectingOutbound } from "../prospecting/prospecting-delivery.js";
 import { buildProspectingInstructions } from "../prospecting/prospecting-instructions.js";
 import { autonomousAgentAllowed, findProspectingReservation, asRecord, stopProspectingConversation } from "../prospecting/prospecting-policy.js";
-import { aiAgentAllowedActionSchema, type AiAgentAllowedAction, type MessageDto } from "@prymeira-talk/shared";
+import { aiAgentAllowedActionSchema, readReplyInBubbles, type AiAgentAllowedAction, type MessageDto } from "@prymeira-talk/shared";
 import { createHash } from "node:crypto";
 import { usesContextFirst, resolveConversationSafetyOutput, conversationReasoningContext } from "./conversation-reasoning-policy.js";
 import {
@@ -51,6 +51,8 @@ import type { MessageTranscriptionService } from "../conversations/message-trans
 import { prepareInboundMedia, formatProcessedMediaMessage, transcribeInboundAudio, MAX_INBOUND_MEDIA_BYTES, type InboundMediaResult } from "./inbound-media.js";
 import type { AgentAudioTranscriber } from "./audio-transcription.js";
 import type { MeetingAvailability, MeetingScheduler } from "./meeting-scheduler.js";
+import { splitReplyIntoBubbles, typingDelayMs } from "./reply-bubbles.js";
+import type { MeetingReminderService } from "./meeting-reminders.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { evaluateAgentLoopGuard } from "./agent-loop-guard.js";
@@ -281,6 +283,8 @@ export function createAgentRuntime(input: {
   handoffBriefService?: { schedule(input: { workspaceId: string; conversationId: string }): void };
   /** Google Calendar access for agents allowed to use schedule_meeting; without it the action is never offered. */
   meetingScheduler?: MeetingScheduler;
+  /** Plans the messages sent before a booked call; without it no reminder is scheduled. */
+  meetingReminders?: Pick<MeetingReminderService, "scheduleForBooking">;
   logger?: { warn(fields: Record<string, unknown>, message: string): void };
 }) {
   const { prisma, provider } = input;
@@ -1360,7 +1364,9 @@ export function createAgentRuntime(input: {
           const booking = await bookRequestedMeeting({
             output: providerOutput,
             allowed: allowedActions.includes("schedule_meeting") && !getHandoffReason(providerOutput, confidenceThreshold),
-            conversation
+            conversation,
+            workspaceId: runInput.workspaceId,
+            agent
           });
           providerOutput = booking.output;
           meetingResult = booking.result;
@@ -1421,42 +1427,56 @@ export function createAgentRuntime(input: {
           const pending = prospecting ? await reserveProspectingOutbound(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id,
             agentId: agent.id, generation: prospecting.generation, type: 'text', body: outboundReply,
             metadata: runInput.replyClaim ? { replyClaimId: runInput.replyClaim.id, replyClaimToken: runInput.replyClaim.token } : undefined }) : null;
-          const providerSend = pending ? null : await sendAgentReplyToProvider(input.evolution, conversation, outboundReply);
-          const outboundMessage = pending ? await dispatchProspectingOutbound(prisma, pending,
-            () => sendAgentReplyToProvider(input.evolution, conversation, outboundReply)) : await prisma.message.create({
-            data: {
-              workspaceId: runInput.workspaceId,
-              conversationId: conversation.id,
-              direction: "outbound",
-              type: "text",
-              body: outboundReply,
-              providerMessageId: providerSend?.providerMessageId ?? undefined,
-              status: providerSend ? "sent" : "pending",
-              sentByUserId: null,
-              metadata: {
-                source: "ai_agent",
-                agentId: agent.id
-              }
-            }
-          });
-          await observeAgentOutboundFollowup(outboundMessage);
-          input.realtime?.publish({
-            type: "message.created",
-            workspaceId: runInput.workspaceId,
-            payload: toMessageDto(outboundMessage)
-          });
-          await prisma.conversation.update({
-            where: {
-              workspaceId_id: {
+          // A plain reply goes out as one message, or as one WhatsApp bubble per
+          // paragraph (with "digitando..." before each) when the agent asks for it.
+          const bubbles = pending || !readReplyInBubbles(agent.behaviorConfig)
+            ? [outboundReply]
+            : splitReplyIntoBubbles(outboundReply);
+          let lastOutboundMessage: MessageRecord | null = null;
+          for (const [bubbleIndex, bubble] of bubbles.entries()) {
+            if (bubbleIndex > 0 && !await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) break;
+            const providerSend = pending ? null : await sendAgentReplyToProvider(input.evolution, conversation, bubble,
+              bubbles.length > 1 ? typingDelayMs(bubble) : undefined);
+            const outboundMessage = pending ? await dispatchProspectingOutbound(prisma, pending,
+              () => sendAgentReplyToProvider(input.evolution, conversation, outboundReply)) : await prisma.message.create({
+              data: {
                 workspaceId: runInput.workspaceId,
-                id: conversation.id
+                conversationId: conversation.id,
+                direction: "outbound",
+                type: "text",
+                body: bubble,
+                providerMessageId: providerSend?.providerMessageId ?? undefined,
+                status: providerSend ? "sent" : "pending",
+                sentByUserId: null,
+                metadata: {
+                  source: "ai_agent",
+                  agentId: agent.id,
+                  ...(bubbles.length > 1 ? { bubble: { index: bubbleIndex, count: bubbles.length } } : {})
+                }
               }
-            },
-            data: {
-              lastMessageAt: new Date(),
-              lastMessagePreview: outboundReply
-            }
-          });
+            });
+            input.realtime?.publish({
+              type: "message.created",
+              workspaceId: runInput.workspaceId,
+              payload: toMessageDto(outboundMessage)
+            });
+            lastOutboundMessage = outboundMessage;
+          }
+          if (lastOutboundMessage) {
+            await observeAgentOutboundFollowup(lastOutboundMessage);
+            await prisma.conversation.update({
+              where: {
+                workspaceId_id: {
+                  workspaceId: runInput.workspaceId,
+                  id: conversation.id
+                }
+              },
+              data: {
+                lastMessageAt: new Date(),
+                lastMessagePreview: lastOutboundMessage.body ?? outboundReply
+              }
+            });
+          }
         }
 
         for (const attachment of pendingAttachments) {
@@ -1589,6 +1609,8 @@ export function createAgentRuntime(input: {
     output: AgentOutput;
     allowed: boolean;
     conversation: ConversationRecord;
+    workspaceId: string;
+    agent: { id: string; behaviorConfig: unknown };
   }): Promise<{ output: AgentOutput; result: AgentToolExecutionResult }> {
     const request = args.output.actions.find((action) => action.type === "schedule_meeting");
     const output = { ...args.output, actions: args.output.actions.filter((action) => action.type !== "schedule_meeting") };
@@ -1628,8 +1650,10 @@ export function createAgentRuntime(input: {
       const reply = meeting.meetLink && !confirmation.includes(meeting.meetLink)
         ? `${confirmation}\n\nLink da call: ${meeting.meetLink}`
         : confirmation;
+      const reminders = await scheduleMeetingReminders(args, meeting);
       const note = [
         `Call marcada pela IA: ${meeting.label}.`,
+        reminders.length > 0 ? `Lembretes programados: ${reminders.map(formatMinutesBefore).join(", ")} antes.` : null,
         meeting.meetLink ? `Meet: ${meeting.meetLink}` : null,
         meeting.htmlLink ? `Evento: ${meeting.htmlLink}` : null,
         booking.replacedEventIds.length > 0 ? "Substituiu a call marcada antes para esta conversa." : null
@@ -1645,6 +1669,27 @@ export function createAgentRuntime(input: {
         output: { ...output, reply: null, actions: [...output.actions, { type: "request_handoff", reason }], handoff: { required: true, reason } },
         result: { type: "schedule_meeting", status: "skipped", reason: getErrorMessage(error) }
       };
+    }
+  }
+
+  async function scheduleMeetingReminders(
+    args: { conversation: ConversationRecord; workspaceId: string; agent: { id: string; behaviorConfig: unknown } },
+    meeting: { eventId: string; startsAt: string }
+  ): Promise<number[]> {
+    if (!input.meetingReminders) return [];
+    try {
+      const { scheduled } = await input.meetingReminders.scheduleForBooking({
+        workspaceId: args.workspaceId,
+        conversationId: args.conversation.id,
+        agentId: args.agent.id,
+        behaviorConfig: args.agent.behaviorConfig,
+        meeting
+      });
+      return scheduled;
+    } catch (error) {
+      // The call is booked; a reminder that could not be planned must not undo the confirmation.
+      input.logger?.warn({ err: error, conversationId: args.conversation.id }, "Meeting reminders could not be scheduled");
+      return [];
     }
   }
 
@@ -1943,7 +1988,8 @@ function buildContext(
 async function sendAgentReplyToProvider(
   evolution: AgentRuntimeEvolution | undefined,
   conversation: ConversationRecord,
-  reply: string
+  reply: string,
+  delay?: number
 ) {
   const instanceName = conversation.channel?.providerKey;
   const number = conversation.contact?.phone;
@@ -1955,7 +2001,8 @@ async function sendAgentReplyToProvider(
   return await evolution.client.sendText({
     instanceName,
     number,
-    text: reply
+    text: reply,
+    ...(delay ? { delay } : {})
   });
 }
 
@@ -2152,4 +2199,10 @@ function firstString(action: Record<string, unknown>, keys: string[]) {
 
 function joinOptions(options: string[]) {
   return options.length === 1 ? options[0] : `${options.slice(0, -1).join(", ")} ou ${options[options.length - 1]}`;
+}
+
+function formatMinutesBefore(minutes: number) {
+  if (minutes % 1440 === 0) return minutes === 1440 ? "1 dia" : `${minutes / 1440} dias`;
+  if (minutes % 60 === 0) return minutes === 60 ? "1 hora" : `${minutes / 60} horas`;
+  return `${minutes} min`;
 }

@@ -6,3 +6,4 @@ export * from "./leads.js";
 export * from './assistant.js';
 export * from './location.js';
 export * from './automation-webhook.js';
+export * from './meeting-reminders.js';

@@ -2114,6 +2114,31 @@ describe("createAgentRuntime", () => {
     expect(prisma.conversation.update).not.toHaveBeenCalled();
   });
 
+  it("sends each paragraph as its own WhatsApp bubble when the agent asks for it", async () => {
+    const prisma = buildPrisma();
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ ...baseAgent, behaviorConfig: { replyInBubbles: true } });
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Imagino a correria.\n\nUm agente responde na hora e só te passa o que precisa de você.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-out" });
+    const runtime = createAgentRuntime({ prisma, provider, evolution: { mode: "real", client: { sendText } } });
+
+    await runtime.runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation"
+    });
+
+    expect(sendText).toHaveBeenCalledTimes(2);
+    expect(sendText).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: "Imagino a correria.", delay: expect.any(Number) }));
+    expect(sendText).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: "Um agente responde na hora e só te passa o que precisa de você." }));
+    expect(prisma.message.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ body: "Imagino a correria.", metadata: expect.objectContaining({ bubble: { index: 0, count: 2 } }) })
+    });
+    expect(prisma.message.create).toHaveBeenCalledTimes(2);
+  });
+
   it("sends agent replies through Evolution in real mode", async () => {
     const prisma = buildPrisma();
     const provider = buildProvider({
@@ -2670,6 +2695,35 @@ it("continues after a material answer without requiring a document for its own p
 
       expect(result.status).toBe("handoff_requested");
       expect(prisma.message.create).not.toHaveBeenCalledWith({ data: expect.objectContaining({ body: "Fechado!" }) });
+    });
+
+    it("plans the reminders of the booked call and notes them for the team", async () => {
+      const prisma = schedulingPrisma();
+      const meetingScheduler = buildScheduler();
+      const meetingReminders = { scheduleForBooking: vi.fn().mockResolvedValue({ scheduled: [180, 60] }) };
+      const provider = buildProvider({ confidence: 0.9, reply: "Fechado!", actions: [{ type: "schedule_meeting", startsAt: slot.startsAt }], handoff: { required: false, reason: null } });
+
+      await run(createAgentRuntime({ prisma, provider, meetingScheduler, meetingReminders }));
+
+      expect(meetingReminders.scheduleForBooking).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: ids.workspace, conversationId: ids.conversation, agentId: ids.agent, meeting
+      }));
+      expect(prisma.contactNote.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ body: expect.stringContaining("Lembretes programados: 3 horas, 1 hora antes.") })
+      });
+    });
+
+    it("still confirms the call when planning reminders fails", async () => {
+      const prisma = schedulingPrisma();
+      const meetingReminders = { scheduleForBooking: vi.fn().mockRejectedValue(new Error("db down")) };
+      const provider = buildProvider({ confidence: 0.9, reply: "Fechado!", actions: [{ type: "schedule_meeting", startsAt: slot.startsAt }], handoff: { required: false, reason: null } });
+
+      const result = await run(createAgentRuntime({ prisma, provider, meetingScheduler: buildScheduler(), meetingReminders }));
+
+      expect(result.status).toBe("completed");
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ body: "Fechado!\n\nLink da call: https://meet.google.com/abc-defg-hij" })
+      });
     });
 
     it("never offers or books when the agent lacks the action", async () => {

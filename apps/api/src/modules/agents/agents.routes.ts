@@ -22,7 +22,7 @@ import { createSimulatedAgentProvider } from "./provider-gateway.js";
 import { INBOUND_MEDIA_MIME_TYPES, MAX_INBOUND_MEDIA_BYTES } from "./inbound-media.js";
 import { storeWorkspaceAsset } from "../uploads/uploads.routes.js";
 
-import { aiAgentTypeSchema, agentFollowupConfigSchema } from "@prymeira-talk/shared";
+import { aiAgentTypeSchema, agentFollowupConfigSchema, meetingRemindersConfigSchema } from "@prymeira-talk/shared";
 
 const uuidSchema = z.string().uuid();
 
@@ -60,6 +60,8 @@ const createAgentBodySchema = z.object({
   status: z.enum(["active", "inactive"]).optional(),
   reasoningEffort: z.enum(["none", "low"]).optional(),
   onlyNewConversations: z.boolean().optional(),
+  replyInBubbles: z.boolean().optional(),
+  meetingReminders: meetingRemindersConfigSchema.optional(),
   systemPrompt: z.string().trim().min(10).max(12000),
   allowedActions: z.array(allowedActionSchema).optional(),
   allowedTagIds: z.array(uuidSchema).max(100).optional()

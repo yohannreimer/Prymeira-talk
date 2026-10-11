@@ -76,6 +76,7 @@ import {
   type ConversationFollowupDto,
   type ConversationDto,
   type MessageDto,
+  type MeetingRemindersConfig,
   type TagDto
 } from "@prymeira-talk/shared";
 import { readConfigValue } from "./runtime-config";
@@ -3825,6 +3826,8 @@ export async function apiCreateAgent(
     allowedTagIds?: string[];
     reasoningEffort?: "none" | "low";
     onlyNewConversations?: boolean;
+    replyInBubbles?: boolean;
+    meetingReminders?: MeetingRemindersConfig;
     type?: "attendance" | "prospecting";
     prospectingGoal?: string;
     followupConfig?: AgentFollowupConfig;
@@ -3854,6 +3857,8 @@ export async function apiUpdateAgent(
     status: AiAgentDto["status"];
     reasoningEffort: "none" | "low";
     onlyNewConversations: boolean;
+    replyInBubbles: boolean;
+    meetingReminders: MeetingRemindersConfig;
     type: "attendance" | "prospecting";
     prospectingGoal: string;
     followupConfig: AgentFollowupConfig;
