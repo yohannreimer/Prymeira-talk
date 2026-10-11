@@ -1,5 +1,6 @@
 import { useOptionalTalkSession } from '../../app/session/TalkSessionProvider';
 import { ChannelHealthAlerts } from "../channels/ChannelHealthAlerts";
+import { TalkAlerts } from "../alerts/TalkAlerts";
 import { Bot } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
@@ -68,6 +69,14 @@ export function TalkSuiteShell({ renderModule, prefetchModule }: TalkSuiteShellP
     setActiveModule(moduleKey);
   }
 
+  function openConversation(conversationId: string) {
+    const url = new URL(window.location.href);
+    url.searchParams.set(moduleParamName, "atendimento");
+    url.searchParams.set("conversation", conversationId);
+    window.history.pushState({ module: "atendimento", conversation: conversationId }, "", `${url.pathname}${url.search}${url.hash}`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+
   return (
     <main className={`talk-suite-shell${sidebarExpanded ? " sidebar-expanded" : ""}`}>
       <aside className="app-rail" aria-label="Navegação principal">
@@ -107,6 +116,7 @@ export function TalkSuiteShell({ renderModule, prefetchModule }: TalkSuiteShellP
             </button>
           ))}
         </nav>
+        <TalkAlerts activeModule={activeModule} onOpenConversation={openConversation} />
       </aside>
 
       {renderModule(activeModule)}

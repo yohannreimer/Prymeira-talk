@@ -511,27 +511,27 @@ export function ChannelsPage() {
 
   return (
     <section className="module-page" aria-label="Canais">
-      <header className="module-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div>
-            <p className="eyebrow">Prymeira Talk</p>
+      <header className="module-header page-header">
+        <div>
+          <div className="page-header-title">
             <h1>Canais</h1>
-          </div>
-          <div className="channels-health-chips" aria-label="Status dos canais">
-            <span className="status-badge status-badge--open">
-              {connectedCount} conectado{connectedCount !== 1 ? 's' : ''}
-            </span>
-            {connectingCount > 0 ? (
-              <span className="status-badge status-badge--waiting">
-                {connectingCount} conectando
+            <div className="channels-health-chips" aria-label="Status dos canais">
+              <span className="status-badge status-badge--open">
+                {connectedCount} conectado{connectedCount !== 1 ? 's' : ''}
               </span>
-            ) : null}
-            {archivedChannels.length > 0 || showArchived ? (
-              <button className="secondary-button" onClick={() => setShowArchived((current) => !current)} type="button">
-                {showArchived ? "Ver canais ativos" : `Arquivados (${archivedChannels.length})`}
-              </button>
-            ) : null}
+              {connectingCount > 0 ? (
+                <span className="status-badge status-badge--waiting">
+                  {connectingCount} conectando
+                </span>
+              ) : null}
+              {archivedChannels.length > 0 || showArchived ? (
+                <button className="secondary-button" onClick={() => setShowArchived((current) => !current)} type="button">
+                  {showArchived ? "Ver canais ativos" : `Arquivados (${archivedChannels.length})`}
+                </button>
+              ) : null}
+            </div>
           </div>
+          <p className="page-header-lede">Os números de WhatsApp conectados ao Talk e a saúde de cada um.</p>
         </div>
         <button
           className="primary-button"

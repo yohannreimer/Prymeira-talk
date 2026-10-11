@@ -498,10 +498,10 @@ export function SettingsPage() {
 
   return (
     <section className="module-page settings-page" aria-label="Ajustes">
-      <header className="module-header">
+      <header className="module-header page-header">
         <div>
-          <p className="eyebrow">Prymeira Talk</p>
           <h1>Ajustes</h1>
+          <p className="page-header-lede">Configurações da empresa, da IA e das integrações.</p>
         </div>
         <div className="module-header-actions">
           <span className={`status-badge status-badge--${isLoading ? "waiting" : "open"}`}>

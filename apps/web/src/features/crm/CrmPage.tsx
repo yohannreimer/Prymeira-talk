@@ -136,10 +136,10 @@ export function CrmPage() {
 
   return (
     <section className="module-page crm-page" aria-label="Vincula CRM">
-      <header className="module-header">
+      <header className="module-header page-header">
         <div>
-          <p className="eyebrow">Prymeira Talk</p>
           <h1>Vincula CRM</h1>
+          <p className="page-header-lede">O que o Talk enviou para o Vincula CRM e o que ficou pendente.</p>
         </div>
         <div className="module-header-actions">
           <span className="status-pill status-pending">
