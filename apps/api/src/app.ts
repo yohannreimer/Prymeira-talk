@@ -32,6 +32,7 @@ import { createConversationFollowupRealtimePublisher } from "./modules/followups
 import { agentsRoutes } from "./modules/agents/agents.routes.js";
 import { agentPackageRoutes } from "./modules/agents/agent-package.routes.js";
 import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.js";
+import { createGoogleCalendarMeetingScheduler, parseMeetingHours, parseMeetingWeekdays } from "./modules/agents/meeting-scheduler.js";
 import { automationsRoutes } from "./modules/automations/automations.routes.js";
 import {
   automationWebhookRoutes,
@@ -451,6 +452,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
           followupService,
           inboxTriage,
           handoffBriefService,
+          meetingScheduler: meetingSchedulerFromEnv(env),
           durableMedia: durableMedia?.media,
           transcriptions: durableMedia?.transcriptions
         });
@@ -726,4 +728,27 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(settingsRoutes, { handoffBriefService });
 
   return app;
+}
+
+function meetingSchedulerFromEnv(env: AppEnv) {
+  if (!env.GOOGLE_CALENDAR_CLIENT_ID || !env.GOOGLE_CALENDAR_CLIENT_SECRET || !env.GOOGLE_CALENDAR_REFRESH_TOKEN) return undefined;
+  return createGoogleCalendarMeetingScheduler({
+    credentials: {
+      clientId: env.GOOGLE_CALENDAR_CLIENT_ID,
+      clientSecret: env.GOOGLE_CALENDAR_CLIENT_SECRET,
+      refreshToken: env.GOOGLE_CALENDAR_REFRESH_TOKEN
+    },
+    config: {
+      calendarId: env.GOOGLE_CALENDAR_ID,
+      timeZone: env.MEETING_TIMEZONE,
+      durationMinutes: env.MEETING_DURATION_MINUTES,
+      weekdays: parseMeetingWeekdays(env.MEETING_WEEKDAYS),
+      hours: parseMeetingHours(env.MEETING_HOURS),
+      slotStepMinutes: env.MEETING_SLOT_STEP_MINUTES,
+      minNoticeMinutes: env.MEETING_MIN_NOTICE_MINUTES,
+      daysAhead: env.MEETING_DAYS_AHEAD,
+      maxSlots: 9,
+      title: env.MEETING_TITLE
+    }
+  });
 }

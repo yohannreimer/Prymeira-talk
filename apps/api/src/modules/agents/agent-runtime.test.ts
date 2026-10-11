@@ -2592,6 +2592,98 @@ it("continues after a material answer without requiring a document for its own p
     expect(prisma.message.create).not.toHaveBeenCalled();
   });
 
+  describe("schedule_meeting", () => {
+    const slot = { startsAt: "2026-06-24T10:30:00-03:00", label: "quarta-feira, 24/06 às 10:30" };
+    const meeting = { eventId: "ev-1", startsAt: slot.startsAt, label: slot.label, meetLink: "https://meet.google.com/abc-defg-hij", htmlLink: "https://calendar.google.com/e/1" };
+
+    function buildScheduler(book: unknown = { status: "booked", meeting, replacedEventIds: [] }) {
+      return {
+        availability: vi.fn().mockResolvedValue({ durationMinutes: 15, timeZone: "America/Sao_Paulo", availableSlots: [slot], bookedMeeting: null }),
+        book: vi.fn().mockResolvedValue(book)
+      };
+    }
+
+    function schedulingPrisma() {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ ...baseAgent, allowedActions: ["send_message", "create_internal_note", "request_handoff", "schedule_meeting"] });
+      return prisma;
+    }
+
+    const run = (runtime: ReturnType<typeof createAgentRuntime>) => runtime.runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation"
+    });
+
+    it("gives the model free slots and books the chosen one with the Meet link in the reply", async () => {
+      const prisma = schedulingPrisma();
+      const meetingScheduler = buildScheduler();
+      const provider = buildProvider({
+        confidence: 0.9,
+        reply: "Fechado, quarta às 10:30!",
+        actions: [{ type: "schedule_meeting", startsAt: slot.startsAt, email: "ana@example.com" }],
+        handoff: { required: false, reason: null }
+      });
+
+      const result = await run(createAgentRuntime({ prisma, provider, meetingScheduler }));
+
+      expect(result.status).toBe("completed");
+      expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
+        context: expect.objectContaining({ meetingScheduling: expect.objectContaining({ availableSlots: [slot] }) })
+      }));
+      expect(meetingScheduler.book).toHaveBeenCalledWith(expect.objectContaining({
+        conversationId: ids.conversation, startsAt: slot.startsAt, attendeeEmail: "ana@example.com"
+      }));
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ body: "Fechado, quarta às 10:30!\n\nLink da call: https://meet.google.com/abc-defg-hij" })
+      });
+      expect(prisma.contactNote.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ body: expect.stringContaining("Call marcada pela IA: quarta-feira, 24/06 às 10:30.") })
+      });
+      expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ actions: expect.arrayContaining([expect.objectContaining({ type: "schedule_meeting", status: "completed" })]) })
+      });
+    });
+
+    it("offers other times when the chosen slot was taken meanwhile", async () => {
+      const prisma = schedulingPrisma();
+      const meetingScheduler = buildScheduler({
+        status: "unavailable",
+        reason: "Horário já ocupado na agenda.",
+        availableSlots: [{ startsAt: "x", label: "quarta-feira, 24/06 às 11:00" }, { startsAt: "y", label: "quinta-feira, 25/06 às 09:00" }]
+      });
+      const provider = buildProvider({ confidence: 0.9, reply: "Fechado!", actions: [{ type: "schedule_meeting", startsAt: slot.startsAt }], handoff: { required: false, reason: null } });
+
+      await run(createAgentRuntime({ prisma, provider, meetingScheduler }));
+
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ body: "Esse horário acabou de ser ocupado. Tenho livre quarta-feira, 24/06 às 11:00 ou quinta-feira, 25/06 às 09:00. Qual fica melhor pra você?" })
+      });
+      expect(prisma.contactNote.create).not.toHaveBeenCalled();
+    });
+
+    it("hands off instead of confirming when the calendar fails", async () => {
+      const prisma = schedulingPrisma();
+      const meetingScheduler = buildScheduler();
+      meetingScheduler.book.mockRejectedValue(new Error("Google Calendar POST failed (401)"));
+      const provider = buildProvider({ confidence: 0.9, reply: "Fechado!", actions: [{ type: "schedule_meeting", startsAt: slot.startsAt }], handoff: { required: false, reason: null } });
+
+      const result = await run(createAgentRuntime({ prisma, provider, meetingScheduler }));
+
+      expect(result.status).toBe("handoff_requested");
+      expect(prisma.message.create).not.toHaveBeenCalledWith({ data: expect.objectContaining({ body: "Fechado!" }) });
+    });
+
+    it("never offers or books when the agent lacks the action", async () => {
+      const prisma = buildPrisma();
+      const meetingScheduler = buildScheduler();
+      const provider = buildProvider({ confidence: 0.9, reply: "Fechado!", actions: [{ type: "schedule_meeting", startsAt: slot.startsAt }], handoff: { required: false, reason: null } });
+
+      await run(createAgentRuntime({ prisma, provider, meetingScheduler }));
+
+      expect(meetingScheduler.availability).not.toHaveBeenCalled();
+      expect(meetingScheduler.book).not.toHaveBeenCalled();
+    });
+  });
+
   it("requests handoff for low confidence output", async () => {
     const prisma = buildPrisma({
       conversation: {

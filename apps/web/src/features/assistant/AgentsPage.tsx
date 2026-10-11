@@ -67,7 +67,8 @@ const allowedActionLabels: Array<{ value: AiAgentAllowedAction; label: string; d
   { value: "create_internal_note", label: "Nota interna", description: "Registra contexto para o vendedor." },
   { value: "assign_user", label: "Atribuir a usuário", description: "Encaminha para um usuário do time." },
   { value: "assign_department", label: "Atribuir a departamento", description: "Encaminha para um departamento." },
-  { value: "request_handoff", label: "Pedir handoff", description: "Passa a conversa para o vendedor." }
+  { value: "request_handoff", label: "Pedir handoff", description: "Passa a conversa para o vendedor." },
+  { value: "schedule_meeting", label: "Marcar call", description: "Oferece horários livres da agenda Google e marca a call com link do Meet." }
 ];
 
 const defaultSystemPrompt =
@@ -176,7 +177,7 @@ function emptyImprovementForm(): ImprovementFormState {
 }
 
 const allowedActionGroups: Array<{ title: string; actions: AiAgentAllowedAction[] }> = [
-  { title: "Conversar com o cliente", actions: ["send_message", "send_attachment"] },
+  { title: "Conversar com o cliente", actions: ["send_message", "send_attachment", "schedule_meeting"] },
   { title: "Organizar a conversa", actions: ["add_tag", "remove_tag", "change_priority", "create_internal_note"] },
   { title: "Passar para o time", actions: ["assign_user", "assign_department", "request_handoff"] }
 ];
