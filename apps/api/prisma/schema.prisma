@@ -911,11 +911,30 @@ model AutomationRule {
   createdAt   DateTime         @default(now()) @map("created_at")
   updatedAt   DateTime         @updatedAt @map("updated_at")
 
-  runs AutomationRun[]
+  runs         AutomationRun[]
+  webhookToken AutomationWebhookToken?
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status])
   @@map("automation_rules")
+}
+
+// Capability token for the public "Webhook externo" trigger URL. The token is
+// meant to be embedded in a customer's site, so it is shown to automation
+// managers; regenerating it replaces the value and invalidates the old URL.
+model AutomationWebhookToken {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id")
+  ruleId      String   @map("rule_id") @db.Uuid
+  token       String   @unique
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  rule AutomationRule @relation(fields: [workspaceId, ruleId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, ruleId])
+  @@map("automation_webhook_tokens")
 }
 
 model AutomationRun {

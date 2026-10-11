@@ -87,7 +87,7 @@ export const automationBlockCatalog: AutomationBlockDefinition[] = [
   { type: "trigger_board_stage_changed", category: "trigger", label: "Etapa alterada", description: "Dispara quando o contato muda de etapa.", support: "visual_only" },
   { type: "trigger_conversation_closed", category: "trigger", label: "Conversa encerrada", description: "Dispara quando atendimento fecha.", support: "visual_only" },
   { type: "trigger_schedule", category: "trigger", label: "Horário/agendamento", description: "Dispara por horário configurado.", support: "visual_only" },
-  { type: "trigger_webhook", category: "trigger", label: "Webhook externo", description: "Dispara por evento externo.", support: "coming_soon" },
+  { type: "trigger_webhook", category: "trigger", label: "Webhook externo", description: "Dispara quando um formulário ou sistema externo envia dados por um link seguro.", support: "supported" },
   { type: "send_message", category: "communication", label: "Enviar mensagem", description: "Envia texto pelo WhatsApp.", support: "supported" },
   { type: "send_quick_reply", category: "communication", label: "Enviar mensagem padrão", description: "Usa uma mensagem padrão salva.", support: "supported" },
   { type: "send_image", category: "communication", label: "Enviar imagem", description: "Envia imagem.", support: "supported" },
@@ -172,6 +172,15 @@ function triggerNodes(flow: AutomationFlowDefinition) {
   return flow.nodes.filter((node) => getAutomationBlock(node.type)?.category === "trigger");
 }
 
+export function findWebhookTriggerNode(flow: AutomationFlowDefinition) {
+  return flow.nodes.find((node) => node.type === "trigger_webhook") ?? null;
+}
+
+export function readWebhookTriggerChannelId(node: AutomationNodeDefinition) {
+  const channelId = node.data.config.channelId;
+  return typeof channelId === "string" && channelId.trim().length > 0 ? channelId.trim() : null;
+}
+
 export function validateAutomationFlowForStatus(
   flow: AutomationFlowDefinition,
   status: "enabled" | "disabled"
@@ -204,6 +213,11 @@ export function validateAutomationFlowForStatus(
 
   if (triggers.length > 1) {
     errors.push("O fluxo permite apenas um gatilho.");
+  }
+
+  const webhookTrigger = findWebhookTriggerNode(flow);
+  if (status === "enabled" && webhookTrigger && !readWebhookTriggerChannelId(webhookTrigger)) {
+    errors.push("Escolha o canal do WhatsApp no gatilho Webhook externo.");
   }
 
   const edgeIds = new Set<string>();

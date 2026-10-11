@@ -90,6 +90,14 @@ atualização mensal do CNPJ, limites e recuperação estão em
 [`docs/leads-operations.md`](docs/leads-operations.md). As fontes externas são
 opcionais e precisam ficar em rede privada.
 
+## Webhook externo em automações
+
+Uma automação pode começar por um formulário de site: o gatilho **Webhook
+externo** gera um link secreto por fluxo, cria ou atualiza o contato pelo
+telefone, registra os dados na conversa e roda o fluxo (inclusive um agente que
+puxa a conversa). Passo a passo, formato do JSON e limitações em
+[`docs/automacoes-webhook-externo.md`](docs/automacoes-webhook-externo.md).
+
 ## Meta WhatsApp Cloud API
 
 Prymeira Talk can run Evolution and official Meta WhatsApp Cloud API channels side by side. Owner and manager users activate Meta in Settings.
