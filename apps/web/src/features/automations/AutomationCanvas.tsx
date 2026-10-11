@@ -38,6 +38,8 @@ import {
 
 interface AutomationCanvasProps {
   agents: AiAgentDto[];
+  automationId?: string | null;
+  automationRevision?: string | null;
   value?: unknown;
   onChange: (payload: AutomationFlowDefinition) => void;
   variant?: "editor" | "focus";
@@ -168,7 +170,14 @@ export function automationCanvasStateFromValue(value: unknown): AutomationCanvas
   return canvasStateFromFlow(createDefaultAutomationFlow());
 }
 
-export function AutomationCanvas({ agents, value, onChange, variant = "editor" }: AutomationCanvasProps) {
+export function AutomationCanvas({
+  agents,
+  automationId = null,
+  automationRevision = null,
+  value,
+  onChange,
+  variant = "editor"
+}: AutomationCanvasProps) {
   const initialState = useMemo(() => automationCanvasStateFromValue(value), [value]);
   const [nodes, setNodes] = useState<AutomationCanvasNode[]>(initialState.nodes);
   const [edges, setEdges] = useState<AutomationCanvasEdge[]>(initialState.edges);
@@ -359,6 +368,8 @@ export function AutomationCanvas({ agents, value, onChange, variant = "editor" }
               <div className="automation-focus-inspector">
                 <AutomationNodeInspector
                   agents={agents}
+                  automationId={automationId}
+                  automationRevision={automationRevision}
                   node={selectedNode}
                   onConfigChange={updateConfig}
                   onTypeChange={updateNodeType}
@@ -372,6 +383,8 @@ export function AutomationCanvas({ agents, value, onChange, variant = "editor" }
       {isFocusMode ? null : (
         <AutomationNodeInspector
           agents={agents}
+          automationId={automationId}
+          automationRevision={automationRevision}
           node={selectedNode}
           onConfigChange={updateConfig}
           onTypeChange={updateNodeType}

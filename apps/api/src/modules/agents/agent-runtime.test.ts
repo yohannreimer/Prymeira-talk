@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAgentRuntime } from "./agent-runtime.js";
+import { EXTERNAL_FORM_OPENER_DIRECTIVE, createAgentRuntime } from "./agent-runtime.js";
 import type {
   AgentToolExecutorPrismaLike,
   AgentToolExecutorTransactionLike
@@ -686,6 +686,79 @@ describe("createAgentRuntime", () => {
       type: "message.created",
       payload: expect.objectContaining({ body: "Não foi possível transcrever este áudio." })
     }));
+  });
+
+  it("opens the conversation from an external form recorded by the webhook trigger", async () => {
+    const formMessage = {
+      ...baseMessage,
+      type: "system",
+      body: "Formulário recebido (Webhook externo)\nNome: Maria\nDor: Caixa apertado",
+      metadata: { source: "automation_webhook", automationId: "rule_1" }
+    };
+    const prisma = buildPrisma({ aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([]) } });
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(formMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([formMessage]);
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "Oi Maria, tudo bem? Vi aqui teu formulário. Podemos marcar uma call?",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-opener" });
+
+    const result = await createAgentRuntime({
+      prisma,
+      provider,
+      evolution: { mode: "real", client: { sendText } }
+    }).runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation",
+      instruction: "Agende uma call."
+    });
+
+    expect(result.status).toBe("completed");
+    const generateInput = vi.mocked(provider.generate).mock.calls[0]?.[0];
+    expect(generateInput?.userPrompt).toBe(
+      [EXTERNAL_FORM_OPENER_DIRECTIVE, "Agende uma call.", formMessage.body].join("\n\n")
+    );
+    expect(generateInput?.context.conversationMessages).toEqual([
+      expect.objectContaining({ id: ids.message, label: "sistema", type: "system" })
+    ]);
+    expect(sendText).toHaveBeenCalledWith({
+      instanceName: "instancia",
+      number: "5511999999999",
+      text: "Oi Maria, tudo bem? Vi aqui teu formulário. Podemos marcar uma call?"
+    });
+    expect(prisma.message.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        direction: "outbound",
+        body: "Oi Maria, tudo bem? Vi aqui teu formulário. Podemos marcar uma call?",
+        metadata: { source: "ai_agent", agentId: ids.agent }
+      })
+    });
+  });
+
+  it("does not add the form opener directive to regular customer messages", async () => {
+    const prisma = buildPrisma();
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "O plano profissional custa R$ 199 por mes.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+
+    await createAgentRuntime({ prisma, provider }).runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(vi.mocked(provider.generate).mock.calls[0]?.[0].userPrompt).not.toContain(EXTERNAL_FORM_OPENER_DIRECTIVE);
   });
 
   it("reuses a stored audio transcript without transcribing again", async () => {

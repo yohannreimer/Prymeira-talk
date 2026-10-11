@@ -23,6 +23,10 @@ import { agentsRoutes } from "./modules/agents/agents.routes.js";
 import { agentPackageRoutes } from "./modules/agents/agent-package.routes.js";
 import { createSimulatedAgentProvider } from "./modules/agents/provider-gateway.js";
 import { automationsRoutes } from "./modules/automations/automations.routes.js";
+import {
+  automationWebhookRoutes,
+  isAutomationWebhookPath
+} from "./modules/automations/automation-webhook.routes.js";
 import { assistantRoutes } from "./modules/assistant/assistant.routes.js";
 import { createAssistantScheduler } from './modules/assistant/assistant-scheduler.js';
 import { createAssistantHistoryImporter } from './modules/assistant/assistant-history.js';
@@ -79,14 +83,25 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
     .filter(Boolean);
 
   await app.register(cors, {
-    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    origin(origin, callback) {
-      if (!origin || allowedCorsOrigins.includes(origin)) {
-        callback(null, true);
+    delegator(request, callback) {
+      // External "Webhook externo" forms post from the customer's own site;
+      // the secret token in the URL authorizes them, not the origin.
+      if (isAutomationWebhookPath(new URL(request.url ?? "/", "http://localhost").pathname)) {
+        callback(null, { origin: true, methods: ["POST", "OPTIONS"], allowedHeaders: ["Content-Type"], maxAge: 600 });
         return;
       }
 
-      callback(null, false);
+      callback(null, {
+        methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        origin(origin, originCallback) {
+          if (!origin || allowedCorsOrigins.includes(origin)) {
+            originCallback(null, true);
+            return;
+          }
+
+          originCallback(null, false);
+        }
+      });
     }
   });
 
@@ -387,6 +402,11 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   await app.register(boardsRoutes);
   await app.register(channelsRoutes, { evolution: evolutionRuntime });
   await app.register(automationsRoutes, { agentRuntime, evolution: evolutionRuntime });
+  await app.register(automationWebhookRoutes, {
+    agentRuntime,
+    agentReplyScheduler,
+    evolution: evolutionRuntime
+  });
   await app.register(campaignsRoutes, { evolution: evolutionRuntime });
   await app.register(reportsRoutes);
   await app.register(teamRoutes);

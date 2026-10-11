@@ -95,6 +95,10 @@ function resolveMessageLabel(
     return "nota interna";
   }
 
+  if (message.type === "system") {
+    return "sistema";
+  }
+
   if (message.direction === "inbound") {
     return "cliente";
   }

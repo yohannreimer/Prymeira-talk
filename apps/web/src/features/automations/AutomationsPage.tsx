@@ -138,13 +138,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function automationRunSummary(result: unknown) {
+export function automationRunSummary(result: unknown) {
   if (!isRecord(result)) {
     return "Resultado ainda sem detalhes.";
   }
 
   if (result.skippedReason === "trigger_not_matched") {
     return "Gatilho avaliado, mas não correspondeu a este evento.";
+  }
+
+  if (result.skippedReason === "outbound_blocked" && typeof result.skippedMessage === "string") {
+    return result.skippedMessage;
+  }
+
+  if (typeof result.error === "string") {
+    return result.error;
   }
 
   const actionResults = Array.isArray(result.actionResults) ? result.actionResults : [];
@@ -1079,6 +1087,8 @@ export function AutomationEditorView({
         <div className="automation-editor-canvas-area">
           <AutomationCanvas
             agents={agents}
+            automationId={selectedAutomation?.id ?? null}
+            automationRevision={selectedAutomation?.updatedAt ?? null}
             key={selectedAutomation?.id ?? `new-automation-${draftVersion}`}
             onChange={onCanvasChange}
             value={selectedAutomation?.actions}

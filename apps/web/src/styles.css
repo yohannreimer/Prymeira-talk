@@ -5427,6 +5427,71 @@ select:disabled {
   font-size: 0.78rem;
 }
 
+.automation-webhook-trigger {
+  margin: 0;
+}
+
+.automation-webhook-hint,
+.automation-webhook-error,
+.automation-webhook-warning,
+.automation-webhook-example p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.automation-webhook-error {
+  color: #9f332d;
+}
+
+.automation-webhook-warning {
+  border: 1px solid #f3d38a;
+  border-radius: 8px;
+  background: var(--color-status-waiting-bg);
+  color: var(--color-status-waiting-text);
+  padding: 10px;
+}
+
+.automation-webhook-url {
+  display: grid;
+  gap: 8px;
+}
+
+.automation-webhook-url input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.74rem;
+}
+
+.automation-webhook-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.automation-webhook-example {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-surface-subtle);
+  padding: 10px;
+}
+
+.automation-webhook-example summary {
+  color: var(--color-text-primary);
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.automation-webhook-example pre {
+  margin: 0;
+  overflow-x: auto;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
 .panel-title-row.compact {
   padding-bottom: 4px;
 }
@@ -6758,6 +6823,24 @@ select:disabled {
 
 .message-bubble.is-inbound p {
   color: var(--color-text-primary);
+}
+
+/* Events recorded by Talk itself (e.g. a form received by an automation webhook). */
+.message-bubble.is-system {
+  align-self: center;
+  max-width: min(520px, 90%);
+}
+
+.message-bubble.is-system .msg-bubble-body {
+  border: 1px dashed var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-subtle);
+  box-shadow: none;
+}
+
+.message-bubble.is-system p {
+  color: var(--color-text-secondary);
+  white-space: pre-line;
 }
 
 .message-bubble.is-outbound p {

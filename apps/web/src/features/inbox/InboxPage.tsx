@@ -1527,10 +1527,10 @@ function InboxPageContent() {
             ) : null}
             {visibleMessages.map((message) => (
               <article
-                className={`message-bubble ${message.direction === "outbound" ? "is-outbound" : "is-inbound"}`}
+                className={`message-bubble ${message.direction === "outbound" ? "is-outbound" : "is-inbound"}${message.type === "system" ? " is-system" : ""}`}
                 key={message.id}
               >
-                {message.direction === "inbound" ? (
+                {message.direction === "inbound" && message.type !== "system" ? (
                   <ContactAvatar conversationId={selectedConversation?.id} name={selectedConversation?.contactName} className="msg-avatar" />
                 ) : null}
                 <div className="msg-bubble-body">

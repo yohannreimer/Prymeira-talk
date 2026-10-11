@@ -1,5 +1,7 @@
 import {
   agentPackageSchema,
+  automationWebhookSchema,
+  type AutomationWebhookDto,
   aiAgentSchema,
   aiAgentImprovementSchema,
   aiKnowledgeSourceSchema,
@@ -2327,7 +2329,7 @@ export async function apiCreateAutomation(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to create automation: ${response.status}`);
+    throw new Error(await readApiErrorMessage(response, "Failed to create automation"));
   }
 
   const data = await response.json();
@@ -2357,7 +2359,7 @@ export async function apiUpdateAutomation(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to update automation: ${response.status}`);
+    throw new Error(await readApiErrorMessage(response, "Failed to update automation"));
   }
 
   const data = await response.json();
@@ -2410,6 +2412,40 @@ export async function apiTestAutomation(
 
   const data = await response.json();
   return parseAutomationRun(data);
+}
+
+export function automationWebhookUrl(path: string) {
+  return `${apiUrl.replace(/\/+$/, "")}${path}`;
+}
+
+async function requestAutomationWebhook(
+  getToken: () => Promise<string | null>,
+  automationId: string,
+  suffix: "" | "/regenerate",
+  fallbackLabel: string
+): Promise<AutomationWebhookDto> {
+  const token = await getRequiredToken(getToken);
+
+  const response = await fetch(`${apiUrl}/automations/${automationId}/webhook${suffix}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(await readApiErrorMessage(response, fallbackLabel));
+  }
+
+  return automationWebhookSchema.parse(await response.json());
+}
+
+export function apiGetAutomationWebhook(getToken: () => Promise<string | null>, automationId: string) {
+  return requestAutomationWebhook(getToken, automationId, "", "Failed to load automation webhook");
+}
+
+export function apiRegenerateAutomationWebhook(getToken: () => Promise<string | null>, automationId: string) {
+  return requestAutomationWebhook(getToken, automationId, "/regenerate", "Failed to regenerate automation webhook");
 }
 
 export async function apiGetAutomationRuns(

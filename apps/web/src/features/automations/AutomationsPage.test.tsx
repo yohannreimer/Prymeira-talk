@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import {
   automationActionsToTrigger,
+  automationRunSummary,
   buildAutomationSavePayload,
   defaultAutomationEventKey,
   mergeAutomationRun
@@ -948,5 +949,40 @@ describe("automation flow helpers", () => {
         config: {}
       })
     });
+  });
+});
+
+describe("automation run summary for external webhooks", () => {
+  it("explains runs where WhatsApp sends were blocked or the webhook could not start", () => {
+    expect(
+      automationRunSummary({
+        skippedReason: "outbound_blocked",
+        skippedMessage: "Canal da API oficial (Meta): template necessário.",
+        actionResults: [{ status: "skipped" }]
+      })
+    ).toBe("Canal da API oficial (Meta): template necessário.");
+    expect(automationRunSummary({ error: "Canal do WhatsApp não encontrado.", actionResults: [] })).toBe(
+      "Canal do WhatsApp não encontrado."
+    );
+  });
+
+  it("maps the webhook trigger block to the webhook trigger key", () => {
+    expect(
+      automationActionsToTrigger(
+        {
+          version: 1,
+          nodes: [
+            {
+              id: "trigger-1",
+              type: "trigger_webhook",
+              position: { x: 0, y: 0 },
+              data: { title: "Webhook externo", config: {} }
+            }
+          ],
+          edges: []
+        },
+        "message.received"
+      )
+    ).toBe("webhook.received");
   });
 });
