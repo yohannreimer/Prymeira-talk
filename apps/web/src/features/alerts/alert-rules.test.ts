@@ -8,22 +8,21 @@ const conversation = (overrides: Partial<ConversationDto> = {}): ConversationDto
 
 describe('describeAlert', () => {
   it('tells the seller who wrote and what', () => {
-    expect(describeAlert({ kind: 'message', message: message(), conversation: conversation() }, 'me', now))
+    expect(describeAlert({ kind: 'message', message: message(), conversation: conversation() }, now))
       .toEqual({ conversationId: 'c1', title: 'Ana', body: 'Tem chapa 3mm?' });
-    expect(describeAlert({ kind: 'message', message: message({ body: null, type: 'audio' }) }, 'me', now)?.body).toBe('🎤 Áudio');
+    expect(describeAlert({ kind: 'message', message: message({ body: null, type: 'audio' }) }, now)?.body).toBe('🎤 Áudio');
   });
-  it('stays quiet for another seller\'s conversation, groups and conversations the AI is handling', () => {
-    expect(describeAlert({ kind: 'message', message: message(), conversation: conversation({ assignedUserId: 'other' }) }, 'me', now)).toBeNull();
-    expect(describeAlert({ kind: 'message', message: message(), conversation: conversation({ isGroup: true }) }, 'me', now)).toBeNull();
-    expect(describeAlert({ kind: 'message', message: message(), conversation: conversation({ aiControlStatus: 'agent_allowed', activeAgentSessionStatus: 'active' }) }, 'me', now)).toBeNull();
-    expect(describeAlert({ kind: 'message', message: message(), conversation: conversation({ assignedUserId: 'me' }) }, 'me', now)).not.toBeNull();
+  it('stays quiet for groups and conversations the AI is handling', () => {
+    expect(describeAlert({ kind: 'message', message: message(), conversation: conversation({ isGroup: true }) }, now)).toBeNull();
+    expect(describeAlert({ kind: 'message', message: message(), conversation: conversation({ aiControlStatus: 'agent_allowed', activeAgentSessionStatus: 'active' }) }, now)).toBeNull();
+    expect(describeAlert({ kind: 'message', message: message(), conversation: conversation({ aiControlStatus: 'human_controlled', activeAgentSessionStatus: 'active' }) }, now)).not.toBeNull();
   });
   it('announces a handoff with its reason, and skips an old one it never saw happen', () => {
     const handedOff = conversation({ aiControlStatus: 'human_controlled', handoffReason: 'Pediu orçamento' });
-    expect(describeAlert({ kind: 'handoff', conversation: handedOff, previous: conversation() }, 'me', now))
+    expect(describeAlert({ kind: 'handoff', conversation: handedOff, previous: conversation() }, now))
       .toEqual({ conversationId: 'c1', title: 'A IA passou Ana para a equipe', body: 'Pediu orçamento' });
-    expect(describeAlert({ kind: 'handoff', conversation: handedOff }, 'me', now)).not.toBeNull();
-    expect(describeAlert({ kind: 'handoff', conversation: { ...handedOff, lastMessageAt: '2026-10-10T12:00:00Z' } }, 'me', now)).toBeNull();
+    expect(describeAlert({ kind: 'handoff', conversation: handedOff }, now)).not.toBeNull();
+    expect(describeAlert({ kind: 'handoff', conversation: { ...handedOff, lastMessageAt: '2026-10-10T12:00:00Z' } }, now)).toBeNull();
   });
   it('counts waiting conversations in the tab title', () => {
     expect(titleWithCount('Prymeira Talk', 0)).toBe('Prymeira Talk');

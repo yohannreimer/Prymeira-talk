@@ -9180,3 +9180,49 @@ select:disabled {
 .rail-alerts.is-muted {
   color: rgba(255, 255, 255, 0.45);
 }
+
+.rail-alerts-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.alerts-panel {
+  position: fixed;
+  left: 80px;
+  bottom: 12px;
+  z-index: 60;
+  display: grid;
+  gap: 10px;
+  width: 280px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  box-shadow: 0 14px 34px rgba(36, 63, 53, 0.16);
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
+.sidebar-expanded .alerts-panel {
+  left: 248px;
+}
+
+.alerts-panel p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.alerts-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  line-height: 1.35;
+}
+
+.alerts-switch input {
+  margin-top: 2px;
+  accent-color: var(--color-brand-600);
+}

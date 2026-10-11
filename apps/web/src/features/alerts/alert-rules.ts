@@ -18,14 +18,13 @@ function preview(message: MessageDto) {
 }
 
 /**
- * Decides whether an alert is for this person. Sellers hear about customers in
- * conversations that are theirs or nobody's; a conversation the AI is handling
- * stays quiet until the AI hands it over.
+ * Decides whether an alert is worth a sound. Each seller works in a workspace with
+ * their own numbers, so every customer conversation there is theirs; a conversation
+ * the AI is handling stays quiet until the AI hands it over.
  */
-export function describeAlert(alert: TalkAlert, userId: string | undefined, now = Date.now()): AlertNotice | null {
+export function describeAlert(alert: TalkAlert, now = Date.now()): AlertNotice | null {
   const conversation = alert.conversation;
   if (conversation?.isGroup) return null;
-  if (conversation?.assignedUserId && userId && conversation.assignedUserId !== userId) return null;
   if (alert.kind === 'message') {
     const aiHandling = conversation?.aiControlStatus !== 'human_controlled' && conversation?.activeAgentSessionStatus === 'active';
     if (aiHandling) return null;

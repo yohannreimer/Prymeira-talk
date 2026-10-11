@@ -1,10 +1,11 @@
-import { Bell, BellOff } from 'lucide-react';
+import { Bell, BellOff, BellRing } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useOptionalTalkSession } from '../../app/session/TalkSessionProvider';
 import { describeAlert, titleWithCount } from './alert-rules';
 import { playAlertSound, unlockAlertSound } from './alert-sound';
 
-const MUTED_KEY = 'talk-alerts-muted';
+const SOUND_OFF_KEY = 'talk-alerts-sound-off';
+const POPUPS_OFF_KEY = 'talk-alerts-popups-off';
 const ASKED_KEY = 'talk-alerts-permission-asked';
 const SOUND_GAP_MS = 2_500;
 
@@ -31,11 +32,14 @@ export function TalkAlerts(props: TalkAlertsProps) {
 }
 
 function TalkAlertsConnected({ activeModule, onOpenConversation }: TalkAlertsProps) {
-  const { session, currentUser } = useOptionalTalkSession()!;
-  const [muted, setMuted] = useState(() => readFlag(MUTED_KEY));
+  const { session } = useOptionalTalkSession()!;
+  const [soundOff, setSoundOff] = useState(() => readFlag(SOUND_OFF_KEY));
+  const [popupsOff, setPopupsOff] = useState(() => readFlag(POPUPS_OFF_KEY));
+  const [open, setOpen] = useState(false);
   const [permission, setPermission] = useState(notificationPermission);
-  const live = useRef({ activeModule, muted, onOpenConversation });
-  live.current = { activeModule, muted, onOpenConversation };
+  const panel = useRef<HTMLDivElement>(null);
+  const live = useRef({ activeModule, soundOff, popupsOff, onOpenConversation });
+  live.current = { activeModule, soundOff, popupsOff, onOpenConversation };
   const waiting = useRef(new Set<string>());
   const baseTitle = useRef(document.title);
   const lastSound = useRef(0);
@@ -54,19 +58,19 @@ function TalkAlertsConnected({ activeModule, onOpenConversation }: TalkAlertsPro
       }
     };
     const unsubscribe = session.subscribeAlerts(alert => {
-      const notice = describeAlert(alert, currentUser.userId);
-      if (!notice || live.current.muted) return;
+      const notice = describeAlert(alert);
+      if (!notice) return;
       const here = personIsHere();
       const looking = here && live.current.activeModule === 'atendimento' &&
         session.readUI<string | null>('selectedConversation', null) === notice.conversationId;
       if (looking) return;
       const now = Date.now();
-      if (now - lastSound.current > SOUND_GAP_MS || alert.kind === 'handoff') {
+      if (!live.current.soundOff && (now - lastSound.current > SOUND_GAP_MS || alert.kind === 'handoff')) {
         lastSound.current = now; playAlertSound(alert.kind);
       }
       if (here) return;
       waiting.current.add(notice.conversationId); updateTitle();
-      if (notificationPermission() !== 'granted') return;
+      if (live.current.popupsOff || notificationPermission() !== 'granted') return;
       try {
         const notification = new Notification(notice.title, { body: notice.body, tag: notice.conversationId });
         notification.onclick = () => {
@@ -82,22 +86,48 @@ function TalkAlertsConnected({ activeModule, onOpenConversation }: TalkAlertsPro
       window.removeEventListener('pointerdown', firstTouch); window.removeEventListener('keydown', firstTouch);
       document.title = baseTitle.current;
     };
-  }, [session, currentUser.userId]);
+  }, [session]);
 
-  function toggle() {
-    const next = !muted;
-    setMuted(next); writeFlag(MUTED_KEY, next);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => { if (!panel.current?.contains(event.target as Node)) setOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
+    window.addEventListener('pointerdown', outside); window.addEventListener('keydown', escape);
+    return () => { window.removeEventListener('pointerdown', outside); window.removeEventListener('keydown', escape); };
+  }, [open]);
+
+  function toggleSound() {
+    const next = !soundOff; setSoundOff(next); writeFlag(SOUND_OFF_KEY, next);
+    if (!next) unlockAlertSound();
+  }
+  function togglePopups() {
+    const next = !popupsOff; setPopupsOff(next); writeFlag(POPUPS_OFF_KEY, next);
     if (!next && notificationPermission() === 'default') {
       void Notification.requestPermission().then(setPermission).catch(() => {});
     }
   }
 
-  const label = muted ? 'Avisos desligados' : permission === 'denied'
-    ? 'Avisos ligados (só som: notificações bloqueadas no navegador)' : 'Avisos ligados';
-  const Icon = muted ? BellOff : Bell;
-  return <button type="button" className={`rail-button rail-alerts${muted ? ' is-muted' : ''}`} onClick={toggle}
-    aria-label={label} aria-pressed={!muted} title={label}>
-    <Icon size={20} aria-hidden="true" />
-    <span className="rail-label">{muted ? 'Avisos desligados' : 'Avisos ligados'}</span>
-  </button>;
+  const allOff = soundOff && popupsOff;
+  const Icon = allOff ? BellOff : soundOff ? Bell : BellRing;
+  const summary = allOff ? 'Avisos desligados' : soundOff ? 'Avisos sem som' : 'Avisos ligados';
+  return <div className="rail-alerts-wrap" ref={panel}>
+    <button type="button" className={`rail-button rail-alerts${allOff ? ' is-muted' : ''}`} onClick={() => setOpen(value => !value)}
+      aria-label={summary} aria-expanded={open} aria-haspopup="dialog" title={summary}>
+      <Icon size={20} aria-hidden="true" />
+      <span className="rail-label">{summary}</span>
+    </button>
+    {open ? <div className="alerts-panel" role="dialog" aria-label="Avisos de mensagem nova">
+      <strong>Avisos de mensagem nova</strong>
+      <label className="alerts-switch">
+        <input type="checkbox" checked={!soundOff} onChange={toggleSound} />
+        <span>Tocar som</span>
+      </label>
+      <label className="alerts-switch">
+        <input type="checkbox" checked={!popupsOff} onChange={togglePopups} disabled={permission === 'unsupported'} />
+        <span>Mostrar notificação quando o Talk estiver em outra aba</span>
+      </label>
+      {permission === 'denied' && !popupsOff ? <p>O navegador está bloqueando as notificações. Libere no cadeado ao lado do endereço do site.</p> : null}
+      <p>O número de conversas novas aparece no título da aba.</p>
+    </div> : null}
+  </div>;
 }
