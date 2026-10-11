@@ -5,3 +5,4 @@ export * from "./realtime.js";
 export * from "./leads.js";
 export * from './assistant.js';
 export * from './location.js';
+export * from './automation-webhook.js';

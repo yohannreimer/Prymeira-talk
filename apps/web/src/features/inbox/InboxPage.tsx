@@ -2002,12 +2002,12 @@ selectedConversation ? (
               <Fragment key={message.id}>
               {placement.newDay ? <div className="thread-day" role="separator"><span>{messageDayLabel(message.createdAt)}</span></div> : null}
               <article
-                className={`message-bubble ${isInbound ? "is-inbound" : "is-outbound"}${placement.startsRun ? ' is-run-start' : ''}${placement.endsRun ? ' is-run-end' : ''}${forwardSelection ? ' is-selecting' : ''}${picked ? ' is-picked' : ''}${forwardSelection && !canForward(message) ? ' is-unpickable' : ''}`}
+                className={`message-bubble ${isInbound ? "is-inbound" : "is-outbound"}${message.type === "system" ? " is-system" : ""}${placement.startsRun ? ' is-run-start' : ''}${placement.endsRun ? ' is-run-end' : ''}${forwardSelection ? ' is-selecting' : ''}${picked ? ' is-picked' : ''}${forwardSelection && !canForward(message) ? ' is-unpickable' : ''}`}
                 data-message-id={message.id}
                 onClickCapture={forwardSelection ? (event) => { event.preventDefault(); event.stopPropagation(); actionsRef.current.toggleForwardPick(message); } : undefined}
               >
                 {forwardSelection ? <span className="message-pick" role="checkbox" aria-checked={picked} aria-label="Selecionar mensagem">{picked ? <Check size={13} strokeWidth={3} /> : null}</span> : null}
-                {isInbound ? placement.endsRun ? (
+                {isInbound && message.type !== "system" ? placement.endsRun ? (
                   <ContactAvatar conversationId={selectedConversation?.id} name={senderName} className="msg-avatar" />
                 ) : <span className="msg-avatar is-spacer" aria-hidden="true" /> : null}
                 <div className={`msg-bubble-body${inlineMeta ? ' has-inline-meta' : ''}`}>

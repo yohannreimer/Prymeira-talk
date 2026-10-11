@@ -1,5 +1,6 @@
 import fp from "fastify-plugin";
 import type { FastifyRequest } from "fastify";
+import { AUTOMATION_WEBHOOK_PATH_PREFIX } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { SupervisionError, validateSupervisionAccess, type SupervisionContext } from "../modules/supervision/supervision-access.js";
 import { createAccessSingleflight } from "./access-singleflight.js";
@@ -83,6 +84,7 @@ function isPublicPath(pathname: string) {
     pathname === "/ready" ||
     pathname === "/webhooks/evolution" ||
     pathname.startsWith("/webhooks/evolution/") ||
+    pathname.startsWith(AUTOMATION_WEBHOOK_PATH_PREFIX) ||
     pathname.startsWith("/uploads/automations/") ||
     pathname.includes("/uploads/automations/")
   );

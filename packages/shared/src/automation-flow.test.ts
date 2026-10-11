@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   automationBlockCatalog,
   automationFlowSchema,
+  findWebhookTriggerNode,
   getAutomationBlock,
+  readWebhookTriggerChannelId,
   validateAutomationFlowForStatus
 } from "./automation-flow";
+import { automationWebhookPath, automationWebhookSchema } from "./automation-webhook";
 
 describe("automation flow contract", () => {
   it("contains the first-cut supported blocks", () => {
@@ -230,5 +233,52 @@ describe("automation flow contract", () => {
   it("keeps block ids unique in the catalog", () => {
     const ids = automationBlockCatalog.map((block) => block.type);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("supports the external webhook trigger and requires its channel when enabled", () => {
+    expect(getAutomationBlock("trigger_webhook")?.support).toBe("supported");
+
+    const flow = automationFlowSchema.parse({
+      version: 1,
+      nodes: [
+        {
+          id: "trigger-1",
+          type: "trigger_webhook",
+          position: { x: 0, y: 0 },
+          data: { title: "Webhook externo", config: {} }
+        }
+      ],
+      edges: []
+    });
+
+    expect(validateAutomationFlowForStatus(flow, "disabled").success).toBe(true);
+    expect(validateAutomationFlowForStatus(flow, "enabled").errors).toContain(
+      "Escolha o canal do WhatsApp no gatilho Webhook externo."
+    );
+
+    const configured = {
+      ...flow,
+      nodes: [{ ...flow.nodes[0]!, data: { title: "Webhook externo", config: { channelId: " channel-1 " } } }]
+    };
+    const trigger = findWebhookTriggerNode(configured);
+
+    expect(trigger?.id).toBe("trigger-1");
+    expect(trigger ? readWebhookTriggerChannelId(trigger) : null).toBe("channel-1");
+    expect(validateAutomationFlowForStatus(configured, "enabled").success).toBe(true);
+  });
+
+  it("builds the public webhook path contract", () => {
+    const path = automationWebhookPath("abc_DEF-123");
+
+    expect(path).toBe("/webhooks/automations/abc_DEF-123");
+    expect(
+      automationWebhookSchema.parse({
+        automationId: "rule-1",
+        token: "abc_DEF-123",
+        path,
+        createdAt: "2026-10-11T12:00:00.000Z",
+        updatedAt: "2026-10-11T12:00:00.000Z"
+      }).path
+    ).toBe(path);
   });
 });

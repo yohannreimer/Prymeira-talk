@@ -57,6 +57,48 @@ describe("inbox triage API", () => {
   });
 });
 
+describe("automation webhook helpers", () => {
+  it("builds the public webhook URL behind the production API prefix", async () => {
+    vi.stubEnv("VITE_API_URL", "https://talk.prymeiradigital.com.br/api");
+
+    const { automationWebhookUrl } = await import("./api");
+
+    expect(automationWebhookUrl("/webhooks/automations/abc")).toBe(
+      "https://talk.prymeiradigital.com.br/api/webhooks/automations/abc"
+    );
+  });
+
+  it("gets and regenerates the webhook link with the manager token and surfaces API errors", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const id = "00000000-0000-4000-8000-000000000001";
+    const webhook = {
+      automationId: id,
+      token: "abc",
+      path: "/webhooks/automations/abc",
+      createdAt: "2026-10-11T12:00:00.000Z",
+      updatedAt: "2026-10-11T12:00:00.000Z"
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(webhook), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...webhook, token: "def", path: "/webhooks/automations/def" }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: "AUTOMATION_WEBHOOK_TRIGGER_MISSING", error: "Salve o fluxo com o gatilho Webhook externo para gerar o link." }), { status: 409 })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+    const { apiGetAutomationWebhook, apiRegenerateAutomationWebhook } = await import("./api");
+
+    await expect(apiGetAutomationWebhook(async () => null, id)).resolves.toEqual(webhook);
+    await expect(apiRegenerateAutomationWebhook(async () => null, id)).resolves.toMatchObject({ token: "def" });
+    await expect(apiGetAutomationWebhook(async () => null, id)).rejects.toThrow(
+      "Salve o fluxo com o gatilho Webhook externo para gerar o link."
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(1, `http://localhost:3002/automations/${id}/webhook`, expect.objectContaining({ method: "POST", headers: expect.objectContaining({ Authorization: "Bearer local-dev-bypass" }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, `http://localhost:3002/automations/${id}/webhook/regenerate`, expect.objectContaining({ method: "POST" }));
+  });
+});
+
 describe("readApiErrorMessage", () => {
   it("uses structured API error bodies before falling back to HTTP status", async () => {
     const { readApiErrorMessage } = await import("./api");
