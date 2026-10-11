@@ -274,7 +274,8 @@ export function createReportsService(prisma: PrismaLike) {
         createdAt: dateWhere,
         status: filters.status,
         channelId: filters.channelId,
-        departmentId: filters.departmentId
+        departmentId: filters.departmentId,
+        retiredIntoConversationId: null
       });
       const messageWhere = visibleConversationMessageWhere(withoutUndefined({
         workspaceId: input.workspaceId,

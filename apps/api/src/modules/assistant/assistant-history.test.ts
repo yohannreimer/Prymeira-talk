@@ -31,13 +31,26 @@ describe('context-only history import',()=>{
     expect(s.db.assistantConversationState.updateMany).not.toHaveBeenCalled();
     expect(s.source.load).toHaveBeenCalledWith(expect.objectContaining({anchorId:'a',to:date,from:new Date(date.getTime()-30*86400000)}));
   });
+  it('preserves location metadata in context-only imports without fetching media', async () => {
+    const s = setup();
+    s.source.load.mockResolvedValue([{ key: { id: 'old', remoteJid: '123@s.whatsapp.net', fromMe: true },
+      messageTimestamp: date.getTime() / 1000 - 10, message: { locationMessage: {
+        name: 'Grupo Villefer', degreesLatitude: -26.254, degreesLongitude: -48.875
+      } } }] as any);
+    await s.run('w', 'c');
+    expect(s.messages[1]).toMatchObject({ type: 'text', metadata: { location: { name: 'Grupo Villefer', latitude: -26.254, longitude: -48.875 } } });
+    expect(s.source.media).not.toHaveBeenCalled();
+  });
   it('is idempotent and never re-fetches a completed import',async()=>{
     const s=setup();await s.run('w','c');await s.run('w','c');
     expect(s.source.load).toHaveBeenCalledOnce();expect(s.messages).toHaveLength(2);
   });
-  it('does not import for disabled opt-in, another provider or human control',async()=>{
-    const s=setup();s.conversation.aiControlStatus='human_controlled';expect((await s.run('w','c')).inserted).toBe(0);expect(s.source.load).not.toHaveBeenCalled();
-    s.conversation.aiControlStatus='agent_allowed';s.conversation.channel.encryptedConfig.assistantHistory.days=0;await s.run('w','c');expect(s.source.load).not.toHaveBeenCalled();
+  it('can import opted-in history for private support during human control',async()=>{
+    const s=setup();s.conversation.aiControlStatus='human_controlled';
+    expect((await s.run('w','c')).inserted).toBe(1);
+  });
+  it('does not import without opt-in',async()=>{
+    const s=setup();s.conversation.channel.encryptedConfig.assistantHistory.days=0;await s.run('w','c');expect(s.source.load).not.toHaveBeenCalled();
   });
   it('rejects cross-conversation provider ID collisions before writing',async()=>{
     const s=setup();s.messages.push({id:'other',conversationId:'other',providerMessageId:'old',createdAt:date,metadata:{historyImport:{source:'evolution'}}});

@@ -317,10 +317,10 @@ export function ReportsPage() {
 
   return (
     <section className="module-page reports-page" aria-label="Relatórios">
-      <header className="module-header">
+      <header className="module-header page-header">
         <div>
-          <p className="eyebrow">Prymeira Talk</p>
           <h1>Relatórios</h1>
+          <p className="page-header-lede">Como estão o atendimento, os disparos e as automações no período.</p>
         </div>
         <div className="module-header-actions">
           <span className={`status-badge status-badge--${isLoading ? "waiting" : "open"}`}>

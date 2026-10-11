@@ -1,3 +1,7 @@
+import { lastMessageKind, messageLocationSchema } from '@prymeira-talk/shared';
+import { lockProspectingConversation } from "../prospecting/prospecting-lock.js";
+import { reserveProspectingOutbound, adoptProspectingOutbound, dispatchProspectingOutbound, confirmProspectingOutbound, cancelProspectingOutbound } from "../prospecting/prospecting-delivery.js";
+import { stopProspectingConversation, autonomousAgentAllowed, releaseEndedProspectingBinding, findProspectingReservation } from "../prospecting/prospecting-policy.js";
 import type { ConversationStatus, Prisma, PrismaClient } from "@prisma/client";
 import { createHash } from 'node:crypto';
 import { prepareVoiceRecording } from './outbound-audio.js';
@@ -5,12 +9,16 @@ import type {
   ContactBoardMembershipDto,
   ContactBoardMoveSource,
   ConversationDto,
+  ConversationLastMessage,
+  InboxView,
   MessageDto
 } from "@prymeira-talk/shared";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import { MetaClientError, type MetaClient } from "../meta/meta.client.js";
+import { canonicalizePhone } from "../contacts/phone-normalization.js";
 import { visibleConversationMessageWhere, withoutInternalFollowupReservations } from "./internal-message.js";
+import { measureInboxAssembly } from "../../plugins/inbox-timing.js";
 
 type DateLike = Date | string;
 
@@ -28,7 +36,8 @@ type ConversationActionErrorCode =
   | "CURRENT_USER_REQUIRED"
   | "CURRENT_USER_NOT_FOUND"
   | "DEPARTMENT_NOT_FOUND"
-  | "BOARD_STAGE_NOT_FOUND";
+  | "BOARD_STAGE_NOT_FOUND"
+  | "HANDOFF_ACTION_NOT_AVAILABLE";
 
 export class ConversationActionError extends Error {
   statusCode = 409 as const;
@@ -48,6 +57,7 @@ type OutboundMessageValidationErrorCode =
   | "OUTBOUND_CONTACT_PHONE_REQUIRED"
   | "OUTBOUND_PROVIDER_KEY_REQUIRED"
   | "META_MEDIA_NOT_SUPPORTED"
+  | "CONTACT_CARD_NOT_SUPPORTED"
   | "META_NOT_CONFIGURED"
   | "META_SERVICE_WINDOW_CLOSED";
 
@@ -82,6 +92,7 @@ function isDefinitiveProviderRejection(error: unknown) {
 }
 
 export interface ConversationRecord {
+  prospectingOrigin?: { campaign: { id: string; name: string } } | null;
   id: string;
   workspaceId: string;
   channelId: string;
@@ -89,6 +100,7 @@ export interface ConversationRecord {
   contact?: {
     name?: string | null;
     phone?: string | null;
+    isGroup?: boolean;
   } | null;
   channel?: {
     displayName?: string | null;
@@ -107,34 +119,93 @@ export interface ConversationRecord {
   assignedUserId: string | null;
   departmentId: string | null;
   lastMessageAt: DateLike | null;
+  lastMessagePreviewAt?: DateLike | null;
   lastMessagePreview: string | null;
   unreadCount: number;
+  hiddenUntilReply?: boolean;
   priority: ConversationDto["priority"];
   aiControlStatus?: NonNullable<ConversationDto["aiControlStatus"]>;
   activeAgentSessionId?: string | null;
   activeAgentSession?: {
     status: NonNullable<ConversationDto["activeAgentSessionStatus"]>;
     handoffReason?: string | null;
+    handoffActionCompletedAt?: DateLike | null;
     agent?: {
       name: string;
     } | null;
+  } | null;
+  inboxTriage?: {
+    manualMarkedAt: DateLike | null;
+    decision: "needs_reply" | "no_reply" | "uncertain" | null;
+    reason: string | null;
+    anchorMessageId: string | null;
+    dismissedMessageId: string | null;
   } | null;
   tags?: Array<{
     tag: TagRecord;
   }>;
 }
 
-const conversationDtoInclude = {
+export const inboxHandoffWhere: Prisma.ConversationWhereInput = {
+  status: { not: "closed" },
+  OR: [
+    { activeAgentSession: { is: { status: "handoff_requested", handoffActionCompletedAt: null } } },
+    {
+      aiControlStatus: "human_controlled",
+      activeAgentSession: { is: {
+        handoffReason: { notIn: [""] }, handoffActionCompletedAt: null
+      } }
+    }
+  ]
+};
+
+const inboxSemanticReplyWhere: Prisma.ConversationWhereInput = {
+  status: { not: "closed" },
+  aiControlStatus: "human_controlled",
+  inboxTriage: { is: {
+    decision: { in: ["needs_reply", "uncertain"] },
+    dismissedMessageId: null,
+    anchorMessageId: { not: null }
+  } }
+};
+
+// In private review modes the autonomous agent is blocked. A ready suggestion or
+// generation failure therefore belongs in the seller's reply queue, even after
+// the conversation has been opened and its unread counter reached zero.
+const privateReviewChannelWhere: Prisma.ConversationWhereInput = {
+  channel: { is: { OR: [
+    { encryptedConfig: { path: ["assistant", "mode"], equals: "automatic" } },
+    { encryptedConfig: { path: ["assistant", "mode"], equals: "on_demand" } }
+  ] } }
+};
+
+const inboxPrivateReviewWhere: Prisma.ConversationWhereInput = {
+  status: { not: "closed" },
+  assistantState: { is: { status: { in: ["ready", "failed"] } } },
+  ...privateReviewChannelWhere
+};
+
+export const inboxUnreadWhere: Prisma.ConversationWhereInput = {
+  unreadCount: { gt: 0 },
+  OR: [inboxHandoffWhere, { aiControlStatus: "human_controlled" }, privateReviewChannelWhere]
+};
+
+export const conversationDtoInclude = {
+  prospectingOrigin: { select: { campaign: { select: { id: true, name: true } } } },
   assignedUser: { select: { displayName: true } },
   channel: { select: { displayName: true, phoneNumber: true, provider: true } },
-  contact: { select: { name: true, phone: true } },
+  contact: { select: { name: true, phone: true, isGroup: true } },
   department: { select: { name: true } },
   activeAgentSession: {
     select: {
       status: true,
       handoffReason: true,
+      handoffActionCompletedAt: true,
       agent: { select: { name: true } }
     }
+  },
+  inboxTriage: {
+    select: { manualMarkedAt: true, decision: true, reason: true, anchorMessageId: true, dismissedMessageId: true }
   },
   tags: { include: { tag: true } }
 } as const;
@@ -302,7 +373,31 @@ type AiActionLogDeleteManyArgs = Parameters<PrismaClient["aiActionLog"]["deleteM
 type AuditLogCreateArgs = Parameters<PrismaClient["auditLog"]["create"]>[0];
 type CrmSyncActionCreateArgs = Parameters<PrismaClient["crmSyncAction"]["create"]>[0];
 
+const OUTBOUND_STATUS_RANK: Record<string, number> = { failed: 0, pending: 1, sent: 2, delivered: 3, read: 4 };
+/** The echo of a message Talk just sent, stored first because WhatsApp answered before the send call returned. */
+async function findEchoedOutbound(prisma: PrismaLike, workspaceId: string, conversationId: string, providerMessageId: string) {
+  // Each candidate is checked again here: only the same WhatsApp id, in this conversation, sent by us, is the echo.
+  const ours = (record: MessageRecord | undefined) => record && record.conversationId === conversationId && record.direction === 'outbound' ? record : null;
+  const byProviderId = ours((await prisma.message.findMany({ where: { workspaceId, conversationId, direction: 'outbound', providerMessageId }, take: 1 } as never))
+    .find(record => record.providerMessageId === providerMessageId));
+  if (byProviderId) return byProviderId;
+  const identity = (await prisma.canonicalMessageIdentity?.findMany({ where: { workspaceId, conversationId, rawId: providerMessageId, direction: 'outbound' }, select: { messageId: true, rawId: true } }).catch(() => []) ?? [])
+    .find(row => row.rawId === providerMessageId);
+  if (!identity) return null;
+  return ours((await prisma.message.findMany({ where: { workspaceId, conversationId, id: identity.messageId }, take: 1 } as never)).find(record => record.id === identity.messageId));
+}
+/** Talk's details win (caption, file name, who sent, marks); the echo keeps its stored media and the furthest status. */
+function mergeEchoedOutbound(echo: MessageRecord, talk: { metadata?: unknown; mediaUrl?: string | null; status: string } & Record<string, unknown>) {
+  const record = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const echoMeta = record(echo.metadata); const talkMeta = record(talk.metadata);
+  const metadata = { ...echoMeta, ...talkMeta, ...(echoMeta.attachment || talkMeta.attachment ? { attachment: { ...record(echoMeta.attachment), ...record(talkMeta.attachment) } } : {}) };
+  const status = (OUTBOUND_STATUS_RANK[String(echo.status)] ?? 0) > (OUTBOUND_STATUS_RANK[talk.status] ?? 0) ? echo.status : talk.status;
+  return { ...talk, mediaUrl: echo.mediaUrl ?? talk.mediaUrl, status, metadata: metadata as Prisma.InputJsonValue } as never;
+}
+
 export interface PrismaLike {
+  $queryRaw?: PrismaClient['$queryRaw'];
+  canonicalMessageIdentity?: { findMany(args: { where: Record<string, unknown>; select: { messageId: true; rawId: true } }): Promise<Array<{ messageId: string; rawId: string }>> };
   assistantConversationState?: Pick<PrismaClient['assistantConversationState'], 'deleteMany'>;
   assistantSuggestion?: Pick<PrismaClient['assistantSuggestion'], 'deleteMany'>;
   conversation: {
@@ -372,6 +467,7 @@ export interface PrismaLike {
 }
 
 interface ConversationsServiceOptions {
+  publicTalkUrl?: string;
   evolution?: EvolutionRuntime;
   meta?: {
     phoneNumberId: string | null;
@@ -420,8 +516,41 @@ function isFutureDate(value: DateLike | null | undefined) {
   return Number.isFinite(timestamp) && timestamp > Date.now();
 }
 
+/**
+ * Each conversation's latest visible message (who sent it, its status), for WhatsApp's ticks on the queue card.
+ * One query per page, one index probe per conversation (LATERAL ... LIMIT 1). A failure leaves the cards without ticks.
+ */
+export async function withLastMessages(prisma: Pick<PrismaLike, '$queryRaw'>, workspaceId: string, dtos: ConversationDto[]): Promise<ConversationDto[]> {
+  if (!dtos.length || typeof prisma.$queryRaw !== 'function') return dtos;
+  try {
+    const rows = await prisma.$queryRaw<Array<{ conversation_id: string; id: string; direction: string; status: string; created_at: Date;
+      type: string; body: string | null; mime_type: string | null; media_mime: string | null; sender_name: string | null }>>`
+      SELECT c.id::text AS conversation_id, m.id::text AS id, m.direction::text AS direction, m.status::text AS status, m.created_at,
+        m.type::text AS type, m.body, m.mime_type,
+        substring(m.media_url from '^data:([^;,]+)') AS media_mime, m.sender_name
+      FROM unnest(${dtos.map(dto => dto.id)}::uuid[]) AS c(id)
+      CROSS JOIN LATERAL (
+        SELECT id, direction, status, created_at, type, left(body, 64) AS body,
+          metadata->'attachment'->>'mimeType' AS mime_type, left(media_url, 64) AS media_url,
+          left(coalesce(nullif(trim(metadata->'groupSender'->>'name'), ''), split_part(metadata->'groupSender'->>'jid', '@', 1)), 120) AS sender_name FROM messages
+        WHERE workspace_id = ${workspaceId} AND conversation_id = c.id
+          AND NOT (status = 'pending' AND metadata->>'source' = 'followup_review')
+        ORDER BY created_at DESC, id DESC LIMIT 1
+      ) m`;
+    const latest = new Map(rows.map(row => [row.conversation_id, {
+      id: row.id, direction: row.direction, status: row.status, createdAt: toIsoString(row.created_at),
+      kind: lastMessageKind({ type: row.type, body: row.body, mimeType: row.mime_type ?? row.media_mime }),
+      ...(row.direction === 'inbound' && row.sender_name ? { senderName: row.sender_name } : {})
+    } as ConversationLastMessage]));
+    return dtos.map(dto => ({ ...dto, lastMessage: latest.get(dto.id) ?? null }));
+  } catch {
+    return dtos;
+  }
+}
+
 export function toConversationDto(record: ConversationRecord): ConversationDto {
   const channelProvider = toChannelProvider(record.channel?.provider);
+  const isGroup = Boolean(record.contact?.isGroup || record.contact?.phone?.endsWith('@g.us'));
   const customerServiceWindowExpiresAt = record.customerServiceWindowExpiresAt
     ? toIsoString(record.customerServiceWindowExpiresAt)
     : null;
@@ -432,7 +561,8 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
     channelId: record.channelId,
     contactId: record.contactId,
     contactName: record.contact?.name ?? null,
-    contactPhone: record.contact?.phone ?? null,
+    contactPhone: isGroup ? null : record.contact?.phone ?? null,
+    isGroup,
     channelName: record.channel?.displayName ?? record.channel?.phoneNumber ?? null,
     channelProvider,
     customerServiceWindowExpiresAt,
@@ -444,17 +574,47 @@ export function toConversationDto(record: ConversationRecord): ConversationDto {
     assignedUserId: record.assignedUserId,
     departmentId: record.departmentId,
     lastMessageAt: record.lastMessageAt ? toIsoString(record.lastMessageAt) : null,
+    lastMessagePreviewAt: record.lastMessagePreviewAt ? toIsoString(record.lastMessagePreviewAt) : null,
     lastMessagePreview: record.lastMessagePreview,
     unreadCount: record.unreadCount,
+    hiddenUntilReply: Boolean(record.hiddenUntilReply),
     priority: record.priority,
     aiControlStatus: record.aiControlStatus ?? "agent_allowed",
+    ...(record.prospectingOrigin !== undefined ? { sourceCampaign: record.prospectingOrigin?.campaign ?? null } : {}),
     activeAgentName: record.activeAgentSession?.agent?.name ?? null,
     activeAgentSessionStatus: record.activeAgentSession?.status ?? null,
-    handoffReason: record.activeAgentSession?.handoffReason ?? null
+    handoffReason: record.activeAgentSession?.handoffReason ?? null,
+    handoffActionCompletedAt: record.activeAgentSession?.handoffActionCompletedAt
+      ? toIsoString(record.activeAgentSession.handoffActionCompletedAt)
+      : null,
+    ...(record.inboxTriage !== undefined ? {
+      manualMarked: Boolean(record.inboxTriage?.manualMarkedAt),
+      replyTriageDecision: record.inboxTriage?.decision ?? null,
+      replyTriageReason: record.inboxTriage?.reason ?? null,
+      replyTriageAnchorMessageId: record.inboxTriage?.anchorMessageId ?? null,
+      replyDismissed: Boolean(record.inboxTriage?.anchorMessageId &&
+        record.inboxTriage.dismissedMessageId === record.inboxTriage.anchorMessageId)
+    } : {})
   };
 }
 
 export function toMessageDto(record: MessageRecord): MessageDto {
+  return mapMessageDto(record);
+}
+
+export function toCompactMessageDto(record: MessageRecord, publicTalkUrl: string): MessageDto {
+  return mapMessageDto(record, publicTalkUrl);
+}
+
+function canonicalInlineBase64(source: string, headerLength: number): boolean {
+  const length = source.length - headerLength;
+  if (!length || length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(source.slice(headerLength))) return false;
+  const padding = source.endsWith('==') ? 2 : source.endsWith('=') ? 1 : 0;
+  const last = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.indexOf(source[source.length - padding - 1]);
+  return padding === 0 || last % (padding === 2 ? 16 : 4) === 0;
+}
+
+function mapMessageDto(record: MessageRecord, publicTalkUrl?: string): MessageDto {
   const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
   const metadata = object(record.metadata);
   const cache = object(metadata.assistantMedia);
@@ -462,11 +622,36 @@ export function toMessageDto(record: MessageRecord): MessageDto {
   const result = cache.sourceHash === sourceHash ? object(cache.result) : {};
   const history = object(metadata.historyImport);
   const attachment = object(metadata.attachment);
+  const inlineHeader = /^data:([^;,]+);base64,/i.exec(record.mediaUrl ?? '');
+  const storedVisual = record.type === 'image' && /^image\/(jpeg|png|webp|gif)$/i.test(inlineHeader?.[1] ?? '') ||
+    record.type === 'file' && /^video\/(mp4|webm|quicktime)$/i.test(inlineHeader?.[1] ?? '');
+  // Preserve direct display above the frontend's 64 MiB Blob cache budget.
+  const inlineBytes = inlineHeader ? (record.mediaUrl!.length - inlineHeader[0].length) * 3 / 4 - (record.mediaUrl!.endsWith('==') ? 2 : record.mediaUrl!.endsWith('=') ? 1 : 0) : 0;
+  const compactMedia = Boolean(publicTalkUrl && ['image', 'audio', 'file'].includes(record.type) && record.mediaUrl?.startsWith('data:') && inlineHeader &&
+    (!storedVisual || inlineBytes <= 64 * 1024 * 1024 && canonicalInlineBase64(record.mediaUrl, inlineHeader[0].length)));
+  const sourceMimeType = compactMedia ? /^data:([^;,]{1,120})[;,]/i.exec(record.mediaUrl!)?.[1].trim().toLowerCase() : undefined;
+  const inferredMimeType = typeof attachment.mimeType !== 'string' ? sourceMimeType : undefined;
+  // The inline URL used to identify video/PDF even with generic provider MIME
+  // metadata. Keep that presentation hint without replacing existing metadata.
+  const previewMimeType = sourceMimeType && typeof attachment.mimeType === 'string' && attachment.mimeType.toLowerCase() !== sourceMimeType &&
+    (sourceMimeType.startsWith('video/') || sourceMimeType === 'application/pdf') ? sourceMimeType : undefined;
+  const groupSender = object(metadata.groupSender);
+  const location = messageLocationSchema.safeParse(metadata.location);
+  const rawCards = Array.isArray(metadata.contactCards) ? metadata.contactCards : metadata.contactCard ? [metadata.contactCard] : [];
+  const contactCards = rawCards.slice(0, 50).map((raw) => {
+    const card = object(raw);
+    const fullName = typeof card.fullName === 'string' ? card.fullName.trim().slice(0, 200) : '';
+    const phoneNumber = typeof card.phoneNumber === 'string' ? card.phoneNumber.replace(/\D/g, '').slice(0, 20) : null;
+    return fullName ? { fullName, phoneNumber: phoneNumber || null } : null;
+  }).filter((card): card is { fullName: string; phoneNumber: string | null } => Boolean(card));
   const publicAttachment = {
     ...(typeof attachment.fileName === 'string' ? { fileName: attachment.fileName.slice(0, 240) } : {}),
     ...(typeof attachment.caption === 'string' ? { caption: attachment.caption } : {}),
-    ...(typeof attachment.mimeType === 'string' ? { mimeType: attachment.mimeType } : {}),
-    ...(typeof attachment.durationSeconds === 'number' && Number.isFinite(attachment.durationSeconds) && attachment.durationSeconds >= 0 ? { durationSeconds: attachment.durationSeconds } : {})
+    ...(typeof attachment.mimeType === 'string' ? { mimeType: attachment.mimeType } : inferredMimeType ? { mimeType: inferredMimeType } : {}),
+    ...(typeof attachment.durationSeconds === 'number' && Number.isFinite(attachment.durationSeconds) && attachment.durationSeconds >= 0 ? { durationSeconds: attachment.durationSeconds } : {}),
+    ...(attachment.isGif === true ? { isGif: true } : {}),
+    ...(typeof attachment.width === 'number' && attachment.width > 0 && typeof attachment.height === 'number' && attachment.height > 0
+      ? { width: attachment.width, height: attachment.height } : {})
   };
   const processed = result.status === 'processed' && typeof result.extractedText === 'string' && result.extractedText.trim().length > 0;
   const unread = ['image', 'audio', 'file'].includes(record.type) && !processed && (result.status === 'failed' || (history.source === 'evolution' && ['unavailable', 'unread'].includes(String(history.mediaStatus))));
@@ -478,12 +663,39 @@ export function toMessageDto(record: MessageRecord): MessageDto {
     direction: record.direction,
     type: record.type,
     body: record.body,
-    mediaUrl: record.mediaUrl ?? null,
+    ...(groupSender.name || groupSender.jid ? {
+      senderName: typeof groupSender.name === 'string' ? groupSender.name.slice(0, 120) : null,
+      senderJid: typeof groupSender.jid === 'string' ? groupSender.jid.slice(0, 100) : null
+    } : {}),
+    mediaUrl: compactMedia ? new URL(`/api/conversations/${encodeURIComponent(record.conversationId)}/messages/${encodeURIComponent(record.id)}/media?v=${sourceHash}${previewMimeType ? `&previewMime=${encodeURIComponent(previewMimeType)}` : ''}`, publicTalkUrl).href : record.mediaUrl ?? null,
+    ...(record.mediaUrl && ['image', 'audio', 'file'].includes(record.type) ? { mediaSourceHash: sourceHash } : {}),
+    ...(contactCards.length ? { contactCards } : {}),
+    ...(location.success ? { location: location.data } : {}),
     ...(Object.keys(publicAttachment).length ? { attachment: publicAttachment } : {}),
     ...(unread ? { attachmentReadStatus: 'unread' as const } : {}),
     status: record.status,
     sentByUserId: record.sentByUserId ?? null,
+    ...(typeof metadata.editedAt === 'string' ? { editedAt: metadata.editedAt } : {}),
+    ...(typeof metadata.deletedAt === 'string' ? { deletedAt: metadata.deletedAt } : {}),
+    ...(metadata.supervisorReply && typeof metadata.supervisorReply === 'object' ? { sentBySupervisor: true } : {}),
+    ...(metadata.forwarded && typeof metadata.forwarded === 'object' ? { forwarded: true } : {}),
+    ...whatsappPresentation(metadata, record.providerMessageId ?? null),
     createdAt: toIsoString(record.createdAt)
+  };
+}
+
+/** WhatsApp id, quote, reaction and poll vote stored by the canonical writer (metadata.whatsapp/quoted/reaction/pollVote). */
+function whatsappPresentation(metadata: Record<string, unknown>, providerMessageId: string | null) {
+  const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
+  const text = (v: unknown, max: number) => typeof v === 'string' && v ? v.slice(0, max) : null;
+  const whatsapp = object(metadata.whatsapp), quoted = object(metadata.quoted), reaction = object(metadata.reaction), pollVote = object(metadata.pollVote);
+  const whatsappId = text(whatsapp.id, 200) ?? (providerMessageId && !providerMessageId.includes('_') && !providerMessageId.startsWith('wamid.') ? providerMessageId : null);
+  return {
+    ...(whatsappId ? { whatsappId } : {}),
+    ...(text(quoted.id, 200) ? { quoted: { whatsappId: text(quoted.id, 200)!, participant: text(quoted.participant, 100), body: text(quoted.body, 500) } } : {}),
+    ...(text(reaction.targetId, 200) ? { reaction: { targetWhatsappId: text(reaction.targetId, 200)!, emoji: text(reaction.emoji, 32) } } : {}),
+    ...(text(pollVote.targetId, 200) ? { pollVote: { targetWhatsappId: text(pollVote.targetId, 200)!,
+      options: Array.isArray(pollVote.options) ? pollVote.options.map(option => text(option, 100)).filter((option): option is string => Boolean(option)).slice(0, 12) : null } } : {})
   };
 }
 
@@ -555,28 +767,62 @@ export function createConversationsService(
     workspaceId: string;
     status?: ConversationListStatus;
     assignedUserId?: string | null;
-  }) {
+    channelId?: string;
+    search?: string;
+    view?: InboxView;
+  }): Prisma.ConversationWhereInput {
     const assigneeWhere = input.assignedUserId ? { assignedUserId: input.assignedUserId } : {};
-
+    const channelWhere = input.channelId ? { channelId: input.channelId } : {};
+    const searchPhone = input.search?.replace(/\D/g, '')
+      ? canonicalizePhone(input.search)
+      : input.search?.trim() ?? '';
+    const searchWhere: Prisma.ConversationWhereInput = input.search?.trim()
+      ? { contact: { is: { OR: [
+          { name: { contains: input.search.trim(), mode: "insensitive" } },
+          { phone: { contains: searchPhone } }
+        ] } } }
+      : {};
+    // A conversation retired by an authority resolution is never listed: its chat is operated, and shown, by another one.
+    const visibilityWhere: Prisma.ConversationWhereInput = input.search?.trim()
+      ? { retiredIntoConversationId: null } : { hiddenUntilReply: false, retiredIntoConversationId: null };
+    const viewWhere: Prisma.ConversationWhereInput = input.view === "unread"
+      ? inboxUnreadWhere
+      : input.view === "marked"
+        ? { inboxTriage: { is: { manualMarkedAt: { not: null } } } }
+        : input.view === "reply"
+          ? { OR: [inboxHandoffWhere, inboxSemanticReplyWhere, inboxPrivateReviewWhere] }
+          : input.view === "handoff" ? inboxHandoffWhere : {};
     if (input.status === "closed") {
       return {
         workspaceId: input.workspaceId,
         status: "closed" as const,
-        ...assigneeWhere
+        ...assigneeWhere,
+        ...channelWhere,
+        ...visibilityWhere,
+        ...searchWhere,
+        ...viewWhere
       };
     }
 
     if (input.status === "all") {
       return {
         workspaceId: input.workspaceId,
-        ...assigneeWhere
+        ...assigneeWhere,
+        ...channelWhere,
+        ...visibilityWhere,
+        ...searchWhere,
+        ...viewWhere
       };
     }
 
     return {
       workspaceId: input.workspaceId,
       status: { in: activeConversationStatuses },
-      ...assigneeWhere
+      ...assigneeWhere,
+      ...channelWhere,
+      ...visibilityWhere,
+      ...searchWhere,
+      ...viewWhere
     };
   }
 
@@ -586,20 +832,7 @@ export function createConversationsService(
   }): Promise<ConversationRecord> {
     const conversation = await prisma.conversation.findUnique({
       where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
-      include: {
-        assignedUser: { select: { displayName: true } },
-        channel: { select: { displayName: true, phoneNumber: true, provider: true } },
-        contact: { select: { name: true, phone: true } },
-        department: { select: { name: true } },
-        activeAgentSession: {
-          select: {
-            status: true,
-            handoffReason: true,
-            agent: { select: { name: true } }
-          }
-        },
-        tags: { include: { tag: true } }
-      }
+      include: conversationDtoInclude
     });
 
     assertConversationRecord(conversation);
@@ -645,7 +878,7 @@ export function createConversationsService(
       })
     ]);
 
-    return {
+    return measureInboxAssembly(() => ({
       primaryBoardStage: toPrimaryBoardStageDto(primaryMembership),
       tags: conversation.tags?.map((tagLink) => tagLink.tag) ?? [],
       notes: notes.map(toNoteDto),
@@ -654,7 +887,7 @@ export function createConversationsService(
         name: department.name
       })),
       boardStages: boardStages.map(toBoardStageOptionDto)
-    };
+    }));
   }
 
   async function resolveCurrentUser(input: {
@@ -686,19 +919,28 @@ export function createConversationsService(
   }
 
   return {
+    async getConversationDto(input: { workspaceId: string; conversationId: string }): Promise<ConversationDto> {
+      const [dto] = await withLastMessages(prisma, input.workspaceId, [toConversationDto(await findConversation(input))]);
+      return dto!;
+    },
     async listConversations(input: {
       workspaceId: string;
       status?: ConversationListStatus;
       assignedUserId?: string | null;
+      channelId?: string;
+      search?: string;
+      cursor?: string;
+      view?: InboxView;
     }): Promise<ConversationDto[]> {
       const conversations = await prisma.conversation.findMany({
         where: conversationListWhere(input),
         include: conversationDtoInclude,
-        orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
+        orderBy: [{ lastMessageAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }, { id: "desc" }],
+        ...(input.cursor ? { cursor: { id: input.cursor }, skip: 1 } : {}),
         take: 50
       });
 
-      return conversations.map(toConversationDto);
+      return withLastMessages(prisma, input.workspaceId, measureInboxAssembly(() => conversations.map(toConversationDto)));
     },
 
     async createPendingOutboundMessage(input: {
@@ -711,8 +953,11 @@ export function createConversationsService(
         mimetype: string;
         mediaUrl: string;
       };
+      contactCard?: { fullName: string; phoneNumber: string };
       sentByUserId: string | null;
       metadata?: Record<string, unknown>;
+      /** Reply to this message (text only). */
+      quoted?: { id: string; fromMe: boolean; participant: string | null; body: string | null };
     }): Promise<{ message: MessageDto; conversation: ConversationDto }> {
       if (input.reservedMessageId && !prisma.message.update) throw new Error('Reserved outbound storage is unavailable.');
       const conversation = await prisma.conversation.findUnique({
@@ -721,7 +966,7 @@ export function createConversationsService(
           customerServiceWindowExpiresAt: true,
           id: true,
           channel: { select: { provider: true, providerKey: true } },
-          contact: { select: { phone: true } }
+          contact: { select: { phone: true, isGroup: true } }
         }
       });
 
@@ -729,24 +974,51 @@ export function createConversationsService(
         throw new ConversationNotFoundError();
       }
 
+      if (input.contactCard && (conversation.contact?.isGroup || conversation.contact?.phone?.endsWith('@g.us'))) {
+        throw new OutboundMessageValidationError('CONTACT_CARD_NOT_SUPPORTED', 'Não é possível compartilhar um contato em uma conversa de grupo.');
+      }
+
       const isAudio = input.attachment?.mimetype.toLowerCase().startsWith('audio/') ?? false;
       if (isAudio && conversation.channel?.provider !== 'evolution') throw new OutboundMessageValidationError('AUDIO_CHANNEL_NOT_SUPPORTED', 'A gravação de voz está disponível em canais Evolution.');
       let audio: Awaited<ReturnType<typeof prepareVoiceRecording>> | null = null;
-      const messageBody = isAudio ? 'Áudio enviado' : input.body?.trim() || input.attachment?.fileName || "";
+      const isVideo = input.attachment?.mimetype.toLowerCase().startsWith('video/') ?? false;
+      const messageBody = isAudio ? 'Áudio enviado' : input.contactCard
+        ? `Contato compartilhado: ${input.contactCard.fullName} (${input.contactCard.phoneNumber})`
+        : input.body?.trim() || (isVideo ? 'Vídeo enviado' : input.attachment?.fileName) || "";
       const messageType: MessageDto["type"] = input.attachment
         ? isAudio ? 'audio' : input.attachment.mimetype.toLowerCase().startsWith("image/")
           ? "image"
           : "file"
         : "text";
 
+      const prospecting = input.metadata?.source === 'ai_agent' ? await findProspectingReservation(prisma, input.workspaceId, input.conversationId) : null;
+      const prospectingPending = prospecting ? input.reservedMessageId ? await adoptProspectingOutbound(prisma, {
+        workspaceId: input.workspaceId, conversationId: input.conversationId, messageId: input.reservedMessageId, agentId: prospecting.agentId,
+        generation: typeof input.metadata?.prospectingGeneration === 'string' ? input.metadata.prospectingGeneration : prospecting.generation,
+        type: messageType === 'image' ? 'image' : messageType === 'file' ? 'file' : 'text', body: messageBody, mediaUrl: input.attachment?.mediaUrl, metadata: input.metadata
+      }) : await reserveProspectingOutbound(prisma, {
+        workspaceId: input.workspaceId, conversationId: input.conversationId, agentId: prospecting.agentId,
+        generation: typeof input.metadata?.prospectingGeneration === 'string' ? input.metadata.prospectingGeneration : prospecting.generation,
+        type: messageType === 'image' ? 'image' : messageType === 'file' ? 'file' : 'text', body: messageBody,
+        mediaUrl: input.attachment?.mediaUrl, metadata: input.metadata }) : null;
+      const reservedMessageId = prospectingPending?.id ?? input.reservedMessageId;
       let providerSend: { providerMessageId: string | null; raw: unknown } | null = null;
       let providerStarted = false;
-      const callProvider = async <T>(operation: () => Promise<T>): Promise<T> => {
-        providerStarted = true;
+      let confirmedProspectingMessage: Awaited<ReturnType<typeof dispatchProspectingOutbound>> | null = null;
+      const callProvider = async (operation: () => Promise<{ providerMessageId: string | null; raw: unknown }>) => {
+        if (input.metadata?.source === "ai_agent" && await findProspectingReservation(prisma, input.workspaceId, input.conversationId) && !await autonomousAgentAllowed(prisma, { workspaceId: input.workspaceId, conversationId: input.conversationId, agentId: typeof input.metadata.agentId === "string" ? input.metadata.agentId : undefined, expectedGeneration: typeof input.metadata.prospectingGeneration === "string" ? input.metadata.prospectingGeneration : undefined })) { if (prospectingPending) await cancelProspectingOutbound(prisma, prospectingPending.id); throw new Error("Prospecting authorization changed before delivery."); }
         try {
+          if (prospectingPending) {
+            confirmedProspectingMessage = await dispatchProspectingOutbound(prisma, prospectingPending, async () => {
+              providerStarted = true;
+              return operation();
+            });
+            return { providerMessageId: confirmedProspectingMessage.providerMessageId, raw: null };
+          }
+          providerStarted = true;
           return await operation();
         } catch (error) {
-          if (input.reservedMessageId && !isDefinitiveProviderRejection(error)) {
+          if (reservedMessageId && providerStarted && !isDefinitiveProviderRejection(error)) {
             throw new OutboundDeliveryUncertainError();
           }
           throw error;
@@ -775,7 +1047,18 @@ export function createConversationsService(
           );
         }
 
-        if (isAudio && input.attachment) {
+        if (input.contactCard) {
+          if (!options.evolution.client.sendContact) throw new OutboundMessageValidationError('CONTACT_CARD_NOT_SUPPORTED', 'Este canal não oferece cartão de contato.');
+          providerSend = await callProvider(() => options.evolution!.client!.sendContact!({
+            instanceName: providerKey,
+            number: contactPhone,
+            contact: [{
+              fullName: input.contactCard!.fullName,
+              wuid: input.contactCard!.phoneNumber,
+              phoneNumber: input.contactCard!.phoneNumber
+            }]
+          }));
+        } else if (isAudio && input.attachment) {
           if (!options.evolution.client.sendAudio) throw new OutboundMessageValidationError('AUDIO_CHANNEL_NOT_SUPPORTED', 'Este canal ainda não oferece envio de voz.');
           try { audio = await prepareVoiceRecording(input.attachment.mediaUrl, input.attachment.mimetype); }
           catch (e) { throw new OutboundMessageValidationError('INVALID_VOICE_RECORDING', e instanceof Error ? e.message : 'Áudio inválido.'); }
@@ -786,7 +1069,7 @@ export function createConversationsService(
           ? await callProvider(() => options.evolution!.client!.sendMedia({
               instanceName: providerKey,
               number: contactPhone,
-              mediatype: messageType === "image" ? "image" : "document",
+              mediatype: messageType === "image" ? "image" : isVideo ? "video" : "document",
               mimetype: attachment.mimetype,
               media: attachment.mediaUrl,
               fileName: attachment.fileName,
@@ -795,7 +1078,8 @@ export function createConversationsService(
           : await callProvider(() => options.evolution!.client!.sendText({
               instanceName: providerKey,
               number: contactPhone,
-              text: messageBody
+              text: messageBody,
+              ...(input.quoted ? { quoted: input.quoted } : {})
             }));
         }
       }
@@ -807,9 +1091,9 @@ export function createConversationsService(
         const metaClient = options.meta?.client;
         const metaEvolutionClient = options.metaEvolution?.client;
 
-        if (input.attachment) {
+        if (input.attachment || input.contactCard) {
           throw new OutboundMessageValidationError(
-            "META_MEDIA_NOT_SUPPORTED",
+            input.contactCard ? "CONTACT_CARD_NOT_SUPPORTED" : "META_MEDIA_NOT_SUPPORTED",
             "Meta Cloud inbox replies support text only in this release."
           );
         }
@@ -862,13 +1146,16 @@ export function createConversationsService(
           type: messageType,
           body: messageBody,
           mediaUrl: audio?.mediaUrl ?? input.attachment?.mediaUrl,
-          ...(audio || input.metadata
+          ...(audio || input.attachment || input.metadata || input.contactCard || input.quoted
             ? {
                 metadata: {
                   ...(audio
-                    ? { attachment: { fileName: "audio.ogg", durationSeconds: audio.durationSeconds } }
-                    : {}),
-                  ...(input.metadata ?? {})
+                    ? { attachment: { fileName: "audio.ogg", mimeType: 'audio/ogg', durationSeconds: audio.durationSeconds } }
+                    : input.attachment ? { attachment: { fileName: input.attachment.fileName, mimeType: input.attachment.mimetype,
+                      ...(input.body?.trim() ? { caption: input.body.trim() } : {}) } } : {}),
+                  ...(input.metadata ?? {}),
+                  ...(input.contactCard ? { contactCard: input.contactCard } : {}),
+                  ...(input.quoted && !input.attachment ? { quoted: { id: input.quoted.id, participant: input.quoted.participant, body: input.quoted.body } } : {})
                 } as Prisma.InputJsonValue
               }
             : {}),
@@ -877,8 +1164,13 @@ export function createConversationsService(
           sentByUserId: input.sentByUserId
       };
       try {
-        const message = input.reservedMessageId
-          ? await prisma.message.update!({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.reservedMessageId } }, data: messageData })
+        // A large file can take longer to send than WhatsApp takes to echo it back: the echo may already be stored as a
+        // message with this WhatsApp id. Then that one is completed with Talk's details instead of creating a twin.
+        const echoed = !prospectingPending && !reservedMessageId && providerSend?.providerMessageId && prisma.message.update
+          ? await findEchoedOutbound(prisma, input.workspaceId, input.conversationId, providerSend.providerMessageId) : null;
+        const message = prospectingPending ? confirmedProspectingMessage ?? await confirmProspectingOutbound(prisma, prospectingPending.id, providerSend?.providerMessageId) : reservedMessageId
+          ? await prisma.message.update!({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: reservedMessageId } }, data: messageData })
+          : echoed ? await prisma.message.update!({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: echoed.id } }, data: mergeEchoedOutbound(echoed, messageData) })
           : await prisma.message.create({ data: messageData });
 
         const updatedConversation = await prisma.conversation.update({
@@ -945,6 +1237,8 @@ export function createConversationsService(
 
       const aiControlUpdatedAt = new Date();
       const updatedConversation = (await prisma.$transaction(async (tx) => {
+        await lockProspectingConversation(tx, input.workspaceId, input.conversationId);
+        if (input.status === "human_controlled") await stopProspectingConversation(tx, input.workspaceId, input.conversationId, "human_controlled");
         if (input.status === "human_controlled" && conversation.activeAgentSessionId) {
           await tx.aiAgentSession.update({
             where: {
@@ -970,6 +1264,57 @@ export function createConversationsService(
         });
       })) as ConversationRecord;
 
+      return toConversationDto(updatedConversation);
+    },
+
+    async updateHandoffAction(input: {
+      workspaceId: string;
+      conversationId: string;
+      completed?: boolean;
+      actorUserId?: string | null;
+    }): Promise<ConversationDto> {
+      if (input.completed === undefined) {
+        return toConversationDto(await findConversation(input));
+      }
+      const updatedConversation = (await prisma.$transaction(async (tx) => {
+        const current = await tx.conversation.findUnique({
+          where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+          include: conversationDtoInclude
+        });
+        assertConversationRecord(current);
+        if (
+          !current.activeAgentSessionId ||
+          !current.activeAgentSession?.handoffReason ||
+          !["handoff_requested", "paused_by_human"].includes(current.activeAgentSession.status)
+        ) {
+          throw new ConversationActionError(
+            "HANDOFF_ACTION_NOT_AVAILABLE",
+            "Não há uma próxima ação humana para concluir nesta conversa."
+          );
+        }
+
+        if (input.completed !== undefined) {
+          await tx.aiAgentSession.update({
+            where: { workspaceId_id: { workspaceId: input.workspaceId, id: current.activeAgentSessionId } },
+            data: { handoffActionCompletedAt: input.completed ? new Date() : null }
+          });
+        }
+        if (input.completed && current.aiControlStatus !== "human_controlled") {
+          await tx.conversation.update({
+            where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+            data: {
+              aiControlStatus: "human_controlled",
+              aiControlUpdatedAt: new Date(),
+              aiControlUpdatedById: input.actorUserId ?? null
+            }
+          });
+        }
+        return tx.conversation.findUnique({
+          where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
+          include: conversationDtoInclude
+        });
+      })) as ConversationRecord | null;
+      assertConversationRecord(updatedConversation);
       return toConversationDto(updatedConversation);
     },
 
@@ -1017,6 +1362,7 @@ export function createConversationsService(
       }
 
       if (input.action === "assign_current_user") {
+        await stopProspectingConversation(prisma, input.workspaceId, input.conversationId, "human_assignment");
         const user = await resolveCurrentUser(input);
 
         conversation = await prisma.conversation.update({
@@ -1206,6 +1552,7 @@ export function createConversationsService(
       }
 
       if (input.action === "close_conversation") {
+        await stopProspectingConversation(prisma, input.workspaceId, input.conversationId, "conversation_closed");
         conversation = await prisma.conversation.update({
           where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
           data: {
@@ -1249,6 +1596,8 @@ export function createConversationsService(
       }
 
       await prisma.$transaction(async (tx) => {
+        await stopProspectingConversation(tx, input.workspaceId, input.conversationId, "conversation_reset");
+        await releaseEndedProspectingBinding(tx, input);
         await tx.conversation.update({
           where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
           data: {
@@ -1314,6 +1663,7 @@ export function createConversationsService(
     async listMessages(input: {
       workspaceId: string;
       conversationId: string;
+      compactMedia?: boolean;
     }): Promise<MessageDto[]> {
       const conversation = await prisma.conversation.findUnique({
         where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } },
@@ -1324,16 +1674,31 @@ export function createConversationsService(
         throw new ConversationNotFoundError();
       }
 
+      // Conversations retired into this one keep their rows; their history reads here as one.
+      const retired = prisma.conversation.findMany
+        ? await prisma.conversation.findMany({ where: { workspaceId: input.workspaceId, retiredIntoConversationId: input.conversationId }, select: { id: true } })
+        : [];
       const messages = await prisma.message.findMany({
         where: visibleConversationMessageWhere({
           workspaceId: input.workspaceId,
-          conversationId: input.conversationId
+          conversationId: retired.length ? { in: [input.conversationId, ...retired.map(row => row.id)] } : input.conversationId
         }),
-        orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
+        // WhatsApp's own time, like WhatsApp: a message recovered after a disconnection sits where it was sent,
+        // not at the bottom where it arrived.
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: 100
       });
 
-      return withoutInternalFollowupReservations([...messages]).reverse().map(toMessageDto);
+      const dtos = measureInboxAssembly(() => withoutInternalFollowupReservations([...messages]).reverse().map(record => input.compactMedia
+        ? toCompactMessageDto(record, options.publicTalkUrl ?? 'https://talk.prymeiradigital.com.br') : toMessageDto(record)));
+      // Messages written before the WhatsApp id was kept in their metadata get it from their canonical identity.
+      const missing = dtos.filter(dto => !dto.whatsappId).map(dto => dto.id);
+      if (missing.length && prisma.canonicalMessageIdentity?.findMany) {
+        const identities = await prisma.canonicalMessageIdentity.findMany({ where: { workspaceId: input.workspaceId, messageId: { in: missing }, identityFormat: 'whatsapp_stanza' }, select: { messageId: true, rawId: true } });
+        const byMessage = new Map(identities.map(row => [row.messageId, row.rawId]));
+        for (const dto of dtos) if (!dto.whatsappId && byMessage.get(dto.id)) dto.whatsappId = byMessage.get(dto.id)!;
+      }
+      return dtos;
     }
   };
 }

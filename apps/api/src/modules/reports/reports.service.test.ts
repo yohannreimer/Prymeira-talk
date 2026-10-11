@@ -261,7 +261,8 @@ describe("reports service", () => {
       },
       status: "open",
       channelId,
-      departmentId
+      departmentId,
+      retiredIntoConversationId: null
     };
     const messageWhere = {
       workspaceId,

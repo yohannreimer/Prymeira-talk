@@ -36,7 +36,7 @@ describe("GoogleMapsScraperClient", () => {
       baseUrl: "http://scraper.internal:8080/base/ignored",
       fetch,
       requestTimeoutMs: 5_000,
-      depth: 5
+      depth: 12
     });
 
     await expect(client.health()).resolves.toEqual({ ok: true });
@@ -69,7 +69,7 @@ describe("GoogleMapsScraperClient", () => {
       lon: "-47.0608",
       fast_mode: false,
       radius: 10000,
-      depth: 5,
+      depth: 12,
       max_time: 600
     });
     expect(JSON.parse(String(calls[1]?.[1]?.body))).not.toHaveProperty("concurrency");
@@ -159,7 +159,7 @@ describe("GoogleMapsScraperClient", () => {
   it("fails only Google actions when configuration is absent and guards depth/max time", async () => {
     const unavailable = createGoogleMapsScraperClient({ baseUrl: undefined });
     await expect(unavailable.health()).rejects.toMatchObject({ code: "UNAVAILABLE" });
-    expect(() => createGoogleMapsScraperClient({ baseUrl: "http://127.0.0.1:8080", depth: 6 }))
+    expect(() => createGoogleMapsScraperClient({ baseUrl: "http://127.0.0.1:8080", depth: 21 }))
       .toThrow(GoogleMapsScraperError);
 
     const client = createGoogleMapsScraperClient({ baseUrl: "http://127.0.0.1:8080", fetch: vi.fn() });

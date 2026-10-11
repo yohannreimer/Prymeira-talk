@@ -42,6 +42,63 @@ describe("buildRealtimeUrl", () => {
   });
 });
 
+describe("inbox triage API", () => {
+  it("requests the selected server view, channel and cursor before pagination", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const fetchMock = vi.fn().mockResolvedValue(new Response("[]", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+    const { apiGetConversations } = await import("./api");
+    await apiGetConversations(async () => null, { status: "all", view: "reply", channelId: "channel_1", cursor: "older_1" });
+    const url = new URL(fetchMock.mock.calls[0][0]);
+    expect(url.searchParams.get("view")).toBe("reply");
+    expect(url.searchParams.get("channelId")).toBe("channel_1");
+    expect(url.searchParams.get("cursor")).toBe("older_1");
+  });
+});
+
+describe("automation webhook helpers", () => {
+  it("builds the public webhook URL behind the production API prefix", async () => {
+    vi.stubEnv("VITE_API_URL", "https://talk.prymeiradigital.com.br/api");
+
+    const { automationWebhookUrl } = await import("./api");
+
+    expect(automationWebhookUrl("/webhooks/automations/abc")).toBe(
+      "https://talk.prymeiradigital.com.br/api/webhooks/automations/abc"
+    );
+  });
+
+  it("gets and regenerates the webhook link with the manager token and surfaces API errors", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const id = "00000000-0000-4000-8000-000000000001";
+    const webhook = {
+      automationId: id,
+      token: "abc",
+      path: "/webhooks/automations/abc",
+      createdAt: "2026-10-11T12:00:00.000Z",
+      updatedAt: "2026-10-11T12:00:00.000Z"
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(webhook), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...webhook, token: "def", path: "/webhooks/automations/def" }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: "AUTOMATION_WEBHOOK_TRIGGER_MISSING", error: "Salve o fluxo com o gatilho Webhook externo para gerar o link." }), { status: 409 })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+    const { apiGetAutomationWebhook, apiRegenerateAutomationWebhook } = await import("./api");
+
+    await expect(apiGetAutomationWebhook(async () => null, id)).resolves.toEqual(webhook);
+    await expect(apiRegenerateAutomationWebhook(async () => null, id)).resolves.toMatchObject({ token: "def" });
+    await expect(apiGetAutomationWebhook(async () => null, id)).rejects.toThrow(
+      "Salve o fluxo com o gatilho Webhook externo para gerar o link."
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(1, `http://localhost:3002/automations/${id}/webhook`, expect.objectContaining({ method: "POST", headers: expect.objectContaining({ Authorization: "Bearer local-dev-bypass" }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, `http://localhost:3002/automations/${id}/webhook/regenerate`, expect.objectContaining({ method: "POST" }));
+  });
+});
+
 describe("readApiErrorMessage", () => {
   it("uses structured API error bodies before falling back to HTTP status", async () => {
     const { readApiErrorMessage } = await import("./api");
@@ -60,8 +117,54 @@ describe("readApiErrorMessage", () => {
   });
 });
 
+describe("apiGetContactPhoto", () => {
+  it("distinguishes a missing photo from a temporary API failure", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+    const { apiGetContactPhoto } = await import("./api");
+    await expect(apiGetContactPhoto("conversation-1", async () => null)).resolves.toBeNull();
+    await expect(apiGetContactPhoto("conversation-1", async () => null)).rejects.toThrow("foto do contato");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("apiGetChannelHealth", () => {
+  it("reads the health rows from the authenticated endpoint", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const row = { channelId: "c1", state: "needs_qr", since: null, lastInboundAt: null, attempts: 3 };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ health: [row] }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.resetModules();
+
+    const { apiGetChannelHealth } = await import("./api");
+    await expect(apiGetChannelHealth(async () => null)).resolves.toEqual({
+      health: [row],
+      watchdog: { enabled: false, lastTickAt: null, lastTickOk: true, lastError: null, unreachable: false }
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:3002/channels/health",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer local-dev-bypass" }) })
+    );
+  });
+});
+
+describe("apiGetChannelHealth watchdog", () => {
+  it("returns the watchdog status sent by the API", async () => {
+    vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
+    const watchdog = { enabled: true, lastTickAt: "2026-10-02T15:00:00.000Z", lastTickOk: false, lastError: "boom", unreachable: true };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ health: [], watchdog }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.resetModules();
+
+    const { apiGetChannelHealth } = await import("./api");
+    await expect(apiGetChannelHealth(async () => null)).resolves.toEqual({ health: [], watchdog });
+  });
+});
+
 describe("apiDeleteChannel", () => {
-  it("sends DELETE to the channel endpoint", async () => {
+  it("sends DELETE with the typed channel name to the channel endpoint", async () => {
     vi.stubEnv("VITE_LOCAL_AUTH_BYPASS", "true");
     vi.stubGlobal(
       "fetch",
@@ -75,7 +178,7 @@ describe("apiDeleteChannel", () => {
     vi.resetModules();
 
     const { apiDeleteChannel } = await import("./api");
-    await expect(apiDeleteChannel(async () => null, "channel-1")).resolves.toEqual({
+    await expect(apiDeleteChannel(async () => null, "channel-1", "Diogo — Villefer")).resolves.toEqual({
       ok: true,
       channelId: "channel-1"
     });
@@ -86,7 +189,8 @@ describe("apiDeleteChannel", () => {
         method: "DELETE",
         headers: expect.objectContaining({
           Authorization: "Bearer local-dev-bypass"
-        })
+        }),
+        body: JSON.stringify({ confirmationName: "Diogo — Villefer" })
       })
     );
   });
@@ -106,7 +210,7 @@ describe("apiDeleteChannel", () => {
 
     const { apiDeleteChannel } = await import("./api");
 
-    await expect(apiDeleteChannel(async () => null, "channel-1")).rejects.toThrow(
+    await expect(apiDeleteChannel(async () => null, "channel-1", "Diogo — Villefer")).rejects.toThrow(
       "Invalid delete channel response."
     );
   });
@@ -661,5 +765,35 @@ describe("agent API helpers", () => {
         body: JSON.stringify({ title: "Produto confirmado" })
       })
     );
+  });
+});
+
+describe("prospecting API compatibility", () => {
+  it("defaults old settings to module off and persists the module PATCH response", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ workspace: {}, integrations: [] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ workspace: {}, modules: { campaignProspecting: true } })));
+    vi.stubGlobal("fetch", fetchMock);
+    const { apiGetSettings, apiUpdateModules } = await import("./api");
+    const token = async () => "token";
+    expect((await apiGetSettings(token)).modules).toEqual({ campaignProspecting: false });
+    expect((await apiUpdateModules(token, { campaignProspecting: true })).modules).toEqual({ campaignProspecting: true });
+    expect(fetchMock).toHaveBeenLastCalledWith(expect.stringContaining("/settings/modules"), expect.objectContaining({
+      method: "PATCH", body: JSON.stringify({ campaignProspecting: true }) }));
+  });
+  it("retains campaign binding, skip reasons and conversation origin after handoff", async () => {
+    const campaign = { id: "campaign", workspaceId: "workspace", name: "Oferta", status: "draft", messageBody: "Olá", audience: { type: "imported", rows: [] },
+      prospectingAgentId: "agent", prospectingContext: "Oferta especial" };
+    const conversation = { id: "conversation", workspaceId: "workspace", channelId: "channel", contactId: "contact", status: "open",
+      assignedUserId: null, departmentId: null, lastMessageAt: null, lastMessagePreview: null, unreadCount: 0, priority: "normal",
+      aiControlStatus: "human_controlled", activeAgentSessionStatus: "handoff_requested", sourceCampaign: { id: "campaign", name: "Oferta" } };
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify([campaign])))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "recipient", status: "skipped_in_service", errorMessage: "Contato já está em atendimento." }])))
+      .mockResolvedValueOnce(new Response(JSON.stringify([conversation])));
+    vi.stubGlobal("fetch", fetchMock);
+    const { apiGetCampaigns, apiGetCampaignRecipients, apiGetConversations } = await import("./api");
+    const token = async () => "token";
+    expect((await apiGetCampaigns(token))[0]).toMatchObject({ prospectingAgentId: "agent", prospectingContext: "Oferta especial" });
+    expect((await apiGetCampaignRecipients(token, "campaign"))[0].skipReason).toBe("Contato já está em atendimento.");
+    expect((await apiGetConversations(token))[0].sourceCampaign).toEqual({ id: "campaign", name: "Oferta" });
   });
 });

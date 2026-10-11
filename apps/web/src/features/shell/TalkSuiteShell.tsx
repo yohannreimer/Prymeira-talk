@@ -1,3 +1,6 @@
+import { useOptionalTalkSession } from '../../app/session/TalkSessionProvider';
+import { ChannelHealthAlerts } from "../channels/ChannelHealthAlerts";
+import { TalkAlerts } from "../alerts/TalkAlerts";
 import { Bot } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
@@ -5,6 +8,7 @@ import { isTalkModuleKey, talkModules, type TalkModuleKey } from "./moduleRegist
 
 type TalkSuiteShellProps = {
   renderModule: (moduleKey: TalkModuleKey) => ReactNode;
+  prefetchModule?: (moduleKey: TalkModuleKey) => void;
 };
 
 const defaultModule: TalkModuleKey = "atendimento";
@@ -23,7 +27,8 @@ function buildModuleUrl(moduleKey: TalkModuleKey) {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
+export function TalkSuiteShell({ renderModule, prefetchModule }: TalkSuiteShellProps) {
+  const context = useOptionalTalkSession();
   const [activeModule, setActiveModule] = useState<TalkModuleKey>(readModuleFromUrl);
 
   const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(() => {
@@ -57,8 +62,19 @@ export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
   }, [activeModule]);
 
   function handleModuleClick(moduleKey: TalkModuleKey) {
+    if (moduleKey === 'atendimento' && activeModule !== moduleKey && new URLSearchParams(window.location.search).get('talkPerf') === '1') {
+      context?.session.writeUI('performance:returnStart', performance.now(), null);
+    }
     window.history.pushState({ module: moduleKey }, "", buildModuleUrl(moduleKey));
     setActiveModule(moduleKey);
+  }
+
+  function openConversation(conversationId: string) {
+    const url = new URL(window.location.href);
+    url.searchParams.set(moduleParamName, "atendimento");
+    url.searchParams.set("conversation", conversationId);
+    window.history.pushState({ module: "atendimento", conversation: conversationId }, "", `${url.pathname}${url.search}${url.hash}`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
   }
 
   return (
@@ -90,6 +106,8 @@ export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
                 .join(" ")}
               key={key}
               onClick={() => handleModuleClick(key)}
+              onPointerEnter={() => prefetchModule?.(key)}
+              onFocus={() => prefetchModule?.(key)}
               title={sidebarExpanded ? undefined : label}
               type="button"
             >
@@ -98,9 +116,11 @@ export function TalkSuiteShell({ renderModule }: TalkSuiteShellProps) {
             </button>
           ))}
         </nav>
+        <TalkAlerts activeModule={activeModule} onOpenConversation={openConversation} />
       </aside>
 
       {renderModule(activeModule)}
+      <ChannelHealthAlerts onOpenChannels={() => handleModuleClick("canais")} />
     </main>
   );
 }

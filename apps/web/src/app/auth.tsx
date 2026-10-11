@@ -5,6 +5,7 @@ import {
   SignedOut,
   SignIn,
   useAuth as useClerkAuth,
+  useUser,
 } from "@clerk/clerk-react";
 import type { PropsWithChildren } from "react";
 import { readConfigValue } from "./runtime-config";
@@ -14,6 +15,7 @@ const publishableKey = configuredPublishableKey?.endsWith("_replace_me") ? undef
 const localAuthBypass = readConfigValue("VITE_LOCAL_AUTH_BYPASS") === "true";
 const localAuthBypassToken = "local.eyJzdWIiOiJkZW1vX2FnZW50X21hcmluYSJ9.bypass";
 const localAuth = {
+  userId: 'demo_agent_marina', sessionId: 'local-session', orgId: null,
   getToken: async () => localAuthBypassToken
 };
 
@@ -310,6 +312,19 @@ export function AuthGate({ children }: PropsWithChildren) {
       </SignedOut>
     </>
   );
+}
+
+/** The signed-in person's first name, for the {vendedor} field of quick replies (null in local development). */
+export function useTalkUserName(): string | null {
+  if (localAuthBypass) return null;
+  try {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- the branch is fixed for the app's whole life.
+    const { user } = useUser();
+    return user?.firstName?.trim() || user?.fullName?.trim()?.split(" ")[0] || null;
+  } catch {
+    // Outside Clerk (embedded views, tests) the field simply stays empty.
+    return null;
+  }
 }
 
 export function useTalkAuth() {

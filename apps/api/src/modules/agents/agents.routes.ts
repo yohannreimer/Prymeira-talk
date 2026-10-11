@@ -22,6 +22,8 @@ import { createSimulatedAgentProvider } from "./provider-gateway.js";
 import { INBOUND_MEDIA_MIME_TYPES, MAX_INBOUND_MEDIA_BYTES } from "./inbound-media.js";
 import { storeWorkspaceAsset } from "../uploads/uploads.routes.js";
 
+import { aiAgentTypeSchema, agentFollowupConfigSchema, meetingRemindersConfigSchema } from "@prymeira-talk/shared";
+
 const uuidSchema = z.string().uuid();
 
 const agentParamsSchema = z.object({
@@ -45,15 +47,21 @@ const allowedActionSchema = z.enum([
   "create_internal_note",
   "assign_user",
   "assign_department",
-  "request_handoff"
+  "request_handoff",
+  "schedule_meeting"
 ]);
 
 const createAgentBodySchema = z.object({
+  type: aiAgentTypeSchema.optional(),
+  prospectingGoal: z.string().trim().min(1).max(2000).optional(),
+  followupConfig: agentFollowupConfigSchema.optional(),
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).nullable().optional(),
   status: z.enum(["active", "inactive"]).optional(),
   reasoningEffort: z.enum(["none", "low"]).optional(),
   onlyNewConversations: z.boolean().optional(),
+  replyInBubbles: z.boolean().optional(),
+  meetingReminders: meetingRemindersConfigSchema.optional(),
   systemPrompt: z.string().trim().min(10).max(12000),
   allowedActions: z.array(allowedActionSchema).optional(),
   allowedTagIds: z.array(uuidSchema).max(100).optional()
@@ -171,12 +179,15 @@ function handleAgentImprovementsError(reply: FastifyReply, error: unknown) {
     const statusCode =
       error.code === "AGENT_NOT_FOUND" || error.code === "IMPROVEMENT_NOT_FOUND"
         ? 404
-        : error.code === "IMPROVEMENT_NORMALIZER_UNAVAILABLE"
+        : error.code === "IMPROVEMENT_NORMALIZER_UNAVAILABLE" || error.code === "IMPROVEMENT_WRITER_UNAVAILABLE"
           ? 503
+          : error.code === "IMPROVEMENT_WRITER_FAILED" || error.code === "IMPROVEMENT_JEV_FAILED"
+            ? 502
           : [
               "IMPROVEMENT_CLARIFICATION_REQUIRED",
               "IMPROVEMENT_NORMALIZATION_REQUIRED",
-              "IMPROVEMENT_NORMALIZATION_AMBIGUOUS"
+              "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
+              "IMPROVEMENT_DRAFT_INCONSISTENT"
             ].includes(error.code)
           ? 400
           : 409;
@@ -368,6 +379,15 @@ export const agentsRoutes: FastifyPluginAsync<AgentsRoutesOptions> = async (app,
         improvementId: params.data.improvementId
       });
     } catch (error) {
+      if (error instanceof AgentImprovementsServiceError) {
+        request.log.warn({
+          event: "agent_improvement_normalization_failed",
+          improvementId: params.data.improvementId,
+          agentId: params.data.agentId,
+          code: error.code,
+          cause: error.cause instanceof Error ? error.cause.message : undefined
+        }, "Agent improvement could not be prepared");
+      }
       return handleAgentImprovementsError(reply, error);
     }
   });

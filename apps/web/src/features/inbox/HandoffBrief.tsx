@@ -1,35 +1,31 @@
-import { ArrowRight, ClipboardList, ShieldAlert } from "lucide-react";
-import type { HandoffBrief as HandoffBriefData } from "./handoff-brief";
+import { ArrowRight, Check, ClipboardList, ShieldAlert } from "lucide-react";
+import type { HandoffBriefDto } from "../../../../../packages/shared/src/assistant";
 
-export function HandoffBrief({ brief, messagesLoading }: { brief: HandoffBriefData; messagesLoading: boolean }) {
+export function HandoffBrief({ brief, busy, onComplete }: { brief: HandoffBriefDto; busy: boolean; onComplete: () => void }) {
+  const hasContent = Boolean(brief.nextAction && brief.summary);
   return (
-    <section className="handoff-brief" aria-label="Resumo para ação humana">
+    <section className="handoff-brief" aria-label="Apoio para ação humana" aria-live="polite">
       <div className="handoff-brief-intro">
         <span className="handoff-brief-kicker"><ShieldAlert size={15} aria-hidden="true" /> Humano necessário</span>
-        <h3>Próxima ação</h3>
-        <p>O agente passou esta conversa para sua equipe.</p>
+        <h3>Próximo passo</h3>
+        {brief.status === "stale" ? <p className="handoff-brief-update">Atualizando com as novas mensagens…</p> : null}
       </div>
-
-      <div className="handoff-brief-next">
-        <span><ArrowRight size={16} aria-hidden="true" /> Faça agora</span>
-        <p>{brief.nextStep}</p>
+      {hasContent ? <>
+        <div className="handoff-brief-next">
+          <span><ArrowRight size={16} aria-hidden="true" /> Faça agora</span>
+          <p>{brief.nextAction}</p>
+        </div>
+        <div className="handoff-brief-summary">
+          <h4><ClipboardList size={14} aria-hidden="true" /> Resumo</h4>
+          <p>{brief.summary}</p>
+        </div>
+      </> : brief.status === "failed" ? <p className="handoff-brief-message" role="alert">{brief.error ?? "Apoio indisponível. Confira a conversa."}</p>
+        : <p className="handoff-brief-message" role="status">Preparando próximo passo…</p>}
+      {brief.status === "stale" && hasContent ? <p className="handoff-brief-footnote">Resumo anterior; confira as novas mensagens antes de agir.</p> : null}
+      <div className="handoff-brief-actions">
+        <button className="assistant-primary" type="button" disabled={busy} onClick={onComplete}><Check size={15} aria-hidden="true" /> {busy ? "Concluindo…" : "Marcar como concluído"}</button>
+        <p>Remove da lista Próxima ação. O atendimento continua com o humano.</p>
       </div>
-
-      <div className="handoff-brief-facts">
-        <div>
-          <h4><ClipboardList size={14} aria-hidden="true" /> O cliente informou</h4>
-          <p>{messagesLoading ? "Carregando histórico…" : brief.customerContext ?? "Confira o pedido no histórico da conversa."}</p>
-        </div>
-        <div>
-          <h4>O que já foi dito</h4>
-          <p>{messagesLoading ? "Carregando histórico…" : brief.lastReply ?? "Não há resposta automática registrada neste histórico."}</p>
-        </div>
-        <div>
-          <h4>Motivo do repasse</h4>
-          <p>{brief.reason}</p>
-        </div>
-      </div>
-      <p className="handoff-brief-footnote">Resumo das últimas mensagens. Confira a conversa antes de responder.</p>
     </section>
   );
 }

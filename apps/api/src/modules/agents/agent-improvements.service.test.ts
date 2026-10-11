@@ -8,6 +8,8 @@ import type {
   AgentImprovementDetector,
   AgentImprovementNormalizer
 } from "./jev-agent-improvement.js";
+import type { AgentImprovementRuleWriter } from "./openai-agent-improvement.js";
+import { selectRelevantKnowledge } from "./knowledge-retrieval.js";
 
 const workspaceId = "workspace_a";
 const agentId = "00000000-0000-4000-8000-000000000101";
@@ -16,7 +18,7 @@ const humanReplyId = "00000000-0000-4000-8000-000000000301";
 const now = new Date("2026-09-22T14:00:00.000Z");
 
 const agent = { id: agentId, workspaceId };
-const handoffSession = { id: "session-1", agentId };
+const handoffSession = { id: "session-1", agentId, lastRunAt: new Date("2026-09-22T13:58:00.000Z") };
 const customerMessage = {
   id: "00000000-0000-4000-8000-000000000302",
   direction: "inbound" as const,
@@ -62,8 +64,10 @@ const pendingImprovement = {
 };
 
 type MockPrisma = {
+  conversation: { findFirst: ReturnType<typeof vi.fn> };
   aiAgent: { findFirst: ReturnType<typeof vi.fn> };
   aiAgentSession: { findFirst: ReturnType<typeof vi.fn> };
+  aiAgentRun: { findFirst: ReturnType<typeof vi.fn> };
   message: { findFirst: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
   aiAgentImprovement: {
     findFirst: ReturnType<typeof vi.fn>;
@@ -77,8 +81,10 @@ type MockPrisma = {
 
 function buildPrisma(): MockPrisma & AgentImprovementsPrismaLike {
   const prisma = {
+    conversation: { findFirst: vi.fn().mockResolvedValue({ activeAgentSessionId: handoffSession.id }) },
     aiAgent: { findFirst: vi.fn().mockResolvedValue(agent) },
     aiAgentSession: { findFirst: vi.fn().mockResolvedValue(handoffSession) },
+    aiAgentRun: { findFirst: vi.fn().mockResolvedValue({ createdAt: handoffSession.lastRunAt }) },
     message: {
       findFirst: vi.fn().mockResolvedValue(humanReply),
       findMany: vi.fn().mockResolvedValue([humanReply, customerMessage])
@@ -120,6 +126,27 @@ function normalizer(result: Awaited<ReturnType<AgentImprovementNormalizer["norma
 }
 
 describe("createAgentImprovementsService", () => {
+  it("learns from a paused handoff and preserves the complete multi-message request", async () => {
+    const prisma = buildPrisma();
+    const request = { ...customerMessage, id: "00000000-0000-4000-8000-000000000310", body: "Quanto está uma barra de 10 mm e 12 m?", createdAt: new Date("2026-09-22T13:54:00.000Z") };
+    const clarification = { ...customerMessage, id: "00000000-0000-4000-8000-000000000311", body: "Barra para viga baldrame. 10 mm.", createdAt: new Date("2026-09-22T13:56:00.000Z") };
+    prisma.message.findMany.mockResolvedValue([humanReply, clarification, request]);
+    const improvementDetector = detector({ outcome: "suggest", kind: "not_sold", confidence: 0.96 });
+    const service = createAgentImprovementsService(prisma, { detector: improvementDetector });
+
+    await expect(service.observeHumanReply({ workspaceId, conversationId, messageId: humanReplyId })).resolves.toEqual({ created: true });
+    expect(prisma.aiAgentSession.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: handoffSession.id, status: { in: ["handoff_requested", "paused_by_human"] } })
+    }));
+    expect(improvementDetector.assess).toHaveBeenCalledWith(expect.objectContaining({
+      customerMessage: expect.stringContaining("Quanto está uma barra de 10 mm e 12 m?")
+    }));
+    expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        sourceCustomerMessage: expect.stringContaining("Barra para viga baldrame. 10 mm.")
+      })
+    }));
+  });
   it("creates a pending, carefully scoped proposal only after a human resolution following handoff", async () => {
     const prisma = buildPrisma();
     const improvementDetector = detector({ outcome: "suggest", kind: "not_sold", confidence: 0.96 });
@@ -145,14 +172,83 @@ describe("createAgentImprovementsService", () => {
         clarificationNormalization: {},
         sourceCustomerMessage: customerMessage.body,
         sourceHumanReply: humanReply.body,
-        content: expect.stringContaining("Não generalize para materiais parecidos")
+        content: expect.stringContaining("escopo desta decisão ainda precisa ser confirmado")
       })
     }));
     expect(prisma.aiKnowledgeSource.create).not.toHaveBeenCalled();
   });
 
+  it("proposes catalog learning after a manual takeover without an agent handoff reason", async () => {
+    const prisma = buildPrisma();
+    const service = createAgentImprovementsService(prisma);
+    await expect(service.observeHumanReply({ workspaceId, conversationId, messageId: humanReplyId }))
+      .resolves.toEqual({ created: true, reason: "detector_unavailable_explicit_refusal_fallback" });
+    expect(prisma.aiAgentSession.findFirst).toHaveBeenCalledWith({
+      where: {
+        workspaceId,
+        id: handoffSession.id,
+        conversationId,
+        status: { in: ["handoff_requested", "paused_by_human"] }
+      }
+    });
+    expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        agentId,
+        kind: "not_sold",
+        sourceCustomerMessage: customerMessage.body,
+        sourceHumanReply: humanReply.body,
+        status: "pending"
+      })
+    }));
+  });
+
+  it("uses the configured support agent when the conversation never had an agent session", async () => {
+    const prisma = buildPrisma();
+    prisma.message.findFirst.mockResolvedValue({ ...humanReply, body: "Bom dia, flange não trabalhamos" });
+    prisma.conversation.findFirst.mockResolvedValue({
+      activeAgentSessionId: null,
+      channel: { encryptedConfig: { assistant: { mode: "automatic", agentId } } }
+    });
+    const service = createAgentImprovementsService(prisma);
+
+    await expect(service.observeHumanReply({ workspaceId, conversationId, messageId: humanReplyId }))
+      .resolves.toEqual({ created: true, reason: "detector_unavailable_explicit_refusal_fallback" });
+    expect(prisma.aiAgent.findFirst).toHaveBeenCalledWith({ where: { workspaceId, id: agentId } });
+    expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        agentId,
+        kind: "not_sold",
+        sourceHumanReply: "Bom dia, flange não trabalhamos",
+        status: "pending"
+      })
+    }));
+  });
+
+  it("reanalyses an earlier catalog refusal even when a later human message and customer greeting followed", async () => {
+    const prisma = buildPrisma();
+    const refusal = { ...humanReply, body: "Bom dia, flange não trabalhamos" };
+    const laterReply = { ...humanReply, id: "later_reply", body: "Nosso foco são as chapas de ferro e laminados", createdAt: new Date(now.getTime() + 60_000) };
+    prisma.conversation.findFirst.mockResolvedValue({
+      activeAgentSessionId: null,
+      channel: { encryptedConfig: { assistant: { mode: "automatic", agentId } } }
+    });
+    prisma.message.findMany.mockImplementation(async (args: { where?: { direction?: string } }) =>
+      args.where?.direction === "outbound" ? [laterReply, refusal] : [refusal, customerMessage]
+    );
+    prisma.message.findFirst.mockImplementation(async (args: { where: { id: string } }) =>
+      args.where.id === refusal.id ? refusal : laterReply
+    );
+    const service = createAgentImprovementsService(prisma);
+    await expect(service.observeLatestHumanReplyAfterHandoff({ workspaceId, conversationId }))
+      .resolves.toMatchObject({ created: true });
+    expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ sourceMessageId: refusal.id, kind: "not_sold", status: "pending" })
+    }));
+  });
+
   it("does not create a suggestion for a response that JEV cannot classify as reusable", async () => {
     const prisma = buildPrisma();
+    prisma.message.findFirst.mockResolvedValue({ ...humanReply, body: "Vou consultar e retorno." });
     const service = createAgentImprovementsService(prisma, {
       detector: detector({ outcome: "ignore", reason: "not_a_durable_human_resolution" })
     });
@@ -163,6 +259,55 @@ describe("createAgentImprovementsService", () => {
     });
     expect(prisma.aiAgentImprovement.create).not.toHaveBeenCalled();
     expect(prisma.aiKnowledgeSource.create).not.toHaveBeenCalled();
+  });
+
+  it("recovers an old João-style reply when the reviewer completes the handoff", async () => {
+    const prisma = buildPrisma();
+    const reply = { ...humanReply, body: "Construção civil não trabalhamos" };
+    prisma.message.findMany.mockImplementation(async (args: { where?: { direction?: string } }) =>
+      args.where?.direction === "outbound" ? [reply] : [reply, customerMessage]
+    );
+    prisma.message.findFirst.mockResolvedValue(reply);
+    const service = createAgentImprovementsService(prisma, {
+      detector: detector({ outcome: "ignore", reason: "not_a_durable_human_resolution" })
+    });
+
+    await expect(service.observeLatestHumanReplyAfterHandoff({ workspaceId, conversationId })).resolves.toEqual({
+      created: true,
+      reason: "not_a_durable_human_resolution_explicit_refusal_fallback"
+    });
+    expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        sourceMessageId: reply.id,
+        status: "pending",
+        kind: "not_sold",
+        detector: expect.objectContaining({ provider: "explicit_human_refusal" })
+      })
+    }));
+  });
+
+  it("still proposes a direct refusal for review when the detector fails", async () => {
+    const prisma = buildPrisma();
+    const service = createAgentImprovementsService(prisma, {
+      detector: { assess: vi.fn().mockRejectedValue(new Error("JEV unavailable")) }
+    });
+    await expect(service.observeHumanReply({ workspaceId, conversationId, messageId: humanReplyId })).resolves.toEqual({
+      created: true,
+      reason: "detector_failed_explicit_refusal_fallback"
+    });
+    expect(prisma.aiAgentImprovement.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "pending", detector: expect.objectContaining({ provider: "explicit_human_refusal" }) })
+    }));
+  });
+
+  it("does not claim an improvement when there is no human reply after handoff", async () => {
+    const prisma = buildPrisma();
+    prisma.message.findMany.mockResolvedValue([]);
+    const service = createAgentImprovementsService(prisma);
+    await expect(service.observeLatestHumanReplyAfterHandoff({ workspaceId, conversationId })).resolves.toEqual({
+      created: false, reason: "no_human_reply"
+    });
+    expect(prisma.aiAgentImprovement.create).not.toHaveBeenCalled();
   });
 
   it("never treats an automatic agent message as a human resolution", async () => {
@@ -228,6 +373,29 @@ describe("createAgentImprovementsService", () => {
     }));
     expect(approved.status).toBe("accepted");
     expect(approved.acceptedKnowledgeSourceId).toBe("source-1");
+  });
+
+  it("makes an approved João-style resolution retrievable on the next matching inquiry", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue({
+      ...pendingImprovement,
+      title: "Barra para viga baldrame — não fornecemos",
+      content: "Pedido do cliente: barra de 10 mm e 12 m para viga baldrame.\nDecisão confirmada pelo time: não fornecemos vergalhão para construção civil."
+    });
+    const service = createAgentImprovementsService(prisma);
+
+    await service.approveImprovement({ workspaceId, agentId, improvementId: pendingImprovement.id });
+    const created = prisma.aiKnowledgeSource.create.mock.calls[0]![0].data;
+    const selection = selectRelevantKnowledge({
+      latestMessage: "Vocês fornecem barra de 10 mm para viga baldrame?",
+      conversationHistory: "",
+      instruction: null,
+      sources: [{ id: "source-1", title: created.title, content: created.content, metadata: created.metadata }]
+    });
+
+    expect(selection.selected).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "source-1", content: expect.stringContaining("não fornecemos vergalhão") })
+    ]));
   });
 
   it("requires the team to complete the clarification before it can approve a rule", async () => {
@@ -309,7 +477,10 @@ describe("createAgentImprovementsService", () => {
     expect(improvementNormalizer.normalize).toHaveBeenCalledWith(expect.objectContaining({
       customerMessage: customerMessage.body,
       humanReply: humanReply.body,
-      clarificationAnswers: pendingImprovement.clarificationAnswers
+      clarificationAnswers: pendingImprovement.clarificationAnswers,
+      clarificationQuestions: expect.objectContaining({
+        scope: expect.stringContaining("todas as medidas")
+      })
     }));
     expect(updated.clarification.normalization).toEqual({
       scope: "material_or_finish_family",
@@ -319,6 +490,107 @@ describe("createAgentImprovementsService", () => {
     expect(updated.content).toContain("Modo de aplicação interpretado pelo JEV:");
     expect(updated.content).toContain("família de material ou acabamento");
     expect(updated.content).toContain("Fora desse escopo, encaminhe para o comercial");
+  });
+
+  it("asks OpenAI to draft the proposal before JEV validation and keeps approval manual", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue({
+      ...pendingImprovement,
+      clarificationNormalization: {}
+    });
+    const ruleWriter = {
+      write: vi.fn().mockResolvedValue({
+        title: "Barras para viga baldrame não comercializadas",
+        content: "Não comercializamos barras para viga baldrame nas variações confirmadas pelo time. Para outro item, encaminhe ao comercial. Não informe preço."
+      })
+    } satisfies AgentImprovementRuleWriter;
+    const improvementNormalizer = normalizer({
+      outcome: "ready",
+      normalization: {
+        scope: "requested_item_variations",
+        confidence: 0.95,
+        requiresHandoffOutsideScope: true
+      }
+    });
+    const service = createAgentImprovementsService(prisma, {
+      writer: ruleWriter,
+      normalizer: improvementNormalizer
+    });
+
+    const updated = await service.normalizeImprovement({ workspaceId, agentId, improvementId: pendingImprovement.id });
+
+    expect(ruleWriter.write).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId,
+      clarificationQuestions: expect.objectContaining({ scope: expect.stringContaining("todas as medidas") })
+    }));
+    expect(improvementNormalizer.normalize).toHaveBeenCalledWith(expect.objectContaining({
+      proposedContent: expect.stringContaining("barras para viga baldrame")
+    }));
+    expect(updated.title).toBe("Barras para viga baldrame não comercializadas");
+    expect(updated.content).toContain("Não comercializamos barras para viga baldrame");
+    expect(updated.status).toBe("pending");
+    expect(prisma.aiKnowledgeSource.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps an improvement pending when the OpenAI draft fails", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue({ ...pendingImprovement, clarificationNormalization: {} });
+    const ruleWriter = {
+      write: vi.fn().mockRejectedValue(new Error("OPENAI_AGENT_IMPROVEMENT_HTTP_429"))
+    } satisfies AgentImprovementRuleWriter;
+    const improvementNormalizer = normalizer({ outcome: "needs_clarification", reason: "unused" });
+    const service = createAgentImprovementsService(prisma, { writer: ruleWriter, normalizer: improvementNormalizer });
+
+    await expect(service.normalizeImprovement({ workspaceId, agentId, improvementId: pendingImprovement.id }))
+      .rejects.toMatchObject({
+        code: "IMPROVEMENT_WRITER_FAILED",
+        message: expect.stringContaining("Tente novamente")
+      });
+    expect(improvementNormalizer.normalize).not.toHaveBeenCalled();
+    expect(prisma.aiAgentImprovement.update).not.toHaveBeenCalled();
+  });
+
+  it("does not feed an old contradictory scope hint to the writer for telhas", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue({
+      ...pendingImprovement,
+      sourceCustomerMessage: "Vocês têm telha?",
+      sourceHumanReply: "Telhas não fornecemos.",
+      content: "Pedido do cliente: Vocês têm telha?\n\nQuando uma consulta futura corresponder claramente ao mesmo item ou variação, informe de forma objetiva que não trabalhamos com esse produto. Não generalize para materiais parecidos; se houver diferença de medida, acabamento, furação ou equivalência, faça handoff para o comercial.",
+      clarificationAnswers: { scope: "sim, para todas as variacoes de telha", exceptions: "nenhuma" },
+      clarificationNormalization: {}
+    });
+    const ruleWriter = {
+      write: vi.fn().mockResolvedValue({
+        title: "Telhas não comercializadas",
+        content: "Não fornecemos telhas em nenhuma variação de medida, espessura, acabamento ou furação. Para itens que não sejam telhas, consulte o comercial antes de responder. Não informe disponibilidade não confirmada."
+      })
+    } satisfies AgentImprovementRuleWriter;
+    const service = createAgentImprovementsService(prisma, {
+      writer: ruleWriter,
+      normalizer: normalizer({
+        outcome: "ready",
+        normalization: { scope: "requested_item_variations", confidence: 0.95, requiresHandoffOutsideScope: true }
+      })
+    });
+
+    await service.normalizeImprovement({ workspaceId, agentId, improvementId: pendingImprovement.id });
+
+    expect(ruleWriter.write).toHaveBeenCalledWith(expect.objectContaining({
+      proposedContent: expect.not.stringContaining("se houver diferença de medida")
+    }));
+  });
+
+  it("does not claim an OpenAI draft was made when the workspace has no provider", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue({ ...pendingImprovement, clarificationNormalization: {} });
+    const ruleWriter = { write: vi.fn().mockResolvedValue(null) } satisfies AgentImprovementRuleWriter;
+    const improvementNormalizer = normalizer({ outcome: "needs_clarification", reason: "unused" });
+    const service = createAgentImprovementsService(prisma, { writer: ruleWriter, normalizer: improvementNormalizer });
+
+    await expect(service.normalizeImprovement({ workspaceId, agentId, improvementId: pendingImprovement.id }))
+      .rejects.toMatchObject({ code: "IMPROVEMENT_WRITER_UNAVAILABLE" });
+    expect(improvementNormalizer.normalize).not.toHaveBeenCalled();
   });
 
   it("does not save a rule when JEV cannot delimit the scope safely", async () => {
@@ -336,8 +608,24 @@ describe("createAgentImprovementsService", () => {
       agentId,
       improvementId: pendingImprovement.id
     })).rejects.toMatchObject({
-      code: "IMPROVEMENT_NORMALIZATION_AMBIGUOUS"
+      code: "IMPROVEMENT_NORMALIZATION_AMBIGUOUS",
+      message: expect.stringContaining("Diga explicitamente")
     } satisfies Partial<AgentImprovementsServiceError>);
+    expect(prisma.aiAgentImprovement.update).not.toHaveBeenCalled();
+  });
+
+  it("reports a draft conflict without asking the reviewer to repeat clear answers", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgentImprovement.findFirst.mockResolvedValue({ ...pendingImprovement, clarificationNormalization: {} });
+    const service = createAgentImprovementsService(prisma, {
+      normalizer: normalizer({ outcome: "needs_clarification", reason: "draft_inconsistent" })
+    });
+
+    await expect(service.normalizeImprovement({ workspaceId, agentId, improvementId: pendingImprovement.id }))
+      .rejects.toMatchObject({
+        code: "IMPROVEMENT_DRAFT_INCONSISTENT",
+        message: expect.stringContaining("suas respostas já estão salvas")
+      });
     expect(prisma.aiAgentImprovement.update).not.toHaveBeenCalled();
   });
 

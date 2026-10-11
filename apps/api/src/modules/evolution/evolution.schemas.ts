@@ -12,6 +12,8 @@ export const evolutionWebhookSchema = evolutionWebhookEnvelopeSchema.extend({
       key: z.object({
         id: z.string().min(1),
         remoteJid: z.string().min(1),
+        remoteJidAlt: z.string().optional(),
+        participant: z.string().optional(),
         fromMe: z.boolean().default(false)
       }),
       message: z
@@ -20,7 +22,8 @@ export const evolutionWebhookSchema = evolutionWebhookEnvelopeSchema.extend({
         })
         .passthrough()
         .optional(),
-      messageTimestamp: z.number().optional()
+      messageTimestamp: z.number().optional(),
+      participant: z.string().optional()
     })
     .passthrough()
 });

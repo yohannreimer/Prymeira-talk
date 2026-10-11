@@ -8,6 +8,7 @@ export type AgentImprovementScope =
   | "broader_catalog_scope";
 
 export type AgentImprovementDetectorInput = {
+  workspaceId: string;
   customerMessage: string;
   humanReply: string;
   conversationMessages: Array<{
@@ -18,8 +19,8 @@ export type AgentImprovementDetectorInput = {
 };
 
 export type AgentImprovementAssessment =
-  | { outcome: "ignore"; reason: string }
-  | { outcome: "suggest"; kind: AgentImprovementKind; confidence: number };
+  | { outcome: "ignore"; reason: string; provider?: string }
+  | { outcome: "suggest"; kind: AgentImprovementKind; confidence: number; provider?: string };
 
 export type AgentImprovementDetector = {
   assess(input: AgentImprovementDetectorInput): Promise<AgentImprovementAssessment>;
@@ -31,6 +32,7 @@ export type AgentImprovementNormalizationInput = {
   humanReply: string;
   proposedContent: string;
   clarificationAnswers: Record<string, string>;
+  clarificationQuestions?: Record<string, string>;
 };
 
 export type AgentImprovementNormalization = {
@@ -83,7 +85,11 @@ const normalizationResponseSchema = z.object({
       choice: normalizationScopeSchema,
       confidence: z.number().min(0).max(1)
     }),
-    understandsAnswers: z.object({
+    answersAreClear: z.object({
+      type: z.literal("noul"),
+      noul: z.number().min(0).max(1)
+    }),
+    proposalMatchesAnswers: z.object({
       type: z.literal("noul"),
       noul: z.number().min(0).max(1)
     }),
@@ -122,7 +128,7 @@ const normalizationQuestions = {
   scope: {
     type: "choice",
     instructions:
-      "Interprete as respostas dadas pelo time, no contexto do pedido e da decisão humana. Qual é o alcance exato que pode ser usado pelo agente? Escolha ambiguous se as respostas não permitirem uma regra comercial clara.",
+      "Interprete as respostas junto das perguntas correspondentes, do pedido e da decisão humana. Ignore o texto proposto nesta pergunta: ele pode ser um rascunho antigo e contradizer as respostas. Uma confirmação de todas as variações do item solicitado não autoriza ampliar a recusa para toda a construção civil. Qual é o alcance confirmado pelo time? Escolha ambiguous somente se as respostas não permitirem definir esse alcance.",
     criteria: {
       requested_item_only: "A decisão é limitada exatamente ao item solicitado, sem incluir suas medidas, acabamentos ou variações.",
       requested_item_variations: "A decisão vale para as variações do mesmo item solicitado, como medidas, espessuras, acabamentos ou furações explicitamente abrangidos.",
@@ -131,13 +137,22 @@ const normalizationQuestions = {
       ambiguous: "Há conflito, falta de detalhe ou texto que não permite definir um escopo seguro."
     }
   },
-  understandsAnswers: {
+  answersAreClear: {
     type: "noul",
     instructions:
-      "As respostas internas do time são suficientes, específicas e coerentes com o pedido e a decisão original para registrar uma regra? Não presuma informação ausente.",
+      "As respostas internas do time, lidas com as perguntas correspondentes, são suficientes e coerentes com o pedido e a decisão original para delimitar uma regra? Ignore o texto proposto nesta pergunta: ele pode ser um rascunho antigo. Uma confirmação curta como 'exato' responde afirmativamente à pergunta anterior. Não presuma informação ausente.",
     criteria: {
       true: "As respostas delimitam o escopo e as exceções de modo claro.",
-      false: "Há contradição, linguagem vaga, medida/especificação sem referência clara ou falta de escopo."
+      false: "As respostas se contradizem, usam linguagem vaga ou não esclarecem o escopo ou as exceções."
+    }
+  },
+  proposalMatchesAnswers: {
+    type: "noul",
+    instructions:
+      "O texto proposto respeita o escopo e as exceções confirmados nas respostas, sem acrescentar recusa, disponibilidade ou exceção não confirmada? Uma regra que exige repasse para variações que o time explicitamente incluiu no escopo é inconsistente. Não presuma informação ausente.",
+    criteria: {
+      true: "O texto proposto aplica a decisão somente ao escopo confirmado e encaminha apenas consultas fora dele.",
+      false: "O texto proposto contradiz as respostas, restringe indevidamente o escopo confirmado ou amplia a recusa além do confirmado."
     }
   },
   requiresHandoffOutsideScope: {
@@ -150,6 +165,24 @@ const normalizationQuestions = {
     }
   }
 } as const;
+
+function contextualizeClarificationAnswers(state: AgentImprovementNormalizationInput) {
+  const answers = { ...state.clarificationAnswers };
+  if (
+    state.kind === "not_sold" &&
+    /^(?:sim|isso mesmo|exato|exatamente|correto)[\s.!?]*$/i.test(answers.scope?.trim() ?? "")
+  ) {
+    answers.scope =
+      "Sim, a decisão vale para todas as medidas, espessuras, acabamentos e furações do item solicitado.";
+  }
+
+  return Object.fromEntries(
+    Object.entries(answers).map(([questionId, answer]) => [
+      questionId.slice(0, 80),
+      answer.slice(0, 800)
+    ])
+  );
+}
 
 export function createJevAgentImprovementDetector(
   input: JevAgentImprovementDetectorOptions
@@ -226,10 +259,11 @@ export function createJevAgentImprovementNormalizer(
             customerMessage: state.customerMessage.slice(0, 2_500),
             humanReply: state.humanReply.slice(0, 2_500),
             proposedContent: state.proposedContent.slice(0, 4_000),
-            clarificationAnswers: Object.fromEntries(
-              Object.entries(state.clarificationAnswers).map(([questionId, answer]) => [
+            clarificationAnswers: contextualizeClarificationAnswers(state),
+            clarificationQuestions: Object.fromEntries(
+              Object.entries(state.clarificationQuestions ?? {}).map(([questionId, question]) => [
                 questionId.slice(0, 80),
-                answer.slice(0, 800)
+                question.slice(0, 800)
               ])
             )
           },
@@ -246,10 +280,13 @@ export function createJevAgentImprovementNormalizer(
         throw new Error("JEV_AGENT_IMPROVEMENT_NORMALIZATION_RESPONSE_INVALID");
       }
 
-      const { scope, understandsAnswers, requiresHandoffOutsideScope } = parsed.data.answers;
-      const confidence = Math.min(scope.confidence, understandsAnswers.noul);
-      if (scope.choice === "ambiguous" || confidence < 0.8) {
+      const { scope, answersAreClear, proposalMatchesAnswers, requiresHandoffOutsideScope } = parsed.data.answers;
+      const confidence = Math.min(scope.confidence, answersAreClear.noul, proposalMatchesAnswers.noul);
+      if (scope.choice === "ambiguous" || Math.min(scope.confidence, answersAreClear.noul) < 0.8) {
         return { outcome: "needs_clarification", reason: "normalization_ambiguous" };
+      }
+      if (proposalMatchesAnswers.noul < 0.8) {
+        return { outcome: "needs_clarification", reason: "draft_inconsistent" };
       }
 
       return {

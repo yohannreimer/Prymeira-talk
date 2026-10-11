@@ -1,60 +1,80 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { UserRound } from 'lucide-react';
-import { apiGetContactPhoto } from '../../app/api';
-import { mediaDataUrl } from './media-data-url';
+import { apiGetCardPhoto, apiGetChannelPhoto, apiGetContactPhoto, apiGetSavedContactPhoto } from '../../app/api';
+import { SessionBlobCache } from '../../app/session/blob-cache';
+import { BlobCacheContext } from '../../app/session/blob-cache-context';
+import { createContactPhotoLoader } from './contact-photo-loader';
 
 type PhotoLoader = (id: string) => Promise<string | null>;
 const PhotoContext = createContext<PhotoLoader | null>(null);
-export function ContactPhotoProvider({ getToken, children }: { getToken: () => Promise<string | null>; children: ReactNode }) {
+export function ContactPhotoProvider({ getToken, children, cache: sharedCache }: { getToken: () => Promise<string | null>; children: ReactNode; cache?: SessionBlobCache }) {
+  const inherited = useContext(PhotoContext);
+  if (inherited && !sharedCache) return <>{children}</>;
+  return <OwnedContactPhotoProvider getToken={getToken} cache={sharedCache}>{children}</OwnedContactPhotoProvider>;
+}
+function OwnedContactPhotoProvider({ getToken, children, cache: sharedCache }: { getToken: () => Promise<string | null>; children: ReactNode; cache?: SessionBlobCache }) {
+  const [localCache] = useState(() => new SessionBlobCache());
+  const cache = sharedCache ?? localCache;
   const tokenRef = useRef(getToken); tokenRef.current = getToken;
-  const [loader] = useState(() => {
-    const cache = new Map<string, Promise<string | null>>();
-    let abort = new AbortController();
-    let chain = Promise.resolve();
-    return {
-      start() { if (abort.signal.aborted) abort = new AbortController(); },
-      clear() { abort.abort(); cache.clear(); },
-      load(id: string) {
-        if (cache.has(id)) return cache.get(id)!;
-        const signal = abort.signal;
-        // Serial provider lookup avoids a burst when opening a long contact list.
-        const task = chain.then(async () => {
-          if (signal.aborted) return null;
-          try {
-            const blob = await apiGetContactPhoto(id, () => tokenRef.current(), signal);
-            if (!blob || signal.aborted) return null;
-            const url = await mediaDataUrl(blob); return signal.aborted ? null : url;
-          } catch { return null; }
-        });
-        chain = task.then(() => {}); cache.set(id, task); return task;
-      }
-    };
-  });
-  useEffect(() => { loader.start(); return () => loader.clear(); }, [loader]);
-  return <PhotoContext.Provider value={loader.load}>{children}</PhotoContext.Provider>;
+  const [loader] = useState(() => createContactPhotoLoader(async (id, signal) => {
+    const cached = cache.get(`photo:${id}`); if (cached) return cached.url;
+    const blob = id.startsWith('contact:')
+      ? await apiGetSavedContactPhoto(id.slice('contact:'.length), () => tokenRef.current(), signal)
+      : id.startsWith('channel:') ? await apiGetChannelPhoto(id.slice('channel:'.length), () => tokenRef.current(), signal)
+      : id.startsWith('card:') ? await apiGetCardPhoto(id.split(':')[1]!, id.split(':')[2]!, () => tokenRef.current(), signal)
+      : await apiGetContactPhoto(id, () => tokenRef.current(), signal);
+    if (!blob || signal.aborted) return null;
+    const { url } = await cache.load(`photo:${id}`, async () => blob);
+    return signal.aborted ? null : url;
+  }, id => Boolean(cache.get(`photo:${id}`))));
+  useEffect(() => { loader.start(); return () => { loader.clear(); if (!sharedCache) localCache.clear(); }; }, [loader, sharedCache, localCache]);
+  return <BlobCacheContext.Provider value={cache}><PhotoContext.Provider value={loader.load}>{children}</PhotoContext.Provider></BlobCacheContext.Provider>;
 }
 
 export function contactInitials(name?: string | null) {
   const parts = name?.trim().split(/\s+/).filter(part => /\p{L}/u.test(part));
   return parts?.slice(0, 2).map(part => Array.from(part)[0]).join('').toUpperCase() || null;
 }
-export function ContactAvatar({ conversationId, name, className }: { conversationId?: string; name?: string | null; className: string }) {
+/** cardPhone: a number shared in a contact card, whose picture is read through `conversationId`'s channel. */
+export function ContactAvatar({ conversationId, contactId, channelId, cardPhone, name, className }: { conversationId?: string; contactId?: string; channelId?: string; cardPhone?: string | null; name?: string | null; className: string }) {
   const load = useContext(PhotoContext);
+  const cache = useContext(BlobCacheContext);
   const ref = useRef<HTMLSpanElement>(null);
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     setUrl(null);
-    if (!load || !conversationId || !ref.current) return;
+    const photoId = channelId ? `channel:${channelId}` : contactId ? `contact:${contactId}`
+      : cardPhone && conversationId ? `card:${conversationId}:${cardPhone.replace(/\D/g, '')}` : cardPhone ? undefined : conversationId;
+    if (!load || !photoId || !ref.current) return;
     let active = true;
+    let visible = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = () => {
+      void load(photoId).then(photo => {
+        if (!active || !visible) return;
+        setUrl(photo);
+        if (!photo) retryTimer = setTimeout(attempt, 5 * 60_000);
+      }).catch(() => {
+        if (active && visible) retryTimer = setTimeout(attempt, 30_000);
+      });
+    };
     const observer = new IntersectionObserver(entries => {
-      if (!entries.some(entry => entry.isIntersecting)) return;
-      observer.disconnect();
-      void load(conversationId).then(photo => { if (active) setUrl(photo); });
+      const nextVisible = entries.some(entry => entry.isIntersecting);
+      if (nextVisible === visible) return;
+      visible = nextVisible;
+      if (visible) {
+        cache?.retain(`photo:${photoId}`);
+        if (cache && !cache.get(`photo:${photoId}`)) setUrl(null);
+        attempt();
+      } else {
+        cache?.release(`photo:${photoId}`);
+        if (retryTimer) clearTimeout(retryTimer);
+      }
     });
     observer.observe(ref.current);
-    return () => { active = false; observer.disconnect(); };
-  }, [load, conversationId]);
+    return () => { active = false; observer.disconnect(); if (visible) cache?.release(`photo:${photoId}`); if (retryTimer) clearTimeout(retryTimer); };
+  }, [load, conversationId, contactId, channelId, cardPhone, cache]);
   return <span ref={ref} className={`${className} talk-contact-photo`} aria-hidden="true">
-    {url ? <img src={url} alt="" onError={() => setUrl(null)} /> : contactInitials(name) || <UserRound size={18} />}
+    {url ? <img src={url} loading="lazy" decoding="async" alt="" onError={() => setUrl(null)} /> : contactInitials(name) || <UserRound size={18} />}
   </span>;
 }

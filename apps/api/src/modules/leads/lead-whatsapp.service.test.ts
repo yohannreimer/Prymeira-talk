@@ -45,6 +45,205 @@ function setup(selected = [lead(1)]) {
 }
 
 describe("lead WhatsApp verification", () => {
+  function fullMobileJob() {
+    const verificationId = randomUUID();
+    return {
+      verificationId,
+      job: claimed({
+        requestId: randomUUID(), instanceName: "workspace-instance",
+        numbers: ["5547991396920"],
+        lookups: [{ phone: "554791396920", primary: "5547991396920", alternate: "554791396920" }],
+        entries: [{ verificationId, leadId: randomUUID(), phone: "554791396920" }]
+      })
+    };
+  }
+
+  it("keeps the full number and skips fallback when Evolution confirms availability", async () => {
+    const context = setup();
+    const { job, verificationId } = fullMobileJob();
+    context.evolution.checkWhatsappNumbersAvailability.mockResolvedValue({
+      numbers: [{ phone: "5547991396920", available: true }], raw: {}
+    });
+
+    await context.service.processClaimedJob(job);
+
+    expect(context.evolution.checkWhatsappNumbersAvailability).toHaveBeenCalledExactlyOnceWith({
+      instanceName: "workspace-instance", numbers: ["5547991396920"]
+    });
+    expect(context.repository.fencedFinishWhatsappVerificationJob).toHaveBeenCalledWith(expect.objectContaining({
+      results: [{ verificationId, status: "available", errorMessage: null }]
+    }));
+  });
+
+  it.each([
+    [true, "available"],
+    [false, "unavailable"]
+  ] as const)("checks the reduced variant after a negative primary and records %s as %s", async (alternateAvailable, status) => {
+    const context = setup();
+    const { job, verificationId } = fullMobileJob();
+    context.evolution.checkWhatsappNumbersAvailability
+      .mockResolvedValueOnce({ numbers: [{ phone: "5547991396920", available: false }], raw: {} })
+      .mockResolvedValueOnce({ numbers: [{ phone: "554791396920", available: alternateAvailable }], raw: {} });
+
+    await context.service.processClaimedJob(job);
+
+    expect(context.evolution.checkWhatsappNumbersAvailability.mock.calls.map(([request]) => request.numbers))
+      .toEqual([["5547991396920"], ["554791396920"]]);
+    expect(context.repository.fencedFinishWhatsappVerificationJob).toHaveBeenCalledWith(expect.objectContaining({
+      results: [{ verificationId, status, errorMessage: null }]
+    }));
+  });
+
+  it.each([
+    [{ numbers: [], raw: {} }, { numbers: [{ phone: "554791396920", available: false }], raw: {} }],
+    [{ numbers: [{ phone: "5547991396920", available: false }], raw: {} }, { numbers: [], raw: {} }]
+  ])("treats a missing response for either variant as inconclusive", async (primary, alternate) => {
+    const context = setup();
+    const { job, verificationId } = fullMobileJob();
+    context.evolution.checkWhatsappNumbersAvailability.mockResolvedValueOnce(primary).mockResolvedValueOnce(alternate);
+
+    await context.service.processClaimedJob(job);
+
+    expect(context.repository.fencedFinishWhatsappVerificationJob).toHaveBeenCalledWith(expect.objectContaining({
+      results: [{ verificationId, status: "failed", errorMessage: "LEAD_WHATSAPP_RESULT_MISSING" }]
+    }));
+  });
+
+  it("derives a safe alternate for legacy jobs but not for fixed lines", async () => {
+    const context = setup();
+    const mobileId = randomUUID();
+    const fixedId = randomUUID();
+    const job = claimed({
+      requestId: randomUUID(), instanceName: "workspace-instance",
+      numbers: ["554791396920", "554733334444"],
+      entries: [
+        { verificationId: mobileId, leadId: randomUUID(), phone: "554791396920" },
+        { verificationId: fixedId, leadId: randomUUID(), phone: "554733334444" }
+      ]
+    });
+    context.evolution.checkWhatsappNumbersAvailability
+      .mockResolvedValueOnce({ numbers: [
+        { phone: "554791396920", available: false },
+        { phone: "554733334444", available: false }
+      ], raw: {} })
+      .mockResolvedValueOnce({ numbers: [{ phone: "5547991396920", available: true }], raw: {} });
+
+    await context.service.processClaimedJob(job);
+
+    expect(context.evolution.checkWhatsappNumbersAvailability.mock.calls.map(([request]) => request.numbers))
+      .toEqual([["554791396920", "554733334444"], ["5547991396920"]]);
+    expect(context.repository.fencedFinishWhatsappVerificationJob).toHaveBeenCalledWith(expect.objectContaining({
+      results: [
+        { verificationId: mobileId, status: "available", errorMessage: null },
+        { verificationId: fixedId, status: "unavailable", errorMessage: null }
+      ]
+    }));
+  });
+
+  it("keeps an explicit fixed-line negative when another phone's fallback fails", async () => {
+    const context = setup();
+    const mobileId = randomUUID();
+    const fixedId = randomUUID();
+    const job = claimed({
+      requestId: randomUUID(), instanceName: "workspace-instance",
+      numbers: ["554791396920", "554733334444"],
+      entries: [
+        { verificationId: mobileId, leadId: randomUUID(), phone: "554791396920" },
+        { verificationId: fixedId, leadId: randomUUID(), phone: "554733334444" }
+      ]
+    });
+    context.evolution.checkWhatsappNumbersAvailability
+      .mockResolvedValueOnce({ numbers: [
+        { phone: "554791396920", available: false },
+        { phone: "554733334444", available: false }
+      ], raw: {} })
+      .mockRejectedValueOnce(new EvolutionClientError(400, {}));
+
+    await context.service.processClaimedJob(job);
+
+    expect(context.repository.fencedFinishWhatsappVerificationJob).toHaveBeenCalledWith(expect.objectContaining({
+      results: [
+        { verificationId: mobileId, status: "failed", errorMessage: "LEAD_WHATSAPP_EVOLUTION_400" },
+        { verificationId: fixedId, status: "unavailable", errorMessage: null }
+      ]
+    }));
+  });
+
+  it("prefers an explicit positive when Evolution returns both phone variants", async () => {
+    const context = setup();
+    const { job, verificationId } = fullMobileJob();
+    context.evolution.checkWhatsappNumbersAvailability.mockResolvedValue({
+      numbers: [
+        { phone: "554791396920", available: false },
+        { phone: "5547991396920", available: true }
+      ], raw: {}
+    });
+
+    await context.service.processClaimedJob(job);
+
+    expect(context.evolution.checkWhatsappNumbersAvailability).toHaveBeenCalledTimes(1);
+    expect(context.repository.fencedFinishWhatsappVerificationJob).toHaveBeenCalledWith(expect.objectContaining({
+      results: [{ verificationId, status: "available", errorMessage: null }]
+    }));
+  });
+
+  it("queries the original full Brazilian mobile number for deduplicated leads", async () => {
+    const full = lead(1, "+55 (47) 99139-6920");
+    full.normalizedPhone = "554791396920";
+    const reduced = lead(2, "554791396920");
+    const context = setup([reduced, full]);
+
+    await context.service.createVerification({
+      workspaceId,
+      listId,
+      leadIds: [reduced.id, full.id],
+      idempotencyKey: "full-mobile-request"
+    });
+
+    const persisted = context.repository.createWhatsappVerificationJobs.mock.calls[0]![0];
+    expect(persisted.batches).toEqual([[{
+      phone: "554791396920",
+      primary: "5547991396920",
+      alternate: "554791396920",
+      leadIds: expect.arrayContaining([reduced.id, full.id])
+    }]]);
+  });
+
+  it("adds Brazil's country code to a local Google Maps mobile number", async () => {
+    const local = lead(1, "(47) 99139-6920");
+    local.normalizedPhone = "47991396920";
+    const context = setup([local]);
+
+    await context.service.createVerification({
+      workspaceId, listId, leadIds: [local.id], idempotencyKey: "local-google-mobile"
+    });
+
+    expect(context.repository.createWhatsappVerificationJobs.mock.calls[0]![0].batches).toEqual([[{
+      phone: "554791396920", primary: "5547991396920", alternate: "554791396920", leadIds: [local.id]
+    }]]);
+  });
+
+  it("can finish a legacy queued job with a local Brazilian number", async () => {
+    const context = setup();
+    const verificationId = randomUUID();
+    const job = claimed({
+      requestId: randomUUID(), instanceName: "workspace-instance", numbers: ["47991396920"],
+      entries: [{ verificationId, leadId: randomUUID(), phone: "47991396920" }]
+    });
+    context.evolution.checkWhatsappNumbersAvailability.mockResolvedValue({
+      numbers: [{ phone: "5547991396920", available: true }], raw: {}
+    });
+
+    await context.service.processClaimedJob(job);
+
+    expect(context.evolution.checkWhatsappNumbersAvailability).toHaveBeenCalledExactlyOnceWith({
+      instanceName: "workspace-instance", numbers: ["5547991396920"]
+    });
+    expect(context.repository.fencedFinishWhatsappVerificationJob).toHaveBeenCalledWith(expect.objectContaining({
+      results: [{ verificationId, status: "available", errorMessage: null }]
+    }));
+  });
+
   it("deduplicates normalized variants, preserves lead mapping and splits more than 25 numbers", async () => {
     const selected = Array.from({ length: 27 }, (_, index) => lead(index));
     selected[1]!.phones = ["+55 (11) 9999-0000"];

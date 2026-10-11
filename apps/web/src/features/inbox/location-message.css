@@ -1,0 +1,6 @@
+.talk-shared-location { display: grid; gap: 6px; min-width: min(240px, 58vw); overflow-wrap: anywhere; }
+.talk-shared-location strong { display: flex; align-items: center; gap: 6px; }
+.talk-shared-location svg { flex-shrink: 0; }
+.talk-shared-location span { font-size: 12px; line-height: 1.5; }
+.talk-shared-location small { opacity: .8; font-size: 11px; }
+.talk-shared-location a { color: inherit; text-decoration: underline; font-size: 12px; width: fit-content; padding: 4px 0; }

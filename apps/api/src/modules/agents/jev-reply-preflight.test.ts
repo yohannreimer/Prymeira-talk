@@ -40,6 +40,7 @@ function auditResponse(input: {
   followsPlan: number;
   assertsUnsupportedCommercialFact: number;
   advancesOpenQualification?: number;
+  stalledQuoteNeedsSeller?: number;
 }) {
   return new Response(JSON.stringify({
     model: "jev-1.13.0",
@@ -53,12 +54,169 @@ function auditResponse(input: {
       advancesOpenQualification: {
         type: "noul",
         noul: input.advancesOpenQualification ?? 0
+      },
+      stalledQuoteNeedsSeller: {
+        type: "noul",
+        noul: input.stalledQuoteNeedsSeller ?? 0
       }
     }
   }));
 }
 
 describe("createJevReplyPreflight", () => {
+  it("evaluates a due catalog follow-up instead of answering the customer's already fulfilled request again", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      shouldReply: { type: "noul", noul: 0.98 },
+      conversationStage: choice("qualification"),
+      commercialPath: choice("not_applicable"),
+      nextAction: choice("followup_checkin")
+    } })));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.evaluate({ ...baseInput, followupPurpose: "confirm_active" })).resolves.toEqual({
+      outcome: "continue",
+      plan: { conversationStage: "qualification", commercialPath: "not_applicable", nextAction: "followup_checkin" }
+    });
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(payload.state.followupPurpose).toBe("confirm_active");
+    expect(payload.questions.shouldReply.instructions).toContain("follow-up agendado");
+    expect(payload.questions.nextAction.criteria.followup_checkin).toContain("catálogo");
+  });
+  it("distinguishes unsupported variants, approved refusals and ongoing qualification in JEV criteria", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      shouldReply: { type: "noul", noul: 0.98 },
+      conversationStage: choice("qualification"),
+      commercialPath: choice("ambiguous"),
+      nextAction: choice("handoff")
+    } })));
+
+    await createJevReplyPreflight({ apiKey: "jev-test", fetchImpl }).evaluate(baseInput);
+
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(payload.questions.conversationStage.criteria.qualification).toContain("resposta do cliente à pergunta de qualificação");
+    expect(payload.questions.conversationStage.criteria.new_quote).toContain("não é resposta à qualificação anterior");
+    expect(payload.questions.commercialPath.criteria.stock).toContain("variante solicitada não contradiz medidas, material ou norma aprovados");
+    expect(payload.questions.commercialPath.criteria.ambiguous).toContain("medida fora da faixa aprovada");
+    expect(payload.questions.commercialPath.criteria.not_sold).toContain("negativa explícita aplicável");
+    expect(payload.questions.nextAction.criteria.answer_current_request).toContain("recusa objetiva de item explicitamente não vendido");
+    expect(payload.questions.nextAction.criteria.answer_current_request).toContain("não substitui handoff quando a variante está fora da faixa aprovada");
+    expect(payload.questions.nextAction.criteria.handoff).toContain("variante fora da faixa ou especificação não confirmada");
+    expect(payload.questions.nextAction.instructions).toContain("Se a variante está fora da faixa aprovada");
+    expect(payload.questions.nextAction.criteria.handoff).toContain("nem para repetir uma negativa aprovada");
+  });
+
+  it("tells JEV that a greeting is answered and never handed off", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      shouldReply: { type: "noul", noul: 0.95 },
+      conversationStage: choice("general_support"),
+      commercialPath: choice("not_applicable"),
+      nextAction: choice("answer_current_request")
+    } })));
+
+    await createJevReplyPreflight({ apiKey: "jev-test", fetchImpl }).evaluate({
+      currentMessage: { id: "greeting-2", body: "Tudo bem?", type: "text" },
+      conversationMessages: [
+        { id: "greeting-1", label: "cliente", body: "Bom dia!", type: "text", createdAt: null },
+        { id: "greeting-2", label: "cliente", body: "Tudo bem?", type: "text", createdAt: null }
+      ],
+      selectedKnowledge: []
+    });
+
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(payload.questions.nextAction.instructions).toContain("sem pedido concreto: escolha answer_current_request");
+    expect(payload.questions.nextAction.criteria.answer_current_request).toContain("saudação ou abertura sem pedido");
+    expect(payload.questions.nextAction.criteria.handoff).toContain("nunca para saudação ou abertura sem pedido");
+  });
+
+  it("tells JEV to follow the agent's made-to-order offer and collect handoff data before a regular handoff", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      shouldReply: { type: "noul", noul: 0.98 },
+      conversationStage: choice("new_quote"),
+      commercialPath: choice("made_to_order"),
+      nextAction: choice("offer_catalog_or_seller")
+    } })));
+
+    await createJevReplyPreflight({ apiKey: "jev-test", fetchImpl }).evaluate({
+      ...baseInput,
+      agentRules: "Encomenda: U enrijecido/estrutural. Cadastro vem depois: empresa e CNPJ para PJ ou nome para PF, antes do repasse comum."
+    });
+
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(payload.questions.commercialPath.criteria.made_to_order).toContain("as regras do agente identificam o item ou sua família como sob encomenda");
+    expect(payload.questions.nextAction.instructions).toContain("Na primeira menção de um item sob encomenda em pedido novo");
+    expect(payload.questions.nextAction.instructions).toContain("empresa e CNPJ ou nome");
+    expect(payload.questions.nextAction.criteria.ask_missing_technical).toContain("logística e cadastro");
+    expect(payload.questions.nextAction.criteria.handoff).toContain("dados de repasse exigidos pelas regras do agente");
+  });
+
+  it("sends a greeting instead of the generic handoff notice when JEV planned a handoff", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
+      disposition: "send",
+      followsPlan: 0.05,
+      assertsUnsupportedCommercialFact: 0.01
+    }));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.audit!({
+      currentMessage: { id: "greeting-2", body: "Tudo bem?", type: "text" },
+      conversationMessages: [
+        { id: "greeting-1", label: "cliente", body: "Bom dia!", type: "text", createdAt: null },
+        { id: "greeting-2", label: "cliente", body: "Tudo bem?", type: "text", createdAt: null }
+      ],
+      selectedKnowledge: [],
+      candidateReply: "Bom dia! Tudo bem, e com você? Como posso ajudar?",
+      plan: { conversationStage: "general_support", commercialPath: "not_applicable", nextAction: "handoff" }
+    })).resolves.toEqual({ outcome: "send" });
+  });
+
+  it("still blocks a reply that departs from a planned handoff with an unsupported commercial fact", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
+      disposition: "send",
+      followsPlan: 0.05,
+      assertsUnsupportedCommercialFact: 0.9
+    }));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.audit!({
+      ...baseInput,
+      candidateReply: "Temos em estoque e entrego amanhã.",
+      plan: { conversationStage: "new_quote", commercialPath: "ambiguous", nextAction: "handoff" }
+    })).resolves.toEqual({ outcome: "handoff", reason: "commercial_policy_risk" });
+  });
+
+  it("sends the full prompt, latest 20 complete messages, and selected evidence", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ answers: {
+      shouldReply: { type: "noul", noul: 0.98 },
+      conversationStage: choice("new_quote"),
+      commercialPath: choice("ambiguous"),
+      nextAction: choice("handoff")
+    } })));
+    const agentRules = `${"A".repeat(4_100)}\nNão fornecemos oxicorte.`;
+    const conversationMessages = Array.from({ length: 22 }, (_, index) => ({
+      id: `message-${index + 1}`,
+      label: "cliente" as const,
+      body: index === 20 ? "B".repeat(2_100) : `Mensagem ${index + 1}`,
+      type: "text",
+      createdAt: new Date(Date.UTC(2026, 8, 22, 12, index)).toISOString()
+    }));
+    const selectedKnowledge = [{ id: "approved-rule", title: "Regra aprovada", content: "C".repeat(1_600) }];
+
+    await createJevReplyPreflight({ apiKey: "jev-test", fetchImpl }).evaluate({
+      currentMessage: { id: "message-22", body: "Mensagem 22", type: "text" },
+      conversationMessages,
+      selectedKnowledge,
+      agentRules
+    });
+
+    const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(payload.state.agentRules).toBe(agentRules);
+    expect(payload.state.conversationMessages).toHaveLength(20);
+    expect(payload.state.conversationMessages[0].id).toBe("message-3");
+    expect(payload.state.conversationMessages.at(-1).id).toBe("message-22");
+    expect(payload.state.conversationMessages.find((item: { id: string }) => item.id === "message-21").body).toHaveLength(2_100);
+    expect(payload.state.approvedKnowledge).toEqual(selectedKnowledge);
+  });
+
   it("tells the auditor that an approved not-sold refusal is supported", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
       disposition: "send",
@@ -79,6 +237,52 @@ describe("createJevReplyPreflight", () => {
     const body = JSON.parse(String(init?.body));
     expect(body.questions.disposition.instructions).toContain("not_sold");
     expect(body.questions.assertsUnsupportedCommercialFact.instructions).toContain("explicitamente não vendido");
+  });
+
+  it("distinguishes sending a safe handoff notice from blocking the candidate reply", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
+      disposition: "send",
+      followsPlan: 1,
+      assertsUnsupportedCommercialFact: 0
+    }));
+    await createJevReplyPreflight({ apiKey: "jev-test", fetchImpl }).audit!({
+      ...baseInput,
+      candidateReply: "Vou encaminhar ao vendedor para verificar a disponibilidade e a especificação dessa barra.",
+      plan: { conversationStage: "new_quote", commercialPath: "ambiguous", nextAction: "handoff" }
+    });
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.questions.disposition.instructions).toContain("handoff nesta auditoria significa bloquear a candidateReply");
+    expect(body.questions.disposition.criteria.send).toContain("nextAction=handoff");
+    expect(body.questions.disposition.criteria.handoff).toContain("não escolha handoff apenas porque o texto comunica um encaminhamento");
+  });
+
+  it("passes agent product rules to preflight and audit as commercial evidence", async () => {
+    const preflightResponse = new Response(JSON.stringify({ answers: {
+      shouldReply: { type: "noul", noul: 0.98 },
+      conversationStage: choice("new_quote"),
+      commercialPath: choice("not_sold"),
+      nextAction: choice("answer_current_request")
+    } }));
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(preflightResponse)
+      .mockResolvedValueOnce(auditResponse({ disposition: "send", followsPlan: 1, assertsUnsupportedCommercialFact: 0 }));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+    const agentRules = "Não fornecemos oxicorte nem material cortado.";
+    const state = { ...baseInput, agentRules, currentMessage: { id: "item", body: "Vocês fazem oxicorte?", type: "text" } };
+
+    await preflight.evaluate(state);
+    await preflight.audit!({
+      ...state,
+      candidateReply: "Não fornecemos oxicorte.",
+      plan: { conversationStage: "new_quote", commercialPath: "not_sold", nextAction: "answer_current_request" }
+    });
+
+    const preflightBody = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    const auditBody = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body));
+    expect(preflightBody.state.agentRules).toContain("Não fornecemos oxicorte");
+    expect(auditBody.state.agentRules).toContain("Não fornecemos oxicorte");
+    expect(preflightBody.questions.commercialPath.instructions).toContain("regras do agente");
   });
 
   it("sends the next valid qualification question even when JEV marks it as suppress", async () => {
@@ -162,6 +366,33 @@ describe("createJevReplyPreflight", () => {
     })).resolves.toEqual({ outcome: "handoff", reason: "plan_mismatch" });
   });
 
+  it("hands a stalled tube quote to a seller instead of repeating commercial conditions", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(auditResponse({
+      disposition: "send",
+      followsPlan: 0.86,
+      assertsUnsupportedCommercialFact: 0.02,
+      advancesOpenQualification: 0.12,
+      stalledQuoteNeedsSeller: 0.96
+    }));
+    const preflight = createJevReplyPreflight({ apiKey: "jev-test", fetchImpl });
+
+    await expect(preflight.audit!({
+      currentMessage: { id: "customer-material", body: "Tubo de aço", type: "text" },
+      conversationMessages: [
+        { id: "customer-quote", label: "cliente", body: "Pode cotar tubos redondos 1.1/2 parede 4,5 (1 barra), 2.1/2 parede 6,3 (1 barra) e 6 parede 4,5 (2 barras)?", type: "text", createdAt: null },
+        { id: "agent-minimum", label: "atendente", body: "Tubos sob encomenda. Mínimo de 1.000 kg; não consigo confirmar esse peso pelas barras. Prefere catálogo ou vendedor?", type: "text", createdAt: null },
+        { id: "customer-material", label: "cliente", body: "Tubo de aço", type: "text", createdAt: null }
+      ],
+      selectedKnowledge: [],
+      candidateReply: "Entendi: tubos de aço. São sob encomenda. O mínimo é 1.000 kg. Prazo de 5 a 10 dias e pagamento à vista. Essas condições atendem?",
+      plan: { conversationStage: "qualification", commercialPath: "made_to_order", nextAction: "wait_for_customer" }
+    })).resolves.toEqual({ outcome: "handoff", reason: "stalled_quote" });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body));
+    expect(body.questions.stalledQuoteNeedsSeller.instructions).toContain("medidas e quantidades");
+  });
+
   it("suppresses a social closure before a generative reply is created", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({
@@ -236,7 +467,8 @@ describe("createJevReplyPreflight", () => {
           disposition: choice("handoff"),
           followsPlan: { type: "noul", noul: 0.1 },
           assertsUnsupportedCommercialFact: { type: "noul", noul: 0.98 },
-          advancesOpenQualification: { type: "noul", noul: 0.01 }
+          advancesOpenQualification: { type: "noul", noul: 0.01 },
+          stalledQuoteNeedsSeller: { type: "noul", noul: 0.01 }
         },
         usage: { input_tokens: 120, output_tokens: 6 }
       }))
@@ -267,7 +499,8 @@ describe("createJevReplyPreflight", () => {
           },
           followsPlan: { type: "noul", noul: 0.87 },
           assertsUnsupportedCommercialFact: { type: "noul", noul: 0.09 },
-          advancesOpenQualification: { type: "noul", noul: 0.02 }
+          advancesOpenQualification: { type: "noul", noul: 0.02 },
+          stalledQuoteNeedsSeller: { type: "noul", noul: 0.01 }
         },
         usage: { input_tokens: 120, output_tokens: 6 }
       }))
@@ -293,7 +526,8 @@ describe("createJevReplyPreflight", () => {
           disposition: { type: "choice", choice: "handoff" },
           followsPlan: { type: "noul", noul: 0.91 },
           assertsUnsupportedCommercialFact: { type: "noul", noul: 0.08 },
-          advancesOpenQualification: { type: "noul", noul: 0.02 }
+          advancesOpenQualification: { type: "noul", noul: 0.02 },
+          stalledQuoteNeedsSeller: { type: "noul", noul: 0.01 }
         }
       }))
     );

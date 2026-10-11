@@ -91,6 +91,9 @@ function buildPrisma(overrides: Record<string, any> = {}) {
       vi.fn().mockResolvedValue(activeFollowup())
   };
   const prisma = {
+    channel: {
+      findUnique: overrides.channel?.findUnique ?? vi.fn().mockResolvedValue(null)
+    },
     conversation: {
       findUnique:
         overrides.conversation?.findUnique ?? vi.fn().mockResolvedValue(baseConversation)
@@ -100,10 +103,14 @@ function buildPrisma(overrides: Record<string, any> = {}) {
         overrides.message?.findFirst ??
         vi.fn().mockImplementation(async (args: any) =>
           args.where.direction === "inbound" ? null : baseMessage
-        )
+        ),
+      findMany: overrides.message?.findMany ?? vi.fn().mockResolvedValue([])
     },
     aiAgentSession: {
       findFirst: overrides.aiAgentSession?.findFirst ?? vi.fn().mockResolvedValue(baseSession)
+    },
+    aiAgent: {
+      findFirst: overrides.aiAgent?.findFirst ?? vi.fn().mockResolvedValue(baseAgent)
     },
     conversationFollowup
   };
@@ -136,7 +143,7 @@ describe("conversation followups", () => {
 
     expect(prisma.conversationFollowup.findFirst).not.toHaveBeenCalled();
     expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ status: { in: ["scheduled", "review"] } })
+      where: expect.objectContaining({ status: { in: ["evaluating", "scheduled", "review"] } })
     }));
   });
 
@@ -149,7 +156,8 @@ describe("conversation followups", () => {
     ]);
     const prisma = buildPrisma({
       conversationFollowup: {
-        findMany: vi.fn().mockResolvedValue([staleManual, staleAutomatic]),
+        findMany: vi.fn().mockImplementation(async (args: any) =>
+          args.where.status === "processing" ? [staleManual, staleAutomatic] : []),
         findFirst: vi.fn().mockImplementation(async (args: any) => persisted.get(args.where.id) ?? null),
         updateMany: vi.fn().mockResolvedValue({ count: 1 })
       }
@@ -205,7 +213,7 @@ describe("conversation followups", () => {
     const scheduled = activeFollowup({ createdAt: anchorAt, updatedAt: new Date("2026-09-21T12:05:00.000Z") });
     const prisma = buildPrisma({
       conversationFollowup: {
-        findFirst: vi.fn().mockResolvedValueOnce(processing).mockResolvedValueOnce(scheduled),
+        findFirst: vi.fn().mockResolvedValueOnce(processing).mockResolvedValueOnce(processing).mockResolvedValueOnce(scheduled),
         updateMany: vi.fn().mockResolvedValue({ count: 1 })
       }
     });
@@ -253,7 +261,7 @@ describe("conversation followups", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         activeKey: "active",
-        status: { in: ["scheduled", "review"] },
+        status: { in: ["evaluating", "scheduled", "review"] },
         anchorIngestedAt: { lt: customerMessage.ingestedAt }
       },
       data: expect.objectContaining({
@@ -407,6 +415,270 @@ describe("conversation followups", () => {
     });
   });
 
+  describe("brain mode", () => {
+    const sellerConversation = { ...baseConversation, channelId: "channel_1", activeAgentSessionId: null, activeAgentSession: null, aiControlStatus: "human_controlled" };
+    const channel = { followupConfig, encryptedConfig: { assistant: { mode: "automatic", agentId: ids.agent } } };
+    const brain = { appliesTo: (workspaceId: string) => workspaceId === ids.workspace };
+
+    function brainPrisma(message: Record<string, unknown>, current: unknown = null) {
+      return buildPrisma({
+        conversation: { findUnique: vi.fn().mockResolvedValue(sellerConversation) },
+        aiAgentSession: { findFirst: vi.fn().mockResolvedValue(null) },
+        channel: { findUnique: vi.fn().mockResolvedValue(channel) },
+        message: { findFirst: vi.fn().mockResolvedValue({ ...baseMessage, createdAt: new Date(), ingestedAt: new Date(), ...message }) },
+        conversationFollowup: { findFirst: vi.fn().mockResolvedValue(current), updateMany: vi.fn().mockResolvedValue({ count: 1 }) }
+      });
+    }
+
+    it("a customer \"ok\" restarts a short quiet wait instead of ending the follow-up", async () => {
+      const previous = activeFollowup({ id: "previous", kind: "human_commercial", sessionId: null, status: "review" });
+      const prisma = brainPrisma({ direction: "inbound", body: "ok" }, previous);
+
+      const result = await createConversationFollowupsService(prisma, { brain, eligibility: { evaluate: vi.fn() } })
+        .observeConversationActivity({ workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.anchor, direction: "inbound", source: "customer" });
+
+      expect(result).toEqual({ status: "scheduled", followupId: ids.followup });
+      expect(prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ id: "previous" }),
+        data: expect.objectContaining({ status: "cancelled", reason: "customer_replied" })
+      }));
+      expect(prisma.conversationFollowup.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+        kind: "human_commercial",
+        status: "scheduled",
+        anchorMessageId: ids.anchor,
+        decision: { mode: "brain" },
+        reason: "brain_quiet_wait"
+      }) });
+    });
+
+    it("does not restart the cadence for a follow-up the system itself sent", async () => {
+      const prisma = brainPrisma({ metadata: { source: "ai_agent", followupId: "sent_one" } });
+
+      await expect(createConversationFollowupsService(prisma, { brain })
+        .observeConversationActivity({ workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.anchor, direction: "outbound", source: "human" }))
+        .resolves.toEqual({ status: "ignored" });
+      expect(prisma.conversationFollowup.create).not.toHaveBeenCalled();
+    });
+
+    it("leaves conversations an AI agent is running on the regular flow", async () => {
+      const prisma = brainPrisma({});
+      prisma.conversation.findUnique = vi.fn().mockResolvedValue(baseConversation);
+
+      await createConversationFollowupsService(prisma, { brain })
+        .observeConversationActivity({ workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.anchor, direction: "outbound", source: "human" });
+      expect(prisma.conversationFollowup.create).not.toHaveBeenCalledWith({ data: expect.objectContaining({ reason: "brain_quiet_wait" }) });
+    });
+  });
+
+  it("screens human conversations supported by a channel agent even without an active agent session", async () => {
+    const conversation = { ...baseConversation, channelId: "channel_1", activeAgentSessionId: null, activeAgentSession: null, aiControlStatus: "human_controlled" };
+    const prisma = buildPrisma({
+      conversation: { findUnique: vi.fn().mockResolvedValue(conversation) },
+      aiAgentSession: { findFirst: vi.fn().mockResolvedValue(null) },
+      channel: { findUnique: vi.fn().mockResolvedValue({
+        followupConfig,
+        encryptedConfig: { assistant: { mode: "automatic", agentId: ids.agent } }
+      }) }
+    });
+    const result = await createConversationFollowupsService(prisma, { eligibility: { evaluate: vi.fn() } })
+      .observeConversationActivity({ workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.anchor, direction: "outbound", source: "human" });
+    expect(result).toEqual({ status: "evaluating", followupId: ids.followup });
+    expect(prisma.conversationFollowup.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      sessionId: null,
+      agentId: ids.agent,
+      kind: "human_commercial"
+    }) });
+  });
+
+  it("revalidates a no-session commercial follow-up against the configured channel agent", async () => {
+    const conversation = { ...baseConversation, channelId: "channel_1", activeAgentSessionId: null, activeAgentSession: null, aiControlStatus: "human_controlled" };
+    const followup = activeFollowup({ sessionId: null, kind: "human_commercial" });
+    const prisma = buildPrisma({
+      conversation: { findUnique: vi.fn().mockResolvedValue(conversation) },
+      conversationFollowup: { findFirst: vi.fn().mockResolvedValue(followup) },
+      message: { findFirst: vi.fn().mockResolvedValue(null) },
+      channel: { findUnique: vi.fn().mockResolvedValue({ encryptedConfig: { assistant: { mode: "automatic", agentId: ids.agent } } }) }
+    });
+    await expect(createConversationFollowupsService(prisma).revalidateActiveFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "valid", context: { agent: baseAgent, session: null } });
+  });
+
+  it("does not create or deliver follow-ups while the selected number is paused", async () => {
+    const conversation = { ...baseConversation, channelId: "channel_1" };
+    const pausedConfig = { ...followupConfig, enabled: false, steps: [{ afterMinutes: 60 }], humanCommercialDelivery: "review" };
+    const prisma = buildPrisma({
+      conversation: { findUnique: vi.fn().mockResolvedValue(conversation) },
+      channel: { findUnique: vi.fn().mockResolvedValue({ followupConfig: pausedConfig }) },
+      conversationFollowup: {
+        findFirst: vi.fn().mockResolvedValue(activeFollowup()),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 })
+      },
+      message: { findFirst: vi.fn().mockImplementation(async (args: any) => args.where.direction === "outbound" ? baseMessage : null) }
+    });
+    const service = createConversationFollowupsService(prisma);
+    await expect(service.observeConversationActivity({
+      workspaceId: ids.workspace, conversationId: ids.conversation, messageId: ids.anchor,
+      direction: "outbound", source: "human"
+    })).resolves.toEqual({ status: "ignored" });
+    expect(prisma.conversationFollowup.create).not.toHaveBeenCalled();
+    await expect(service.revalidateActiveFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "cancelled", reason: "channel_paused" });
+  });
+
+  it("keeps a new candidate out of Agendados until eligibility has been checked", async () => {
+    const prisma = buildPrisma();
+    const eligibility = { evaluate: vi.fn() };
+    const result = await createConversationFollowupsService(prisma, { eligibility }).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "human"
+    });
+
+    expect(result).toEqual({ status: "evaluating", followupId: ids.followup });
+    expect(prisma.conversationFollowup.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ status: "evaluating", kind: "human_commercial" })
+    });
+    expect(eligibility.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("skips an evaluated candidate when the next action belongs to the seller", async () => {
+    const candidate = activeFollowup({ status: "evaluating", kind: "human_commercial" });
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = buildPrisma({
+      conversationFollowup: { findFirst: vi.fn().mockResolvedValue(candidate), updateMany },
+      message: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([{ ...baseMessage, body: "O vendedor responsável irá entrar em contato.", type: "text" }])
+      }
+    });
+    const eligibility = { evaluate: vi.fn().mockResolvedValue({ eligibility: "skip", reason: "seller_action_pending" }) };
+
+    await expect(createConversationFollowupsService(prisma, { eligibility }).evaluateCandidate({
+      workspaceId: ids.workspace, followupId: ids.followup
+    })).resolves.toEqual({ status: "skipped" });
+    expect(eligibility.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "human_commercial", anchorMessageId: ids.anchor
+    }));
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "skipped", activeKey: null, reason: "eligibility_seller_action_pending" })
+    }));
+  });
+
+  it("promotes a concrete customer pendency to Agendados after evaluation", async () => {
+    const candidate = activeFollowup({ status: "evaluating", kind: "human_commercial" });
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = buildPrisma({
+      conversationFollowup: { findFirst: vi.fn().mockResolvedValue(candidate), updateMany },
+      message: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([{ ...baseMessage, body: "Você recebeu a proposta?", type: "text" }])
+      }
+    });
+    const eligibility = { evaluate: vi.fn().mockResolvedValue({ eligibility: "schedule", reason: "proposal_response_pending" }) };
+
+    await expect(createConversationFollowupsService(prisma, { eligibility }).evaluateCandidate({
+      workspaceId: ids.workspace, followupId: ids.followup
+    })).resolves.toEqual({ status: "scheduled" });
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "scheduled", activeKey: "active", reason: "eligibility_proposal_response_pending" })
+    }));
+  });
+
+  it("retries a temporary eligibility outage without making the candidate visible", async () => {
+    const candidate = activeFollowup({ status: "evaluating", attempts: 1 });
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = buildPrisma({
+      conversationFollowup: { findFirst: vi.fn().mockResolvedValue(candidate), updateMany },
+      message: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([{ ...baseMessage, body: "Qual medida você precisa?", type: "text" }])
+      }
+    });
+    const eligibility = { evaluate: vi.fn().mockRejectedValue(new Error("JEV unavailable")) };
+
+    await expect(createConversationFollowupsService(prisma, { eligibility }).evaluateCandidate({
+      workspaceId: ids.workspace, followupId: ids.followup
+    })).rejects.toThrow("JEV unavailable");
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { lockedAt: null, reason: "eligibility_retry" }
+    }));
+    expect(updateMany).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "scheduled" })
+    }));
+  });
+
+  it("does not restart a sequence when WhatsApp echoes its own follow-up send", async () => {
+    const prisma = buildPrisma({
+      message: { findFirst: vi.fn().mockResolvedValue({
+        ...baseMessage,
+        metadata: { source: "followup_review", followupId: ids.followup }
+      }) }
+    });
+
+    await expect(createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "human"
+    })).resolves.toEqual({ status: "ignored" });
+
+    expect(prisma.conversationFollowup.create).not.toHaveBeenCalled();
+    expect(prisma.conversationFollowup.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("continues a reviewed sequence from the actual send using that number's interval", async () => {
+    const sentAt = new Date("2026-09-21T12:30:00.000Z");
+    const create = vi.fn().mockResolvedValue({ ...activeFollowup(), id: "next_followup" });
+    const prisma = buildPrisma({
+      conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channelId: "channel_vendas_5" }) },
+      channel: { findUnique: vi.fn().mockResolvedValue({ followupConfig: {
+        timeZone: "America/Sao_Paulo",
+        businessDays: [1, 2, 3, 4, 5],
+        businessHours: { start: "08:00", end: "18:00" },
+        steps: [{ afterMinutes: 20 }, { afterMinutes: 40 }, { afterMinutes: 60 }, { afterMinutes: 360 }],
+        humanCommercialDelivery: "review"
+      } }) },
+      conversationFollowup: { create }
+    });
+
+    await expect(createConversationFollowupsService(prisma).scheduleNextAfterManualSend({
+      workspaceId: ids.workspace,
+      followup: activeFollowup({ kind: "human_commercial", status: "sent", activeKey: null }),
+      sentAt
+    })).resolves.toBe("next_followup");
+
+    expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      stepIndex: 2,
+      anchorMessageId: ids.followup,
+      anchorIngestedAt: sentAt,
+      scheduledAt: new Date("2026-09-21T13:10:00.000Z")
+    }) });
+  });
+
+  it("does not schedule a follow-up for a courtesy reply after the customer thanks the seller", async () => {
+    const prisma = buildPrisma({
+      message: {
+        findFirst: vi.fn().mockImplementation(async (args: any) => {
+          if (args.where.direction === "outbound") return { ...baseMessage, body: "Imagina!" };
+          if (args.where.ingestedAt?.lte) return { ...baseMessage, direction: "inbound", body: "Mas obrigada pela indicação!" };
+          return null;
+        })
+      }
+    });
+    const result = await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "human"
+    });
+    expect(result.status).toBe("ignored");
+    expect(prisma.conversationFollowup.create).not.toHaveBeenCalled();
+  });
+
   it("schedules a human commercial candidate while a human controls the conversation", async () => {
     const pausedSession = { ...baseSession, status: "paused_by_human" };
     const prisma = buildPrisma({
@@ -431,6 +703,36 @@ describe("conversation followups", () => {
     expect(result).toEqual({ status: "scheduled", followupId: ids.followup });
     expect(prisma.conversationFollowup.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ kind: "human_commercial" })
+    });
+  });
+
+  it("schedules a human follow-up after the agent requested handoff", async () => {
+    const handoffSession = { ...baseSession, status: "handoff_requested" };
+    const prisma = buildPrisma({
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue({
+          ...baseConversation,
+          aiControlStatus: "human_controlled",
+          activeAgentSession: handoffSession
+        })
+      },
+      message: { findFirst: vi.fn().mockImplementation(async (args: any) =>
+        args.where.direction === "inbound" ? null : { ...baseMessage, body: "Como ficou?" }
+      ) },
+      aiAgentSession: { findFirst: vi.fn().mockResolvedValue(null) }
+    });
+
+    const result = await createConversationFollowupsService(prisma).observeConversationActivity({
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation,
+      messageId: ids.anchor,
+      direction: "outbound",
+      source: "human"
+    });
+
+    expect(result).toEqual({ status: "scheduled", followupId: ids.followup });
+    expect(prisma.conversationFollowup.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ kind: "human_commercial", sessionId: ids.session })
     });
   });
 
@@ -585,7 +887,7 @@ describe("conversation followups", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         activeKey: "active",
-        status: { in: ["scheduled", "review"] },
+        status: { in: ["evaluating", "scheduled", "review"] },
         anchorIngestedAt: { lt: newerCustomerMessage.ingestedAt }
       },
       data: expect.objectContaining({
@@ -736,7 +1038,7 @@ describe("conversation followups", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         activeKey: "active",
-        status: { in: ["scheduled", "review"] },
+        status: { in: ["evaluating", "scheduled", "review"] },
         anchorIngestedAt: { lt: newerCustomerMessage.ingestedAt }
       },
       data: expect.objectContaining({ reason: "customer_replied", activeKey: null })
@@ -788,7 +1090,7 @@ describe("conversation followups", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         activeKey: "active",
-        status: { in: ["scheduled", "review"] },
+        status: { in: ["evaluating", "scheduled", "review"] },
         anchorIngestedAt: { lt: newerCustomerMessage.ingestedAt }
       },
       data: expect.objectContaining({ reason: "customer_replied", activeKey: null })
@@ -1099,7 +1401,7 @@ describe("completeAutomaticFollowup", () => {
     }));
   });
 
-  it("marks the delivered step sent and schedules exactly its next configured step on the original anchor", async () => {
+  it("marks the delivered step sent and schedules the next step from the actual send", async () => {
     const configWithThreeSteps = {
       ...followupConfig,
       steps: [
@@ -1178,9 +1480,9 @@ describe("completeAutomaticFollowup", () => {
         activeKey: "active",
         stepIndex: 2,
         anchorMessageId: ids.anchor,
-        anchorMessageAt: anchorAt,
-        anchorIngestedAt,
-        scheduledAt: new Date("2026-09-21T14:00:00.000Z"),
+        anchorMessageAt: new Date("2026-09-21T12:05:00.000Z"),
+        anchorIngestedAt: new Date("2026-09-21T12:05:00.000Z"),
+        scheduledAt: new Date("2026-09-21T13:05:00.000Z"),
         decision: {},
         reason: "agent_followup_step"
       })
@@ -1220,17 +1522,17 @@ describe("completeAutomaticFollowup", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("does not schedule a fourth follow-up when the package config exposes more than three steps", async () => {
+  it("schedules a fourth follow-up when the configuration provides one", async () => {
     const configWithFourSteps = {
       ...followupConfig,
       steps: [
         { afterBusinessMinutes: 60, instruction: "Primeiro." },
         { afterBusinessMinutes: 120, instruction: "Segundo." },
         { afterBusinessMinutes: 180, instruction: "Terceiro." },
-        { afterBusinessMinutes: 240, instruction: "Quarto proibido." }
+        { afterBusinessMinutes: 240, instruction: "Quarto passo." }
       ]
     };
-    const create = vi.fn();
+    const create = vi.fn().mockResolvedValue({ ...activeFollowup(), id: "next_followup" });
     const prisma = buildPrisma({
       conversationFollowup: {
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
@@ -1246,9 +1548,9 @@ describe("completeAutomaticFollowup", () => {
       agentBehaviorConfig: { followup: configWithFourSteps },
       finalBody: "Terceira e última confirmação técnica.",
       decision: { route: "automatic_send" }
-    })).resolves.toEqual({ status: "sent" });
+    })).resolves.toEqual({ status: "scheduled", followupId: "next_followup" });
 
-    expect(create).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledOnce();
   });
 
   it("keeps the completed step sent when a malformed next-step schedule cannot be calculated", async () => {
@@ -1348,7 +1650,8 @@ describe("recoverClaimedFollowup", () => {
       followupId: ids.followup,
       claim: { lockedAt: claimLockedAt },
       outcome: "retry",
-      reason: "provider_generation_failed: provider down"
+      reason: "provider_generation_failed: provider down",
+      now: claimLockedAt
     })).resolves.toEqual({ status: "recovered" });
 
     expect(updateMany).toHaveBeenCalledWith({
@@ -1362,9 +1665,79 @@ describe("recoverClaimedFollowup", () => {
       data: {
         status: "scheduled",
         lockedAt: null,
-        reason: "provider_generation_failed: provider down"
+        reason: "provider_generation_failed: provider down",
+        scheduledAt: new Date(claimLockedAt.getTime() + 60_000),
+        decision: { transientRetries: 1 }
       }
     });
+  });
+
+  it("backs off further on each consecutive transient failure", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const findFirst = vi.fn().mockResolvedValue({ decision: { purpose: "proposal_checkin", transientRetries: 2 } });
+    const prisma = buildPrisma({ conversationFollowup: { updateMany, findFirst } });
+
+    await createConversationFollowupsService(prisma).recoverClaimedFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: claimLockedAt },
+      outcome: "retry",
+      reason: "provider_generation_failed: provider down",
+      now: claimLockedAt
+    });
+
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: "scheduled",
+        scheduledAt: new Date(claimLockedAt.getTime() + 30 * 60_000),
+        decision: { purpose: "proposal_checkin", transientRetries: 3 }
+      })
+    }));
+  });
+
+  it("stops retrying once the transient retry budget is spent", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const findFirst = vi.fn().mockResolvedValue({ decision: { transientRetries: 3 } });
+    const prisma = buildPrisma({ conversationFollowup: { updateMany, findFirst } });
+
+    await createConversationFollowupsService(prisma).recoverClaimedFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: claimLockedAt },
+      outcome: "retry",
+      reason: "provider_generation_failed: provider down"
+    });
+
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: {
+        status: "failed",
+        activeKey: null,
+        lockedAt: null,
+        reason: "retry_exhausted",
+        decision: { transientRetries: 3, lastError: "provider_generation_failed: provider down" }
+      }
+    }));
+  });
+
+  it("keeps an explicit retry time without spending the retry budget", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const findFirst = vi.fn();
+    const prisma = buildPrisma({ conversationFollowup: { updateMany, findFirst } });
+    const scheduledAt = new Date(claimLockedAt.getTime() + 12 * 60 * 60_000);
+
+    await createConversationFollowupsService(prisma).recoverClaimedFollowup({
+      workspaceId: ids.workspace,
+      followupId: ids.followup,
+      claim: { lockedAt: claimLockedAt },
+      outcome: "retry",
+      reason: "outside_business_hours",
+      scheduledAt
+    });
+
+    expect(findFirst).not.toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { status: "scheduled", lockedAt: null, reason: "outside_business_hours", scheduledAt }
+    }));
   });
 
   it("does not recover a record if its original lock token no longer matches", async () => {

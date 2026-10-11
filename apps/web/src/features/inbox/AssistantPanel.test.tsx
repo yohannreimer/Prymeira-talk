@@ -2,9 +2,13 @@ import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { AssistantConversationDto } from '@prymeira-talk/shared';
 import { AssistantPanel } from './AssistantPanel';
-const data: AssistantConversationDto = { settings: { mode: 'automatic', agentId: 'a' }, status: 'ready', humanControlled: false, suggestion: { id: 's', conversationId: 'c', agentId: 'a', revision: 1, contextKey: 'k', body: 'Qual a cidade de entrega?', instruction: null, createdAt: '2026-09-06T12:00:00Z', warnings: [], actorName: null, finalBody: null, messageId: null, sendStatus: null }, history: [], agentName: 'Pré-atendimento', error: null, currentContextKey: 'k' };
-const props = { data, error: null, humanControlled: false, draftExists: false, sending: false, onGenerate: vi.fn(), onSend: vi.fn(), onEdit: vi.fn() };
+const data: AssistantConversationDto = { settings: { mode: 'automatic', agentId: 'a' }, status: 'ready', humanControlled: false, humanSupport: false, awaitingCustomer: false, suggestion: { id: 's', conversationId: 'c', agentId: 'a', revision: 1, contextKey: 'k', body: 'Qual a cidade de entrega?', instruction: null, createdAt: '2026-09-06T12:00:00Z', warnings: [], actorName: null, finalBody: null, messageId: null, sendStatus: null }, history: [], agentName: 'Pré-atendimento', error: null, currentContextKey: 'k' };
+const props = { data, error: null, humanControlled: false, draftExists: false, sending: false, handoffCompleted: false, handoffFeedback: null, handoffBusy: false, onCompleteHandoff: vi.fn(), onReopenHandoff: vi.fn(), onReanalyzeHandoff: vi.fn(), onGenerate: vi.fn(), onSend: vi.fn(), onEdit: vi.fn() };
 describe('assistant panel', () => {
+  it('while the first answer loads, shows a quiet placeholder instead of a wrong "select a conversation" message', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} data={null} loading />);
+    expect(html).toContain('assistant-loading'); expect(html).not.toContain('Selecione uma conversa');
+  });
   it('shows a private draft with explicit send and edit controls', () => {
     const html = renderToStaticMarkup(<AssistantPanel {...props} />);
     expect(html).toContain('Só você e sua equipe'); expect(html).toContain('Enviar resposta'); expect(html).toContain('Editar no campo'); expect(props.onSend).not.toHaveBeenCalled();
@@ -20,16 +24,79 @@ describe('assistant panel', () => {
   });
   it('shows the human handoff brief even when suggestions are disabled', () => {
     const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled data={{ ...data, settings: { mode: 'disabled', agentId: null } }} handoffBrief={{
-      customerContext: 'Material para porcas, quatro peças de aço 1045.',
-      lastReply: 'Vou consultar essas informações e já te dou um retorno.',
-      reason: 'A informação comercial precisa ser confirmada.',
-      nextStep: 'Confirme as condições e responda ao cliente.'
+      status: 'ready', nextAction: 'Verifique se trabalhamos com o material solicitado.',
+      summary: 'Ricardo pediu quatro peças de aço 1045 para porcas oxicortadas.',
+      contextKey: 'key', updatedAt: '2026-09-22T19:00:00Z', error: null
     }} />);
-    expect(html).toContain('Próxima ação');
+    expect(html).toContain('Faça agora');
     expect(html).toContain('quatro peças de aço 1045');
-    expect(html).toContain('Motivo do repasse');
+    expect(html).not.toContain('Motivo do repasse');
     expect(html).not.toContain('Apoio não ativado');
     expect(html).not.toContain('Enviar resposta');
+  });
+  it('shows a completed handoff with human control and recovery actions', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled handoffCompleted handoffFeedback="A resposta gerou um aprimoramento pendente." />);
+    expect(html).toContain('Ação anterior');
+    expect(html).not.toContain('Próxima ação concluída');
+    expect(html).toContain('Analisar respostas humanas');
+    expect(html).toContain('Reabrir próxima ação');
+    expect(html).toContain('aprimoramento pendente');
+  });
+  it('offers reanalysis for a human-controlled conversation without a handoff', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled />);
+    expect(html).toContain('Analisar respostas humanas');
+  });
+  it('keeps the human action focused until it is completed', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled data={{...data,humanControlled:true,humanSupport:true}} handoffBrief={{
+      status:'ready',nextAction:'Confirme a especificação.',summary:'Cliente pediu um perfil.',contextKey:'key',updatedAt:'2026-09-22T19:00:00Z',error:null
+    }} />);
+    expect(html).toContain('Confirme a especificação.');
+    expect(html).not.toContain('Sugestão de resposta');
+    expect(html).not.toContain('Enviar resposta');
+    expect(html).not.toContain('Orientar a IA');
+  });
+  it('keeps suggestions visible after the human action is completed', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled data={{...data,humanControlled:true,humanSupport:true}} handoffCompleted />);
+    expect(html).not.toContain('Próxima ação concluída');
+    expect(html).toContain('Ação anterior');
+    expect(html).toContain('Sugestão de resposta');
+    expect(html).toContain('Enviar resposta');
+  });
+  it('after our last message only waits for the customer and offers a follow-up on request, hiding the old reply', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled data={{ ...data, status: 'stale', humanControlled: true, humanSupport: true, awaitingCustomer: true }} handoffCompleted />);
+    expect(html).toContain('Aguardando o cliente');
+    expect(html).toContain('Sugerir follow-up');
+    expect(html).not.toContain('Qual a cidade de entrega?');
+    expect(html).not.toContain('Enviar resposta');
+    expect(html).not.toContain('Orientação');
+  });
+  it('a requested follow-up is a message the seller reviews and sends', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled data={{ ...data, humanControlled: true, humanSupport: true, awaitingCustomer: true }} handoffCompleted />);
+    expect(html).toContain('Aguardando o cliente');
+    expect(html).toContain('Sugestão de follow-up');
+    expect(html).toContain('Enviar resposta');
+    expect(html).toContain('Ajustar follow-up');
+  });
+  it('has three states only, by who wrote last, and never shows an outdated reply as something to send', () => {
+    const none = renderToStaticMarkup(<AssistantPanel {...props} data={{ ...data, status: 'stale', suggestion: null }} />);
+    expect(none).toContain('Sugestão de resposta'); expect(none).toContain('Gerar sugestão'); expect(none).not.toContain('Aguardando revisão');
+    const outdated = renderToStaticMarkup(<AssistantPanel {...props} data={{ ...data, status: 'stale' }} />);
+    expect(outdated).toContain('Sugestão de resposta'); expect(outdated).not.toContain('Qual a cidade de entrega?'); expect(outdated).not.toContain('Enviar resposta');
+    expect(outdated).not.toContain('desatualizada');
+    const preparing = renderToStaticMarkup(<AssistantPanel {...props} data={{ ...data, status: 'generating' }} />);
+    expect(preparing).toContain('Sugestão de resposta'); expect(preparing).toContain('Preparando sugestão…'); expect(preparing).not.toContain('Enviar resposta');
+  });
+  it('switches to "waiting for the customer" the moment the seller sends, before the server knows', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} lastFromUs data={{ ...data, status: 'ready', awaitingCustomer: false }} />);
+    expect(html).toContain('Aguardando o cliente'); expect(html).toContain('Sugerir follow-up');
+    expect(html).not.toContain('Qual a cidade de entrega?'); expect(html).not.toContain('Enviar resposta');
+  });
+  it('shows a generation error without repeating an old reply after a completed action', () => {
+    const html = renderToStaticMarkup(<AssistantPanel {...props} humanControlled data={{ ...data, humanControlled: true, humanSupport: true, awaitingCustomer: true, status: 'failed', error: 'Aguarde uma mensagem do cliente.' }} handoffCompleted />);
+    expect(html).toContain('Aguarde uma mensagem do cliente.');
+    expect(html).not.toContain('Próxima ação concluída');
+    expect(html).not.toContain('Sugestão de resposta');
+    expect(html).toContain('Sugerir follow-up');
   });
   it('escapes customer/provider text and shows media warnings', () => {
     const html = renderToStaticMarkup(<AssistantPanel {...props} data={{ ...data, suggestion: { ...data.suggestion!, body: '<script>unsafe()</script>', warnings: ['PDF não lido.'] } }} />);

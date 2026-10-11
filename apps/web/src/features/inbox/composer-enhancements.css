@@ -3,7 +3,7 @@
 .composer-rich-input p { margin: 0; }
 .composer-rich-input strong, .msg-bubble-body strong { font-weight: 700; }
 .composer-rich-input em, .msg-bubble-body em { font-style: italic; }
-.composer-rich-input p:only-child:has(> br:only-child)::before { content: 'Escreva uma mensagem...'; color: #92aaa1; pointer-events: none; float: left; height: 0; }
+.composer-rich-shell.is-empty .composer-rich-input > p:first-child::before { content: 'Escreva uma mensagem...'; color: #92aaa1; pointer-events: none; float: left; height: 0; }
 .composer-rich-input[contenteditable=false] { opacity: .65; }
 .composer-tool[aria-pressed=true] { background: #d5e9e0; color: #20584d; border-radius: 6px; }
 .composer-voice { position: relative; }
@@ -19,3 +19,8 @@
 .composer-recording .voice-send { background: #285b50; color: white; }
 .recording-dot { width: 8px; height: 8px; background: #b94141; border-radius: 50%; }
 .voice-error { color: #934036; font-size: 12px; margin: 6px 0; max-width: 350px; }
+/* A long word with no spaces wraps like in WhatsApp. The editor's own default (overflow-wrap: break-word), injected after
+   this file, does not shrink the min-content width, so the whole chat used to grow sideways. */
+.composer-rich-shell .composer-rich-input.ProseMirror, .composer-rich-shell .composer-rich-input { overflow-wrap: anywhere !important; word-break: break-word; min-width: 0; }
+.composer-input-row, .composer { min-width: 0; }
+.msg-bubble-body, .msg-bubble-body .message-text { overflow-wrap: anywhere; min-width: 0; }

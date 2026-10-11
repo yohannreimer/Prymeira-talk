@@ -174,7 +174,8 @@ describe("createAgentReplyScheduler", () => {
       conversationId: ids.conversation,
       messageId: ids.firstMessage,
       trigger: "automation",
-      instruction: null
+      instruction: null,
+      replyClaim: { id: ids.pending, token: expect.any(String) }
     });
     scheduler.stop();
     vi.useRealTimers();
@@ -269,21 +270,19 @@ describe("createAgentReplyScheduler", () => {
       conversationId: ids.conversation,
       messageId: ids.secondMessage,
       trigger: "automation",
-      instruction: "Responda como secretária comercial."
+      instruction: "Responda como secretária comercial.",
+      replyClaim: { id: ids.pending, token: expect.any(String) }
     });
-    expect(prisma.aiAgentPendingReply.update).toHaveBeenCalledWith({
-      where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.pending } },
-      data: expect.objectContaining({
-        status: "processing",
-        attempts: { increment: 1 }
-      })
+    expect(prisma.aiAgentPendingReply.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ workspaceId: ids.workspace, id: ids.pending, status: "pending", lastMessageId: ids.secondMessage }),
+      data: expect.objectContaining({ status: "processing", claimToken: expect.any(String), attempts: { increment: 1 } })
     });
     expect(prisma.aiAgentPendingReply.updateMany).toHaveBeenLastCalledWith({
       where: {
         workspaceId: ids.workspace,
         id: ids.pending,
         status: "processing",
-        lockedAt: new Date("2026-07-05T12:01:06.000Z")
+        claimToken: expect.any(String)
       },
       data: expect.objectContaining({
         status: "completed",
@@ -292,7 +291,7 @@ describe("createAgentReplyScheduler", () => {
     });
   });
 
-  it("does not complete a pending reply that was rescheduled while processing", async () => {
+  it("does not run a pending reply when its atomic claim loses a reschedule/cancellation race", async () => {
     const updateMany = vi.fn().mockResolvedValue({ count: 0 });
     const prisma = buildPrisma({
       aiAgentPendingReply: {
@@ -323,17 +322,10 @@ describe("createAgentReplyScheduler", () => {
 
     await scheduler.processDueReplies({ now: new Date("2026-07-05T12:01:06.000Z") });
 
+    expect(agentRuntime.runForMessage).not.toHaveBeenCalled();
     expect(updateMany).toHaveBeenCalledWith({
-      where: {
-        workspaceId: ids.workspace,
-        id: ids.pending,
-        status: "processing",
-        lockedAt: new Date("2026-07-05T12:01:06.000Z")
-      },
-      data: expect.objectContaining({
-        status: "completed",
-        lastError: null
-      })
+      where: expect.objectContaining({ status: "pending", lastMessageId: ids.firstMessage }),
+      data: expect.objectContaining({ status: "processing", claimToken: expect.any(String) })
     });
   });
 
@@ -377,7 +369,7 @@ describe("createAgentReplyScheduler", () => {
         workspaceId: ids.workspace,
         id: ids.pending,
         status: "processing",
-        lockedAt: new Date("2026-07-05T12:01:06.000Z")
+        claimToken: expect.any(String)
       },
       data: expect.objectContaining({
         status: "failed",

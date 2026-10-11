@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
+  channelHealthSchema,
   channelSchema,
+  connectionProviderSchema,
   conversationFollowupSchema,
   contactBoardMembershipSchema,
   contactSchema,
@@ -15,6 +17,18 @@ const messageCreatedEventSchema = z.object({
   type: z.literal("message.created"),
   workspaceId: z.string().min(1),
   payload: messageSchema
+});
+
+const messageUpdatedEventSchema = z.object({
+  type: z.literal("message.updated"),
+  workspaceId: z.string().min(1),
+  payload: messageSchema
+});
+
+const messageDeletedEventSchema = z.object({
+  type: z.literal('message.deleted'),
+  workspaceId: z.string().min(1),
+  payload: z.object({ messageId: z.string().min(1), conversationId: z.string().min(1) })
 });
 
 const messageStatusChangedEventSchema = z.object({
@@ -75,8 +89,17 @@ const channelQrUpdatedEventSchema = z.object({
   payload: z.object({
     channelId: z.string().min(1),
     qrCode: z.string().min(1),
-    expiresAt: z.string().datetime()
+    expiresAt: z.string().datetime(),
+    connectionId: z.string().min(1).optional(),
+    provider: connectionProviderSchema.optional(),
+    issuedAt: z.string().datetime().optional()
   })
+});
+
+const channelHealthEventSchema = z.object({
+  type: z.literal("channel.health"),
+  workspaceId: z.string().min(1),
+  payload: channelHealthSchema
 });
 
 const automationRunSchema = z.object({
@@ -101,10 +124,13 @@ const campaignSchema = z.object({
   id: z.string().min(1),
   workspaceId: z.string().min(1),
   name: z.string().min(1),
-  status: z.enum(["draft", "scheduled", "sending", "completed", "failed"]),
+  status: z.enum(["draft", "scheduled", "sending", "paused", "completed", "failed", "canceled", "needs_attention"]),
   audience: z.unknown(),
-  messageBody: z.string().min(1),
+  // A list created in Leads is a draft without a message until it is written in Disparos.
+  messageBody: z.string(),
   scheduledAt: z.string().datetime().nullable(),
+  timeZone: z.string().optional(),
+  hideFromInboxUntilReply: z.boolean().optional(),
   mode: integrationModeSchema,
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
@@ -137,6 +163,8 @@ const leadJobUpdatedEventSchema = z.object({
 export const realtimeEventSchema = z
   .discriminatedUnion("type", [
     messageCreatedEventSchema,
+    messageUpdatedEventSchema,
+    messageDeletedEventSchema,
     messageStatusChangedEventSchema,
     conversationUpdatedEventSchema,
     contactUpdatedEventSchema,
@@ -145,6 +173,7 @@ export const realtimeEventSchema = z
     channelUpdatedEventSchema,
     channelDeletedEventSchema,
     channelQrUpdatedEventSchema,
+    channelHealthEventSchema,
     automationRunCreatedEventSchema,
     campaignUpdatedEventSchema,
     conversationFollowupUpdatedEventSchema,

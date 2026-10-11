@@ -1,0 +1,80 @@
+import type { CampaignAudiencePreviewDto, CampaignCadenceDto } from "../../app/api";
+import { estimateDays, isDaily, shortDay, weekdaysLabel } from "./campaign-rhythm";
+
+const reasonLabel: Record<CampaignAudiencePreviewDto["excluded"][number]["reason"], string> = {
+  missing_phone: "Sem telefone válido",
+  no_whatsapp: "Sem WhatsApp",
+  unverified: "Ainda não verificado",
+  verification_error: "Falha na verificação",
+  duplicate: "Número repetido"
+};
+
+export function CampaignReview(props: {
+  preview: CampaignAudiencePreviewDto;
+  message: string;
+  channelName: string;
+  startLabel: string;
+  cadence: CampaignCadenceDto;
+  prospectingAgentName?: string;
+  prospectingContext?: string;
+  confirmed: boolean;
+  onConfirmedChange: (checked: boolean) => void;
+}) {
+  const { preview } = props;
+  const counts = preview.excluded.reduce<Record<string, number>>((result, item) => {
+    result[item.reason] = (result[item.reason] ?? 0) + 1;
+    return result;
+  }, {});
+  const samples = preview.eligible.filter((row, index, rows) =>
+    rows.findIndex((other) => other.message === row.message) === index).slice(0, 5);
+  const days = estimateDays(preview.eligible.length, props.cadence, preview.effectiveStartAt ? new Date(preview.effectiveStartAt) : new Date());
+  const notImported = preview.selectedCount === null ? 0 : Math.max(0,
+    preview.selectedCount - preview.eligible.length - preview.excluded.length);
+  return <div className="campaign-review">
+    <div className="campaign-review-summary" aria-label="Resumo da audiência">
+      <div><strong>{preview.selectedCount ?? "—"}</strong><span>selecionados</span></div>
+      <div className="is-ready"><strong>{preview.eligible.length}</strong><span>com WhatsApp confirmado</span></div>
+      <div><strong>{preview.excluded.length + notImported}</strong><span>não receberão</span></div>
+    </div>
+    {preview.selectedCount === null && <p className="campaign-guidance-note">
+      A quantidade originalmente selecionada não está disponível neste rascunho antigo.
+    </p>}
+    {preview.nameCheck === "unavailable" && <p role="status" className="campaign-guidance-note">
+      Nomes não verificados pela IA: as mensagens saem sem o nome. Confira a configuração de IA do workspace e verifique novamente.
+    </p>}
+    {(Object.entries(counts).length > 0 || notImported > 0) && <div className="campaign-review-exclusions">
+      <h3>Por que alguns ficaram de fora?</h3>
+      <ul>{notImported > 0 && <li>{notImported} não entraram no rascunho após a importação (telefone inválido ou repetido).</li>}{Object.entries(counts).map(([reason, count]) =>
+        <li key={reason}>{reasonLabel[reason as keyof typeof reasonLabel]}: {count}</li>)}</ul>
+    </div>}
+    <dl className="campaign-review-details">
+      {props.prospectingAgentName && <div><dt>Agente responsável</dt><dd>{props.prospectingAgentName}</dd></div>}
+      {props.prospectingContext && <div><dt>Contexto da oferta</dt><dd>{props.prospectingContext}</dd></div>}
+      <div><dt>Canal de envio</dt><dd>{props.channelName}</dd></div>
+      <div><dt>Início</dt><dd>{props.startLabel}</dd></div>
+      {isDaily(props.cadence) ? <>
+        <div><dt>Ritmo</dt><dd>{props.cadence.dailyMin} a {props.cadence.dailyMax} por dia, espalhadas ao longo do horário</dd></div>
+        <div><dt>Dias e horário</dt><dd>{weekdaysLabel(props.cadence.weekdays)}, das {props.cadence.windowStart} às {props.cadence.windowEnd}</dd></div>
+        {days.length ? <div><dt>Previsão</dt><dd>cerca de {days.length} {days.length === 1 ? "dia" : "dias"}, até {shortDay(days.at(-1)!.date)}</dd></div> : null}
+      </> : <>
+        <div><dt>Intervalo entre mensagens</dt><dd>{props.cadence.minDelaySeconds / 60} a {props.cadence.maxDelaySeconds / 60} minutos, sorteado a cada envio</dd></div>
+        <div><dt>Pausas</dt><dd>{props.cadence.pauseMinSeconds / 60} a {props.cadence.pauseMaxSeconds / 60} minutos após cada {props.cadence.batchSize} tentativas</dd></div>
+        <div><dt>Horário permitido</dt><dd>{props.cadence.windowStart} às {props.cadence.windowEnd}</dd></div>
+      </>}
+    </dl>
+    <div className="campaign-review-message"><span>Mensagem que será enviada</span><p>{props.message}</p>
+      {preview.eligible[0] && <><span>Exemplo preenchido para {preview.eligible[0].name || "um contato"}</span>
+        <p>{preview.eligible[0].message}</p></>}</div>
+    {samples.length > 0 && <div className="campaign-review-message campaign-review-samples">
+      <span>Exemplos do que será enviado</span>
+      <ul>{samples.map((row) => <li className="campaign-review-sample" key={row.audienceKey}>
+        <strong>{row.name || "Sem nome"}</strong><p>{row.message}</p></li>)}</ul>
+      {preview.eligible.length > samples.length && <small>e mais {preview.eligible.length - samples.length} destinatários</small>}
+    </div>}
+    <label className="campaign-review-confirmation">
+      <input type="checkbox" checked={props.confirmed}
+        onChange={(event) => props.onConfirmedChange(event.target.checked)} />
+      <span>Revisei os destinatários e a mensagem. Confirmo que tenho autorização para entrar em contato com eles.</span>
+    </label>
+  </div>;
+}
