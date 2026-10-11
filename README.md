@@ -98,6 +98,12 @@ telefone, registra os dados na conversa e roda o fluxo (inclusive um agente que
 puxa a conversa). Passo a passo, formato do JSON e limitações em
 [`docs/automacoes-webhook-externo.md`](docs/automacoes-webhook-externo.md).
 
+## Agente marcando call
+
+Com a ação **Marcar call**, o agente oferece horários livres da agenda Google e
+marca a call com link do Meet na própria conversa. Credencial, variáveis e
+comportamento em [`docs/agente-marcar-call.md`](docs/agente-marcar-call.md).
+
 ## Meta WhatsApp Cloud API
 
 Prymeira Talk can run Evolution and official Meta WhatsApp Cloud API channels side by side. Owner and manager users activate Meta in Settings.

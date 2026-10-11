@@ -135,7 +135,8 @@ export const aiAgentAllowedActionSchema = z.enum([
   "create_internal_note",
   "assign_user",
   "assign_department",
-  "request_handoff"
+  "request_handoff",
+  "schedule_meeting"
 ]);
 export type AiAgentAllowedAction = z.infer<typeof aiAgentAllowedActionSchema>;
 

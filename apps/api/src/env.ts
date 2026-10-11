@@ -105,9 +105,28 @@ export const envSchema = z
     LEAD_GOOGLE_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(1),
     LEAD_GOOGLE_DEFAULT_DEPTH: z.coerce.number().int().positive().max(20).default(12),
     LEAD_WHATSAPP_BATCH_SIZE: z.coerce.number().int().positive().max(25).default(25),
-    LEAD_JOB_POLL_MS: z.coerce.number().int().min(1_000).max(60_000).optional()
+    LEAD_JOB_POLL_MS: z.coerce.number().int().min(1_000).max(60_000).optional(),
+    /** Google Calendar the agents' schedule_meeting action books into; all three OAuth values turn it on. */
+    GOOGLE_CALENDAR_CLIENT_ID: optionalNonEmptyString,
+    GOOGLE_CALENDAR_CLIENT_SECRET: optionalNonEmptyString,
+    GOOGLE_CALENDAR_REFRESH_TOKEN: optionalNonEmptyString,
+    GOOGLE_CALENDAR_ID: z.string().trim().min(1).default("primary"),
+    MEETING_TIMEZONE: z.string().trim().min(1).default("America/Sao_Paulo"),
+    MEETING_DURATION_MINUTES: z.coerce.number().int().min(5).max(240).default(15),
+    /** Local booking window, HH:MM-HH:MM. */
+    MEETING_HOURS: z.string().trim().default("09:00-18:00"),
+    /** Bookable weekdays, 0 = Sunday: ranges or lists such as 1-5 or 1,3,5. */
+    MEETING_WEEKDAYS: z.string().trim().default("1-5"),
+    MEETING_SLOT_STEP_MINUTES: z.coerce.number().int().min(5).max(240).default(30),
+    MEETING_MIN_NOTICE_MINUTES: z.coerce.number().int().min(0).max(10_080).default(120),
+    MEETING_DAYS_AHEAD: z.coerce.number().int().min(1).max(60).default(7),
+    MEETING_TITLE: z.string().trim().min(1).default("Call Prymeira")
   })
   .superRefine((env, ctx) => {
+    const calendarKeys = [env.GOOGLE_CALENDAR_CLIENT_ID, env.GOOGLE_CALENDAR_CLIENT_SECRET, env.GOOGLE_CALENDAR_REFRESH_TOKEN];
+    if (calendarKeys.some(Boolean) && !calendarKeys.every(Boolean)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['GOOGLE_CALENDAR_REFRESH_TOKEN'], message: 'Google Calendar needs GOOGLE_CALENDAR_CLIENT_ID, GOOGLE_CALENDAR_CLIENT_SECRET and GOOGLE_CALENDAR_REFRESH_TOKEN together.' });
+    }
     if (env.WAHA_WEBHOOK_BASE_URL && !env.WAHA_WEBHOOK_HMAC_KEY) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['WAHA_WEBHOOK_HMAC_KEY'], message: 'WAHA_WEBHOOK_BASE_URL requires WAHA_WEBHOOK_HMAC_KEY (at least 16 characters).' });
     }

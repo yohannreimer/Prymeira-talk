@@ -262,6 +262,8 @@ async function executeNonSendAction(
       return sendAttachment(input, action);
     case "send_message":
       throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "send_message is handled elsewhere.");
+    case "schedule_meeting":
+      throw new AgentToolExecutionError("TOOL_INVALID_INPUT", "schedule_meeting is handled by the agent runtime.");
   }
 
   const _exhaustive: never = actionType;
@@ -604,6 +606,10 @@ function normalizeActionType(actionType: string) {
     ].includes(normalized)
   ) {
     return "request_handoff";
+  }
+
+  if (["schedule_meeting", "book_meeting", "schedule_call", "book_call", "create_meeting", "marcar_call", "agendar"].includes(normalized)) {
+    return "schedule_meeting";
   }
 
   if (["add_tag", "add_contact_tag", "tag_contact", "tag_conversation", "tag"].includes(normalized)) {

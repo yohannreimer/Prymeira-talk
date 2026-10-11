@@ -50,6 +50,7 @@ import type { MessageMediaService } from "../conversations/message-media.js";
 import type { MessageTranscriptionService } from "../conversations/message-transcription.js";
 import { prepareInboundMedia, formatProcessedMediaMessage, transcribeInboundAudio, MAX_INBOUND_MEDIA_BYTES, type InboundMediaResult } from "./inbound-media.js";
 import type { AgentAudioTranscriber } from "./audio-transcription.js";
+import type { MeetingAvailability, MeetingScheduler } from "./meeting-scheduler.js";
 import { toConversationDto, toMessageDto } from "../conversations/conversations.service.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { evaluateAgentLoopGuard } from "./agent-loop-guard.js";
@@ -278,6 +279,8 @@ export function createAgentRuntime(input: {
   followupService?: ConversationFollowupsObserver;
   inboxTriage?: InboxTriageObserver;
   handoffBriefService?: { schedule(input: { workspaceId: string; conversationId: string }): void };
+  /** Google Calendar access for agents allowed to use schedule_meeting; without it the action is never offered. */
+  meetingScheduler?: MeetingScheduler;
   logger?: { warn(fields: Record<string, unknown>, message: string): void };
 }) {
   const { prisma, provider } = input;
@@ -1235,6 +1238,10 @@ export function createAgentRuntime(input: {
           };
           contextSummary = { ...contextSummary, catalogSelection: "approved_attachment" };
         } else {
+          const meetingScheduling = await loadMeetingScheduling(allowedActions, conversation.id);
+          if (meetingScheduling) {
+            contextSummary = { ...contextSummary, meetingSlotsOffered: meetingScheduling.availableSlots.length, meetingAlreadyBooked: Boolean(meetingScheduling.bookedMeeting) };
+          }
           providerOutput = await runProvider.generate({
             reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
             model: runModel,
@@ -1245,7 +1252,8 @@ export function createAgentRuntime(input: {
               ...conversationReasoningContext(agent.behaviorConfig, safety),
               ...(replyPreflight?.outcome === "continue"
                 ? { agentPreflight: replyPreflight.plan }
-                : {})
+                : {}),
+              ...(meetingScheduling ? { meetingScheduling } : {})
             }
           });
         }
@@ -1343,6 +1351,21 @@ export function createAgentRuntime(input: {
         };
 
         const confidenceThreshold = readConfidenceThreshold(agent.handoffConfig);
+        const beforeActions = await prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: conversation.id } }, include: { channel: true } });
+        if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
+        if (!beforeActions || !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id, sessionId: session.id, expectedGeneration: prospectingGeneration, channelConfig: beforeActions.channel?.encryptedConfig, aiControlStatus: beforeActions.aiControlStatus })) return { status: 'skipped', message: 'Human review is required.' };
+        // Booking is an external side effect, so it runs only after the autonomy checks above.
+        let meetingResult: AgentToolExecutionResult | null = null;
+        if (providerOutput.actions.some((action) => action.type === "schedule_meeting")) {
+          const booking = await bookRequestedMeeting({
+            output: providerOutput,
+            allowed: allowedActions.includes("schedule_meeting") && !getHandoffReason(providerOutput, confidenceThreshold),
+            conversation
+          });
+          providerOutput = booking.output;
+          meetingResult = booking.result;
+          contextSummary = { ...contextSummary, meetingBooking: booking.result.status === "completed" ? "booked" : booking.result.reason ?? "skipped" };
+        }
         const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
         const status: AgentRunStatus = handoffReason ? "handoff_requested" : "completed";
         const outboundReply = unreadableImageRequiresHandoff
@@ -1353,9 +1376,6 @@ export function createAgentRuntime(input: {
               : HANDOFF_ACKNOWLEDGEMENT
             : providerOutput.reply;
 
-        const beforeActions = await prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: conversation.id } }, include: { channel: true } });
-        if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
-        if (!beforeActions || !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id, sessionId: session.id, expectedGeneration: prospectingGeneration, channelConfig: beforeActions.channel?.encryptedConfig, aiControlStatus: beforeActions.aiControlStatus })) return { status: 'skipped', message: 'Human review is required.' };
         actionResults = await executeAgentActions(prisma as AgentToolExecutorPrismaLike, {
           workspaceId: runInput.workspaceId,
           conversationId: conversation.id,
@@ -1365,6 +1385,7 @@ export function createAgentRuntime(input: {
           allowedTags,
           actions: providerOutput.actions
         });
+        if (meetingResult) actionResults = [meetingResult, ...actionResults];
         contextSummary = {
           ...contextSummary,
           rejectedActionCodes: [
@@ -1546,6 +1567,86 @@ export function createAgentRuntime(input: {
       }
     }
   };
+
+  async function loadMeetingScheduling(
+    allowedActions: readonly AiAgentAllowedAction[],
+    conversationId: string
+  ): Promise<MeetingAvailability | null> {
+    if (!input.meetingScheduler || !allowedActions.includes("schedule_meeting")) return null;
+    try {
+      return await input.meetingScheduler.availability({ conversationId });
+    } catch (error) {
+      input.logger?.warn({ err: error, conversationId }, "Meeting availability lookup failed");
+      return null;
+    }
+  }
+
+  /**
+   * Books the call the model chose before the reply goes out, so the reply can carry
+   * the real Meet link, or be replaced when the slot is gone or the calendar fails.
+   */
+  async function bookRequestedMeeting(args: {
+    output: AgentOutput;
+    allowed: boolean;
+    conversation: ConversationRecord;
+  }): Promise<{ output: AgentOutput; result: AgentToolExecutionResult }> {
+    const request = args.output.actions.find((action) => action.type === "schedule_meeting");
+    const output = { ...args.output, actions: args.output.actions.filter((action) => action.type !== "schedule_meeting") };
+    if (!args.allowed || !input.meetingScheduler || !request) {
+      return {
+        output,
+        result: { type: "schedule_meeting", status: "skipped", reason: !input.meetingScheduler ? "Google Calendar is not configured." : "Agent action schedule_meeting is not allowed." }
+      };
+    }
+    const startsAt = firstString(request, ["startsAt", "start", "slot", "dateTime", "startTime"]);
+    const email = firstString(request, ["email", "attendeeEmail", "guestEmail"]);
+    try {
+      const booking = await input.meetingScheduler.book({
+        conversationId: args.conversation.id,
+        startsAt: startsAt ?? "",
+        contactName: args.conversation.contact?.name ?? null,
+        contactPhone: args.conversation.contact?.phone ?? null,
+        attendeeEmail: email ?? args.conversation.contact?.email ?? null,
+        notes: firstString(request, ["notes", "summary", "reason"]) ?? null
+      });
+      if (booking.status === "unavailable") {
+        const options = booking.availableSlots.slice(0, 3).map((slot) => slot.label);
+        if (options.length === 0) {
+          const reason = `Não há horário livre na agenda para marcar a call (${booking.reason}).`;
+          return {
+            output: { ...output, reply: null, actions: [...output.actions, { type: "request_handoff", reason }], handoff: { required: true, reason } },
+            result: { type: "schedule_meeting", status: "skipped", reason: booking.reason }
+          };
+        }
+        return {
+          output: { ...output, reply: `Esse horário acabou de ser ocupado. Tenho livre ${joinOptions(options)}. Qual fica melhor pra você?` },
+          result: { type: "schedule_meeting", status: "skipped", reason: booking.reason }
+        };
+      }
+      const { meeting } = booking;
+      const confirmation = output.reply?.trim() || `Fechado! Sua call ficou marcada para ${meeting.label}.`;
+      const reply = meeting.meetLink && !confirmation.includes(meeting.meetLink)
+        ? `${confirmation}\n\nLink da call: ${meeting.meetLink}`
+        : confirmation;
+      const note = [
+        `Call marcada pela IA: ${meeting.label}.`,
+        meeting.meetLink ? `Meet: ${meeting.meetLink}` : null,
+        meeting.htmlLink ? `Evento: ${meeting.htmlLink}` : null,
+        booking.replacedEventIds.length > 0 ? "Substituiu a call marcada antes para esta conversa." : null
+      ].filter(Boolean).join("\n");
+      return {
+        output: { ...output, reply, actions: [...output.actions, { type: "create_internal_note", body: note }] },
+        result: { type: "schedule_meeting", status: "completed", conversationId: args.conversation.id }
+      };
+    } catch (error) {
+      input.logger?.warn({ err: error, conversationId: args.conversation.id }, "Meeting booking failed");
+      const reason = "Não consegui marcar a call na agenda Google. Confirme o horário com o contato.";
+      return {
+        output: { ...output, reply: null, actions: [...output.actions, { type: "request_handoff", reason }], handoff: { required: true, reason } },
+        result: { type: "schedule_meeting", status: "skipped", reason: getErrorMessage(error) }
+      };
+    }
+  }
 
   async function publishConversationUpdated(workspaceId: string, conversationId: string) {
     if (!input.realtime) {
@@ -2039,4 +2140,16 @@ function readStableMediaErrorCode(error: unknown) {
     return error.code;
   }
   return "MEDIA_PROCESSING_FAILED";
+}
+
+function firstString(action: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = action[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function joinOptions(options: string[]) {
+  return options.length === 1 ? options[0] : `${options.slice(0, -1).join(", ")} ou ${options[options.length - 1]}`;
 }

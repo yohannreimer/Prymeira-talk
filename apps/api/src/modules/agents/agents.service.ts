@@ -158,7 +158,8 @@ const allowedActionValues = new Set<AiAgentAllowedAction>([
   "create_internal_note",
   "assign_user",
   "assign_department",
-  "request_handoff"
+  "request_handoff",
+  "schedule_meeting"
 ]);
 
 const agentInclude = {
