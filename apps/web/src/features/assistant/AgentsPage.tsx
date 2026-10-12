@@ -90,6 +90,7 @@ type AgentFormState = {
   onlyNewConversations: boolean;
   replyInBubbles: boolean;
   meetingReminders: MeetingRemindersConfig;
+  meetingBookedTagId: string | null;
 };
 
 type KnowledgeFormState = {
@@ -139,6 +140,7 @@ function emptyAgentForm(): AgentFormState {
     onlyNewConversations: false,
     replyInBubbles: false,
     meetingReminders: DEFAULT_MEETING_REMINDERS,
+    meetingBookedTagId: null,
     allowedActions: defaultAllowedActions,
     allowedTagIds: []
   };
@@ -157,6 +159,7 @@ function agentFormFromAgent(agent: AiAgentDto): AgentFormState {
     onlyNewConversations: agent.behaviorConfig.onlyNewConversations === true,
     replyInBubbles: readReplyInBubbles(agent.behaviorConfig),
     meetingReminders: readMeetingRemindersConfig(agent.behaviorConfig),
+    meetingBookedTagId: typeof agent.behaviorConfig.meetingBookedTagId === "string" ? agent.behaviorConfig.meetingBookedTagId : null,
     allowedActions: agent.allowedActions,
     allowedTagIds: agent.allowedTags.map((tag) => tag.id)
   };
@@ -506,7 +509,7 @@ export function AgentsPage() {
           reasoningEffort: agentForm.reasoningEffort,
           onlyNewConversations: agentForm.onlyNewConversations,
           replyInBubbles: agentForm.replyInBubbles,
-          ...(agentForm.allowedActions.includes("schedule_meeting") ? { meetingReminders: agentForm.meetingReminders } : {}),
+          ...(agentForm.allowedActions.includes("schedule_meeting") ? { meetingReminders: agentForm.meetingReminders, meetingBookedTagId: agentForm.meetingBookedTagId } : {}),
           allowedActions: agentForm.allowedActions,
           allowedTagIds: agentForm.allowedTagIds
         });
@@ -525,7 +528,7 @@ export function AgentsPage() {
         reasoningEffort: agentForm.reasoningEffort,
         onlyNewConversations: agentForm.onlyNewConversations,
         replyInBubbles: agentForm.replyInBubbles,
-        ...(agentForm.allowedActions.includes("schedule_meeting") ? { meetingReminders: agentForm.meetingReminders } : {}),
+        ...(agentForm.allowedActions.includes("schedule_meeting") ? { meetingReminders: agentForm.meetingReminders, meetingBookedTagId: agentForm.meetingBookedTagId } : {}),
         allowedActions: agentForm.allowedActions,
         allowedTagIds: agentForm.allowedTagIds
       });
@@ -1425,10 +1428,28 @@ export function AgentsPage() {
                       })}
                     </section>
                     {agentForm.allowedActions.includes("schedule_meeting") ? (
-                      <MeetingRemindersEditor
-                        value={agentForm.meetingReminders}
-                        onChange={(meetingReminders) => setAgentForm((current) => ({ ...current, meetingReminders }))}
-                      />
+                      <>
+                        <section className="agents-card" aria-label="Kanban após agendamento">
+                          <h3>Kanban após agendamento</h3>
+                          <p>Aplica a tag depois que a agenda confirma a call. As regras do board movem o contato automaticamente.</p>
+                          <label>
+                            Tag ao confirmar a call
+                            <select aria-label="Tag ao confirmar a call"
+                              value={agentForm.meetingBookedTagId ?? ""}
+                              onChange={(event) => setAgentForm((current) => ({ ...current, meetingBookedTagId: event.target.value || null }))}>
+                              <option value="">Nenhuma</option>
+                              {tags.filter((tag) => tag.isActive && agentForm.allowedTagIds.includes(tag.id)).map((tag) =>
+                                <option key={tag.id} value={tag.id}>{tag.name}</option>
+                              )}
+                            </select>
+                          </label>
+                          {!agentForm.allowedActions.includes("add_tag") ? <p>Ligue Adicionar tag para usar esta opção.</p> : null}
+                        </section>
+                        <MeetingRemindersEditor
+                          value={agentForm.meetingReminders}
+                          onChange={(meetingReminders) => setAgentForm((current) => ({ ...current, meetingReminders }))}
+                        />
+                      </>
                     ) : null}
                   </div>
 

@@ -265,6 +265,23 @@ describe("board rules service", () => {
     expect(prisma.contactBoardMembership.upsert).toHaveBeenCalledTimes(1);
   });
 
+  it("moves to the confirmed meeting stage even from a later handoff stage with stale tags", async () => {
+    const prisma = createMockPrisma({
+      conversation: { ...createMockPrisma().conversation, findUnique: vi.fn().mockResolvedValue(conversation({ tags: [{ tagId }, { tagId: otherTagId }] })) },
+      contactBoardMembership: { ...createMockPrisma().contactBoardMembership, findFirst: vi.fn().mockResolvedValue(membership({ stageId: stageLastId, stage: { order: 3 } })) }
+    });
+    const result = await createBoardRulesService(prisma).applyBoardRulesForConversationTags({ workspaceId, conversationId, confirmedMeetingTagId: tagId });
+    expect(result.moved).toBe(1);
+    expect(prisma.contactBoardMembership.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ stageId: stageLaterId }) }));
+  });
+
+  it("ignores a confirmed-meeting tag that is not actually applied to the conversation", async () => {
+    const prisma = createMockPrisma();
+    const result = await createBoardRulesService(prisma).applyBoardRulesForConversationTags({ workspaceId, conversationId, confirmedMeetingTagId: otherTagId });
+    expect(result.evaluated).toBe(0);
+    expect(prisma.contactBoardMembership.upsert).not.toHaveBeenCalled();
+  });
+
   it("does not move a contact backward or sideways to an equal or lower stage order", async () => {
     const prisma = createMockPrisma({
       contactBoardMembership: {

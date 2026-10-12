@@ -101,3 +101,10 @@ Em **Como ele responde**, a opção **Responder em mensagens separadas** faz o
 agente mandar cada parágrafo da resposta como uma mensagem própria no
 WhatsApp (até 3), com "digitando..." antes de cada uma, como uma pessoa faria.
 O link da call, quando houver, vai na última.
+
+
+## Mover o lead no Kanban ao confirmar
+
+Em **Agentes > O que ele pode fazer**, com **Marcar call** e **Adicionar tag** ligados, selecione **Tag ao confirmar a call**. A lista contém somente as tags ativas permitidas ao agente. Configure essa tag como gatilho da etapa **Call marcada** no board e vincule o board ao canal usado pelo fluxo.
+
+O servidor aplica a tag apenas após a agenda confirmar o agendamento, inclusive remarcações, e move o card imediatamente. O evento confirmado prevalece sobre tags antigas de andamento e pode trazer o card de uma etapa posterior para a etapa da call. Horário ocupado, erro da agenda ou falta de permissão não aplicam a tag. A IA não pode antecipar a tag configurada por inferência. Sem uma tag selecionada, o comportamento anterior continua. Não há nova migração de banco.

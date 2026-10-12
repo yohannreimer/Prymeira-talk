@@ -320,7 +320,7 @@ async function addTag(
   };
 }
 
-function normalizeTagName(value: string) {
+export function normalizeTagName(value: string) {
   return value
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
@@ -567,7 +567,7 @@ function parseActionType(action: AgentAction): {
   };
 }
 
-function normalizeActionType(actionType: string) {
+export function normalizeActionType(actionType: string) {
   const normalized = actionType.trim().toLocaleLowerCase("en-US").replace(/[^a-z0-9]+/g, "_");
 
   if (

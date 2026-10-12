@@ -399,6 +399,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       onlyNewConversations?: boolean;
       replyInBubbles?: boolean;
       meetingReminders?: MeetingRemindersConfig;
+      meetingBookedTagId?: string | null;
       type?: AiAgentType;
       prospectingGoal?: string;
       followupConfig?: AgentFollowupConfig;
@@ -431,6 +432,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
             onlyNewConversations: input.onlyNewConversations === true,
             ...(input.replyInBubbles !== undefined ? { replyInBubbles: input.replyInBubbles } : {}),
             ...(input.meetingReminders ? { meetingReminders: input.meetingReminders } : {}),
+            ...(input.meetingBookedTagId !== undefined ? { meetingBookedTagId: input.meetingBookedTagId } : {}),
             ...(input.followupConfig ? { followup: input.followupConfig } : {}),
             ...(input.type === "prospecting" && !input.followupConfig ? { followup: { timeZone: "America/Sao_Paulo", businessDays: [1,2,3,4,5], businessHours: { start: "08:00", end: "18:00" }, steps: [], closeAfterBusinessMinutes: 0 } } : {})
           },
@@ -488,6 +490,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
         onlyNewConversations: boolean;
         replyInBubbles: boolean;
         meetingReminders: MeetingRemindersConfig;
+        meetingBookedTagId: string | null;
         type: AiAgentType;
         prospectingGoal: string;
         followupConfig: AgentFollowupConfig;
@@ -508,7 +511,7 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
       const description = nullableTrim(input.data.description);
       const behaviorConfigPatch =
         input.data.reasoningEffort !== undefined || input.data.onlyNewConversations !== undefined || input.data.followupConfig !== undefined
-          || input.data.replyInBubbles !== undefined || input.data.meetingReminders !== undefined
+          || input.data.replyInBubbles !== undefined || input.data.meetingReminders !== undefined || input.data.meetingBookedTagId !== undefined
           ? {
               ...toRecord(existingAgent.behaviorConfig),
               ...(input.data.followupConfig ? { followup: input.data.followupConfig } : {}),
@@ -519,7 +522,8 @@ export function createAgentsService(prisma: AgentsPrismaLike) {
                 ? { onlyNewConversations: input.data.onlyNewConversations === true }
                 : {}),
               ...(input.data.replyInBubbles !== undefined ? { replyInBubbles: input.data.replyInBubbles } : {}),
-              ...(input.data.meetingReminders !== undefined ? { meetingReminders: input.data.meetingReminders } : {})
+              ...(input.data.meetingReminders !== undefined ? { meetingReminders: input.data.meetingReminders } : {}),
+              ...(input.data.meetingBookedTagId !== undefined ? { meetingBookedTagId: input.data.meetingBookedTagId } : {})
             }
           : undefined;
       const updateArgs = {
