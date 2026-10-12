@@ -25,10 +25,15 @@ import type {
   TagDto
 } from "@prymeira-talk/shared";
 import {
+  Building2,
   ChevronLeft,
   ChevronRight,
+  Clock3,
   Columns3,
+  GripVertical,
+  Mail,
   MessageSquarePlus,
+  Tag,
   Pencil,
   Plus,
   RefreshCw,
@@ -37,7 +42,7 @@ import {
   Trash2,
   Users
 } from "lucide-react";
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiAddContactToBoard,
   apiCreateBoard,
@@ -66,6 +71,7 @@ import {
 } from "../../app/api";
 import { findDuplicateStageTag, formatBoardChannelLabel, stageTagIdsByStage } from "./board-display";
 import { useRealtimeEvents } from "../inbox/useRealtimeEvents";
+import "./contacts-page.css";
 
 type ViewMode = "list" | "board";
 type BoardPanelMode = "create-board" | "edit-board" | "create-stage" | "add-contact" | "sync-rules" | null;
@@ -124,6 +130,13 @@ function contactName(contact: ContactDto) {
 function initials(contact: ContactDto) {
   const source = contact.name ?? contact.company ?? contact.phone;
   return source.slice(0, 2).toUpperCase();
+}
+
+function formatContactPhone(phone: string) {
+  const digits = phone.replace(/\D/g, "");
+  const match = /^55(\d{2})(\d{4,5})(\d{4})$/.exec(digits);
+
+  return match ? `+55 ${match[1]} ${match[2]}-${match[3]}` : phone;
 }
 
 function formatDate(value: string) {
@@ -1308,67 +1321,82 @@ export function ContactsPage() {
           <h1>Contatos</h1>
           <p className="page-header-lede">Todos os clientes e empresas com quem o time conversa.</p>
         </div>
-        <button
-          className="primary-button"
-          onClick={() => setCreateDrawerOpen(true)}
-          type="button"
-        >
-          <Plus size={16} aria-hidden="true" />
-          Novo contato
-        </button>
-      </header>
-
-      <div className="contacts-toolbar">
-        <label className="search-field">
-          <Search size={18} aria-hidden="true" />
-          <input
-            aria-label="Buscar contatos"
-            onChange={(event) => { setNextContactsCursor(null); setSearch(event.target.value); }}
-            placeholder="Buscar por nome, telefone, email ou empresa"
-            type="search"
-            value={search}
-          />
-        </label>
-        <div className="segmented-control" aria-label="Visualização de contatos">
+        <div className="module-header-actions">
+          <div className="segmented-control contacts-view-switch" aria-label="Visualização de contatos">
+            <button
+              className={viewMode === "list" ? "is-active" : ""}
+              onClick={() => setViewMode("list")}
+              type="button"
+            >
+              <Users size={16} aria-hidden="true" />
+              Lista
+            </button>
+            <button
+              className={viewMode === "board" ? "is-active" : ""}
+              onClick={() => setViewMode("board")}
+              type="button"
+            >
+              <Columns3 size={16} aria-hidden="true" />
+              Board
+            </button>
+          </div>
           <button
-            className={viewMode === "list" ? "is-active" : ""}
-            onClick={() => setViewMode("list")}
+            className="primary-button"
+            onClick={() => setCreateDrawerOpen(true)}
             type="button"
           >
-            <Users size={16} aria-hidden="true" />
-            Lista
-          </button>
-          <button
-            className={viewMode === "board" ? "is-active" : ""}
-            onClick={() => setViewMode("board")}
-            type="button"
-          >
-            <Columns3 size={16} aria-hidden="true" />
-            Board
+            <Plus size={16} aria-hidden="true" />
+            Novo contato
           </button>
         </div>
-      </div>
+      </header>
 
-      <div className="contacts-stats-row" aria-label="Resumo de contatos">
-        <span className="contacts-stat">
-          <strong>{totalContacts}</strong>
-          <span>Total</span>
-        </span>
-        <span className="contacts-stat">
-          <strong>{contactsWithEmail}</strong>
-          <span>Com email exibidos</span>
-        </span>
-        <span className="contacts-stat">
-          <strong>{recentlyUpdated}</strong>
-          <span>Atualizados exibidos (7d)</span>
-        </span>
-      </div>
+      {viewMode === "list" ? (
+        <div className="contacts-overview">
+          <label className="search-field">
+            <Search size={18} aria-hidden="true" />
+            <input
+              aria-label="Buscar contatos"
+              onChange={(event) => { setNextContactsCursor(null); setSearch(event.target.value); }}
+              placeholder="Buscar por nome, telefone, email ou empresa"
+              type="search"
+              value={search}
+            />
+          </label>
+          <div className="contacts-stats-row" aria-label="Resumo de contatos">
+            <span className="contacts-stat">
+              <span className="contacts-stat-icon" aria-hidden="true"><Users size={16} /></span>
+              <span>
+                <strong>{totalContacts.toLocaleString("pt-BR")}</strong>
+                <small>Contatos</small>
+              </span>
+            </span>
+            <span className="contacts-stat" title="Conta só os contatos que aparecem na lista abaixo">
+              <span className="contacts-stat-icon" aria-hidden="true"><Mail size={16} /></span>
+              <span>
+                <strong>{contactsWithEmail}</strong>
+                <small>Com email nos exibidos</small>
+              </span>
+            </span>
+            <span className="contacts-stat" title="Conta só os contatos que aparecem na lista abaixo">
+              <span className="contacts-stat-icon" aria-hidden="true"><Clock3 size={16} /></span>
+              <span>
+                <strong>{recentlyUpdated}</strong>
+                <small>Atualizados em 7 dias</small>
+              </span>
+            </span>
+            <span className="contacts-stat" title="Conta só os contatos que aparecem na lista abaixo">
+              <span className="contacts-stat-icon" aria-hidden="true"><Building2 size={16} /></span>
+              <span>
+                <strong>{contactsWithCompany}</strong>
+                <small>Com empresa nos exibidos</small>
+              </span>
+            </span>
+          </div>
+        </div>
+      ) : null}
 
-      <section className="module-panel" style={{ margin: '0 8px 8px', borderRadius: 'var(--radius-lg)' }}>
-            <div className="panel-title-row">
-              <h2>{viewMode === "list" ? "Lista de contatos" : "Board de contatos"}</h2>
-              <span>{contactsWithCompany} exibidos com empresa</span>
-            </div>
+      <section className={`contacts-surface ${viewMode === "board" ? "is-board" : "is-list"}`}>
 
             {isLoading ? <p className="list-note">Carregando contatos...</p> : null}
             {error ? <p className="error-note">{error}</p> : null}
@@ -1390,7 +1418,7 @@ export function ContactsPage() {
                   <span role="columnheader">Telefone</span>
                   <span role="columnheader">Empresa</span>
                   <span role="columnheader">Atualizado</span>
-                  <span role="columnheader">Acao</span>
+                  <span role="columnheader" className="sr-only-cell">Ação</span>
                 </div>
                 {contacts.map((contact) => (
                   <button
@@ -1411,9 +1439,18 @@ export function ContactsPage() {
                         <small>{contact.email ?? "Sem email"}</small>
                       </span>
                     </span>
-                    <span role="cell">{contact.phone}</span>
-                    <span role="cell">{contact.company ?? "Sem empresa"}</span>
-                    <span role="cell">{formatDate(contact.updatedAt)}</span>
+                    <span role="cell" className="contacts-phone">{formatContactPhone(contact.phone)}</span>
+                    <span role="cell">
+                      {contact.company ? (
+                        <span className="contacts-company-chip">
+                          <Building2 size={13} aria-hidden="true" />
+                          {contact.company}
+                        </span>
+                      ) : (
+                        <span className="contacts-muted">Sem empresa</span>
+                      )}
+                    </span>
+                    <span role="cell" className="contacts-muted">{formatDate(contact.updatedAt)}</span>
                     <span role="cell" className="row-action">
                       <Pencil size={15} aria-hidden="true" />
                     </span>
@@ -1426,35 +1463,45 @@ export function ContactsPage() {
             {viewMode === "board" ? (
               <div className="board-view">
                 <div className="board-command-bar">
-                  <label className="board-active-select">
-                    <span>Board ativo</span>
-                    <select
-                      disabled={isBoardLoading || boards.length === 0}
-                      onChange={(event) => setSelectedBoardId(event.target.value)}
-                      value={selectedBoardId ?? ""}
-                    >
-                      {boards.length === 0 ? <option value="">Sem board</option> : null}
-                      {boards.map((board) => (
-                        <option key={board.id} value={board.id}>
-                          {board.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <div className="board-identity">
+                    <label className="board-active-select">
+                      <span className="sr-only">Board ativo</span>
+                      <Columns3 size={18} aria-hidden="true" />
+                      <select
+                        disabled={isBoardLoading || boards.length === 0}
+                        onChange={(event) => setSelectedBoardId(event.target.value)}
+                        value={selectedBoardId ?? ""}
+                      >
+                        {boards.length === 0 ? <option value="">Sem board</option> : null}
+                        {boards.map((board) => (
+                          <option key={board.id} value={board.id}>
+                            {board.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
 
-                  <div className="board-rule-summary" aria-label="Regras do board selecionado">
-                    {selectedBoard?.channels.length ? (
-                      selectedBoard.channels.map((channel) => (
-                        <span className="board-rule-chip" key={channel.id}>
-                          {formatBoardChannelLabel(channel)}
+                    <div className="board-rule-summary" aria-label="Regras do board selecionado">
+                      {selectedBoard?.channels.length ? (
+                        selectedBoard.channels.map((channel) => (
+                          <span className="board-rule-chip" key={channel.id}>
+                            {formatBoardChannelLabel(channel)}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="board-rule-chip is-muted">Sem canais</span>
+                      )}
+                      {selectedBoard?.isPrimaryPipeline ? (
+                        <span className="board-rule-chip is-primary">Funil principal</span>
+                      ) : null}
+                      {loadedBoardContacts ? (
+                        <span className="board-rule-chip is-count">
+                          <Users size={13} aria-hidden="true" />
+                          {loadedBoardContacts.memberships.length}{" "}
+                          {loadedBoardContacts.memberships.length === 1 ? "contato" : "contatos"}
                         </span>
-                      ))
-                    ) : (
-                      <span className="board-rule-chip is-muted">Sem canais</span>
-                    )}
-                    {selectedBoard?.isPrimaryPipeline ? (
-                      <span className="board-rule-chip is-primary">Funil principal</span>
-                    ) : null}
+                      ) : null}
+                    </div>
                   </div>
 
                   <div className="board-command-actions" aria-label="Acoes do board">
@@ -1497,19 +1544,6 @@ export function ContactsPage() {
                       Nova etapa
                     </button>
                     <button
-                      className={boardPanelMode === "add-contact" ? "is-active" : ""}
-                      disabled={!selectedBoard || boardStages.length === 0}
-                      onClick={() =>
-                        setBoardPanelMode((current) =>
-                          current === "add-contact" ? null : "add-contact"
-                        )
-                      }
-                      type="button"
-                    >
-                      <Users size={16} aria-hidden="true" />
-                      Adicionar contato
-                    </button>
-                    <button
                       className={boardPanelMode === "sync-rules" ? "is-active" : ""}
                       disabled={!selectedBoard}
                       onClick={() =>
@@ -1521,6 +1555,19 @@ export function ContactsPage() {
                     >
                       <RefreshCw size={16} aria-hidden="true" />
                       Sincronizar
+                    </button>
+                    <button
+                      className={`is-primary ${boardPanelMode === "add-contact" ? "is-active" : ""}`}
+                      disabled={!selectedBoard || boardStages.length === 0}
+                      onClick={() =>
+                        setBoardPanelMode((current) =>
+                          current === "add-contact" ? null : "add-contact"
+                        )
+                      }
+                      type="button"
+                    >
+                      <Users size={16} aria-hidden="true" />
+                      Adicionar contato
                     </button>
                   </div>
                 </div>
@@ -2012,53 +2059,68 @@ export function ContactsPage() {
                         const memberships = membershipsByStage.get(stage.id) ?? [];
 
                         return (
-                          <section className="board-column" key={stage.id}>
+                          <section
+                            className="board-column"
+                            key={stage.id}
+                            style={{ "--stage-color": stage.color } as CSSProperties}
+                          >
                             <header>
-                              <div className="stage-rich-heading">
+                              <div className="stage-title-row">
                                 <span
                                   className="stage-color-swatch"
                                   style={{ backgroundColor: stage.color }}
                                   aria-hidden="true"
                                 />
-                                <div>
-                                  <strong>{stage.name}</strong>
-                                  <div className="stage-tag-chips">
-                                    {stage.tagTriggers.length > 0 ? (
-                                      stage.tagTriggers.map((tag) => (
-                                        <span key={tag.id}>{tag.name}</span>
-                                      ))
-                                    ) : (
-                                      <span className="is-muted">Manual</span>
-                                    )}
-                                  </div>
+                                <strong title={stage.name}>{stage.name}</strong>
+                                <span className="stage-count-pill">{memberships.length}</span>
+                                <div className="stage-actions" aria-label={`Acoes da etapa ${stage.name}`}>
+                                  <button
+                                    aria-label="Mover etapa para esquerda"
+                                    disabled={stageIndex === 0 || isBoardSaving}
+                                    onClick={() => void handleReorderStage(stage, -1)}
+                                    title="Mover etapa para a esquerda"
+                                    type="button"
+                                  >
+                                    <ChevronLeft size={14} aria-hidden="true" />
+                                  </button>
+                                  <button
+                                    aria-label="Mover etapa para direita"
+                                    disabled={stageIndex === boardStages.length - 1 || isBoardSaving}
+                                    onClick={() => void handleReorderStage(stage, 1)}
+                                    title="Mover etapa para a direita"
+                                    type="button"
+                                  >
+                                    <ChevronRight size={14} aria-hidden="true" />
+                                  </button>
+                                  <button
+                                    aria-label="Apagar etapa"
+                                    disabled={isBoardSaving || memberships.length > 0}
+                                    onClick={() => void handleDeleteStage(stage)}
+                                    title={
+                                      memberships.length > 0
+                                        ? "Tire os contatos da etapa para poder apagar"
+                                        : "Apagar etapa"
+                                    }
+                                    type="button"
+                                  >
+                                    <Trash2 size={14} aria-hidden="true" />
+                                  </button>
                                 </div>
                               </div>
-                              <span className="stage-count-pill">{memberships.length}</span>
-                              <div className="stage-actions" aria-label={`Acoes da etapa ${stage.name}`}>
-                                <button
-                                  aria-label="Mover etapa para esquerda"
-                                  disabled={stageIndex === 0 || isBoardSaving}
-                                  onClick={() => void handleReorderStage(stage, -1)}
-                                  type="button"
-                                >
-                                  <ChevronLeft size={15} aria-hidden="true" />
-                                </button>
-                                <button
-                                  aria-label="Mover etapa para direita"
-                                  disabled={stageIndex === boardStages.length - 1 || isBoardSaving}
-                                  onClick={() => void handleReorderStage(stage, 1)}
-                                  type="button"
-                                >
-                                  <ChevronRight size={15} aria-hidden="true" />
-                                </button>
-                                <button
-                                  aria-label="Apagar etapa"
-                                  disabled={isBoardSaving || memberships.length > 0}
-                                  onClick={() => void handleDeleteStage(stage)}
-                                  type="button"
-                                >
-                                  <Trash2 size={15} aria-hidden="true" />
-                                </button>
+                              <div className="stage-tag-chips">
+                                {stage.tagTriggers.length > 0 ? (
+                                  stage.tagTriggers.map((tag) => (
+                                    <span
+                                      key={tag.id}
+                                      title={`Entra aqui quando o contato recebe a tag "${tag.name}"`}
+                                    >
+                                      <Tag size={11} aria-hidden="true" />
+                                      {tag.name}
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span className="is-muted">Etapa manual</span>
+                                )}
                               </div>
                             </header>
                             <SortableContext
@@ -2067,47 +2129,75 @@ export function ContactsPage() {
                             >
                               <BoardStageDropZone stageId={stage.id}>
                                 {memberships.length === 0 ? (
-                                  <p className="board-empty-note">Sem contatos nesta etapa.</p>
+                                  <p className="board-empty-note">Arraste um contato para cá</p>
                                 ) : null}
                                 {memberships.map((membership) => (
                                   <SortableBoardContact key={membership.id} membership={membership}>
                                     <button
                                       className="board-contact-body"
-                                      onClick={() => setSelectedContactId(membership.contactId)}
+                                      onClick={() => {
+                                        setSelectedContactId(membership.contactId);
+                                        openDrawer(membership.contact);
+                                      }}
                                       type="button"
                                     >
-                                      <strong>{contactName(membership.contact)}</strong>
-                                      <span>{membership.contact.company ?? membership.contact.phone}</span>
+                                      <ContactAvatar
+                                        contactId={membership.contactId}
+                                        name={contactName(membership.contact)}
+                                        className="contact-avatar"
+                                      />
+                                      <span className="board-contact-text">
+                                        <strong>{contactName(membership.contact)}</strong>
+                                        {membership.contact.company ? (
+                                          <span className="board-contact-company">
+                                            <Building2 size={12} aria-hidden="true" />
+                                            {membership.contact.company}
+                                          </span>
+                                        ) : null}
+                                        <span className="board-contact-phone">
+                                          {formatContactPhone(membership.contact.phone)}
+                                        </span>
+                                      </span>
                                     </button>
-                                    <div className="board-card-actions" aria-label="Mover contato">
-                                      <button
-                                        aria-label="Mover para etapa anterior"
-                                        disabled={stageIndex === 0 || isBoardLoading || isBoardSaving}
-                                        onClick={() => void handleMoveMembership(membership, -1)}
-                                        type="button"
-                                      >
-                                        <ChevronLeft size={16} aria-hidden="true" />
-                                      </button>
-                                      <button
-                                        aria-label="Mover para proxima etapa"
-                                        disabled={
-                                          stageIndex === boardStages.length - 1 ||
-                                          isBoardLoading ||
-                                          isBoardSaving
-                                        }
-                                        onClick={() => void handleMoveMembership(membership, 1)}
-                                        type="button"
-                                      >
-                                        <ChevronRight size={16} aria-hidden="true" />
-                                      </button>
-                                      <button
-                                        aria-label="Remover do board"
-                                        disabled={isBoardLoading || isBoardSaving}
-                                        onClick={() => void handleRemoveMembership(membership)}
-                                        type="button"
-                                      >
-                                        <Trash2 size={16} aria-hidden="true" />
-                                      </button>
+                                    <div className="board-card-footer">
+                                      <span className="board-card-meta" title="Última mudança no board">
+                                        <GripVertical size={13} aria-hidden="true" />
+                                        {formatDate(membership.updatedAt)}
+                                      </span>
+                                      <div className="board-card-actions" aria-label="Mover contato">
+                                        <button
+                                          aria-label="Mover para etapa anterior"
+                                          disabled={stageIndex === 0 || isBoardLoading || isBoardSaving}
+                                          onClick={() => void handleMoveMembership(membership, -1)}
+                                          title="Mover para a etapa anterior"
+                                          type="button"
+                                        >
+                                          <ChevronLeft size={14} aria-hidden="true" />
+                                        </button>
+                                        <button
+                                          aria-label="Mover para proxima etapa"
+                                          disabled={
+                                            stageIndex === boardStages.length - 1 ||
+                                            isBoardLoading ||
+                                            isBoardSaving
+                                          }
+                                          onClick={() => void handleMoveMembership(membership, 1)}
+                                          title="Mover para a próxima etapa"
+                                          type="button"
+                                        >
+                                          <ChevronRight size={14} aria-hidden="true" />
+                                        </button>
+                                        <button
+                                          aria-label="Remover do board"
+                                          className="is-danger"
+                                          disabled={isBoardLoading || isBoardSaving}
+                                          onClick={() => void handleRemoveMembership(membership)}
+                                          title="Remover do board"
+                                          type="button"
+                                        >
+                                          <Trash2 size={14} aria-hidden="true" />
+                                        </button>
+                                      </div>
                                     </div>
                                   </SortableBoardContact>
                                 ))}
@@ -2120,10 +2210,20 @@ export function ContactsPage() {
                     <DragOverlay>
                       {activeBoardMembership ? (
                         <article className="board-contact board-contact-overlay">
-                          <strong>{contactName(activeBoardMembership.contact)}</strong>
-                          <span>
-                            {activeBoardMembership.contact.company ?? activeBoardMembership.contact.phone}
-                          </span>
+                          <div className="board-contact-body">
+                            <ContactAvatar
+                              contactId={activeBoardMembership.contactId}
+                              name={contactName(activeBoardMembership.contact)}
+                              className="contact-avatar"
+                            />
+                            <span className="board-contact-text">
+                              <strong>{contactName(activeBoardMembership.contact)}</strong>
+                              <span className="board-contact-phone">
+                                {activeBoardMembership.contact.company ??
+                                  formatContactPhone(activeBoardMembership.contact.phone)}
+                              </span>
+                            </span>
+                          </div>
                         </article>
                       ) : null}
                     </DragOverlay>
