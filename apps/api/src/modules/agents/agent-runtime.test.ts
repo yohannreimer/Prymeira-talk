@@ -2638,6 +2638,37 @@ it("continues after a material answer without requiring a document for its own p
       workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation"
     });
 
+    it.each(["booked", "unavailable", "failed", "no_permission", "unapproved_tag", "no_booking"])(
+      "applies the configured Kanban tag only after an authorized confirmed booking (%s)", async (scenario) => {
+        const prisma = schedulingPrisma();
+        const tag = baseAgent.allowedTags[0]!.tag;
+        vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
+          ...baseAgent,
+          behaviorConfig: { meetingBookedTagId: scenario === "unapproved_tag" ? "outside-agent-tags" : tag.id },
+          allowedActions: ["send_message", "create_internal_note", "request_handoff", "schedule_meeting", ...(scenario === "no_permission" ? [] : ["add_tag"])]
+        });
+        const meetingScheduler = buildScheduler();
+        if (scenario === "unavailable") meetingScheduler.book.mockResolvedValue({ status: "unavailable", reason: "slot_taken", availableSlots: [slot] });
+        if (scenario === "failed") meetingScheduler.book.mockRejectedValue(new Error("Calendar unavailable"));
+        const boardRules = { applyBoardRulesForConversationTags: vi.fn().mockResolvedValue({}) };
+        const provider = buildProvider({ confidence: 0.9, reply: "Fechado!", handoff: { required: false, reason: null }, actions: [
+          ...(scenario === "no_booking" ? [] : [{ type: "schedule_meeting", startsAt: slot.startsAt }]),
+          // Model inference (including a supported alias) cannot preempt the Calendar result.
+          ...(scenario === "unapproved_tag" ? [] : [{ type: "add_contact_tag", tagName: tag.name }])
+        ] });
+        await run(createAgentRuntime({ prisma, provider, meetingScheduler, boardRules }));
+        if (scenario === "booked") {
+          expect(prisma.conversationTag.upsert).toHaveBeenCalledTimes(1);
+          expect(prisma.conversationTag.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ conversationId: ids.conversation, tagId: tag.id }) }));
+          expect(boardRules.applyBoardRulesForConversationTags).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: ids.workspace, conversationId: ids.conversation, confirmedMeetingTagId: tag.id }));
+          expect(meetingScheduler.book.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(prisma.conversationTag.upsert).mock.invocationCallOrder[0]!);
+        } else {
+          expect(prisma.conversationTag.upsert).not.toHaveBeenCalled();
+          expect(boardRules.applyBoardRulesForConversationTags).not.toHaveBeenCalled();
+        }
+      }
+    );
+
     it("gives the model free slots and books the chosen one with the Meet link in the reply", async () => {
       const prisma = schedulingPrisma();
       const meetingScheduler = buildScheduler();

@@ -62,6 +62,7 @@ const createAgentBodySchema = z.object({
   onlyNewConversations: z.boolean().optional(),
   replyInBubbles: z.boolean().optional(),
   meetingReminders: meetingRemindersConfigSchema.optional(),
+  meetingBookedTagId: uuidSchema.nullable().optional(),
   systemPrompt: z.string().trim().min(10).max(12000),
   allowedActions: z.array(allowedActionSchema).optional(),
   allowedTagIds: z.array(uuidSchema).max(100).optional()

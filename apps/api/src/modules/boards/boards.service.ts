@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import type {
   ChannelProvider,
   ContactBoardMoveSource,
@@ -331,10 +331,8 @@ export function createBoardsService(prisma: PrismaLike) {
             channelIds.length > 0
               ? {
                   createMany: {
-                    data: channelIds.map((channelId) => ({
-                      workspaceId: input.workspaceId,
-                      channelId
-                    })),
+                    // The parent relation supplies workspaceId and boardId.
+                    data: channelIds.map((channelId) => ({ channelId } satisfies Prisma.ContactBoardChannelCreateManyBoardInput)),
                     skipDuplicates: true
                   }
                 }

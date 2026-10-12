@@ -3828,6 +3828,7 @@ export async function apiCreateAgent(
     onlyNewConversations?: boolean;
     replyInBubbles?: boolean;
     meetingReminders?: MeetingRemindersConfig;
+    meetingBookedTagId?: string | null;
     type?: "attendance" | "prospecting";
     prospectingGoal?: string;
     followupConfig?: AgentFollowupConfig;
@@ -3859,6 +3860,7 @@ export async function apiUpdateAgent(
     onlyNewConversations: boolean;
     replyInBubbles: boolean;
     meetingReminders: MeetingRemindersConfig;
+    meetingBookedTagId: string | null;
     type: "attendance" | "prospecting";
     prospectingGoal: string;
     followupConfig: AgentFollowupConfig;

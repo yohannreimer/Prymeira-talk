@@ -15,6 +15,8 @@ import {
 } from "./ai-provider-settings.js";
 import {
   executeAgentActions,
+  normalizeActionType,
+  normalizeTagName,
   type AgentToolExecutionResult,
   type AgentToolExecutorPrismaLike
 } from "./agent-tool-executor.js";
@@ -228,6 +230,7 @@ type AgentRuntimeBoardRules = {
   applyBoardRulesForConversationTags(input: {
     workspaceId: string;
     conversationId: string;
+    confirmedMeetingTagId?: string;
     publish?: (event: unknown) => void;
   }): Promise<unknown>;
 };
@@ -1372,6 +1375,22 @@ export function createAgentRuntime(input: {
           meetingResult = booking.result;
           contextSummary = { ...contextSummary, meetingBooking: booking.result.status === "completed" ? "booked" : booking.result.reason ?? "skipped" };
         }
+        // This tag is controlled by the confirmed Calendar result, never by model inference.
+        const bookedTagId = asRecord(agent.behaviorConfig)?.meetingBookedTagId;
+        const bookedTag = allowedTags.find((tag) => tag.id === bookedTagId);
+        if (bookedTag) {
+          providerOutput = {
+            ...providerOutput,
+            actions: providerOutput.actions.filter((action) =>
+              normalizeActionType(action.type) !== "add_tag" ||
+              (firstString(action, ["tagId", "id"]) !== bookedTag.id &&
+                normalizeTagName(firstString(action, ["tagName", "name", "tag", "label"]) ?? "") !== normalizeTagName(bookedTag.name))
+            )
+          };
+          if (meetingResult?.status === "completed" && allowedActions.includes("add_tag")) {
+            providerOutput.actions.push({ type: "add_tag", tagId: bookedTag.id });
+          }
+        }
         const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
         const status: AgentRunStatus = handoffReason ? "handoff_requested" : "completed";
         const outboundReply = unreadableImageRequiresHandoff
@@ -1402,7 +1421,8 @@ export function createAgentRuntime(input: {
             )
           ]
         };
-        await applyBoardRulesForActionResults(runInput.workspaceId, actionResults);
+        await applyBoardRulesForActionResults(runInput.workspaceId, actionResults,
+          meetingResult?.status === "completed" && allowedActions.includes("add_tag") ? bookedTag?.id : undefined);
 
         const pendingAttachments =
           !handoffReason && allowedActions.includes("send_attachment")
@@ -1735,7 +1755,8 @@ export function createAgentRuntime(input: {
 
   async function applyBoardRulesForActionResults(
     workspaceId: string,
-    actionResults: AgentToolExecutionResult[]
+    actionResults: AgentToolExecutionResult[],
+    confirmedMeetingTagId?: string
   ) {
     if (!input.boardRules) {
       return;
@@ -1756,6 +1777,7 @@ export function createAgentRuntime(input: {
       await input.boardRules.applyBoardRulesForConversationTags({
         workspaceId,
         conversationId,
+        ...(confirmedMeetingTagId ? { confirmedMeetingTagId } : {}),
         publish: (event) => input.realtime?.publish(event)
       });
     }

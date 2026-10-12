@@ -334,7 +334,6 @@ describe("boards service", () => {
             createMany: {
               data: [
                 {
-                  workspaceId: "workspace_a",
                   channelId: "00000000-0000-4000-8000-000000000060"
                 }
               ],
