@@ -464,6 +464,31 @@ describe.skipIf(!url)('persistent outbound intents', () => {
         expect(new Set(identities.map(i => i.messageId)).size).toBe(2);
         expect(identities.every(i => i.tupleHash === '0'.repeat(64))).toBe(true);
     });
+    it('uses the audited authority with retired history and rejects a newly competing claimant', async () => {
+        const f = await fixture(), first = await reserve(f);
+        await tx(t => api.cancelPreparedInTransaction(t, { workspaceId: f.source.workspaceId,
+            channelId: f.source.channelId, intentId: first.intent!.id }, async () => true));
+        const oldContact = await db.contact.create({ data: { workspaceId: f.source.workspaceId, phone: '700002@lid' } });
+        const retired = await db.conversation.create({ data: { workspaceId: f.source.workspaceId,
+            channelId: f.source.channelId, contactId: oldContact.id, aiControlStatus: 'human_controlled',
+            retiredIntoConversationId: f.conversation.id } });
+        await db.canonicalChatMember.create({ data: { workspaceId: f.source.workspaceId,
+            channelId: f.source.channelId, chatId: first.intent!.chatId, conversationId: retired.id, source: 'legacy' } });
+        await db.canonicalChatAuthorityResolution.create({ data: { workspaceId: f.source.workspaceId,
+            channelId: f.source.channelId, chatId: first.intent!.chatId, conversationId: f.conversation.id,
+            memberConversationIds: [retired.id, f.conversation.id].sort(), resolvedBy: f.user.id } });
+        const accepted = await reserve(f, { ...f.request, origin: { ...f.request.origin, requestKey: 'resolved' } });
+        expect(accepted.intent!.state).toBe('prepared');
+        expect((await begin(f, accepted.intent!.id)).kind).toBe('dispatch');
+        expect(await db.conversation.findUnique({ where: { id: retired.id } })).toMatchObject({ aiControlStatus: 'human_controlled' });
+        const extraContact = await db.contact.create({ data: { workspaceId: f.source.workspaceId, phone: '700003@lid' } });
+        const extra = await db.conversation.create({ data: { workspaceId: f.source.workspaceId, channelId: f.source.channelId, contactId: extraContact.id } });
+        await db.canonicalChatMember.create({ data: { workspaceId: f.source.workspaceId, channelId: f.source.channelId,
+            chatId: first.intent!.chatId, conversationId: extra.id, source: 'new-claimant' } });
+        const blocked = await reserve(f, { ...f.request, origin: { ...f.request.origin, requestKey: 'new-claimant' } });
+        expect(blocked.intent!.state).toBe('review');
+        expect((await begin(f, blocked.intent!.id)).kind).toBe('not_prepared');
+    });
     it('stale authority and source session cannot cross the I/O frontier', async () => {
         const f = await fixture(), r = await reserve(f);
         await db.canonicalChat.update({ where: { id: r.intent!.chatId }, data: { revision: { increment: 1 } } });

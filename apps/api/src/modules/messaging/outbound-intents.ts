@@ -127,7 +127,18 @@ async function reserveChat(tx: Tx, scope: Scope, conversationId: string, destina
         await tx.canonicalChatMember.upsert({
             where: { workspaceId_channelId_chatId_conversationId: { ...scope, chatId: chat.id, conversationId: id } }, create: { ...scope, chatId: chat.id, conversationId: id, source: 'persisted_outbound_destination' }, update: {}
         });
-    const state = ids.size === 1 && address.state === 'active' ? 'active' : 'review', operationConversationId = state === 'active' ? conversationId : null;
+    // Incoming messages already honor this audited operator resolution. Outbound
+    // reservation must use the same authority, keeping retired members for history.
+    const resolution = ids.size > 1 ? await tx.canonicalChatAuthorityResolution.findUnique({
+        where: { workspaceId_channelId_chatId: { ...scope, chatId: chat.id } }
+    }) : null;
+    const resolvedFor = Array.isArray(resolution?.memberConversationIds)
+        ? new Set(resolution!.memberConversationIds as string[]) : new Set<string>();
+    const resolved = !!resolution && ids.has(resolution.conversationId)
+        && ids.size === resolvedFor.size && [...ids].every(id => resolvedFor.has(id));
+    const state = (ids.size === 1 || resolved) && address.state === 'active' ? 'active' : 'review';
+    const operationConversationId = state === 'active'
+        ? resolved ? resolution!.conversationId : conversationId : null;
     if (chat.state !== state || chat.operationConversationId !== operationConversationId)
         chat = await tx.canonicalChat.update({
             where: { id: chat.id }, data: {
