@@ -66,7 +66,7 @@ export function evaluateAgentLoopGuard(input: {
     const text = current.body;
     const numberedOptions = text.match(/(?:^|[\n;:])\s*\d{1,2}\s*[-.):–]\s*[^\s;]+/gm) ?? [];
     const menu = numberedOptions.length >= 2 && /digite|selecione|escolha|op[cç][aã]o/i.test(text);
-    const waiting = /(?:aguard[eao]|aguardando|enquanto voc[eê] aguarda)[\s\S]{0,100}atendimento|(?:pessoal|equipe)[\s\S]{0,50}(?:ir[aá]|vai)[\s\S]{0,20}atend[eê]/i.test(text);
+    const waiting = /(?:aguard[eao]|aguardando|enquanto voc[eê] aguarda)[\s\S]{0,100}atendimento|(?:pessoal|equipe)[\s\S]{0,50}(?:ir[aá]|vai)[\s\S]{0,20}atend[eê]/i.test(text) || (/hor[aá]rio de atendimento/i.test(text) && /responderemos (?:assim que|o mais breve)|aguarde que responderemos/i.test(text));
     if (menu || waiting) return {
       triggered: true, guard: menu ? 'automated_menu' : 'waiting_reception',
       inboundCount: inbound.length, aiOutboundCount: aiOutbound.length
