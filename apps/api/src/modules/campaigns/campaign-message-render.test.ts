@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { findUnresolvedVariables, renderCampaignMessage } from "./campaign-message-render.js";
+import { campaignCompanyName, findUnresolvedVariables, renderCampaignMessage } from "./campaign-message-render.js";
 
 const contact = { phone: "554799999999", fields: { empresa: "Metalpress" } };
 
 describe("renderCampaignMessage", () => {
   it('usa o nome comercial sem a lista de produtos do Maps', () => {
+    expect(campaignCompanyName('Arsul Equipamentos Pneumáticos e Hidráulicos Ltda')).toBe('Arsul Equipamentos Pneumáticos e Hidráulicos');
+    expect(campaignCompanyName('Padaria Sol - ME')).toBe('Padaria Sol');
+    expect(campaignCompanyName('Metal S/A')).toBe('Metal');
+    expect(campaignCompanyName('Call Me')).toBe('Call Me');
     expect(renderCampaignMessage({ template: 'Quem cuida disso aí na {{empresa}}?',
       contact: { phone: contact.phone, fields: { empresa: 'Trevo Metais | Aços | Metais | Tubo | Corrimão' } }, firstName: null }))
       .toBe('Quem cuida disso aí na Trevo Metais?');

@@ -1189,7 +1189,8 @@ export function createAgentRuntime(input: {
             ? selectRequestedCatalog(effectiveText, approvedAttachments)
             : null;
         let replyPreflight: AgentReplyPreflightResult | undefined;
-        let modelGeneratedReply = false;
+        // What the model itself wrote before handoff normalization fills in an acknowledgement.
+        let modelReply: string | null = null;
 
         // The reply preflight plans quote-desk steps (stock, made-to-order, catalog) and
         // has no notion of cold outreach, so prospecting replies skip it.
@@ -1284,7 +1285,6 @@ export function createAgentRuntime(input: {
           if (meetingScheduling) {
             contextSummary = { ...contextSummary, meetingSlotsOffered: meetingScheduling.availableSlots.length, meetingAlreadyBooked: Boolean(meetingScheduling.bookedMeeting) };
           }
-          modelGeneratedReply = true;
           providerOutput = await runProvider.generate({
             reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
             model: runModel,
@@ -1299,6 +1299,7 @@ export function createAgentRuntime(input: {
               ...(meetingScheduling ? { meetingScheduling } : {})
             }
           });
+          modelReply = providerOutput.reply?.trim() || null;
         }
 
         if (
@@ -1428,19 +1429,17 @@ export function createAgentRuntime(input: {
           }
         }
         const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
-        // A lead who reached the goal (or asked for a person) hears the next step from
-        // the agent itself; only uncertain or guard-driven transfers stay silent.
-        const prospectingHandoffReply = Boolean(prospecting && handoffReason && modelGeneratedReply &&
-          providerOutput.confidence >= confidenceThreshold);
+        // A lead who reached the goal hears the next step the agent itself wrote. Silent
+        // transfers (refusals, reply=null), uncertain ones and guard-driven ones stay silent.
+        const prospectingHandoffReply = Boolean(prospecting && handoffReason && modelReply &&
+          modelReply !== HANDOFF_ACKNOWLEDGEMENT && providerOutput.confidence >= confidenceThreshold);
         if (prospectingHandoffReply) deferredProspectingHandoff = handoffReason;
         const status: AgentRunStatus = handoffReason ? "handoff_requested" : "completed";
         const outboundReply = unreadableImageRequiresHandoff
           ? null
           : handoffReason
             ? contextualHandoff && providerOutput.handoff.required && providerOutput.confidence >= confidenceThreshold
-              ? prospecting && (!providerOutput.reply || providerOutput.reply === HANDOFF_ACKNOWLEDGEMENT)
-                ? PROSPECTING_HANDOFF_ACKNOWLEDGEMENT
-                : providerOutput.reply ?? HANDOFF_ACKNOWLEDGEMENT
+              ? providerOutput.reply ?? HANDOFF_ACKNOWLEDGEMENT
               : HANDOFF_ACKNOWLEDGEMENT
             : providerOutput.reply;
 
@@ -2223,8 +2222,6 @@ async function sendAgentAttachmentToProvider(
     caption: attachment.caption ?? undefined
   });
 }
-
-const PROSPECTING_HANDOFF_ACKNOWLEDGEMENT = "Perfeito! Vou pedir para alguém do nosso time continuar com você por aqui.";
 
 function getHandoffReason(output: AgentOutput, confidenceThreshold: number) {
   const requestHandoffAction = output.actions.find((action) => action.type === "request_handoff");

@@ -327,6 +327,20 @@ describe.skipIf(!safe).sequential('campaign prospecting with disposable PostgreS
     expect((await prisma.conversation.findUniqueOrThrow({where:{id:row.conversationId}})).aiControlStatus).toBe('human_controlled');
   });
 
+  it('keeps a silent transfer silent when the agent returns no reply',async()=>{
+    const row=await confirmed();const response=await inbound(row.conversationId);
+    await prisma.message.update({where:{id:response.message.id},data:{body:'ah entendi, mas muito obrigada'}});
+    const scheduler=createAgentReplyScheduler({prisma,agentRuntime:{runForMessage:vi.fn()}});
+    await scheduler.scheduleActiveSessionForMessage({workspaceId,conversationId:row.conversationId,messageId:response.message.id});
+    const sendText=vi.fn(async()=>({providerMessageId:randomUUID(),raw:{}}));
+    const runtime=createAgentRuntime({prisma:prisma as unknown as Parameters<typeof createAgentRuntime>[0]['prisma'],
+      provider:{generate:vi.fn(async()=>({confidence:0.95,reply:null,actions:[{type:'request_handoff',reason:'Recusa educada.'}],handoff:{required:true,reason:'Recusa educada.'}}))},
+      evolution:{mode:'real',client:{sendText}} as Parameters<typeof createAgentRuntime>[0]['evolution']});
+    expect((await runtime.runForMessage({workspaceId,conversationId:row.conversationId,agentId,messageId:response.message.id,trigger:'automation'})).status).toBe('handoff_requested');
+    expect(sendText).not.toHaveBeenCalled();
+    expect((await origin()).status).toBe('stopped');
+  });
+
   it('answers a price question from a lead instead of transferring it silently',async()=>{
     const row=await confirmed();
     const response=await inbound(row.conversationId);

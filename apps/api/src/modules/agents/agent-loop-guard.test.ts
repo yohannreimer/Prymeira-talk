@@ -20,7 +20,13 @@ describe("agent loop guard", () => {
     ['Por favor, digite a opção desejada:\n1 - Vendas\n2 - Suporte\n0 - Finalizar', 'automated_menu'],
     ['Por favor, escolha: 1 - Vendas; 2 - Suporte', 'automated_menu'],
     ['Enquanto você aguarda o atendimento, veja nosso catálogo.', 'waiting_reception'],
-    ['Só um minuto que o pessoal já irá atendê-lo, tá bem?', 'waiting_reception']
+    ['Só um minuto que o pessoal já irá atendê-lo, tá bem?', 'waiting_reception'],
+    ['Por favor, digite o número da opção desejada para prosseguir com seu atendimento 1 - Vendas 2 - Suporte Técnico 0 - Finalizar', 'automated_menu'],
+    ['Opção inválida! Favor digite uma das opções acima.', 'automated_menu'],
+    ['Seja bem-vindo ao sistema de atendimento do Grupo JAV.', 'automated_menu'],
+    ['Tecville Soluções Industriais agradece seu contato. Como podemos ajudar? Enquanto você aguarda o atendimento, que tal dar uma olhadinha em nossas plataformas digitais?', 'waiting_reception'],
+    ['Olá, Sou a Tatiani, em que posso lhe ajudar? As mensagens recebidas pelo whats são respondidas por ordem de recebimento. Por isso, envie sua mensagem e aguarde que responderemos o mais breve possivel! Horário de atendimento das 08:00 às 12:00', 'waiting_reception'],
+    ['Agradecemos seu contato. O horário de atendimento é de segunda a sexta-feira das 7:30 às 12:00. Responderemos assim que possível.', 'waiting_reception']
   ])('silently pauses explicit reception only with opt-in: %s', (text, guard) => {
     const messages = [inbound(text, 1)];
     expect(evaluateAgentLoopGuard({ messages, now })).toEqual({ triggered: false });
