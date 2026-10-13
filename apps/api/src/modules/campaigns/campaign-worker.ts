@@ -13,7 +13,7 @@ function cadenceFrom(value: unknown): CampaignCadence {
 
 export function createCampaignWorker(input: {
   prisma: PrismaClient;
-  evolution: Pick<EvolutionClient, "sendText" | "checkWhatsappNumbersAvailability">;
+  evolution: Pick<EvolutionClient, "sendText" | "sendCampaignText" | "checkWhatsappNumbersAvailability">;
   pollMs?: number;
   now?: () => Date;
   draw?: Draw;
@@ -118,10 +118,14 @@ export function createCampaignWorker(input: {
     // The in-flight lease was persisted before this call. An error here may mean Evolution sent
     // the text but the acknowledgment was lost; never retry this recipient automatically.
     let providerMessageId: string | null;
+    let localMessageId: string | undefined;
     try {
-      const sent = await input.evolution.sendText({ instanceName: channel.providerKey,
-        number: sendNumber, text: message });
+      const command = { instanceName: channel.providerKey, number: sendNumber, text: message };
+      const sent = input.evolution.sendCampaignText
+        ? await input.evolution.sendCampaignText({ ...command, recipientId: job.id, leaseToken: token })
+        : await input.evolution.sendText(command);
       providerMessageId = sent.providerMessageId;
+      localMessageId = sent.localMessageId;
     } catch {
       await repository.settle({ id: job.id, leaseToken: token, status: "uncertain",
         errorMessage: "O resultado do envio é incerto. Confira no WhatsApp antes de decidir." });
@@ -143,7 +147,7 @@ export function createCampaignWorker(input: {
     const settled = await repository.settle({ id: job.id, leaseToken: token, status: "sent",
       providerMessageId, sentAt, pauseSeconds, nextAvailableAt,
       attemptsSincePause: pauseSeconds ? 0 : afterAttempts,
-      contactId: job.contactId ?? undefined, message });
+      localMessageId, message });
     if (settled.replay) await input.onProspectingReplyReady?.(settled.replay);
     if (settled.conversationId) await input.onConversationUpdated?.({
       workspaceId: job.workspaceId, conversationId: settled.conversationId

@@ -78,6 +78,7 @@ export interface SendTextInput {
   instanceName: string;
   number: string;
   text: string;
+  prospectingMessageId?: string;
   linkPreview?: boolean;
   /** Milliseconds WhatsApp shows "digitando..." before the message arrives. */
   delay?: number;
@@ -88,6 +89,7 @@ export interface SendTextInput {
 export interface SendTextResult {
   providerMessageId: string | null;
   raw: unknown;
+  localMessageId?: string;
 }
 
 export interface EditMessageInput {
@@ -193,6 +195,7 @@ export interface EvolutionClient {
   getConnectionState?(input: ConnectInstanceInput): Promise<EvolutionConnectionState | null>;
   setWebhook(input: SetWebhookInput): Promise<SetWebhookResult>;
   sendText(input: SendTextInput): Promise<SendTextResult>;
+  sendCampaignText?(input: SendTextInput & { recipientId: string; leaseToken: string }): Promise<SendTextResult>;
   sendContact?(input: SendContactInput): Promise<SendTextResult>;
   sendMedia(input: SendMediaInput): Promise<SendMediaResult>;
   sendTemplate?(input: SendTemplateInput): Promise<SendTemplateResult>;

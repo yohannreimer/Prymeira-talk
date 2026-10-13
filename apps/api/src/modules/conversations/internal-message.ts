@@ -18,5 +18,7 @@ export function isInternalFollowupReservation(message: { status?: string | null;
 }
 
 export function withoutInternalFollowupReservations<T extends { status?: string | null; metadata?: unknown }>(messages: T[]) {
-  return messages.filter((message) => !isInternalFollowupReservation(message));
+  return messages.filter((message) => !isInternalFollowupReservation(message)
+    && !(message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+      && (message.metadata as Record<string, unknown>).campaignDuplicateAudit === true));
 }
