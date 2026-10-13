@@ -5,6 +5,7 @@ import { parseWahaMessageKey } from '../messaging/whatsapp-identity.js';
 import type { WahaClient } from '../waha/waha.client.js';
 import type { DispatchKind, OutboundDispatchJournal } from './outbound-dispatch-journal.js';
 import { classifySendFailure, writerCandidates, type RoutableChannel, type RoutableConnection } from './outbound-routing.js';
+import { sendCanonicalCampaignText, sendCanonicalProspectingText } from '../campaigns/campaign-canonical-send.js';
 
 /** The single outbound router. It wraps the Evolution client, which every sender (human, AI, automations,
  * follow-ups, campaigns, prospecting) already uses, so all of them go through one place without being changed:
@@ -39,6 +40,7 @@ export function createOutboundRouter(options: {
   base: EvolutionClient;
   waha: Pick<WahaClient, 'sendText' | 'sendMedia' | 'sendVoice' | 'sendContact'> & Partial<Pick<WahaClient, 'deleteMessage' | 'editMessage' | 'getContactProfilePicture' | 'checkNumber' | 'getGroup'>> | null;
   db: Db;
+  campaignPrisma?: PrismaClient;
   journal: OutboundDispatchJournal;
   probe?: DeliveryProbe;
   probeDelayMs?: number;
@@ -129,6 +131,14 @@ export function createOutboundRouter(options: {
     catch (error) { options.logger?.warn({ err: error }, 'Outbound router could not load the channel; sending directly'); return legacy(); }
     if (!channel) return legacy();
     if (options.routes && !options.routes(channel.workspaceId)) return legacy();
+    if (command.kind === 'text' && command.input.prospectingMessageId && options.campaignPrisma) {
+      const connection = writerCandidates(channel)[0] as ConnectionRef | undefined;
+      if (!connection) throw new Error('Prospecting writer unavailable');
+      return sendCanonicalProspectingText({ prisma: options.campaignPrisma, workspaceId: channel.workspaceId,
+        channelId: channel.id, messageId: command.input.prospectingMessageId, connectionId: connection.id,
+        provider: connection.provider, text: command.input.text,
+        send: () => sendVia(connection, { ...command, input: { ...command.input, instanceName: connection.sessionName } }) });
+    }
 
     let dispatchId: string | null = null;
     try { dispatchId = await journal.begin({ workspaceId: channel.workspaceId, channelId: channel.id, kind: command.kind, destination: command.destination, text: command.text }); }
@@ -183,6 +193,30 @@ export function createOutboundRouter(options: {
     ...base,
     sendText: (input: SendTextInput): Promise<SendTextResult> => route(input.instanceName, { kind: 'text', destination: input.number, text: input.text, input }, () => base.sendText(input)),
     sendMedia: (input: SendMediaInput): Promise<SendMediaResult> => route(input.instanceName, { kind: 'media', destination: input.number, text: input.caption ?? null, input }, () => base.sendMedia(input))
+  };
+  if (options.campaignPrisma) router.sendCampaignText = async input => {
+    const channel = await loadChannel(input.instanceName);
+    if (!channel) throw new Error('Campaign channel unavailable');
+    if (options.routes && !options.routes(channel.workspaceId)) return router.sendText(input);
+    const connection = writerCandidates(channel)[0] as ConnectionRef | undefined;
+    if (!connection) throw new Error('Campaign writer unavailable');
+    return sendCanonicalCampaignText({ prisma: options.campaignPrisma!, workspaceId: channel.workspaceId,
+      channelId: channel.id, recipientId: input.recipientId, leaseToken: input.leaseToken,
+      connectionId: connection.id, provider: connection.provider, text: input.text,
+      send: async () => {
+        const dispatchId = await journal.begin({ workspaceId: channel.workspaceId, channelId: channel.id,
+          kind: 'text', destination: input.number, text: input.text });
+        try {
+          const sent = await sendVia(connection, { kind: 'text', destination: input.number, text: input.text,
+            input: { ...input, instanceName: connection.sessionName } });
+          await journal.recordAttempt(dispatchId, { connectionId: connection.id, provider: connection.provider, outcome: 'accepted', code: null });
+          await journal.accept(dispatchId, { connectionId: connection.id, providerMessageId: sent.providerMessageId });
+          return sent;
+        } catch (error) {
+          await journal.markUncertain(dispatchId, errorCode(error));
+          throw error;
+        }
+      } });
   };
   // Delete for everyone: Evolution as before; in routed workspaces, when Evolution cannot, the WAHA connection of the
   // same number revokes it (WhatsApp accepts the revoke from any linked device of the sender).

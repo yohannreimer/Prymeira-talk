@@ -16,6 +16,22 @@ function ai(body: string, secondsAgo: number): AgentLoopMessage {
 }
 
 describe("agent loop guard", () => {
+  it.each([
+    ['Por favor, digite a opção desejada:\n1 - Vendas\n2 - Suporte\n0 - Finalizar', 'automated_menu'],
+    ['Por favor, escolha: 1 - Vendas; 2 - Suporte', 'automated_menu'],
+    ['Enquanto você aguarda o atendimento, veja nosso catálogo.', 'waiting_reception'],
+    ['Só um minuto que o pessoal já irá atendê-lo, tá bem?', 'waiting_reception']
+  ])('silently pauses explicit reception only with opt-in: %s', (text, guard) => {
+    const messages = [inbound(text, 1)];
+    expect(evaluateAgentLoopGuard({ messages, now })).toEqual({ triggered: false });
+    expect(evaluateAgentLoopGuard({ messages, now, stopOnAutomatedReception: true })).toMatchObject({ triggered: true, guard });
+  });
+  it.each(['Boa tarde, como posso ajudar?', 'Podes informar seu CNPJ?', 'Sabrina é a secretária da Carina e do Fabio.'])('does not mistake a human response for reception: %s', text => {
+    expect(evaluateAgentLoopGuard({ messages: [inbound(text, 1)], now, stopOnAutomatedReception: true })).toEqual({ triggered: false });
+  });
+  it('uses a later human reply instead of the older menu', () => {
+    expect(evaluateAgentLoopGuard({ messages: [inbound('Digite a opção:\n1 - Vendas\n2 - Suporte', 30), inbound('Sou a Ana, cuido dessa parte. Como funciona?', 1)], now, stopOnAutomatedReception: true })).toEqual({ triggered: false });
+  });
   it("normalizes insignificant differences", () => {
     expect(normalizeLoopComparisonText("  NÃO   entendi!!! ")).toBe("não entendi");
   });

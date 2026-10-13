@@ -1,6 +1,11 @@
 const PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g;
 const NAME_KEYS = new Set(["nome", "name"]);
 
+export function campaignCompanyName(value: string) {
+  const name = value.split('|')[0]!.replace(/\s+/g, ' ').trim();
+  return name.length <= 80 ? name : 'empresa';
+}
+
 export type RenderContact = { phone: string; fields: Record<string, string> };
 
 // Private marker for a name placeholder that resolved to empty. Cleanup only
@@ -61,7 +66,7 @@ export function renderCampaignMessage(input: {
       blankedName = true;
       return BLANK;
     }
-    return value;
+    return key === 'empresa' || key === 'company' ? campaignCompanyName(value) : value;
   });
   return blankedName ? resolveBlankNames(rendered) : rendered;
 }

@@ -121,7 +121,7 @@ function currentPhoneState(input: {
   const available = currentVerifications.find((verification) => verification.status === "available");
   const whatsappStatus: LeadWhatsappStatus = currentVerifications[0]?.status ?? "unverified";
   return {
-    phone: available?.currentPhone ?? candidates[0] ?? null,
+    phone: whatsappPhoneCandidates(available?.currentPhone ?? candidates[0] ?? '')?.key ?? null,
     whatsappStatus
   };
 }

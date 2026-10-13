@@ -30,7 +30,7 @@ export async function findProspectingOutboundEcho(db: unknown, input: {
     ...(input.mediaUrl ? { OR: [{ mediaUrl: input.mediaUrl }, { body: input.body ?? '', type: { in: ['image', 'file'] } }] } : { body: input.body ?? '', type: 'text' }) }, orderBy: { createdAt: 'desc' } });
 }
 
-export async function confirmProspectingOutbound(db: unknown, messageId: string, providerMessageId: string | null | undefined) {
+export async function confirmProspectingOutbound(db: unknown, messageId: string, providerMessageId: string | null | undefined, localMessageId?: string) {
   const store = db as Store;
   const message = await store.message.findUniqueOrThrow({ where: { id: messageId } });
   if (!providerMessageId) {
@@ -39,7 +39,11 @@ export async function confirmProspectingOutbound(db: unknown, messageId: string,
     throw new Error('Prospecting delivery was not confirmed; automatic retry is disabled.');
   }
   const metadata = asRecord(message.metadata);
-  return store.message.update({ where: { id: message.id }, data: { providerMessageId, status: 'sent',
+  if (localMessageId && (localMessageId !== message.id || !await store.outboundIntent.findFirst({ where: {
+    workspaceId: message.workspaceId, messageId: message.id, originKind: 'prospecting_delivery', state: 'bound'
+  } }))) throw new Error('Prospecting canonical binding changed');
+  return store.message.update({ where: { id: message.id }, data: { ...(!localMessageId ? { providerMessageId } : {}),
+    status: ['delivered', 'read'].includes(message.status) ? message.status : 'sent',
     metadata: { ...metadata, prospectingDispatch: 'confirmed',
       ...(typeof metadata.followupId !== 'string' && metadata.prospectingFollowupObservation !== 'observed'
         ? { prospectingFollowupObservation: 'pending' } : {}) } as Prisma.InputJsonObject } });
@@ -53,7 +57,7 @@ export async function cancelProspectingOutbound(db: unknown, messageId: string) 
 }
 
 export async function dispatchProspectingOutbound(db: unknown, message: Awaited<ReturnType<typeof reserveProspectingOutbound>>,
-  send: () => Promise<{ providerMessageId: string | null } | null>) {
+  send: () => Promise<{ providerMessageId: string | null; localMessageId?: string } | null>) {
   const metadata = asRecord(message.metadata);
   if (!await autonomousAgentAllowed(db, { workspaceId: message.workspaceId, conversationId: message.conversationId,
     agentId: typeof metadata.agentId === 'string' ? metadata.agentId : undefined,
@@ -88,7 +92,7 @@ export async function dispatchProspectingOutbound(db: unknown, message: Awaited<
   let sent;
   try { sent = await send(); }
   catch (error) { await confirmProspectingOutbound(db, message.id, null).catch(() => undefined); throw error; }
-  return confirmProspectingOutbound(db, message.id, sent?.providerMessageId);
+  return confirmProspectingOutbound(db, message.id, sent?.providerMessageId, sent?.localMessageId);
 }
 
 /** Adopt an explicitly reserved automatic delivery into the same durable boundary. */

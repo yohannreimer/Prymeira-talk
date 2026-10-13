@@ -1,3 +1,4 @@
+import { evaluateAgentLoopGuard } from "./agent-loop-guard.js";
 import { buildProspectingInstructions } from "../prospecting/prospecting-instructions.js";
 import { asRecord } from "../prospecting/prospecting-policy.js";
 import {
@@ -113,6 +114,7 @@ export type AgentTestChatDebug = {
     requestedAttachments: Array<{ url: string; caption: string | null }>;
   };
   providerError?: string;
+  receptionGuard?: "automated_menu" | "waiting_reception";
 };
 
 export interface AgentTestChatPrismaLike {
@@ -268,9 +270,21 @@ knowledgeMatches,
         ...(media ? { media } : {})
       };
 
+      const testNow = new Date();
+      const reception = evaluateAgentLoopGuard({
+        now: testNow,
+        stopOnAutomatedReception: asRecord(agent.behaviorConfig).pauseAutomatedReception === true,
+        messages: messages.map(message => ({
+          direction: message.role === "user" ? "inbound" : "outbound",
+          type: "text", body: message.content, createdAt: testNow
+        }))
+      });
+      const receptionGuard = reception.triggered && (reception.guard === "automated_menu" || reception.guard === "waiting_reception") ? reception.guard : undefined;
       let output: AgentOutput;
 
-      if (media?.status === "failed") {
+      if (receptionGuard) {
+        output = { confidence: 1, reply: null, actions: [], handoff: { required: true, reason: "automated_reception_wait" } };
+      } else if (media?.status === "failed") {
         output = { confidence: 1, reply: media.fallback ?? "Pode reenviar o arquivo?", actions: [], handoff: { required: false, reason: null } };
       } else if (safetyOutput) {
         output = safetyOutput;
@@ -326,7 +340,7 @@ knowledgeMatches,
         }
       }
 
-      output = normalizeAgentHandoffOutput(output, { preserveReply: usesQualificationHandoff(agent.behaviorConfig) });
+      if (!receptionGuard) output = normalizeAgentHandoffOutput(output, { preserveReply: usesQualificationHandoff(agent.behaviorConfig) });
 
       const replyPolicy = output.reply ? enforceWhatsAppReply(output.reply) : null;
       if (replyPolicy) {
@@ -335,6 +349,7 @@ knowledgeMatches,
 
       const debug: AgentTestChatDebug = {
         ...debugBase,
+        ...(receptionGuard ? { receptionGuard } : {}),
         proposedActions: output.actions,
         replyCharacters: output.reply?.length ?? 0,
         replyCompacted: replyPolicy?.compacted ?? false,
@@ -351,7 +366,7 @@ knowledgeMatches,
         ...(processedMessage ? { processedMessage } : {}),
         message: {
           role: "assistant",
-          content: output.reply?.trim() || "Vou chamar uma pessoa do time para continuar este teste."
+          content: output.reply?.trim() || (receptionGuard ? "[Simulação: nenhuma mensagem enviada; aguardar atendimento humano.]" : "Vou chamar uma pessoa do time para continuar este teste.")
         },
         output,
         knowledgeMatches,

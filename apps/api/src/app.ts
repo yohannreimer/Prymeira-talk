@@ -244,7 +244,7 @@ export async function createApp(env: AppEnv, options: CreateAppOptions = {}) {
   if (options.prismaEnabled !== false && env.OUTBOUND_ROUTER_ENABLED && evolutionRuntime.client) {
     outboundJournal = createOutboundDispatchJournal(app.prisma);
     evolutionRuntime.client = createOutboundRouter({
-      base: evolutionRuntime.client, waha: wahaRuntime.client, db: app.prisma, journal: outboundJournal,
+      base: evolutionRuntime.client, waha: wahaRuntime.client, db: app.prisma, campaignPrisma: app.prisma, journal: outboundJournal,
       probe: createDeliveryProbe({ waha: wahaRuntime.client, history: { recentMessages: (input) => { if (!evolutionHistorySource) throw new Error('HISTORY_UNAVAILABLE'); return evolutionHistorySource.recentMessages(input); } } }),
       logger: app.log,
       routes: inRollout

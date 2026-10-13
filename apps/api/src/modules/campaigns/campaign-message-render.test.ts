@@ -4,6 +4,11 @@ import { findUnresolvedVariables, renderCampaignMessage } from "./campaign-messa
 const contact = { phone: "554799999999", fields: { empresa: "Metalpress" } };
 
 describe("renderCampaignMessage", () => {
+  it('usa o nome comercial sem a lista de produtos do Maps', () => {
+    expect(renderCampaignMessage({ template: 'Quem cuida disso aí na {{empresa}}?',
+      contact: { phone: contact.phone, fields: { empresa: 'Trevo Metais | Aços | Metais | Tubo | Corrimão' } }, firstName: null }))
+      .toBe('Quem cuida disso aí na Trevo Metais?');
+  });
   it("usa o primeiro nome quando informado", () => {
     expect(renderCampaignMessage({ template: "Olá {{nome}}, tudo bem?", contact, firstName: "Agnaldo" }))
       .toBe("Olá Agnaldo, tudo bem?");

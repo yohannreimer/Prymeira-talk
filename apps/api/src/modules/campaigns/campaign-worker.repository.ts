@@ -3,6 +3,9 @@ import { validateProspectingAgent } from "../prospecting/prospecting-policy.js";
 import { activateConfirmedProspecting } from "../prospecting/prospecting-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
+import { whatsappPhoneCandidates } from '../leads/lead-whatsapp-numbers.js';
+import { buildPhoneLookupCandidates } from '../contacts/phone-normalization.js';
+import { enterCanonicalWorkspaceTransaction } from '../messaging/canonical-boundary.js';
 
 export function createCampaignWorkerRepository(prisma: PrismaClient, options: {
   now?: () => Date;
@@ -74,20 +77,45 @@ export function createCampaignWorkerRepository(prisma: PrismaClient, options: {
       try {
         return await prisma.$transaction(async tx => {
           const recipient = await tx.campaignRecipient.findFirst({ where: { id, leaseToken, status: 'in_flight' }, include: { campaign: true } });
-          if (!recipient?.campaign.prospectingAgentId) return { status: 'ordinary' as const };
+          if (!recipient) return { status: 'unavailable' as const };
+          await enterCanonicalWorkspaceTransaction(tx, recipient.workspaceId);
           if (!recipient.channelId || !recipient.phoneSnapshot) return { status: 'unavailable' as const };
-          try { await validateProspectingAgent(tx, recipient.workspaceId, recipient.campaign.prospectingAgentId, recipient.channelId); }
+          try { if (recipient.campaign.prospectingAgentId) await validateProspectingAgent(tx, recipient.workspaceId, recipient.campaign.prospectingAgentId, recipient.channelId); }
           catch { return { status: 'unavailable' as const }; }
           // All campaigns targeting this identity serialize here, including rows imported without a contact id.
           const savedContact = recipient.contactId ? await tx.contact.findFirst({ where: { workspaceId: recipient.workspaceId, id: recipient.contactId } }) : null;
-          const contact = savedContact ?? await tx.contact.upsert({ where: { workspaceId_phone: { workspaceId: recipient.workspaceId, phone: recipient.phoneSnapshot } },
-            create: { workspaceId: recipient.workspaceId, phone: recipient.phoneSnapshot }, update: {} });
+          const canonical = whatsappPhoneCandidates(recipient.phoneSnapshot)?.key;
+          if (!canonical || (savedContact && whatsappPhoneCandidates(savedContact.phone)?.key !== canonical)) return { status: 'unavailable' as const };
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${recipient.workspaceId}:${recipient.channelId}:${canonical}`}, 0))`;
+          const phones = buildPhoneLookupCandidates(canonical);
+          // Google Maps supplies Brazilian regional numbers. Retain them only as
+          // lookup aliases; all future incoming messages carry the country code.
+          if (canonical.startsWith('55') && canonical.length === 12) {
+            phones.push(canonical.slice(2), `${canonical.slice(2, 4)}9${canonical.slice(4)}`);
+          }
+          const matches = await tx.contact.findMany({ where: { workspaceId: recipient.workspaceId, phone: { in: phones } } });
+          const existingConversations = await tx.conversation.findMany({ where: { workspaceId: recipient.workspaceId,
+            channelId: recipient.channelId, retiredIntoConversationId: null, contactId: { in: matches.map(c => c.id) } } });
+          // Existing competing histories require explicit reconciliation. Never
+          // send through a fresh lane that bypasses the customer's human control.
+          if (existingConversations.length > 1) return { status: 'unavailable' as const };
+          const chosen = existingConversations[0]
+            ? matches.find(c => c.id === existingConversations[0]!.contactId)!
+            : matches.find(c => c.phone === canonical) ?? savedContact ?? matches[0];
+          const canonicalOwner = matches.find(c => c.phone === canonical);
+          if (chosen && canonicalOwner && chosen.id !== canonicalOwner.id) return { status: 'unavailable' as const };
+          const contact = chosen
+            ? chosen.phone === canonical ? chosen : await tx.contact.update({ where: { id: chosen.id }, data: { phone: canonical } })
+            : await tx.contact.upsert({ where: { workspaceId_phone: { workspaceId: recipient.workspaceId, phone: canonical } },
+              create: { workspaceId: recipient.workspaceId, phone: canonical }, update: {} });
+          await tx.campaignRecipient.update({ where: { id }, data: { contactId: contact.id, phoneSnapshot: canonical } });
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${recipient.workspaceId}:${recipient.channelId}:${contact.id}`}, 0))`;
           const proposedConversation = await tx.conversation.upsert({ where: { workspaceId_channelId_contactId: {
             workspaceId: recipient.workspaceId, channelId: recipient.channelId, contactId: contact.id } },
             create: { workspaceId: recipient.workspaceId, channelId: recipient.channelId, contactId: contact.id, hiddenUntilReply: recipient.campaign.hideFromInboxUntilReply }, update: {} });
           await lockProspectingConversation(tx, recipient.workspaceId, proposedConversation.id);
           const conversation = await tx.conversation.findUniqueOrThrow({ where: { id: proposedConversation.id } });
+          if (!recipient.campaign.prospectingAgentId) return { status: 'ordinary' as const };
           const existing = await tx.campaignProspectingReservation.findUnique({ where: { workspaceId_conversationId: { workspaceId: recipient.workspaceId, conversationId: conversation.id } } });
           const active = await tx.aiAgentSession.count({ where: { workspaceId: recipient.workspaceId, conversationId: conversation.id, status: 'active' } });
           if (conversation.aiControlStatus === 'human_controlled' || conversation.assignedUserId || conversation.activeAgentSessionId || active) return { status: 'in_service' as const };
@@ -157,6 +185,7 @@ export function createCampaignWorkerRepository(prisma: PrismaClient, options: {
       errorMessage?: string;
       contactId?: string;
       message?: string;
+      localMessageId?: string;
     }) {
       return prisma.$transaction(async (tx) => {
         if (tx.campaignProspectingReservation) {
@@ -210,7 +239,13 @@ export function createCampaignWorkerRepository(prisma: PrismaClient, options: {
               hiddenUntilReply: recipient.campaign.hideFromInboxUntilReply }, update: {}
           });
           conversationId = conversation.id;
-          await tx.message.upsert({ where: input.providerMessageId
+          if (input.localMessageId) {
+            const boundMessage = await tx.message.findFirst({ where: { id: input.localMessageId,
+              workspaceId: recipient.workspaceId, conversationId: conversation.id, direction: 'outbound',
+              outboundIntents: { some: { originKind: 'campaign_recipient', originId: recipient.id, state: 'bound' } } } });
+            if (!boundMessage) throw new Error('Campaign message binding changed');
+            await tx.message.updateMany({ where: { id: boundMessage.id, status: { notIn: ['delivered', 'read'] } }, data: { status: 'sent' } });
+          } else await tx.message.upsert({ where: input.providerMessageId
             ? { workspaceId_providerMessageId: { workspaceId: recipient.workspaceId,
                 providerMessageId: input.providerMessageId } }
             : { workspaceId_providerEventId: { workspaceId: recipient.workspaceId,

@@ -10,7 +10,7 @@ export type AgentLoopGuardResult =
   | { triggered: false }
   | {
       triggered: true;
-      guard: "repeated_inbound" | "rapid_exchange";
+      guard: "repeated_inbound" | "rapid_exchange" | "automated_menu" | "waiting_reception";
       inboundCount: number;
       aiOutboundCount: number;
     };
@@ -43,6 +43,7 @@ function isAiOutbound(message: AgentLoopMessage) {
 export function evaluateAgentLoopGuard(input: {
   messages: readonly AgentLoopMessage[];
   now: Date;
+  stopOnAutomatedReception?: boolean;
 }): AgentLoopGuardResult {
   const cutoff = input.now.getTime() - LOOP_WINDOW_MS;
   const recent = input.messages
@@ -58,6 +59,19 @@ export function evaluateAgentLoopGuard(input: {
   const aiOutbound = recent.filter(isAiOutbound);
   const current = [...recent].reverse().find((message) => message.direction === "inbound" && message.type === "text");
   const normalizedCurrent = current?.body ? normalizeLoopComparisonText(current.body) : "";
+
+  // Opt-in: clear reception instructions ask us to wait, not to pitch to a bot.
+  // Only the latest incoming text matters: a later human message resumes normal reasoning.
+  if (input.stopOnAutomatedReception && current?.body) {
+    const text = current.body;
+    const numberedOptions = text.match(/(?:^|[\n;:])\s*\d{1,2}\s*[-.):–]\s*[^\s;]+/gm) ?? [];
+    const menu = numberedOptions.length >= 2 && /digite|selecione|escolha|op[cç][aã]o/i.test(text);
+    const waiting = /(?:aguard[eao]|aguardando|enquanto voc[eê] aguarda)[\s\S]{0,100}atendimento|(?:pessoal|equipe)[\s\S]{0,50}(?:ir[aá]|vai)[\s\S]{0,20}atend[eê]/i.test(text) || (/hor[aá]rio de atendimento/i.test(text) && /responderemos (?:assim que|o mais breve)|aguarde que responderemos/i.test(text));
+    if (menu || waiting) return {
+      triggered: true, guard: menu ? 'automated_menu' : 'waiting_reception',
+      inboundCount: inbound.length, aiOutboundCount: aiOutbound.length
+    };
+  }
 
   if (normalizedCurrent) {
     const matchingInbound = inbound.filter((message) =>

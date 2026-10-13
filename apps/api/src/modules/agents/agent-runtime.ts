@@ -789,10 +789,13 @@ export function createAgentRuntime(input: {
         }) as MessageRecord[];
         const loopGuard = evaluateAgentLoopGuard({
           messages: recentMessages,
-          now: new Date()
+          now: new Date(),
+          stopOnAutomatedReception: asRecord(agent.behaviorConfig).pauseAutomatedReception === true
         });
 
         if (loopGuard.triggered) {
+          const stopReason = ["automated_menu", "waiting_reception"].includes(loopGuard.guard)
+            ? "automated_reception_wait" : "possible_automation_loop";
           const loopContextSummary = {
             ...contextSummary,
             loopGuard: loopGuard.guard,
@@ -808,7 +811,7 @@ export function createAgentRuntime(input: {
             },
             data: {
               status: "handoff_requested",
-              handoffReason: "possible_automation_loop",
+              handoffReason: stopReason,
               handoffActionCompletedAt: null,
               lastRunAt: new Date()
             }
@@ -838,7 +841,7 @@ export function createAgentRuntime(input: {
               }
             }
           });
-          if (prospecting) await stopProspectingConversation(prisma, runInput.workspaceId, conversation.id, "possible_automation_loop");
+          if (prospecting) await stopProspectingConversation(prisma, runInput.workspaceId, conversation.id, stopReason);
           await publishConversationUpdated(runInput.workspaceId, conversation.id);
           const run = await createRun({
             workspaceId: runInput.workspaceId,
@@ -855,7 +858,7 @@ export function createAgentRuntime(input: {
           return {
             status: "handoff_requested",
             runId: run.id,
-            message: "possible_automation_loop"
+            message: stopReason
           };
         }
 
@@ -1444,21 +1447,24 @@ export function createAgentRuntime(input: {
           const beforeSend = await prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: conversation.id } }, include: { channel: true } });
           if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
           if (!beforeSend || (prospecting ? !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id, sessionId: session.id, expectedGeneration: prospectingGeneration }) : blocksAutonomousAgent(beforeSend.channel?.encryptedConfig) || (beforeSend.aiControlStatus === 'human_controlled' && !handoffReason))) return { status: 'skipped', message: 'Human review is required.' };
-          const pending = prospecting ? await reserveProspectingOutbound(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id,
-            agentId: agent.id, generation: prospecting.generation, type: 'text', body: outboundReply,
-            metadata: runInput.replyClaim ? { replyClaimId: runInput.replyClaim.id, replyClaimToken: runInput.replyClaim.token } : undefined }) : null;
-          // A plain reply goes out as one message, or as one WhatsApp bubble per
-          // paragraph (with "digitando..." before each) when the agent asks for it.
-          const bubbles = pending || !readReplyInBubbles(agent.behaviorConfig)
-            ? [outboundReply]
-            : splitReplyIntoBubbles(outboundReply);
+          const bubbles = readReplyInBubbles(agent.behaviorConfig)
+            ? splitReplyIntoBubbles(outboundReply) : [outboundReply];
           let lastOutboundMessage: MessageRecord | null = null;
           for (const [bubbleIndex, bubble] of bubbles.entries()) {
             if (bubbleIndex > 0 && !await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) break;
+            const pending = prospecting ? await reserveProspectingOutbound(prisma, {
+              workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id,
+              generation: prospecting.generation, type: 'text', body: bubble,
+              metadata: {
+                ...(runInput.replyClaim ? { replyClaimId: runInput.replyClaim.id, replyClaimToken: runInput.replyClaim.token } : {}),
+                ...(bubbles.length > 1 ? { bubble: { index: bubbleIndex, count: bubbles.length } } : {})
+              }
+            }) : null;
             const providerSend = pending ? null : await sendAgentReplyToProvider(input.evolution, conversation, bubble,
               bubbles.length > 1 ? typingDelayMs(bubble) : undefined);
             const outboundMessage = pending ? await dispatchProspectingOutbound(prisma, pending,
-              () => sendAgentReplyToProvider(input.evolution, conversation, outboundReply)) : await prisma.message.create({
+              () => sendAgentReplyToProvider(input.evolution, conversation, bubble,
+                bubbles.length > 1 ? typingDelayMs(bubble) : undefined, pending.id)) : await prisma.message.create({
               data: {
                 workspaceId: runInput.workspaceId,
                 conversationId: conversation.id,
@@ -2011,7 +2017,8 @@ async function sendAgentReplyToProvider(
   evolution: AgentRuntimeEvolution | undefined,
   conversation: ConversationRecord,
   reply: string,
-  delay?: number
+  delay?: number,
+  prospectingMessageId?: string
 ) {
   const instanceName = conversation.channel?.providerKey;
   const number = conversation.contact?.phone;
@@ -2024,7 +2031,8 @@ async function sendAgentReplyToProvider(
     instanceName,
     number,
     text: reply,
-    ...(delay ? { delay } : {})
+    ...(delay ? { delay } : {}),
+    ...(prospectingMessageId ? { prospectingMessageId } : {})
   });
 }
 

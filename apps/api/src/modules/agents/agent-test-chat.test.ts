@@ -609,3 +609,30 @@ describe("createAgentTestChatService", () => {
     } satisfies Partial<AgentTestChatError>);
   });
 });
+
+
+describe("test chat automated reception parity", () => {
+  it.each([
+    "Por favor, digite a opção:\n1 - Vendas\n2 - Suporte\n0 - Finalizar",
+    "Enquanto você aguarda o atendimento, veja nosso site.",
+    "Agradecemos seu contato. O horário de atendimento é de segunda a sexta. Responderemos assim que possível."
+  ])("silences an opted-in reception before generation: %s", async content => {
+    const provider = buildProvider({ confidence: 1, reply: "Wrong reply", actions: [], handoff: { required: false, reason: null } });
+    const prisma = buildPrisma({ aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, behaviorConfig: { pauseAutomatedReception: true } }) } });
+    const result = await createAgentTestChatService({ prisma, provider }).sendMessage({ workspaceId: "workspace_a", agentId: baseAgent.id, messages: [{ role: "user", content }] });
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(result.output.reply).toBeNull();
+    expect(result.output.actions).toEqual([]);
+    expect(result.output.handoff.required).toBe(true);
+    expect(result.message.content).toContain("nenhuma mensagem enviada");
+    expect(result.debug.receptionGuard).toBeDefined();
+  });
+  it("lets a later human reply pass an old reception", async () => {
+    const provider = buildProvider({ confidence: 1, reply: "Resposta humana", actions: [], handoff: { required: false, reason: null } });
+    const prisma = buildPrisma({ aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, behaviorConfig: { pauseAutomatedReception: true } }) } });
+    const result = await createAgentTestChatService({ prisma, provider }).sendMessage({ workspaceId: "workspace_a", agentId: baseAgent.id, messages: [{ role: "user", content: "Digite a opção:\n1 - Vendas\n2 - Suporte" }, { role: "user", content: "Boa tarde, sou eu quem cuida do atendimento." }] });
+    expect(provider.generate).toHaveBeenCalledOnce();
+    expect(result.output.reply).toBe("Resposta humana");
+    expect(result.debug.receptionGuard).toBeUndefined();
+  });
+});

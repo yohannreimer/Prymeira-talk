@@ -1079,6 +1079,7 @@ export function createConversationsService(
               instanceName: providerKey,
               number: contactPhone,
               text: messageBody,
+              ...(prospectingPending ? { prospectingMessageId: prospectingPending.id } : {}),
               ...(input.quoted ? { quoted: input.quoted } : {})
             }));
         }

@@ -127,7 +127,7 @@ describe("lead conversion", () => {
     });
 
     expect(tx.contact.upsert).toHaveBeenCalledWith(expect.objectContaining({
-      where: { workspaceId_phone: { workspaceId: "workspace-a", phone: "47991396920" } }
+      where: { workspaceId_phone: { workspaceId: "workspace-a", phone: "554791396920" } }
     }));
     expect(tx.leadContactProvenance.upsert).toHaveBeenCalledWith(expect.objectContaining({
       create: expect.objectContaining({ whatsappStatus: "available" })
