@@ -327,6 +327,25 @@ describe.skipIf(!safe).sequential('campaign prospecting with disposable PostgreS
     expect((await prisma.conversation.findUniqueOrThrow({where:{id:row.conversationId}})).aiControlStatus).toBe('human_controlled');
   });
 
+  it('asks the model again instead of re-asking the campaign question',async()=>{
+    const row=await confirmed();const response=await inbound(row.conversationId);
+    await prisma.message.update({where:{id:response.message.id},data:{body:'Boa tarde'}});
+    const scheduler=createAgentReplyScheduler({prisma,agentRuntime:{runForMessage:vi.fn()}});
+    await scheduler.scheduleActiveSessionForMessage({workspaceId,conversationId:row.conversationId,messageId:response.message.id});
+    const sendText=vi.fn(async()=>({providerMessageId:randomUUID(),raw:{}}));
+    const generate=vi.fn()
+      .mockResolvedValueOnce({confidence:0.9,reply:'Boa tarde! Deseja saber mais sobre o plano Premium?',actions:[],handoff:{required:false,reason:null}})
+      .mockResolvedValueOnce({confidence:0.9,reply:'Boa tarde! É você quem cuida das demonstrações aí?',actions:[],handoff:{required:false,reason:null}});
+    await prisma.message.create({data:{workspaceId,conversationId:row.conversationId,direction:'outbound',type:'text',status:'sent',
+      body:'Olá! Deseja saber mais sobre o plano Premium da nossa empresa?',createdAt:new Date(Date.now()-60_000)}});
+    const runtime=createAgentRuntime({prisma:prisma as unknown as Parameters<typeof createAgentRuntime>[0]['prisma'],
+      provider:{generate},evolution:{mode:'real',client:{sendText}} as Parameters<typeof createAgentRuntime>[0]['evolution']});
+    expect((await runtime.runForMessage({workspaceId,conversationId:row.conversationId,agentId,messageId:response.message.id,trigger:'automation'})).status).toBe('completed');
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(generate.mock.calls[1]![0].userPrompt).toContain('Não repita essa pergunta');
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({text:'Boa tarde! É você quem cuida das demonstrações aí?'}));
+  });
+
   it('keeps a silent transfer silent when the agent returns no reply',async()=>{
     const row=await confirmed();const response=await inbound(row.conversationId);
     await prisma.message.update({where:{id:response.message.id},data:{body:'ah entendi, mas muito obrigada'}});

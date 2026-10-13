@@ -4,6 +4,7 @@ import { observeProspectingAudioRefusal, isLiveProspectingAudio } from "../prosp
 import { isExplicitProspectingRefusal } from "../prospecting/prospecting-refusal.js";
 import { reserveProspectingOutbound, dispatchProspectingOutbound } from "../prospecting/prospecting-delivery.js";
 import { buildProspectingInstructions } from "../prospecting/prospecting-instructions.js";
+import { findRepeatedQuestion } from "../prospecting/repeated-question.js";
 import { autonomousAgentAllowed, findProspectingReservation, asRecord, stopProspectingConversation } from "../prospecting/prospecting-policy.js";
 import { aiAgentAllowedActionSchema, readReplyInBubbles, type AiAgentAllowedAction, type MessageDto } from "@prymeira-talk/shared";
 import { createHash } from "node:crypto";
@@ -1285,11 +1286,12 @@ export function createAgentRuntime(input: {
           if (meetingScheduling) {
             contextSummary = { ...contextSummary, meetingSlotsOffered: meetingScheduling.availableSlots.length, meetingAlreadyBooked: Boolean(meetingScheduling.bookedMeeting) };
           }
-          providerOutput = await runProvider.generate({
+          const generateReply = (extraInstruction?: string) => runProvider.generate({
             reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
             model: runModel,
             systemPrompt: effectiveSystemPrompt,
-            userPrompt: buildUserPrompt(effectiveText, runInput.instruction, externalFormOpenerDirective(message)),
+            userPrompt: buildUserPrompt(effectiveText, [runInput.instruction, extraInstruction].filter(Boolean).join("\n\n"),
+              externalFormOpenerDirective(message)),
             context: {
               ...context,
               ...conversationReasoningContext(reasoningConfig, safety),
@@ -1299,6 +1301,17 @@ export function createAgentRuntime(input: {
               ...(meetingScheduling ? { meetingScheduling } : {})
             }
           });
+          providerOutput = await generateReply();
+          const repeatedQuestion = prospecting && providerOutput.reply
+            ? findRepeatedQuestion(providerOutput.reply, conversationContext.messages
+              .filter((entry) => entry.direction === "outbound" && entry.type !== "internal_note")
+              .map((entry) => entry.body ?? ""))
+            : null;
+          if (repeatedQuestion) {
+            // A prospect who is asked the same thing twice stops answering; ask the model once more.
+            contextSummary = { ...contextSummary, repeatedQuestion };
+            providerOutput = await generateReply(`Nossa resposta anterior repetia uma pergunta que já fizemos nesta conversa: "${repeatedQuestion}". Não repita essa pergunta. Avance a partir do que a pessoa escreveu; se não houver nada novo para perguntar, responda sem pergunta.`);
+          }
           modelReply = providerOutput.reply?.trim() || null;
         }
 
