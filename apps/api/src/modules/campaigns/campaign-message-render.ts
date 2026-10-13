@@ -2,7 +2,9 @@ const PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g;
 const NAME_KEYS = new Set(["nome", "name"]);
 
 export function campaignCompanyName(value: string) {
-  const name = value.split('|')[0]!.replace(/\s+/g, ' ').trim();
+  // Google Maps names carry a keyword list after "|" and registry suffixes nobody says out loud.
+  const name = value.split('|')[0]!.replace(/\s+/g, ' ').trim()
+    .replace(/(?:[\s,.-]+(?:ltda|eireli|s\.?\/a)|\s*[-,]\s*(?:me|epp))\.?$/i, '').trim();
   return name.length <= 80 ? name : 'empresa';
 }
 
