@@ -298,19 +298,65 @@ describe.skipIf(!safe).sequential('campaign prospecting with disposable PostgreS
     await prisma.aiAgent.update({where:{id:agentId},data:{allowedActions:['send_message']}});
     const scheduler=createAgentReplyScheduler({prisma,agentRuntime:{runForMessage:vi.fn()}});
     await scheduler.scheduleActiveSessionForMessage({workspaceId,conversationId:row.conversationId,messageId:response.message.id});
-    const sendText=vi.fn(), schedule=vi.fn();
+    const sendText=vi.fn(async()=>({providerMessageId:randomUUID(),raw:{}})), schedule=vi.fn();
     const runtime=createAgentRuntime({prisma:prisma as unknown as Parameters<typeof createAgentRuntime>[0]['prisma'],
       handoffBriefService:{schedule},
       provider:{generate:vi.fn(async()=>({confidence:1,reply:'Vou transferir para confirmar sua demonstração.',actions:[],handoff:{required:true,reason:'Cliente confirmou interesse na demonstração.'}}))},
       evolution:{mode:'real',client:{sendText}} as Parameters<typeof createAgentRuntime>[0]['evolution']});
     const result=await runtime.runForMessage({workspaceId,conversationId:row.conversationId,agentId,messageId:response.message.id,trigger:'automation'});
-    expect(result.status).toBe('handoff_requested');expect(sendText).not.toHaveBeenCalled();
+    expect(result.status).toBe('handoff_requested');
+    // The lead hears the next step instead of silence while the team takes over.
+    expect(sendText).toHaveBeenCalledTimes(1);expect(sendText).toHaveBeenCalledWith(expect.objectContaining({text:'Vou transferir para confirmar sua demonstração.'}));
     const session=await prisma.aiAgentSession.findFirstOrThrow({where:{workspaceId}});
     expect(schedule).toHaveBeenCalledWith({workspaceId,conversationId:row.conversationId});
     expect(await prisma.aiAgentRun.count({where:{workspaceId,status:'handoff_requested'}})).toBe(1);
     expect(session.status).toBe('handoff_requested');expect(session.handoffReason).toContain('demonstração');
     expect((await origin()).status).toBe('stopped');
     expect((await prisma.aiAgentPendingReply.findFirstOrThrow({where:{workspaceId}})).status).toBe('cancelled');
+  });
+
+  it('still hands off when the announcement of a reached goal cannot be delivered',async()=>{
+    const row=await confirmed();const response=await inbound(row.conversationId);
+    const scheduler=createAgentReplyScheduler({prisma,agentRuntime:{runForMessage:vi.fn()}});
+    await scheduler.scheduleActiveSessionForMessage({workspaceId,conversationId:row.conversationId,messageId:response.message.id});
+    const runtime=createAgentRuntime({prisma:prisma as unknown as Parameters<typeof createAgentRuntime>[0]['prisma'],
+      provider:{generate:vi.fn(async()=>({confidence:1,reply:'Vou chamar o time.',actions:[{type:'request_handoff',reason:'Quer demonstração.'}],handoff:{required:true,reason:'Quer demonstração.'}}))},
+      evolution:{mode:'real',client:{sendText:vi.fn(async()=>{throw new Error('offline');})}} as Parameters<typeof createAgentRuntime>[0]['evolution']});
+    await runtime.runForMessage({workspaceId,conversationId:row.conversationId,agentId,messageId:response.message.id,trigger:'automation'});
+    expect((await origin()).status).toBe('stopped');
+    expect((await prisma.conversation.findUniqueOrThrow({where:{id:row.conversationId}})).aiControlStatus).toBe('human_controlled');
+  });
+
+  it('answers a price question from a lead instead of transferring it silently',async()=>{
+    const row=await confirmed();
+    const response=await inbound(row.conversationId);
+    await prisma.message.update({where:{id:response.message.id},data:{body:'Quanto custa?'}});
+    const scheduler=createAgentReplyScheduler({prisma,agentRuntime:{runForMessage:vi.fn()}});
+    await scheduler.scheduleActiveSessionForMessage({workspaceId,conversationId:row.conversationId,messageId:response.message.id});
+    const sendText=vi.fn(async()=>({providerMessageId:randomUUID(),raw:{}}));
+    const generate=vi.fn(async()=>({confidence:0.9,reply:'Depende do tamanho da equipe. Posso te mostrar em 15 minutos?',actions:[],handoff:{required:false,reason:null}}));
+    const runtime=createAgentRuntime({prisma:prisma as unknown as Parameters<typeof createAgentRuntime>[0]['prisma'],
+      provider:{generate},evolution:{mode:'real',client:{sendText}} as Parameters<typeof createAgentRuntime>[0]['evolution']});
+    expect((await runtime.runForMessage({workspaceId,conversationId:row.conversationId,agentId,messageId:response.message.id,trigger:'automation'})).status).toBe('completed');
+    expect(generate).toHaveBeenCalledOnce();
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({text:'Depende do tamanho da equipe. Posso te mostrar em 15 minutos?'}));
+    expect((await origin()).status).toBe('confirmed');
+  });
+
+  it('waits for the person behind an automated reception without ending prospecting',async()=>{
+    const row=await confirmed();
+    const response=await inbound(row.conversationId);
+    await prisma.message.update({where:{id:response.message.id},data:{body:'Olá! Digite uma opção:\n1 - Vendas\n2 - Financeiro'}});
+    const scheduler=createAgentReplyScheduler({prisma,agentRuntime:{runForMessage:vi.fn()}});
+    await scheduler.scheduleActiveSessionForMessage({workspaceId,conversationId:row.conversationId,messageId:response.message.id});
+    const sendText=vi.fn(), generate=vi.fn();
+    const runtime=createAgentRuntime({prisma:prisma as unknown as Parameters<typeof createAgentRuntime>[0]['prisma'],
+      provider:{generate},evolution:{mode:'real',client:{sendText}} as Parameters<typeof createAgentRuntime>[0]['evolution']});
+    const result=await runtime.runForMessage({workspaceId,conversationId:row.conversationId,agentId,messageId:response.message.id,trigger:'automation'});
+    expect(result).toMatchObject({status:'skipped',message:'automated_reception_wait'});
+    expect(generate).not.toHaveBeenCalled();expect(sendText).not.toHaveBeenCalled();
+    expect((await origin()).status).toBe('confirmed');
+    expect((await prisma.conversation.findUniqueOrThrow({where:{id:row.conversationId}})).aiControlStatus).toBe('agent_allowed');
   });
 
   it('explicit refusal cancels pending replies and followups at live ingestion without generating a reply',async()=>{

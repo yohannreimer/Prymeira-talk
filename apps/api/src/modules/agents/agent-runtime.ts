@@ -7,7 +7,7 @@ import { buildProspectingInstructions } from "../prospecting/prospecting-instruc
 import { autonomousAgentAllowed, findProspectingReservation, asRecord, stopProspectingConversation } from "../prospecting/prospecting-policy.js";
 import { aiAgentAllowedActionSchema, readReplyInBubbles, type AiAgentAllowedAction, type MessageDto } from "@prymeira-talk/shared";
 import { createHash } from "node:crypto";
-import { usesContextFirst, resolveConversationSafetyOutput, conversationReasoningContext } from "./conversation-reasoning-policy.js";
+import { CONTEXT_FIRST, usesContextFirst, resolveConversationSafetyOutput, conversationReasoningContext } from "./conversation-reasoning-policy.js";
 import {
   resolveOpenAiCompatibleSettings,
   type AiProviderSettingsPrismaLike,
@@ -696,6 +696,11 @@ export function createAgentRuntime(input: {
 
       const prospecting = await findProspectingReservation(prisma, runInput.workspaceId, conversation.id);
       const prospectingGeneration = prospecting?.generation;
+      // Prospecting reads the exchange instead of the quote-desk keyword guards: a lead
+      // asking "quanto custa?" is a buying signal, not a reason to go silent.
+      const reasoningConfig = prospecting
+        ? { ...asRecord(agent.behaviorConfig), conversationReasoning: CONTEXT_FIRST }
+        : agent.behaviorConfig;
       if (conversation.contact?.isGroup || conversation.contact?.phone?.endsWith('@g.us') || !await autonomousAgentAllowed(prisma, {
         workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id,
         expectedGeneration: runInput.prospectingGeneration ?? prospectingGeneration, channelConfig: conversation.channel?.encryptedConfig, aiControlStatus: conversation.aiControlStatus
@@ -741,6 +746,8 @@ export function createAgentRuntime(input: {
       let providerOutput: AgentOutput | undefined;
       let runModel = agent.model;
       let actionResults: Awaited<ReturnType<typeof executeAgentActions>> = [];
+      // A prospecting transfer announced to the lead is applied after the reply goes out.
+      let deferredProspectingHandoff: string | null = null;
 
       const session = await prisma.aiAgentSession.upsert({
         where: {
@@ -790,8 +797,30 @@ export function createAgentRuntime(input: {
         const loopGuard = evaluateAgentLoopGuard({
           messages: recentMessages,
           now: new Date(),
-          stopOnAutomatedReception: asRecord(agent.behaviorConfig).pauseAutomatedReception === true
+          // Cold outreach reaches many business numbers that answer with a bot first.
+          stopOnAutomatedReception: Boolean(prospecting) || asRecord(agent.behaviorConfig).pauseAutomatedReception === true
         });
+
+        if (prospecting && loopGuard.triggered && ["automated_menu", "waiting_reception"].includes(loopGuard.guard)) {
+          // Prospecting waits for the person behind the bot instead of giving up the lead:
+          // no reply now, and the next human message is answered normally.
+          await prisma.aiAgentSession.update({
+            where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: session.id } },
+            data: { lastRunAt: new Date() }
+          });
+          const run = await createRun({
+            workspaceId: runInput.workspaceId,
+            agentId: agent.id,
+            sessionId: session.id,
+            conversationId: conversation.id,
+            trigger: runInput.trigger,
+            input: runInputPayload,
+            contextSummary: { ...contextSummary, loopGuard: loopGuard.guard },
+            model: agent.model,
+            status: "skipped"
+          });
+          return { status: "skipped", runId: run.id, message: "automated_reception_wait" };
+        }
 
         if (loopGuard.triggered) {
           const stopReason = ["automated_menu", "waiting_reception"].includes(loopGuard.guard)
@@ -1135,7 +1164,7 @@ export function createAgentRuntime(input: {
           attachmentAvailable,
           selectedKnowledge: knowledgeSelection.selected
         });
-        let safetyOutput = resolveConversationSafetyOutput(safety, agent.behaviorConfig);
+        let safetyOutput = resolveConversationSafetyOutput(safety, reasoningConfig);
         const approvedNotSoldSourceIds = new Set(knowledge.flatMap((source) => {
           const metadata = isRecord(source.metadata) ? source.metadata : null;
           return metadata?.source === "approved_agent_improvement" && metadata.kind === "not_sold"
@@ -1150,18 +1179,21 @@ export function createAgentRuntime(input: {
           knowledgeSelection.selected.some((source) => approvedNotSoldSourceIds.has(source.id))
         );
         const documentRequiresHuman =
-          !usesContextFirst(agent.behaviorConfig) &&
+          !usesContextFirst(reasoningConfig) &&
           !attachmentAvailable &&
           safety.outcome !== "await_approval" &&
           isDocumentDependentQuestion(effectiveText, taxonomy) &&
           knowledgeSelection.selected.length === 0;
         const approvedCatalogSelection =
-          !safetyOutput && !documentRequiresHuman && allowedActions.includes("send_attachment")
+          !prospecting && !safetyOutput && !documentRequiresHuman && allowedActions.includes("send_attachment")
             ? selectRequestedCatalog(effectiveText, approvedAttachments)
             : null;
         let replyPreflight: AgentReplyPreflightResult | undefined;
+        let modelGeneratedReply = false;
 
-        if (input.replyPreflight && !mediaFallback && (!safetyOutput || canReviewApprovedRefusal) && !documentRequiresHuman) {
+        // The reply preflight plans quote-desk steps (stock, made-to-order, catalog) and
+        // has no notion of cold outreach, so prospecting replies skip it.
+        if (input.replyPreflight && !prospecting && !mediaFallback && (!safetyOutput || canReviewApprovedRefusal) && !documentRequiresHuman) {
           try {
             replyPreflight = await input.replyPreflight.evaluate({
               agentRules: effectiveSystemPrompt,
@@ -1252,6 +1284,7 @@ export function createAgentRuntime(input: {
           if (meetingScheduling) {
             contextSummary = { ...contextSummary, meetingSlotsOffered: meetingScheduling.availableSlots.length, meetingAlreadyBooked: Boolean(meetingScheduling.bookedMeeting) };
           }
+          modelGeneratedReply = true;
           providerOutput = await runProvider.generate({
             reasoningEffort: readAgentReasoningEffort(agent.behaviorConfig),
             model: runModel,
@@ -1259,7 +1292,7 @@ export function createAgentRuntime(input: {
             userPrompt: buildUserPrompt(effectiveText, runInput.instruction, externalFormOpenerDirective(message)),
             context: {
               ...context,
-              ...conversationReasoningContext(agent.behaviorConfig, safety),
+              ...conversationReasoningContext(reasoningConfig, safety),
               ...(replyPreflight?.outcome === "continue"
                 ? { agentPreflight: replyPreflight.plan }
                 : {}),
@@ -1341,7 +1374,7 @@ export function createAgentRuntime(input: {
           }
         }
 
-        const contextualHandoff = usesQualificationHandoff(agent.behaviorConfig);
+        const contextualHandoff = usesQualificationHandoff(agent.behaviorConfig) || Boolean(prospecting);
         // A failed image is an internal handoff: normalization would synthesize a customer reply.
         providerOutput = unreadableImageRequiresHandoff
           ? providerOutput
@@ -1395,12 +1428,19 @@ export function createAgentRuntime(input: {
           }
         }
         const handoffReason = getHandoffReason(providerOutput, confidenceThreshold);
+        // A lead who reached the goal (or asked for a person) hears the next step from
+        // the agent itself; only uncertain or guard-driven transfers stay silent.
+        const prospectingHandoffReply = Boolean(prospecting && handoffReason && modelGeneratedReply &&
+          providerOutput.confidence >= confidenceThreshold);
+        if (prospectingHandoffReply) deferredProspectingHandoff = handoffReason;
         const status: AgentRunStatus = handoffReason ? "handoff_requested" : "completed";
         const outboundReply = unreadableImageRequiresHandoff
           ? null
           : handoffReason
             ? contextualHandoff && providerOutput.handoff.required && providerOutput.confidence >= confidenceThreshold
-              ? providerOutput.reply ?? HANDOFF_ACKNOWLEDGEMENT
+              ? prospecting && (!providerOutput.reply || providerOutput.reply === HANDOFF_ACKNOWLEDGEMENT)
+                ? PROSPECTING_HANDOFF_ACKNOWLEDGEMENT
+                : providerOutput.reply ?? HANDOFF_ACKNOWLEDGEMENT
               : HANDOFF_ACKNOWLEDGEMENT
             : providerOutput.reply;
 
@@ -1411,7 +1451,10 @@ export function createAgentRuntime(input: {
             ? Array.from(new Set<AiAgentAllowedAction>([...allowedActions, "request_handoff"]))
             : allowedActions,
           allowedTags,
-          actions: providerOutput.actions
+          // The transfer action would end prospecting before the announcement is sent.
+          actions: prospectingHandoffReply
+            ? providerOutput.actions.filter((action) => normalizeActionType(action.type) !== "request_handoff")
+            : providerOutput.actions
         });
         if (meetingResult) actionResults = [meetingResult, ...actionResults];
         contextSummary = {
@@ -1443,7 +1486,7 @@ export function createAgentRuntime(input: {
           throw new Error("Agent did not produce a reply.");
         }
 
-        if (outboundReply && allowedActions.includes("send_message") && (!prospecting || !handoffReason)) {
+        if (outboundReply && allowedActions.includes("send_message") && (!prospecting || !handoffReason || prospectingHandoffReply)) {
           const beforeSend = await prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: conversation.id } }, include: { channel: true } });
           if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
           if (!beforeSend || (prospecting ? !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id, sessionId: session.id, expectedGeneration: prospectingGeneration }) : blocksAutonomousAgent(beforeSend.channel?.encryptedConfig) || (beforeSend.aiControlStatus === 'human_controlled' && !handoffReason))) return { status: 'skipped', message: 'Human review is required.' };
@@ -1592,6 +1635,7 @@ export function createAgentRuntime(input: {
         return { status, runId: run.id };
       } catch (error) {
         const errorMessage = getErrorMessage(error);
+        if (deferredProspectingHandoff) await stopProspectingConversation(prisma, runInput.workspaceId, conversation.id, deferredProspectingHandoff);
         const run = await createRun({
           workspaceId: runInput.workspaceId,
           agentId: agent.id,
@@ -2179,6 +2223,8 @@ async function sendAgentAttachmentToProvider(
     caption: attachment.caption ?? undefined
   });
 }
+
+const PROSPECTING_HANDOFF_ACKNOWLEDGEMENT = "Perfeito! Vou pedir para alguém do nosso time continuar com você por aqui.";
 
 function getHandoffReason(output: AgentOutput, confidenceThreshold: number) {
   const requestHandoffAction = output.actions.find((action) => action.type === "request_handoff");
