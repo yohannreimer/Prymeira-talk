@@ -13,6 +13,7 @@ import { deriveTrustedMessagingContext } from '../messaging/canonical-source.js'
 import { observeProspectingInbound } from '../prospecting/prospecting-lifecycle.js';
 import type { EvolutionClient } from '../evolution/evolution.client.js';
 import { createConversationsService, type PrismaLike as ConversationsPrismaLike } from '../conversations/conversations.service.js';
+import { createAgentRuntime } from '../agents/agent-runtime.js';
 import { repairPausedProspecting } from './paused-prospecting-repair.js';
 
 const url = process.env.CAMPAIGN_INTEGRATION_DATABASE_URL;
@@ -105,6 +106,45 @@ describe.skipIf(!safe).sequential('campaign identity through real canonical ingr
     expect(await db.message.count({ where: { workspaceId: f.workspaceId, direction: 'outbound' } })).toBe(2);
     expect(await db.conversation.findUniqueOrThrow({ where: { id: conversation.id } })).toMatchObject({ aiControlStatus: 'agent_allowed' });
     expect(await db.outboundIntent.count({ where: { workspaceId: f.workspaceId, state: 'bound' } })).toBe(2);
+  });
+  it.each([false, true])('sends separate prospecting paragraphs and stops on human takeover=%s', async humanTakeover => {
+    const f = await fixture(), receipts: string[] = [];
+    const send = vi.fn(async (command: { text: string }) => {
+      const id = randomUUID(); receipts.push(await f.receive('outbound', id, command.text));
+      if (humanTakeover && command.text === 'A IA responde clientes.') await db.conversation.updateMany({
+        where: { workspaceId: f.workspaceId }, data: { aiControlStatus: 'human_controlled' }
+      });
+      return { providerMessageId: id, raw: { key: { id, remoteJid: '554730290282@s.whatsapp.net', fromMe: true } } };
+    });
+    const base = { sendText: send, checkWhatsappNumbersAvailability: vi.fn(async ({ numbers }: { numbers: string[] }) => ({ numbers: numbers.map(phone => ({ phone, available: true })), raw: {} })) } as unknown as EvolutionClient;
+    const router = createOutboundRouter({ base, waha: null, db, campaignPrisma: db, journal: createOutboundDispatchJournal(db) });
+    await createCampaignWorker({ prisma: db, evolution: router }).processOne();
+    const conversation = await db.conversation.findFirstOrThrow({ where: { workspaceId: f.workspaceId } });
+    await f.receive('inbound', randomUUID(), 'Sou eu que cuido. Como funciona?');
+    const reply = await db.message.findFirstOrThrow({ where: { workspaceId: f.workspaceId, direction: 'inbound' } });
+    await observeProspectingInbound(db, { workspaceId: f.workspaceId, conversationId: conversation.id,
+      messageId: reply.id, direction: reply.direction, type: reply.type, body: reply.body, createdAt: reply.createdAt, ingestedAt: reply.ingestedAt });
+    await db.aiAgent.update({ where: { id: f.agent.id }, data: { behaviorConfig: { replyInBubbles: true } } });
+    const runtime = createAgentRuntime({ prisma: db as never, provider: { generate: vi.fn(async () => ({
+      confidence: 1, reply: 'A IA responde clientes.\n\nAjuda a dar retorno aos orçamentos.\n\nQuer entender como funciona aí?',
+      actions: [], handoff: { required: false, reason: null }
+    })) }, evolution: { mode: 'real', client: router } });
+    const outcome = await runtime.runForMessage({ workspaceId: f.workspaceId, agentId: f.agent.id,
+      conversationId: conversation.id, messageId: reply.id, trigger: 'automation' });
+    if (humanTakeover) {
+      expect(outcome.status).toBe('failed');
+      expect(send.mock.calls.map(([command]) => command.text)).toEqual(['Oi, aqui é o João.', 'A IA responde clientes.']);
+      expect(await db.conversation.findUnique({ where: { id: conversation.id } })).toMatchObject({ aiControlStatus: 'human_controlled' });
+      return;
+    }
+    expect(outcome.status).toBe('completed');
+    expect(send.mock.calls.map(([command]) => command.text)).toEqual([
+      'Oi, aqui é o João.', 'A IA responde clientes.', 'Ajuda a dar retorno aos orçamentos.', 'Quer entender como funciona aí?'
+    ]);
+    expect(await db.outboundIntent.count({ where: { workspaceId: f.workspaceId, originKind: 'prospecting_delivery', state: 'bound' } })).toBe(3);
+    expect(await db.message.count({ where: { workspaceId: f.workspaceId, direction: 'outbound' } })).toBe(4);
+    expect(await db.conversation.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+    expect(await db.conversation.findUnique({ where: { id: conversation.id } })).toMatchObject({ aiControlStatus: 'agent_allowed' });
   });
   it('persists incomplete acceptance and never retries the same recipient automatically', async () => {
     const f = await fixture();
