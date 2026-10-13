@@ -789,10 +789,13 @@ export function createAgentRuntime(input: {
         }) as MessageRecord[];
         const loopGuard = evaluateAgentLoopGuard({
           messages: recentMessages,
-          now: new Date()
+          now: new Date(),
+          stopOnAutomatedReception: asRecord(agent.behaviorConfig).pauseAutomatedReception === true
         });
 
         if (loopGuard.triggered) {
+          const stopReason = ["automated_menu", "waiting_reception"].includes(loopGuard.guard)
+            ? "automated_reception_wait" : "possible_automation_loop";
           const loopContextSummary = {
             ...contextSummary,
             loopGuard: loopGuard.guard,
@@ -808,7 +811,7 @@ export function createAgentRuntime(input: {
             },
             data: {
               status: "handoff_requested",
-              handoffReason: "possible_automation_loop",
+              handoffReason: stopReason,
               handoffActionCompletedAt: null,
               lastRunAt: new Date()
             }
@@ -838,7 +841,7 @@ export function createAgentRuntime(input: {
               }
             }
           });
-          if (prospecting) await stopProspectingConversation(prisma, runInput.workspaceId, conversation.id, "possible_automation_loop");
+          if (prospecting) await stopProspectingConversation(prisma, runInput.workspaceId, conversation.id, stopReason);
           await publishConversationUpdated(runInput.workspaceId, conversation.id);
           const run = await createRun({
             workspaceId: runInput.workspaceId,
@@ -855,7 +858,7 @@ export function createAgentRuntime(input: {
           return {
             status: "handoff_requested",
             runId: run.id,
-            message: "possible_automation_loop"
+            message: stopReason
           };
         }
 

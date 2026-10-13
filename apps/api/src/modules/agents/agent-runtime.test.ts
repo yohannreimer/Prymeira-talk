@@ -576,6 +576,20 @@ describe("createAgentRuntime", () => {
     expect((await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: 'automation' })).status).toBe('skipped');
     expect(sendText).not.toHaveBeenCalled(); expect(prisma.message.create).not.toHaveBeenCalled();
   });
+  it('pauses an opted-in agent on the first menu without calling the model or sending a message', async () => {
+    const message = { ...baseMessage, body: 'Digite uma opção:\n1 - Vendas\n2 - Suporte', createdAt: new Date() };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ ...baseAgent, behaviorConfig: { pauseAutomatedReception: true } });
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(message);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([message]);
+    const provider = buildProvider({ confidence: 1, reply: 'Não enviar.', actions: [], handoff: { required: false, reason: null } });
+    const sendText = vi.fn();
+    const runtime = createAgentRuntime({ prisma, provider, evolution: { mode: 'real', client: { sendText } } });
+    expect(await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: 'automation' })).toMatchObject({ status: 'handoff_requested', message: 'automated_reception_wait' });
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ aiControlStatus: 'human_controlled' }) }));
+  });
   it("stops a repeated automated exchange silently before provider generation", async () => {
     const currentNow = new Date();
     const repeated = "Não entendi, escolha uma das opções acima, por favor.";
