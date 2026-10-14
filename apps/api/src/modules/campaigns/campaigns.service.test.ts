@@ -11,6 +11,7 @@ type MockPrisma = {
     findFirst: any;
     create: any;
     update: any;
+    deleteMany?: any;
   };
   campaignRecipient: {
     findMany: any;
@@ -22,6 +23,8 @@ type MockPrisma = {
   };
   contact: {
     findFirst: any;
+    findMany?: any;
+    update?: any;
     create: any;
   };
   conversation: {
@@ -125,7 +128,8 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
       findMany: overrides.campaign?.findMany ?? vi.fn().mockResolvedValue([baseCampaign]),
       findFirst: overrides.campaign?.findFirst ?? vi.fn().mockResolvedValue(baseCampaign),
       create: overrides.campaign?.create ?? vi.fn().mockResolvedValue(baseCampaign),
-      update: overrides.campaign?.update ?? vi.fn().mockResolvedValue(baseCampaign)
+      update: overrides.campaign?.update ?? vi.fn().mockResolvedValue(baseCampaign),
+      deleteMany: overrides.campaign?.deleteMany ?? vi.fn().mockResolvedValue({ count: 1 })
     },
     campaignRecipient: {
       findMany:
@@ -187,6 +191,8 @@ function createMockPrisma(overrides: Partial<MockPrisma> = {}): MockPrisma & Pri
     },
     contact: {
       findFirst: overrides.contact?.findFirst ?? vi.fn().mockResolvedValue(null),
+      findMany: overrides.contact?.findMany ?? vi.fn().mockResolvedValue([]),
+      update: overrides.contact?.update ?? vi.fn().mockResolvedValue({}),
       create:
         overrides.contact?.create ??
         vi.fn().mockImplementation(async (args) => ({
@@ -348,6 +354,69 @@ describe("campaigns service", () => {
     );
   });
 
+  it("uses the first name from the injected name insight service in the simulated queue", async () => {
+    const prisma = createMockPrisma();
+    const resolve = vi.fn().mockResolvedValue({
+      status: "ok",
+      firstNames: { [firstContactId]: "Ana", [secondContactId]: null }
+    });
+    const service = createCampaignsService(prisma, { nameInsight: { resolve } });
+
+    await service.sendSimulated({ workspaceId: "workspace_a", campaignId });
+
+    expect(resolve).toHaveBeenCalledWith({
+      workspaceId: "workspace_a",
+      contacts: [
+        { audienceKey: firstContactId, contactId: firstContactId, name: "Ana" },
+        { audienceKey: secondContactId, contactId: secondContactId, name: "Bruno" }
+      ]
+    });
+    const upsert = vi.mocked(prisma.campaignRecipient.upsert);
+    expect(upsert.mock.calls[0]?.[0].create).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          messagePreview: "Oi Ana, temos uma novidade para você."
+        })
+      })
+    );
+    expect(upsert.mock.calls[1]?.[0].create).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          messagePreview: "Oi, temos uma novidade para você."
+        })
+      })
+    );
+  });
+
+  it("leaves the name empty for company-like contact names when no name insight is injected", async () => {
+    const prisma = createMockPrisma({
+      contactBoardMembership: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            contactId: firstContactId,
+            contact: {
+              id: firstContactId,
+              workspaceId: "workspace_a",
+              name: "Prymeira",
+              phone: "+5511999990001"
+            }
+          }
+        ])
+      }
+    });
+    const service = createCampaignsService(prisma);
+
+    await service.sendSimulated({ workspaceId: "workspace_a", campaignId });
+
+    expect(vi.mocked(prisma.campaignRecipient.upsert).mock.calls[0]?.[0].create).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({
+          messagePreview: "Oi, temos uma novidade para você."
+        })
+      })
+    );
+  });
+
   it("builds a delayed simulated queue from imported rows with rotating templates and fallback names", async () => {
     const importedCampaign = {
       ...baseCampaign,
@@ -379,6 +448,7 @@ describe("campaigns service", () => {
       }
     });
     const service = createCampaignsService(prisma, {
+      nameInsight: { resolve: async () => ({ status: "ok" as const, firstNames: { "+5511999990002": "Maria" } }) },
       now: () => new Date("2026-05-25T12:00:00.000Z")
     });
 
@@ -396,7 +466,7 @@ describe("campaigns service", () => {
         scheduledAt: new Date("2026-05-25T12:00:00.000Z"),
         status: "queued_simulated",
         result: expect.objectContaining({
-          messagePreview: "Oi cliente, novidade para Prymeira.",
+          messagePreview: "Oi, novidade para Prymeira.",
           templateIndex: 0
         })
       })
@@ -416,7 +486,7 @@ describe("campaigns service", () => {
         audienceKey: "+5511999990003",
         scheduledAt: new Date("2026-05-25T12:07:00.000Z"),
         result: expect.objectContaining({
-          messagePreview: "Oi cliente, novidade para Sem Nome.",
+          messagePreview: "Oi, novidade para Sem Nome.",
           templateIndex: 0
         })
       })
@@ -446,6 +516,7 @@ describe("campaigns service", () => {
         mode: "real",
         client: { sendText }
       },
+      nameInsight: { resolve: async () => ({ status: "ok" as const, firstNames: { [firstContactId]: "Ana", [secondContactId]: "Ana" } }) },
       now: () => new Date("2026-05-25T12:00:00.000Z")
     });
 
@@ -685,6 +756,7 @@ describe("campaigns service", () => {
     expect(prisma.contact.findFirst).toHaveBeenCalledWith({
       where: {
         workspaceId: "workspace_a",
+        isGroup: false,
         phone: { in: expect.arrayContaining(["5511999990001"]) }
       },
       orderBy: { updatedAt: "desc" }
@@ -892,6 +964,7 @@ describe("campaigns service", () => {
         instanceName: null,
         client: { sendTemplate }
       },
+      nameInsight: { resolve: async () => ({ status: "ok" as const, firstNames: { [firstContactId]: "Ana", [secondContactId]: "Bruno" } }) },
       now: () => new Date("2026-05-25T12:00:00.000Z")
     });
 
@@ -935,6 +1008,65 @@ describe("campaigns service", () => {
           ]
         }
       ]
+    }));
+  });
+
+  it.each([
+    ["cliente", "cliente"],
+    ["amigo", "amigo"]
+  ])("never sends an empty Meta parameter when the name is blank (fallback %s)", async (fallbackName, expected) => {
+    const sendTemplate = vi.fn().mockResolvedValue({
+      providerMessageId: "evo_dynamic_parameter_2",
+      raw: { key: { id: "evo_dynamic_parameter_2" } }
+    });
+    const prisma = createMockPrisma({
+      campaign: {
+        findMany: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue({ ...baseCampaign, fallbackName }),
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({ ...baseCampaign, status: "completed", mode: "real" })
+      },
+      channel: {
+        findFirst: vi.fn(),
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "channel_meta_evolution_1",
+            workspaceId: "workspace_a",
+            provider: "meta_cloud",
+            providerKey: "official-instance-one",
+            status: "connected"
+          }
+        ])
+      },
+      metaMessageTemplate: {
+        findFirst: vi.fn()
+      }
+    });
+    const service = createCampaignsService(prisma, {
+      metaEvolution: {
+        instanceName: null,
+        client: { sendTemplate }
+      },
+      nameInsight: { resolve: async () => ({ status: "ok" as const, firstNames: { [firstContactId]: "Ana", [secondContactId]: null } }) },
+      now: () => new Date("2026-05-25T12:00:00.000Z")
+    });
+
+    await service.sendMetaTemplate({
+      workspaceId: "workspace_a",
+      campaignId,
+      channelIds: ["channel_meta_evolution_1"],
+      template: {
+        name: "reactivation_vip",
+        language: "pt_BR",
+        components: [{ type: "body", parameters: [{ type: "text", text: "{{nome}}" }] }]
+      }
+    });
+
+    expect(sendTemplate).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      components: [{ type: "body", parameters: [{ type: "text", text: "Ana" }] }]
+    }));
+    expect(sendTemplate).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      components: [{ type: "body", parameters: [{ type: "text", text: expected }] }]
     }));
   });
 
@@ -1405,7 +1537,25 @@ describe("campaigns service", () => {
     expect(prisma.contactBoardMembership.findMany).not.toHaveBeenCalled();
   });
 
-  it("derives scheduled status when updating a campaign schedule without explicit status", async () => {
+  it('resolves the current members of a reusable list for each draft preview', async () => {
+    const listId = '00000000-0000-4000-8000-000000000301';
+    const contact = { id: firstContactId, workspaceId: 'workspace_a', name: 'Ana',
+      phone: '5547999999999', email: 'ana@example.com', company: 'Villefer' };
+    const findFirst = vi.fn().mockResolvedValueOnce({ members: [{ contactId: firstContactId, contact }] })
+      .mockResolvedValueOnce({ members: [] });
+    const prisma = Object.assign(createMockPrisma({ campaign: {
+      findMany: vi.fn(), findFirst: vi.fn().mockResolvedValue({ ...baseCampaign, audience: { type: 'list', listId } }),
+      create: vi.fn(), update: vi.fn()
+    } }), { broadcastList: { findFirst } });
+    const service = createCampaignsService(prisma);
+    expect(await service.resolveAudience({ workspaceId: 'workspace_a', campaignId })).toEqual([
+      expect.objectContaining({ contactId: firstContactId, name: 'Ana', fields: expect.objectContaining({ company: 'Villefer' }) })
+    ]);
+    expect(await service.resolveAudience({ workspaceId: 'workspace_a', campaignId })).toEqual([]);
+    expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: 'workspace_a', id: listId } }));
+  });
+
+  it("keeps a saved future schedule as a draft until explicit activation", async () => {
     const prisma = createMockPrisma();
     const service = createCampaignsService(prisma);
 
@@ -1421,13 +1571,13 @@ describe("campaigns service", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           scheduledAt: new Date("2026-05-22T12:00:00.000Z"),
-          status: "scheduled"
+          status: "draft"
         })
       })
     );
   });
 
-  it("keeps completed campaign status when editing an empty schedule without explicit status", async () => {
+  it("rejects edits to a completed campaign", async () => {
     const prisma = createMockPrisma({
       campaign: {
         findMany: vi.fn(),
@@ -1438,26 +1588,18 @@ describe("campaigns service", () => {
     });
     const service = createCampaignsService(prisma);
 
-    await service.updateCampaign({
+    await expect(service.updateCampaign({
       workspaceId: "workspace_a",
       campaignId,
       data: {
         name: "Reativação editada",
         scheduledAt: null
       }
-    });
-
-    expect(prisma.campaign.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          scheduledAt: null,
-          status: "completed"
-        })
-      })
-    );
+    })).rejects.toMatchObject({ code: "CAMPAIGN_NOT_DRAFT" });
+    expect(prisma.campaign.update).not.toHaveBeenCalled();
   });
 
-  it("returns scheduled campaigns to draft when clearing schedule without explicit status", async () => {
+  it("rejects direct edits to an already scheduled campaign", async () => {
     const prisma = createMockPrisma({
       campaign: {
         findMany: vi.fn(),
@@ -1468,26 +1610,73 @@ describe("campaigns service", () => {
     });
     const service = createCampaignsService(prisma);
 
-    await service.updateCampaign({
+    await expect(service.updateCampaign({
       workspaceId: "workspace_a",
       campaignId,
       data: {
         scheduledAt: null
       }
-    });
-
-    expect(prisma.campaign.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          scheduledAt: null,
-          status: "draft"
-        })
-      })
-    );
+    })).rejects.toMatchObject({ code: "CAMPAIGN_NOT_DRAFT" });
+    expect(prisma.campaign.update).not.toHaveBeenCalled();
   });
 });
 
 describe("campaigns routes", () => {
+  it("excludes a draft only from the current workspace", async () => {
+    const { app, prisma } = await buildCampaignsApp();
+    try {
+      const response = await app.inject({ method: "DELETE", url: `/campaigns/${campaignId}` });
+      expect(response.statusCode).toBe(204);
+      expect(prisma.campaign.deleteMany).toHaveBeenCalledWith({
+        where: { workspaceId: "workspace_a", id: campaignId, status: "draft" }
+      });
+    } finally { await app.close(); }
+  });
+
+  it("does not delete a campaign that has already started", async () => {
+    const prisma = createMockPrisma({ campaign: {
+      findMany: vi.fn(), findFirst: vi.fn().mockResolvedValue({ ...baseCampaign, status: "sending" }),
+      create: vi.fn(), update: vi.fn(), deleteMany: vi.fn().mockResolvedValue({ count: 0 })
+    } });
+    const { app } = await buildCampaignsApp({ prisma });
+    try {
+      const response = await app.inject({ method: "DELETE", url: `/campaigns/${campaignId}` });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ code: "CAMPAIGN_NOT_DRAFT" });
+    } finally { await app.close(); }
+  });
+
+  it("does not reveal campaigns belonging to another workspace", async () => {
+    const prisma = createMockPrisma({ campaign: {
+      findMany: vi.fn(), findFirst: vi.fn().mockResolvedValue(null), create: vi.fn(), update: vi.fn(),
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 })
+    } });
+    const { app } = await buildCampaignsApp({ prisma });
+    try {
+      const response = await app.inject({ method: "DELETE", url: `/campaigns/${campaignId}` });
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({ code: "CAMPAIGN_NOT_FOUND" });
+    } finally { await app.close(); }
+  });
+
+  it("requires campaign management permission to delete", async () => {
+    const { app, prisma } = await buildCampaignsApp({ role: "agent" });
+    try {
+      const response = await app.inject({ method: "DELETE", url: `/campaigns/${campaignId}` });
+      expect(response.statusCode).toBe(403);
+      expect(prisma.campaign.deleteMany).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  it("rejects the legacy real-send shortcut without contacting Evolution", async () => {
+    const { app } = await buildCampaignsApp();
+    try {
+      const response = await app.inject({ method: "POST",
+        url: `/campaigns/${campaignId}/send-real`, payload: {} });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ code: "CAMPAIGN_REVIEW_REQUIRED" });
+    } finally { await app.close(); }
+  });
   it("sends a simulated campaign from POST /campaigns/:campaignId/send-simulated", async () => {
     const prisma = createMockPrisma({
       campaign: {

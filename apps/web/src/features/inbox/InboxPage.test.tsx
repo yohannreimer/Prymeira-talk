@@ -1,11 +1,14 @@
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  ConversationCampaignSource,
   audioMessageDisplayText,
   attachmentReadNotice,
   aiControlActionLabel,
   aiControlLabel,
   applyComposerMarker,
   canResetConversation,
+  conversationPreviewTime,
   filterConversationsNeedingHuman,
   insertComposerText,
   isBrowserPlayableAudio,
@@ -18,6 +21,8 @@ import {
   needsHumanAttention,
   outboundStatusLabel,
   sortConversationsByRecency,
+  mergeConversationPage,
+  resolveSelectedConversation,
   upsertConversation
 } from "./InboxPage";
 import { quickReplyMatchesQuery, quickReplyMutationErrorMessage } from "./QuickRepliesPopover";
@@ -40,6 +45,8 @@ describe("AI control helpers", () => {
     expect(aiControlLabel({ aiControlStatus: "human_controlled", activeAgentName: null })).toBe("Humano no controle");
     expect(aiControlLabel({ aiControlStatus: "agent_allowed", activeAgentName: "Secretaria IA" })).toBe("IA ativa: Secretaria IA");
     expect(aiControlLabel({ aiControlStatus: "agent_allowed", activeAgentName: null })).toBe("IA liberada");
+    expect(aiControlLabel({ aiControlStatus: "agent_allowed", activeAgentName: null }, "automatic")).toBe("Apoio com revisão");
+    expect(aiControlLabel({ aiControlStatus: "agent_allowed", activeAgentName: null }, "automatic_with_agent")).toBe("Agente liberado");
   });
 
   it("chooses the correct AI control action label", () => {
@@ -69,6 +76,10 @@ describe("AI control helpers", () => {
         handoffReason: null
       })
     ).toBe(false);
+    expect(needsHumanAttention({
+      aiControlStatus: "human_controlled", activeAgentSessionStatus: "handoff_requested",
+      handoffReason: "Confirmar pedido", handoffActionCompletedAt: "2026-09-23T12:00:00.000Z"
+    })).toBe(false);
   });
 });
 
@@ -102,15 +113,40 @@ describe("human attention view", () => {
       aiControlStatus: "agent_allowed",
       activeAgentSessionStatus: "active"
     });
+    const completed = conversation("completed", {
+      activeAgentSessionStatus: "handoff_requested", aiControlStatus: "human_controlled",
+      handoffReason: "Confirmar pedido", handoffActionCompletedAt: "2026-09-23T12:00:00.000Z"
+    });
     const closed = conversation("closed", {
       status: "closed",
       aiControlStatus: "human_controlled",
       handoffReason: "Pedido encerrado"
     });
-    const all = [handoff, human, agent, closed];
+    const all = [handoff, human, agent, completed, closed];
 
     expect(filterConversationsNeedingHuman(all, false)).toBe(all);
     expect(filterConversationsNeedingHuman(all, true).map(({ id }) => id)).toEqual(["handoff", "human"]);
+  });
+});
+
+describe("conversation pagination", () => {
+  it("appends older pages without replacing a newer realtime conversation", () => {
+    const recent = {
+      id: "recent",
+      workspaceId: "workspace-1",
+      channelId: "channel-1",
+      contactId: "contact-1",
+      status: "open" as const,
+      assignedUserId: null,
+      departmentId: null,
+      lastMessageAt: "2026-09-25T13:00:00.000Z",
+      lastMessagePreview: "nova mensagem",
+      unreadCount: 0,
+      priority: "normal" as const
+    };
+    const older = { ...recent, id: "older", contactId: "contact-2", lastMessageAt: "2026-09-24T13:00:00.000Z" };
+
+    expect(mergeConversationPage([recent], [{ ...recent, lastMessagePreview: "antiga" }, older])).toEqual([recent, older]);
   });
 });
 
@@ -226,7 +262,8 @@ describe("outboundStatusLabel", () => {
 
   it("shows sending only for optimistic pending messages", () => {
     expect(outboundStatusLabel(outboundMessage)).toBeNull();
-    expect(outboundStatusLabel({ ...outboundMessage, id: "optimistic-1" })).toBe("Enviando...");
+    // Sending is the clock in the ticks' place, not a label under the bubble.
+    expect(outboundStatusLabel({ ...outboundMessage, id: "optimistic-1" })).toBeNull();
   });
 
   it("shows failed outbound messages", () => {
@@ -330,6 +367,17 @@ describe("conversation queue ordering", () => {
     ]);
   });
 
+  it("shows a broadcast's latest text and time without changing an existing card's position", () => {
+    const older = conversationFixture({ id: "older", lastMessageAt: "2026-09-20T10:00:00.000Z" });
+    const newer = conversationFixture({ id: "newer", lastMessageAt: "2026-09-20T11:00:00.000Z" });
+    const broadcast = { ...older, lastMessagePreview: "Oferta de hoje",
+      lastMessagePreviewAt: "2026-09-20T13:00:00.000Z" };
+    const list = upsertConversation([newer, older], broadcast);
+    expect(list.map((item) => item.id)).toEqual(["newer", "older"]);
+    expect(list[1]?.lastMessagePreview).toBe("Oferta de hoje");
+    expect(conversationPreviewTime(list[1]!)).toBe("2026-09-20T13:00:00.000Z");
+  });
+
   it("moves a conversation up only when it receives newer activity", () => {
     const older = conversationFixture({ id: "older", lastMessageAt: "2026-09-20T10:00:00.000Z" });
     const newer = conversationFixture({ id: "newer", lastMessageAt: "2026-09-20T11:00:00.000Z" });
@@ -339,5 +387,31 @@ describe("conversation queue ordering", () => {
       "older",
       "newer"
     ]);
+  });
+
+  it("keeps confirmed triage fields when an older realtime producer omits them", () => {
+    const current = conversationFixture({ id: "c", manualMarked: true, replyTriageDecision: "needs_reply" });
+    const event = conversationFixture({ id: "c", lastMessagePreview: "Nova mensagem" });
+    delete event.manualMarked;
+    delete event.replyTriageDecision;
+    expect(upsertConversation([current], event)[0]).toMatchObject({
+      manualMarked: true, replyTriageDecision: "needs_reply", lastMessagePreview: "Nova mensagem"
+    });
+  });
+
+  it("keeps the opened conversation visible after a filter removes its card", () => {
+    const opened = conversationFixture({ id: "opened", unreadCount: 0 });
+    expect(resolveSelectedConversation([], "opened", opened)).toEqual(opened);
+    expect(resolveSelectedConversation([], "other", opened)).toBeNull();
+  });
+});
+
+describe("campaign source in inbox", () => {
+  it("links the source campaign independently of agent or human control", () => {
+    const conversation = { sourceCampaign: { id: "campaign/id", name: "Oferta setembro" }, aiControlStatus: "human_controlled" as const };
+    const html = renderToStaticMarkup(<ConversationCampaignSource conversation={conversation} />);
+    expect(html).toContain("Campanha: Oferta setembro");
+    expect(html).toContain("?module=disparos&amp;campaign=campaign%2Fid");
+    expect(renderToStaticMarkup(<ConversationCampaignSource conversation={{ sourceCampaign: null }} />)).toBe("");
   });
 });

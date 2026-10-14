@@ -7,8 +7,10 @@ function insertedText(text: string) {
   const paragraphs = parseWhatsappText(text).content!;
   return paragraphs.length === 1 ? paragraphs[0].content ?? [] : paragraphs;
 }
-export interface RichDraftHandle { focus(): void; format(mark: 'bold' | 'italic'): void; insertText(text: string): void }
-export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: boolean; onChange(value: string): void; onFormatChange(value: { bold: boolean; italic: boolean }): void }>(function RichDraft(props, ref) {
+export interface RichDraftHandle { focus(): void; focusEnd(): void; format(mark: 'bold' | 'italic'): void; insertText(text: string): void }
+export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: boolean; onChange(value: string): void; onFormatChange(value: { bold: boolean; italic: boolean }): void; onPasteImage?(file: File): void;
+  /** Lets an open menu (the "/" quick replies) take ↑ ↓ Enter Tab Esc before the editor does. */
+  onKeyCommand?(key: string): boolean }>(function RichDraft(props, ref) {
   const latest = useRef(props); latest.current = props;
   const written = useRef(props.value);
   const editor = useEditor({
@@ -19,12 +21,22 @@ export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: 
     editorProps: {
       attributes: { role: 'textbox', 'aria-label': 'Mensagem', 'aria-multiline': 'true', class: 'composer-rich-input', 'data-placeholder': 'Escreva uma mensagem...' },
       handleKeyDown(view, event) {
+        if (['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'].includes(event.key) && !event.isComposing && latest.current.onKeyCommand?.(event.key)) {
+          event.preventDefault(); return true;
+        }
         if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !view.composing) {
           event.preventDefault(); view.dom.closest('form')?.requestSubmit(); return true;
         }
         return false;
       },
       handlePaste(_view, event) {
+        const imageItem = Array.from(event.clipboardData?.items ?? []).find(item => item.kind === 'file' && item.type.startsWith('image/'));
+        const image = imageItem?.getAsFile() ?? Array.from(event.clipboardData?.files ?? []).find(file => file.type.startsWith('image/'));
+        if (image && latest.current.onPasteImage) {
+          event.preventDefault();
+          latest.current.onPasteImage(image.name ? image : new File([image], 'captura-de-tela.png', { type: image.type }));
+          return true;
+        }
         const text = event.clipboardData?.getData('text/plain');
         if (!text) return false;
         event.preventDefault(); editor?.commands.insertContent(insertedText(text)); return true;
@@ -33,14 +45,16 @@ export const RichDraft = forwardRef<RichDraftHandle, { value: string; disabled: 
     onUpdate({ editor }) { const value = serializeWhatsappText(editor.getJSON()); written.current = value; latest.current.onChange(value); },
     onTransaction({ editor }) { latest.current.onFormatChange({ bold: editor.isActive('bold'), italic: editor.isActive('italic') }); }
   });
-  useEffect(() => { editor?.setEditable(!props.disabled); }, [editor, props.disabled]);
   useEffect(() => {
     if (editor && props.value !== written.current) { written.current = props.value; editor.commands.setContent(parseWhatsappText(props.value), { emitUpdate: false }); }
   }, [editor, props.value]);
+  useEffect(() => { editor?.setEditable(!props.disabled); }, [editor, props.disabled]);
   useImperativeHandle(ref, () => ({
     focus: () => { editor?.commands.focus(); },
+    focusEnd: () => { editor?.commands.focus('end'); },
     format: mark => { if (!props.disabled) editor?.chain().focus().toggleMark(mark).run(); },
     insertText: text => { if (!props.disabled) editor?.chain().focus().insertContent(insertedText(text)).run(); }
   }), [editor, props.disabled]);
-  return <EditorContent editor={editor} className="composer-rich-shell" />;
+  // The placeholder shows only when there is truly nothing written (CSS alone cannot see the text beside a line break).
+  return <EditorContent editor={editor} className={`composer-rich-shell${props.value ? '' : ' is-empty'}`} />;
 });

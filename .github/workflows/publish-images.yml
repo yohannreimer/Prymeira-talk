@@ -53,5 +53,5 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image }}:latest
+            ${{ github.event_name == 'push' && format('{0}/{1}/{2}:latest', env.REGISTRY, env.IMAGE_OWNER, matrix.image) || '' }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image }}:${{ github.sha }}

@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { AssistantSendInput, ConversationDto, MessageDto } from '@prymeira-talk/shared';
 import { AssistantError, lockAssistantConversation, requireAssistantConversation, type AssistantActor } from './assistant-access.js';
 import { assistantHash, loadAssistantContext } from './assistant-generation.js';
+import { pauseAgentOnHumanOutbound } from '../conversations/pause-agent-on-human-outbound.js';
 
 export function createAssistantSendService(prisma: PrismaClient, transport: (input: { workspaceId: string; conversationId: string; body: string; sentByUserId: string; reservedMessageId: string }) => Promise<{ message: MessageDto; conversation: ConversationDto }>) {
   return async (actor: AssistantActor, conversationId: string, input: AssistantSendInput) => {
@@ -21,9 +22,14 @@ export function createAssistantSendService(prisma: PrismaClient, transport: (inp
         if (state?.status !== 'ready' || state.revision !== suggestion.revision) throw new AssistantError('ASSISTANT_STALE', 'A sugestão está sendo atualizada. Aguarde a nova revisão.');
       }
       const context = await loadAssistantContext(tx, actor.workspaceId, conversationId);
-      if (context.conversation.aiControlStatus === 'human_controlled' && !input.edited) throw new AssistantError('ASSISTANT_PAUSED', 'O humano está no controle. Use o campo de mensagem para enviar manualmente.');
+      if (context.conversation.aiControlStatus === 'human_controlled' && !context.humanSupport && !input.edited) throw new AssistantError('ASSISTANT_PAUSED', 'A IA de apoio não está disponível nesta conversa.');
       if (context.contextKey !== input.reviewedContextKey || (!input.edited && suggestion.contextKey !== context.contextKey)) throw new AssistantError('ASSISTANT_STALE', 'A conversa mudou. Revise o texto antes de enviar.');
       const message = await tx.message.create({ data: { workspaceId: actor.workspaceId, conversationId, direction: 'outbound', type: 'text', body: input.body, status: 'pending', sentByUserId: actor.userId, metadata: { source: 'assistant_review', suggestionId: suggestion.id, requestKey: input.requestKey } } });
+      await pauseAgentOnHumanOutbound(tx, {
+        workspaceId: actor.workspaceId,
+        conversationId,
+        actorUserId: actor.userId
+      });
       const send = await tx.assistantSuggestionSend.create({ data: { workspaceId: actor.workspaceId, requestKey: input.requestKey, suggestionId: suggestion.id, bodyHash, finalBody: input.body, actorUserId: actor.userId, messageId: message.id } });
       await tx.assistantConversationState.updateMany({ where: { workspaceId: actor.workspaceId, conversationId }, data: { status: 'sent', revision: { increment: 1 }, scheduledAt: null } });
       // This commit is the explicit-send acceptance point. A later takeover cannot unsend it.

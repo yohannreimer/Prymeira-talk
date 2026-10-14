@@ -74,9 +74,9 @@ function safeJobId(value: string) {
 export function createGoogleMapsScraperClient(options: GoogleMapsScraperClientOptions) {
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const requestTimeoutMs = options.requestTimeoutMs ?? 15_000;
-  const depth = options.depth ?? 5;
-  if (!Number.isInteger(depth) || depth < 1 || depth > 5) {
-    throw invalidResponse("Google Maps scraper depth must be between 1 and the safe maximum of 5.");
+  const depth = options.depth ?? 12;
+  if (!Number.isInteger(depth) || depth < 1 || depth > 20) {
+    throw invalidResponse("Google Maps scraper depth must be between 1 and the safe maximum of 20.");
   }
   if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 60_000) {
     throw invalidResponse("Google Maps scraper request timeout is invalid.");

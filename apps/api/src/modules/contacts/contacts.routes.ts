@@ -1,9 +1,21 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
-import { createContactsService } from "./contacts.service.js";
+import { createContactsService, publicFollowupAudience } from "./contacts.service.js";
+import { saveManualFollowupAudience } from "../followups/followup-contact-audience.js";
+import { createInboxMediaService } from "../conversations/inbox-media.js";
+import { deploymentPhotoStore } from '../conversations/photo-store.js';
+import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import { resolveOpenAiCompatibleSettings } from "../agents/ai-provider-settings.js";
+import { createOpenAiCompatibleAgentProvider } from "../agents/provider-gateway.js";
+import { resolveNameInsight, saveNameInsight } from "./name-insight.js";
 
 const searchQuerySchema = z.object({
   search: z.string().optional()
+});
+const pageQuerySchema = z.object({
+  search: z.string().trim().max(100).optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
 });
 
 const contactParamsSchema = z.object({
@@ -57,8 +69,77 @@ function sendPhoneConflict(reply: FastifyReply) {
     });
 }
 
-export const contactsRoutes: FastifyPluginAsync = async (app) => {
+export const contactsRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntime }> = async (app, options) => {
   const service = createContactsService(app.prisma);
+  const mediaService = createInboxMediaService({ prisma: app.prisma, client: options.evolution?.client, photos: deploymentPhotoStore() });
+
+  // How to address the contact in a quick reply ({primeiro_nome}, {empresa}): saved answer, plain-name rule, or one AI read.
+  app.post("/contacts/:contactId/name-insight", async (request, reply) => {
+    const params = contactParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: "Contato inválido." });
+    const startedAt = Date.now();
+    try {
+      const insight = await resolveNameInsight(app.prisma, { workspaceId: request.talk.workspaceId, contactId: params.data.contactId }, await (async () => {
+        const settings = await resolveOpenAiCompatibleSettings(app.prisma, { workspaceId: request.talk.workspaceId });
+        return settings.active ? { provider: createOpenAiCompatibleAgentProvider(settings), model: settings.chatModel } : null;
+      })());
+      const ms = Date.now() - startedAt;
+      request.log.info({ event: "contact_name_insight", workspaceId: request.talk.workspaceId, source: insight.source, ms }, "Contact name insight resolved.");
+      return { ...insight, ms };
+    } catch (error) {
+      if (error instanceof Error && error.message === "NOT_FOUND") return reply.code(404).send({ error: "Contato não encontrado." });
+      throw error;
+    }
+  });
+  // The team corrects it by hand; a manual answer always wins over the AI's.
+  app.put("/contacts/:contactId/name-insight", async (request, reply) => {
+    const params = contactParamsSchema.safeParse(request.params);
+    const body = z.object({ firstName: z.string().trim().max(60).nullable(), fullName: z.string().trim().max(120).nullable().optional(),
+      company: z.string().trim().max(120).nullable(), salutation: z.string().trim().max(10).nullable().optional() }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: "Dados inválidos." });
+    const contact = await app.prisma.contact.findFirst({ where: { workspaceId: request.talk.workspaceId, id: params.data.contactId }, select: { customFields: true } });
+    if (!contact) return reply.code(404).send({ error: "Contato não encontrado." });
+    const insight = { firstName: body.data.firstName || null, fullName: body.data.fullName || body.data.firstName || null, company: body.data.company || null,
+      salutation: body.data.salutation || null, source: "manual" as const };
+    await saveNameInsight(app.prisma, { workspaceId: request.talk.workspaceId, contactId: params.data.contactId }, insight, contact.customFields);
+    return insight;
+  });
+
+  // Only the follow-up AI reads this marker; the team can correct it from the contact panel.
+  app.get("/contacts/:contactId/followup-audience", async (request, reply) => {
+    const params = contactParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: "Contato inválido." });
+    const contact = await app.prisma.contact.findFirst({ where: { workspaceId: request.talk.workspaceId, id: params.data.contactId }, select: { customFields: true } });
+    if (!contact) return reply.code(404).send({ error: "Contato não encontrado." });
+    return { followupAudience: publicFollowupAudience(contact.customFields) };
+  });
+  app.put("/contacts/:contactId/followup-audience", async (request, reply) => {
+    const params = contactParamsSchema.safeParse(request.params);
+    const body = z.object({ kind: z.enum(["customer", "internal_personal"]) }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: "Dados inválidos." });
+    const saved = await saveManualFollowupAudience(app.prisma, { workspaceId: request.talk.workspaceId, contactId: params.data.contactId, kind: body.data.kind });
+    if (!saved) return reply.code(404).send({ error: "Contato não encontrado." });
+    return { followupAudience: { kind: saved.kind, source: saved.source } };
+  });
+  app.get("/contacts/page", async (request, reply) => {
+    const query = pageQuerySchema.safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: "Invalid contacts page request." });
+    return service.listContactsPage({ workspaceId: request.talk.workspaceId, ...query.data });
+  });
+
+  app.get("/contacts/:contactId/photo", async (request, reply) => {
+    const params = contactParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: "Invalid contact photo request." });
+    reply.header("Cache-Control", "private, no-store").header("X-Content-Type-Options", "nosniff");
+    try {
+      const photo = await mediaService.photoForContact(request.talk.workspaceId, params.data.contactId);
+      return photo ? reply.type(photo.mimeType).send(photo.bytes) : reply.code(204).send();
+    } catch (error) {
+      if (error instanceof Error && error.message === "NOT_FOUND") return reply.code(404).send();
+      request.log.warn({ err: error }, "Failed to fetch contact photo");
+      return reply.code(503).send({ error: "Não foi possível carregar a foto do contato." });
+    }
+  });
 
   app.get("/contacts", async (request, reply) => {
     const query = searchQuerySchema.safeParse(request.query);

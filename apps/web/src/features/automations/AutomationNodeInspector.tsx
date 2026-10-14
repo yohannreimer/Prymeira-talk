@@ -5,9 +5,12 @@ import { apiUploadAutomationAsset } from "../../app/api";
 import type { AiAgentDto } from "../../app/api";
 import { useTalkAuth } from "../../app/auth";
 import type { AutomationCanvasNode } from "./automationFlow";
+import { AutomationWebhookTriggerPanel } from "./AutomationWebhookTriggerPanel";
 
 interface AutomationNodeInspectorProps {
   agents: AiAgentDto[];
+  automationId?: string | null;
+  automationRevision?: string | null;
   node: AutomationCanvasNode | null;
   onConfigChange: (nodeId: string, config: Record<string, unknown>) => void;
   onTypeChange?: (nodeId: string, type: AutomationBlockType) => void;
@@ -61,7 +64,14 @@ function updateConfigValue(
   });
 }
 
-export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeChange }: AutomationNodeInspectorProps) {
+export function AutomationNodeInspector({
+  agents,
+  automationId = null,
+  automationRevision = null,
+  node,
+  onConfigChange,
+  onTypeChange
+}: AutomationNodeInspectorProps) {
   const { getToken } = useTalkAuth();
   const [uploadingNodeId, setUploadingNodeId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -167,6 +177,15 @@ export function AutomationNodeInspector({ agents, node, onConfigChange, onTypeCh
             <p className="list-note">
               Executa somente quando essa conversa ainda não tinha mensagens inbound anteriores.
             </p>
+          ) : null}
+
+          {type === "trigger_webhook" ? (
+            <AutomationWebhookTriggerPanel
+              automationId={automationId}
+              automationRevision={automationRevision}
+              channelId={readConfigValue(config, "channelId")}
+              onChannelChange={(channelId) => updateConfigValue(node, "channelId", channelId, onConfigChange)}
+            />
           ) : null}
 
           {showsReengagementTrigger ? (

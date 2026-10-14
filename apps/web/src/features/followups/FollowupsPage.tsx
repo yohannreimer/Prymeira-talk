@@ -1,14 +1,17 @@
 import type { ConversationFollowupDto, MessageType, RealtimeEvent } from "@prymeira-talk/shared";
 import {
+  BellRing,
   CalendarClock,
   Check,
   CheckCircle2,
   Clock3,
   Edit3,
+  ExternalLink,
   Inbox,
   LoaderCircle,
   MessageCircleReply,
   RefreshCw,
+  Settings2,
   Send,
   UserRoundCheck,
   X,
@@ -18,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   apiCancelFollowup,
   apiListFollowups,
+  apiMarkFollowupDone,
   apiMarkFollowupNoFollowup,
   apiPostponeFollowup,
   apiSendFollowup,
@@ -34,9 +38,11 @@ import {
   followupStatusLabel,
   followupStepLabel,
   formatFollowupDate,
+  isSellerReminder,
   matchesFollowupFilter
 } from "./followup-display";
 import "./followups.css";
+import { FollowupSettings } from "./FollowupSettings";
 
 const filters: Array<{
   key: FollowupListStatus;
@@ -45,6 +51,7 @@ const filters: Array<{
   Icon: typeof MessageCircleReply;
 }> = [
   { key: "review", label: "Para revisar", shortLabel: "Revisar", Icon: MessageCircleReply },
+  { key: "reminders", label: "Lembretes", shortLabel: "Lembretes", Icon: BellRing },
   { key: "scheduled", label: "Agendados", shortLabel: "Agendados", Icon: CalendarClock },
   { key: "sent", label: "Enviados", shortLabel: "Enviados", Icon: CheckCircle2 },
   { key: "cancelled", label: "Cancelados", shortLabel: "Encerrados", Icon: XCircle }
@@ -54,6 +61,10 @@ const emptyCopy: Record<FollowupListStatus, { title: string; body: string }> = {
   review: {
     title: "Nenhum acompanhamento esperando revisão",
     body: "Quando uma conversa comercial esfriar, o rascunho seguro aparece aqui."
+  },
+  reminders: {
+    title: "Nenhum lembrete pendente",
+    body: "Quando a próxima ação for da equipe, como enviar um orçamento ou ligar para alguém, o lembrete aparece aqui."
   },
   scheduled: {
     title: "Nenhum follow-up agendado",
@@ -84,10 +95,19 @@ function sortFollowups(items: ConversationFollowupDto[], filter: FollowupListSta
   return [...items].sort((left, right) => {
     const leftTime = new Date(followupMoment(left)).getTime();
     const rightTime = new Date(followupMoment(right)).getTime();
-    return filter === "review" || filter === "scheduled"
+    return filter === "review" || filter === "reminders" || filter === "scheduled"
       ? leftTime - rightTime
       : rightTime - leftTime;
   });
+}
+
+/** Opens the conversation in the inbox, the same way Contatos does. */
+function openConversation(conversationId: string) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("module", "atendimento");
+  url.searchParams.set("conversation", conversationId);
+  window.history.pushState({ module: "atendimento", conversation: conversationId }, "", `${url.pathname}${url.search}${url.hash}`);
+  window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
 function mergeRealtimeFollowups(
@@ -119,6 +139,7 @@ function mergeRealtimeFollowups(
 export function FollowupsPage() {
   const { getToken } = useTalkAuth();
   const [filter, setFilter] = useState<FollowupListStatus>("review");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [followups, setFollowups] = useState<ConversationFollowupDto[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -309,21 +330,22 @@ export function FollowupsPage() {
               <h1 id="followups-title">Follow-ups</h1>
               <p>Retome conversas no momento certo, com contexto e controle humano.</p>
             </div>
-            <div className="followups-quiet-count" aria-label={`${counts.current} itens no filtro atual`}>
+            {!settingsOpen ? <div className="followups-quiet-count" aria-label={`${counts.current} itens no filtro atual`}>
               <strong>{counts.current}</strong>
               <span>{counts.current === 1 ? "item" : "itens"}</span>
-            </div>
+            </div> : null}
           </div>
         </div>
 
         <nav className="followups-filters" aria-label="Filtros de follow-up">
           {filters.map(({ key, label, shortLabel, Icon }) => (
             <button
-              className={filter === key ? "is-active" : ""}
+              className={!settingsOpen && filter === key ? "is-active" : ""}
               disabled={busyId !== null}
               key={key}
               onClick={() => {
                 if (busyId) return;
+                setSettingsOpen(false);
                 filterRef.current = key;
                 setFilter(key);
                 setNotice(null);
@@ -341,6 +363,10 @@ export function FollowupsPage() {
               <span className="followups-filter-short">{shortLabel}</span>
             </button>
           ))}
+          <button className={settingsOpen ? "is-active" : ""} type="button" aria-pressed={settingsOpen}
+            disabled={busyId !== null} aria-disabled={busyId !== null} onClick={() => setSettingsOpen(true)}>
+            <Settings2 size={16} aria-hidden="true" /> Configuração
+          </button>
         </nav>
       </header>
 
@@ -349,6 +375,7 @@ export function FollowupsPage() {
       </div>
 
       <div className="followups-content">
+        {settingsOpen ? <FollowupSettings getToken={getToken} /> : <>
         {isLoading ? <FollowupsLoading /> : null}
 
         {!isLoading && loadError ? (
@@ -424,6 +451,11 @@ export function FollowupsPage() {
                   editingRef.current = next;
                   setEditing(next);
                 }}
+                onDone={() => void runAction(
+                  followup,
+                  () => apiMarkFollowupDone(getToken, followup.id, followup.updatedAt),
+                  "Lembrete concluído."
+                )}
                 onNoFollowup={() => void runAction(
                   followup,
                   () => apiMarkFollowupNoFollowup(getToken, followup.id, followup.updatedAt),
@@ -439,6 +471,7 @@ export function FollowupsPage() {
             ))}
           </div>
         ) : null}
+        </>}
       </div>
     </section>
   );
@@ -469,6 +502,7 @@ function FollowupCard(props: {
   onCloseConfirmation: () => void;
   onCancel: () => void;
   onNoFollowup: () => void;
+  onDone: () => void;
 }) {
   const {
     followup,
@@ -485,7 +519,8 @@ function FollowupCard(props: {
     onAskNoFollowup,
     onCloseConfirmation,
     onCancel,
-    onNoFollowup
+    onNoFollowup,
+    onDone
   } = props;
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
   const cancelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -524,12 +559,22 @@ function FollowupCard(props: {
         ? "Agendado"
         : "Atualizado";
   const isReview = followup.status === "review";
+  const isReminder = isSellerReminder(followup);
+  const analysis = followup.analysis;
+  const headline = analysis ? analysis.pendingItem?.trim() || analysis.nextStep?.trim() || "Sem pendência identificada" : null;
+  const meta = analysis
+    ? [
+        isReminder ? null : followupStepLabel(followup.stepIndex),
+        isReminder ? null : `${datePrefix} ${formatFollowupDate(followupMoment(followup))}`,
+        analysis.timingNote?.trim() || null
+      ].filter(Boolean).join(" · ")
+    : "";
   const isScheduled = followup.status === "scheduled";
   const defaultBody = followup.draftBody ?? "";
   const validationError = editing !== null && (editing.body.trim().length < 1 || editing.body.trim().length > 4000);
 
   return (
-    <article className={`followup-card followup-card-${followup.status}`} aria-busy={busy}>
+    <article className={`followup-card followup-card-${followup.status}${isReminder ? " followup-card-reminder" : ""}`} aria-busy={busy}>
       <div className="followup-card-accent" aria-hidden="true" />
       <div className="followup-card-main">
         <header className="followup-card-header">
@@ -540,36 +585,54 @@ function FollowupCard(props: {
               <p title={contactDetail}>{contactDetail}</p>
             </div>
           </div>
-          <span className={`followup-status followup-status-${followup.status}`}>
-            <span aria-hidden="true" />
-            {followupStatusLabel(followup.status)}
-          </span>
+          {isReminder && isReview ? (
+            <span className="followup-status followup-status-reminder">
+              <BellRing size={11} aria-hidden="true" />
+              {followupKindLabel(followup.kind)}
+            </span>
+          ) : (
+            <span className={`followup-status followup-status-${followup.status}`}>
+              <span aria-hidden="true" />
+              {followupStatusLabel(followup.status)}
+            </span>
+          )}
         </header>
 
-        <div className="followup-context-grid">
-          <div className="followup-preview" title={followup.anchorMessage.id ?? undefined}>
-            <span>
-              Mensagem âncora
-              {followup.anchorMessage.createdAt ? ` · ${formatFollowupDate(followup.anchorMessage.createdAt)}` : ""}
-            </span>
-            <p>{messagePreview}</p>
+        {analysis ? (
+          <div className="followup-analysis">
+            <h3 className="followup-pending">
+              {isReminder ? <BellRing size={15} aria-hidden="true" /> : null}
+              {headline}
+            </h3>
+            <p className="followup-rationale">{analysis.rationale}</p>
           </div>
-          <dl className="followup-facts">
-            <div><dt>Tipo</dt><dd>{followupKindLabel(followup.kind)}</dd></div>
-            <div><dt>Sequência</dt><dd>{followupStepLabel(followup.stepIndex)}</dd></div>
-            <div><dt>Finalidade</dt><dd>{followupPurposeLabel(followup)}</dd></div>
-            <div><dt>Quando</dt><dd>{datePrefix} {formatFollowupDate(followupMoment(followup))}</dd></div>
-          </dl>
-        </div>
+        ) : (
+          <div className="followup-context-grid">
+            <div className="followup-preview" title={followup.anchorMessage.id ?? undefined}>
+              <span>
+                Mensagem âncora
+                {followup.anchorMessage.createdAt ? ` · ${formatFollowupDate(followup.anchorMessage.createdAt)}` : ""}
+              </span>
+              <p>{messagePreview}</p>
+            </div>
+            <dl className="followup-facts">
+              <div><dt>Tipo</dt><dd>{followupKindLabel(followup.kind)}</dd></div>
+              <div><dt>Sequência</dt><dd>{followupStepLabel(followup.stepIndex)}</dd></div>
+              <div><dt>Finalidade</dt><dd>{followupPurposeLabel(followup)}</dd></div>
+              <div><dt>Quando</dt><dd>{datePrefix} {formatFollowupDate(followupMoment(followup))}</dd></div>
+            </dl>
+          </div>
+        )}
 
-        {reason ? (
+        {/* With the AI's reading on the card, the rationale already says why; only a closing reason adds to it. */}
+        {reason && (!analysis || terminalReason) ? (
           <p className="followup-reason">
             <Clock3 size={15} aria-hidden="true" />
             <span><strong>Motivo:</strong> {reason}</span>
           </p>
         ) : null}
 
-        {text ? (
+        {isReminder ? null : text ? (
           <blockquote className="followup-copy">
             <span>{followup.status === "sent" ? "Mensagem enviada" : "Rascunho sugerido"}</span>
             <p>{text}</p>
@@ -577,6 +640,8 @@ function FollowupCard(props: {
         ) : isReview ? (
           <p className="followup-missing-copy">Este item não possui rascunho. Edite a mensagem antes de enviar.</p>
         ) : null}
+
+        {meta ? <p className="followup-meta">{meta}</p> : null}
 
         {editing !== null ? (
           <form
@@ -661,7 +726,27 @@ function FollowupCard(props: {
         ) : null}
       </div>
 
-      {(isReview || isScheduled) && editing === null && confirmation === null ? (
+      {isReminder && isReview && confirmation === null ? (
+        <footer className="followup-actions">
+          <button
+            className="followups-button followups-button-primary"
+            disabled={busy}
+            onClick={onDone}
+            type="button"
+          >
+            {busy ? <LoaderCircle className="followups-spin" size={14} aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
+            Já fiz
+          </button>
+          <button className="followups-button" onClick={() => openConversation(followup.conversationId)} type="button">
+            <ExternalLink size={14} aria-hidden="true" /> Abrir conversa
+          </button>
+          <button className="followups-button followups-button-quiet" disabled={busy} onClick={onNoFollowup} type="button">
+            <X size={14} aria-hidden="true" /> Não precisa
+          </button>
+        </footer>
+      ) : null}
+
+      {!isReminder && (isReview || isScheduled) && editing === null && confirmation === null ? (
         <footer className="followup-actions">
           {isReview ? (
             <>

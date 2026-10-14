@@ -1,6 +1,71 @@
 import { describe, expect, it, vi } from "vitest";
 import { EvolutionClientError, createEvolutionClient } from "./evolution.client.js";
 import { createEvolutionRuntime } from "./evolution-runtime.js";
+import { AgentMediaError } from '../agents/agent-media-resolver.js';
+import { createMessageMediaService } from '../conversations/message-media.js';
+
+describe('Evolution media size handling', () => {
+  it('cancels an oversized provider response and reports a permanent size limit', async () => {
+    const cancel = vi.fn();
+    const chunk = new Uint8Array(1024 * 1024);
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) { if (sent++ < 50) controller.enqueue(chunk); else controller.close(); },
+      cancel
+    });
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key',
+      fetch: vi.fn(async () => new Response(body, { status: 201 })) as typeof fetch });
+    const error = await client.fetchMedia!({ instanceName: 'instance', id: 'media' }).catch(error => error);
+    expect(error).toBeInstanceOf(AgentMediaError);
+    expect(error.code).toBe('MEDIA_TOO_LARGE');
+    expect(cancel).toHaveBeenCalledOnce();
+    const put = vi.fn();
+    const media = createMessageMediaService({
+      db: { message: { findFirst: vi.fn(async () => ({ id: 'media', conversationId: 'conversation', type: 'file', mediaUrl: null })) },
+        messageMedia: { upsert: vi.fn(async () => ({ state: 'pending' })), update: vi.fn() } } as never,
+      store: { put } as never
+    });
+    await expect(media.prepare({ workspaceId: 'workspace', messageId: 'media',
+      fetchers: [{ name: 'evolution', fetch: async () => { throw error; } }] }))
+      .resolves.toEqual({ state: 'limit_exceeded', errorCode: 'MEDIA_TOO_LARGE', retryable: false });
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it('keeps unavailable media distinct from a size limit', async () => {
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key',
+      fetch: vi.fn(async () => Response.json({ mimetype: 'video/mp4' })) as typeof fetch });
+    await expect(client.fetchMedia!({ instanceName: 'instance', id: 'media' })).rejects.toThrow('MEDIA_UNAVAILABLE');
+  });
+
+  it('closes an explicitly non-media provider source without transient retries', async () => {
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key',
+      fetch: vi.fn(async () => Response.json({ status: 400, error: 'Bad Request',
+        response: { message: ['The message is not of the media type'] } }, { status: 400 })) as typeof fetch });
+    const error = await client.fetchMedia!({ instanceName: 'instance', id: 'media' }).catch(error => error);
+    expect(error).toBeInstanceOf(AgentMediaError);
+    expect(error.code).toBe('NOT_AN_ATTACHMENT');
+    const media = createMessageMediaService({
+      db: { message: { findFirst: vi.fn(async () => ({ id: 'media', conversationId: 'conversation', type: 'file', mediaUrl: null })) },
+        messageMedia: { upsert: vi.fn(async () => ({ state: 'pending' })), update: vi.fn() } } as never,
+      store: { put: vi.fn() } as never
+    });
+    await expect(media.prepare({ workspaceId: 'workspace', messageId: 'media',
+      fetchers: [{ name: 'evolution', fetch: async () => { throw error; } }] }))
+      .resolves.toEqual({ state: 'failed', errorCode: 'NOT_AN_ATTACHMENT', retryable: false });
+  });
+
+  it('keeps other provider 400 responses available for diagnosis and retry policy', async () => {
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key',
+      fetch: vi.fn(async () => Response.json({ response: { message: ['Connection closed'] } }, { status: 400 })) as typeof fetch });
+    await expect(client.fetchMedia!({ instanceName: 'instance', id: 'media' })).rejects.toBeInstanceOf(EvolutionClientError);
+  });
+
+  it('still returns valid media below the response limit', async () => {
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key',
+      fetch: vi.fn(async () => Response.json({ mimetype: 'video/mp4', base64: 'eA==' })) as typeof fetch });
+    await expect(client.fetchMedia!({ instanceName: 'instance', id: 'media' })).resolves.toBe('data:video/mp4;base64,eA==');
+  });
+});
 
 describe("createEvolutionRuntime", () => {
   it("uses simulated mode when EVOLUTION_MODE is simulated", () => {
@@ -78,6 +143,30 @@ function createJsonResponse(body: unknown, status = 200) {
 }
 
 describe("Evolution client", () => {
+  it("sends the provider key to delete a message for everyone", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse({ key: { id: 'revoke-1' } }, 201));
+    const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'key', fetch: fetchMock });
+    await client.deleteMessageForEveryone?.({ instanceName: 'vendas-5', id: 'message-1',
+      remoteJid: '12345@g.us', fromMe: true });
+    expect(fetchMock).toHaveBeenCalledWith('https://evolution.invalid/chat/deleteMessageForEveryone/vendas-5',
+      expect.objectContaining({ method: 'DELETE', body: JSON.stringify({ id: 'message-1',
+        remoteJid: '12345@g.us', fromMe: true }) }));
+  });
+  it("uses only a matching cached contact photo when the live lookup has no photo", async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(createJsonResponse({ profilePictureUrl: null }))
+      .mockResolvedValueOnce(createJsonResponse([
+        { remoteJid: "5511888888888@s.whatsapp.net", profilePicUrl: "https://example.com/wrong.jpg" },
+        { remoteJid: "5511999999999@s.whatsapp.net", profilePicUrl: "https://example.com/photo.jpg" }
+      ]));
+    const client = createEvolutionClient({ baseUrl: "https://evolution.invalid", apiKey: "key", fetch: fetchMock });
+    expect(await client.fetchProfilePicture?.({ instanceName: "vendas-5", number: "5511999999999" }))
+      .toBe("https://example.com/photo.jpg");
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      where: { remoteJid: "5511999999999@s.whatsapp.net" }
+    });
+  });
+
   it("creates an instance with QR and webhook config", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       createJsonResponse({
@@ -112,12 +201,12 @@ describe("Evolution client", () => {
         webhook: expect.objectContaining({
           url: "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace",
           byEvents: false,
-          base64: true,
+          base64: false,
           headers: expect.objectContaining({
             "x-prymeira-talk-secret": "webhook-secret",
             "Content-Type": "application/json"
           }),
-          events: expect.arrayContaining(["QRCODE_UPDATED", "CONNECTION_UPDATE", "MESSAGES_UPSERT"])
+          events: expect.arrayContaining(["QRCODE_UPDATED", "CONNECTION_UPDATE", "MESSAGES_UPSERT", "MESSAGES_EDITED"])
         })
       })
     );
@@ -200,6 +289,18 @@ describe("Evolution client", () => {
     expect(result.providerMessageId).toBe("provider_msg_1");
   });
 
+  it("reads a WhatsApp group subject by its exact JID", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse({ subject: "Equipe comercial" }));
+    const client = createEvolutionClient({ baseUrl: "https://evolution.invalid", apiKey: "key", fetch: fetchMock });
+    const groupJid = "120363024158769234@g.us";
+    await expect(client.getGroupInfo!({ instanceName: "vendas", groupJid }))
+      .resolves.toEqual({ subject: "Equipe comercial" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://evolution.invalid/group/findGroupInfos/vendas?groupJid=${encodeURIComponent(groupJid)}&getParticipants=false`,
+      expect.objectContaining({ method: "GET" })
+    );
+  });
+
   it("allows link preview to be explicitly enabled for text messages", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       createJsonResponse({ key: { id: "provider_msg_1" } })
@@ -222,6 +323,25 @@ describe("Evolution client", () => {
       text: "https://rubinot.com.br/characters?name=Thiiszk",
       linkPreview: true
     });
+  });
+
+  it("sends a native WhatsApp contact card", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(createJsonResponse({ key: { id: "contact_msg_1" } }));
+    const client = createEvolutionClient({ baseUrl: "https://wsapi.yrdnegocios.com.br", apiKey: "secret-key", fetch: fetchMock });
+    const result = await client.sendContact!({
+      instanceName: "talk-local_workspace-abc",
+      number: "5547999990000",
+      contact: [{ fullName: "Ana", wuid: "5547888880000", phoneNumber: "5547888880000" }]
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://wsapi.yrdnegocios.com.br/message/sendContact/talk-local_workspace-abc",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      number: "5547999990000",
+      contact: [{ fullName: "Ana", wuid: "5547888880000", phoneNumber: "5547888880000" }]
+    });
+    expect(result.providerMessageId).toBe("contact_msg_1");
   });
 
   it("sends a media message with raw base64 in the provider payload", async () => {
@@ -438,7 +558,7 @@ describe("Evolution client", () => {
           enabled: true,
           url: "https://talk.prymeiradigital.com.br/webhooks/evolution/local_workspace",
           byEvents: false,
-          base64: true,
+          base64: false,
           headers: expect.objectContaining({
             "x-prymeira-talk-secret": "webhook-secret"
           }),
@@ -449,6 +569,54 @@ describe("Evolution client", () => {
     const webhook = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).webhook;
     expect(webhook).not.toHaveProperty("webhookBase64");
     expect(webhook).not.toHaveProperty("webhookByEvents");
+  });
+
+  it("reads the live connection state without exposing the provider response", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({ instance: { state: "open", ownerJid: "5511999999999@s.whatsapp.net" } })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    expect(await client.getConnectionState?.({ instanceName: "existing instance" })).toBe("open");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://wsapi.yrdnegocios.com.br/instance/connectionState/existing%20instance",
+      expect.objectContaining({ method: "GET" })
+    );
+  });
+
+  it("logs out the exact Evolution instance before a QR relink", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({ status: "SUCCESS", error: false })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    await client.logoutInstance?.({ instanceName: "Geral Villefer/1" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://wsapi.yrdnegocios.com.br/instance/logout/Geral%20Villefer%2F1",
+      expect.objectContaining({ method: "DELETE", headers: { apikey: "secret-key" } })
+    );
+  });
+
+  it("treats an Evolution logout error body as a failure even on HTTP 200", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      createJsonResponse({ error: true, message: "logout failed" })
+    );
+    const client = createEvolutionClient({
+      baseUrl: "https://wsapi.yrdnegocios.com.br",
+      apiKey: "secret-key",
+      fetch: fetchMock
+    });
+
+    await expect(client.logoutInstance?.({ instanceName: "Geral Villefer" })).rejects.toBeInstanceOf(EvolutionClientError);
   });
 
   it("connects an existing instance and returns its QR code", async () => {
@@ -614,5 +782,33 @@ describe("Evolution client", () => {
       .rejects.toThrow("EVOLUTION_AVAILABILITY_INVALID_RESPONSE");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://evolution.invalid/chat/whatsappNumbers/instance");
+  });
+});
+
+describe("connected phone (fetchInstances counts every message on Evolution's database)", () => {
+  it("asks once per 10 minutes, and again at once after the number disconnects or reconnects", async () => {
+    let clock = 0;
+    let state = "open";
+    let owner = "554799990001@s.whatsapp.net";
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(url.includes("/connectionState/")
+      ? { instance: { state } } : [{ name: "vendas5", ownerJid: owner }]), { status: 200, headers: { "content-type": "application/json" } }));
+    const client = createEvolutionClient({ baseUrl: "https://evolution.invalid", apiKey: "key", fetch: fetchMock as never, now: () => clock });
+    const identityCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).includes("fetchInstances")).length;
+
+    expect(await client.getInstanceIdentity!({ instanceName: "vendas5" })).toBe(owner);
+    clock += 15_000;
+    expect(await client.getInstanceIdentity!({ instanceName: "vendas5" })).toBe(owner);
+    expect(identityCalls()).toBe(1);
+
+    clock += 10 * 60_000;
+    await client.getInstanceIdentity!({ instanceName: "vendas5" });
+    expect(identityCalls()).toBe(2);
+
+    // The number dropped and was scanned with another phone: never the old answer.
+    state = "close";
+    await client.getConnectionState!({ instanceName: "vendas5" });
+    owner = "554799990002@s.whatsapp.net";
+    expect(await client.getInstanceIdentity!({ instanceName: "vendas5" })).toBe(owner);
+    expect(identityCalls()).toBe(3);
   });
 });

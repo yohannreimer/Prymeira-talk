@@ -3,7 +3,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import type { EvolutionHistorySource } from '../evolution/evolution-history.js';
 import { extractMessageContent } from '../evolution/evolution.routes.js';
 import { AssistantError, lockAssistantConversation } from './assistant-access.js';
-import { readAssistantSettings } from './assistant-policy.js';
+import { resolveConversationAssistant } from './assistant-policy.js';
 import type { InboundMediaResult } from '../agents/inbound-media.js';
 
 const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -24,9 +24,10 @@ function unwrap(input: Record<string, unknown>) {
 /** Imports context only. No sender, scheduler, webhook dispatcher or conversation mutation dependency. */
 export function createAssistantHistoryImporter(db: PrismaClient, source: EvolutionHistorySource, options: { prepareMedia?: HistoryMediaPreparer } = {}) {
   return async (workspaceId: string, conversationId: string, input: { force?: boolean; dryRun?: boolean } = {}) => {
-    const conversation = await db.conversation.findFirst({ where: { workspaceId, id: conversationId }, include: { channel: true } });
+    const conversation = await db.conversation.findFirst({ where: { workspaceId, id: conversationId }, include: { channel: true, activeAgentSession: true } });
     if (!conversation || conversation.channel.provider !== 'evolution' || !conversation.channel.providerKey) return zero;
-    if (conversation.aiControlStatus !== 'agent_allowed' || readAssistantSettings(conversation.channel.encryptedConfig).mode === 'disabled') return zero;
+    const {settings,humanSupport}=resolveConversationAssistant(conversation);
+    if ((conversation.aiControlStatus !== 'agent_allowed' && !humanSupport) || settings.mode === 'disabled') return zero;
     if (!input.force && object(object(conversation.channel.encryptedConfig).assistantHistory).days !== 30) return zero;
     const live = await db.message.findMany({ where: { workspaceId, conversationId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: 5001 });
     const anchor = live.find(m => m.providerMessageId && object(object(m.metadata).historyImport).source !== 'evolution');
@@ -44,18 +45,20 @@ export function createAssistantHistoryImporter(db: PrismaClient, source: Evoluti
     const known = new Set(existing.map(m => m.providerMessageId));
     const missing = records.filter(r => !known.has(r.key.id));
     if (live.length + missing.length > 2000) throw new AssistantError('ASSISTANT_HISTORY_LIMIT', 'O histórico excede 2.000 mensagens. Revise o período antes de importar.');
-    if (input.dryRun) return { ...zero, imported: records.length, missing: missing.length, from: from.toISOString(), to: to.toISOString(), media: missing.filter(r => ['image','audio','file'].includes(extractMessageContent(unwrap(r.message)).type)).length };
+    if (input.dryRun) return { ...zero, imported: records.length, missing: missing.length, from: from.toISOString(), to: to.toISOString(), media: missing.filter(r => ['image','audio','file'].includes(extractMessageContent(unwrap(r.message), r.messageType).type)).length };
     const batchId = randomUUID();
     let unreadMedia = 0;
     let mediaBytes = 0;
     const startedAt = Date.now();
     const rows: Prisma.MessageCreateManyInput[] = [];
     for (const item of missing) {
-      const content = extractMessageContent(unwrap(item.message));
+      const content = extractMessageContent(unwrap(item.message), item.messageType);
       const id = randomUUID();
       const date = new Date(item.messageTimestamp * 1000);
       const provenance: Record<string, unknown> = { source: 'evolution', batchId, from: from.toISOString(), to: to.toISOString(), originalType: item.messageType ?? Object.keys(item.message)[0] ?? 'unknown' };
       const metadata: Record<string, unknown> = { historyImport: provenance };
+      if (content.contactCards?.length) metadata.contactCards = content.contactCards;
+      if (content.location) metadata.location = content.location;
       let mediaUrl: string | null = null;
       if (['image', 'audio', 'file'].includes(content.type)) {
         try {

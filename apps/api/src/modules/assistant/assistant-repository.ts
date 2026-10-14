@@ -1,22 +1,26 @@
+import { findProspectingReservation } from "../prospecting/prospecting-policy.js";
 import { randomUUID } from 'node:crypto';
 import type { AssistantConversationState, Prisma, PrismaClient } from '@prisma/client';
 import { lockAssistantConversation } from './assistant-access.js';
-import { canGenerateSuggestion, nextSuggestionAt, readAssistantSettings } from './assistant-policy.js';
+import { canGenerateSuggestion, nextSuggestionAt, resolveConversationAssistant } from './assistant-policy.js';
 
 export function createAssistantRepository(prisma: PrismaClient) {
   return {
-    async schedule(input: { workspaceId: string; conversationId: string; trigger: 'manual' | 'inbound'; messageId?: string; actorUserId?: string; instruction?: string }, transaction?: Prisma.TransactionClient) {
+    async schedule(input: { workspaceId: string; conversationId: string; trigger: 'manual' | 'inbound' | 'continuation'; messageId?: string; actorUserId?: string; instruction?: string }, transaction?: Prisma.TransactionClient) {
       const perform = async (tx: Prisma.TransactionClient) => {
         await lockAssistantConversation(tx, input.workspaceId, input.conversationId);
-        const conversation = await tx.conversation.findFirst({ where: { workspaceId: input.workspaceId, id: input.conversationId }, include: { channel: true } });
+        const conversation = await tx.conversation.findFirst({ where: { workspaceId: input.workspaceId, id: input.conversationId }, include: { channel: true, activeAgentSession: true } });
         if (!conversation) return false;
-        const settings = readAssistantSettings(conversation.channel.encryptedConfig);
+        const prospecting = await findProspectingReservation(tx, input.workspaceId, input.conversationId);
+        if (prospecting && prospecting.status !== "stopped") return false;
+        const {settings,humanSupport}=resolveConversationAssistant(conversation);
         const where = { workspaceId_conversationId: { workspaceId: input.workspaceId, conversationId: input.conversationId } };
         const state = await tx.assistantConversationState.findUnique({ where });
-        if (!canGenerateSuggestion({ mode: settings.mode, control: conversation.aiControlStatus, trigger: input.trigger })) return false;
+        if (!canGenerateSuggestion({ mode: settings.mode, control: conversation.aiControlStatus, trigger: input.trigger, humanSupport })) return false;
         const latest = await tx.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, type: { notIn: ['internal_note', 'system'] } }, orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }] });
         // A release never replays an already answered conversation. Duplicate hooks are harmless.
         if (!latest || (input.trigger === 'inbound' && (latest.direction !== 'inbound' || state?.lastMessageId === latest.id))) return false;
+        if (input.trigger === 'continuation' && (latest.direction !== 'outbound' || !humanSupport || (state?.lastMessageId === latest.id && state.status !== 'stale'))) return false;
         const now = new Date();
         const firstPendingAt = state?.status === 'pending' ? state.firstPendingAt : now;
         const data = {
@@ -34,7 +38,7 @@ export function createAssistantRepository(prisma: PrismaClient) {
       return transaction ? perform(transaction) : prisma.$transaction(perform);
     },
     async invalidate(workspaceId: string, conversationId: string, status = 'stale') {
-      await prisma.assistantConversationState.updateMany({ where: { workspaceId, conversationId }, data: { status, revision: { increment: 1 }, scheduledAt: null } });
+      await prisma.assistantConversationState.updateMany({ where: { workspaceId, conversationId }, data: { status, revision: { increment: 1 }, scheduledAt: null, lastError: null } });
     },
     async due(now = new Date()) {
       // Recover abandoned workers, but never retry more than twice.
@@ -42,6 +46,27 @@ export function createAssistantRepository(prisma: PrismaClient) {
       await prisma.assistantConversationState.updateMany({ where: { status: 'generating', leaseUntil: { lt: now }, attempts: { gte: 2 } }, data: { status: 'failed', lastError: 'Não foi possível gerar a sugestão. Tente novamente.', leaseToken: null, leaseUntil: null } });
       await prisma.assistantConversationState.updateMany({ where: { status: { not: 'generating' }, leaseUntil: { lt: now } }, data: { leaseToken: null, leaseUntil: null } });
       return prisma.assistantConversationState.findMany({ where: { status: 'pending', leaseToken: null, scheduledAt: { lte: now } }, orderBy: { scheduledAt: 'asc' }, take: 2 });
+    },
+    /** An automatic suggestion that lost its turn (the seller answered first) ends quietly: no error on screen. */
+    async dismiss(state: AssistantConversationState, leaseToken: string) {
+      await prisma.assistantConversationState.updateMany({ where: { id: state.id, workspaceId: state.workspaceId, leaseToken },
+        data: { status: 'stale', lastError: null, scheduledAt: null } });
+    },
+    /**
+     * The conversation changed while the suggestion was being written (the customer sent another message, edited one…):
+     * write it again shortly with the new messages instead of showing an error. Bounded by `attempts` (reset by a new
+     * customer message), so a conversation that keeps changing cannot loop forever.
+     */
+    async requeue(state: AssistantConversationState, leaseToken: string, lastMessageId: string, delayMs = 3_000) {
+      const result = await prisma.assistantConversationState.updateMany({ where: { id: state.id, workspaceId: state.workspaceId, revision: state.revision, leaseToken },
+        data: { status: 'pending', lastMessageId, revision: { increment: 1 }, scheduledAt: new Date(Date.now() + delayMs), lastError: null, leaseToken: null, leaseUntil: null } });
+      return result.count === 1;
+    },
+    /** A ready suggestion (or one that gave up) no longer matches the conversation and the customer spoke last: refresh it. */
+    async refresh(state: AssistantConversationState, lastMessageId: string) {
+      const result = await prisma.assistantConversationState.updateMany({ where: { id: state.id, workspaceId: state.workspaceId, revision: state.revision, status: { in: ['ready', 'failed'] }, leaseToken: null },
+        data: { status: 'pending', lastMessageId, revision: { increment: 1 }, scheduledAt: new Date(Date.now() + 1_500), lastError: null, attempts: 0, instruction: null, requestedById: null } });
+      return result.count === 1;
     },
     async releaseLease(state: AssistantConversationState, leaseToken: string) {
       await prisma.assistantConversationState.updateMany({ where: { id: state.id, workspaceId: state.workspaceId, leaseToken }, data: { leaseToken: null, leaseUntil: null } });

@@ -14,6 +14,7 @@ function choice(value: string, confidence = 1) {
 }
 
 const input = {
+  workspaceId: "workspace_1",
   customerMessage: "Vocês têm barra chata galvanizada com furos de 7 mm?",
   humanReply: "Não trabalhamos com esse produto.",
   conversationMessages: [
@@ -88,12 +89,54 @@ describe("createJevAgentImprovementDetector", () => {
 });
 
 describe("createJevAgentImprovementNormalizer", () => {
+  it("expands João's short confirmation using the question before asking JEV", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        answers: {
+          scope: choice("requested_item_variations", 0.96),
+          answersAreClear: { type: "noul", noul: 0.95 },
+          proposalMatchesAnswers: { type: "noul", noul: 0.98 },
+          requiresHandoffOutsideScope: { type: "noul", noul: 0.99 }
+        }
+      }))
+    );
+    const normalizer = createJevAgentImprovementNormalizer({ apiKey: "jev-test", fetchImpl });
+
+    await expect(normalizer.normalize({
+      kind: "not_sold",
+      customerMessage: "Quanto tá uma barra de 10mm 12m? Barra pra viga baldrame. 10mm.",
+      humanReply: "Construção civil não trabalhamos.",
+      proposedContent: "Não comercializamos a barra para viga baldrame solicitada.",
+      clarificationAnswers: { scope: "exato", exceptions: "nenhuma" },
+      clarificationQuestions: {
+        scope: "A decisão de não trabalhar vale para todas as medidas, espessuras, acabamentos e furações do item solicitado?",
+        exceptions: "Quais medidas, acabamentos ou produtos parecidos vocês ainda comercializam?"
+      }
+    })).resolves.toEqual({
+      outcome: "ready",
+      normalization: {
+        scope: "requested_item_variations",
+        confidence: 0.95,
+        requiresHandoffOutsideScope: true
+      }
+    });
+
+    const [, request] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(request?.body));
+    expect(body.state.clarificationAnswers.scope).toBe(
+      "Sim, a decisão vale para todas as medidas, espessuras, acabamentos e furações do item solicitado."
+    );
+    expect(body.state.clarificationAnswers.exceptions).toBe("nenhuma");
+    expect(body.state.clarificationQuestions.scope).toContain("todas as medidas");
+  });
+
   it("normalizes natural-language team answers into a bounded rule scope", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({
         answers: {
           scope: choice("material_or_finish_family", 0.97),
-          understandsAnswers: { type: "noul", noul: 0.94 },
+          answersAreClear: { type: "noul", noul: 0.94 },
+          proposalMatchesAnswers: { type: "noul", noul: 0.96 },
           requiresHandoffOutsideScope: { type: "noul", noul: 0.98 }
         }
       }))
@@ -130,7 +173,8 @@ describe("createJevAgentImprovementNormalizer", () => {
       new Response(JSON.stringify({
         answers: {
           scope: choice("ambiguous", 0.98),
-          understandsAnswers: { type: "noul", noul: 0.99 },
+          answersAreClear: { type: "noul", noul: 0.99 },
+          proposalMatchesAnswers: { type: "noul", noul: 0.99 },
           requiresHandoffOutsideScope: { type: "noul", noul: 1 }
         }
       }))
@@ -146,12 +190,44 @@ describe("createJevAgentImprovementNormalizer", () => {
     })).resolves.toEqual({ outcome: "needs_clarification", reason: "normalization_ambiguous" });
   });
 
+  it("distinguishes a clear telha scope from an inconsistent proposed rule", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        answers: {
+          scope: choice("requested_item_variations", 0.96),
+          answersAreClear: { type: "noul", noul: 0.97 },
+          proposalMatchesAnswers: { type: "noul", noul: 0.13 },
+          requiresHandoffOutsideScope: { type: "noul", noul: 0.99 }
+        }
+      }))
+    );
+    const normalizer = createJevAgentImprovementNormalizer({ apiKey: "jev-test", fetchImpl });
+
+    await expect(normalizer.normalize({
+      kind: "not_sold",
+      customerMessage: "Vocês têm telha?",
+      humanReply: "Telhas não fornecemos.",
+      proposedContent: "Se houver diferença de medida, acabamento ou furação, faça handoff.",
+      clarificationAnswers: { scope: "sim, para todas as variações de telha", exceptions: "nenhuma" },
+      clarificationQuestions: {
+        scope: "A decisão vale para todas as medidas, espessuras, acabamentos e furações do item solicitado?",
+        exceptions: "Quais produtos parecidos vocês ainda comercializam?"
+      }
+    })).resolves.toEqual({ outcome: "needs_clarification", reason: "draft_inconsistent" });
+
+    const [, request] = fetchImpl.mock.calls[0] ?? [];
+    const body = JSON.parse(String(request?.body));
+    expect(body.questions.scope.instructions).toContain("Ignore o texto proposto");
+    expect(body.questions.proposalMatchesAnswers.instructions).toContain("exige repasse para variações");
+  });
+
   it("rejects a normalization response that does not carry a JEV confidence", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({
         answers: {
           scope: { type: "choice", choice: "requested_item_variations" },
-          understandsAnswers: { type: "noul", noul: 0.99 },
+          answersAreClear: { type: "noul", noul: 0.99 },
+          proposalMatchesAnswers: { type: "noul", noul: 0.99 },
           requiresHandoffOutsideScope: { type: "noul", noul: 1 }
         }
       }))

@@ -13,6 +13,31 @@ const baseProductionEnv = {
 } as const;
 
 describe("readEnv", () => {
+  it('needs the HMAC key whenever WAHA is told where Talk\'s ingress is', () => {
+    expect(readEnv(baseProductionEnv).WAHA_WEBHOOK_BASE_URL).toBeUndefined();
+    expect(readEnv(baseProductionEnv).WAHA_WEBHOOK_HMAC_KEY).toBeUndefined();
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_WEBHOOK_BASE_URL: 'http://ingress:4011' })).toThrow(/WAHA_WEBHOOK_HMAC_KEY/);
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_WEBHOOK_BASE_URL: 'http://ingress:4011', WAHA_WEBHOOK_HMAC_KEY: 'short' })).toThrow();
+    expect(readEnv({ ...baseProductionEnv, WAHA_WEBHOOK_BASE_URL: 'http://ingress:4011', WAHA_WEBHOOK_HMAC_KEY: 'shared-hmac-key-1234567' })).toMatchObject({ WAHA_WEBHOOK_BASE_URL: 'http://ingress:4011' });
+  });
+  it('runs durable effects only with the realtime bridge, and scopes them to an allowlist when given', () => {
+    expect(readEnv(baseProductionEnv)).toMatchObject({ EFFECTS_ENABLED: false, REALTIME_BRIDGE_ENABLED: false, EFFECTS_WORKSPACE_ALLOWLIST: [] });
+    expect(() => readEnv({ ...baseProductionEnv, EFFECTS_ENABLED: 'true' })).toThrow(/REALTIME_BRIDGE_ENABLED/);
+    expect(readEnv({ ...baseProductionEnv, EFFECTS_ENABLED: 'true', REALTIME_BRIDGE_ENABLED: 'true', EFFECTS_WORKSPACE_ALLOWLIST: ' a, b ,' })).toMatchObject({ EFFECTS_ENABLED: true, EFFECTS_WORKSPACE_ALLOWLIST: ['a', 'b'] });
+  });
+  it('keeps durable media off unless an absolute private store path is configured', () => {
+    expect(readEnv(baseProductionEnv).TALK_MEDIA_STORE_PATH).toBeUndefined();
+    expect(readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: '/var/lib/talk/media' }).TALK_MEDIA_STORE_PATH).toBe('/var/lib/talk/media');
+    expect(() => readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: 'relative/media' })).toThrow(/TALK_MEDIA_STORE_PATH/);
+  });
+  it('keeps WAHA disabled until qualification and validates enabled runtime credentials', () => {
+    expect(readEnv(baseProductionEnv).WAHA_ENABLED).toBe(false);
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_ENABLED: 'true' })).toThrow(/WAHA/);
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_ENABLED: 'true', WAHA_API_BASE_URL: 'ftp://waha.example', WAHA_API_KEY: 'secret' })).toThrow(/WAHA/);
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_API_BASE_URL: 'invalid-url' })).toThrow(/WAHA/);
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_API_BASE_URL: 'https://user:pass@waha.example' })).toThrow(/WAHA/);
+    expect(readEnv({ ...baseProductionEnv, WAHA_ENABLED: 'true', WAHA_API_BASE_URL: 'https://waha.example', WAHA_API_KEY: 'secret' }).WAHA_ENABLED).toBe(true);
+  });
   it("rejects local auth bypass in production", () => {
     expect(() =>
       readEnv({
@@ -49,12 +74,45 @@ describe("readEnv", () => {
     });
   });
 
+  it("selects the inbox triage model from a validated setting", () => {
+    expect(readEnv(baseProductionEnv).INBOX_TRIAGE_PRIMARY).toBe("jev");
+    expect(readEnv(baseProductionEnv).INBOX_TRIAGE_ENABLED).toBe(false);
+    expect(readEnv({ ...baseProductionEnv, INBOX_TRIAGE_PRIMARY: "jev" }).INBOX_TRIAGE_PRIMARY).toBe("jev");
+    expect(readEnv({ ...baseProductionEnv, INBOX_TRIAGE_ENABLED: "true" }).INBOX_TRIAGE_ENABLED).toBe(true);
+    expect(() => readEnv({ ...baseProductionEnv, INBOX_TRIAGE_PRIMARY: "unknown" })).toThrow(/INBOX_TRIAGE_PRIMARY/);
+  });
+
+  it("enables contact name recovery by default and accepts a kill switch", () => {
+    expect(readEnv(baseProductionEnv).CONTACT_NAME_RECOVERY_ENABLED).toBe(true);
+    expect(readEnv({ ...baseProductionEnv, CONTACT_NAME_RECOVERY_ENABLED: "" }).CONTACT_NAME_RECOVERY_ENABLED).toBe(true);
+    for (const value of ["true", "1", "on", "TRUE", " On "]) {
+      expect(readEnv({ ...baseProductionEnv, CONTACT_NAME_RECOVERY_ENABLED: value }).CONTACT_NAME_RECOVERY_ENABLED).toBe(true);
+    }
+    for (const value of ["false", "0", "off", "FALSE", " Off "]) {
+      expect(readEnv({ ...baseProductionEnv, CONTACT_NAME_RECOVERY_ENABLED: value }).CONTACT_NAME_RECOVERY_ENABLED).toBe(false);
+    }
+    expect(() => readEnv({ ...baseProductionEnv, CONTACT_NAME_RECOVERY_ENABLED: "maybe" })).toThrow(/CONTACT_NAME_RECOVERY_ENABLED/);
+  });
+
+  it("configures the channel watchdog with safe defaults and bounds", () => {
+    const defaults = readEnv(baseProductionEnv);
+    expect(defaults.CHANNEL_WATCHDOG_ENABLED).toBe(true);
+    expect(defaults.CHANNEL_WATCHDOG_INTERVAL_SECONDS).toBe(120);
+    expect(defaults.CHANNEL_WATCHDOG_DRY_RUN).toBe(true);
+    expect(readEnv({ ...baseProductionEnv, CHANNEL_WATCHDOG_DRY_RUN: "false" }).CHANNEL_WATCHDOG_DRY_RUN).toBe(false);
+    expect(() => readEnv({ ...baseProductionEnv, CHANNEL_WATCHDOG_DRY_RUN: "maybe" })).toThrow(/CHANNEL_WATCHDOG_DRY_RUN/);
+    expect(readEnv({ ...baseProductionEnv, CHANNEL_WATCHDOG_ENABLED: "false" }).CHANNEL_WATCHDOG_ENABLED).toBe(false);
+    expect(readEnv({ ...baseProductionEnv, CHANNEL_WATCHDOG_INTERVAL_SECONDS: "30" }).CHANNEL_WATCHDOG_INTERVAL_SECONDS).toBe(30);
+    expect(() => readEnv({ ...baseProductionEnv, CHANNEL_WATCHDOG_INTERVAL_SECONDS: "29" })).toThrow(/CHANNEL_WATCHDOG_INTERVAL_SECONDS/);
+    expect(() => readEnv({ ...baseProductionEnv, CHANNEL_WATCHDOG_ENABLED: "maybe" })).toThrow(/CHANNEL_WATCHDOG_ENABLED/);
+  });
+
   it("loads the conservative Leads defaults without source services", () => {
     const env = readEnv(baseProductionEnv);
 
     expect(env).toMatchObject({
       LEAD_GOOGLE_MAX_CONCURRENT_JOBS: 1,
-      LEAD_GOOGLE_DEFAULT_DEPTH: 5,
+      LEAD_GOOGLE_DEFAULT_DEPTH: 12,
       LEAD_WHATSAPP_BATCH_SIZE: 25
     });
     expect(env.CNPJ_DATABASE_URL).toBeUndefined();
@@ -110,7 +168,7 @@ describe("readEnv", () => {
     expect(() =>
       readEnv({
         ...baseProductionEnv,
-        LEAD_GOOGLE_DEFAULT_DEPTH: "6"
+        LEAD_GOOGLE_DEFAULT_DEPTH: "21"
       })
     ).toThrow(/LEAD_GOOGLE_DEFAULT_DEPTH/);
 
@@ -132,5 +190,39 @@ describe("readEnv", () => {
       .toThrow(/LEAD_JOB_POLL_MS/);
     expect(() => readEnv({ ...baseProductionEnv, LEAD_JOB_POLL_MS: "60001" }))
       .toThrow(/LEAD_JOB_POLL_MS/);
+  });
+
+  it("keeps canonical history import off unless explicitly enabled", () => {
+    expect(readEnv({ ...baseProductionEnv }).CANONICAL_HISTORY_IMPORT_ENABLED).toBe(false);
+    expect(readEnv({ ...baseProductionEnv, CANONICAL_HISTORY_IMPORT_ENABLED: "true" }).CANONICAL_HISTORY_IMPORT_ENABLED).toBe(true);
+  });
+
+  it("parses the delegated legacy-webhook workspaces", () => {
+    expect(readEnv({ ...baseProductionEnv }).LEGACY_WEBHOOK_DELEGATED_WORKSPACES).toEqual(new Set());
+    expect(readEnv({ ...baseProductionEnv, LEGACY_WEBHOOK_DELEGATED_WORKSPACES: " a , b ,," }).LEGACY_WEBHOOK_DELEGATED_WORKSPACES).toEqual(new Set(["a", "b"]));
+    expect(readEnv({ ...baseProductionEnv, LEGACY_WEBHOOK_DELEGATED_WORKSPACES: "*" }).LEGACY_WEBHOOK_DELEGATED_WORKSPACES).toBe("*");
+  });
+
+  it("treats an empty TALK_MEDIA_STORE_PATH (compose default) as unset but still rejects a relative one", () => {
+    expect(readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: "" }).TALK_MEDIA_STORE_PATH).toBeUndefined();
+    expect(readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: "/data/media" }).TALK_MEDIA_STORE_PATH).toBe("/data/media");
+    expect(() => readEnv({ ...baseProductionEnv, TALK_MEDIA_STORE_PATH: "media" })).toThrow();
+  });
+
+  it("starts with exactly the docker-compose defaults (every new switch empty or false)", () => {
+    const composeDefaults = { WAHA_ENABLED: "false", WAHA_API_BASE_URL: "", WAHA_API_KEY: "", WAHA_WEBHOOK_BASE_URL: "", WAHA_WEBHOOK_HMAC_KEY: "",
+      OUTBOUND_ROUTER_ENABLED: "false", CHANNEL_HEALTH_MONITOR_ENABLED: "false", CANONICAL_HISTORY_IMPORT_ENABLED: "false", LEGACY_WEBHOOK_DELEGATED_WORKSPACES: "",
+      EFFECTS_ENABLED: "false", EFFECTS_WORKSPACE_ALLOWLIST: "", REALTIME_BRIDGE_ENABLED: "false", TALK_MEDIA_STORE_PATH: "" };
+    const env = readEnv({ ...baseProductionEnv, ...composeDefaults });
+    expect(env).toMatchObject({ WAHA_ENABLED: false, OUTBOUND_ROUTER_ENABLED: false, EFFECTS_ENABLED: false, CANONICAL_HISTORY_IMPORT_ENABLED: false });
+    expect(env.WAHA_WEBHOOK_HMAC_KEY).toBeUndefined();
+    expect(env.TALK_MEDIA_STORE_PATH).toBeUndefined();
+    expect(() => readEnv({ ...baseProductionEnv, WAHA_WEBHOOK_HMAC_KEY: "short" })).toThrow();
+  });
+
+  it("rolls the integration out to nobody by default, to listed workspaces, or to everyone with *", () => {
+    expect(readEnv({ ...baseProductionEnv }).WAHA_ROLLOUT_WORKSPACES).toEqual(new Set());
+    expect(readEnv({ ...baseProductionEnv, WAHA_ROLLOUT_WORKSPACES: "ws-yohann" }).WAHA_ROLLOUT_WORKSPACES).toEqual(new Set(["ws-yohann"]));
+    expect(readEnv({ ...baseProductionEnv, WAHA_ROLLOUT_WORKSPACES: "*" }).WAHA_ROLLOUT_WORKSPACES).toBe("*");
   });
 });

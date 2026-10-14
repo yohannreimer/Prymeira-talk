@@ -1,10 +1,13 @@
 import { useTalkAuth } from "../../app/auth";
 import type { ChannelDto } from "@prymeira-talk/shared";
-import { CalendarClock, Gauge, Play, Plus, RefreshCw, Save, Send, Upload, X, Zap } from "lucide-react";
+import { CalendarClock, Gauge, Play, Plus, RefreshCw, Save, Send, Trash2, Upload, X, Zap } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { readSheet } from "read-excel-file/browser";
+import { GuidedCampaignEditor } from "./GuidedCampaignEditor";
+import "./campaigns-redesign.css";
 import {
   apiCreateCampaign,
+  apiDeleteCampaignDraft,
   apiGetBoards,
   apiGetChannels,
   apiGetCampaignRecipients,
@@ -31,6 +34,7 @@ type CampaignViewMode = "hub" | "editor";
 type MetaConnectionMode = "direct" | "evolution_official";
 type CampaignSendMode = "evolution" | "meta_cloud";
 type MetaVariableMode = "field" | "fixed";
+const isGuidedEvolution = (mode: CampaignSendMode): boolean => mode === "evolution";
 
 interface ImportedAudienceRow {
   name?: string;
@@ -129,8 +133,11 @@ function statusLabel(status: CampaignDto["status"]) {
     draft: "Rascunho",
     scheduled: "Agendada",
     sending: "Enviando",
+    paused: "Pausada",
     completed: "Concluida",
-    failed: "Falhou"
+    failed: "Falhou",
+    canceled: "Cancelada",
+    needs_attention: "Precisa de atenção"
   };
 
   return labels[status];
@@ -419,6 +426,7 @@ export function CampaignsPage() {
   const [metaTemplatesLoaded, setMetaTemplatesLoaded] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [deletingCampaignId, setDeletingCampaignId] = useState<string | null>(null);
   const [isRecipientsLoading, setIsRecipientsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -547,6 +555,24 @@ export function CampaignsPage() {
   const completedCount = campaigns.filter((campaign) => campaign.status === "completed").length;
   const sendingCount = campaigns.filter((campaign) => campaign.status === "sending").length;
 
+  async function deleteDraft(campaign: CampaignDto) {
+    if (campaign.status !== "draft" || deletingCampaignId) return;
+    if (!window.confirm(`Excluir o rascunho "${campaign.name}"? Esta ação não pode ser desfeita.`)) return;
+
+    setDeletingCampaignId(campaign.id);
+    setError(null);
+    try {
+      await apiDeleteCampaignDraft(getToken, campaign.id);
+      setCampaigns((current) => current.filter((item) => item.id !== campaign.id));
+      if (selectedCampaignId === campaign.id) setSelectedCampaignId(null);
+      setNotice("Rascunho excluído.");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Não foi possível excluir o rascunho.");
+    } finally {
+      setDeletingCampaignId(null);
+    }
+  }
+
   useEffect(() => {
     if (!notice) return;
 
@@ -604,6 +630,7 @@ export function CampaignsPage() {
   }, [getToken, selectedCampaignId]);
 
   function openCampaign(campaign: CampaignDto) {
+    setSendMode(campaign.messageBody.startsWith("Template Meta ") ? "meta_cloud" : "evolution");
     setSelectedCampaignId(campaign.id);
     setForm(toFormState(campaign));
     setAudiencePreview([]);
@@ -613,6 +640,7 @@ export function CampaignsPage() {
   }
 
   function createDraft() {
+    setSendMode("evolution");
     setSelectedCampaignId(null);
     setRecipients([]);
     setAudiencePreview([]);
@@ -938,12 +966,17 @@ export function CampaignsPage() {
   }
 
   if (viewMode === "hub") {
+    const tone = (status: CampaignDto["status"]) => status === "completed" ? "done"
+      : status === "sending" || status === "scheduled" ? "active"
+      : status === "paused" || status === "needs_attention" ? "attention" : "idle";
+    const origin = (campaign: CampaignDto) => campaign.audience.origin === "leads" ? "Lista de Leads"
+      : campaign.audience.type === "list" ? "Lista de contatos" : campaign.audience.type === "imported" ? "Planilha importada" : "Board do CRM";
     return (
-      <section className="module-page campaigns-page" aria-label="Disparos">
-        <header className="module-header">
+      <section className="module-page campaigns-page campaigns-hub" aria-label="Disparos">
+        <header className="campaigns-head">
           <div>
-            <p className="eyebrow">Prymeira Talk</p>
             <h1>Disparos</h1>
+            <p>{campaigns.length} {campaigns.length === 1 ? "campanha" : "campanhas"} · {sendingCount} enviando · {scheduledCount} {scheduledCount === 1 ? "agendada" : "agendadas"} · {completedCount} {completedCount === 1 ? "concluída" : "concluídas"}</p>
           </div>
           <button className="primary-button" type="button" onClick={createDraft}>
             <Plus size={16} aria-hidden="true" />
@@ -951,66 +984,52 @@ export function CampaignsPage() {
           </button>
         </header>
 
-        <div className="contacts-stats-row" aria-label="Resumo de disparos">
-          <span className="contacts-stat">
-            <strong>{campaigns.length}</strong>
-            <span>Campanhas</span>
-          </span>
-          <span className="contacts-stat">
-            <strong>{scheduledCount}</strong>
-            <span>Agendadas</span>
-          </span>
-          <span className="contacts-stat">
-            <strong>{sendingCount}</strong>
-            <span>Enviando</span>
-          </span>
-          <span className="contacts-stat">
-            <strong>{completedCount}</strong>
-            <span>Concluidas</span>
-          </span>
-        </div>
-
         {error ? <p className="error-note campaign-inline-note">{error}</p> : null}
+        {notice ? <p className="success-note campaign-inline-note" role="status">{notice}</p> : null}
 
-        <div className="campaign-hub-grid">
-          <button className="campaign-create-card" type="button" onClick={createDraft}>
-            <span className="campaign-create-icon">
-              <Send size={26} aria-hidden="true" />
-            </span>
-            <strong>Criar novo disparo</strong>
-            <span>Importe uma lista, escreva templates e configure o ritmo antes de enviar.</span>
-          </button>
-
-          {isLoading ? (
-            <div className="module-panel campaign-empty-panel">Carregando campanhas...</div>
-          ) : campaigns.length === 0 ? (
-            <div className="module-panel campaign-empty-panel">
-              <strong>Nenhum disparo criado</strong>
-              <span>Comece por um rascunho e valide tudo em simulação.</span>
-            </div>
-          ) : (
-            campaigns.map((campaign) => (
-              <button
-                className="campaign-hub-card"
-                key={campaign.id}
-                onClick={() => openCampaign(campaign)}
-                type="button"
-              >
-                <span className={`status-badge status-badge--${
-                  campaign.status === "completed" ? "open" :
-                  campaign.status === "scheduled" || campaign.status === "sending" ? "waiting" : "closed"
-                }`}>
-                  {statusLabel(campaign.status)}
-                </span>
-                <strong>{campaign.name}</strong>
-                <span>{campaign.audience.type === "imported" ? "Lista importada" : "Board do CRM"}</span>
-                <small>{formatDateTime(campaign.scheduledAt)}</small>
-              </button>
-            ))
-          )}
+        <div className="campaigns-list">
+          {isLoading ? <p className="campaigns-empty">Carregando campanhas…</p>
+            : campaigns.length === 0 ? <div className="campaigns-empty"><strong>Nenhum disparo criado</strong>
+              <span>Crie um disparo aqui ou monte uma lista em Leads e use “Criar lista de disparo”.</span></div>
+            : <table>
+              <thead><tr><th>Disparo</th><th>Contatos</th><th>Situação</th><th>Início</th><th aria-label="Ações" /></tr></thead>
+              <tbody>{campaigns.map((campaign) => (
+                <tr key={campaign.id} onClick={() => openCampaign(campaign)}>
+                  <td><button className="campaigns-open" type="button" onClick={(event) => { event.stopPropagation(); openCampaign(campaign); }}>{campaign.name}</button></td>
+                  <td className="campaigns-muted">{origin(campaign)}</td>
+                  <td><span className={`campaigns-status is-${tone(campaign.status)}`}>{statusLabel(campaign.status)}</span></td>
+                  <td className="campaigns-muted">{campaign.scheduledAt ? formatDateTime(campaign.scheduledAt) : "–"}</td>
+                  <td className="campaigns-actions">{campaign.status === "draft" ? (
+                    <button className="campaigns-delete" type="button"
+                      aria-label={`Excluir rascunho ${campaign.name}`}
+                      title="Excluir rascunho"
+                      disabled={deletingCampaignId !== null}
+                      onClick={(event) => { event.stopPropagation(); void deleteDraft(campaign); }}>
+                      <Trash2 size={16} aria-hidden="true" />
+                    </button>
+                  ) : null}</td>
+                </tr>
+              ))}</tbody>
+            </table>}
         </div>
       </section>
     );
+  }
+
+  if (isGuidedEvolution(sendMode)) {
+    return <GuidedCampaignEditor
+      campaign={selectedCampaign}
+      boards={boards}
+      channels={evolutionChannels}
+      getToken={getToken}
+      parseFile={parseAudienceFile}
+      onSaved={(campaign) => {
+        setCampaigns((current) => mergeCampaign(current, campaign));
+        setSelectedCampaignId(campaign.id);
+      }}
+      onBack={() => setViewMode("hub")}
+      onMeta={() => setSendMode("meta_cloud")}
+    />;
   }
 
   return (

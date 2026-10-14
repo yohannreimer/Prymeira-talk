@@ -125,7 +125,46 @@ describe("createJevFollowupDecision", () => {
     const body = JSON.parse(String(init?.body));
     expect(body.questions.outcome.criteria.follow_up).toContain("revisão humana");
     expect(body.questions.outcome.criteria.skip).not.toContain("há controle humano");
-    expect(body.questions.route.criteria.human_review).toContain("controle humano");
+    expect(body.questions.route.criteria.human_review).toContain("não autorizou envio automático");
+  });
+
+  it("allows a neutral seller follow-up only when the number opts into automatic sending", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => decisionResponse({
+      purpose: "confirm_active",
+      route: "automatic_send",
+      stage: "seller_owned",
+      risk: "none"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+    const input = {
+      ...baseInput,
+      followupKind: "human_commercial" as const,
+      aiControlStatus: "human_controlled" as const
+    };
+
+    await expect(decision.decide(input)).resolves.toMatchObject({ route: "human_review" });
+    await expect(decision.decide({ ...input, allowAutomaticSend: true })).resolves.toMatchObject({
+      outcome: "follow_up",
+      route: "automatic_send",
+      risk: "none"
+    });
+  });
+
+  it("accepts the configured channel agent for an opted-in human commercial follow-up without a session", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
+      purpose: "confirm_active", route: "automatic_send", stage: "seller_owned", risk: "none"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+    await expect(decision.decide({
+      ...baseInput,
+      followupKind: "human_commercial",
+      aiControlStatus: "human_controlled",
+      hasCompatibleActiveAgentSession: false,
+      hasConfiguredHumanAgent: true,
+      allowAutomaticSend: true
+    })).resolves.toMatchObject({ route: "automatic_send" });
+    const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(request.state.hasConfiguredHumanAgent).toBe(true);
   });
 
   it("does not classify asking for an explicitly missing technical field as commercial risk", async () => {
@@ -148,13 +187,45 @@ describe("createJevFollowupDecision", () => {
     );
     const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
 
-    await expect(decision.decide(baseInput)).resolves.toEqual({
+    await expect(decision.decide({ ...baseInput, allowAutomaticSend: true })).resolves.toEqual({
       outcome: "follow_up",
       purpose: "missing_qualification",
       route: "automatic_send",
       stage: "qualification",
       risk: "none"
     });
+  });
+
+  it("requires channel opt-in before a qualification follow-up can be sent automatically", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({ route: "automatic_send" }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+
+    await expect(decision.decide(baseInput)).resolves.toMatchObject({
+      outcome: "follow_up", purpose: "missing_qualification", route: "human_review"
+    });
+    const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(request.state.allowAutomaticSend).toBe(false);
+  });
+
+  it("keeps a catalog review pending after the customer requested and received the PDF", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(decisionResponse({
+      purpose: "confirm_active",
+      route: "automatic_send",
+      stage: "qualification"
+    }));
+    const decision = createJevFollowupDecision({ apiKey: "jev-test", fetchImpl });
+    const conversationMessages = [
+      { id: "request", label: "cliente" as const, body: "Catálogo por favor", type: "text", createdAt: "2026-09-24T17:31:34Z" },
+      { id: "reply", label: "atendente" as const, body: "Claro! Segue o catálogo para consulta.", type: "text", createdAt: "2026-09-24T17:32:50Z" },
+      { id: "catalog", label: "atendente" as const, body: "Catálogo Villefer", type: "file", createdAt: "2026-09-24T17:32:52Z" }
+    ];
+
+    await expect(decision.decide({ ...baseInput, conversationMessages, allowAutomaticSend: true })).resolves.toMatchObject({
+      outcome: "follow_up", purpose: "confirm_active", route: "automatic_send"
+    });
+    const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(request.questions.outcome.criteria.follow_up).toContain("catálogo");
+    expect(request.questions.purpose.criteria.confirm_active).toContain("catálogo");
   });
 
   it("canonicalizes an automatic proposal with no purpose to skip and cancel", async () => {

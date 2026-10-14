@@ -7,10 +7,11 @@ import {
 } from "@prymeira-talk/shared";
 import { EvolutionClientError } from "../evolution/evolution.client.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
+import { interpolateAutomationText, type AutomationVariables } from "./automation-variables.js";
 
 type DateLike = Date | string;
 
-interface AutomationRuleRecord {
+export interface AutomationRuleRecord {
   id: string;
   workspaceId: string;
   name: string;
@@ -152,7 +153,7 @@ interface AutomationRunnerRealtime {
 
 export interface AutomationRunnerEvolution {
   mode: EvolutionRuntime["mode"];
-  client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText" | "sendMedia"> | null;
+  client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText" | "sendMedia" | "getGroupInfo"> | null;
 }
 
 export interface AutomationRunnerAgentRuntime {
@@ -214,6 +215,18 @@ export interface RunForInboundMessageInput {
   includeDisabled?: boolean;
 }
 
+export interface RunForWebhookEventInput {
+  workspaceId: string;
+  rule: AutomationRuleRecord;
+  /** System message that records the external event; anchors the conversation. */
+  messageId: string;
+  eventKey: string;
+  variables: AutomationVariables;
+  /** When set, steps that would send WhatsApp messages are skipped with this reason. */
+  outboundBlockedReason?: string | null;
+  runInput?: Record<string, unknown>;
+}
+
 interface ActionResult {
   nodeId: string;
   type: string;
@@ -231,7 +244,18 @@ interface ExecuteContext {
   message: MessageRecord;
   conversation: ConversationRecord;
   eventKey: string;
+  variables?: AutomationVariables;
+  outboundBlockedReason?: string | null;
 }
+
+const OUTBOUND_BLOCK_TYPES = new Set([
+  "send_message",
+  "ask_open_reply",
+  "send_quick_reply",
+  "send_image",
+  "send_file",
+  "run_agent"
+]);
 
 const MAX_GRAPH_STEPS = 80;
 
@@ -360,6 +384,16 @@ function findTarget(flow: AutomationFlowDefinition, edge: AutomationEdgeDefiniti
 
 function messageText(context: ExecuteContext) {
   return context.message.body?.trim() ?? "";
+}
+
+// Only externally triggered runs carry variables; message-triggered flows keep
+// their configured text untouched.
+function withVariables(context: ExecuteContext, text: string): string;
+function withVariables(context: ExecuteContext, text: string | null): string | null;
+function withVariables(context: ExecuteContext, text: string | null) {
+  return text !== null && context.variables
+    ? interpolateAutomationText(text, context.variables)
+    : text;
 }
 
 function textContains(haystack: string, needle: string) {
@@ -515,8 +549,16 @@ async function executeNode(
     return { result: resultFor(node, "completed") };
   }
 
+  if (context.outboundBlockedReason && OUTBOUND_BLOCK_TYPES.has(node.type)) {
+    return {
+      result: resultFor(node, "skipped", { message: context.outboundBlockedReason }),
+      stop: node.type === "run_agent"
+    };
+  }
+
   if (node.type === "send_message" || node.type === "ask_open_reply" || node.type === "send_quick_reply") {
-    const text = configValue(node, ["message", "body", "text"]);
+    const configuredText = configValue(node, ["message", "body", "text"]);
+    const text = configuredText ? withVariables(context, configuredText).trim() : null;
     if (!text) {
       return {
         result: resultFor(node, "failed", { error: "Message text is required." }),
@@ -536,7 +578,7 @@ async function executeNode(
     const mimetype =
       configValue(node, ["mimetype", "mimeType"]) ??
       (node.type === "send_image" ? "image/jpeg" : "application/octet-stream");
-    const caption = configValue(node, ["caption", "message", "body"]) ?? undefined;
+    const caption = withVariables(context, configValue(node, ["caption", "message", "body"])) ?? undefined;
 
     if (!mediaUrl) {
       return {
@@ -736,7 +778,8 @@ async function executeNode(
   }
 
   if (node.type === "create_internal_note") {
-    const body = configValue(node, ["note", "body", "message"]);
+    const configuredBody = configValue(node, ["note", "body", "message"]);
+    const body = configuredBody ? withVariables(context, configuredBody).trim() : null;
     if (!body) {
       return { result: resultFor(node, "failed", { error: "Note body is required." }), stop: true };
     }
@@ -763,7 +806,7 @@ async function executeNode(
 
   if (node.type === "run_agent") {
     const agentId = configValue(node, ["agentId"]);
-    const instruction = configValue(node, ["instruction", "prompt", "message"]);
+    const instruction = withVariables(context, configValue(node, ["instruction", "prompt", "message"]));
 
     if (!agentId) {
       return { result: resultFor(node, "failed", { error: "Agent ID is required." }), stop: true };
@@ -1015,11 +1058,12 @@ function sanitizeError(error: unknown) {
 
 async function recordAutomationRun(
   options: AutomationRunnerOptions,
-  input: RunForInboundMessageInput,
+  input: Pick<RunForInboundMessageInput, "workspaceId" | "eventKey">,
   context: ExecuteContext,
   rule: AutomationRuleRecord,
   status: string,
-  result: unknown
+  result: unknown,
+  recordedInput: unknown = runInput(context)
 ) {
   const run = await options.prisma.automationRun.upsert({
     where: {
@@ -1034,12 +1078,12 @@ async function recordAutomationRun(
       ruleId: rule.id,
       eventKey: input.eventKey,
       status,
-      input: runInput(context),
+      input: recordedInput,
       result
     },
     update: {
       status,
-      input: runInput(context),
+      input: recordedInput,
       result
     }
   });
@@ -1091,6 +1135,11 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
         const triggerNodes = flow.nodes.filter(
           (node) => getAutomationBlock(node.type)?.category === "trigger"
         );
+        if (triggerNodes.some((node) => node.type === "trigger_webhook")) {
+          // External webhook flows only start from their public URL.
+          continue;
+        }
+
         const triggerNode = (
           await Promise.all(
             triggerNodes.map(async (node) => ({
@@ -1135,6 +1184,61 @@ export function createAutomationRunner(options: AutomationRunnerOptions) {
       }
 
       return runs;
+    },
+
+    async runForWebhookEvent(input: RunForWebhookEventInput) {
+      const flow = flowFromRule(input.rule);
+      const triggerNode = flow?.nodes.find((node) => node.type === "trigger_webhook");
+      if (!flow || !triggerNode) {
+        return null;
+      }
+
+      const loaded = await loadContext(options, {
+        workspaceId: input.workspaceId,
+        messageId: input.messageId,
+        eventKey: input.eventKey
+      });
+      if (!loaded) {
+        return null;
+      }
+
+      const context: ExecuteContext = {
+        ...loaded,
+        variables: input.variables,
+        outboundBlockedReason: input.outboundBlockedReason ?? null
+      };
+      const results = await executeFlow(options, context, flow, triggerNode);
+      const outboundBlocked = Boolean(
+        context.outboundBlockedReason &&
+          results.some((result) => result.status === "skipped" && OUTBOUND_BLOCK_TYPES.has(result.type))
+      );
+      const status = runStatus(results) === "failed" ? "failed" : outboundBlocked ? "skipped" : "completed";
+      const result = {
+        mode: "real",
+        runner: "graph",
+        triggerNodeId: triggerNode.id,
+        ...(outboundBlocked
+          ? { skippedReason: "outbound_blocked", skippedMessage: context.outboundBlockedReason }
+          : {}),
+        actionResults: results
+      };
+
+      return recordAutomationRun(
+        options,
+        input,
+        context,
+        input.rule,
+        status,
+        result,
+        {
+          source: "automation_webhook",
+          trigger: "webhook.received",
+          messageId: context.message.id,
+          conversationId: context.conversation.id,
+          contactId: context.conversation.contactId,
+          ...input.runInput
+        }
+      );
     }
   };
 }

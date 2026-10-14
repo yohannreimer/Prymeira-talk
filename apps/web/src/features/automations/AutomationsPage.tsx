@@ -138,13 +138,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function automationRunSummary(result: unknown) {
+export function automationRunSummary(result: unknown) {
   if (!isRecord(result)) {
     return "Resultado ainda sem detalhes.";
   }
 
   if (result.skippedReason === "trigger_not_matched") {
     return "Gatilho avaliado, mas não correspondeu a este evento.";
+  }
+
+  if (result.skippedReason === "outbound_blocked" && typeof result.skippedMessage === "string") {
+    return result.skippedMessage;
+  }
+
+  if (typeof result.error === "string") {
+    return result.error;
   }
 
   const actionResults = Array.isArray(result.actionResults) ? result.actionResults : [];
@@ -731,17 +739,17 @@ export function AutomationsPageView({
 
   return (
     <section className="module-page automations-page" aria-label="Automações">
-      <header className="module-header">
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <div>
-            <p className="eyebrow">Prymeira Talk</p>
+      <header className="module-header page-header">
+        <div>
+          <div className="page-header-title">
             <h1>Automações</h1>
+            {automations.length > 0 ? (
+              <span className="status-badge status-badge--open">
+                {enabledCount} ativa{enabledCount !== 1 ? "s" : ""}
+              </span>
+            ) : null}
           </div>
-          {automations.length > 0 ? (
-            <span className="status-badge status-badge--open">
-              {enabledCount} ativa{enabledCount !== 1 ? "s" : ""}
-            </span>
-          ) : null}
+          <p className="page-header-lede">Fluxos que respondem, movem cards e avisam a equipe sozinhos.</p>
         </div>
         <button className="primary-button" type="button" onClick={onCreate}>
           <Plus size={16} aria-hidden="true" />
@@ -1079,6 +1087,8 @@ export function AutomationEditorView({
         <div className="automation-editor-canvas-area">
           <AutomationCanvas
             agents={agents}
+            automationId={selectedAutomation?.id ?? null}
+            automationRevision={selectedAutomation?.updatedAt ?? null}
             key={selectedAutomation?.id ?? `new-automation-${draftVersion}`}
             onChange={onCanvasChange}
             value={selectedAutomation?.actions}

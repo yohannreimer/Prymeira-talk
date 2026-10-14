@@ -162,6 +162,16 @@ describe("createAgentsService", () => {
     expect(prisma.aiAgent.update).toHaveBeenCalledWith(expect.objectContaining({ data: { behaviorConfig: result.behaviorConfig } }));
   });
 
+  it("stores and clears the booking tag while retaining the agent's other behavior", async () => {
+    const prisma = buildPrisma();
+    prisma.aiAgent.findFirst.mockResolvedValue({ ...baseAgent, behaviorConfig: { replyInBubbles: true, meetingBookedTagId: null } });
+    const updated = await createAgentsService(prisma).updateAgent({ workspaceId: "workspace_a", agentId, data: { meetingBookedTagId: tagIdB } });
+    expect(updated.behaviorConfig).toEqual({ replyInBubbles: true, meetingBookedTagId: tagIdB });
+    prisma.aiAgent.findFirst.mockResolvedValue({ ...baseAgent, behaviorConfig: updated.behaviorConfig });
+    const cleared = await createAgentsService(prisma).updateAgent({ workspaceId: "workspace_a", agentId, data: { meetingBookedTagId: null } });
+    expect(cleared.behaviorConfig).toEqual({ replyInBubbles: true, meetingBookedTagId: null });
+  });
+
   it("does not touch behavior configuration when reasoning is omitted", async () => {
     const prisma = buildPrisma();
     prisma.aiAgent.findFirst.mockResolvedValue({ ...baseAgent, behaviorConfig: { reasoningEffort: "low", qualification: { requiredFields: ["city"] } } });

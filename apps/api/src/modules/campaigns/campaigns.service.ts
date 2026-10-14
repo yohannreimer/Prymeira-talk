@@ -1,3 +1,4 @@
+import { validateProspectingAgent } from "../prospecting/prospecting-policy.js";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   buildPhoneLookupCandidates,
@@ -5,9 +6,11 @@ import {
 } from "../contacts/phone-normalization.js";
 import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import type { MetaTemplateComponent } from "../meta/meta.client.js";
+import { renderCampaignMessage } from "./campaign-message-render.js";
+import type { NameInsightContact, NameInsightResult } from "./name-insight.js";
 
 type DateLike = Date | string;
-type CampaignStatus = "draft" | "scheduled" | "sending" | "completed" | "failed";
+type CampaignStatus = "draft" | "scheduled" | "sending" | "paused" | "completed" | "failed" | "canceled" | "needs_attention";
 type IntegrationMode = "simulated" | "real";
 
 interface CampaignRecord {
@@ -21,6 +24,11 @@ interface CampaignRecord {
   fallbackName?: string;
   cadence?: Prisma.JsonValue;
   scheduledAt: DateLike | null;
+  timeZone?: string;
+  prospectingAgentId?: string | null;
+  prospectingContext?: string | null;
+  hideFromInboxUntilReply?: boolean;
+  activationKey?: string | null;
   mode: IntegrationMode;
   createdAt: DateLike;
   updatedAt: DateLike;
@@ -63,6 +71,7 @@ type CampaignFindManyArgs = Parameters<PrismaClient["campaign"]["findMany"]>[0];
 type CampaignFindFirstArgs = Parameters<PrismaClient["campaign"]["findFirst"]>[0];
 type CampaignCreateArgs = Parameters<PrismaClient["campaign"]["create"]>[0];
 type CampaignUpdateArgs = Parameters<PrismaClient["campaign"]["update"]>[0];
+type CampaignDeleteManyArgs = Parameters<PrismaClient["campaign"]["deleteMany"]>[0];
 type RecipientFindManyArgs = Parameters<PrismaClient["campaignRecipient"]["findMany"]>[0];
 type RecipientUpsertArgs = Parameters<PrismaClient["campaignRecipient"]["upsert"]>[0];
 type BoardFindFirstArgs = Parameters<PrismaClient["contactBoard"]["findFirst"]>[0];
@@ -107,6 +116,7 @@ export interface PrismaLike {
     findFirst(args: CampaignFindFirstArgs): Promise<CampaignRecord | null>;
     create(args: CampaignCreateArgs): Promise<CampaignRecord>;
     update(args: CampaignUpdateArgs): Promise<CampaignRecord>;
+    deleteMany(args: CampaignDeleteManyArgs): Promise<{ count: number }>;
   };
   campaignRecipient: {
     findMany(args: RecipientFindManyArgs): Promise<CampaignRecipientRecord[]>;
@@ -149,6 +159,10 @@ export interface CampaignDto {
   fallbackName: string;
   cadence: CampaignCadenceDto;
   scheduledAt: string | null;
+  timeZone: string;
+  prospectingAgentId: string | null;
+  prospectingContext: string | null;
+  hideFromInboxUntilReply: boolean;
   mode: IntegrationMode;
   createdAt: string;
   updatedAt: string;
@@ -210,6 +224,9 @@ export interface CampaignCadenceDto {
   pauseMaxSeconds: number;
   windowStart?: string;
   windowEnd?: string;
+  dailyMin?: number;
+  dailyMax?: number;
+  weekdays?: number[];
 }
 
 export class CampaignsServiceError extends Error {
@@ -218,11 +235,13 @@ export class CampaignsServiceError extends Error {
       | "CAMPAIGN_NOT_FOUND"
       | "CAMPAIGN_AUDIENCE_INVALID"
       | "CAMPAIGN_BOARD_NOT_FOUND"
+      | 'CAMPAIGN_LIST_NOT_FOUND'
       | "CAMPAIGN_CHANNEL_NOT_FOUND"
       | "CAMPAIGN_EVOLUTION_NOT_CONFIGURED"
       | "CAMPAIGN_META_NOT_CONFIGURED"
       | "CAMPAIGN_TEMPLATE_NOT_FOUND"
-      | "CAMPAIGN_TEMPLATE_COMPONENT_INVALID",
+      | "CAMPAIGN_TEMPLATE_COMPONENT_INVALID"
+      | "CAMPAIGN_NOT_DRAFT",
     message: string
   ) {
     super(message);
@@ -262,7 +281,10 @@ function cadenceToJson(cadence: CampaignCadenceDto): Prisma.InputJsonObject {
     pauseMinSeconds: cadence.pauseMinSeconds,
     pauseMaxSeconds: cadence.pauseMaxSeconds,
     windowStart: cadence.windowStart,
-    windowEnd: cadence.windowEnd
+    windowEnd: cadence.windowEnd,
+    dailyMin: cadence.dailyMin,
+    dailyMax: cadence.dailyMax,
+    weekdays: cadence.weekdays
   }) as Prisma.InputJsonObject;
 }
 
@@ -283,7 +305,8 @@ async function findOrCreateCampaignContact(input: {
     const existingById = await input.prisma.contact.findFirst({
       where: {
         workspaceId: input.workspaceId,
-        id: input.contact.contactId
+        id: input.contact.contactId,
+        isGroup: false
       }
     });
 
@@ -296,6 +319,7 @@ async function findOrCreateCampaignContact(input: {
   const existingByPhone = await input.prisma.contact.findFirst({
     where: {
       workspaceId: input.workspaceId,
+      isGroup: false,
       phone: { in: buildPhoneLookupCandidates(phone) }
     },
     orderBy: { updatedAt: "desc" }
@@ -386,6 +410,10 @@ function toCampaignDto(record: CampaignRecord): CampaignDto {
     fallbackName: normalizeFallbackName(record.fallbackName),
     cadence: normalizeCadence(record.cadence),
     scheduledAt: toNullableIsoString(record.scheduledAt),
+    timeZone: record.timeZone ?? "America/Sao_Paulo",
+    prospectingAgentId: record.prospectingAgentId ?? null,
+    prospectingContext: record.prospectingContext ?? null,
+    hideFromInboxUntilReply: Boolean(record.hideFromInboxUntilReply),
     mode: record.mode,
     createdAt: toIsoString(record.createdAt),
     updatedAt: toIsoString(record.updatedAt)
@@ -428,6 +456,12 @@ function getBoardAudience(audience: unknown) {
     boardId: payload.boardId,
     stageId: typeof payload.stageId === "string" ? payload.stageId : undefined
   };
+}
+
+function getBroadcastListAudience(audience: unknown) {
+  if (!audience || typeof audience !== 'object') return null;
+  const value = audience as { type?: unknown; listId?: unknown };
+  return value.type === 'list' && typeof value.listId === 'string' ? value.listId : null;
 }
 
 function getImportedAudience(audience: unknown) {
@@ -510,8 +544,19 @@ function normalizeCadence(value: unknown): CampaignCadenceDto {
     pauseMinSeconds: numberValue("pauseMinSeconds", 300),
     pauseMaxSeconds: numberValue("pauseMaxSeconds", 900),
     windowStart: stringValue("windowStart"),
-    windowEnd: stringValue("windowEnd")
+    windowEnd: stringValue("windowEnd"),
+    ...dailyCadence(payload)
   });
+}
+
+/** "Espalhar em vários dias": kept only when complete and sensible, so a broken draft falls back to same-day sending. */
+function dailyCadence(payload: Record<string, unknown>) {
+  const dailyMax = typeof payload.dailyMax === "number" && Number.isInteger(payload.dailyMax) && payload.dailyMax > 0 ? payload.dailyMax : undefined;
+  const dailyMin = dailyMax && typeof payload.dailyMin === "number" && Number.isInteger(payload.dailyMin) && payload.dailyMin > 0
+    ? Math.min(payload.dailyMin, dailyMax) : dailyMax;
+  const weekdays = Array.isArray(payload.weekdays)
+    ? [...new Set(payload.weekdays.filter((day): day is number => Number.isInteger(day) && day >= 0 && day <= 6))].sort() : [];
+  return { ...(dailyMax ? { dailyMin, dailyMax } : {}), ...(weekdays.length ? { weekdays } : {}) };
 }
 
 interface ResolvedCampaignContact {
@@ -527,19 +572,16 @@ function renderTemplate(input: {
   template: string;
   contact: ResolvedCampaignContact;
   fallbackName: string;
+  firstName?: string | null;
+  keepDefaultFallback?: boolean;
 }) {
-  const name = input.contact.name?.trim() || input.fallbackName;
-  const variables: Record<string, string> = {
-    ...input.contact.fields,
-    name,
-    nome: name,
-    phone: input.contact.phone,
-    telefone: input.contact.phone
-  };
-
-  return input.template.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_, key: string) =>
-    variables[key] ?? ""
-  );
+  return renderCampaignMessage({
+    template: input.template,
+    contact: { phone: input.contact.phone, fields: input.contact.fields },
+    firstName: input.firstName ?? null,
+    explicitFallbackName: input.fallbackName,
+    keepDefaultFallback: input.keepDefaultFallback
+  });
 }
 
 function planScheduledAt(input: {
@@ -688,6 +730,7 @@ function renderMetaComponentsForContact(input: {
   components?: MetaTemplateComponent[];
   contact: ResolvedCampaignContact;
   fallbackName: string;
+  firstName?: string | null;
 }) {
   if (!input.components) {
     return undefined;
@@ -700,13 +743,19 @@ function renderMetaComponentsForContact(input: {
       text: renderTemplate({
         template: parameter.text ?? "",
         contact: input.contact,
-        fallbackName: input.fallbackName
+        fallbackName: input.fallbackName,
+        firstName: input.firstName,
+        // Meta template bodies are fixed; an empty parameter is rejected by Meta.
+        keepDefaultFallback: true
       })
     }))
   }) as MetaTemplateComponent);
 }
 
 export interface CampaignsServiceOptions {
+  nameInsight?: {
+    resolve(input: { workspaceId: string; contacts: NameInsightContact[] }): Promise<NameInsightResult>;
+  };
   evolution?: {
     mode: EvolutionRuntime["mode"];
     client?: Pick<NonNullable<EvolutionRuntime["client"]>, "sendText"> | null;
@@ -748,11 +797,7 @@ function deriveStatusFromSchedule(input: {
     return input.explicitStatus;
   }
 
-  if (input.scheduledAt) {
-    return input.currentStatus === "draft" ? "scheduled" : input.currentStatus;
-  }
-
-  return input.currentStatus === "scheduled" ? "draft" : input.currentStatus;
+  return input.currentStatus;
 }
 
 // Select only columns that exist in the current DB (templates/fallbackName/cadence are schema-only)
@@ -767,6 +812,11 @@ const campaignSelect = {
   fallbackName: true,
   cadence: true,
   scheduledAt: true,
+  timeZone: true,
+  prospectingAgentId: true,
+  prospectingContext: true,
+  hideFromInboxUntilReply: true,
+  activationKey: true,
   mode: true,
   createdAt: true,
   updatedAt: true,
@@ -842,6 +892,23 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
   };
 
   const resolveCampaignAudience = async (campaign: CampaignRecord): Promise<ResolvedCampaignContact[]> => {
+    const listId = getBroadcastListAudience(campaign.audience);
+    if (listId) {
+      const list = await (prisma as unknown as PrismaClient).broadcastList.findFirst({
+        where: { workspaceId: campaign.workspaceId, id: listId },
+        include: { members: { include: { contact: true }, orderBy: { createdAt: 'asc' } } }
+      });
+      if (!list) throw new CampaignsServiceError('CAMPAIGN_LIST_NOT_FOUND', 'Lista de contatos não encontrada.');
+      return list.members.map((member): ResolvedCampaignContact => ({
+        contactId: member.contactId,
+        audienceKey: member.contactId,
+        name: member.contact.name,
+        phone: member.contact.phone,
+        fields: { email: member.contact.email ?? '', company: member.contact.company ?? '',
+          empresa: member.contact.company ?? '' },
+        contact: member.contact
+      }));
+    }
     const importedRows = getImportedAudience(campaign.audience);
 
     if (importedRows) {
@@ -853,6 +920,16 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
 
   const buildRecipientPlans = async (campaign: CampaignRecord) => {
     const contacts = await resolveCampaignAudience(campaign);
+    const insight = options.nameInsight
+      ? await options.nameInsight.resolve({
+          workspaceId: campaign.workspaceId,
+          contacts: contacts.map((contact) => ({
+            audienceKey: contact.audienceKey,
+            contactId: contact.contactId,
+            name: contact.name
+          }))
+        })
+      : null;
     const templates = normalizeTemplates(campaign.templates, campaign.messageBody);
     const fallbackName = normalizeFallbackName(campaign.fallbackName);
     const cadence = normalizeCadence(campaign.cadence);
@@ -861,10 +938,12 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
     return contacts.map((contact, index) => {
       const templateIndex = templates.length > 0 ? index % templates.length : 0;
       const template = templates[templateIndex] ?? campaign.messageBody;
-      const messagePreview = renderTemplate({ template, contact, fallbackName });
+      const firstName = insight?.firstNames[contact.audienceKey] ?? null;
+      const messagePreview = renderTemplate({ template, contact, fallbackName, firstName });
 
       return {
         contact,
+        firstName,
         templateIndex,
         messagePreview,
         scheduledAt: planScheduledAt({ index, now: startedAt, cadence }),
@@ -913,6 +992,22 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       return campaigns.map(toCampaignDto);
     },
 
+    async deleteDraft(input: { workspaceId: string; campaignId: string }): Promise<void> {
+      const deleted = await prisma.campaign.deleteMany({
+        where: { workspaceId: input.workspaceId, id: input.campaignId, status: "draft" }
+      });
+      if (deleted.count > 0) return;
+
+      const campaign = await prisma.campaign.findFirst({
+        where: { workspaceId: input.workspaceId, id: input.campaignId },
+        select: campaignSelect
+      });
+      if (!campaign) {
+        throw new CampaignsServiceError("CAMPAIGN_NOT_FOUND", "Disparo não encontrado.");
+      }
+      throw new CampaignsServiceError("CAMPAIGN_NOT_DRAFT", "Só é possível excluir rascunhos.");
+    },
+
     async createCampaign(input: {
       workspaceId: string;
       name: string;
@@ -922,19 +1017,28 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       fallbackName?: string;
       cadence?: CampaignCadenceDto;
       scheduledAt?: string | null;
+      timeZone?: string;
+      prospectingAgentId?: string | null;
+      prospectingContext?: string | null;
+      hideFromInboxUntilReply?: boolean;
     }): Promise<CampaignDto> {
+      await validateProspectingAgent(prisma, input.workspaceId, input.prospectingAgentId);
       const campaign = await prisma.campaign.create({
         select: campaignSelect,
         data: {
           workspaceId: input.workspaceId,
           name: input.name.trim(),
-          status: input.scheduledAt ? "scheduled" : "draft",
+          status: "draft",
           audience: input.audience,
           messageBody: input.messageBody.trim(),
           templates: input.templates ?? [input.messageBody.trim()],
           fallbackName: input.fallbackName?.trim() || "cliente",
           cadence: input.cadence ? cadenceToJson(input.cadence) : cadenceToJson(normalizeCadence({})),
           scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : null,
+          timeZone: input.timeZone ?? "America/Sao_Paulo",
+          prospectingAgentId: input.prospectingAgentId ?? null,
+          prospectingContext: input.prospectingContext?.trim() ?? null,
+          hideFromInboxUntilReply: input.hideFromInboxUntilReply ?? false,
           mode: "simulated"
         }
       });
@@ -954,10 +1058,18 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
         fallbackName: string;
         cadence: CampaignCadenceDto;
         scheduledAt: string | null;
+        timeZone: string;
+        prospectingAgentId: string | null;
+        prospectingContext: string | null;
+        hideFromInboxUntilReply: boolean;
       }>;
     }): Promise<CampaignDto> {
       const currentCampaign = await findCampaignForWorkspace(input);
+      if (currentCampaign.status !== "draft") {
+        throw new CampaignsServiceError("CAMPAIGN_NOT_DRAFT", "Uma campanha ativa não pode ser editada.");
+      }
 
+      await validateProspectingAgent(prisma, input.workspaceId, input.data.prospectingAgentId === undefined ? currentCampaign.prospectingAgentId : input.data.prospectingAgentId);
       const campaign = await prisma.campaign.update({
         select: campaignSelect,
         where: {
@@ -983,7 +1095,11 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
               ? undefined
               : input.data.scheduledAt
                 ? new Date(input.data.scheduledAt)
-                : null
+                : null,
+          timeZone: input.data.timeZone,
+          prospectingAgentId: input.data.prospectingAgentId,
+          prospectingContext: input.data.prospectingContext,
+          hideFromInboxUntilReply: input.data.hideFromInboxUntilReply
         })
       });
 
@@ -1011,6 +1127,10 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       campaignId: string;
     }): Promise<CampaignSendResultDto> {
       const campaign = await findCampaignForWorkspace(input);
+      if (campaign.status !== "draft") {
+        throw new CampaignsServiceError("CAMPAIGN_NOT_DRAFT",
+          "Só rascunhos podem ser simulados.");
+      }
       const plans = await buildRecipientPlans(campaign);
 
       for (const plan of plans) {
@@ -1086,6 +1206,7 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       }
 
       const campaign = await findCampaignForWorkspace(input);
+      if (campaign.prospectingAgentId) throw new Error("PROSPECTING_UNAVAILABLE: Use o envio guiado Evolution para campanhas com IA.");
       const plans = await buildRecipientPlans(campaign);
       const channels = await listConnectedChannels({
         workspaceId: input.workspaceId,
@@ -1304,6 +1425,11 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
       }
 
       const campaign = await findCampaignForWorkspace(input);
+      if (campaign.prospectingAgentId) throw new Error("PROSPECTING_UNAVAILABLE: Prospecção com IA requer envio guiado Evolution; Meta não é compatível.");
+      if (campaign.activationKey) {
+        throw new CampaignsServiceError("CAMPAIGN_NOT_DRAFT",
+          "Uma campanha com fila ativa não pode usar outro modo de envio.");
+      }
       const plans = await buildRecipientPlans(campaign);
       const fallbackName = normalizeFallbackName(campaign.fallbackName);
       const components: MetaTemplateComponent[] | undefined = template
@@ -1325,7 +1451,8 @@ export function createCampaignsService(prisma: PrismaLike, options: CampaignsSer
         const renderedComponents = renderMetaComponentsForContact({
           components,
           contact: plan.contact,
-          fallbackName
+          fallbackName,
+          firstName: plan.firstName
         });
         const baseData = {
           workspaceId: input.workspaceId,

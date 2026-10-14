@@ -2,11 +2,11 @@ import type { LeadResultDto } from "@prymeira-talk/shared";
 import { ExternalLink, Phone, Mail, Sparkles } from "lucide-react";
 import { formatCnpj, whatsappLabels } from "./lead-display";
 
-export function LeadResultsTable({ items, selected, onToggle, onSelectAll, onSimilar }: { items: LeadResultDto[]; selected: Set<string>; onToggle: (id: string) => void; onSelectAll: () => void; onSimilar: (lead: LeadResultDto) => void }) {
+export function LeadResultsTable({ items, selected, allSelected, selectingAll, onToggle, onSelectAll, onSimilar }: { items: LeadResultDto[]; selected: Set<string>; allSelected: boolean; selectingAll: boolean; onToggle: (id: string) => void; onSelectAll: () => void; onSimilar: (lead: LeadResultDto) => void }) {
   return <div className="leads-results-scroll"><table className="leads-results-table">
-    <thead><tr><th scope="col"><input type="checkbox" aria-label="Selecionar todos os resultados desta página" checked={items.length > 0 && items.every(item => selected.has(item.id))} onChange={onSelectAll} /></th><th scope="col">Empresa</th><th scope="col">Contato</th><th scope="col">Localização / atividade</th><th scope="col">WhatsApp</th><th scope="col">Origem</th><th scope="col">Ações</th></tr></thead>
+    <thead><tr><th scope="col"><input type="checkbox" aria-label="Selecionar todos os resultados da lista" checked={allSelected} disabled={selectingAll} onChange={onSelectAll} /></th><th scope="col">Empresa</th><th scope="col">Contato</th><th scope="col">Localização / atividade</th><th scope="col">WhatsApp</th><th scope="col">Origem</th><th scope="col">Ações</th></tr></thead>
     <tbody>{items.map(item => <tr key={item.id} className={selected.has(item.id) ? "is-selected" : ""}>
-      <td><input type="checkbox" aria-label={`Selecionar ${item.tradeName || item.companyName || item.cnpj || "empresa"}`} checked={selected.has(item.id)} onChange={() => onToggle(item.id)} /></td>
+      <td><input type="checkbox" aria-label={`Selecionar ${item.tradeName || item.companyName || item.cnpj || "empresa"}`} checked={selected.has(item.id)} disabled={selectingAll} onChange={() => onToggle(item.id)} /></td>
       <td><strong>{item.tradeName || item.companyName || "Empresa sem nome"}</strong>{item.tradeName && item.companyName && <small>{item.companyName}</small>}<small>{formatCnpj(item.cnpj)}</small></td>
       <td>{item.phones.length > 0 ? <span><Phone size={13} aria-hidden="true" /> {item.phones[0]}{item.phones.length > 1 ? ` +${item.phones.length - 1}` : ""}</span> : <small>Sem telefone</small>}{item.email && <span><Mail size={13} aria-hidden="true" /> {item.email}</span>}</td>
       <td>{item.address && <span>{item.address}</span>}<small>{[item.city, item.state].filter(Boolean).join(" / ") || "Local não informado"} · {item.cnaePrimary || item.category || "Atividade não informada"}</small></td>

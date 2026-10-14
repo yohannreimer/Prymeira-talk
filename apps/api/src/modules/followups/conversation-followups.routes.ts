@@ -1,18 +1,21 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
-import type { RealtimeEvent } from "@prymeira-talk/shared";
+import { channelFollowupConfigSchema, type RealtimeEvent } from "@prymeira-talk/shared";
 import { z } from "zod";
 import { canPerform, type Permission } from "../access/roles.js";
 import { resolveCurrentUserProfileId } from "../conversations/current-user.js";
+import { pauseAgentOnHumanOutbound } from "../conversations/pause-agent-on-human-outbound.js";
 import {
   OutboundDeliveryUncertainError,
   type ConversationOutboundTextDelivery
 } from "../conversations/conversations.service.js";
 import {
   createConversationFollowupsService,
+  type ConversationFollowupRecord,
   type ConversationFollowupsPrismaLike,
   type RevalidateActiveFollowupResult
 } from "./conversation-followups.service.js";
-import { addBusinessMinutes } from "./business-time.js";
+import { addBusinessMinutes, nextBusinessStart } from "./business-time.js";
+import { DEFAULT_CHANNEL_FOLLOWUP_CONFIG } from "./channel-followup-plan.js";
 import {
   conversationFollowupPublicSelect,
   createConversationFollowupRealtimePublisher,
@@ -22,7 +25,7 @@ import {
   type ConversationFollowupPublisher
 } from "./conversation-followup-events.js";
 
-const FOLLOWUP_LIST_STATUSES = ["review", "scheduled", "sent", "cancelled"] as const;
+const FOLLOWUP_LIST_STATUSES = ["review", "reminders", "scheduled", "sent", "cancelled"] as const;
 const ACTIVE_MANUAL_STATUSES = ["scheduled", "review"] as const;
 const POSTPONE_BUSINESS_MINUTES = 60;
 
@@ -86,6 +89,10 @@ export type ConversationFollowupsRoutesPrismaLike = Omit<
   ConversationFollowupsPrismaLike,
   "conversationFollowup" | "$transaction"
 > & {
+  channel?: {
+    findUnique(args: unknown): Promise<{ followupConfig?: unknown } | null>;
+    update(args: unknown): Promise<{ followupConfig?: unknown }>;
+  };
   conversationFollowup: FollowupStore;
   message: ConversationFollowupsPrismaLike["message"] & ManualSendTransaction["message"];
   userProfile: {
@@ -101,6 +108,11 @@ type FollowupLifecycle = {
     now?: Date;
     claim?: { lockedAt: Date };
   }): Promise<RevalidateActiveFollowupResult>;
+  scheduleNextAfterManualSend?(input: {
+    workspaceId: string;
+    followup: ConversationFollowupRecord;
+    sentAt: Date;
+  }): Promise<string | null>;
 };
 
 type RealtimePublisher = {
@@ -213,6 +225,18 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
     });
   }
 
+  async function loadChannelCalendar(workspaceId: string, conversationId: string) {
+    const conversation = await prisma.conversation.findUnique({
+      where: { workspaceId_id: { workspaceId, id: conversationId } }
+    });
+    if (!conversation?.channelId || !prisma.channel) return null;
+    const channel = await prisma.channel.findUnique({
+      where: { workspaceId_id: { workspaceId, id: conversation.channelId } }
+    });
+    const parsed = channelFollowupConfigSchema.safeParse(channel?.followupConfig);
+    return parsed.success ? parsed.data : null;
+  }
+
   app.get("/followups", async (request, reply) => {
     if (!requirePermission(request.talk.role, "conversation.read", reply)) return reply;
     const query = listQuerySchema.safeParse(request.query);
@@ -225,15 +249,77 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
         workspaceId: request.talk.workspaceId,
         status: query.data.status === "cancelled"
           ? { in: ["cancelled", "failed", "skipped", "expired"] }
-          : query.data.status
+          : query.data.status === "reminders" ? "review" : query.data.status,
+        ...(query.data.status === "reminders" ? { kind: "seller_reminder" } : {}),
+        ...(query.data.status === "review" ? { NOT: { kind: "seller_reminder" } } : {}),
+        // A quiet wait is only "analyze this in 5 minutes"; it is not a follow-up yet.
+        ...(query.data.status === "scheduled" ? { NOT: { reason: "brain_quiet_wait" } } : {}),
+        // Screening and brain verdicts of "nothing to follow up" are not cancellations the team made.
+        ...(query.data.status === "cancelled"
+          ? { NOT: [{ reason: { startsWith: "eligibility_" } }, { reason: { startsWith: "brain_" } }] }
+          : {})
       },
       select: followupSelect,
-      orderBy: query.data.status === "review" || query.data.status === "scheduled"
+      orderBy: query.data.status === "review" || query.data.status === "reminders" || query.data.status === "scheduled"
         ? [{ scheduledAt: "asc" }, { createdAt: "asc" }]
         : [{ updatedAt: "desc" }],
       take: 100
     });
     return records.map(toConversationFollowupDto);
+  });
+
+  app.get("/followups/config/:channelId", async (request, reply) => {
+    if (!requirePermission(request.talk.role, "conversation.read", reply)) return reply;
+    const params = z.object({ channelId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ code: "FOLLOWUP_INVALID_CHANNEL" });
+    if (!prisma.channel) return reply.code(503).send({ code: "FOLLOWUP_CONFIG_UNAVAILABLE" });
+    const channel = await prisma.channel.findUnique({
+      where: { workspaceId_id: { workspaceId: request.talk.workspaceId, id: params.data.channelId } }
+    });
+    if (!channel) return reply.code(404).send({ code: "FOLLOWUP_CHANNEL_NOT_FOUND" });
+    const configured = channelFollowupConfigSchema.safeParse(channel.followupConfig);
+    return {
+      config: configured.success ? configured.data : DEFAULT_CHANNEL_FOLLOWUP_CONFIG,
+      customized: configured.success
+    };
+  });
+
+  app.put("/followups/config/:channelId", async (request, reply) => {
+    if (!requirePermission(request.talk.role, "automation.manage", reply)) return reply;
+    const params = z.object({ channelId: z.string().uuid() }).safeParse(request.params);
+    const body = channelFollowupConfigSchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ code: "FOLLOWUP_INVALID_CONFIG", error: "Confira horários, dias e etapas." });
+    }
+    if (!prisma.channel) return reply.code(503).send({ code: "FOLLOWUP_CONFIG_UNAVAILABLE" });
+    const channel = await prisma.channel.findUnique({
+      where: { workspaceId_id: { workspaceId: request.talk.workspaceId, id: params.data.channelId } }
+    });
+    if (!channel) return reply.code(404).send({ code: "FOLLOWUP_CHANNEL_NOT_FOUND" });
+    await prisma.channel.update({
+      where: { workspaceId_id: { workspaceId: request.talk.workspaceId, id: params.data.channelId } },
+      data: { followupConfig: body.data }
+    });
+    if (!body.data.enabled) {
+      const where = {
+        workspaceId: request.talk.workspaceId,
+        activeKey: "active",
+        status: { in: ["evaluating", "scheduled", "processing", "review"] },
+        conversation: { is: { channelId: params.data.channelId } }
+      };
+      const pending = await prisma.conversationFollowup.findMany({ where, select: { id: true } });
+      await prisma.conversationFollowup.updateMany({
+        where,
+        data: { status: "cancelled", activeKey: null, reason: "channel_paused", cancelledAt: new Date() }
+      });
+      await Promise.all(pending.map((followup) => publishPersistedConversationFollowup({
+        store: prisma.conversationFollowup,
+        publisher,
+        workspaceId: request.talk.workspaceId,
+        followupId: followup.id
+      })));
+    }
+    return { config: body.data, customized: true };
   });
 
   app.post("/followups/:id/send", async (request, reply) => {
@@ -258,6 +344,24 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
     if (!current) return reply;
     if (current.status !== "review" || current.activeKey !== "active") {
       return stale(reply, current);
+    }
+
+    const channelCalendar = await loadChannelCalendar(request.talk.workspaceId, current.conversationId);
+    if (channelCalendar) {
+      const requestedAt = now();
+      const permittedAt = nextBusinessStart({
+        from: requestedAt,
+        timeZone: channelCalendar.timeZone,
+        businessDays: channelCalendar.businessDays,
+        businessHours: channelCalendar.businessHours
+      });
+      if (permittedAt > requestedAt) {
+        return reply.code(409).send({
+          code: "FOLLOWUP_OUTSIDE_BUSINESS_HOURS",
+          error: "Este número envia follow-ups apenas no horário de atendimento.",
+          nextAllowedAt: permittedAt.toISOString()
+        });
+      }
     }
 
     const claimAt = now();
@@ -300,6 +404,12 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
       }
       return stale(reply, latest);
     }
+
+    await prisma.$transaction((tx) => pauseAgentOnHumanOutbound(tx as unknown as Parameters<typeof pauseAgentOnHumanOutbound>[0], {
+      workspaceId: request.talk.workspaceId,
+      conversationId: current.conversationId,
+      actorUserId
+    }));
 
     let delivery: Awaited<ReturnType<ConversationOutboundTextDelivery["createPendingOutboundMessage"]>>;
     try {
@@ -423,6 +533,15 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
       return reply.code(500).send({ code: "FOLLOWUP_WRITE_FAILED", error: "Follow-up state was not persisted." });
     }
     await publisher.publishUpdated(result);
+    try {
+      await followups.scheduleNextAfterManualSend?.({
+        workspaceId: request.talk.workspaceId,
+        followup: current as ConversationFollowupRecord,
+        sentAt
+      });
+    } catch (error) {
+      app.log.error({ error, followupId: current.id }, "Could not schedule the next manual follow-up");
+    }
     return toConversationFollowupDto(result);
   });
 
@@ -438,7 +557,7 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
     if (!current) return reply;
     if (!isManuallyActionable(current)) return stale(reply, current);
 
-    const scheduledAt = nextBusinessWindow(now());
+    const scheduledAt = nextBusinessWindow(now(), await loadChannelCalendar(request.talk.workspaceId, current.conversationId));
     const updated = await prisma.conversationFollowup.updateMany({
       where: manualActiveWhere(request.talk.workspaceId, current.id, expectedUpdatedAt),
       data: { status: "scheduled", scheduledAt, lockedAt: null, reason: "manual_postponed" }
@@ -471,6 +590,45 @@ export const conversationFollowupsRoutes: FastifyPluginAsync<ConversationFollowu
       }
     });
     return respondConditionalMutation({ prisma, workspaceId: request.talk.workspaceId, id: current.id, count: updated.count, reply, publisher });
+  });
+
+  // The seller did what the reminder asked.
+  app.post("/followups/:id/done", async (request, reply) => {
+    if (!requirePermission(request.talk.role, "conversation.reply", reply)) return reply;
+    const params = followupParamsSchema.safeParse(request.params);
+    const body = noFollowupBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ code: "FOLLOWUP_INVALID_REQUEST", error: "Invalid reminder request." });
+    }
+    const expectedUpdatedAt = new Date(body.data.expectedUpdatedAt);
+    const cancelledByUserId = await resolveActor(request);
+    const current = await revalidateForMutation({ workspaceId: request.talk.workspaceId, followupId: params.data.id, expectedUpdatedAt, reply });
+    if (!current) return reply;
+    if (!isManuallyActionable(current) || current.kind !== "seller_reminder") return stale(reply, current);
+
+    const updated = await prisma.conversationFollowup.updateMany({
+      where: manualActiveWhere(request.talk.workspaceId, current.id, expectedUpdatedAt),
+      data: { status: "cancelled", activeKey: null, lockedAt: null, cancelledAt: now(), cancelledByUserId, reason: "seller_done" }
+    });
+    return respondConditionalMutation({ prisma, workspaceId: request.talk.workspaceId, id: current.id, count: updated.count, reply, publisher });
+  });
+
+  // The active follow-up of one conversation, for the strip above the composer.
+  app.get("/conversations/:conversationId/followup", async (request, reply) => {
+    if (!requirePermission(request.talk.role, "conversation.read", reply)) return reply;
+    const params = z.object({ conversationId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ code: "FOLLOWUP_INVALID_CONVERSATION" });
+    const record = await prisma.conversationFollowup.findFirst({
+      where: {
+        workspaceId: request.talk.workspaceId,
+        conversationId: params.data.conversationId,
+        activeKey: "active",
+        status: { in: ["evaluating", "scheduled", "processing", "review"] },
+        NOT: { reason: "brain_quiet_wait" }
+      },
+      select: followupSelect
+    });
+    return { followup: record ? toConversationFollowupDto(record) : null };
   });
 
   app.post("/followups/:id/no-followup", async (request, reply) => {
@@ -680,13 +838,13 @@ async function respondConditionalMutation(input: {
   return toConversationFollowupDto(current);
 }
 
-function nextBusinessWindow(from: Date) {
+function nextBusinessWindow(from: Date, calendar: { timeZone: string; businessDays: number[]; businessHours: { start: string; end: string } } | null = null) {
   return addBusinessMinutes({
     from,
     minutes: POSTPONE_BUSINESS_MINUTES,
-    timeZone: "America/Sao_Paulo",
-    businessDays: [1, 2, 3, 4, 5],
-    businessHours: { start: "08:00", end: "18:00" }
+    timeZone: calendar?.timeZone ?? "America/Sao_Paulo",
+    businessDays: calendar?.businessDays ?? [1, 2, 3, 4, 5],
+    businessHours: calendar?.businessHours ?? { start: "08:00", end: "18:00" }
   });
 }
 

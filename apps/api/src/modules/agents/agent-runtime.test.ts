@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAgentRuntime } from "./agent-runtime.js";
+import { EXTERNAL_FORM_OPENER_DIRECTIVE, createAgentRuntime } from "./agent-runtime.js";
+import { AgentMediaError } from "./agent-media-resolver.js";
 import type {
   AgentToolExecutorPrismaLike,
   AgentToolExecutorTransactionLike
@@ -240,6 +241,77 @@ function buildPrisma(overrides: Record<string, any> = {}) {
 }
 
 describe("createAgentRuntime", () => {
+  it("shares the last 20 messages and a source beyond the first 50 with both JEV calls", async () => {
+    const current = { ...baseMessage, body: "10mm" };
+    const earlier = Array.from({ length: 19 }, (_, index) => ({
+      ...baseMessage,
+      id: `history-${index + 1}`,
+      body: `Assunto anterior ${index + 1}`,
+      createdAt: new Date(now.getTime() - (21 - index) * 60_000)
+    }));
+    const messages = [
+      ...earlier,
+      { ...baseMessage, id: "product", body: "Barra para viga baldrame", createdAt: new Date(now.getTime() - 60_000) },
+      current
+    ];
+    const sources = Array.from({ length: 50 }, (_, index) => ({
+      id: `unrelated-${index}`,
+      title: `Manual sem relacao ${index}`,
+      content: "Atendimento geral sem produto citado.",
+      metadata: { category: "suporte" },
+      status: "ready"
+    }));
+    sources.push({
+      id: "approved-baldrame",
+      title: "Aplicação baldrame aprovada",
+      content: "Barra para viga baldrame deve ser verificada conforme o material e a aplicação.",
+      metadata: { category: "produto", keywords: ["viga baldrame"] },
+      status: "ready"
+    } as typeof sources[number]);
+    const prisma = buildPrisma({
+      message: { findFirst: vi.fn().mockResolvedValue(current), findMany: vi.fn().mockResolvedValue(messages) },
+      aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue(sources) }
+    });
+    const provider = buildProvider({ confidence: 0.9, reply: "Vou verificar o material.", actions: [], handoff: { required: false, reason: null } });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({ outcome: "continue", plan: { conversationStage: "new_quote", commercialPath: "ambiguous", nextAction: "handoff" } }),
+      audit: vi.fn().mockResolvedValue({ outcome: "send" })
+    };
+
+    await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(prisma.aiKnowledgeSource.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { workspaceId: ids.workspace, agentId: ids.agent, status: "ready" }
+    }));
+    expect(prisma.aiKnowledgeSource.findMany.mock.calls[0]?.[0]).not.toHaveProperty("take");
+    const preflightInput = replyPreflight.evaluate.mock.calls[0]?.[0];
+    const auditInput = replyPreflight.audit.mock.calls[0]?.[0];
+    expect(preflightInput.conversationMessages).toHaveLength(20);
+    expect(preflightInput.conversationMessages.at(-1).body).toBe("10mm");
+    expect(preflightInput.agentRules).toBe(baseAgent.systemPrompt);
+    expect(preflightInput.selectedKnowledge).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "approved-baldrame", content: expect.stringContaining("viga baldrame") })
+    ]));
+    expect(auditInput.conversationMessages).toEqual(preflightInput.conversationMessages);
+    expect(auditInput.selectedKnowledge).toEqual(preflightInput.selectedKnowledge);
+    expect(auditInput.agentRules).toBe(preflightInput.agentRules);
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: baseAgent.systemPrompt }));
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      contextSummary: expect.objectContaining({
+        jevConversationMessageCount: 20,
+        jevAgentRulesCharacters: baseAgent.systemPrompt.length,
+        jevSelectedKnowledgeCharacters: expect.any(Number),
+        jevStateCharacters: expect.any(Number)
+      })
+    }) }));
+  });
+
   it("skips generation when JEV identifies a social closure", async () => {
     const socialMessage = { ...baseMessage, body: "Obrigado!" };
     const prisma = buildPrisma({ aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([]) } });
@@ -326,7 +398,8 @@ describe("createAgentRuntime", () => {
       audit: vi.fn().mockResolvedValue({ outcome: "handoff", reason: "commercial_policy_risk" })
     };
 
-    const result = await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+    const schedule = vi.fn();
+    const result = await createAgentRuntime({ prisma, provider, replyPreflight, handoffBriefService: { schedule } }).runForMessage({
       workspaceId: ids.workspace,
       agentId: ids.agent,
       conversationId: ids.conversation,
@@ -335,6 +408,8 @@ describe("createAgentRuntime", () => {
     });
 
     expect(result).toEqual({ status: "handoff_requested", runId: ids.run });
+    expect(schedule).toHaveBeenCalledWith({ workspaceId: ids.workspace, conversationId: ids.conversation });
+    expect(schedule.mock.invocationCallOrder[0]).toBeGreaterThan(vi.mocked(prisma.aiAgentRun.create).mock.invocationCallOrder[0]!);
     expect(provider.generate).toHaveBeenCalledOnce();
     expect(replyPreflight.audit).toHaveBeenCalledOnce();
     expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({
@@ -353,6 +428,113 @@ describe("createAgentRuntime", () => {
     expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({ context: expect.objectContaining({ conversationReasoning: "context_first_v1" }) }));
     expect(prisma.message.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 2001 }));
   });
+
+  it.each([
+    "Quanto custa a barra para viga baldrame de 10mm?",
+    "Tem em estoque a barra para viga baldrame de 10mm?"
+  ])("lets JEV apply an approved not-sold rule before a generic price or stock guard: %s", async (request) => {
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, body: request });
+    vi.mocked(prisma.message.findMany).mockResolvedValue([{ ...baseMessage, body: request }]);
+    vi.mocked(prisma.aiKnowledgeSource.findMany).mockResolvedValue([{
+        id: "approved_baldrame",
+        title: "Barras para viga baldrame não comercializadas",
+        content: "Não comercializamos barras para viga baldrame de 10mm nem outras variações confirmadas. Para outros itens, encaminhe ao comercial.",
+        metadata: { source: "approved_agent_improvement", kind: "not_sold", keywords: ["barra para viga baldrame"] },
+        status: "ready"
+      }]);
+    const provider = buildProvider({
+      confidence: 0.95,
+      reply: "Não trabalhamos com barras para viga baldrame.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({
+        outcome: "continue",
+        plan: { conversationStage: "new_quote", commercialPath: "not_sold", nextAction: "answer_current_request" }
+      }),
+      audit: vi.fn().mockResolvedValue({ outcome: "send" })
+    };
+
+    const result = await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation,
+      messageId: ids.message, trigger: "automation"
+    });
+
+    expect(result.status).toBe("completed");
+    expect(replyPreflight.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      selectedKnowledge: expect.arrayContaining([expect.objectContaining({ id: "approved_baldrame" })])
+    }));
+    expect(provider.generate).toHaveBeenCalledOnce();
+    expect(replyPreflight.audit).toHaveBeenCalledOnce();
+    expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ body: "Não trabalhamos com barras para viga baldrame." })
+    }));
+  });
+
+  it("keeps price handoff when JEV does not confirm an approved refusal", async () => {
+    const request = "Quanto custa a barra para viga baldrame de 10mm?";
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, body: request });
+    vi.mocked(prisma.message.findMany).mockResolvedValue([{ ...baseMessage, body: request }]);
+    vi.mocked(prisma.aiKnowledgeSource.findMany).mockResolvedValue([{
+        id: "approved_baldrame",
+        title: "Barras para viga baldrame não comercializadas",
+        content: "Não comercializamos barras para viga baldrame de 10mm.",
+        metadata: { source: "approved_agent_improvement", kind: "not_sold", keywords: ["barra para viga baldrame"] },
+        status: "ready"
+      }]);
+    const provider = buildProvider({ reply: "Não trabalhamos.", confidence: 0.9, actions: [], handoff: { required: false, reason: null } });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({
+        outcome: "continue",
+        plan: { conversationStage: "new_quote", commercialPath: "ambiguous", nextAction: "handoff" }
+      }),
+      audit: vi.fn().mockResolvedValue({ outcome: "send" })
+    };
+
+    const result = await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation,
+      messageId: ids.message, trigger: "automation"
+    });
+
+    expect(result.status).toBe("handoff_requested");
+    expect(provider.generate).not.toHaveBeenCalled();
+  });
+
+  it("hands off if the final JEV audit fails after an approved refusal bypass", async () => {
+    const request = "Quanto custa a barra para viga baldrame de 10mm?";
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...baseMessage, body: request });
+    vi.mocked(prisma.message.findMany).mockResolvedValue([{ ...baseMessage, body: request }]);
+    vi.mocked(prisma.aiKnowledgeSource.findMany).mockResolvedValue([{
+      id: "approved_baldrame",
+      title: "Barras para viga baldrame não comercializadas",
+      content: "Não comercializamos barras para viga baldrame de 10mm.",
+      metadata: { source: "approved_agent_improvement", kind: "not_sold", keywords: ["barra para viga baldrame"] },
+      status: "ready"
+    }]);
+    const provider = buildProvider({ reply: "Não trabalhamos com barras para viga baldrame.", confidence: 0.95, actions: [], handoff: { required: false, reason: null } });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({
+        outcome: "continue",
+        plan: { conversationStage: "new_quote", commercialPath: "not_sold", nextAction: "answer_current_request" }
+      }),
+      audit: vi.fn().mockRejectedValue(new Error("JEV unavailable"))
+    };
+
+    const result = await createAgentRuntime({ prisma, provider, replyPreflight }).runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation,
+      messageId: ids.message, trigger: "automation"
+    });
+
+    expect(result.status).toBe("handoff_requested");
+    expect(replyPreflight.audit).toHaveBeenCalledOnce();
+    expect(prisma.message.create).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ body: "Não trabalhamos com barras para viga baldrame." })
+    }));
+  });
   it('never activates or sends an autonomous agent in an assisted channel', async () => {
     const prisma = buildPrisma({ conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: { ...baseConversation.channel, encryptedConfig: { assistant: { mode: 'automatic', agentId: ids.agent } } } }) } });
     const provider = buildProvider({ reply: 'Do not send', confidence: 1, actions: [], handoff: { required: false, reason: null } });
@@ -362,6 +544,26 @@ describe("createAgentRuntime", () => {
     expect((await runtime.activateForMessage(input)).status).toBe('skipped');
     expect((await runtime.runForMessage(input)).status).toBe('skipped');
     expect(provider.generate).not.toHaveBeenCalled(); expect(sendText).not.toHaveBeenCalled(); expect(prisma.message.create).not.toHaveBeenCalled();
+  });
+  it('never activates an autonomous agent for a WhatsApp group', async () => {
+    const prisma = buildPrisma({ conversation: { findUnique: vi.fn().mockResolvedValue({
+      ...baseConversation, contact: { ...baseConversation.contact, isGroup: true, phone: '120363024158769234@g.us' }
+    }) } });
+    const provider = buildProvider({ reply: 'Não enviar', confidence: 1, actions: [], handoff: { required: false, reason: null } });
+    const runtime = createAgentRuntime({ prisma, provider });
+    const input = { workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation,
+      messageId: ids.message, trigger: 'automation' as const };
+    expect((await runtime.activateForMessage(input)).status).toBe('skipped');
+    expect((await runtime.runForMessage(input)).status).toBe('skipped');
+    expect(provider.generate).not.toHaveBeenCalled();
+  });
+  it('activates the autonomous agent when the channel also generates private suggestions', async () => {
+    const prisma = buildPrisma({ conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: { ...baseConversation.channel, encryptedConfig: { assistant: { mode: 'automatic_with_agent', agentId: ids.agent } } } }), update: vi.fn().mockResolvedValue({}) } });
+    const provider = buildProvider({ reply: 'Resposta', confidence: 1, actions: [], handoff: { required: false, reason: null } });
+    const runtime = createAgentRuntime({ prisma, provider });
+    expect((await runtime.activateForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message })).status).toBe('completed');
+    expect(prisma.aiAgentSession.upsert).toHaveBeenCalled();
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ activeAgentSessionId: ids.session }) }));
   });
   it('rechecks channel mode after the provider returns, before tools or send', async () => {
     const prisma = buildPrisma();
@@ -373,6 +575,20 @@ describe("createAgentRuntime", () => {
     const runtime = createAgentRuntime({ prisma, provider, evolution: { mode: 'real', client: { sendText } } });
     expect((await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: 'automation' })).status).toBe('skipped');
     expect(sendText).not.toHaveBeenCalled(); expect(prisma.message.create).not.toHaveBeenCalled();
+  });
+  it('pauses an opted-in agent on the first menu without calling the model or sending a message', async () => {
+    const message = { ...baseMessage, body: 'Digite uma opção:\n1 - Vendas\n2 - Suporte', createdAt: new Date() };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ ...baseAgent, behaviorConfig: { pauseAutomatedReception: true } });
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(message);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([message]);
+    const provider = buildProvider({ confidence: 1, reply: 'Não enviar.', actions: [], handoff: { required: false, reason: null } });
+    const sendText = vi.fn();
+    const runtime = createAgentRuntime({ prisma, provider, evolution: { mode: 'real', client: { sendText } } });
+    expect(await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: 'automation' })).toMatchObject({ status: 'handoff_requested', message: 'automated_reception_wait' });
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ aiControlStatus: 'human_controlled' }) }));
   });
   it("stops a repeated automated exchange silently before provider generation", async () => {
     const currentNow = new Date();
@@ -393,10 +609,11 @@ describe("createAgentRuntime", () => {
       actions: [],
       handoff: { required: false, reason: null }
     });
-    const sendText = vi.fn();
+    const sendText = vi.fn(), schedule = vi.fn();
     const runtime = createAgentRuntime({
       prisma,
       provider,
+      handoffBriefService: { schedule },
       evolution: { mode: "real", client: { sendText } }
     });
 
@@ -409,6 +626,8 @@ describe("createAgentRuntime", () => {
     });
 
     expect(result).toEqual({ status: "handoff_requested", runId: ids.run, message: "possible_automation_loop" });
+    expect(schedule).toHaveBeenCalledWith({ workspaceId: ids.workspace, conversationId: ids.conversation });
+    expect(schedule.mock.invocationCallOrder[0]).toBeGreaterThan(vi.mocked(prisma.aiAgentRun.create).mock.invocationCallOrder[0]!);
     expect(provider.generate).not.toHaveBeenCalled();
     expect(sendText).not.toHaveBeenCalled();
     expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
@@ -483,6 +702,143 @@ describe("createAgentRuntime", () => {
     expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ body: expect.stringContaining("Tubo aço\t12\t50 x 30 x 2 mm"), metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "processed" }) }) }) });
   });
 
+  describe("image and document reading through the durable copy", () => {
+    const policy = { kind: "image" as const, maxBytes: 8 * 1024 * 1024, allowedMimeTypes: new Set(["image/png", "image/jpeg"]) };
+    const expired = { ...baseMessage, type: "image", body: "Vocês trabalham com isto?", mediaUrl: "https://mmg.whatsapp.net/expired.enc" };
+    const run = (runtime: ReturnType<typeof createAgentRuntime>) => runtime.runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation"
+    });
+    const generation = () => buildProvider({ confidence: 0.9, reply: "ok", actions: [], handoff: { required: false, reason: null } });
+    const readsThrough = vi.fn(async (args: { mediaResolver: (input: { mediaUrl: string | null | undefined; policy: typeof policy }) => Promise<{ bytes: Buffer; mimeType: string; source: string }> ; mediaUrl?: string | null }) => {
+      const media = await args.mediaResolver({ mediaUrl: args.mediaUrl, policy });
+      return { kind: "image", status: "processed", extractedText: `lido de ${media.source}:${media.bytes.toString()}` };
+    });
+
+    it("hands the preparer a resolver that serves the durable original, so an expired provider URL no longer blocks the read", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(expired);
+      vi.mocked(prisma.message.findMany).mockResolvedValue([expired]);
+      const legacy = vi.fn().mockRejectedValue(new Error("expired"));
+      const read = vi.fn().mockResolvedValue({ bytes: Buffer.from("png-original"), mimeType: "image/png" });
+      const runtime = createAgentRuntime({ prisma, provider: generation(), mediaResolver: legacy, mediaPreparer: readsThrough as never, durableMedia: { read } });
+
+      await run(runtime);
+
+      expect(read).toHaveBeenCalledWith({ workspaceId: ids.workspace, conversationId: expired.conversationId, messageId: ids.message, variant: "original" });
+      expect(legacy).not.toHaveBeenCalled();
+      expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ body: expect.stringContaining("lido de durable:png-original") }) });
+    });
+
+    it("keeps the caller's processing limit and allowed types for the durable original", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(expired);
+      vi.mocked(prisma.message.findMany).mockResolvedValue([expired]);
+      const tooBig = vi.fn().mockResolvedValue({ bytes: Buffer.alloc(8 * 1024 * 1024 + 1), mimeType: "image/png" });
+      const wrongType = vi.fn().mockResolvedValue({ bytes: Buffer.from("x"), mimeType: "image/gif" });
+      for (const [read, code] of [[tooBig, "MEDIA_TOO_LARGE"], [wrongType, "UNSUPPORTED_MEDIA_TYPE"]] as const) {
+        const preparer = vi.fn(async (args: { mediaResolver: (input: { mediaUrl: string | null | undefined; policy: typeof policy }) => Promise<unknown> }) => {
+          try { await args.mediaResolver({ mediaUrl: null, policy }); return { kind: "image", status: "processed", extractedText: "x" }; }
+          catch (error) { return { kind: "image", status: "failed", errorCode: (error as { code: string }).code }; }
+        });
+        const runtime = createAgentRuntime({ prisma, provider: generation(), mediaPreparer: preparer as never, durableMedia: { read } });
+        await run(runtime);
+        expect(preparer).toHaveBeenCalledTimes(1);
+        expect(await preparer.mock.results[0]!.value).toMatchObject({ status: "failed", errorCode: code });
+      }
+    });
+
+    it("falls back to the legacy resolver when no durable copy exists", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(expired);
+      vi.mocked(prisma.message.findMany).mockResolvedValue([expired]);
+      const legacy = vi.fn().mockResolvedValue({ bytes: Buffer.from("via-url"), mimeType: "image/png", source: "remote" });
+      const runtime = createAgentRuntime({ prisma, provider: generation(), mediaResolver: legacy, mediaPreparer: readsThrough as never, durableMedia: { read: vi.fn().mockResolvedValue(null) } });
+
+      await run(runtime);
+
+      expect(legacy).toHaveBeenCalledTimes(1);
+      expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ body: expect.stringContaining("lido de remote:via-url") }) });
+    });
+  });
+
+  it("recovers an encrypted WhatsApp image from Evolution before reading it", async () => {
+    const encryptedUrl = "https://mmg.whatsapp.net/o1/v/t24/f2/m233/imagem.enc?ccb=11-4";
+    const imageMessage = { ...baseMessage, type: "image", body: "Imagem recebida", providerMessageId: "wamid-image", mediaUrl: encryptedUrl, metadata: {} };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(imageMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([imageMessage]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Vejo uma lista de vergalhões.", actions: [], handoff: { required: false, reason: null } });
+    const fetchMedia = vi.fn().mockResolvedValue("data:image/jpeg;base64,aW1hZ2Vt");
+    const mediaResolver = vi.fn(async ({ mediaUrl }: { mediaUrl: string | null | undefined; policy: unknown }) => {
+      if (mediaUrl === encryptedUrl) throw new AgentMediaError("UNSUPPORTED_MEDIA_TYPE", "Inbound media type is unsupported.");
+      return { bytes: Buffer.from("imagem"), mimeType: "image/jpeg", source: "data_url" as const };
+    });
+    const mediaPreparer = vi.fn(async (args: { mediaUrl?: string | null; mediaResolver?: typeof mediaResolver }) => {
+      const media = await args.mediaResolver!({ mediaUrl: args.mediaUrl, policy: { kind: "image", maxBytes: 1_000_000, allowedMimeTypes: new Set(["image/jpeg"]) } });
+      return { kind: "image", status: "processed", extractedText: `Ø 10,0 mm - 215 barras (${media.mimeType})` };
+    });
+    const runtime = createAgentRuntime({ prisma, provider, mediaResolver, mediaPreparer: mediaPreparer as never, evolution: { mode: "real", client: { sendText: vi.fn(), fetchMedia } } });
+
+    await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+
+    expect(fetchMedia).toHaveBeenCalledWith({ instanceName: "instancia", id: "wamid-image" });
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
+      userPrompt: expect.stringContaining("Ø 10,0 mm - 215 barras (image/jpeg)")
+    }));
+  });
+
+  it("reads images in the customer burst before answering a later text message", async () => {
+    const first = { ...baseMessage, id: "image_1", type: "image", body: "Imagem recebida", mediaUrl: "data:image/jpeg;base64,aW1hZ2Vt", createdAt: new Date(now.getTime() - 60_000), metadata: {} };
+    const second = { ...first, id: "image_2", createdAt: new Date(now.getTime() - 30_000) };
+    const current = { ...baseMessage, body: "Quais materiais estão nas imagens?" };
+    const messages: any[] = [first, second, current];
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(current);
+    vi.mocked(prisma.message.findMany).mockImplementation(async () => messages);
+    vi.mocked(prisma.message.update).mockImplementation(async ({ where, data }: any) => {
+      const index = messages.findIndex((item) => item.id === where.id);
+      messages[index] = { ...messages[index], ...data };
+      return messages[index];
+    });
+    const mediaPreparer = vi.fn()
+      .mockResolvedValueOnce({ kind: "image", status: "processed", extractedText: "FERRO CHATO 3/4 x 2, 100 unidades" })
+      .mockResolvedValueOnce({ kind: "image", status: "processed", extractedText: "ORDEM DE COMPRA SETEP" });
+    const provider = buildProvider({ confidence: 0.9, reply: "Vejo ferro chato e uma ordem de compra.", actions: [], handoff: { required: false, reason: null } });
+    const runtime = createAgentRuntime({ prisma, provider, mediaPreparer });
+
+    await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: current.id, trigger: "automation" });
+
+    expect(mediaPreparer).toHaveBeenCalledTimes(2);
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ conversationHistory: expect.stringContaining("FERRO CHATO 3/4 x 2, 100 unidades") })
+    }));
+    expect(messages[0].metadata.inboundMedia.status).toBe("processed");
+    expect(messages[1].metadata.inboundMedia.status).toBe("processed");
+  });
+
+  it("hands off a later text request when an image in that customer burst cannot be read", async () => {
+    const image = { ...baseMessage, id: "image_before", type: "image", body: "Imagem recebida", mediaUrl: null, createdAt: new Date(now.getTime() - 60_000), metadata: {} };
+    const current = { ...baseMessage, body: "Preciso cotar o material acima" };
+    const messages: any[] = [image, current];
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(current);
+    vi.mocked(prisma.message.findMany).mockImplementation(async () => messages);
+    vi.mocked(prisma.message.update).mockImplementation(async ({ where, data }: any) => {
+      const index = messages.findIndex((item) => item.id === where.id);
+      messages[index] = { ...messages[index], ...data };
+      return messages[index];
+    });
+    const provider = buildProvider({ confidence: 0.9, reply: "Vou cotar os itens da imagem.", actions: [], handoff: { required: false, reason: null } });
+    const runtime = createAgentRuntime({ prisma, provider, mediaPreparer: vi.fn().mockResolvedValue({ kind: "image", status: "failed", errorCode: "MEDIA_UNREADABLE" }) });
+
+    const result = await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: current.id, trigger: "automation" });
+
+    expect(result.status).toBe("handoff_requested");
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(messages[0].metadata.inboundMedia.errorCode).toBe("MEDIA_UNREADABLE");
+  });
+
   it("processes PDFs as retained customer data, then reuses them on a later turn", async () => {
     const document = { ...baseMessage, type: "file", body: "Segue o arquivo.", mediaUrl: "https://cdn.example/lista.pdf", metadata: { fileName: "lista.pdf" } };
     const prisma = buildPrisma();
@@ -533,7 +889,44 @@ describe("createAgentRuntime", () => {
     expect(prisma.message.update).toHaveBeenCalledWith({ where: { id: ids.message }, data: expect.objectContaining({ metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "failed", errorCode: "MEDIA_UNAVAILABLE" }) }) }) });
   });
 
-  it("uses the exact image fallback once when media cannot be resolved", async () => {
+  it("ignores a lone sticker without reading it, replying or handing off", async () => {
+    const stickerMessage = { ...baseMessage, type: "image", body: "Figurinha recebida", mediaUrl: "https://mmg.whatsapp.net/sticker.enc" };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(stickerMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([stickerMessage]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Não deveria ser chamada.", actions: [], handoff: { required: false, reason: null } });
+    const mediaResolver = vi.fn();
+    const runtime = createAgentRuntime({ prisma, provider, mediaResolver });
+
+    const result = await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+
+    expect(result.status).toBe("skipped");
+    expect(mediaResolver).not.toHaveBeenCalled();
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ aiControlStatus: "human_controlled" }) }));
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({ data: expect.objectContaining({ status: "skipped", errorMessage: "Sticker ignored." }) });
+  });
+
+  it("answers the customer's text when a sticker follows it, without reading the sticker", async () => {
+    const text = { ...baseMessage, id: "text_before", type: "text", body: "Bom dia, vocês têm tubo schedule 80?", createdAt: new Date(now.getTime() - 60_000) };
+    const sticker = { ...baseMessage, type: "image", body: "Figurinha recebida", mediaUrl: "https://mmg.whatsapp.net/sticker.enc", createdAt: now };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(sticker);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([sticker, text]);
+    const provider = buildProvider({ confidence: 0.9, reply: "Temos sob encomenda.", actions: [], handoff: { required: false, reason: null } });
+    const mediaResolver = vi.fn();
+    const runtime = createAgentRuntime({ prisma, provider, mediaResolver });
+
+    const result = await runtime.runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+
+    expect(result.status).not.toBe("skipped");
+    expect(result.status).not.toBe("handoff_requested");
+    expect(mediaResolver).not.toHaveBeenCalled();
+    expect(provider.generate).toHaveBeenCalled();
+  });
+
+  it("hands an unreadable image to a human without messaging the customer", async () => {
     const imageMessage = {
       ...baseMessage,
       type: "image",
@@ -543,15 +936,21 @@ describe("createAgentRuntime", () => {
     const prisma = buildPrisma();
     vi.mocked(prisma.message.findFirst).mockResolvedValue(imageMessage);
     vi.mocked(prisma.message.findMany).mockResolvedValue([imageMessage]);
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
+      ...baseAgent,
+      allowedActions: ["send_message"]
+    });
     const provider = buildProvider({
       confidence: 0.9,
       reply: "Não deveria ser chamada.",
       actions: [],
       handoff: { required: false, reason: null }
     });
+    const warn = vi.fn();
     const runtime = createAgentRuntime({
       prisma,
       provider,
+      logger: { warn },
       mediaResolver: vi.fn().mockRejectedValue(Object.assign(new Error("missing"), {
         code: "MEDIA_UNAVAILABLE"
       }))
@@ -565,14 +964,91 @@ describe("createAgentRuntime", () => {
       trigger: "automation"
     });
 
-    expect(result.status).toBe("completed");
+    expect(result.status).toBe("handoff_requested");
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({
+      event: "agent_image_processing_failed",
+      messageId: ids.message,
+      errorCode: "MEDIA_UNAVAILABLE"
+    }), expect.any(String));
     expect(provider.generate).not.toHaveBeenCalled();
-    expect(prisma.message.create).toHaveBeenCalledWith({
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.message.update).toHaveBeenCalledWith({
+      where: { id: ids.message },
       data: expect.objectContaining({
-        type: "text",
-        body: "Não consegui analisar essa imagem. Pode reenviar com mais nitidez ou mandar a lista em texto?"
+        body: expect.stringContaining("Atendimento humano necessário."),
+        metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ status: "failed" }) })
       })
     });
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+    }));
+    expect(prisma.aiAgentSession.update).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: "handoff_requested",
+        handoffReason: "Não foi possível ler automaticamente a imagem enviada pelo cliente. Verifique o anexo e responda o pedido."
+      })
+    }));
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        status: "handoff_requested",
+        contextSummary: expect.objectContaining({ mediaProcessingError: "MEDIA_UNAVAILABLE" }),
+        output: expect.objectContaining({ reply: null, handoff: expect.objectContaining({ required: true }) }),
+        actions: expect.arrayContaining([expect.objectContaining({ type: "request_handoff", status: "completed" })])
+      })
+    });
+  });
+
+  it("keeps a qualification agent silent when visual extraction cannot read the image", async () => {
+    const imageMessage = {
+      ...baseMessage,
+      type: "image",
+      body: "Imagem recebida",
+      mediaUrl: "data:image/jpeg;base64,aW1hZ2Vt"
+    };
+    const prisma = buildPrisma();
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(imageMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([imageMessage]);
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
+      ...baseAgent,
+      behaviorConfig: { qualification: { fields: [{ key: "pedido" }] } }
+    });
+    const mediaPreparer = vi.fn().mockResolvedValue({
+      kind: "image",
+      status: "failed",
+      errorCode: "MEDIA_UNREADABLE",
+      fallback: "Pode reenviar a imagem?"
+    });
+    const sendText = vi.fn();
+    const provider = buildProvider({ confidence: 1, reply: "Não deveria ser chamada.", actions: [], handoff: { required: false, reason: null } });
+    const runtime = createAgentRuntime({
+      prisma,
+      provider,
+      mediaPreparer,
+      evolution: { mode: "real", client: { sendText } }
+    });
+
+    const result = await runtime.runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(result.status).toBe("handoff_requested");
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.message.update).toHaveBeenCalledWith({
+      where: { id: ids.message },
+      data: expect.objectContaining({
+        body: expect.not.stringContaining("reenviar"),
+        metadata: expect.objectContaining({ inboundMedia: expect.objectContaining({ errorCode: "MEDIA_UNREADABLE" }) })
+      })
+    });
+    expect(prisma.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ aiControlStatus: "human_controlled" })
+    }));
   });
 
   it("prepares an inbound audio message immediately", async () => {
@@ -686,6 +1162,151 @@ describe("createAgentRuntime", () => {
       type: "message.created",
       payload: expect.objectContaining({ body: "Não foi possível transcrever este áudio." })
     }));
+  });
+
+  describe("audio through the shared transcription job and the durable copy", () => {
+    const audioMessage = { ...baseMessage, type: "audio", body: "Áudio recebido", mediaUrl: "https://provider.invalid/expired.enc" };
+    const settings = { mode: "real", settings: { baseUrl: "https://provider.example/v1", apiKey: "secret", chatModel: "gpt-5.6-luna" } };
+    const provider = () => buildProvider({ confidence: 0.9, reply: "x", actions: [], handoff: { required: false, reason: null } });
+    // The real job lives in PostgreSQL (message-transcription.postgres.test.ts); here it only runs the work.
+    const jobThatRuns = (message: unknown) => ({ run: vi.fn(async (job: { work: () => Promise<{ text: string; extraMessageData?: unknown }>; failureBody?: string; retryFailed?: boolean }) => {
+      try { const result = await job.work(); return { status: "completed" as const, text: result.text, message }; }
+      catch (error) { return { status: "failed" as const, errorCode: (error as { code?: string }).code ?? "TRANSCRIPTION_FAILED", message }; }
+    }) });
+
+    it("transcribes the durable original, never the expired provider URL, and keeps the playback out of mediaUrl", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(audioMessage);
+      vi.mocked(prisma.integrationConfig.findUnique).mockResolvedValue(settings);
+      const transcribe = vi.fn().mockResolvedValue({ text: "Preciso de 42 chapas.", playback: { bytes: Buffer.from("mp3"), mimeType: "audio/mpeg" } });
+      const mediaResolver = vi.fn().mockRejectedValue(new Error("must not be used"));
+      const read = vi.fn().mockResolvedValue({ bytes: Buffer.from("ogg-original"), mimeType: "audio/ogg" });
+      const transcriptions = jobThatRuns({ ...audioMessage, body: "Preciso de 42 chapas." });
+      const publish = vi.fn();
+      const runtime = createAgentRuntime({ prisma, provider: provider(), mediaResolver, audioTranscriberFactory: vi.fn(() => ({ transcribe })),
+        durableMedia: { read }, transcriptions: transcriptions as never, realtime: { publish } });
+
+      const result = await runtime.prepareAudioMessage({ workspaceId: ids.workspace, messageId: ids.message });
+
+      expect(result).toEqual({ status: "completed", text: "Preciso de 42 chapas.", media: { type: "audio", mimeType: "audio/ogg", source: "durable" } });
+      expect(read).toHaveBeenCalledWith({ workspaceId: ids.workspace, conversationId: audioMessage.conversationId, messageId: ids.message, variant: "original" });
+      expect(mediaResolver).not.toHaveBeenCalled();
+      const job = transcriptions.run.mock.calls[0]![0];
+      expect(job).toMatchObject({ retryFailed: false, failureBody: "Não foi possível transcrever este áudio." });
+      expect(prisma.message.update).not.toHaveBeenCalled();
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "message.created" }));
+    });
+
+    it("reuses a transcription another caller already produced without transcribing or publishing", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(audioMessage);
+      vi.mocked(prisma.integrationConfig.findUnique).mockResolvedValue(settings);
+      const transcribe = vi.fn();
+      const transcriptions = { run: vi.fn(async () => ({ status: "completed" as const, text: "texto compartilhado", message: null })) };
+      const publish = vi.fn();
+      const runtime = createAgentRuntime({ prisma, provider: provider(), audioTranscriberFactory: vi.fn(() => ({ transcribe })), transcriptions: transcriptions as never, realtime: { publish } });
+
+      expect(await runtime.prepareAudioMessage({ workspaceId: ids.workspace, messageId: ids.message })).toEqual({ status: "completed", text: "texto compartilhado" });
+      expect(transcribe).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    });
+
+    it("refuses a durable original above the 8 MiB processing limit with an explicit failure", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue(audioMessage);
+      vi.mocked(prisma.integrationConfig.findUnique).mockResolvedValue(settings);
+      const read = vi.fn().mockResolvedValue({ bytes: Buffer.alloc(8 * 1024 * 1024 + 1), mimeType: "audio/ogg" });
+      const runtime = createAgentRuntime({ prisma, provider: provider(), durableMedia: { read }, transcriptions: jobThatRuns({ ...audioMessage, body: "Não foi possível transcrever este áudio." }) as never });
+
+      expect(await runtime.prepareAudioMessage({ workspaceId: ids.workspace, messageId: ids.message })).toEqual({ status: "failed", errorCode: "MEDIA_TOO_LARGE" });
+    });
+
+    it("falls back to the legacy resolver when the durable copy does not exist yet", async () => {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.message.findFirst).mockResolvedValue({ ...audioMessage, mediaUrl: "data:audio/ogg;base64,YXVkaW8=" });
+      vi.mocked(prisma.integrationConfig.findUnique).mockResolvedValue(settings);
+      const transcribe = vi.fn().mockResolvedValue({ text: "ok", playback: { bytes: Buffer.from("mp3"), mimeType: "audio/mpeg" } });
+      const mediaResolver = vi.fn().mockResolvedValue({ bytes: Buffer.from("audio"), mimeType: "audio/ogg", source: "data_url" });
+      const transcriptions = jobThatRuns({ ...audioMessage, body: "ok" });
+      const runtime = createAgentRuntime({ prisma, provider: provider(), mediaResolver, audioTranscriberFactory: vi.fn(() => ({ transcribe })),
+        durableMedia: { read: vi.fn().mockResolvedValue(null) }, transcriptions: transcriptions as never });
+
+      expect(await runtime.prepareAudioMessage({ workspaceId: ids.workspace, messageId: ids.message })).toMatchObject({ status: "completed", text: "ok", media: { source: "data_url" } });
+      expect(mediaResolver).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("opens the conversation from an external form recorded by the webhook trigger", async () => {
+    const formMessage = {
+      ...baseMessage,
+      type: "system",
+      body: "Formulário recebido (Webhook externo)\nNome: Maria\nDor: Caixa apertado",
+      metadata: { source: "automation_webhook", automationId: "rule_1" }
+    };
+    const prisma = buildPrisma({ aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([]) } });
+    vi.mocked(prisma.message.findFirst).mockResolvedValue(formMessage);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([formMessage]);
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "Oi Maria, tudo bem? Vi aqui teu formulário. Podemos marcar uma call?",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-opener" });
+
+    const result = await createAgentRuntime({
+      prisma,
+      provider,
+      evolution: { mode: "real", client: { sendText } }
+    }).runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation",
+      instruction: "Agende uma call."
+    });
+
+    expect(result.status).toBe("completed");
+    const generateInput = vi.mocked(provider.generate).mock.calls[0]?.[0];
+    expect(generateInput?.userPrompt).toBe(
+      [EXTERNAL_FORM_OPENER_DIRECTIVE, "Agende uma call.", formMessage.body].join("\n\n")
+    );
+    expect(generateInput?.context.conversationMessages).toEqual([
+      expect.objectContaining({ id: ids.message, label: "sistema", type: "system" })
+    ]);
+    expect(sendText).toHaveBeenCalledWith({
+      instanceName: "instancia",
+      number: "5511999999999",
+      text: "Oi Maria, tudo bem? Vi aqui teu formulário. Podemos marcar uma call?"
+    });
+    expect(prisma.message.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        direction: "outbound",
+        body: "Oi Maria, tudo bem? Vi aqui teu formulário. Podemos marcar uma call?",
+        metadata: { source: "ai_agent", agentId: ids.agent }
+      })
+    });
+  });
+
+  it("does not add the form opener directive to regular customer messages", async () => {
+    const prisma = buildPrisma();
+    const provider = buildProvider({
+      confidence: 0.9,
+      reply: "O plano profissional custa R$ 199 por mes.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+
+    await createAgentRuntime({ prisma, provider }).runForMessage({
+      workspaceId: ids.workspace,
+      agentId: ids.agent,
+      conversationId: ids.conversation,
+      messageId: ids.message,
+      trigger: "automation"
+    });
+
+    expect(vi.mocked(provider.generate).mock.calls[0]?.[0].userPrompt).not.toContain(EXTERNAL_FORM_OPENER_DIRECTIVE);
   });
 
   it("reuses a stored audio transcript without transcribing again", async () => {
@@ -934,8 +1555,7 @@ describe("createAgentRuntime", () => {
         agentId: ids.agent,
         status: "ready"
       },
-      orderBy: [{ createdAt: "desc" }],
-      take: 50
+      orderBy: [{ createdAt: "desc" }]
     });
     expect(provider.generate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1283,7 +1903,16 @@ describe("createAgentRuntime", () => {
     expect(hasPriorMessages).toHaveBeenCalledWith({
       instanceName: "instancia",
       remoteJid: "5511999999999@s.whatsapp.net",
-      excludeMessageId: null
+      excludeMessageId: null,
+      before: now
+    });
+    expect(prisma.message.count).toHaveBeenCalledWith({
+      where: {
+        workspaceId: ids.workspace,
+        conversationId: ids.conversation,
+        id: { not: ids.message },
+        createdAt: { lt: now }
+      }
     });
     expect(prisma.aiAgentSession.upsert).toHaveBeenCalled();
   });
@@ -1310,10 +1939,12 @@ describe("createAgentRuntime", () => {
       actions: [],
       handoff: { required: false, reason: null }
     });
+    const observeMessage = vi.fn().mockResolvedValue(undefined);
     const runtime = createAgentRuntime({
       prisma,
       provider,
-      chatHistory: { hasPriorMessages }
+      chatHistory: { hasPriorMessages },
+      inboxTriage: { observeMessage }
     });
 
     const result = await runtime.activateForMessage({
@@ -1326,17 +1957,20 @@ describe("createAgentRuntime", () => {
     expect(result.status).toBe("skipped");
     expect(result.message).toContain("Conversa anterior ao WhatsApp");
     expect(hasPriorMessages).not.toHaveBeenCalled();
+    expect(provider.generate).not.toHaveBeenCalled();
     expect(prisma.aiAgentSession.upsert).not.toHaveBeenCalled();
     expect(prisma.conversation.update).toHaveBeenCalledWith({
       where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.conversation } },
       data: {
         aiControlStatus: "human_controlled",
-        handoffReason: expect.stringContaining("Conversa anterior ao WhatsApp")
+        activeAgentSessionId: null
       }
     });
-    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ status: "skipped" })
-    });
+    expect(prisma.aiAgentRun.create).not.toHaveBeenCalled();
+    expect(observeMessage).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: ids.workspace, conversationId: ids.conversation,
+      messageId: ids.message, direction: "inbound"
+    }));
   });
 
   it("holds fresh Talk conversations that already exist in Evolution", async () => {
@@ -1375,7 +2009,7 @@ describe("createAgentRuntime", () => {
       where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.conversation } },
       data: {
         aiControlStatus: "human_controlled",
-        handoffReason: expect.stringContaining("Conversa anterior ao WhatsApp")
+        activeAgentSessionId: null
       }
     });
   });
@@ -1416,7 +2050,7 @@ describe("createAgentRuntime", () => {
       where: { workspaceId_id: { workspaceId: ids.workspace, id: ids.conversation } },
       data: {
         aiControlStatus: "human_controlled",
-        handoffReason: expect.stringContaining("Não foi possível confirmar")
+        activeAgentSessionId: null
       }
     });
   });
@@ -1494,6 +2128,31 @@ describe("createAgentRuntime", () => {
     expect(prisma.conversation.update).not.toHaveBeenCalled();
   });
 
+  it("sends each paragraph as its own WhatsApp bubble when the agent asks for it", async () => {
+    const prisma = buildPrisma();
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ ...baseAgent, behaviorConfig: { replyInBubbles: true } });
+    const provider = buildProvider({
+      confidence: 0.84,
+      reply: "Imagino a correria.\n\nUm agente responde na hora e só te passa o que precisa de você.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    });
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-out" });
+    const runtime = createAgentRuntime({ prisma, provider, evolution: { mode: "real", client: { sendText } } });
+
+    await runtime.runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation"
+    });
+
+    expect(sendText).toHaveBeenCalledTimes(2);
+    expect(sendText).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: "Imagino a correria.", delay: expect.any(Number) }));
+    expect(sendText).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: "Um agente responde na hora e só te passa o que precisa de você." }));
+    expect(prisma.message.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ body: "Imagino a correria.", metadata: expect.objectContaining({ bubble: { index: 0, count: 2 } }) })
+    });
+    expect(prisma.message.create).toHaveBeenCalledTimes(2);
+  });
+
   it("sends agent replies through Evolution in real mode", async () => {
     const prisma = buildPrisma();
     const provider = buildProvider({
@@ -1506,11 +2165,13 @@ describe("createAgentRuntime", () => {
     const sendMedia = vi.fn().mockResolvedValue({ providerMessageId: "evo-media-1" });
     const realtime = { publish: vi.fn() };
     const observeConversationActivity = vi.fn().mockResolvedValue({ status: "scheduled" });
+    const observeMessage = vi.fn().mockResolvedValue(undefined);
     const runtime = createAgentRuntime({
       prisma,
       provider,
       realtime,
       followupService: { observeConversationActivity },
+      inboxTriage: { observeMessage },
       evolution: {
         mode: "real",
         client: { sendText, sendMedia }
@@ -1543,6 +2204,10 @@ describe("createAgentRuntime", () => {
       direction: "outbound",
       source: "agent"
     });
+    expect(observeMessage).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: ids.workspace, conversationId: ids.conversation,
+      messageId: "outbound_1", direction: "outbound"
+    }));
     expect(realtime.publish).toHaveBeenCalledWith({
       type: "message.created",
       workspaceId: ids.workspace,
@@ -1684,6 +2349,62 @@ it("continues after a material answer without requiring a document for its own p
         payload: expect.objectContaining({ direction: "outbound" })
       })
     );
+  });
+
+  it("sends the approved catalog when the customer accepts the catalog offer", async () => {
+    const current = { ...baseMessage, body: "Pode ser ó catálogo" };
+    const prisma = buildPrisma({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, allowedActions: ["send_message", "send_attachment", "request_handoff"] }) },
+      message: {
+        findFirst: vi.fn().mockResolvedValue(current),
+        findMany: vi.fn().mockResolvedValue([
+          { ...baseMessage, id: "previous_customer", body: "Perfil U galvanizado sob encomenda", createdAt: new Date(now.getTime() - 120_000) },
+          { ...baseMessage, id: "previous_offer", direction: "outbound", body: "Prefere ver o catálogo com os itens ou falar com um vendedor?", createdAt: new Date(now.getTime() - 60_000) },
+          current
+        ]),
+        count: vi.fn().mockResolvedValue(2),
+        update: vi.fn(), create: vi.fn().mockResolvedValue({ id: "outbound_1", workspaceId: ids.workspace, conversationId: ids.conversation })
+      },
+      aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([{
+        id: "approved_catalog", title: "Catálogo Villefer em PDF — envio aprovado",
+        content: "Arquivo aprovado para envio quando o cliente escolher ver o catálogo.",
+        fileUrl: "https://villefer.com.br/site/uploads/2024/07/catalogo-villefer.pdf",
+        fileName: "catalogo-villefer.pdf", mimeType: "application/pdf", status: "ready"
+      }]) }
+    });
+    const provider = buildProvider({ confidence: 0.9, reply: "Confirme se quer catálogo ou vendedor.", actions: [{ type: "request_handoff", reason: "unclear" }], handoff: { required: true, reason: "unclear" } });
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: "evo-out-1" });
+    const sendMedia = vi.fn().mockResolvedValue({ providerMessageId: "evo-media-1" });
+    const replyPreflight = {
+      evaluate: vi.fn().mockResolvedValue({ outcome: "continue", plan: { conversationStage: "qualification", commercialPath: "made_to_order", nextAction: "handoff" } }),
+      audit: vi.fn().mockResolvedValue({ outcome: "handoff", reason: "plan_mismatch" })
+    };
+    const result = await createAgentRuntime({ prisma, provider, replyPreflight, evolution: { mode: "real", client: { sendText, sendMedia } } }).runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation"
+    });
+    expect(result.status).toBe("completed");
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(replyPreflight.audit).not.toHaveBeenCalled();
+    expect(sendMedia).toHaveBeenCalledWith(expect.objectContaining({
+      media: "https://villefer.com.br/site/uploads/2024/07/catalogo-villefer.pdf",
+      mediatype: "document", mimetype: "application/pdf"
+    }));
+    expect(prisma.aiAgentRun.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      contextSummary: expect.objectContaining({ catalogSelection: "approved_attachment" })
+    }) }));
+  });
+
+  it("does not treat a refusal of the catalog as consent to send it", async () => {
+    const current = { ...baseMessage, body: "Não quero catálogo, prefiro vendedor" };
+    const prisma = buildPrisma({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, allowedActions: ["send_message", "send_attachment", "request_handoff"] }) },
+      message: { findFirst: vi.fn().mockResolvedValue(current), findMany: vi.fn().mockResolvedValue([current]), count: vi.fn().mockResolvedValue(0), update: vi.fn(), create: vi.fn() },
+      aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue([{ id: "catalog", title: "Catálogo Villefer", content: "Catálogo aprovado.", fileUrl: "https://villefer.com.br/site/uploads/2024/07/catalogo-villefer.pdf", fileName: "catalogo-villefer.pdf", mimeType: "application/pdf", status: "ready" }]) }
+    });
+    const provider = buildProvider({ confidence: 0.9, reply: "Vou chamar um vendedor.", actions: [{ type: "request_handoff", reason: "seller_requested" }], handoff: { required: true, reason: "seller_requested" } });
+    const sendMedia = vi.fn();
+    await createAgentRuntime({ prisma, provider, evolution: { mode: "real", client: { sendText: vi.fn(), sendMedia } } }).runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });
+    expect(sendMedia).not.toHaveBeenCalled();
   });
 
   it("does not send attachments that are not approved in knowledge", async () => {
@@ -1910,6 +2631,158 @@ it("continues after a material answer without requiring a document for its own p
     expect(prisma.message.create).not.toHaveBeenCalled();
   });
 
+  describe("schedule_meeting", () => {
+    const slot = { startsAt: "2026-06-24T10:30:00-03:00", label: "quarta-feira, 24/06 às 10:30" };
+    const meeting = { eventId: "ev-1", startsAt: slot.startsAt, label: slot.label, meetLink: "https://meet.google.com/abc-defg-hij", htmlLink: "https://calendar.google.com/e/1" };
+
+    function buildScheduler(book: unknown = { status: "booked", meeting, replacedEventIds: [] }) {
+      return {
+        availability: vi.fn().mockResolvedValue({ durationMinutes: 15, timeZone: "America/Sao_Paulo", availableSlots: [slot], bookedMeeting: null }),
+        book: vi.fn().mockResolvedValue(book)
+      };
+    }
+
+    function schedulingPrisma() {
+      const prisma = buildPrisma();
+      vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ ...baseAgent, allowedActions: ["send_message", "create_internal_note", "request_handoff", "schedule_meeting"] });
+      return prisma;
+    }
+
+    const run = (runtime: ReturnType<typeof createAgentRuntime>) => runtime.runForMessage({
+      workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation"
+    });
+
+    it.each(["booked", "unavailable", "failed", "no_permission", "unapproved_tag", "no_booking"])(
+      "applies the configured Kanban tag only after an authorized confirmed booking (%s)", async (scenario) => {
+        const prisma = schedulingPrisma();
+        const tag = baseAgent.allowedTags[0]!.tag;
+        vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
+          ...baseAgent,
+          behaviorConfig: { meetingBookedTagId: scenario === "unapproved_tag" ? "outside-agent-tags" : tag.id },
+          allowedActions: ["send_message", "create_internal_note", "request_handoff", "schedule_meeting", ...(scenario === "no_permission" ? [] : ["add_tag"])]
+        });
+        const meetingScheduler = buildScheduler();
+        if (scenario === "unavailable") meetingScheduler.book.mockResolvedValue({ status: "unavailable", reason: "slot_taken", availableSlots: [slot] });
+        if (scenario === "failed") meetingScheduler.book.mockRejectedValue(new Error("Calendar unavailable"));
+        const boardRules = { applyBoardRulesForConversationTags: vi.fn().mockResolvedValue({}) };
+        const provider = buildProvider({ confidence: 0.9, reply: "Fechado!", handoff: { required: false, reason: null }, actions: [
+          ...(scenario === "no_booking" ? [] : [{ type: "schedule_meeting", startsAt: slot.startsAt }]),
+          // Model inference (including a supported alias) cannot preempt the Calendar result.
+          ...(scenario === "unapproved_tag" ? [] : [{ type: "add_contact_tag", tagName: tag.name }])
+        ] });
+        await run(createAgentRuntime({ prisma, provider, meetingScheduler, boardRules }));
+        if (scenario === "booked") {
+          expect(prisma.conversationTag.upsert).toHaveBeenCalledTimes(1);
+          expect(prisma.conversationTag.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ conversationId: ids.conversation, tagId: tag.id }) }));
+          expect(boardRules.applyBoardRulesForConversationTags).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: ids.workspace, conversationId: ids.conversation, confirmedMeetingTagId: tag.id }));
+          expect(meetingScheduler.book.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(prisma.conversationTag.upsert).mock.invocationCallOrder[0]!);
+        } else {
+          expect(prisma.conversationTag.upsert).not.toHaveBeenCalled();
+          expect(boardRules.applyBoardRulesForConversationTags).not.toHaveBeenCalled();
+        }
+      }
+    );
+
+    it("gives the model free slots and books the chosen one with the Meet link in the reply", async () => {
+      const prisma = schedulingPrisma();
+      const meetingScheduler = buildScheduler();
+      const provider = buildProvider({
+        confidence: 0.9,
+        reply: "Fechado, quarta às 10:30!",
+        actions: [{ type: "schedule_meeting", startsAt: slot.startsAt, email: "ana@example.com" }],
+        handoff: { required: false, reason: null }
+      });
+
+      const result = await run(createAgentRuntime({ prisma, provider, meetingScheduler }));
+
+      expect(result.status).toBe("completed");
+      expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
+        context: expect.objectContaining({ meetingScheduling: expect.objectContaining({ availableSlots: [slot] }) })
+      }));
+      expect(meetingScheduler.book).toHaveBeenCalledWith(expect.objectContaining({
+        conversationId: ids.conversation, startsAt: slot.startsAt, attendeeEmail: "ana@example.com"
+      }));
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ body: "Fechado, quarta às 10:30!\n\nLink da call: https://meet.google.com/abc-defg-hij" })
+      });
+      expect(prisma.contactNote.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ body: expect.stringContaining("Call marcada pela IA: quarta-feira, 24/06 às 10:30.") })
+      });
+      expect(prisma.aiAgentRun.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ actions: expect.arrayContaining([expect.objectContaining({ type: "schedule_meeting", status: "completed" })]) })
+      });
+    });
+
+    it("offers other times when the chosen slot was taken meanwhile", async () => {
+      const prisma = schedulingPrisma();
+      const meetingScheduler = buildScheduler({
+        status: "unavailable",
+        reason: "Horário já ocupado na agenda.",
+        availableSlots: [{ startsAt: "x", label: "quarta-feira, 24/06 às 11:00" }, { startsAt: "y", label: "quinta-feira, 25/06 às 09:00" }]
+      });
+      const provider = buildProvider({ confidence: 0.9, reply: "Fechado!", actions: [{ type: "schedule_meeting", startsAt: slot.startsAt }], handoff: { required: false, reason: null } });
+
+      await run(createAgentRuntime({ prisma, provider, meetingScheduler }));
+
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ body: "Esse horário acabou de ser ocupado. Tenho livre quarta-feira, 24/06 às 11:00 ou quinta-feira, 25/06 às 09:00. Qual fica melhor pra você?" })
+      });
+      expect(prisma.contactNote.create).not.toHaveBeenCalled();
+    });
+
+    it("hands off instead of confirming when the calendar fails", async () => {
+      const prisma = schedulingPrisma();
+      const meetingScheduler = buildScheduler();
+      meetingScheduler.book.mockRejectedValue(new Error("Google Calendar POST failed (401)"));
+      const provider = buildProvider({ confidence: 0.9, reply: "Fechado!", actions: [{ type: "schedule_meeting", startsAt: slot.startsAt }], handoff: { required: false, reason: null } });
+
+      const result = await run(createAgentRuntime({ prisma, provider, meetingScheduler }));
+
+      expect(result.status).toBe("handoff_requested");
+      expect(prisma.message.create).not.toHaveBeenCalledWith({ data: expect.objectContaining({ body: "Fechado!" }) });
+    });
+
+    it("plans the reminders of the booked call and notes them for the team", async () => {
+      const prisma = schedulingPrisma();
+      const meetingScheduler = buildScheduler();
+      const meetingReminders = { scheduleForBooking: vi.fn().mockResolvedValue({ scheduled: [180, 60] }) };
+      const provider = buildProvider({ confidence: 0.9, reply: "Fechado!", actions: [{ type: "schedule_meeting", startsAt: slot.startsAt }], handoff: { required: false, reason: null } });
+
+      await run(createAgentRuntime({ prisma, provider, meetingScheduler, meetingReminders }));
+
+      expect(meetingReminders.scheduleForBooking).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: ids.workspace, conversationId: ids.conversation, agentId: ids.agent, meeting
+      }));
+      expect(prisma.contactNote.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ body: expect.stringContaining("Lembretes programados: 3 horas, 1 hora antes.") })
+      });
+    });
+
+    it("still confirms the call when planning reminders fails", async () => {
+      const prisma = schedulingPrisma();
+      const meetingReminders = { scheduleForBooking: vi.fn().mockRejectedValue(new Error("db down")) };
+      const provider = buildProvider({ confidence: 0.9, reply: "Fechado!", actions: [{ type: "schedule_meeting", startsAt: slot.startsAt }], handoff: { required: false, reason: null } });
+
+      const result = await run(createAgentRuntime({ prisma, provider, meetingScheduler: buildScheduler(), meetingReminders }));
+
+      expect(result.status).toBe("completed");
+      expect(prisma.message.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ body: "Fechado!\n\nLink da call: https://meet.google.com/abc-defg-hij" })
+      });
+    });
+
+    it("never offers or books when the agent lacks the action", async () => {
+      const prisma = buildPrisma();
+      const meetingScheduler = buildScheduler();
+      const provider = buildProvider({ confidence: 0.9, reply: "Fechado!", actions: [{ type: "schedule_meeting", startsAt: slot.startsAt }], handoff: { required: false, reason: null } });
+
+      await run(createAgentRuntime({ prisma, provider, meetingScheduler }));
+
+      expect(meetingScheduler.availability).not.toHaveBeenCalled();
+      expect(meetingScheduler.book).not.toHaveBeenCalled();
+    });
+  });
+
   it("requests handoff for low confidence output", async () => {
     const prisma = buildPrisma({
       conversation: {
@@ -1968,7 +2841,7 @@ it("continues after a material answer without requiring a document for its own p
     const message = { ...baseMessage, body: "Quais medidas estão na lista?" };
     vi.mocked(prisma.message.findFirst).mockResolvedValue(message);
     vi.mocked(prisma.message.findMany).mockResolvedValue([
-      { ...baseMessage, id: "media-before", type: mediaType, body: `${mediaType === "file" ? "[Texto do PDF — conteúdo enviado pelo cliente]\n" : ""}2 chapas 3 x 1200 x 3000 mm` }, message
+      { ...baseMessage, id: "media-before", type: mediaType, body: `${mediaType === "file" ? "[Texto do PDF — conteúdo enviado pelo cliente]\n" : ""}2 chapas 3 x 1200 x 3000 mm`, metadata: mediaType === "file" ? { inboundMedia: { kind: "document", status: "processed", extractedText: "2 chapas 3 x 1200 x 3000 mm" } } : {} }, message
     ]);
     const provider = buildProvider({ confidence: 0.95, reply: "A lista informa 3 x 1200 x 3000 mm.", actions: [], handoff: { required: false, reason: null } });
     const result = await createAgentRuntime({ prisma, provider }).runForMessage({ workspaceId: ids.workspace, agentId: ids.agent, conversationId: ids.conversation, messageId: ids.message, trigger: "automation" });

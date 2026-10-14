@@ -61,7 +61,17 @@ const baseConversation = {
   activeAgentSessionId: ids.session,
   contactId: "contact_1",
   contact: { id: "contact_1", name: "Ana", phone: "5511999999999" },
-  channel: { provider: "evolution", providerKey: "instance_1" },
+  channel: {
+    provider: "evolution",
+    providerKey: "instance_1",
+    followupConfig: {
+      timeZone: "America/Sao_Paulo",
+      businessDays: [1, 2, 3, 4, 5],
+      businessHours: { start: "08:00", end: "18:00" },
+      steps: [{ afterMinutes: 60 }, { afterMinutes: 120 }, { afterMinutes: 180 }],
+      humanCommercialDelivery: "automatic"
+    }
+  },
   tags: []
 };
 
@@ -210,7 +220,9 @@ function buildRuntime(overrides: Record<string, any> = {}) {
     jevFollowupDecision: { decide },
     replyPreflight,
     outbound: { createPendingOutboundMessage },
-    publisher: overrides.publisher
+    publisher: overrides.publisher,
+    followupBrain: overrides.followupBrain,
+    now: overrides.now ?? (() => now)
   });
 
   return {
@@ -228,7 +240,207 @@ function buildRuntime(overrides: Record<string, any> = {}) {
   };
 }
 
+const brainAnalysis = {
+  contactType: "customer" as const,
+  situation: "waiting_customer" as const,
+  pendingItem: "Cliente ia confirmar a espessura",
+  kind: "missing_information" as const,
+  nextStep: "Perguntar a espessura",
+  timingNote: null,
+  suggestedMessage: "Oi Ana, conseguiu ver a espessura da chapa?",
+  risk: "none" as const,
+  confidence: 0.9,
+  rationale: "A empresa perguntou a espessura e a cliente não respondeu."
+};
+
+function brainHarness(followupOverrides: Record<string, unknown>, analysis: Record<string, unknown> = {}, extra: Record<string, any> = {}) {
+  const brainFollowup = { ...baseFollowup, kind: "human_commercial" as const, sessionId: null, status: "processing", lockedAt: now, ...followupOverrides };
+  const context = { ...validContext(), followup: brainFollowup, session: null };
+  const analyze = vi.fn().mockResolvedValue({ ...brainAnalysis, ...analysis });
+  const harness = buildRuntime({
+    revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context }),
+    conversation: { findUnique: vi.fn().mockResolvedValue({ ...baseConversation, activeAgentSessionId: null, ...extra.conversation }) },
+    followupBrain: { analyze },
+    ...extra
+  });
+  return { ...harness, analyze };
+}
+
+describe("follow-up brain mode", () => {
+  it("after the quiet wait, schedules the customer follow-up for the cadence time with the suggestion ready", async () => {
+    const harness = brainHarness({ decision: { mode: "brain" }, reason: "brain_quiet_wait" });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "deferred" });
+    expect(harness.analyze).toHaveBeenCalledWith(expect.objectContaining({ conversationId: ids.conversation, agentRules: baseAgent.systemPrompt }));
+    expect(harness.decide).not.toHaveBeenCalled();
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: "scheduled",
+        scheduledAt: new Date("2026-09-22T13:00:00.000Z"),
+        reason: "brain_waiting_customer",
+        draftBody: brainAnalysis.suggestedMessage,
+        decision: expect.objectContaining({ mode: "brain", brain: expect.objectContaining({ step: 1, pendingItem: brainAnalysis.pendingItem }) })
+      })
+    }));
+  });
+
+  it("turns a company-owned step into a reminder for the seller right away", async () => {
+    const harness = brainHarness({ decision: { mode: "brain" }, reason: "brain_quiet_wait" }, {
+      situation: "waiting_company", suggestedMessage: "Lembrete: enviar a NF na terça.", pendingItem: "Enviar a NF na terça"
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "review" });
+    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ kind: "seller_reminder", status: "review", reason: "seller_reminder", draftBody: null })
+    }));
+  });
+
+  it("skips colleagues and personal contacts and remembers them as internal", async () => {
+    const contact = { findFirst: vi.fn().mockResolvedValue({ customFields: {} }), updateMany: vi.fn().mockResolvedValue({ count: 1 }) };
+    const harness = brainHarness({ decision: { mode: "brain" }, reason: "brain_quiet_wait" },
+      { contactType: "internal_personal", situation: "no_pending", confidence: 0.95 });
+    (harness.prisma as Record<string, unknown>).contact = contact;
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "skipped" });
+    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "skipped", reason: "brain_internal_contact" })
+    }));
+    expect(contact.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { customFields: { followupAudience: expect.objectContaining({ kind: "internal_personal", source: "ai" }) } }
+    }));
+  });
+
+  it("sends the prepared suggestion when the number allows automatic sending", async () => {
+    const harness = brainHarness({
+      decision: { mode: "brain", brain: { ...brainAnalysis, step: 1 } },
+      reason: "brain_waiting_customer"
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "sent" });
+    expect(harness.analyze).not.toHaveBeenCalled();
+    expect(harness.createPendingOutboundMessage).toHaveBeenCalledWith(expect.objectContaining({ body: brainAnalysis.suggestedMessage }));
+    expect(harness.completeAutomaticFollowup).toHaveBeenCalledWith(expect.objectContaining({ finalBody: brainAnalysis.suggestedMessage }));
+  });
+
+  it("leaves a commercial or unsure suggestion for the seller to review", async () => {
+    const harness = brainHarness({
+      decision: { mode: "brain", brain: { ...brainAnalysis, risk: "commercial", step: 1 } },
+      reason: "brain_waiting_customer"
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "review" });
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+  });
+
+  it("retries later when the analysis fails", async () => {
+    const harness = brainHarness({ decision: { mode: "brain" }, reason: "brain_quiet_wait" });
+    harness.analyze.mockRejectedValue(new Error("LUNA_ANALYSIS_HTTP_500"));
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "failed" });
+    expect(harness.recoverClaimedFollowup).toHaveBeenCalledWith(expect.objectContaining({ outcome: "retry" }));
+  });
+});
+
 describe("createAgentFollowupRuntime", () => {
+  it("drafts a qualification follow-up for review when the number has no automatic-send opt-in", async () => {
+    const conversation = { ...baseConversation, channel: { provider: "evolution", providerKey: "instance_1" } };
+    const harness = buildRuntime({ conversation: { findUnique: vi.fn().mockResolvedValue(conversation) } });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "review" });
+    expect(harness.decide).toHaveBeenCalledWith(expect.objectContaining({ allowAutomaticSend: false }));
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "review", draftBody: expect.any(String) })
+    }));
+  });
+
+  it("keeps the draft for review if automatic sending is disabled while it is being generated", async () => {
+    const channelWithoutOptIn = { provider: "evolution", providerKey: "instance_1" };
+    const harness = buildRuntime({
+      conversation: {
+        findUnique: vi.fn()
+          .mockResolvedValueOnce(baseConversation)
+          .mockResolvedValueOnce({ ...baseConversation, channel: channelWithoutOptIn })
+      }
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "review" });
+    expect(harness.decide).toHaveBeenCalledWith(expect.objectContaining({ allowAutomaticSend: true }));
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "review", draftBody: expect.any(String) })
+    }));
+  });
+  it("defers an overdue automatic send when processing reaches the channel after closing", async () => {
+    const recoverClaimedFollowup = vi.fn().mockResolvedValue({ status: "recovered" });
+    const harness = buildRuntime({
+      now: () => new Date("2026-09-22T23:00:00.000Z"),
+      recoverClaimedFollowup
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toEqual({ status: "deferred", followupId: ids.followup });
+    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
+    expect(recoverClaimedFollowup).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: "retry",
+      reason: "outside_business_hours",
+      scheduledAt: new Date("2026-09-23T11:00:00.000Z")
+    }));
+  });
+  it("gives follow-up reply validation the full prompt, 20 messages, and a late approved improvement", async () => {
+    const fullPrompt = `${"A".repeat(4_100)}\nNão fornecemos oxicorte.`;
+    const messages = Array.from({ length: 21 }, (_, index) => ({
+      id: `message-${index + 1}`,
+      direction: index % 2 === 0 ? "inbound" : "outbound",
+      type: "text",
+      body: index === 19 ? "B".repeat(2_100) : `Mensagem ${index + 1}`,
+      createdAt: new Date(now.getTime() - (21 - index) * 60_000)
+    }));
+    const sources: Array<{ id: string; title: string; content: string; metadata: Record<string, string> }> = Array.from({ length: 50 }, (_, index) => ({
+      id: `irrelevant-${index}`,
+      title: `Assunto alheio ${index}`,
+      content: "Material sem relação com a pergunta atual.",
+      metadata: { approvalStatus: "behavioral" }
+    }));
+    sources.push({
+      id: "approved-improvement",
+      title: "Espessura necessária",
+      content: "Peça a espessura da chapa antes de cotar.",
+      metadata: { source: "approved_agent_improvement" }
+    });
+    const harness = buildRuntime({
+      aiAgent: { findFirst: vi.fn().mockResolvedValue({ ...baseAgent, systemPrompt: fullPrompt }) },
+      aiKnowledgeSource: { findMany: vi.fn().mockResolvedValue(sources) },
+      message: { findMany: vi.fn().mockResolvedValue(messages) }
+    });
+
+    await harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup });
+
+    expect(harness.prisma.aiKnowledgeSource.findMany.mock.calls[0]?.[0]).not.toHaveProperty("take");
+    const preflightInput = harness.replyPreflight.evaluate.mock.calls[0]?.[0];
+    const auditInput = harness.audit.mock.calls[0]?.[0];
+    expect(preflightInput.agentRules).toBe(fullPrompt);
+    expect(preflightInput.conversationMessages).toHaveLength(20);
+    expect(preflightInput.conversationMessages[0]?.id).toBe("message-2");
+    expect(preflightInput.conversationMessages.find((item: { id: string }) => item.id === "message-20")?.body).toHaveLength(2_100);
+    expect(preflightInput.selectedKnowledge).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "approved-improvement", content: "Peça a espessura da chapa antes de cotar." })
+    ]));
+    expect(auditInput.agentRules).toBe(fullPrompt);
+    expect(auditInput.conversationMessages).toEqual(preflightInput.conversationMessages);
+    expect(auditInput.selectedKnowledge).toEqual(preflightInput.selectedKnowledge);
+    expect(JSON.stringify(harness.decide.mock.calls[0]?.[0])).not.toContain(fullPrompt);
+  });
+
   it("never executes a review record automatically", async () => {
     const revalidateActiveFollowup = vi.fn();
     const harness = buildRuntime({
@@ -334,6 +546,7 @@ describe("createAgentFollowupRuntime", () => {
     }));
     expect(JSON.stringify(harness.decide.mock.calls[0]?.[0])).not.toContain("FULL STORED AGENT PROMPT");
     expect(harness.replyPreflight.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      followupPurpose: "missing_qualification",
       currentMessage: {
         id: "customer_1",
         body: "Preciso de chapas, mas ainda não sei a espessura.",
@@ -367,6 +580,37 @@ describe("createAgentFollowupRuntime", () => {
       followupId: ids.followup,
       finalBody: "Você consegue me informar a espessura da chapa?",
       decision: expect.objectContaining({ ...automaticDecision })
+    }));
+  });
+
+  it("sends a neutral catalog check-in when catalog review is the pending qualification step", async () => {
+    const catalogDecision = { ...automaticDecision, purpose: "confirm_active" as const };
+    const decide = vi.fn().mockResolvedValue(catalogDecision);
+    const provider = { generate: vi.fn().mockResolvedValue({
+      confidence: 0.9,
+      reply: "Conseguiu consultar o catálogo? Se quiser, posso ajudar a seguir com a cotação.",
+      actions: [],
+      handoff: { required: false, reason: null }
+    }) };
+    const harness = buildRuntime({
+      decide,
+      provider,
+      message: { findMany: vi.fn().mockResolvedValue([
+        { id: "customer_catalog", direction: "inbound", type: "text", body: "Catálogo por favor", createdAt: new Date("2026-09-24T17:31:34Z") },
+        { id: "reply_catalog", direction: "outbound", type: "text", body: "Claro! Segue o catálogo para consulta.", createdAt: new Date("2026-09-24T17:32:50Z") },
+        { id: ids.anchor, direction: "outbound", type: "file", body: "Catálogo Villefer", createdAt: new Date("2026-09-24T17:32:52Z") }
+      ]) }
+    });
+
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "sent" });
+    expect(harness.createPendingOutboundMessage).toHaveBeenCalledWith(expect.objectContaining({
+      body: "Conseguiu consultar o catálogo? Se quiser, posso ajudar a seguir com a cotação."
+    }));
+    expect(harness.replyPreflight.evaluate).toHaveBeenCalledWith(expect.objectContaining({ followupPurpose: "confirm_active" }));
+    expect(harness.audit).toHaveBeenCalledWith(expect.objectContaining({ followupPurpose: "confirm_active" }));
+    expect(provider.generate).toHaveBeenCalledWith(expect.objectContaining({
+      userPrompt: expect.stringContaining("não uma cadência pós-proposta")
     }));
   });
 
@@ -642,17 +886,27 @@ describe("createAgentFollowupRuntime", () => {
     expect(staleAfter.completeAutomaticFollowup).not.toHaveBeenCalled();
   });
 
-  it("does not automatically generate or send a fourth configured step", async () => {
+  it("runs a fourth configured step within the configurable limit", async () => {
     const configWithFourSteps = {
       ...followupConfig,
       steps: [
         ...followupConfig.steps,
-        { afterBusinessMinutes: 240, instruction: "Quarto passo proibido." }
+        { afterBusinessMinutes: 240, instruction: "Quarto passo." }
       ]
     };
     const fourthStep = validContext({ stepIndex: 4 });
+    const channelWithFourSteps = {
+      ...baseConversation.channel,
+      followupConfig: {
+        ...baseConversation.channel.followupConfig,
+        steps: [...baseConversation.channel.followupConfig.steps, { afterMinutes: 240 }]
+      }
+    };
     const harness = buildRuntime({
       revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context: fourthStep }),
+      conversation: {
+        findUnique: vi.fn().mockResolvedValue({ ...baseConversation, channel: channelWithFourSteps })
+      },
       aiAgent: {
         findFirst: vi.fn().mockResolvedValue({
           ...baseAgent,
@@ -662,15 +916,10 @@ describe("createAgentFollowupRuntime", () => {
     });
 
     await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
-      .resolves.toEqual({ status: "skipped", followupId: ids.followup });
+      .resolves.toEqual({ status: "sent", followupId: ids.followup, nextFollowupId: "next_followup" });
 
-    expect(harness.decide).not.toHaveBeenCalled();
-    expect(harness.provider.generate).not.toHaveBeenCalled();
-    expect(harness.createPendingOutboundMessage).not.toHaveBeenCalled();
-    expect(harness.prisma.conversationFollowup.updateMany).toHaveBeenCalledWith({
-      where: { workspaceId: ids.workspace, id: ids.followup, activeKey: "active" },
-      data: expect.objectContaining({ reason: "followup_step_limit" })
-    });
+    expect(harness.decide).toHaveBeenCalledOnce();
+    expect(harness.createPendingOutboundMessage).toHaveBeenCalledOnce();
   });
 
   it("does not report sent when the completion claim lost its active follow-up", async () => {
@@ -782,5 +1031,45 @@ describe("createAgentFollowupRuntime", () => {
     await expect(humanControlled.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
       .resolves.toEqual({ status: "cancelled", followupId: ids.followup, reason: "human_controlled" });
     expect(humanControlled.createPendingOutboundMessage).not.toHaveBeenCalled();
+  });
+
+  it("generates a fresh commercial reply when an explicit channel setting allows automatic follow-up without a session", async () => {
+    const conversation = {
+      ...baseConversation,
+      aiControlStatus: "human_controlled",
+      activeAgentSessionId: null,
+      channel: {
+        ...baseConversation.channel,
+        encryptedConfig: { assistant: { mode: "automatic", agentId: ids.agent } },
+        followupConfig: {
+          timeZone: "America/Sao_Paulo", businessDays: [1, 2, 3, 4, 5],
+          businessHours: { start: "08:00", end: "18:00" },
+          steps: [{ afterMinutes: 60 }], humanCommercialDelivery: "automatic"
+        }
+      }
+    };
+    const context = {
+      ...validContext({ kind: "human_commercial", sessionId: null }),
+      conversation,
+      session: null
+    };
+    const decision = {
+      outcome: "follow_up" as const, purpose: "confirm_active" as const,
+      route: "automatic_send" as const, stage: "seller_owned" as const, risk: "none" as const
+    };
+    const harness = buildRuntime({
+      conversation: { findUnique: vi.fn().mockResolvedValue(conversation) },
+      revalidateActiveFollowup: vi.fn().mockResolvedValue({ status: "valid", context }),
+      decide: vi.fn().mockResolvedValue(decision)
+    });
+    await expect(harness.runtime.runFollowup({ workspaceId: ids.workspace, followupId: ids.followup }))
+      .resolves.toMatchObject({ status: "sent" });
+    expect(harness.decide).toHaveBeenCalledWith(expect.objectContaining({
+      hasCompatibleActiveAgentSession: false,
+      hasConfiguredHumanAgent: true,
+      allowAutomaticSend: true
+    }));
+    expect(harness.provider.generate).toHaveBeenCalledOnce();
+    expect(harness.createPendingOutboundMessage).toHaveBeenCalledOnce();
   });
 });

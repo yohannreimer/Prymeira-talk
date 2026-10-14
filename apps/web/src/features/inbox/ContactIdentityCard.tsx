@@ -1,5 +1,6 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { Pencil } from 'lucide-react';
+import type { ContactFollowupAudience } from '../../app/api';
 import { ContactAvatar } from './ContactAvatar';
 import './contact-identity.css';
 
@@ -9,10 +10,12 @@ export function contactNameError(name: string) {
 }
 
 /** Key by contactId in the inbox so an unfinished edit never follows another contact. */
-export function ContactIdentityCard({ contactId, conversationId, name, phone, channelName, onSave }: {
+export function ContactIdentityCard({ contactId, conversationId, name, phone, channelName, onSave, followupAudience, onMarkCustomer }: {
   conversationId?: string;
   contactId: string; name: string | null; phone: string | null; channelName?: string | null;
   onSave: (contactId: string, name: string) => Promise<void>;
+  followupAudience?: ContactFollowupAudience;
+  onMarkCustomer?: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState('');
@@ -69,5 +72,20 @@ export function ContactIdentityCard({ contactId, conversationId, name, phone, ch
       }}><Pencil size={13} aria-hidden="true" />{displayName ? 'Editar nome' : 'Adicionar nome'}</button>
       {saved ? <span role="status">Nome salvo</span> : null}
     </div>}
+    {followupAudience?.kind === 'internal_personal' ? <FollowupAudienceNote onMarkCustomer={onMarkCustomer} /> : null}
   </div>;
+}
+
+/** The follow-up AI skips colleagues, family and suppliers; one tap tells it this one is a customer after all. */
+function FollowupAudienceNote({ onMarkCustomer }: { onMarkCustomer?: () => Promise<void> }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(false);
+  return <p className="contact-followup-audience">
+    A IA trata este contato como interno ou pessoal e não sugere follow-up.{' '}
+    {onMarkCustomer ? <button type="button" className="contact-name-edit" disabled={saving} onClick={async () => {
+      setSaving(true); setError(false);
+      try { await onMarkCustomer(); } catch { setError(true); } finally { setSaving(false); }
+    }}>{saving ? 'Salvando…' : 'É cliente'}</button> : null}
+    {error ? <span role="alert"> Não foi possível salvar. Tente novamente.</span> : null}
+  </p>;
 }

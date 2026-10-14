@@ -66,6 +66,24 @@ function artifact(): LeadArtifact {
 }
 
 describe("Leads repository workspace isolation", () => {
+  it("returns IDs from the entire list and only verifiable phone IDs", async () => {
+    const ids = Array.from({ length: 26 }, () => randomUUID());
+    const findMany = vi.fn(async () => ids.map((id, index) => ({
+      id, normalizedPhone: index === 25 ? null : "5511999999999", phones: []
+    })));
+    const repository = new LeadsRepository({
+      leadList: { findFirst: vi.fn(async () => list()) }, lead: { findMany }
+    } as never);
+
+    const selection = await repository.listLeadSelection(workspaceId, listId);
+    expect(selection.ids).toEqual(ids);
+    expect(selection.verifiableIds).toEqual(ids.slice(0, 25));
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { workspaceId, listId }, take: 5001,
+      select: { id: true, normalizedPhone: true, phones: true }
+    }));
+  });
+
   it("makes a foreign list indistinguishable from a missing list", async () => {
     const findFirst = vi.fn(async () => null);
     const repository = new LeadsRepository({ leadList: { findFirst } } as never);
@@ -117,7 +135,7 @@ describe("Leads repository workspace isolation", () => {
       lead: { findMany: vi.fn(async () => [lead]), count: vi.fn(async () => 1) },
       leadWhatsappVerification: { findMany: vi.fn(async () => [
         { id: randomUUID(), workspaceId, leadId, normalizedPhone: lead.normalizedPhone, channelId: null, status: "available", errorMessage: null, checkedAt: now, createdAt: new Date(now.getTime() + 2), updatedAt: now },
-        { id: randomUUID(), workspaceId, leadId, normalizedPhone: "5511888880000", channelId: null, status: "unavailable", errorMessage: null, checkedAt: now, createdAt: new Date(now.getTime() + 1), updatedAt: now },
+        { id: randomUUID(), workspaceId, leadId, normalizedPhone: "5511888880000", channelId: null, status: "unavailable", errorMessage: null, checkedAt: now, createdAt: new Date(now.getTime() + 3), updatedAt: now },
         { id: randomUUID(), workspaceId, leadId, normalizedPhone: lead.normalizedPhone, channelId: null, status: "unavailable", errorMessage: null, checkedAt: now, createdAt: now, updatedAt: now }
       ]) },
       $transaction: vi.fn(async (operations: unknown[]) => Promise.all(operations))
@@ -126,9 +144,38 @@ describe("Leads repository workspace isolation", () => {
     const result = await repository.listLeads({ workspaceId, listId, page: 1, pageSize: 25 });
     expect(result.items[0]?.whatsappStatus).toBe("available");
     expect(result.items[0]?.whatsappVerifications).toEqual([
-      expect.objectContaining({ normalizedPhone: "551199990000", status: "available" }),
-      expect.objectContaining({ normalizedPhone: "5511888880000", status: "unavailable" })
+      expect.objectContaining({ normalizedPhone: "5511888880000", status: "unavailable" }),
+      expect.objectContaining({ normalizedPhone: "551199990000", status: "available" })
     ]);
+  });
+
+  it("matches a local Google Maps phone to its country-coded verification", async () => {
+    const row = {
+      id: leadId, workspaceId, listId, source: "google_maps", sourceExternalId: null,
+      sourceDedupeKey: "maps-local", companyName: "Padaria Sol", tradeName: null, cnpj: null,
+      cnaePrimary: null, cnaeSecondary: [], category: null, address: null, city: "Campinas", state: "SP",
+      postalCode: null, phones: ["(47) 99139-6920"], normalizedPhone: "47991396920",
+      email: null, website: null, rating: null, reviewCount: null, latitude: null,
+      longitude: null, sourceUrl: null, sourceSnapshot: {}, createdAt: now, updatedAt: now
+    };
+    const verification = {
+      id: randomUUID(), workspaceId, leadId, normalizedPhone: "554791396920", channelId: null,
+      status: "available", errorMessage: null, checkedAt: now, createdAt: now, updatedAt: now
+    };
+    const findVerifications = vi.fn(async () => [verification]);
+    const repository = new LeadsRepository({
+      leadList: { findFirst: vi.fn(async () => list()) },
+      lead: { findMany: vi.fn(async () => [row]), count: vi.fn(async () => 1) },
+      leadWhatsappVerification: { findMany: findVerifications },
+      $transaction: vi.fn(async (operations: unknown[]) => Promise.all(operations))
+    } as never);
+
+    const result = await repository.listLeads({ workspaceId, listId, page: 1, pageSize: 25 });
+
+    expect(result.items[0]?.whatsappStatus).toBe("available");
+    expect(findVerifications).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ normalizedPhone: { in: expect.arrayContaining(["554791396920", "47991396920"]) } })
+    }));
   });
 
   it("persists checking rows and sequential batch jobs in one transaction", async () => {
@@ -159,8 +206,8 @@ describe("Leads repository workspace isolation", () => {
       workspaceId, listId, channelId: randomUUID(), instanceName: "instance-one",
       idempotencyKey: "request-1", requestId, requestFingerprint: "fingerprint",
       batches: [
-        [{ phone: "5511999990000", leadIds: [leadId] }],
-        [{ phone: "5511999990001", leadIds: [leadId] }]
+        [{ phone: "5511999990000", primary: "5511999990000", alternate: null, leadIds: [leadId] }],
+        [{ phone: "5511999990001", primary: "5511999990001", alternate: null, leadIds: [leadId] }]
       ]
     });
 
@@ -171,18 +218,95 @@ describe("Leads repository workspace isolation", () => {
     expect(createdJobs.map((record) => record.operation)).toEqual(["whatsapp_availability", "whatsapp_availability_batch"]);
     expect(createdJobs.map((record) => record.idempotencyKey)).toEqual(["request-1", `${requestId}:1`]);
     expect(createdJobs[0].input.entries[0].verificationId).toBe(createdRows[0].id);
+    expect(createdJobs[0].input.numbers).toEqual(["5511999990000"]);
+    expect(createdJobs[0].input.lookups).toEqual([{
+      phone: "5511999990000", primary: "5511999990000", alternate: null
+    }]);
     expect(result).toMatchObject({ requestId, replayed: false });
   });
 
   it("includes workspace and resource id in list update and delete mutations", async () => {
     const updateMany = vi.fn(async () => ({ count: 0 }));
-    const deleteMany = vi.fn(async () => ({ count: 0 }));
-    const repository = new LeadsRepository({ leadList: { updateMany, deleteMany } } as never);
+    const findFirst = vi.fn(async () => null);
+    const deleteMany = vi.fn(async () => ({ count: 1 }));
+    const tx = { leadList: { findFirst, deleteMany } };
+    const repository = new LeadsRepository({
+      leadList: { updateMany },
+      $transaction: vi.fn(async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx))
+    } as never);
 
     await expect(repository.updateList(foreignWorkspaceId, listId, { name: "x" })).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
     await expect(repository.deleteList(foreignWorkspaceId, listId)).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
     expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { workspaceId: foreignWorkspaceId, id: listId } }));
-    expect(deleteMany).toHaveBeenCalledWith({ where: { workspaceId: foreignWorkspaceId, id: listId } });
+    expect(findFirst).toHaveBeenCalledWith({ where: { workspaceId: foreignWorkspaceId, id: listId } });
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [1, 0, "busca ou verificação"],
+    [0, 1, "originou contatos"]
+  ] as const)("rejects deletion with %s active jobs and %s imported sources", async (active, imported, message) => {
+    const deleteMany = vi.fn(async () => ({ count: 1 }));
+    const countJobs = vi.fn(async () => active);
+    const countProvenances = vi.fn(async () => imported);
+    const tx = {
+      leadList: { findFirst: vi.fn(async () => list()), deleteMany },
+      leadJob: { count: countJobs },
+      leadContactProvenance: { count: countProvenances }
+    };
+    const repository = new LeadsRepository({
+      $transaction: vi.fn(async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx))
+    } as never);
+
+    await expect(repository.deleteList(workspaceId, listId)).rejects.toMatchObject({
+      code: "LEAD_INVALID_TRANSITION", message: expect.stringContaining(message)
+    });
+    expect(countJobs).toHaveBeenCalledWith({ where: {
+      workspaceId, listId, status: { in: ["queued", "running"] }
+    } });
+    if (active === 0) expect(countProvenances).toHaveBeenCalledWith({ where: { workspaceId, listId } });
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("deletes an eligible list inside a serializable transaction", async () => {
+    const deleteMany = vi.fn(async () => ({ count: 1 }));
+    const tx = {
+      leadList: { findFirst: vi.fn(async () => list()), deleteMany },
+      leadJob: { count: vi.fn(async () => 0) },
+      leadContactProvenance: { count: vi.fn(async () => 0) }
+    };
+    const transaction = vi.fn(async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx));
+    const repository = new LeadsRepository({ $transaction: transaction } as never);
+
+    await repository.deleteList(workspaceId, listId);
+
+    expect(deleteMany).toHaveBeenCalledWith({ where: { workspaceId, id: listId } });
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+    });
+  });
+
+  it.each([
+    ["P2003", "contatos vinculados"],
+    ["P2034", "mudou durante a exclusão"]
+  ] as const)("turns database race %s into a safe conflict", async (code, message) => {
+    const tx = {
+      leadList: {
+        findFirst: vi.fn(async () => list()),
+        deleteMany: vi.fn(async () => { throw new Prisma.PrismaClientKnownRequestError("race", {
+          code, clientVersion: "6.19.0"
+        }); })
+      },
+      leadJob: { count: vi.fn(async () => 0) },
+      leadContactProvenance: { count: vi.fn(async () => 0) }
+    };
+    const repository = new LeadsRepository({
+      $transaction: vi.fn(async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx))
+    } as never);
+
+    await expect(repository.deleteList(workspaceId, listId)).rejects.toMatchObject({
+      code: "LEAD_INVALID_TRANSITION", message: expect.stringContaining(message)
+    });
   });
 
   it("scopes job and authorized artifact retrieval to the caller workspace", async () => {
@@ -311,6 +435,45 @@ describe("Leads repository workspace isolation", () => {
     expect(retryInput.verificationHistoryIds).toEqual([olderId, failedId, createdRows[0].id]);
   });
 
+  it("retains only the failed lookup and its original variants when retrying a new WhatsApp job", async () => {
+    const failedId = randomUUID();
+    const channelId = randomUUID();
+    const current = {
+      ...job(), operation: "whatsapp_availability", status: "partial" as const,
+      output: { retryable: true }, input: {
+        requestId: randomUUID(), instanceName: "old",
+        numbers: ["5511999990000", "5547991396920"],
+        lookups: [
+          { phone: "5511999990000", primary: "5511999990000", alternate: "55119999990000" },
+          { phone: "554791396920", primary: "5547991396920", alternate: "554791396920" }
+        ],
+        entries: [{ verificationId: failedId, leadId, phone: "554791396920" }]
+      }
+    };
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const findFirst = vi.fn()
+      .mockResolvedValueOnce(current)
+      .mockResolvedValueOnce({ ...current, status: "queued", attempts: 0, output: { retryable: false } });
+    const tx = {
+      leadJob: { findFirst, updateMany },
+      leadWhatsappVerification: {
+        findMany: vi.fn(async () => [{ id: failedId, workspaceId, leadId, normalizedPhone: "554791396920", status: "failed", channelId, errorMessage: "x", checkedAt: now, createdAt: now, updatedAt: now }]),
+        create: vi.fn(async ({ data }: any) => ({ id: randomUUID(), ...data, errorMessage: null, checkedAt: null, createdAt: now, updatedAt: now }))
+      },
+      channel: { findMany: vi.fn(async () => [{ id: channelId, workspaceId, provider: "evolution", providerKey: "new-instance", status: "connected", updatedAt: now }]) }
+    };
+    const repository = new LeadsRepository({ $transaction: vi.fn(async (callback: any) => callback(tx)) } as never);
+
+    await repository.retryWhatsappJob(workspaceId, jobId, now);
+
+    const retryInput = (updateMany.mock.calls as unknown as Array<[{ data: { input: Record<string, unknown> } }]>)[0]![0].data.input;
+    expect(retryInput.numbers).toEqual(["5547991396920"]);
+    expect(retryInput.lookups).toEqual([{
+      phone: "554791396920", primary: "5547991396920", alternate: "554791396920"
+    }]);
+    expect(retryInput.entries).toEqual([expect.objectContaining({ leadId, phone: "554791396920" })]);
+  });
+
   it("replays the winning WhatsApp request after a concurrent idempotency insert", async () => {
     const requestId = randomUUID();
     const oldVerificationId = randomUUID();
@@ -360,7 +523,7 @@ describe("Leads repository workspace isolation", () => {
       idempotencyKey: "request-race",
       requestId: randomUUID(),
       requestFingerprint: "fingerprint",
-      batches: [[{ phone: "5511999990000", leadIds: [leadId] }]]
+      batches: [[{ phone: "5511999990000", primary: "5511999990000", alternate: null, leadIds: [leadId] }]]
     });
 
     expect(result).toMatchObject({

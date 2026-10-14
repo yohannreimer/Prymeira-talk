@@ -15,10 +15,10 @@ export function AssistantChannelSettings({ channelId, getToken }: { channelId: s
   }, [channelId, getToken]);
   if (!settings) return <p className="assistant-caption">{notice ?? 'Carregando configuração do apoio…'}</p>;
   return <form className="assistant-channel-settings" onSubmit={async e => { e.preventDefault(); setBusy(true); setNotice(null); try { setSettings(await apiSetAssistantChannelSettings(channelId, settings, getToken)); setNotice('Configuração salva. Nenhuma mensagem foi enviada.'); } catch (err) { setNotice(err instanceof Error ? err.message : 'Não foi possível salvar.'); } finally { setBusy(false); } }}>
-    <div><h3>IA de apoio</h3><p>Prepara o texto. O vendedor revisa e envia.</p></div>
-    <label>Modo<select aria-label="Modo" disabled={!manager || busy} value={settings.mode} onChange={e => setSettings({ ...settings, mode: e.target.value as Settings['mode'] })}><option value="disabled">Desativado</option><option value="automatic">Sugestão a cada mensagem recebida</option><option value="on_demand">Somente quando solicitado</option></select></label>
+    <div><h3>IA de apoio</h3><p>Nos modos de sugestão, o vendedor revisa e envia. O modo combinado também permite que a automação ative o agente.</p></div>
+    <label>Modo<select aria-label="Modo" disabled={!manager || busy} value={settings.mode} onChange={e => setSettings({ ...settings, mode: e.target.value as Settings['mode'] })}><option value="disabled">Desativado</option><option value="automatic">Sugestão a cada mensagem recebida</option><option value="on_demand">Somente quando solicitado</option><option value="automatic_with_agent">Agente liberado + sugestão a cada mensagem recebida</option></select></label>
     <label>Agente<select aria-label="Agente" disabled={!manager || busy} value={settings.agentId ?? ''} onChange={e => setSettings({ ...settings, agentId: e.target.value || null })}><option value="">Escolha um agente</option>{agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
-    <p className="assistant-caption">Humano no controle pausa as sugestões. Antes do piloto, confira também as campanhas e automações independentes deste canal.</p>
+    <p className="assistant-caption">A mudança vale para as próximas mensagens. No modo combinado, a automação continua decidindo quando o agente responde ou faz handoff; a sugestão nunca é enviada sem revisão.</p>
     {manager ? <button className="assistant-primary" type="submit" disabled={busy || (settings.mode !== 'disabled' && !settings.agentId)}>{busy ? 'Salvando…' : 'Salvar configuração'}</button> : <p>Somente gestores podem alterar esta configuração.</p>}
     {notice ? <p role="status">{notice}</p> : null}
   </form>;

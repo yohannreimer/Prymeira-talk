@@ -12,6 +12,7 @@ import {
   buildPhoneLookupCandidates,
   normalizePhoneForStorage
 } from "../contacts/phone-normalization.js";
+import { whatsappPhoneCandidates } from "./lead-whatsapp-numbers.js";
 
 const DEFAULT_QUICK_REPLY_TITLE = "Prospecção — Clínica padrão";
 const DEFAULT_QUICK_REPLY_CATEGORY = "Prospecção";
@@ -104,18 +105,23 @@ function currentPhoneState(input: {
     .map(validPhone)
     .filter((phone): phone is string => phone !== null)
     .filter((phone, index, phones) => phones.indexOf(phone) === index);
-  const candidateSet = new Set(candidates);
+  const candidateByKey = new Map<string, string>();
+  for (const candidate of candidates) {
+    const key = whatsappPhoneCandidates(candidate)?.key ?? candidate;
+    if (!candidateByKey.has(key)) candidateByKey.set(key, candidate);
+  }
   const latestByPhone = new Map<string, VerificationRow & { currentPhone: string }>();
   for (const verification of sortedVerifications(input.verifications)) {
-    const phone = validPhone(verification.normalizedPhone);
-    if (!phone || !candidateSet.has(phone) || latestByPhone.has(phone)) continue;
-    latestByPhone.set(phone, { ...verification, currentPhone: phone });
+    const phone = whatsappPhoneCandidates(verification.normalizedPhone)?.key ?? validPhone(verification.normalizedPhone);
+    const currentPhone = phone ? candidateByKey.get(phone) : null;
+    if (!phone || !currentPhone || latestByPhone.has(phone)) continue;
+    latestByPhone.set(phone, { ...verification, currentPhone });
   }
   const currentVerifications = sortedVerifications([...latestByPhone.values()]);
   const available = currentVerifications.find((verification) => verification.status === "available");
   const whatsappStatus: LeadWhatsappStatus = currentVerifications[0]?.status ?? "unverified";
   return {
-    phone: available?.currentPhone ?? candidates[0] ?? null,
+    phone: whatsappPhoneCandidates(available?.currentPhone ?? candidates[0] ?? '')?.key ?? null,
     whatsappStatus
   };
 }
@@ -123,7 +129,9 @@ function currentPhoneState(input: {
 function sourceTag(source: LeadSource) {
   return source === "google_maps"
     ? { name: "Origem: Lead Google", color: "#1c6653" }
-    : { name: "Origem: Lead Receita", color: "#6b4bb5" };
+    : source === "own_base"
+      ? { name: "Origem: Base própria", color: "#5b6b63" }
+      : { name: "Origem: Lead Receita", color: "#6b4bb5" };
 }
 
 function toIso(value: Date | string) {
@@ -204,7 +212,9 @@ function renderCompany(body: string, company: string | null) {
 
 async function ensureDefaultQuickReply(tx: TransactionClient, workspaceId: string) {
   const lockKey = `lead-conversion:${workspaceId}:${DEFAULT_QUICK_REPLY_TITLE}`;
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+  // pg_advisory_xact_lock returns PostgreSQL's void type, which Prisma cannot deserialize.
+  // IS NULL keeps the locking call in the query while returning a supported boolean.
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0)) IS NULL AS locked`;
   const existing = await tx.quickReply.findFirst({
     where: { workspaceId, title: DEFAULT_QUICK_REPLY_TITLE },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }]
@@ -460,11 +470,18 @@ export function createLeadConversionService(
     async createCampaignDraftFromLeads(input: {
       workspaceId: string;
       selectedLeadIds: string[];
+      originalSelectedLeadIds?: string[];
+      listId?: string;
       name?: string;
       messageBody?: string;
       quickReplyId?: string;
     }): Promise<LeadCampaignDraftResult> {
       const selectedLeadIds = uniqueSelection(input.selectedLeadIds);
+      const originalSelectedLeadIds = input.originalSelectedLeadIds
+        ? uniqueSelection(input.originalSelectedLeadIds) : null;
+      if (originalSelectedLeadIds && selectedLeadIds.some((id) => !originalSelectedLeadIds.includes(id))) {
+        throw new LeadConversionError("LEAD_SELECTION_INVALID", "Imported leads must belong to the original selection.");
+      }
       if (input.messageBody && input.quickReplyId) {
         throw new LeadConversionError(
           "LEAD_SELECTION_INVALID",
@@ -503,14 +520,10 @@ export function createLeadConversionService(
           messageBody = reply.body.trim();
         }
         if (!messageBody) {
+          // The list is created here; the message, its variations and the pace are written in Disparos. A single
+          // message the leads already share is kept as a starting point, otherwise the draft starts empty.
           const snapshots = [...new Set(provenances.map((row) => row.suggestedMessage?.trim()).filter(Boolean))];
-          if (snapshots.length !== 1) {
-            throw new LeadConversionError(
-              "LEAD_CAMPAIGN_COMMON_BODY_REQUIRED",
-              "Selected leads have different message snapshots; choose one common body."
-            );
-          }
-          messageBody = snapshots[0]!;
+          messageBody = snapshots.length === 1 ? snapshots[0]! : "";
         }
         if (messageBody.length > 2000) {
           throw new LeadConversionError("LEAD_SELECTION_INVALID", "Campaign body is too long.");
@@ -535,7 +548,18 @@ export function createLeadConversionService(
             workspaceId: input.workspaceId,
             name: input.name?.trim() || `Prospecção — Leads ${now().toLocaleDateString("pt-BR")}`,
             status: "draft",
-            audience: { type: "imported", rows },
+            audience: {
+              type: "imported", rows,
+              ...(originalSelectedLeadIds ? {
+                origin: "leads",
+                listId: input.listId,
+                selectedCount: originalSelectedLeadIds.length,
+                exclusions: {
+                  notImported: originalSelectedLeadIds.length - selectedLeadIds.length,
+                  duplicateOrInvalidPhone: selectedLeadIds.length - rows.length
+                }
+              } : {})
+            },
             messageBody,
             templates: [messageBody],
             fallbackName: "cliente",

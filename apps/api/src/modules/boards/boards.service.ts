@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import type {
   ChannelProvider,
   ContactBoardMoveSource,
@@ -135,7 +135,7 @@ interface BoardPersistenceLike {
     count(args: MembershipCountArgs): Promise<number>;
   };
   contact: {
-    findUnique(args: ContactFindUniqueArgs): Promise<{ id: string } | null>;
+    findUnique(args: ContactFindUniqueArgs): Promise<{ id: string; isGroup?: boolean } | null>;
   };
 }
 
@@ -331,10 +331,8 @@ export function createBoardsService(prisma: PrismaLike) {
             channelIds.length > 0
               ? {
                   createMany: {
-                    data: channelIds.map((channelId) => ({
-                      workspaceId: input.workspaceId,
-                      channelId
-                    })),
+                    // The parent relation supplies workspaceId and boardId.
+                    data: channelIds.map((channelId) => ({ channelId } satisfies Prisma.ContactBoardChannelCreateManyBoardInput)),
                     skipDuplicates: true
                   }
                 }
@@ -724,7 +722,7 @@ export function createBoardsService(prisma: PrismaLike) {
       }
 
       const memberships = await prisma.contactBoardMembership.findMany({
-        where: { workspaceId: input.workspaceId, boardId: input.boardId },
+        where: { workspaceId: input.workspaceId, boardId: input.boardId, contact: { is: { isGroup: false } } },
         include: { contact: true },
         orderBy: [{ updatedAt: "desc" }]
       });
@@ -762,10 +760,10 @@ export function createBoardsService(prisma: PrismaLike) {
             id: input.contactId
           }
         },
-        select: { id: true }
+        select: { id: true, isGroup: true }
       });
 
-      if (!contact) {
+      if (!contact || contact.isGroup) {
         throw new BoardsServiceError("CONTACT_NOT_FOUND", "Contact not found.");
       }
 

@@ -264,6 +264,7 @@ export function createBoardRulesService(
     workspaceId: string;
     conversation: ConversationRuleRecord;
     board: BoardRuleRecord;
+    confirmedMeetingTagId?: string;
     publish?: PublishBoardMembership;
   }): Promise<BoardRulesResultDto> {
     const result = emptyResult();
@@ -274,7 +275,7 @@ export function createBoardRulesService(
     }
 
     result.evaluated = 1;
-    const tagIds = new Set(input.conversation.tags.map((tag) => tag.tagId));
+    const tagIds = new Set(input.conversation.tags.map((tag) => tag.tagId).filter((id) => !input.confirmedMeetingTagId || id === input.confirmedMeetingTagId));
     const targetStage = matchStage(input.board, tagIds);
 
     if (!targetStage) {
@@ -295,7 +296,8 @@ export function createBoardRulesService(
       }
     });
 
-    if (currentMembership && (currentMembership.stage?.order ?? -1) >= targetStage.order) {
+    if (currentMembership && (currentMembership.stageId === targetStage.id ||
+      (!input.confirmedMeetingTagId && (currentMembership.stage?.order ?? -1) >= targetStage.order))) {
       result.ignored = 1;
       return result;
     }
@@ -342,6 +344,7 @@ export function createBoardRulesService(
     workspaceId: string;
     conversation: ConversationRuleRecord;
     boards: BoardRuleRecord[];
+    confirmedMeetingTagId?: string;
     publish?: PublishBoardMembership;
   }) {
     const result = emptyResult();
@@ -354,6 +357,7 @@ export function createBoardRulesService(
             workspaceId: input.workspaceId,
             conversation: input.conversation,
             board,
+            confirmedMeetingTagId: input.confirmedMeetingTagId,
             publish: input.publish
           })
         );
@@ -373,6 +377,7 @@ export function createBoardRulesService(
     async applyBoardRulesForConversationTags(input: {
       workspaceId: string;
       conversationId: string;
+      confirmedMeetingTagId?: string;
       publish?: PublishBoardMembership;
     }): Promise<BoardRulesResultDto> {
       const conversation = await prisma.conversation.findUnique({
@@ -389,7 +394,7 @@ export function createBoardRulesService(
         return emptyResult();
       }
 
-      const tagIds = conversation.tags.map((tag) => tag.tagId);
+      const tagIds = conversation.tags.map((tag) => tag.tagId).filter((id) => !input.confirmedMeetingTagId || id === input.confirmedMeetingTagId);
       if (tagIds.length === 0) {
         return emptyResult();
       }
@@ -417,6 +422,7 @@ export function createBoardRulesService(
         workspaceId: input.workspaceId,
         conversation,
         boards,
+        confirmedMeetingTagId: input.confirmedMeetingTagId,
         publish: input.publish
       });
     },

@@ -194,6 +194,32 @@ describe("buildConversationContext", () => {
     expect(result.formattedHistory).toBe("");
   });
 
+  it("labels system events as sistema even when stored as inbound", async () => {
+    const prisma = {
+      message: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "form_1",
+            direction: "inbound",
+            type: "system",
+            body: "Formulário recebido (Webhook externo)\nNome: Maria",
+            createdAt: new Date("2026-06-23T18:02:00.000Z")
+          }
+        ])
+      }
+    };
+
+    const result = await buildConversationContext(prisma, {
+      workspaceId: ids.workspace,
+      conversationId: ids.conversation
+    });
+
+    expect(result.messages).toEqual([expect.objectContaining({ id: "form_1", label: "sistema" })]);
+    expect(result.formattedHistory).toBe(
+      "[2026-06-23T18:02:00.000Z] sistema: Formulário recebido (Webhook externo)\nNome: Maria"
+    );
+  });
+
   it("can include internal notes when explicitly requested", async () => {
     const prisma = {
       message: {
