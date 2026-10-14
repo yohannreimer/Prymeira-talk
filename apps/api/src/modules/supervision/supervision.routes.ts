@@ -7,6 +7,7 @@ import type { EvolutionRuntime } from "../evolution/evolution-runtime.js";
 import { SupervisionError } from "./supervision-access.js";
 import { createSupervisionService } from "./supervision.service.js";
 import { collectPlatformHealth } from "./platform-health.js";
+import { loadWeeklyFollowupCatalog } from "./weekly-followup-catalog.js";
 
 const querySchema = z.object({
   status: z.enum(["active", "closed", "all"]).default("active"),
@@ -59,6 +60,12 @@ export const supervisionRoutes: FastifyPluginAsync<{ evolution?: EvolutionRuntim
     return service.summary(grants(request), query.unreadPeriod);
   });
   app.get("/supervision/conversations", async request => service.list(grants(request), parse(querySchema, request.query)));
+
+  app.get("/supervision/followup-weeks", async request => {
+    const access = grants(request);
+    const query = parse(z.object({ weekId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(), sellerCustomerId: z.string().uuid().optional(), search: z.string().trim().max(80).optional() }).strict(), request.query);
+    return service.followupWeeks(access, await loadWeeklyFollowupCatalog(), query.weekId, query.sellerCustomerId, query.search);
+  });
 
   const base = "/supervision/workspaces/:workspaceId/conversations/:conversationId";
   app.get(`${base}/messages`, async request => {

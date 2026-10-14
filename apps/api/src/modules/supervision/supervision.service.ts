@@ -5,6 +5,8 @@ import { conversationDtoInclude, inboxHandoffWhere, inboxUnreadWhere, toConversa
 import { visibleConversationMessageWhere } from "../conversations/internal-message.js";
 import { SupervisionError } from "./supervision-access.js";
 import { nextActionText, todayActivity, waitingConversations } from "./supervision-insights.js";
+import type { SupervisionFollowupWeeks } from "@prymeira-talk/shared";
+import type { WeeklyFollowupCatalog } from "./weekly-followup-catalog.js";
 
 type Store = Pick<PrismaClient, "conversation" | "message" | "channel"> & Partial<Pick<PrismaClient, "$queryRaw">>;
 export type SupervisionFilters = {
@@ -159,6 +161,36 @@ export function createSupervisionService(prisma: Store, clock: () => Date = () =
         nextCursor: rows.length > 50 && last
           ? Buffer.from(JSON.stringify({ workspaceId: last.workspaceId, channelId: last.channelId, id: last.id,
             lastMessageAt: last.lastMessageAt?.toISOString() ?? null, createdAt: last.createdAt.toISOString() })).toString("base64url") : null };
+    },
+
+    async followupWeeks(grants: SupervisionGrant[], catalog: WeeklyFollowupCatalog, weekId?: string, sellerCustomerId?: string, search?: string): Promise<SupervisionFollowupWeeks> {
+      supervisionScopeWhere(grants);
+      const selectedGrants = filterGrants(grants, sellerCustomerId);
+      const entries = catalog.flatMap(week => week.items);
+      if (!entries.length) return { weeks: [], selectedWeekId: null, conversations: [] };
+      const records = await prisma.conversation.findMany({
+        where: { AND: [supervisionScopeWhere(grants), { hiddenUntilReply: false, retiredIntoConversationId: null },
+          { OR: entries.map(entry => ({ workspaceId: entry.workspaceId, id: entry.conversationId })) }] },
+        include: supervisionInclude
+      });
+      const byKey = new Map(records.map(record => [`${record.workspaceId}:${record.id}`, record]));
+      const accessible = catalog.map(week => ({ ...week, items: week.items.filter(entry => byKey.has(`${entry.workspaceId}:${entry.conversationId}`)) }))
+        .filter(week => week.items.length > 0).sort((a, b) => b.startDate.localeCompare(a.startDate) || b.id.localeCompare(a.id));
+      // Even week titles and totals are derived only from currently authorized conversations.
+      const weeks = accessible.map(week => ({ id: week.id, label: week.label, startDate: week.startDate, endDate: week.endDate,
+        followupCount: week.items.filter(entry => entry.kind === "follow_up").length,
+        reminderCount: week.items.filter(entry => entry.kind === "seller_reminder").length }));
+      const selectedWeek = weekId ? accessible.find(week => week.id === weekId) : accessible[0];
+      if (weekId && !selectedWeek) throw new SupervisionError(404, "Seleção semanal indisponível para supervisão.");
+      return { weeks, selectedWeekId: selectedWeek?.id ?? null, conversations: selectedWeek ? selectedWeek.items.flatMap(entry => {
+        const record = byKey.get(`${entry.workspaceId}:${entry.conversationId}`)!;
+        if (!selectedGrants.some(grant => grant.workspace_id === record.workspaceId && grant.channel_id === record.channelId)) return [];
+        const dto = toDto(record, selectedGrants);
+        const term = search?.trim().toLocaleLowerCase("pt-BR");
+        const digits = term?.replace(/\D/g, "") ?? "";
+        if (term && !(dto.contactName ?? "").toLocaleLowerCase("pt-BR").includes(term) && !(digits.length >= 3 && (dto.contactPhone ?? "").includes(digits))) return [];
+        return [{ ...dto, weeklyFollowup: { weekId: selectedWeek.id, kind: entry.kind, suggestion: entry.suggestion } }];
+      }).sort((a, b) => a.sellerName.localeCompare(b.sellerName, "pt-BR") || (a.contactName ?? "").localeCompare(b.contactName ?? "", "pt-BR")) : [] };
     },
 
     async authorizedConversation(grants: SupervisionGrant[], workspaceId: string, conversationId: string) {

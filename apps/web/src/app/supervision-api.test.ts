@@ -1,11 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiSupervisionConversations, apiSupervisionMedia, apiSupervisionPreview, apiSupervisionSummary, apiSupervisionThread } from "./supervision-api";
+import { apiSupervisionConversations, apiSupervisionMedia, apiSupervisionPreview, apiSupervisionSummary, apiSupervisionThread, apiSupervisionFollowupWeeks } from "./supervision-api";
 
 const getToken = async () => "supervisor-token";
 const sellerCustomerId = "00000000-0000-4000-8000-000000000001";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("supervisor API transport", () => {
+  it("loads a manual week without inbox status/date filters and preserves exact week/seller scope", async () => {
+    const fetch = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ weeks: [], selectedWeekId: null, conversations: [] })));
+    vi.stubGlobal("fetch", fetch);
+    await apiSupervisionFollowupWeeks({ followupWeek: "latest", status: "all", nextAction: false, unread: false }, getToken);
+    expect(new URL(fetch.mock.calls[0][0]).pathname).toBe("/supervision/followup-weeks");
+    expect([...new URL(fetch.mock.calls[0][0]).searchParams]).toHaveLength(0);
+    await apiSupervisionFollowupWeeks({ followupWeek: "2026-10-05", sellerCustomerId, status: "all", nextAction: false, unread: false }, getToken);
+    expect(Object.fromEntries(new URL(fetch.mock.calls[1][0]).searchParams)).toEqual({ weekId: "2026-10-05", sellerCustomerId });
+  });
+
   it("keeps seller, next action, unread and status filters independent and forwards opaque pagination", async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ conversations: [], nextCursor: "next-page" })));
     vi.stubGlobal("fetch", fetch);

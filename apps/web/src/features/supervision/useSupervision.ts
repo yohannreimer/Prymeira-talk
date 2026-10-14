@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SupervisionConversation, SupervisionSummary, SupervisionThread } from "@prymeira-talk/shared";
+import type { SupervisionConversation, SupervisionSummary, SupervisionThread, SupervisionFollowupWeeks } from "@prymeira-talk/shared";
 import {
-  apiSupervisionConversations, apiSupervisionSummary, apiSupervisionThread,
+  apiSupervisionConversations, apiSupervisionSummary, apiSupervisionThread, apiSupervisionFollowupWeeks,
   SupervisionApiError, type SupervisionFilter
 } from "../../app/supervision-api";
 
@@ -11,6 +11,7 @@ export const conversationKey = (conversation: SupervisionConversation) => `${con
 
 export function useSupervision(getToken: () => Promise<string | null>) {
   const [filters, setFilters] = useState<SupervisionFilter>(defaultSupervisionFilters);
+  const [weekly, setWeekly] = useState<SupervisionFollowupWeeks | null>(null);
   const [summary, setSummary] = useState<SupervisionSummary | null>(null);
   const [conversations, setConversations] = useState<SupervisionConversation[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -44,7 +45,7 @@ export function useSupervision(getToken: () => Promise<string | null>) {
       Object.values(requests.current).forEach(request => request?.abort());
       requests.current = {};
       knownSellers.current = null;
-      setSummary(null); setConversations([]); setNextCursor(null); clearSelection();
+      setSummary(null); setWeekly(null); setConversations([]); setNextCursor(null); clearSelection();
       setQueueError(null); setUpdatedAt(null); setLoading(false); setLoadingMore(false);
       setDenied(error.status === 401
         ? "Sua sessão expirou. Entre novamente pelo Hub para consultar a supervisão."
@@ -89,6 +90,11 @@ export function useSupervision(getToken: () => Promise<string | null>) {
       if (!scopedDenial) applySummary(data);
     });
     const listJob = (async () => {
+      if (currentFilters.followupWeek) {
+        const data = await apiSupervisionFollowupWeeks(currentFilters, () => tokenRef.current(), abort.signal);
+        if (!abort.signal.aborted && !blocked.current) setWeekly(data);
+        return { conversations: data.conversations, nextCursor: null };
+      }
       const depth = loadedPages.current;
       let data = await apiSupervisionConversations(currentFilters, () => tokenRef.current(), abort.signal);
       const records = [...data.conversations];
@@ -109,6 +115,11 @@ export function useSupervision(getToken: () => Promise<string | null>) {
         seen.add(key); return true;
       }));
       setNextCursor(data.nextCursor);
+      if (currentFilters.followupWeek && selectedRef.current) {
+        const current = data.conversations.find(conversation => conversationKey(conversation) === conversationKey(selectedRef.current!));
+        if (!current || current.weeklyFollowup?.weekId !== selectedRef.current.weeklyFollowup?.weekId) clearSelection();
+        else { selectedRef.current = current; setSelected(current); }
+      }
     });
     const guard = (job: Promise<unknown>, scopedSeller?: string) => job.catch(async error => {
       if (abort.signal.aborted || blocked.current) return;
@@ -174,7 +185,8 @@ export function useSupervision(getToken: () => Promise<string | null>) {
 
   const changeFilters = useCallback((next: SupervisionFilter) => {
     requests.current.queue?.abort(); requests.current.page?.abort();
-    if (next.sellerCustomerId !== filtersRef.current.sellerCustomerId) clearSelection();
+    if (next.sellerCustomerId !== filtersRef.current.sellerCustomerId || next.followupWeek !== filtersRef.current.followupWeek) clearSelection();
+    if (next.followupWeek !== filtersRef.current.followupWeek) setWeekly(null);
     if (next.unreadPeriod !== filtersRef.current.unreadPeriod) { setSummary(null); setUpdatedAt(null); }
     filtersRef.current = next;
     loadedPages.current = 1;
@@ -254,6 +266,6 @@ export function useSupervision(getToken: () => Promise<string | null>) {
     };
   }, [refreshQueue, refreshThread]);
 
-  return { filters, changeFilters, summary, conversations, nextCursor, selected, selectConversation, thread,
+  return { filters, changeFilters, summary, weekly, conversations, nextCursor, selected, selectConversation, thread,
     denied, queueError, threadError, loading, threadLoading, loadingMore, updatedAt, refresh, loadMore, handleAccessError };
 }

@@ -36,7 +36,18 @@ export const supervisionSellerSchema = z.object({
 export const supervisionSummarySchema = z.object({ sellers: z.array(supervisionSellerSchema) });
 export type SupervisionSummary = z.infer<typeof supervisionSummarySchema>;
 
+export const supervisionWeeklySuggestionSchema = z.object({
+  weekId: z.string(),
+  kind: z.enum(["follow_up", "seller_reminder"]),
+  suggestion: z.string().min(1).max(4000)
+});
+export const supervisionFollowupWeekSchema = z.object({
+  id: z.string(), label: z.string(), startDate: z.string(), endDate: z.string(),
+  followupCount: z.number().int().nonnegative(), reminderCount: z.number().int().nonnegative()
+});
+export type SupervisionFollowupWeek = z.infer<typeof supervisionFollowupWeekSchema>;
 export const supervisionConversationSchema = conversationSchema.extend({
+  weeklyFollowup: supervisionWeeklySuggestionSchema.optional(),
   sellerCustomerId: z.string().uuid(),
   sellerName: z.string(),
   sellerEmail: z.string().email(),
@@ -71,3 +82,9 @@ export function needsHumanAttention(conversation: {
   return conversation.activeAgentSessionStatus === "handoff_requested" ||
     (conversation.aiControlStatus === "human_controlled" && Boolean(conversation.handoffReason));
 }
+
+export const supervisionFollowupWeeksSchema = z.object({
+  weeks: z.array(supervisionFollowupWeekSchema), selectedWeekId: z.string().nullable(),
+  conversations: z.array(supervisionConversationSchema)
+});
+export type SupervisionFollowupWeeks = z.infer<typeof supervisionFollowupWeeksSchema>;

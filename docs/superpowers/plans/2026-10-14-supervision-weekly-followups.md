@@ -10,8 +10,8 @@
 
 ## Task 1 — Private catalog and authorized read
 - [ ] Add weekly schemas to packages/shared/src/supervision.ts: entry fields are weekId, kind (follow_up | seller_reminder), suggestion; response is weeks, selectedWeekId and conversations.
-- [ ] Add server-only bundled selection to apps/api/src/modules/supervision/weekly-followup-selection.ts. Verify `items.length === 57` and `items.filter(x => x.kind === 'follow_up').length === 38`.
-- [ ] Add JSON validation/loading in weekly-followup-catalog.ts. Optional configured file replaces the bundled catalog; invalid/unreadable configured files fail closed.
+- [ ] Prepare the private weekly selection outside Git; publish to the API media volume. Verify `items.length === 57` and `items.filter(x => x.kind === 'follow_up').length === 38`.
+- [ ] Add JSON validation/loading in weekly-followup-catalog.ts. Read the operator-managed file from the media volume; invalid/unreadable configured files fail closed.
 - [ ] Add service method and GET /supervision/followup-weeks. The query must combine `supervisionScopeWhere(grants)` and exact published workspace/conversation pairs. Count only records returned by the authorized query; no writes.
 - [ ] Test that no-grant reads throw, channel restrictions remain in the query, missing/hidden records do not leak a week, and only existing authorized records receive suggestions.
 

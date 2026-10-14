@@ -213,3 +213,20 @@ button.supervision-tile:hover { border-color:#b7d3c8; box-shadow:0 6px 18px #245
 .supervision-reply-error { margin:0; font-size:12px; color:#b42318; }
 .supervision-message.is-supervisor { background:#efe9fd; }
 .supervision-message-supervisor { display:inline-flex; align-items:center; gap:5px; margin-bottom:4px; font-size:11.5px; color:#5b3ab5; }
+
+/* The operator-published weekly selection shares the current conversation viewer. */
+.supervision-tabs { display:flex; gap:8px; margin-bottom:20px; flex-wrap:wrap; }
+.supervision-tabs button { border:1px solid var(--sup-line,#d9e4e7); background:#fff; color:#31515f; border-radius:10px; padding:11px 18px; font:inherit; cursor:pointer; }
+.supervision-tabs button[aria-pressed="true"] { background:#087e77; border-color:#087e77; color:#fff; }
+.supervision-week-summary { display:flex; justify-content:space-between; gap:20px; align-items:center; padding:22px; border:1px solid #d9e4e7; border-radius:14px; background:#fff; margin-bottom:20px; }
+.supervision-week-summary h2 { margin:6px 0; color:#163747; font-size:26px; }
+.supervision-week-summary p { margin:6px 0; color:#607580; }
+.supervision-week-summary label { display:grid; gap:7px; font-size:13px; color:#607580; }
+.supervision-week-summary select { padding:10px; border:1px solid #d9e4e7; border-radius:8px; background:#fff; font:inherit; }
+.supervision-week-kind { display:inline-block; margin-bottom:6px; color:#087e77; font-size:12px; font-weight:600; }
+.supervision-week-suggestion { flex:none; padding:14px 18px; background:#eaf4f7; border-top:1px solid #d9e4e7; }
+.supervision-week-suggestion.is-seller_reminder { background:#fff4dd; }
+.supervision-week-suggestion h3 { margin:0 0 7px; font-size:13px; color:#163747; }
+.supervision-week-suggestion p { margin:0; font-size:14px; line-height:1.5; white-space:pre-wrap; color:#233d47; }
+.supervision-use-suggestion { border:1px solid #087e77; color:#087e77; background:#fff; padding:7px 12px; border-radius:8px; margin-bottom:8px; cursor:pointer; }
+@media (max-width:700px) { .supervision-week-summary { align-items:stretch; flex-direction:column; } }

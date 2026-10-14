@@ -1,9 +1,11 @@
-import { messageSchema, supervisionPageSchema, supervisionSummarySchema, supervisionThreadSchema, type SupervisionUnreadPeriod } from "@prymeira-talk/shared";
+import { messageSchema, supervisionPageSchema, supervisionSummarySchema, supervisionThreadSchema, supervisionFollowupWeeksSchema, type SupervisionUnreadPeriod } from "@prymeira-talk/shared";
 import { readConfigValue } from "./runtime-config";
 
 const apiUrl = readConfigValue("VITE_API_URL") ?? "http://localhost:3002";
 type GetToken = () => Promise<string | null>;
 export type SupervisionFilter = {
+  /** Operator-published week; latest selects the newest authorized publication. */
+  followupWeek?: string;
   sellerCustomerId?: string;
   status: "active" | "closed" | "all";
   nextAction: boolean;
@@ -51,6 +53,13 @@ export async function apiSupervisionConversations(filters: SupervisionFilter, ge
   if (filters.search?.trim()) query.set("search", filters.search.trim());
   if (cursor) query.set("cursor", cursor);
   return supervisionPageSchema.parse(await (await request(`/supervision/conversations?${query}`, getToken, signal)).json());
+}
+export async function apiSupervisionFollowupWeeks(filters: SupervisionFilter, getToken: GetToken, signal?: AbortSignal) {
+  const query = new URLSearchParams();
+  if (filters.followupWeek && filters.followupWeek !== "latest") query.set("weekId", filters.followupWeek);
+  if (filters.sellerCustomerId) query.set("sellerCustomerId", filters.sellerCustomerId);
+  if (filters.search?.trim()) query.set("search", filters.search.trim());
+  return supervisionFollowupWeeksSchema.parse(await (await request(`/supervision/followup-weeks?${query}`, getToken, signal)).json());
 }
 function conversationPath(workspaceId: string, conversationId: string) {
   return `/supervision/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}`;

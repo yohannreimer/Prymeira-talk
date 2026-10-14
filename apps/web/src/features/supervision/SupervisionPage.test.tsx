@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupervisionConversation, SupervisionPage as QueuePage, SupervisionSummary, SupervisionThread, MessageDto } from "@prymeira-talk/shared";
 import { SupervisionPage } from "./SupervisionPage";
-import { apiSupervisionConversations, apiSupervisionSummary, apiSupervisionThread, apiSupervisionMedia, apiSupervisionReply, apiSupervisionDismissWaiting, SupervisionApiError } from "../../app/supervision-api";
+import { apiSupervisionConversations, apiSupervisionSummary, apiSupervisionThread, apiSupervisionMedia, apiSupervisionReply, apiSupervisionDismissWaiting, apiSupervisionFollowupWeeks, SupervisionApiError } from "../../app/supervision-api";
 import { apiGetAudioTranscription, apiGetInboxMedia } from "../../app/api";
 
 const getToken = vi.hoisted(() => vi.fn(async () => "supervisor-token"));
@@ -12,7 +12,7 @@ vi.mock("../../app/auth", () => ({ useTalkAuth: () => ({ getToken }) }));
 vi.mock("../../app/supervision-api", async importOriginal => ({
   ...await importOriginal<typeof import("../../app/supervision-api")>(),
   apiSupervisionConversations: vi.fn(), apiSupervisionSummary: vi.fn(), apiSupervisionThread: vi.fn(),
-  apiSupervisionMedia: vi.fn(), apiSupervisionPreview: vi.fn(), apiSupervisionReply: vi.fn(), apiSupervisionDismissWaiting: vi.fn()
+  apiSupervisionMedia: vi.fn(), apiSupervisionPreview: vi.fn(), apiSupervisionReply: vi.fn(), apiSupervisionDismissWaiting: vi.fn(), apiSupervisionFollowupWeeks: vi.fn()
 }));
 vi.mock("../../app/api", () => ({ apiGetAudioTranscription: vi.fn(), apiGetInboxMedia: vi.fn(), apiGetPdfPreview: vi.fn(), apiGetVideoPoster: vi.fn() }));
 
@@ -55,6 +55,41 @@ describe("supervisão somente de leitura", () => {
     const element = container.querySelectorAll("select")[index]; element.value = value; element.dispatchEvent(new Event("change", { bubbles: true }));
   }); };
   const open = async (index = 0) => click(container.querySelectorAll<HTMLButtonElement>(".supervision-conversation")[index]);
+
+  const weeklyResponse = (kind: "follow_up" | "seller_reminder" = "follow_up") => ({
+    weeks: [{ id: "2026-10-05", label: "5 a 11 de outubro de 2026", startDate: "2026-10-05", endDate: "2026-10-11", followupCount: 38, reminderCount: 19 }], selectedWeekId: "2026-10-05",
+    conversations: [conversation("c1", { weeklyFollowup: { weekId: "2026-10-05", kind, suggestion: kind === "follow_up" ? "Conseguiu avaliar aquela peça?" : "Lembrete interno: conferir cotação" } })]
+  });
+  it("opens the manual week, shows the seller number and current history, and fills a draft only after an explicit click", async () => {
+    vi.mocked(apiSupervisionFollowupWeeks).mockResolvedValue(weeklyResponse());
+    await render(); await click(button("Follow-ups da semana"));
+    expect(container.textContent).toContain("38 follow-ups · 19 lembretes");
+    expect(container.querySelector(".supervision-seller-line")?.textContent).toContain("+5511999999999");
+    expect(container.querySelector(".supervision-summary")).toBeNull();
+    await open(); expect(container.textContent).toContain("Histórico privado");
+    expect(container.querySelector(".supervision-week-suggestion")?.textContent).toContain("Conseguiu avaliar aquela peça?");
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("");
+    await click(button("Usar sugestão"));
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Conseguiu avaliar aquela peça?");
+    expect(apiSupervisionReply).not.toHaveBeenCalled();
+    await click(button("Supervisão")); expect(container.querySelector(".supervision-week-suggestion")).toBeNull();
+  });
+  it("keeps seller reminders separate from the customer's reply box", async () => {
+    vi.mocked(apiSupervisionFollowupWeeks).mockResolvedValue(weeklyResponse("seller_reminder"));
+    await render(); await click(button("Follow-ups da semana")); await open();
+    expect(container.querySelector(".supervision-week-suggestion")?.textContent).toContain("Lembrete interno: conferir cotação");
+    expect(button("Usar sugestão")).toBeUndefined();
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(""); expect(apiSupervisionReply).not.toHaveBeenCalled();
+  });
+  it("clears weekly suggestions and cached history when access is revoked", async () => {
+    vi.mocked(apiSupervisionFollowupWeeks).mockResolvedValue(weeklyResponse());
+    await render(); await click(button("Follow-ups da semana")); await open();
+    vi.mocked(apiSupervisionSummary).mockRejectedValueOnce(new SupervisionApiError(403, "revoked"));
+    await click(button("Atualizar"));
+    expect(container.textContent).toContain("Acesso à supervisão indisponível");
+    expect(container.textContent).not.toContain("Conseguiu avaliar aquela peça?");
+    expect(container.textContent).not.toContain("Histórico privado");
+  });
 
   it("shows shared location in the read-only history without fetching media or sending messages", async () => {
     vi.mocked(apiSupervisionThread).mockResolvedValue({ conversation: conversation(), messages: [message({
