@@ -22,7 +22,11 @@ export type SupervisionFilters = {
   cursor?: string;
 };
 /** The inbox include plus the session metadata, where the handoff brief keeps the seller's next action. */
-const supervisionInclude = { ...conversationDtoInclude, activeAgentSession: { select: { ...conversationDtoInclude.activeAgentSession.select, metadata: true } } } as const;
+const supervisionInclude = { ...conversationDtoInclude,
+  channel: { select: { ...conversationDtoInclude.channel.select,
+    connections: { where: { verifiedPhoneNumber: { not: null } }, select: { verifiedPhoneNumber: true, eligible: true },
+      orderBy: [{ eligible: "desc" }, { lastHealthyAt: { sort: "desc", nulls: "last" } }] } } },
+  activeAgentSession: { select: { ...conversationDtoInclude.activeAgentSession.select, metadata: true } } } as const;
 type Conversation = Prisma.ConversationGetPayload<{ include: typeof supervisionInclude }>;
 const cursorSchema = z.object({
   workspaceId: z.string().uuid(), channelId: z.string().uuid(), id: z.string().uuid(),
@@ -82,7 +86,8 @@ export function createSupervisionService(prisma: Store, clock: () => Date = () =
     const grant = grants.find(item => item.workspace_id === record.workspaceId && item.channel_id === record.channelId);
     if (!grant) throw new SupervisionError(404, "Conversa não encontrada.");
     return { ...toConversationDto(record), sellerCustomerId: grant.seller_customer_id,
-      sellerName: grant.seller_name, sellerEmail: grant.seller_email, channelPhoneNumber: record.channel.phoneNumber,
+      sellerName: grant.seller_name, sellerEmail: grant.seller_email, channelPhoneNumber: record.channel.connections?.find(connection => connection.eligible)?.verifiedPhoneNumber
+        ?? record.channel.phoneNumber ?? record.channel.connections?.[0]?.verifiedPhoneNumber ?? null,
       nextActionText: nextActionText(record.activeAgentSession) };
   }
   /** Adds how long each customer of the page has been waiting; a failure leaves the page as it was. */

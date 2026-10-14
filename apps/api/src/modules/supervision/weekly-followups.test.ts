@@ -16,7 +16,7 @@ const record = { id: conversationId, workspaceId: workspace, channelId: channel,
 const catalog: WeeklyFollowupCatalog = [{ id: "2026-10-05", label: "5 a 11 de outubro", startDate: "2026-10-05", endDate: "2026-10-11",
   items: [{ workspaceId: workspace, conversationId, kind: "follow_up", suggestion: "Conseguiu avaliar o material?" },
     { workspaceId: randomUUID(), conversationId: randomUUID(), kind: "seller_reminder", suggestion: "Privado de outro cliente" }] }];
-function setup(records = [record]) {
+function setup(records: unknown[] = [record]) {
   const findMany = vi.fn().mockResolvedValue(records);
   const prisma = { conversation: { findMany }, message: {}, channel: {} };
   return { findMany, service: createSupervisionService(prisma as never) };
@@ -36,6 +36,13 @@ describe("manual weekly supervision selection", () => {
       sellerName: "Ana", weeklyFollowup: { weekId: "2026-10-05", kind: "follow_up", suggestion: "Conseguiu avaliar o material?" } });
     expect(JSON.stringify(data)).not.toContain("Privado de outro cliente");
   });
+  it("shows the verified WhatsApp number when the channel's configured number is absent or stale", async () => {
+    const { service } = setup([{ ...record, channel: { ...record.channel, phoneNumber: null,
+      connections: [{ verifiedPhoneNumber: "5547999991234", eligible: true }, { verifiedPhoneNumber: "5547999990000", eligible: false }] } }]);
+    const data = await service.followupWeeks([grant], catalog);
+    expect(data.conversations[0].channelPhoneNumber).toBe("5547999991234");
+  });
+
   it("reveals no week labels or totals without matching authorized records", async () => {
     const { service } = setup([]);
     await expect(service.followupWeeks([grant], catalog)).resolves.toEqual({ weeks: [], selectedWeekId: null, conversations: [] });
