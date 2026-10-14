@@ -12,6 +12,10 @@ describe('withLastMessages (queue card ticks)', () => {
     ]);
     const result = await withLastMessages({ $queryRaw } as never, 'w', [dto('c1'), dto('c2')]);
     expect($queryRaw).toHaveBeenCalledTimes(1);
+    const sql = ($queryRaw.mock.calls[0]![0] as unknown as string[]).join('?');
+    expect(sql).toContain('hidden_by_reset = false');
+    expect(sql).toContain('followup_review');
+    expect(sql).toContain('campaignDuplicateAudit');
     expect(result[0]!.lastMessage).toEqual({ id: 'm1', direction: 'outbound', status: 'read', createdAt: '2026-10-03T12:00:00.000Z', kind: 'sticker' });
     expect(result[1]!.lastMessage).toBeNull();
     for (const row of result) expect(conversationSchema.parse(row)).toBeTruthy();

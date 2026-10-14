@@ -459,6 +459,7 @@ model Conversation {
   departmentId                   String?                         @map("department_id") @db.Uuid
   lastMessageAt                  DateTime?                       @map("last_message_at")
   lastMessagePreview             String?                         @map("last_message_preview")
+  historyResetAt                 DateTime?                       @map("history_reset_at")
   lastMessagePreviewAt           DateTime?                       @map("last_message_preview_at")
   customerServiceWindowExpiresAt DateTime?                       @map("customer_service_window_expires_at")
   unreadCount                    Int                             @default(0) @map("unread_count")
@@ -521,6 +522,7 @@ model Message {
   conversationId    String           @map("conversation_id") @db.Uuid
   providerMessageId String?          @map("provider_message_id")
   providerEventId   String?          @map("provider_event_id")
+  hiddenByReset     Boolean          @default(false) @map("hidden_by_reset")
   direction         MessageDirection
   type              MessageType
   body              String?

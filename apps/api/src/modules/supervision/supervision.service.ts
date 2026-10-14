@@ -222,7 +222,7 @@ export function createSupervisionService(prisma: Store, clock: () => Date = () =
     async setWaitingDismissed(grants: SupervisionGrant[], workspaceId: string, conversationId: string, dismissed: boolean) {
       await this.authorizedConversation(grants, workspaceId, conversationId);
       // Up to the latest customer message, not "now": a message arriving after the click still waits.
-      const latest = dismissed ? await prisma.message.findFirst({ where: { workspaceId, conversationId, direction: "inbound" },
+      const latest = dismissed ? await prisma.message.findFirst({ where: { workspaceId, conversationId, direction: "inbound", hiddenByReset: false },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }], select: { createdAt: true } }) : null;
       await prisma.conversation.update({ where: { workspaceId_id: { workspaceId, id: conversationId } },
         data: { waitingDismissedAt: dismissed ? latest?.createdAt ?? clock() : null } });

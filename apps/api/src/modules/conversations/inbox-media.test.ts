@@ -61,7 +61,7 @@ describe('inbox media without AI or sending', () => {
       expect(response.rawPayload.equals(bytes)).toBe(true);
       expect(response.headers['cache-control']).toBe('private, no-store');
       expect(prisma.message.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: {
-        workspaceId: 'w', conversationId: '00000000-0000-4000-8000-000000000001', id: '00000000-0000-4000-8000-000000000002'
+        workspaceId: 'w', conversationId: '00000000-0000-4000-8000-000000000001', id: '00000000-0000-4000-8000-000000000002', hiddenByReset: false
       } }));
       prisma.conversation.findFirst.mockResolvedValue(null);
       const denied = await app.inject({ method: 'GET', url: '/conversations/00000000-0000-4000-8000-000000000001/messages/00000000-0000-4000-8000-000000000002/media' });
@@ -119,7 +119,7 @@ describe('inbox media without AI or sending', () => {
     expect(await service.media('w', 'c', 'm')).toEqual({ bytes: Buffer.from('mp3'), mimeType: 'audio/mpeg' });
     await service.media('w', 'c', 'm');
     expect(convert).toHaveBeenCalledTimes(1);
-    expect(prisma.message.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'm', conversationId: 'c', workspaceId: 'w' } }));
+    expect(prisma.message.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'm', conversationId: 'c', workspaceId: 'w', hiddenByReset: false } }));
   });
   it('checks ownership before cached bytes and never queries the provider for a foreign conversation', async () => {
     const { service, prisma, profile, resolve } = setup();

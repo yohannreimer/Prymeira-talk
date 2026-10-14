@@ -311,6 +311,7 @@ describe("conversation followups", () => {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
         id: delayedCustomerMessage.id,
+        hiddenByReset: false,
         direction: "inbound"
       }
     });

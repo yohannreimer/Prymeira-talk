@@ -34,6 +34,7 @@ export async function selectConversationPreviewInTransaction(tx: Tx, source: Tru
 }) {
     const { conversation, owner } = await lockPreview(tx, source, input);
     const message = await tx.message.findUniqueOrThrow({ where: { workspaceId_conversationId_id: { workspaceId: source.workspaceId, conversationId: input.conversationId, id: input.messageId } } });
+    if (message.hiddenByReset) return false;
     const owns = owner?.messageId === message.id, clock = conversation.lastMessagePreviewAt;
     if (owns) {
         await writePreview(tx, source, input, clock);
@@ -55,6 +56,8 @@ export async function selectConversationPreviewInTransaction(tx: Tx, source: Tru
  * Message owner. The original preview clock and inbox visibility are preserved. */
 export async function refreshOwnedConversationPreviewInTransaction(tx: Tx, source: TrustedMessagingContext, input: PreviewInput) {
     const { conversation, owner } = await lockPreview(tx, source, input);
+    const message = await tx.message.findFirst({ where: { workspaceId: source.workspaceId, conversationId: input.conversationId, id: input.messageId, hiddenByReset: false }, select: { id: true } });
+    if (!message) return false;
     if (owner?.messageId !== input.messageId)
         return false;
     await writePreview(tx, source, input, conversation.lastMessagePreviewAt);

@@ -707,10 +707,11 @@ function InboxPageContent() {
   async function chooseQuickReply(reply: QuickReplyDto, mode: 'slash' | 'insert') {
     const conversation = selectedConversation;
     if (!conversation) return;
+    const resetVersion = session.resetVersion(conversation.id);
     setFillingReplyId(reply.id);
     let values: TemplateValues;
     try { values = await quickReplyValues(reply.body); } finally { setFillingReplyId(null); }
-    if (selectedConversationIdRef.current !== conversation.id) return;
+    if (selectedConversationIdRef.current !== conversation.id || resetVersion !== session.resetVersion(conversation.id)) return;
     const { text, missing } = renderTemplate(reply.body, values);
     const contactMissing = missing.filter(field => field === 'primeiro_nome' || field === 'nome' || field === 'empresa');
     if (contactMissing.length && !conversation.isGroup) {
@@ -724,6 +725,7 @@ function InboxPageContent() {
   async function fillQuickReply(answer: FillAnswer) {
     const fill = pendingFill;
     if (!fill) return;
+    const resetVersion = session.resetVersion(fill.conversationId);
     setFillBusy('use'); setFillError(null);
     const known = nameInsights.current.get(fill.contactId);
     const fullName = answer.name ?? known?.fullName ?? null;
@@ -734,6 +736,7 @@ function InboxPageContent() {
       nameInsights.current.set(fill.contactId, saved);
     } catch { /* Saving is for next time; the message still goes in with what was typed. */ }
     finally { setFillBusy(null); }
+    if (resetVersion !== session.resetVersion(fill.conversationId)) return;
     setPendingFill(null);
     if (selectedConversationIdRef.current === fill.conversationId) {
       placeQuickReply(renderTemplate(fill.reply.body, { ...fill.values, primeiro_nome: firstName, nome: fullName, empresa: company }).text, fill.mode);
@@ -742,9 +745,11 @@ function InboxPageContent() {
   async function fillQuickReplyWithout() {
     const fill = pendingFill;
     if (!fill) return;
+    const resetVersion = session.resetVersion(fill.conversationId);
     setFillBusy('without'); setFillError(null);
     const variant = await apiQuickReplyVariant(getFreshToken, fill.reply.id, fill.missing).catch(() => ({ body: null }));
     setFillBusy(null);
+    if (resetVersion !== session.resetVersion(fill.conversationId)) return;
     setPendingFill(null);
     // Without an AI answer the field is simply dropped, keeping the sentence clean.
     if (selectedConversationIdRef.current === fill.conversationId) placeQuickReply(renderTemplate(variant.body ?? fill.reply.body, fill.values).text, fill.mode);
@@ -1017,7 +1022,13 @@ function InboxPageContent() {
     () => resolveSelectedConversation(visibleConversations, selectedConversationId, selectedConversationSnapshot),
     [visibleConversations, selectedConversationId, selectedConversationSnapshot]
   );
-  const assistant = useAssistantConversation(selectedConversation?.isGroup ? null : selectedConversationId, getToken, `${selectedConversation?.lastMessageAt ?? ''}:${selectedConversation?.aiControlStatus ?? ''}:${selectedConversation?.handoffActionCompletedAt ?? ''}`);
+  const assistant = useAssistantConversation(selectedConversation?.isGroup ? null : selectedConversationId, getToken, `${selectedConversation?.historyResetAt ?? ''}:${selectedConversation?.lastMessageAt ?? ''}:${selectedConversation?.aiControlStatus ?? ''}:${selectedConversation?.handoffActionCompletedAt ?? ''}`);
+  useEffect(() => {
+    if (!selectedConversation?.historyResetAt) return;
+    setAiSuggestion(null); setNoteDraft(''); setSelectedTagId('');
+    setReplyTarget(null); setEditTarget(null); setForwardSelection(null);
+    setForwardOpen(false); setPendingFill(null); setHandoffFeedback(null);
+  }, [selectedConversationId, selectedConversation?.historyResetAt]);
   const beginPerformance = useTalkPerformance(selectedConversationId, selectedConversation?.id ?? null, messagesQuery.data);
   const visibleMessages = messagesConversationId === selectedConversationId ? messages : EMPTY_MESSAGES;
   const thread = useMemo(() => threadWithReactions(visibleMessages), [visibleMessages]);
@@ -1053,12 +1064,14 @@ function InboxPageContent() {
   async function sendSuggestion(suggestion: AssistantSuggestionDto, editedBody?: string) {
     if (assistantSendBusy.current || !selectedConversationId) return;
     const targetId = selectedConversationId;
+    const resetVersion = session.resetVersion(targetId);
     const keyId = `${targetId}:${suggestion.id}`;
     if (!directSendKeys.current.has(keyId)) directSendKeys.current.set(keyId, crypto.randomUUID());
     const requestKey = editedBody !== undefined && composerOrigin ? composerOrigin.requestKey : directSendKeys.current.get(keyId)!;
     assistantSendBusy.current = true; setIsSending(true);
     try {
       const result = await apiSendAssistantSuggestion(targetId, { suggestionId: suggestion.id, requestKey, body: editedBody ?? suggestion.body, reviewedContextKey: editedBody !== undefined ? composerOrigin?.contextKey ?? suggestion.contextKey : suggestion.contextKey, edited: editedBody !== undefined }, getToken);
+      if (resetVersion !== session.resetVersion(targetId)) return;
       if (result.status === 'uncertain' || result.status === 'pending') throw new Error('Envio ainda sem confirmação. Confira a conversa antes de reenviar.');
       if (selectedConversationIdRef.current === targetId) {
         if (result.message) setMessages(current => upsertMessage(current, result.message!));
@@ -1169,9 +1182,11 @@ function InboxPageContent() {
     if (editTarget && editTarget.conversationId === selectedConversationId) {
       if (isSending) return;
       const target = editTarget, conversationId = selectedConversationId, body = draft.trim();
+      const resetVersion = session.resetVersion(conversationId);
       setIsSending(true);
       try {
         const updated = await apiEditMessage(conversationId, target.id, body, getFreshToken);
+        if (resetVersion !== session.resetVersion(conversationId)) return;
         session.updateMessages(conversationId, current => current.map(item => item.id === updated.id ? updated : item));
         setConversations(current => current.map(item => item.id === conversationId && item.lastMessageAt === target.createdAt ? { ...item, lastMessagePreview: updated.body } : item));
         setEditTarget(null); setDraft(''); setMessageError(null);
@@ -1191,6 +1206,7 @@ function InboxPageContent() {
     }
 
     const targetConversationId = selectedConversationId;
+    const resetVersion = session.resetVersion(targetConversationId);
     const messageBody = draft.trim();
     const serviceWindowError = metaServiceWindowSendError(selectedConversation);
 
@@ -1234,15 +1250,16 @@ function InboxPageContent() {
     scheduleMessageThreadScroll("auto");
 
     const previous = textSendQueue.current.get(targetConversationId) ?? Promise.resolve();
-    const current = previous.catch(() => undefined).then(() => apiCreateConversationMessage(
-      targetConversationId,
-      { body: messageBody, ...(replyTarget ? { replyToMessageId: replyTarget.id } : {}) },
-      getFreshToken
-    ));
+    const current = previous.catch(() => undefined).then(() => {
+      if (resetVersion !== session.resetVersion(targetConversationId)) throw new DOMException('Envio anterior ao reinício.', 'AbortError');
+      return apiCreateConversationMessage(targetConversationId,
+        { body: messageBody, ...(replyTarget ? { replyToMessageId: replyTarget.id } : {}) }, getFreshToken);
+    });
     textSendQueue.current.set(targetConversationId, current);
     setReplyTarget(null);
     try {
       const createdMessage = await current;
+      if (resetVersion !== session.resetVersion(targetConversationId)) return;
 
       session.updateMessages(targetConversationId, current => upsertMessage(current, createdMessage, optimisticMessage.id));
       setConversations((current) =>
@@ -1264,7 +1281,7 @@ function InboxPageContent() {
   }
 
   function recordSendFailure(targetId: string, optimisticId: string, failure: unknown, fallback: string, text: string, file?: File, sendOriginal?: boolean) {
-    if (!session.isLive) return;
+    if (!session.isLive || !(session.client.getQueryData<MessageDto[]>(session.key('messages', targetId)) ?? []).some(message => message.id === optimisticId)) return;
     session.updateMessages(targetId, current => current.map(message =>
       message.id === optimisticId && message.status === 'pending' ? { ...message, status: 'failed' } : message));
     const error = failure instanceof Error ? failure.message : fallback;
@@ -1300,16 +1317,18 @@ function InboxPageContent() {
   async function sendPendingAttachments() {
     const targetId = selectedConversationId;
     if (!targetId || attachmentBatchBusy.current) return;
+    const resetVersion = session.resetVersion(targetId);
     attachmentBatchBusy.current = true;
     setIsSendingAttachments(true);
     try {
       for (const item of session.readUI<PendingAttachment[]>(`draftFiles:${targetId}`, [])) {
+        if (resetVersion !== session.resetVersion(targetId)) break;
         // Leaves the tray before it is sent; a failure puts it back (recordSendFailure) and stops the rest, in order.
         session.writeUI<PendingAttachment[]>(`draftFiles:${targetId}`, current => current.filter(entry => entry.id !== item.id), []);
         try { await sendAttachment(item.file, false, item.caption.trim(), item.sendOriginal); }
         catch {
           // Preparation can finish after navigation, before any optimistic message exists. Keep the source too.
-          if (session.isLive) session.writeUI<PendingAttachment[]>(`draftFiles:${targetId}`, current => current.some(entry => entry.file === item.file)
+          if (session.isLive && resetVersion === session.resetVersion(targetId)) session.writeUI<PendingAttachment[]>(`draftFiles:${targetId}`, current => current.some(entry => entry.file === item.file)
             ? current : [...current, item], []);
           break;
         }
@@ -1355,6 +1374,7 @@ function InboxPageContent() {
     if (composerOrigin) { setMessageError('Envie primeiro o texto em revisão. Depois anexe o arquivo em uma nova mensagem.'); throw new Error('Texto em revisão.'); }
 
     const targetConversationId = selectedConversationId;
+    const resetVersion = session.resetVersion(targetConversationId);
     const serviceWindowError = metaServiceWindowSendError(selectedConversation);
 
     if (serviceWindowError) {
@@ -1374,7 +1394,7 @@ function InboxPageContent() {
         setMessageError(fileError instanceof Error ? fileError.message : "Não foi possível ler o arquivo.");
         return null;
       });
-      if (!mediaUrl || !inboxMounted.current || !session.isLive || selectedConversationIdRef.current !== targetConversationId) {
+      if (resetVersion !== session.resetVersion(targetConversationId) || !mediaUrl || !inboxMounted.current || !session.isLive || selectedConversationIdRef.current !== targetConversationId) {
         throw new Error('A conversa mudou ou o arquivo não pôde ser lido.');
       }
       if (!voice) setAttachmentProgress({ targetId: targetConversationId, text: `Enviando ${file.name} (${(outgoingFile.size / 1024 / 1024).toFixed(1)} MB)…` });
@@ -1426,6 +1446,7 @@ function InboxPageContent() {
           getFreshToken
         );
 
+        if (resetVersion !== session.resetVersion(targetConversationId)) return;
         session.updateMessages(targetConversationId, current => upsertMessage(current, createdMessage, optimisticMessage.id));
         setConversations((current) =>
           current.map((conversation) =>
@@ -1463,7 +1484,7 @@ function InboxPageContent() {
 
     try {
       const result = await apiRunConversationAction(targetConversationId, body, getFreshToken);
-      applyActionResult(result, targetConversationId);
+      if (!applyActionResult(result, targetConversationId)) return null;
       if (body.action === "complete_handoff_action" && activeView === "handoff") setActiveView("all");
       if (["complete_handoff_action", "reanalyze_handoff_reply"].includes(body.action) && selectedConversationIdRef.current === targetConversationId) {
         setHandoffFeedback(handoffAnalysisFeedback(result.improvementAnalysis));
@@ -1513,7 +1534,7 @@ function InboxPageContent() {
     const selected = conversations.find((conversation) => conversation.id === selectedConversationId);
     const confirmed = window.confirm(
       `Reiniciar a conversa com ${selected ? contactDisplayName(selected) : "este contato"}?\n\n` +
-      "Isso apagará definitivamente mensagens, tags, notas e toda a memória da IA desta conversa."
+      "Isso limpará o histórico do atendimento, tags, notas, memória da IA e vínculo com campanhas. Registros técnicos necessários para integridade e auditoria serão preservados."
     );
     if (!confirmed) return;
 
@@ -1523,12 +1544,14 @@ function InboxPageContent() {
 
     try {
       const result = await apiResetConversation(targetConversationId, getFreshToken);
-      applyActionResult(result, targetConversationId);
-      setMessages([]);
-      setNoteDraft("");
-      setSelectedTagId("");
-      setAiSuggestion(null);
-      setCrmStatus("Conversa reiniciada. Envie uma nova mensagem pelo WhatsApp para começar do zero.");
+      if (!session.hasObservedReset(targetConversationId, result.conversation.historyResetAt)) {
+        applyActionResult(result, targetConversationId);
+      } else {
+        void session.client.invalidateQueries({ queryKey: session.key('context', targetConversationId), exact: true });
+      }
+      if (selectedConversationIdRef.current === targetConversationId) {
+        setCrmStatus("Conversa reiniciada. Envie uma nova mensagem ou formulário para começar do zero.");
+      }
     } catch (resetError) {
       setContextError(resetError instanceof Error ? resetError.message : "Não foi possível reiniciar a conversa.");
     } finally {
@@ -1537,14 +1560,15 @@ function InboxPageContent() {
   }
 
   function applyActionResult(result: ConversationActionResultDto, targetConversationId: string) {
-    if (!session.isLive) return;
-    session.event({ type: 'conversation.updated', workspaceId: session.workspaceId, payload: result.conversation });
+    const event = { type: 'conversation.updated' as const, workspaceId: session.workspaceId, payload: result.conversation };
+    if (!session.acceptsEvent(event)) return false;
+    session.event(event);
     session.client.setQueryData(session.key('context', targetConversationId), result.context);
     if (
       selectedConversationIdRef.current !== targetConversationId ||
       result.conversation.id !== targetConversationId
     ) {
-      return;
+      return true;
     }
 
     setContactContext(result.context);
@@ -1554,6 +1578,7 @@ function InboxPageContent() {
     if (result.crmAction) {
       setCrmStatus(`Nota registrada no CRM (${result.crmAction.status}).`);
     }
+    return true;
   }
 
   async function handleAddNote(event: FormEvent<HTMLFormElement>) {
@@ -1627,6 +1652,7 @@ function InboxPageContent() {
     setError(null);
     try {
       const updated = await apiSetManualMark(getFreshToken, conversation.id, !conversation.manualMarked);
+      if (!session.acceptsEvent({ type: 'conversation.updated', workspaceId: session.workspaceId, payload: updated })) return;
       if (selectedConversationIdRef.current === conversation.id) setSelectedConversationSnapshot(updated);
       if (activeView === "all") setConversations((current) => upsertConversation(current, updated));
       else setConversationReloadKey((current) => current + 1);
@@ -1644,6 +1670,7 @@ function InboxPageContent() {
     setError(null);
     try {
       const updated = await apiDismissReply(getFreshToken, conversation.id, anchorMessageId);
+      if (!session.acceptsEvent({ type: 'conversation.updated', workspaceId: session.workspaceId, payload: updated })) return;
       if (selectedConversationIdRef.current === conversation.id) setSelectedConversationSnapshot(updated);
       setDismissUndo({ conversationId: conversation.id, anchorMessageId });
       setConversationReloadKey((current) => current + 1);
@@ -1660,6 +1687,7 @@ function InboxPageContent() {
     setError(null);
     try {
       const updated = await apiUndoReply(getFreshToken, dismissUndo.conversationId, dismissUndo.anchorMessageId);
+      if (!session.acceptsEvent({ type: 'conversation.updated', workspaceId: session.workspaceId, payload: updated })) return;
       if (selectedConversationIdRef.current === updated.id) setSelectedConversationSnapshot(updated);
       setDismissUndo(null);
       setConversationReloadKey((current) => current + 1);

@@ -92,7 +92,7 @@ describe('realtime and reconcile', () => {
 
 describe('optional collaborators', () => {
   it('records a skip, never an error, when a service is not wired in this process', async () => {
-    const handlers = createEffectHandlers({ db: {} as never, realtime: { publish: vi.fn() } });
+    const handlers = createEffectHandlers({ db: { message: { findFirst: vi.fn(async () => null) } } as never, realtime: { publish: vi.fn() } });
     for (const kind of ['assistant.control', 'assistant.message', 'handoff.brief', 'triage.message', 'followup.activity', 'human_reply.improvement', 'history.backfill', 'automation.occurrence']) {
       expect(await handlers[kind]!(effect(kind), { signal }), kind).toMatchObject({ status: 'done', result: { skipped: expect.any(String) } });
     }
@@ -119,5 +119,16 @@ describe('contact.group_metadata', () => {
   it('lets a transient lookup failure retry instead of swallowing it', async () => {
     const { handlers } = setup({ extra: { groupSubject: vi.fn(async () => { throw new Error('provider timeout'); }) } });
     await expect(run(handlers, effect('contact.group_metadata', frozen))).rejects.toThrow('provider timeout');
+  });
+});
+
+describe('reset history effects', () => {
+  it.each(['realtime.message', 'assistant.message', 'agent.debounce', 'automation.occurrence', 'history.backfill', 'followup.activity'])('skips %s for a source hidden by reset', async kind => {
+    const { handlers, db, services, published } = setup();
+    db.message.findFirst.mockResolvedValue({ hiddenByReset: true });
+    expect(await run(handlers, effect(kind))).toEqual({ status: 'done', result: { skipped: 'conversation_reset' } });
+    expect(published).toEqual([]);
+    expect(services.assistantScheduler.message).not.toHaveBeenCalled();
+    expect(services.agentReplyScheduler.scheduleActiveSessionForMessage).not.toHaveBeenCalled();
   });
 });

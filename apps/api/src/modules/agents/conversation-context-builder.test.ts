@@ -66,6 +66,7 @@ describe("buildConversationContext", () => {
       where: {
         workspaceId: ids.workspace,
         conversationId: ids.conversation,
+        hiddenByReset: false,
         NOT: { status: "pending", metadata: { path: ["source"], equals: "followup_review" } }
       },
       orderBy: [{ createdAt: "desc" }],

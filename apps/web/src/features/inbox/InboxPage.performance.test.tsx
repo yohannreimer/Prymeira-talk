@@ -9,7 +9,7 @@ import { optimizePhoto } from './photo-optimization';
 import { TalkSessionContext } from '../../app/session/TalkSessionProvider';
 import { TalkSession } from '../../app/session/talk-session';
 import { RealtimeConnection } from './realtime-connection';
-import { apiCreateConversationMessage, apiGetConversationMessages, apiGetConversations, apiGetAssistantConversation, apiGetConversationContext, apiMarkConversationRead, apiGetQuickReplies, apiGetContactNameInsight } from '../../app/api';
+import { apiSetManualMark, apiRunConversationAction, apiResetConversation, apiCreateConversationMessage, apiGetConversationMessages, apiGetConversations, apiGetAssistantConversation, apiGetConversationContext, apiMarkConversationRead, apiGetQuickReplies, apiGetContactNameInsight } from '../../app/api';
 
 vi.mock('./photo-optimization', async original => ({ ...await original<typeof import('./photo-optimization')>(), optimizePhoto: vi.fn(async (file: File) => ({ file, reason: 'unchanged' })) }));
 
@@ -30,7 +30,7 @@ vi.mock('../../app/api', async importOriginal => ({ ...await importOriginal<type
   apiGetConversationMessages: vi.fn(), apiGetConversations: vi.fn(), apiGetConversationContext: vi.fn(),
   apiGetChannels: vi.fn(async () => []), apiGetTags: vi.fn(async () => []), apiGetAttentionCount: vi.fn(async () => 0),
   apiGetAssistantConversation: vi.fn(async () => ({ settings: { mode: 'disabled', agentId: null }, status: 'paused', history: [], suggestion: null, currentContextKey: null, humanControlled: true, humanSupport: false, awaitingCustomer: false, agentName: null, error: null })),
-  apiMarkConversationRead: vi.fn(), apiCreateConversationMessage: vi.fn(), apiGetQuickReplies: vi.fn(async () => []), apiGetContactNameInsight: vi.fn()
+  apiSetManualMark: vi.fn(), apiRunConversationAction: vi.fn(), apiResetConversation: vi.fn(), apiMarkConversationRead: vi.fn(), apiCreateConversationMessage: vi.fn(), apiGetQuickReplies: vi.fn(async () => []), apiGetContactNameInsight: vi.fn()
 }));
 
 const conversation = (id: string): ConversationDto => ({ id, workspaceId: 'w', channelId: 'channel', contactId: `contact-${id}`, contactName: id, status: 'open', assignedUserId: null, departmentId: null, lastMessageAt: null, lastMessagePreview: null, unreadCount: 0, priority: 'normal' });
@@ -46,9 +46,9 @@ class ContentResizeObserver {
 describe('Atendimento query/UI integration', () => {
   let container: HTMLDivElement; let root: ReturnType<typeof createRoot>; let session: TalkSession;
   const token = async () => 'token';
-  const render = async (visible = true) => {
+  const render = async (visible = true, role: 'owner' | 'agent' = 'agent') => {
     await act(async () => {
-      root.render(<TalkSessionContext.Provider value={{ session, realtime: new RealtimeConnection(), currentUser: { workspaceId: 'w', role: 'agent' }, getToken: token }}><QueryClientProvider client={session.client}>{visible ? <InboxPage /> : <p>Outro módulo</p>}</QueryClientProvider></TalkSessionContext.Provider>);
+      root.render(<TalkSessionContext.Provider value={{ session, realtime: new RealtimeConnection(), currentUser: { workspaceId: 'w', role }, getToken: token }}><QueryClientProvider client={session.client}>{visible ? <InboxPage /> : <p>Outro módulo</p>}</QueryClientProvider></TalkSessionContext.Provider>);
       await vi.advanceTimersByTimeAsync(0);
     });
     await flush();
@@ -89,6 +89,97 @@ describe('Atendimento query/UI integration', () => {
     if (initialScrollTop) Object.defineProperty(HTMLElement.prototype, 'scrollTop', initialScrollTop); else Reflect.deleteProperty(HTMLElement.prototype, 'scrollTop');
   });
 
+  it('resets the POST target without clearing the conversation selected while it was pending', async () => {
+    let finish!: (result: Awaited<ReturnType<typeof apiResetConversation>>) => void;
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.mocked(apiResetConversation).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await render(true, 'owner');
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Contato')!.click()); await flush();
+    const reset = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Reiniciar conversa')!;
+    await act(async () => reset.click()); await flush();
+    expect(apiResetConversation).toHaveBeenCalledWith('c1', expect.any(Function));
+    await select('c2'); await type('rascunho c2');
+    await act(async () => finish({ conversation: { ...conversation('c1'), historyResetAt: '2026-10-14T22:00:00.000Z', lastMessage: null }, context: { tags: [], notes: [], departments: [], boardStages: [], primaryBoardStage: null } }));
+    await flush();
+    expect(session.client.getQueryData(session.key('messages', 'c1'))).toEqual([]);
+    expect(container.textContent).toContain('history-c2');
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Mensagem"]')!.value).toBe('rascunho c2');
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('Registros técnicos'));
+  });
+  it('keeps fresh messages and drafts received after the reset frame while POST is pending', async () => {
+    let finish!: (result: Awaited<ReturnType<typeof apiResetConversation>>) => void;
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.mocked(apiResetConversation).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await render(true, 'owner');
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Contato')!.click()); await flush();
+    const reset = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Reiniciar conversa')!;
+    await act(async () => reset.click()); await flush();
+    const boundary = { ...conversation('c1'), historyResetAt: '2026-10-14T22:00:00.000Z', lastMessage: null };
+    await act(async () => session.event({ type: 'conversation.updated', workspaceId: 'w', payload: boundary })); await flush();
+    const fresh = { ...message('c1'), id: 'fresh', body: 'nova mensagem', createdAt: '2026-10-14T22:00:01.000Z' };
+    await act(async () => session.event({ type: 'message.created', workspaceId: 'w', payload: fresh })); await flush();
+    await type('novo rascunho');
+    await act(async () => finish({ conversation: boundary, context: { tags: [], notes: [], departments: [], boardStages: [], primaryBoardStage: null } })); await flush();
+    expect(container.textContent).toContain('nova mensagem');
+    expect(container.textContent).not.toContain('history-c1');
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Mensagem"]')!.value).toBe('novo rascunho');
+    expect(session.client.getQueryData<MessageDto[]>(session.key('messages', 'c1'))?.map(row => row.id)).toEqual(['fresh']);
+  });
+  it('clears an old reply target and message draft on a reset from another browser', async () => {
+    vi.mocked(apiGetConversations).mockResolvedValue([ { ...conversation('c1'), channelProvider: 'evolution' }, conversation('c2') ]);
+    vi.mocked(apiGetConversationMessages).mockImplementation(async id => [{ ...message(id), whatsappId: 'fixture-wa-id' }]);
+    await render(); await type('rascunho antigo');
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Responder esta mensagem"]')!.click()); await flush();
+    expect(container.querySelector('[aria-label="Cancelar resposta"]')).not.toBeNull();
+    await act(async () => session.event({ type: 'conversation.updated', workspaceId: 'w', payload: { ...conversation('c1'), historyResetAt: '2026-10-14T22:00:00.000Z', lastMessage: null } })); await flush();
+    expect(container.querySelector('[aria-label="Cancelar resposta"]')).toBeNull();
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Mensagem"]')!.value).toBe('');
+  });
+  it('does not restore old context from a conversation action completed after an external reset', async () => {
+    let finish!: (result: Awaited<ReturnType<typeof apiRunConversationAction>>) => void;
+    vi.mocked(apiRunConversationAction).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await render(true, 'owner');
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Contato')!.click()); await flush();
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Assumir')!.click()); await flush();
+    await act(async () => session.event({ type: 'conversation.updated', workspaceId: 'w', payload: { ...conversation('c1'), historyResetAt: '2026-10-14T22:00:00.000Z', lastMessage: null } })); await flush();
+    await act(async () => finish({ conversation: conversation('c1'), context: { tags: [], notes: [{ id: 'old-note', body: 'old memory' } as never], departments: [], boardStages: [], primaryBoardStage: null }, aiSuggestion: 'old suggestion' })); await flush();
+    expect(container.textContent).not.toContain('old memory');
+    expect(container.textContent).not.toContain('old suggestion');
+    expect(session.client.getQueryData(session.key('context', 'c1'))).not.toMatchObject({ notes: [{ id: 'old-note' }] });
+  });
+  it.each(['failure', 'success'] as const)('ignores a pre-reset manual send %s that arrives after reset', async outcome => {
+    let finish!: (value: MessageDto) => void; let fail!: (error: Error) => void;
+    vi.mocked(apiCreateConversationMessage).mockImplementation(() => new Promise((resolve, reject) => { finish = resolve; fail = reject; }));
+    await render(); await type('texto antigo');
+    await act(async () => container.querySelector<HTMLFormElement>('[aria-label="Compositor de mensagem"]')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); await flush();
+    expect(apiCreateConversationMessage).toHaveBeenCalled();
+    await act(async () => session.event({ type: 'conversation.updated', workspaceId: 'w', payload: { ...conversation('c1'), historyResetAt: new Date().toISOString(), lastMessage: null } })); await flush();
+    await act(async () => { if (outcome === 'failure') fail(new Error('falha antiga')); else finish({ ...message('c1'), body: 'texto antigo' }); }); await flush();
+    expect(session.client.getQueryData(session.key('messages', 'c1'))).toEqual([]);
+    expect(session.readUI('sendFailure:c1', null)).toBeNull();
+    expect(session.readUI('draft:c1', '')).toBe('');
+    expect(session.client.getQueryData<ConversationDto[]>(session.key('conversations', 'all', 'all', ''))?.find(row => row.id === 'c1')?.lastMessagePreview).toBeNull();
+  });
+  it('ignores a manual marking DTO captured before an external reset', async () => {
+    let finish!: (value: ConversationDto) => void;
+    vi.mocked(apiSetManualMark).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Marcar para cuidar depois"]')!.click()); await flush();
+    await act(async () => session.event({ type: 'conversation.updated', workspaceId: 'w', payload: { ...conversation('c1'), historyResetAt: '2026-10-14T22:00:00.000Z', lastMessage: null } })); await flush();
+    await act(async () => finish({ ...conversation('c1'), manualMarked: true, lastMessagePreview: 'old preview' })); await flush();
+    expect(session.client.getQueryData<ConversationDto[]>(session.key('conversations', 'all', 'all', ''))?.find(row => row.id === 'c1')).toMatchObject({ historyResetAt: '2026-10-14T22:00:00.000Z', lastMessagePreview: null });
+  });
+  it('does not restore a quick reply whose name lookup completed after reset', async () => {
+    let finish!: (value: Awaited<ReturnType<typeof apiGetContactNameInsight>>) => void;
+    vi.mocked(apiGetQuickReplies).mockResolvedValue([{ id: 'q1', workspaceId: 'w', title: 'Bem-vindo', body: '{primeiro_nome}, mensagem antiga', category: null, shortcut: 'bem', shared: false, createdAt: '', updatedAt: '' }]);
+    vi.mocked(apiGetContactNameInsight).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await render(); await type('/bem');
+    await act(async () => container.querySelector<HTMLInputElement>('[aria-label="Mensagem"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))); await flush();
+    await act(async () => session.event({ type: 'conversation.updated', workspaceId: 'w', payload: { ...conversation('c1'), historyResetAt: '2026-10-14T22:00:00.000Z', lastMessage: null } })); await flush();
+    await act(async () => finish({ firstName: 'Maria', fullName: 'Maria', company: null, salutation: null, source: 'rule', ms: 3 })); await flush();
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Mensagem"]')!.value).toBe('');
+    expect(container.textContent).not.toContain('mensagem antiga');
+  });
   it('restores drafts/selection on module return and shows a repeated target synchronously without a read', async () => {
     await render(); expect(container.textContent).toContain('history-c1'); await type('rascunho c1');
     await select('c2'); expect(container.querySelector<HTMLInputElement>('[aria-label="Mensagem"]')!.value).toBe('');

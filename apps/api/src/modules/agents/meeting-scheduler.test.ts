@@ -55,6 +55,36 @@ function scheduler(fetch: ReturnType<typeof fakeGoogle>["fetch"]) {
 }
 
 describe("meeting scheduler", () => {
+  it.each(["freeBusy", "prior events"])("does not invite or replace a call when reset happens during %s reads", async (stage) => {
+    const google = fakeGoogle({
+      existing: [{ id: "ev-old", status: "confirmed", start: { dateTime: "2026-10-13T09:00:00-03:00" } }],
+      created: { id: "ev-new", start: { dateTime: "2026-10-13T10:30:00-03:00" }, hangoutLink: "https://meet.google.com/new" }
+    });
+    let current = true;
+    const fetch: typeof google.fetch = async (url, init) => {
+      const response = await google.fetch(url, init);
+      if ((stage === "freeBusy" && url.endsWith("/freeBusy")) || (stage === "prior events" && init?.method === "GET" && url.includes("/events?"))) current = false;
+      return response;
+    };
+    await expect(scheduler(fetch).book({ conversationId: "conv-1", startsAt: "2026-10-13T10:30:00-03:00", now, stillCurrent: async () => current })).rejects.toThrow("Conversation history was reset.");
+    expect(google.calls.filter(call => call.method === "DELETE" || (call.method === "POST" && call.url.includes("/events?")))).toEqual([]);
+  });
+
+  it("revalidates before each deletion after the new invitation was already accepted", async () => {
+    const google = fakeGoogle({
+      existing: ["ev-old-1", "ev-old-2"].map(id => ({ id, status: "confirmed", start: { dateTime: "2026-10-13T09:00:00-03:00" } })),
+      created: { id: "ev-new", start: { dateTime: "2026-10-13T10:30:00-03:00" }, hangoutLink: "https://meet.google.com/new" }
+    });
+    let current = true;
+    const fetch: typeof google.fetch = async (url, init) => {
+      const response = await google.fetch(url, init);
+      if (init?.method === "DELETE") current = false;
+      return response;
+    };
+    await expect(scheduler(fetch).book({ conversationId: "conv-1", startsAt: "2026-10-13T10:30:00-03:00", now, stillCurrent: async () => current })).rejects.toThrow("Conversation history was reset.");
+    expect(google.calls.filter(call => call.method === "DELETE").map(call => call.url)).toEqual([expect.stringContaining("/events/ev-old-1?")]);
+  });
+
   it("builds the local grid after the minimum notice, skipping weekends", () => {
     const starts = candidateStarts(config, now).map((start) => new Date(start).toISOString());
     // Monday from 10:00 local (08:00 + 2h notice); Tuesday the full morning; Wednesday is past daysAhead=2.

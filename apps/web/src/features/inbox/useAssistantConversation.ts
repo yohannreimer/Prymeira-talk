@@ -10,7 +10,7 @@ export function useAssistantConversation(conversationId: string | null, getToken
   const { session } = useTalkSession();
   const key = session.key('assistant', conversationId);
   const query = useQuery({ queryKey: key, enabled: Boolean(conversationId),
-    queryFn: ({ signal }) => apiGetAssistantConversation(conversationId!, getToken, signal),
+    queryFn: ({ signal }) => session.readContext(conversationId!, () => apiGetAssistantConversation(conversationId!, getToken, signal)),
     retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
     // A new message already refreshes it (contextTrigger), so an idle panel only checks every 20 s; each check loads the
     // whole conversation context on the server. While a suggestion waits or is being written it follows closely.

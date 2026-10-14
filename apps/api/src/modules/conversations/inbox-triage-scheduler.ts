@@ -45,6 +45,7 @@ export function toTriageMessage(message: Pick<Message,
 }
 
 const visibleMessageWhere = {
+  hiddenByReset: false,
   type: { notIn: ["system", "internal_note"] as ["system", "internal_note"] },
   status: { not: "pending" as const }
 };
