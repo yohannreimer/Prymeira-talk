@@ -26,7 +26,7 @@ const supervisionInclude = { ...conversationDtoInclude,
   channel: { select: { ...conversationDtoInclude.channel.select,
     connections: { where: { verifiedPhoneNumber: { not: null } }, select: { verifiedPhoneNumber: true, eligible: true },
       orderBy: [{ eligible: "desc" }, { lastHealthyAt: { sort: "desc", nulls: "last" } }] } } },
-  activeAgentSession: { select: { ...conversationDtoInclude.activeAgentSession.select, metadata: true } } } as const;
+  activeAgentSession: { select: { ...conversationDtoInclude.activeAgentSession.select, metadata: true } } } satisfies Prisma.ConversationInclude;
 type Conversation = Prisma.ConversationGetPayload<{ include: typeof supervisionInclude }>;
 const cursorSchema = z.object({
   workspaceId: z.string().uuid(), channelId: z.string().uuid(), id: z.string().uuid(),
