@@ -1533,18 +1533,24 @@ export function createAgentRuntime(input: {
             : providerOutput.reply;
 
         const outputActions = providerOutput.actions;
-        actionResults = await resetFence(message, epoch, db => executeAgentActions({ ...db, $transaction: callback => callback(db) } as AgentToolExecutorPrismaLike, {
-          workspaceId: runInput.workspaceId,
-          conversationId: conversation.id,
-          allowedActions: prospecting ? Array.from(new Set<AiAgentAllowedAction>([...allowedActions, "request_handoff"])) : unreadableImageRequiresHandoff
-            ? Array.from(new Set<AiAgentAllowedAction>([...allowedActions, "request_handoff"]))
-            : allowedActions,
-          allowedTags,
-          // The transfer action would end prospecting before the announcement is sent.
-          actions: prospectingHandoffReply
-            ? outputActions.filter((action) => normalizeActionType(action.type) !== "request_handoff")
-            : outputActions
-        }));
+        actionResults = await resetFence(message, epoch, db => {
+          // Extended Prisma transaction clients cannot be enumerated. Inherit
+          // their delegates and reuse this transaction for nested tool actions.
+          const tools = Object.create(db) as AgentToolExecutorPrismaLike;
+          Object.defineProperty(tools, '$transaction', { value: (callback: (tx: AgentRuntimePrismaLike) => unknown) => callback(db) });
+          return executeAgentActions(tools, {
+            workspaceId: runInput.workspaceId,
+            conversationId: conversation.id,
+            allowedActions: prospecting ? Array.from(new Set<AiAgentAllowedAction>([...allowedActions, "request_handoff"])) : unreadableImageRequiresHandoff
+              ? Array.from(new Set<AiAgentAllowedAction>([...allowedActions, "request_handoff"]))
+              : allowedActions,
+            allowedTags,
+            // The transfer action would end prospecting before the announcement is sent.
+            actions: prospectingHandoffReply
+              ? outputActions.filter((action) => normalizeActionType(action.type) !== "request_handoff")
+              : outputActions
+          });
+        });
         if (meetingResult) actionResults = [meetingResult, ...actionResults];
         contextSummary = {
           ...contextSummary,
