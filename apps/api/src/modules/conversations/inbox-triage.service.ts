@@ -120,6 +120,7 @@ export function createInboxTriageService(prisma: PrismaClient): InboxTriageObser
           where: {
             workspaceId: input.workspaceId,
             conversationId: input.conversationId,
+            hiddenByReset: false,
             type: { notIn: ["system", "internal_note"] },
             status: { not: "pending" }
           },

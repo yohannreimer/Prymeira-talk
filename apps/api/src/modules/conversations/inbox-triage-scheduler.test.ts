@@ -70,7 +70,9 @@ describe("inbox triage scheduler", () => {
         findUnique: vi.fn().mockImplementation(async () => ({ ...due, lockToken: token }))
       },
       conversation: { findUnique: tx.conversation.findUnique },
-      message: { findMany: vi.fn().mockResolvedValue([message]) },
+      message: { findMany: vi.fn().mockImplementation(async ({ where }) => where.hiddenByReset === false ? [message] : [
+        { ...message, id: "hidden-old", hiddenByReset: true, body: "memória anterior ao reset" }, message
+      ]) },
       $transaction: vi.fn((callback: (client: typeof tx) => Promise<unknown>) => callback(tx))
     } as unknown as PrismaClient;
     const assess = vi.fn().mockResolvedValue({
@@ -80,6 +82,7 @@ describe("inbox triage scheduler", () => {
     const scheduler = createInboxTriageScheduler({ prisma, classifier: { assess }, observer: { observeMessage: vi.fn() }, onUpdate });
     await scheduler.processDue({ now: new Date("2026-09-25T12:03:00Z"), reconcile: false });
     expect(assess).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(assess.mock.calls[0])).not.toContain("memória anterior ao reset");
     expect(updateMany).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({
       decision: "needs_reply", dueAt: null, lockToken: null
     }) }));

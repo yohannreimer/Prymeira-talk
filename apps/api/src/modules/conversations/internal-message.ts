@@ -6,7 +6,7 @@ export const followupReservationExclusion = {
 } as const;
 
 export function visibleConversationMessageWhere<T extends Record<string, unknown>>(where: T) {
-  return { ...where, ...followupReservationExclusion };
+  return { ...where, hiddenByReset: false, ...followupReservationExclusion };
 }
 
 export function isInternalFollowupReservation(message: { status?: string | null; metadata?: unknown }) {
@@ -17,8 +17,8 @@ export function isInternalFollowupReservation(message: { status?: string | null;
   return metadata?.source === "followup_review" && typeof metadata.followupId === "string";
 }
 
-export function withoutInternalFollowupReservations<T extends { status?: string | null; metadata?: unknown }>(messages: T[]) {
-  return messages.filter((message) => !isInternalFollowupReservation(message)
+export function withoutInternalFollowupReservations<T extends { status?: string | null; metadata?: unknown; hiddenByReset?: boolean }>(messages: T[]) {
+  return messages.filter((message) => !message.hiddenByReset && !isInternalFollowupReservation(message)
     && !(message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
       && (message.metadata as Record<string, unknown>).campaignDuplicateAudit === true));
 }

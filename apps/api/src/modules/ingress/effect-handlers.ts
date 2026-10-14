@@ -223,5 +223,14 @@ export function createEffectHandlers(services: EffectServices): Record<string, E
       return done();
     };
   }
+  for (const [kind, handler] of Object.entries(handlers)) {
+    handlers[kind] = async (effect, context) => {
+      if (effect.messageId) {
+        const source = await db.message.findFirst({ where: { workspaceId: effect.workspaceId, id: effect.messageId }, select: { hiddenByReset: true } });
+        if (source?.hiddenByReset) return skipped('conversation_reset');
+      }
+      return handler(effect, context);
+    };
+  }
   return handlers;
 }

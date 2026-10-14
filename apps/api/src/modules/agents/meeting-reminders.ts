@@ -1,3 +1,4 @@
+import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
 import {
   readMeetingRemindersConfig,
   type MeetingReminderMessage
@@ -35,6 +36,7 @@ type ReminderRecord = {
 type ReminderConversation = {
   id: string;
   workspaceId: string;
+  historyResetAt?: Date | string | null;
   channel?: { provider?: string | null; providerKey?: string | null } | null;
   contact?: { name?: string | null; phone?: string | null } | null;
 };
@@ -79,11 +81,24 @@ export function createMeetingReminderService(input: {
   const { prisma } = input;
   const batchSize = input.batchSize ?? 20;
 
+  async function workspaceWrite<T>(workspaceId: string, work: (db: MeetingRemindersPrismaLike) => Promise<T>) {
+    const transactional = prisma as MeetingRemindersPrismaLike & { $transaction?: (work: (tx: MeetingRemindersPrismaLike) => Promise<T>, options: { isolationLevel: "ReadCommitted" }) => Promise<T> };
+    return transactional.$transaction ? transactional.$transaction(async tx => {
+      if (typeof (tx as any).$queryRaw === "function") await enterCanonicalWorkspaceTransaction(tx as any, workspaceId);
+      return work(tx);
+    }, { isolationLevel: "ReadCommitted" }) : work(prisma);
+  }
+
   async function finish(id: string, data: { status: string; error?: string | null; sentAt?: Date }) {
-    await prisma.meetingReminder.update({
-      where: { id },
+    await prisma.meetingReminder.updateMany({
+      where: { id, status: "processing" },
       data: { status: data.status, error: data.error ?? null, lockedAt: null, ...(data.sentAt ? { sentAt: data.sentAt } : {}) }
     });
+  }
+
+  async function stillProcessing(reminder: ReminderRecord, db = prisma) {
+    const rows = await db.meetingReminder.findMany({ where: { id: reminder.id, workspaceId: reminder.workspaceId, status: "processing" }, take: 1 });
+    return rows.some(row => row.id === reminder.id && row.status !== "canceled" && row.status !== "cancelled");
   }
 
   async function stillBooked(reminder: ReminderRecord): Promise<{ booked: boolean; meetLink: string | null }> {
@@ -113,6 +128,7 @@ export function createMeetingReminderService(input: {
     const messages = readReminderMessages(reminder.messages);
     let preview: string | null = null;
     for (const message of messages) {
+      if (!await stillProcessing(reminder)) return false;
       const text = renderReminderText(message.text, values);
       const media = message.mediaUrl ? describeMedia(message.mediaUrl) : null;
       if (media && !client.sendMedia) throw new Error("O canal não envia arquivos.");
@@ -127,8 +143,11 @@ export function createMeetingReminderService(input: {
             ...(text ? { caption: text } : {})
           })
         : await client.sendText({ instanceName, number, text, delay: typingDelayMs(text) });
-      const record = await prisma.message.create({
+      const persisted = await workspaceWrite(reminder.workspaceId, async db => {
+        const current = await stillProcessing(reminder, db);
+        const record = await db.message.create({
         data: {
+          ...(!current ? { hiddenByReset: true } : {}),
           workspaceId: reminder.workspaceId,
           conversationId: reminder.conversationId,
           direction: "outbound",
@@ -141,12 +160,20 @@ export function createMeetingReminderService(input: {
           metadata: { source: "meeting_reminder", agentId: reminder.agentId, reminderId: reminder.id, minutesBefore: reminder.minutesBefore }
         }
       });
+        return { record, current };
+      });
+      if (!persisted.current) return false;
+      const record = persisted.record;
       input.realtime?.publish({ type: "message.created", workspaceId: reminder.workspaceId, payload: toMessageDto(record) });
       preview = text || media?.fileName || preview;
     }
-    await prisma.conversation.update({
+    return workspaceWrite(reminder.workspaceId, async db => {
+      if (!await stillProcessing(reminder, db)) return false;
+    await db.conversation.update({
       where: { workspaceId_id: { workspaceId: reminder.workspaceId, id: reminder.conversationId } },
       data: { lastMessageAt: new Date(), ...(preview ? { lastMessagePreview: preview } : {}) }
+    });
+    return true;
     });
   }
 
@@ -163,7 +190,15 @@ export function createMeetingReminderService(input: {
       behaviorConfig: unknown;
       meeting: Pick<BookedMeeting, "eventId" | "startsAt">;
       now?: Date;
+      expectedHistoryResetAt?: Date | string | null;
     }) {
+      return workspaceWrite(args.workspaceId, async db => {
+        if (Object.hasOwn(args, "expectedHistoryResetAt")) {
+          const conversation = await db.conversation.findUnique({ where: { workspaceId_id: { workspaceId: args.workspaceId, id: args.conversationId } } });
+          const epoch = (value: Date | string | null | undefined) => value ? new Date(value).getTime() : null;
+          if (!conversation || epoch(conversation.historyResetAt) !== epoch(args.expectedHistoryResetAt)) return { scheduled: [] as number[] };
+        }
+        const prisma = db;
       const now = args.now ?? new Date();
       await prisma.meetingReminder.updateMany({
         where: { workspaceId: args.workspaceId, conversationId: args.conversationId, status: "scheduled" },
@@ -189,6 +224,7 @@ export function createMeetingReminderService(input: {
         });
       }
       return { scheduled: steps.map((step) => step.minutesBefore) };
+      });
     },
 
     /** Sends every reminder that is due. Safe to run from several instances: each row is claimed first. */
@@ -216,6 +252,7 @@ export function createMeetingReminderService(input: {
             continue;
           }
           const check = await stillBooked(reminder);
+          if (!await stillProcessing(reminder)) { results.push({ id: reminder.id, status: "cancelled" }); continue; }
           if (!check.booked) {
             await finish(reminder.id, { status: "canceled", error: "A call não está mais na agenda." });
             results.push({ id: reminder.id, status: "canceled" });
@@ -230,7 +267,7 @@ export function createMeetingReminderService(input: {
             results.push({ id: reminder.id, status: "canceled" });
             continue;
           }
-          await send(reminder, conversation, check.meetLink);
+          if (!await send(reminder, conversation, check.meetLink)) { results.push({ id: reminder.id, status: "cancelled" }); continue; }
           await finish(reminder.id, { status: "sent", sentAt: new Date() });
           results.push({ id: reminder.id, status: "sent" });
         } catch (error) {

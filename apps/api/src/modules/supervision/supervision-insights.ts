@@ -7,7 +7,7 @@ type Raw = Pick<PrismaClient, "$queryRaw">;
  * private follow-up drafts. Reactions and receipts must never count as "answered". */
 function written(alias: string) {
   const m = Prisma.raw(alias);
-  return Prisma.sql`${m}.type NOT IN ('system', 'internal_note') AND ${m}.status <> 'failed'
+  return Prisma.sql`${m}.hidden_by_reset = false AND ${m}.type NOT IN ('system', 'internal_note') AND ${m}.status <> 'failed'
     AND NOT (${m}.metadata ? 'reaction') AND NOT (${m}.metadata ? 'deletedAt')
     AND NOT (${m}.status = 'pending' AND ${m}.metadata->>'source' = 'followup_review')`;
 }

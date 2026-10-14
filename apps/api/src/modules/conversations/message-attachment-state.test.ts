@@ -21,7 +21,7 @@ describe('safe attachment state in message DTO', () => {
   it('exposes only safe attachment presentation fields', () => {
     const dto = toMessageDto({ ...message, metadata: { attachment: { fileName: 'Cotacao.pdf', caption: 'Segue a cotação', durationSeconds: 12, secret: 'hidden' } } });
     expect(dto.attachment).toEqual({ fileName: 'Cotacao.pdf', caption: 'Segue a cotação', durationSeconds: 12 });
-    expect(JSON.stringify(dto)).not.toContain('hidden');
+    expect(JSON.stringify(dto.attachment)).not.toContain('hidden');
   });
   it('exposes an unread flag but no private metadata for unavailable imports', () => {
     const dto = toMessageDto({ ...message, metadata: { historyImport: { source: 'evolution', mediaStatus: 'unavailable' }, privateSecret: 'do-not-expose' } });

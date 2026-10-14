@@ -1,3 +1,4 @@
+import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
 import type { Prisma } from "@prisma/client";
 import {
   aiAgentImprovementNormalizationSchema,
@@ -472,7 +473,8 @@ export function createAgentImprovementsService(
           where: {
             workspaceId: input.workspaceId,
             conversationId: input.conversationId,
-            id: input.messageId
+            id: input.messageId,
+            hiddenByReset: false
           }
         }),
         prisma.conversation.findFirst({
@@ -515,6 +517,7 @@ export function createAgentImprovementsService(
         where: {
           workspaceId: input.workspaceId,
           conversationId: input.conversationId,
+          hiddenByReset: false,
           createdAt: { lte: new Date(humanReply.createdAt) }
         },
         orderBy: { createdAt: "desc" },
@@ -560,29 +563,38 @@ export function createAgentImprovementsService(
         humanReply: humanReply.body,
         assessment
       });
+      const humanReplyBody = humanReply.body;
       try {
-        await prisma.aiAgentImprovement.create({
-          data: {
-            workspaceId: input.workspaceId,
-            agentId: targetAgentId,
-            conversationId: input.conversationId,
-            sourceMessageId: input.messageId,
-            status: "pending",
-            kind: assessment.kind,
-            title: proposal.title,
-            content: proposal.content,
-            rationale: proposal.rationale,
-            sourceCustomerMessage: customerMessage,
-            sourceHumanReply: humanReply.body,
-            detector: {
-              provider: detected.outcome === "ignore" ? "explicit_human_refusal" : detected.provider ?? "jev",
-              confidence: assessment.confidence,
-              kind: assessment.kind
-            },
-            clarificationAnswers: {},
-            clarificationNormalization: {}
-          }
+        const created = await prisma.$transaction(async tx => {
+          const store = tx as unknown as Partial<Prisma.TransactionClient>;
+          if (store.$queryRaw && store.$executeRaw) await enterCanonicalWorkspaceTransaction(store as Prisma.TransactionClient, input.workspaceId);
+          const source = await (store.message ?? prisma.message).findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, id: input.messageId, hiddenByReset: false } });
+          if (!source) return false;
+          await (store.aiAgentImprovement ?? prisma.aiAgentImprovement).create({
+            data: {
+              workspaceId: input.workspaceId,
+              agentId: targetAgentId,
+              conversationId: input.conversationId,
+              sourceMessageId: input.messageId,
+              status: "pending",
+              kind: assessment.kind,
+              title: proposal.title,
+              content: proposal.content,
+              rationale: proposal.rationale,
+              sourceCustomerMessage: customerMessage,
+              sourceHumanReply: humanReplyBody,
+              detector: {
+                provider: detected.outcome === "ignore" ? "explicit_human_refusal" : detected.provider ?? "jev",
+                confidence: assessment.confidence,
+                kind: assessment.kind
+              },
+              clarificationAnswers: {},
+              clarificationNormalization: {}
+            }
+          });
+          return true;
         });
+        if (!created) return { created: false, reason: "conversation_reset" };
       } catch (error) {
         if (error && typeof error === "object" && "code" in error && error.code === "P2002") {
           return { created: false, reason: "already_observed" };
@@ -603,6 +615,7 @@ export function createAgentImprovementsService(
         where: {
           workspaceId: input.workspaceId,
           conversationId: input.conversationId,
+          hiddenByReset: false,
           direction: "outbound",
           type: "text"
         },

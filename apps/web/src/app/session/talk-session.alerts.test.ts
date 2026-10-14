@@ -14,6 +14,30 @@ function listen() {
 afterEach(() => { for (const value of sessions.splice(0)) value.clear(); vi.useRealTimers(); });
 
 describe('session alerts', () => {
+  it('does not alert for hidden or pre-reset messages, stale handoffs or a pending alert from before reset', () => {
+    vi.useFakeTimers();
+    const { cache, alerts } = listen();
+    cache.event(event('message.created', message()));
+    const reset = conversation({ historyResetAt: '2026-10-14T22:00:00.000Z', lastMessageAt: null, lastMessage: null } as Partial<ConversationDto>);
+    cache.event(event('conversation.updated', reset));
+    cache.event(event('message.created', message()));
+    cache.event(event('message.created', message({ hiddenByReset: true, createdAt: '2026-10-14T22:01:00.000Z' } as Partial<MessageDto>)));
+    cache.event(event('conversation.updated', conversation({ aiControlStatus: 'human_controlled', activeAgentSessionStatus: 'handoff_requested', handoffReason: 'old' })));
+    vi.advanceTimersByTime(1_500);
+    expect(alerts).toEqual([]);
+    cache.event(event('message.created', message({ id: 'fresh', createdAt: '2026-10-14T22:01:00.000Z' })));
+    vi.advanceTimersByTime(1_500);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].kind).toBe('message');
+  });
+  it('keeps a fresh pending alert when the first conversation DTO reveals an older reset', () => {
+    vi.useFakeTimers(); const { cache, alerts } = listen();
+    cache.event(event('message.created', message({ id: 'fresh', createdAt: '2026-10-14T22:01:00.000Z' })));
+    cache.event(event('conversation.updated', conversation({ historyResetAt: '2026-10-14T22:00:00.000Z', lastMessageAt: null, lastMessage: null })));
+    vi.advanceTimersByTime(1_500);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].kind).toBe('message');
+  });
   it('raises a customer message with the conversation as the list knew it', () => {
     const { cache, alerts } = listen();
     cache.client.setQueryData(cache.key('conversations', 'all', 'all', ''), [conversation()]);

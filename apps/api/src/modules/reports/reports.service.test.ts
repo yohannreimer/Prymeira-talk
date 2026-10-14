@@ -277,7 +277,7 @@ describe("reports service", () => {
     };
 
     expect(prisma.conversation.count).toHaveBeenCalledWith({ where: conversationWhere });
-    expect(prisma.message.count).toHaveBeenCalledWith({ where: messageWhere });
+    expect(prisma.message.count).toHaveBeenCalledWith({ where: { ...messageWhere, hiddenByReset: false } });
     expect(prisma.campaignRecipient.count).toHaveBeenCalledWith({
       where: {
         workspaceId,

@@ -1,3 +1,4 @@
+import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
 import { replayProspectingFollowupObservations } from "../prospecting/prospecting-followup-observation.js";
 import type { ConversationFollowupsObserver } from "../followups/conversation-followups.service.js";
 import { randomUUID } from "node:crypto";
@@ -17,6 +18,7 @@ type ActiveConversationRecord = {
   workspaceId: string;
   aiControlStatus: string;
   activeAgentSessionId?: string | null;
+  historyResetAt?: Date | string | null;
   activeAgentSession?: {
     id: string;
     agentId: string;
@@ -43,7 +45,7 @@ type PendingReplyRecord = {
 };
 
 export interface AgentReplySchedulerPrismaLike {
-  message?: { findMany(args: unknown): Promise<Array<{ metadata?: unknown; status: string }>> };
+  message?: { findMany(args: unknown): Promise<Array<{ metadata?: unknown; status: string }>>; findFirst?(args: unknown): Promise<{ id: string; hiddenByReset?: boolean } | null> };
   workspaceMirror: {
     findUnique(args: unknown): Promise<{ limits?: JsonValue } | null>;
   };
@@ -138,7 +140,16 @@ export function createAgentReplyScheduler(input: {
     const session = conversation.activeAgentSession;
     const instruction = readInstruction(session.metadata);
 
-    await input.prisma.aiAgentPendingReply.upsert({
+    const save = async (db: AgentReplySchedulerPrismaLike) => {
+      const current = await db.conversation.findUnique({ where: { workspaceId_id: { workspaceId: scheduleInput.workspaceId, id: scheduleInput.conversationId } }, include: { activeAgentSession: true, channel: true } });
+      const epoch = (row: ActiveConversationRecord) => row.historyResetAt ? new Date(row.historyResetAt).getTime() : null;
+      if (!current?.activeAgentSession || current.activeAgentSession.id !== session.id || current.activeAgentSession.status !== "active" || epoch(current) !== epoch(conversation)) return false;
+      if (!await autonomousAgentAllowed(db, { workspaceId: scheduleInput.workspaceId, conversationId: scheduleInput.conversationId, agentId: session.agentId, sessionId: session.id, channelConfig: current.channel?.encryptedConfig, aiControlStatus: current.aiControlStatus })) return false;
+      if (db.message?.findFirst) {
+        const anchor = await db.message.findFirst({ where: { workspaceId: scheduleInput.workspaceId, conversationId: scheduleInput.conversationId, id: messageId, hiddenByReset: false } });
+        if (!anchor || anchor.hiddenByReset) return false;
+      }
+    await db.aiAgentPendingReply.upsert({
       where: {
         workspaceId_conversationId: {
           workspaceId: scheduleInput.workspaceId,
@@ -169,6 +180,15 @@ export function createAgentReplyScheduler(input: {
         lastError: null
       }
     });
+      return true;
+    };
+    const transactional = input.prisma as AgentReplySchedulerPrismaLike & { $transaction?: (work: (tx: AgentReplySchedulerPrismaLike) => Promise<boolean>, options: { isolationLevel: "ReadCommitted" }) => Promise<boolean> };
+    const saved = transactional.$transaction ? await transactional.$transaction(async tx => {
+      if (typeof (tx as any).$queryRaw === "function") await enterCanonicalWorkspaceTransaction(tx as any, scheduleInput.workspaceId);
+      return save(tx);
+    }, { isolationLevel: "ReadCommitted" }) : await save(input.prisma);
+    if (!saved) return { scheduled: false as const };
+
     scheduleWake(scheduledAt, now);
 
     return { scheduled: true as const, scheduledAt };

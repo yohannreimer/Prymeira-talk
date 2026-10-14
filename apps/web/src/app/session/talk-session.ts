@@ -14,6 +14,10 @@ type FenceEvent = RealtimeEvent | LocalMessageChange;
 type Fence = { events: FenceEvent[]; queryHash?: string; finish(): void };
 type ReadCommit = { fence: Fence; apply(data: unknown): unknown };
 type ReadOptions = { signal?: AbortSignal; manualCommit?: boolean };
+const resetClock = (at: string | null | undefined) => Date.parse(at ?? '') || 0;
+export function messageVisibleAfterReset(message: MessageDto, at?: string | null) {
+  return !message.hiddenByReset && (!resetClock(at) || Date.parse(message.createdAt) >= resetClock(at));
+}
 /** Something a person may want to hear about: a customer wrote, or the AI handed a conversation to the team. */
 export type TalkAlert =
   | { kind: 'message'; message: MessageDto; conversation?: ConversationDto }
@@ -27,6 +31,9 @@ export function receiptStatus(current: MessageDto['status'], incoming: MessageDt
 }
 
 export function patchMessages(messages: MessageDto[], event: RealtimeEvent, conversationId: string): MessageDto[] {
+  if (event.type === 'conversation.updated' && event.payload.id === conversationId && event.payload.historyResetAt) {
+    return messages.filter(message => messageVisibleAfterReset(message, event.payload.historyResetAt));
+  }
   if (event.type === 'message.deleted') return event.payload.conversationId === conversationId && messages.some(message => message.id === event.payload.messageId)
     ? messages.filter(message => message.id !== event.payload.messageId) : messages;
   if (event.type === 'message.status_changed') {
@@ -38,6 +45,7 @@ export function patchMessages(messages: MessageDto[], event: RealtimeEvent, conv
   }
   if (event.type !== 'message.created' && event.type !== 'message.updated') return messages;
   if (event.payload.conversationId !== conversationId) return messages;
+  if (event.payload.hiddenByReset) return messages.filter(message => message.id !== event.payload.id);
   const index = messages.findIndex(message => message.id === event.payload.id ||
     Boolean(event.payload.providerMessageId && message.providerMessageId === event.payload.providerMessageId) ||
     (message.id.startsWith('optimistic-') && message.status === 'pending' && message.direction === event.payload.direction && message.type === event.payload.type && message.body === event.payload.body));
@@ -94,6 +102,7 @@ export function patchConversations(rows: ConversationDto[], event: RealtimeEvent
     let changed = false;
     const next = rows.map(row => {
       if (row.id !== message.conversationId) return row;
+      if (!messageVisibleAfterReset(message, row.historyResetAt)) return row;
       const current = row.lastMessage;
       if (current && current.id !== message.id && Date.parse(message.createdAt) < Date.parse(current.createdAt)) return row;
       if (current?.id === message.id && current.status === message.status && current.direction === message.direction) return row;
@@ -111,8 +120,11 @@ export function patchConversations(rows: ConversationDto[], event: RealtimeEvent
   }
   if (event.type !== 'conversation.updated') return rows;
   const previousRow = rows.find(row => row.id === event.payload.id);
+  if (previousRow && resetClock(previousRow.historyResetAt) > resetClock(event.payload.historyResetAt)) return rows;
   // Most writers publish the conversation without its last message; keep the one the card already knows.
-  const payload = event.payload.lastMessage === undefined && previousRow?.lastMessage !== undefined
+  const advancesReset = resetClock(event.payload.historyResetAt) > resetClock(previousRow?.historyResetAt);
+  const payload = advancesReset ? { ...event.payload, lastMessage: event.payload.lastMessage ?? null }
+    : event.payload.lastMessage === undefined && previousRow?.lastMessage !== undefined
     ? { ...event.payload, lastMessage: previousRow.lastMessage } : event.payload;
   const membership = conversationMatches(payload, scope);
   if (membership === false) return previousRow ? rows.filter(row => row.id !== payload.id) : rows;
@@ -137,6 +149,7 @@ export class TalkSession {
   private unsubscribeCache: () => void;
   private attentionReads = new Set<{ channel: string; dirty: boolean }>();
   private contextContacts = new Map<string, string>();
+  private resets = new Map<string, ConversationDto>();
   private alertListeners = new Set<(alert: TalkAlert) => void>();
   /** Messages for conversations not loaded yet wait briefly for the conversation update that follows them. */
   private pendingAlerts = new Map<string, { message: MessageDto; timer: ReturnType<typeof setTimeout> }>();
@@ -222,7 +235,7 @@ export class TalkSession {
   async readMessages(id: string, read: () => Promise<MessageDto[]>, signal?: AbortSignal) {
     this.touch(id);
     return this.withEvents(this.key('messages', id), read, (messages, event) => {
-      if (event.type !== 'local.messages') return patchMessages(messages, event, id);
+      if (event.type !== 'local.messages') return this.visibleMessages(id, patchMessages(messages, event, id));
       if (event.conversationId !== id) return messages;
       const rows = messages.filter(message => !event.removedIds.has(message.id));
       // Local IDs identify distinct manual sends, including identical content.
@@ -232,8 +245,8 @@ export class TalkSession {
         if (index < 0) rows.push(row);
         else rows[index] = { ...row, status: receiptStatus(rows[index].status, row.status) };
       }
-      return rows.slice(-MAX_MESSAGES);
-    }, messages => messages.slice(-MAX_MESSAGES), { signal });
+      return this.visibleMessages(id, rows).slice(-MAX_MESSAGES);
+    }, messages => this.visibleMessages(id, messages).slice(-MAX_MESSAGES), { signal });
   }
   /** Use the source query directly: an observer may have changed targets by the
    * time its refetch resolves. TanStack also resolves canceled reads with cached
@@ -254,7 +267,7 @@ export class TalkSession {
   updateMessages(id: string, update: (messages: MessageDto[]) => MessageDto[]) {
     if (this.disposed) return;
     const key = this.key('messages', id); const previous = this.client.getQueryData<MessageDto[]>(key) ?? [];
-    const next = update(previous).slice(-MAX_MESSAGES);
+    const next = this.visibleMessages(id, update(previous)).slice(-MAX_MESSAGES);
     const before = new Map(previous.map(row => [row.id, row])); const ids = new Set(next.map(row => row.id));
     const rows = next.filter(row => before.get(row.id) !== row);
     const removedIds = new Set(previous.filter(row => !ids.has(row.id)).map(row => row.id));
@@ -265,7 +278,8 @@ export class TalkSession {
   }
   readConversations(read: () => Promise<ConversationDto[]>, scope: InboxListScope = {}, options: ReadOptions = {}) {
     const key = this.key('conversations', scope.view ?? 'all', scope.channelId ?? 'all', scope.search ?? '');
-    return this.withEvents(key, read, (rows, event) => event.type === 'local.messages' ? rows : patchConversations(rows, event, scope), undefined, options);
+    return this.withEvents(key, read, (rows, event) => this.currentConversations(event.type === 'local.messages' ? rows : patchConversations(rows, event, scope)),
+      rows => this.currentConversations(rows), options);
   }
   commitConversationPage(key: QueryKey, page: ConversationDto[], merge: (current: ConversationDto[], page: ConversationDto[]) => ConversationDto[]) {
     if (this.disposed) return;
@@ -274,9 +288,54 @@ export class TalkSession {
     if (read) this.readCommits.set(rows, read);
     this.client.setQueryData(key, rows);
   }
-  readContext<T>(id: string, read: () => Promise<T>, contactId = this.findConversation(id)?.contactId) {
+  async readContext<T>(id: string, read: () => Promise<T>, contactId = this.findConversation(id)?.contactId) {
     if (contactId) this.contextContacts.set(id, contactId);
-    return read();
+    const reset = this.resets.get(id)?.historyResetAt;
+    const result = await read();
+    if (this.disposed || reset !== this.resets.get(id)?.historyResetAt) throw new DOMException('Leitura anterior ao reinício.', 'AbortError');
+    return result;
+  }
+
+  private visibleMessages(id: string, rows: MessageDto[]) {
+    const at = this.resets.get(id)?.historyResetAt ?? this.findConversation(id)?.historyResetAt;
+    return rows.filter(message => messageVisibleAfterReset(message, at));
+  }
+  private currentConversations(rows: ConversationDto[]) {
+    return rows.map(row => {
+      const reset = this.resets.get(row.id);
+      if (reset && resetClock(reset.historyResetAt) > resetClock(row.historyResetAt)) return this.findConversation(row.id) ?? reset;
+      this.observeReset(row);
+      return row;
+    });
+  }
+  /** Monotonic even when an old HTTP response or realtime frame arrives last. */
+  private observeReset(row: ConversationDto) {
+    if (!resetClock(row.historyResetAt)) return;
+    const previous = this.resets.get(row.id);
+    if (resetClock(previous?.historyResetAt) >= resetClock(row.historyResetAt)) return;
+    this.resets.set(row.id, row);
+    const pending = this.pendingAlerts.get(row.id);
+    if (pending && !messageVisibleAfterReset(pending.message, row.historyResetAt)) { clearTimeout(pending.timer); this.pendingAlerts.delete(row.id); }
+    this.client.setQueryData<MessageDto[]>(this.key('messages', row.id), current => this.visibleMessages(row.id, current ?? []));
+    for (const kind of ['context', 'assistant']) this.client.removeQueries({ queryKey: this.key(kind, row.id), exact: true });
+    this.writeUI(`draft:${row.id}`, '', '');
+    this.writeUI(`draftOrigin:${row.id}`, null, null);
+    this.writeUI(`draftFiles:${row.id}`, [], []);
+    this.writeUI(`sendFailure:${row.id}`, null, null);
+    this.writeUI(`scroll:${row.id}`, 0, 0);
+    this.writeUI(`scrollFollow:${row.id}`, true, true);
+  }
+  acceptsEvent(event: RealtimeEvent) {
+    if (event.workspaceId !== this.workspaceId || this.disposed) return false;
+    if (event.type === 'message.created' || event.type === 'message.updated') {
+      return messageVisibleAfterReset(event.payload, this.resets.get(event.payload.conversationId)?.historyResetAt ?? this.findConversation(event.payload.conversationId)?.historyResetAt);
+    }
+    if (event.type === 'conversation.updated') return resetClock(event.payload.historyResetAt) >= resetClock(this.resets.get(event.payload.id)?.historyResetAt);
+    return true;
+  }
+  resetVersion(id: string) { return this.resets.get(id)?.historyResetAt ?? null; }
+  hasObservedReset(id: string, at: string | null | undefined) {
+    return resetClock(at) > 0 && resetClock(this.resets.get(id)?.historyResetAt) >= resetClock(at);
   }
   async readAttention(channel: string, read: () => Promise<number>) {
     const fence = { channel, dirty: false }; this.attentionReads.add(fence);
@@ -346,7 +405,8 @@ export class TalkSession {
     }
   }
   event(event: RealtimeEvent) {
-    if (event.workspaceId !== this.workspaceId || this.disposed) return;
+    if (!this.acceptsEvent(event)) return;
+    if (event.type === 'conversation.updated') this.observeReset(event.payload);
     for (const fence of this.fences) fence.events.push(event);
     const previous = event.type === 'conversation.updated' ? this.findConversation(event.payload.id) : undefined;
     const alert = this.alertListeners.size ? this.alertFor(event, previous) : null;
@@ -467,6 +527,6 @@ export class TalkSession {
     this.readCommits = new WeakMap(); this.unsubscribeCache(); this.alertListeners.clear();
     for (const pending of this.pendingAlerts.values()) clearTimeout(pending.timer);
     this.pendingAlerts.clear();
-    this.ui.clear(); this.histories.clear(); this.fences.clear(); this.attentionReads.clear(); this.contextContacts.clear(); this.listeners.clear();
+    this.ui.clear(); this.histories.clear(); this.fences.clear(); this.attentionReads.clear(); this.contextContacts.clear(); this.resets.clear(); this.listeners.clear();
   }
 }

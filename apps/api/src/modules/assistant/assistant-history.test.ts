@@ -65,3 +65,19 @@ describe('context-only history import',()=>{
     const r=await s.run('w','c');expect(r.unreadMedia).toBe(1);expect(s.messages[1].mediaUrl).toBeNull();expect(s.messages[1].metadata.historyImport.mediaStatus).toBe('unavailable');
   });
 });
+
+it('limits imported provider history to the explicit reset boundary', async () => {
+  const s = setup();
+  const boundary = new Date(date.getTime() - 1000);
+  Object.assign(s.conversation, { historyResetAt: boundary });
+  s.source.load.mockResolvedValue([]);
+  await s.run('w', 'c');
+  expect(s.source.load).toHaveBeenCalledWith(expect.objectContaining({ from: boundary }));
+});
+it('does not import memory after its source was hidden while provider history was loading', async () => {
+  const s = setup();
+  s.source.load.mockImplementation(async () => { s.db.message.findFirst.mockResolvedValue(null); return []; });
+  await expect(s.run('w', 'c')).rejects.toMatchObject({ code: 'ASSISTANT_HISTORY_CHANGED' });
+  expect(s.db.message.createMany).not.toHaveBeenCalled();
+  expect(s.db.message.updateMany).not.toHaveBeenCalled();
+});

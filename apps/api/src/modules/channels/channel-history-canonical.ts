@@ -82,6 +82,7 @@ export async function persistProviderMessages(input: {
       if (stored.outcome !== 'created' || !stored.messageId || !stored.conversationId) { result.skipped++; return; }
       result.inserted++;
       const message = await tx.message.findUniqueOrThrow({ where: { id: stored.messageId } });
+      if (message.hiddenByReset) return;
       created.push({ messageId: message.id, conversationId: stored.conversationId,
         media: event.media?.hasMedia && ['audio', 'image', 'file'].includes(message.type)
           ? { provider: context.provider, channelProvider: context.channelProvider, sessionName: context.sessionName, key: event.key, mimeType: event.attachment.mimeType ?? null } : null });

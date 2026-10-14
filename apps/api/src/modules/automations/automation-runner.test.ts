@@ -163,6 +163,27 @@ function createMockPrisma(overrides: Partial<AutomationRunnerPrisma> = {}) {
 }
 
 describe("automation runner", () => {
+  it("rejects an old hidden source without actions or run recreation", async () => {
+    const prisma = createMockPrisma();
+    vi.mocked(prisma.message.findUnique).mockResolvedValue({ ...currentMessage, direction: "inbound", type: "text", conversation, hiddenByReset: true });
+    const runs = await createAutomationRunner({ prisma }).runForInboundMessage({ workspaceId, messageId, eventKey: "reset-source" });
+    expect(runs).toEqual([]);
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.automationRun.upsert).not.toHaveBeenCalled();
+  });
+
+  it("stops later flow actions and run recreation when reset happens during the first send", async () => {
+    const prisma = createMockPrisma();
+    const sendText = vi.fn(async () => {
+      vi.mocked(prisma.message.findUnique).mockResolvedValue({ ...currentMessage, direction: "inbound", type: "text", conversation, hiddenByReset: true });
+      return { providerMessageId: "already-sent" };
+    });
+    await createAutomationRunner({ prisma, evolution: { mode: "real", client: { sendText } as any } })
+      .runForInboundMessage({ workspaceId, messageId, eventKey: "reset-during-send" });
+    expect(prisma.tag.upsert).not.toHaveBeenCalled();
+    expect(prisma.automationRun.upsert).not.toHaveBeenCalled();
+  });
+
   it("executes a first-message flow with real text send and tag actions", async () => {
     const prisma = createMockPrisma();
     const evolutionClient = {

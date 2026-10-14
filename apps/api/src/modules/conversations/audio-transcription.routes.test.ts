@@ -39,7 +39,7 @@ describe('requested audio transcription', () => {
       const response = await app.inject({ method: 'POST', url: `/conversations/${conversationId}/messages/${messageId}/transcription` });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ text: 'Pedido de orçamento' });
-      expect(findFirst).toHaveBeenCalledWith({ where: { id: messageId, conversationId, workspaceId: 'workspace-a', type: 'audio' } });
+      expect(findFirst).toHaveBeenCalledWith({ where: { id: messageId, conversationId, workspaceId: 'workspace-a', type: 'audio', hiddenByReset: false } });
       expect(update).toHaveBeenCalledWith({ where: { id: messageId }, data: { body: 'Pedido de orçamento' } });
       expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.created', workspaceId: 'workspace-a' }));
     } finally { await app.close(); }

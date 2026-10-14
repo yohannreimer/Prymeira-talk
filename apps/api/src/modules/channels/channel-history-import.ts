@@ -92,7 +92,8 @@ export function createChannelHistoryImporter(input: {
       if (newest) {
         const newestAt = new Date(newest.messageTimestamp * 1000);
         await tx.conversation.updateMany({ where: { id: conversation.id, workspaceId: channel.workspaceId,
-          OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: newestAt } }] },
+          OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: newestAt } }],
+          AND: [{ OR: [{ historyResetAt: null }, { historyResetAt: { lt: newestAt } }] }] },
           data: { lastMessageAt: newestAt, lastMessagePreview: preview(newest) } });
       }
       return { conversationId: conversation.id, inserted: inserted.count };

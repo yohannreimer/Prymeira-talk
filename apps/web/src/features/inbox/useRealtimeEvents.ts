@@ -9,7 +9,9 @@ export function useRealtimeEvents({ token, onEvent }: { token: string | null; on
   const callback = useRef(onEvent); callback.current = onEvent;
   const [standalone] = useState(() => new RealtimeConnection());
   const connection = context?.realtime ?? standalone;
-  useEffect(() => connection.subscribe(event => callback.current(event)), [connection]);
+  useEffect(() => connection.subscribe(event => {
+    if (!context || context.session.acceptsEvent(event)) callback.current(event);
+  }), [connection, context]);
   useEffect(() => {
     if (context) return;
     connection.updateToken(token);

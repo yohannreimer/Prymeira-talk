@@ -143,6 +143,19 @@ describe("meeting reminders", () => {
   });
 
   describe("processDue", () => {
+    it("does not send or overwrite cancellation when reset happens during calendar lookup", async () => {
+      const prisma = buildPrisma([reminderRow()]);
+      let canceled = false;
+      prisma.meetingReminder.findMany.mockImplementation(async (args: any) => args.where.status === "processing" ? canceled ? [] : [reminderRow({ status: "processing" })] : [reminderRow()]);
+      const scheduler = buildScheduler();
+      scheduler.availability.mockImplementation(async () => { canceled = true; return { durationMinutes: 30, timeZone: TZ, availableSlots: [], bookedMeeting: null }; });
+      const evolution = buildEvolution();
+      await createMeetingReminderService({ prisma, evolution, meetingScheduler: scheduler, timeZone: TZ }).processDue(new Date("2026-10-13T12:30:30-03:00"));
+      expect(evolution.client.sendText).not.toHaveBeenCalled();
+      expect(prisma.meetingReminder.update).not.toHaveBeenCalled();
+      expect(prisma.meetingReminder.updateMany).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "sent" }) }));
+    });
+
     const now = new Date("2026-10-13T12:30:30-03:00");
 
     it("sends a due reminder with the contact's name, the time and the Meet link", async () => {
@@ -163,8 +176,8 @@ describe("meeting reminders", () => {
         data: expect.objectContaining({ direction: "outbound", type: "text", metadata: expect.objectContaining({ source: "meeting_reminder" }) })
       });
       expect(realtime.publish).toHaveBeenCalledTimes(1);
-      expect(prisma.meetingReminder.update).toHaveBeenCalledWith({
-        where: { id: "rem-1" },
+      expect(prisma.meetingReminder.updateMany).toHaveBeenCalledWith({
+        where: { id: "rem-1", status: "processing" },
         data: expect.objectContaining({ status: "sent", error: null })
       });
     });
@@ -231,8 +244,8 @@ describe("meeting reminders", () => {
       const service = createMeetingReminderService({ prisma, evolution, meetingScheduler: buildScheduler(), timeZone: TZ });
 
       expect(await service.processDue(now)).toEqual([{ id: "rem-1", status: "failed" }]);
-      expect(prisma.meetingReminder.update).toHaveBeenCalledWith({
-        where: { id: "rem-1" },
+      expect(prisma.meetingReminder.updateMany).toHaveBeenCalledWith({
+        where: { id: "rem-1", status: "processing" },
         data: expect.objectContaining({ status: "failed", error: "Evolution 500" })
       });
     });

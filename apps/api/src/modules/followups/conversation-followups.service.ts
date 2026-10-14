@@ -1,3 +1,5 @@
+import type { Prisma } from "@prisma/client";
+import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
 import { autonomousAgentAllowed, findProspectingReservation, lockProspectingObservation } from "../prospecting/prospecting-policy.js";
 import { calculateFollowupDueAt, resolveFollowupPlan } from "./channel-followup-plan.js";
 import { buildConversationContext } from "../agents/conversation-context-builder.js";
@@ -88,6 +90,8 @@ type ConversationFollowupStore = {
 };
 
 type ConversationFollowupsTransaction = {
+  $queryRaw?: Prisma.TransactionClient["$queryRaw"];
+  $executeRaw?: Prisma.TransactionClient["$executeRaw"];
   conversationFollowup: ConversationFollowupStore;
   message: ConversationFollowupsPrismaLike["message"];
 };
@@ -269,6 +273,7 @@ export function createConversationFollowupsService(
     for (let attempt = 0; attempt < MAX_UNIQUE_CONFLICT_RETRIES; attempt += 1) {
       try {
         const mutation = await prisma.$transaction(async (tx) => {
+          if (!await visibleSourceInTransaction(tx, input)) return { ignored: true };
           if (input.source === "agent" && asRecord(candidate.message.metadata)?.prospectingDispatch === "confirmed") {
             const metadata = asRecord(candidate.message.metadata);
             if (!await lockProspectingObservation(tx, { workspaceId: input.workspaceId, conversationId: input.conversationId,
@@ -357,7 +362,7 @@ export function createConversationFollowupsService(
   async function observeForBrain(input: ObserveConversationActivityInput): Promise<ObserveConversationActivityResult | null> {
     const [conversation, message] = await Promise.all([
       prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: input.workspaceId, id: input.conversationId } } }),
-      prisma.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, id: input.messageId } })
+      prisma.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, id: input.messageId, hiddenByReset: false } })
     ]);
     if (!conversation || !message?.ingestedAt || conversation.status === "closed") return null;
     if (conversation.activeAgentSessionId || await findProspectingReservation(prisma, input.workspaceId, conversation.id)) return null;
@@ -374,6 +379,7 @@ export function createConversationFollowupsService(
     const anchorIngestedAt = toDate(message.ingestedAt);
     try {
       const mutation = await prisma.$transaction(async (tx) => {
+        if (!await visibleSourceInTransaction(tx, input)) return null;
         const current = await tx.conversationFollowup.findFirst({
           where: { workspaceId: input.workspaceId, conversationId: input.conversationId, activeKey: "active" }
         });
@@ -407,6 +413,7 @@ export function createConversationFollowupsService(
         });
         return { followup, replacedId, created: true };
       });
+      if (!mutation) return { status: "ignored" };
       if (mutation.replacedId) await publish(input.workspaceId, mutation.replacedId);
       if (mutation.created) await publish(input.workspaceId, mutation.followup.id);
       return { status: "scheduled", followupId: mutation.followup.id };
@@ -527,6 +534,7 @@ export function createConversationFollowupsService(
       where: {
         workspaceId: input.workspaceId,
         conversationId: followup.conversationId,
+        hiddenByReset: false,
         direction: "inbound",
         ingestedAt: { gt: anchorIngestedAt }
       },
@@ -763,6 +771,7 @@ export function createConversationFollowupsService(
         where: {
           workspaceId: input.workspaceId,
           conversationId: input.followup.conversationId,
+          hiddenByReset: false,
           direction: "inbound",
           ingestedAt: { gt: toDate(input.followup.anchorIngestedAt) }
         },
@@ -828,6 +837,7 @@ export function createConversationFollowupsService(
         where: {
           workspaceId: input.workspaceId,
           conversationId: input.followup.conversationId,
+          hiddenByReset: false,
           direction: "inbound",
           ingestedAt: { gt: toDate(input.followup.anchorIngestedAt) }
         },
@@ -899,7 +909,7 @@ async function findNewerCompanyMessage(
     ingestedAt: { gt: anchorIngestedAt }
   };
   const newest = await prisma.message.findFirst({
-    where: { ...where, id: { not: followup.anchorMessageId } },
+    where: { ...where, hiddenByReset: false, id: { not: followup.anchorMessageId } },
     orderBy: { ingestedAt: "desc" }
   });
   if (!isOwnPendingDeliveryReservation(newest, followup)) return newest;
@@ -908,7 +918,7 @@ async function findNewerCompanyMessage(
   // only that exact pending row, then look again so any other outbound still
   // invalidates the follow-up.
   return prisma.message.findFirst({
-    where: { ...where, id: { notIn: [followup.anchorMessageId, followup.id] } },
+    where: { ...where, hiddenByReset: false, id: { notIn: [followup.anchorMessageId, followup.id] } },
     orderBy: { ingestedAt: "desc" }
   });
 }
@@ -937,6 +947,7 @@ async function findPersistedCustomerInboundMessage(
       workspaceId: input.workspaceId,
       conversationId: input.conversationId,
       id: input.messageId,
+      hiddenByReset: false,
       direction: "inbound"
     }
   });
@@ -993,6 +1004,7 @@ async function isCourtesyClosure(
     where: {
       workspaceId: input.workspaceId,
       conversationId: input.conversationId,
+      hiddenByReset: false,
       direction: "inbound",
       ingestedAt: { lte: toDate(sellerMessage.ingestedAt) }
     },
@@ -1011,6 +1023,7 @@ async function findNewerCustomerReply(
     where: {
       workspaceId: input.workspaceId,
       conversationId: input.conversationId,
+      hiddenByReset: false,
       direction: "inbound",
       ingestedAt: { gt: toDate(anchorIngestedAt) }
     },
@@ -1059,6 +1072,7 @@ async function resolveCandidate(
         workspaceId: input.workspaceId,
         id: input.messageId,
         conversationId: input.conversationId,
+        hiddenByReset: false,
         direction: "outbound"
       }
     })
@@ -1265,4 +1279,11 @@ function isUniqueConstraintError(error: unknown): error is { code: string } {
     "code" in error &&
     (error as { code?: unknown }).code === "P2002"
   );
+}
+
+/** Serialize observation with reset before resurrecting an operational follow-up. */
+async function visibleSourceInTransaction(tx: ConversationFollowupsTransaction, input: ObserveConversationActivityInput) {
+  if (tx.$queryRaw && tx.$executeRaw) await enterCanonicalWorkspaceTransaction(tx as never, input.workspaceId);
+  const source = await tx.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, id: input.messageId, hiddenByReset: false } });
+  return Boolean(source);
 }

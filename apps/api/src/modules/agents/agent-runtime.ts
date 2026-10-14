@@ -1,3 +1,4 @@
+import { enterCanonicalWorkspaceTransaction } from "../messaging/canonical-boundary.js";
 import { markProspectingFollowupObserved } from "../prospecting/prospecting-followup-observation.js";
 import { ownsAgentReplyClaim, type AgentReplyClaim } from "./agent-reply-claim.js";
 import { observeProspectingAudioRefusal, isLiveProspectingAudio } from "../prospecting/prospecting-lifecycle.js";
@@ -103,6 +104,7 @@ type ConversationRecord = {
   channelId?: string | null;
   aiControlStatus: string;
   activeAgentSessionId?: string | null;
+  historyResetAt?: Date | string | null;
   contact?: {
     id?: string;
     name?: string | null;
@@ -124,6 +126,7 @@ type MessageRecord = {
   id: string;
   workspaceId: string;
   conversationId: string;
+  hiddenByReset?: boolean;
   providerMessageId?: string | null;
   direction: MessageDto["direction"];
   type: MessageDto["type"];
@@ -293,6 +296,28 @@ export function createAgentRuntime(input: {
 }) {
   const { prisma, provider } = input;
 
+  const resetEpoch = (conversation: ConversationRecord) => conversation.historyResetAt
+    ? new Date(conversation.historyResetAt).getTime() : null;
+  async function currentAnchor(db: AgentRuntimePrismaLike, message: MessageRecord, epoch: number | null) {
+    const [anchor, conversation] = await Promise.all([
+      db.message.findFirst({ where: { workspaceId: message.workspaceId, conversationId: message.conversationId, id: message.id, hiddenByReset: false } }),
+      db.conversation.findUnique({ where: { workspaceId_id: { workspaceId: message.workspaceId, id: message.conversationId } } })
+    ]);
+    return Boolean(anchor && !anchor.hiddenByReset && conversation && resetEpoch(conversation) === epoch);
+  }
+  async function resetFence<T>(message: MessageRecord, epoch: number | null, work: (db: AgentRuntimePrismaLike) => Promise<T>) {
+    const transaction = prisma.$transaction as unknown as (work: (tx: AgentRuntimePrismaLike) => Promise<T>, options: { isolationLevel: "ReadCommitted" }) => Promise<T>;
+    return transaction.call(prisma, async tx => {
+      // Small unit-test clients omit raw SQL and model delegates; production always uses the transaction client.
+      const real = typeof (tx as any).$queryRaw === "function";
+      if (real) await enterCanonicalWorkspaceTransaction(tx as any, message.workspaceId);
+      const db = real ? tx : { ...prisma, ...tx, message: prisma.message, aiAgentSession: prisma.aiAgentSession, aiAgentRun: prisma.aiAgentRun };
+      if (!await currentAnchor(db, message, epoch)) throw new ConversationResetError();
+      return work(db);
+    }, { isolationLevel: "ReadCommitted" });
+  }
+
+
   async function observeAgentOutboundFollowup(
     outboundMessage: Pick<MessageRecord, "id" | "workspaceId" | "conversationId" | "status">
   ) {
@@ -320,6 +345,7 @@ export function createAgentRuntime(input: {
     message: MessageRecord,
     resolvedProviderSettings?: OpenAiCompatibleSettings
   ) {
+    if (message.hiddenByReset || !await prisma.message.findFirst({ where: { id: message.id, workspaceId: message.workspaceId, hiddenByReset: false } })) return { status: "skipped" as const };
     if (message.type !== "audio") {
       return { status: "skipped" as const };
     }
@@ -388,6 +414,8 @@ export function createAgentRuntime(input: {
           };
         }
       });
+      const audioAnchor = await prisma.message.findFirst({ where: { id: message.id, workspaceId: message.workspaceId, hiddenByReset: false } });
+      if (!audioAnchor || audioAnchor.hiddenByReset) return { status: "skipped" as const };
       if ("message" in outcome && outcome.message) {
         input.realtime?.publish({ type: "message.created", workspaceId: message.workspaceId, payload: toMessageDto(outcome.message) });
       }
@@ -409,6 +437,8 @@ export function createAgentRuntime(input: {
 
     try {
       const { media, transcription } = await transcribe();
+      const audioAnchor = await prisma.message.findFirst({ where: { id: message.id, workspaceId: message.workspaceId, hiddenByReset: false } });
+      if (!audioAnchor || audioAnchor.hiddenByReset) return { status: "skipped" as const };
       const updatedAudioMessage = await prisma.message.update({
         where: { id: message.id },
         data: {
@@ -434,6 +464,8 @@ export function createAgentRuntime(input: {
         }
       };
     } catch (error) {
+      const audioAnchor = await prisma.message.findFirst({ where: { id: message.id, workspaceId: message.workspaceId, hiddenByReset: false } });
+      if (!audioAnchor || audioAnchor.hiddenByReset) return { status: "skipped" as const };
       const errorCode = readStableMediaErrorCode(error);
       const failedAudioMessage = await prisma.message.update({
         where: { id: message.id },
@@ -453,9 +485,11 @@ export function createAgentRuntime(input: {
       const message = await prisma.message.findFirst({
         where: {
           workspaceId: prepareInput.workspaceId,
-          id: prepareInput.messageId
+          id: prepareInput.messageId,
+          hiddenByReset: false
         }
       });
+      if (message?.hiddenByReset) return { status: "skipped" as const };
       if (message && await findProspectingReservation(prisma, prepareInput.workspaceId, message.conversationId) && !await isLiveProspectingAudio(prisma, message)) return { status: "skipped" as const };
       return message
         ? prepareAudioMessageRecord(message)
@@ -490,7 +524,8 @@ export function createAgentRuntime(input: {
         prisma.message.findFirst({
           where: {
             workspaceId: runInput.workspaceId,
-            id: runInput.messageId
+            id: runInput.messageId,
+            hiddenByReset: false
           }
         })
       ]);
@@ -515,6 +550,8 @@ export function createAgentRuntime(input: {
         return { status: "failed", message: "Conversation or message was not found." };
       }
 
+      if (message.hiddenByReset) return { status: "skipped", message: "Conversation history was reset." };
+      const epoch = resetEpoch(conversation);
       if (conversation.contact?.isGroup || conversation.contact?.phone?.endsWith('@g.us') || conversation.aiControlStatus === "human_controlled" || blocksAutonomousAgent(conversation.channel?.encryptedConfig)) {
         return { status: "skipped", message: conversation.aiControlStatus === "human_controlled"
           ? "Conversation is controlled by a human."
@@ -535,7 +572,7 @@ export function createAgentRuntime(input: {
         });
 
         if (!freshness.ok) {
-          await prisma.conversation.update({
+          await resetFence(message, epoch, db => db.conversation.update({
             where: {
               workspaceId_id: {
                 workspaceId: runInput.workspaceId,
@@ -546,7 +583,8 @@ export function createAgentRuntime(input: {
               aiControlStatus: "human_controlled",
               activeAgentSessionId: null
             }
-          });
+          })).catch(error => { if (error instanceof ConversationResetError) return null; throw error; });
+          if (!await currentAnchor(prisma, message, epoch)) return { status: "skipped", message: "Conversation history was reset." };
           if (message.direction === "inbound") {
             await input.inboxTriage?.observeMessage({
               workspaceId: runInput.workspaceId,
@@ -567,39 +605,44 @@ export function createAgentRuntime(input: {
       const metadata = runInput.instruction?.trim()
         ? { instruction: runInput.instruction.trim() }
         : {};
-      const session = await prisma.aiAgentSession.upsert({
-        where: {
-          workspaceId_agentId_conversationId: {
+      const session = await resetFence(message, epoch, async db => {
+        const session = await db.aiAgentSession.upsert({
+          where: {
+            workspaceId_agentId_conversationId: {
+              workspaceId: runInput.workspaceId,
+              agentId: activeAgent.id,
+              conversationId: conversation.id
+            }
+          },
+          create: {
             workspaceId: runInput.workspaceId,
             agentId: activeAgent.id,
-            conversationId: conversation.id
+            conversationId: conversation.id,
+            status: "active",
+            metadata
+          },
+          update: {
+            status: "active",
+            metadata
           }
-        },
-        create: {
-          workspaceId: runInput.workspaceId,
-          agentId: activeAgent.id,
-          conversationId: conversation.id,
-          status: "active",
-          metadata
-        },
-        update: {
-          status: "active",
-          metadata
-        }
-      });
+        });
 
-      await prisma.conversation.update({
-        where: {
-          workspaceId_id: {
-            workspaceId: runInput.workspaceId,
-            id: conversation.id
+        await db.conversation.update({
+          where: {
+            workspaceId_id: {
+              workspaceId: runInput.workspaceId,
+              id: conversation.id
+            }
+          },
+          data: {
+            activeAgentSessionId: session.id,
+            aiControlStatus: "agent_allowed"
           }
-        },
-        data: {
-          activeAgentSessionId: session.id,
-          aiControlStatus: "agent_allowed"
-        }
-      });
+        });
+
+        return session;
+      }).catch(error => { if (error instanceof ConversationResetError) return null; throw error; });
+      if (!session) return { status: "skipped", message: "Conversation history was reset." };
 
       return {
         status: "completed",
@@ -644,10 +687,15 @@ export function createAgentRuntime(input: {
         prisma.message.findFirst({
           where: {
             workspaceId: runInput.workspaceId,
-            id: runInput.messageId
+            id: runInput.messageId,
+            hiddenByReset: false
           }
         })
       ]);
+
+      if (message?.hiddenByReset || (!message && (await prisma.message.findFirst({ where: { workspaceId: runInput.workspaceId, id: runInput.messageId } }))?.hiddenByReset)) {
+        return { status: "skipped", message: "Conversation history was reset." };
+      }
 
       const agent =
         activeAgent ??
@@ -668,7 +716,7 @@ export function createAgentRuntime(input: {
           : agent.status === "inactive"
             ? "O agente selecionado está inativo. Ative o agente antes de usar em automações."
             : "Agent, conversation, or message was not found.";
-        const run = await createRun({
+        const run = await persistRun({
           workspaceId: runInput.workspaceId,
           agentId: agent.id,
           conversationId: conversation?.id ?? null,
@@ -682,7 +730,7 @@ export function createAgentRuntime(input: {
       }
 
       if (message.conversationId !== conversation.id) {
-        const run = await createRun({
+        const run = await persistRun({
           workspaceId: runInput.workspaceId,
           agentId: agent.id,
           conversationId: conversation.id,
@@ -694,6 +742,28 @@ export function createAgentRuntime(input: {
         });
         return { status: "failed", runId: run.id, message: "Message does not belong to the conversation." };
       }
+
+      if (message.hiddenByReset) return { status: "skipped", message: "Conversation history was reset." };
+      const epoch = resetEpoch(conversation);
+      const stillCurrent = () => currentAnchor(prisma, message, epoch);
+      const createRun = (args: Parameters<typeof persistRun>[0]) => resetFence(message, epoch, db => persistRun(args, db));
+      const persistOutbound = async (args: { data: Record<string, unknown> }) => {
+        const transaction = prisma.$transaction as unknown as (work: (tx: AgentRuntimePrismaLike) => Promise<MessageRecord>, options: { isolationLevel: "ReadCommitted" }) => Promise<MessageRecord>;
+        return transaction.call(prisma, async tx => {
+          const real = typeof (tx as any).$queryRaw === "function";
+          if (real) await enterCanonicalWorkspaceTransaction(tx as any, message.workspaceId);
+          const db = real ? tx : prisma;
+          const current = await currentAnchor(db, message, epoch);
+          if (!current && args.data.status !== "sent") throw new ConversationResetError();
+          return db.message.create({ data: { ...args.data, ...(!current ? { hiddenByReset: true } : {}) } });
+        }, { isolationLevel: "ReadCommitted" });
+      };
+      const operational = {
+        conversation: { update: (args: unknown) => resetFence(message, epoch, db => db.conversation.update(args)) },
+        message: { update: (args: unknown) => resetFence(message, epoch, db => db.message.update(args)) },
+        aiAgentSession: { update: (args: Parameters<AgentRuntimePrismaLike["aiAgentSession"]["update"]>[0]) => resetFence(message, epoch, db => db.aiAgentSession.update(args)) },
+        auditLog: { create: (args: unknown) => resetFence(message, epoch, db => db.auditLog.create(args)) }
+      };
 
       const prospecting = await findProspectingReservation(prisma, runInput.workspaceId, conversation.id);
       const prospectingGeneration = prospecting?.generation;
@@ -750,29 +820,28 @@ export function createAgentRuntime(input: {
       // A prospecting transfer announced to the lead is applied after the reply goes out.
       let deferredProspectingHandoff: string | null = null;
 
-      const session = await prisma.aiAgentSession.upsert({
-        where: {
-          workspaceId_agentId_conversationId: {
+      const session = await resetFence(message, epoch, async db => {
+        const session = await db.aiAgentSession.upsert({
+          where: {
+            workspaceId_agentId_conversationId: {
+              workspaceId: runInput.workspaceId,
+              agentId: agent.id,
+              conversationId: conversation.id
+            }
+          },
+          create: {
             workspaceId: runInput.workspaceId,
             agentId: agent.id,
-            conversationId: conversation.id
+            conversationId: conversation.id,
+            status: "active",
+            metadata: {}
+          },
+          update: prospecting ? {} : {
+            status: "active"
           }
-        },
-        create: {
-          workspaceId: runInput.workspaceId,
-          agentId: agent.id,
-          conversationId: conversation.id,
-          status: "active",
-          metadata: {}
-        },
-        update: prospecting ? {} : {
-          status: "active"
-        }
-      });
-
-      try {
+        });
         if (conversation.activeAgentSessionId !== session.id) {
-          await prisma.conversation.update({
+          await db.conversation.update({
             where: {
               workspaceId_id: {
                 workspaceId: runInput.workspaceId,
@@ -785,6 +854,11 @@ export function createAgentRuntime(input: {
           });
           conversation.activeAgentSessionId = session.id;
         }
+
+        return session;
+      }).catch(error => { if (error instanceof ConversationResetError) return null; throw error; });
+      if (!session) return { status: "skipped", message: "Conversation history was reset." };
+      try {
 
         const recentMessages = await prisma.message.findMany({
           where: visibleConversationMessageWhere({
@@ -805,7 +879,7 @@ export function createAgentRuntime(input: {
         if (prospecting && loopGuard.triggered && ["automated_menu", "waiting_reception"].includes(loopGuard.guard)) {
           // Prospecting waits for the person behind the bot instead of giving up the lead:
           // no reply now, and the next human message is answered normally.
-          await prisma.aiAgentSession.update({
+          await operational.aiAgentSession.update({
             where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: session.id } },
             data: { lastRunAt: new Date() }
           });
@@ -832,7 +906,7 @@ export function createAgentRuntime(input: {
             loopInboundCount: loopGuard.inboundCount,
             loopAiOutboundCount: loopGuard.aiOutboundCount
           };
-          await prisma.aiAgentSession.update({
+          await operational.aiAgentSession.update({
             where: {
               workspaceId_id: {
                 workspaceId: runInput.workspaceId,
@@ -846,7 +920,7 @@ export function createAgentRuntime(input: {
               lastRunAt: new Date()
             }
           });
-          await prisma.conversation.update({
+          await operational.conversation.update({
             where: {
               workspaceId_id: {
                 workspaceId: runInput.workspaceId,
@@ -857,7 +931,7 @@ export function createAgentRuntime(input: {
               aiControlStatus: "human_controlled"
             }
           });
-          await prisma.auditLog.create({
+          await operational.auditLog.create({
             data: {
               workspaceId: runInput.workspaceId,
               actorUserId: null,
@@ -899,7 +973,7 @@ export function createAgentRuntime(input: {
           // A newer text anchor must not hide an opt-out in an earlier audio in
           // the same burst, including audio received while dispatch was pending.
           const liveAudio = await prisma.message.findMany({ where: { workspaceId: runInput.workspaceId,
-            conversationId: conversation.id, direction: "inbound", type: "audio",
+            conversationId: conversation.id, direction: "inbound", type: "audio", hiddenByReset: false,
             metadata: { path: ["prospectingLiveGeneration"], equals: prospecting.generation } }, orderBy: { createdAt: "asc" } });
           for (const audio of liveAudio) await prepareAudioMessageRecord(audio as MessageRecord, providerSettings);
           if (!await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id,
@@ -982,7 +1056,7 @@ export function createAgentRuntime(input: {
           const handled = attachment.type === "image" && prepared.status === "failed"
             ? { ...prepared, fallback: IMAGE_PROCESSING_FALLBACK }
             : prepared;
-          const updated = await prisma.message.update({
+          const updated = await operational.message.update({
             where: { id: attachment.id },
             data: {
               body: formatProcessedMediaMessage(attachment.body ?? "", handled),
@@ -1032,7 +1106,7 @@ export function createAgentRuntime(input: {
             effectiveText = stored?.status === "processed" ? effectiveText : formatProcessedMediaMessage(effectiveText, media);
           }
           if (stored?.status !== "processed") {
-            const updated = await prisma.message.update({
+            const updated = await operational.message.update({
               where: { id: message.id },
               data: { body: media.status === "processed" ? effectiveText : formatProcessedMediaMessage(effectiveText, handledMedia), metadata: { ...metadata, inboundMedia: handledMedia } }
             });
@@ -1227,7 +1301,7 @@ export function createAgentRuntime(input: {
         }
 
         if (replyPreflight?.outcome === "silence" && !approvedCatalogSelection) {
-          await prisma.aiAgentSession.update({
+          await operational.aiAgentSession.update({
             where: {
               workspaceId_id: {
                 workspaceId: runInput.workspaceId,
@@ -1338,7 +1412,7 @@ export function createAgentRuntime(input: {
             contextSummary = { ...contextSummary, replyQualityAudit };
 
             if (replyQualityAudit.outcome === "suppress") {
-              await prisma.aiAgentSession.update({
+              await operational.aiAgentSession.update({
                 where: {
                   workspaceId_id: {
                     workspaceId: runInput.workspaceId,
@@ -1407,6 +1481,7 @@ export function createAgentRuntime(input: {
           replyCompacted: replyPolicy?.compacted ?? false
         };
 
+        if (!await stillCurrent()) return { status: "skipped", message: "Conversation history was reset." };
         const confidenceThreshold = readConfidenceThreshold(agent.handoffConfig);
         const beforeActions = await prisma.conversation.findUnique({ where: { workspaceId_id: { workspaceId: runInput.workspaceId, id: conversation.id } }, include: { channel: true } });
         if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
@@ -1419,7 +1494,8 @@ export function createAgentRuntime(input: {
             allowed: allowedActions.includes("schedule_meeting") && !getHandoffReason(providerOutput, confidenceThreshold),
             conversation,
             workspaceId: runInput.workspaceId,
-            agent
+            agent,
+            stillCurrent
           });
           providerOutput = booking.output;
           meetingResult = booking.result;
@@ -1456,7 +1532,8 @@ export function createAgentRuntime(input: {
               : HANDOFF_ACKNOWLEDGEMENT
             : providerOutput.reply;
 
-        actionResults = await executeAgentActions(prisma as AgentToolExecutorPrismaLike, {
+        const outputActions = providerOutput.actions;
+        actionResults = await resetFence(message, epoch, db => executeAgentActions({ ...db, $transaction: callback => callback(db) } as AgentToolExecutorPrismaLike, {
           workspaceId: runInput.workspaceId,
           conversationId: conversation.id,
           allowedActions: prospecting ? Array.from(new Set<AiAgentAllowedAction>([...allowedActions, "request_handoff"])) : unreadableImageRequiresHandoff
@@ -1465,9 +1542,9 @@ export function createAgentRuntime(input: {
           allowedTags,
           // The transfer action would end prospecting before the announcement is sent.
           actions: prospectingHandoffReply
-            ? providerOutput.actions.filter((action) => normalizeActionType(action.type) !== "request_handoff")
-            : providerOutput.actions
-        });
+            ? outputActions.filter((action) => normalizeActionType(action.type) !== "request_handoff")
+            : outputActions
+        }));
         if (meetingResult) actionResults = [meetingResult, ...actionResults];
         contextSummary = {
           ...contextSummary,
@@ -1506,6 +1583,7 @@ export function createAgentRuntime(input: {
             ? splitReplyIntoBubbles(outboundReply) : [outboundReply];
           let lastOutboundMessage: MessageRecord | null = null;
           for (const [bubbleIndex, bubble] of bubbles.entries()) {
+            if (!await stillCurrent()) return { status: "skipped", message: "Conversation history was reset." };
             if (bubbleIndex > 0 && !await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) break;
             const pending = prospecting ? await reserveProspectingOutbound(prisma, {
               workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id,
@@ -1519,7 +1597,7 @@ export function createAgentRuntime(input: {
               bubbles.length > 1 ? typingDelayMs(bubble) : undefined);
             const outboundMessage = pending ? await dispatchProspectingOutbound(prisma, pending,
               () => sendAgentReplyToProvider(input.evolution, conversation, bubble,
-                bubbles.length > 1 ? typingDelayMs(bubble) : undefined, pending.id)) : await prisma.message.create({
+                bubbles.length > 1 ? typingDelayMs(bubble) : undefined, pending.id)) : await persistOutbound({
               data: {
                 workspaceId: runInput.workspaceId,
                 conversationId: conversation.id,
@@ -1536,6 +1614,7 @@ export function createAgentRuntime(input: {
                 }
               }
             });
+            if (!await stillCurrent()) return { status: "skipped", message: "Conversation history was reset." };
             input.realtime?.publish({
               type: "message.created",
               workspaceId: runInput.workspaceId,
@@ -1543,9 +1622,9 @@ export function createAgentRuntime(input: {
             });
             lastOutboundMessage = outboundMessage;
           }
-          if (lastOutboundMessage) {
+          if (lastOutboundMessage && await stillCurrent()) {
             await observeAgentOutboundFollowup(lastOutboundMessage);
-            await prisma.conversation.update({
+            await operational.conversation.update({
               where: {
                 workspaceId_id: {
                   workspaceId: runInput.workspaceId,
@@ -1561,6 +1640,7 @@ export function createAgentRuntime(input: {
         }
 
         for (const attachment of pendingAttachments) {
+          if (!await stillCurrent()) return { status: "skipped", message: "Conversation history was reset." };
           if (!await ownsAgentReplyClaim(prisma, runInput.workspaceId, runInput.replyClaim)) return { status: "skipped", message: "Agent reply queue ownership changed." };
           if (prospecting && !await autonomousAgentAllowed(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id, agentId: agent.id, sessionId: session.id, expectedGeneration: prospectingGeneration })) return { status: "skipped", message: "Prospecting authorization changed." };
           const pending = prospecting ? await reserveProspectingOutbound(prisma, { workspaceId: runInput.workspaceId, conversationId: conversation.id,
@@ -1569,7 +1649,7 @@ export function createAgentRuntime(input: {
             metadata: { attachment: true, ...(runInput.replyClaim ? { replyClaimId: runInput.replyClaim.id, replyClaimToken: runInput.replyClaim.token } : {}) } }) : null;
           const providerSend = pending ? null : await sendAgentAttachmentToProvider(input.evolution, conversation, attachment);
           const outboundMessage = pending ? await dispatchProspectingOutbound(prisma, pending,
-            () => sendAgentAttachmentToProvider(input.evolution, conversation, attachment)) : await prisma.message.create({
+            () => sendAgentAttachmentToProvider(input.evolution, conversation, attachment)) : await persistOutbound({
             data: {
               workspaceId: runInput.workspaceId,
               conversationId: conversation.id,
@@ -1587,13 +1667,14 @@ export function createAgentRuntime(input: {
               }
             }
           });
+          if (!await stillCurrent()) return { status: "skipped", message: "Conversation history was reset." };
           await observeAgentOutboundFollowup(outboundMessage);
           input.realtime?.publish({
             type: "message.created",
             workspaceId: runInput.workspaceId,
             payload: toMessageDto(outboundMessage)
           });
-          await prisma.conversation.update({
+          await operational.conversation.update({
             where: {
               workspaceId_id: {
                 workspaceId: runInput.workspaceId,
@@ -1608,8 +1689,9 @@ export function createAgentRuntime(input: {
           });
         }
 
+        if (!await stillCurrent()) return { status: "skipped", message: "Conversation history was reset." };
         if (prospecting && handoffReason) await stopProspectingConversation(prisma, runInput.workspaceId, conversation.id, handoffReason);
-        await prisma.aiAgentSession.update({
+        await resetFence(message, epoch, db => db.aiAgentSession.update({
           where: {
             workspaceId_id: {
               workspaceId: runInput.workspaceId,
@@ -1623,7 +1705,7 @@ export function createAgentRuntime(input: {
             lastRunAt: new Date(),
             messageCount: { increment: 1 }
           }
-        });
+        }));
 
         await publishConversationUpdated(runInput.workspaceId, conversation.id);
 
@@ -1646,6 +1728,7 @@ export function createAgentRuntime(input: {
         if (handoffReason) input.handoffBriefService?.schedule({ workspaceId: runInput.workspaceId, conversationId: conversation.id });
         return { status, runId: run.id };
       } catch (error) {
+        if (error instanceof ConversationResetError || !await stillCurrent()) return { status: "skipped", message: "Conversation history was reset." };
         const errorMessage = getErrorMessage(error);
         if (deferredProspectingHandoff) await stopProspectingConversation(prisma, runInput.workspaceId, conversation.id, deferredProspectingHandoff);
         const run = await createRun({
@@ -1693,6 +1776,7 @@ export function createAgentRuntime(input: {
     conversation: ConversationRecord;
     workspaceId: string;
     agent: { id: string; behaviorConfig: unknown };
+    stillCurrent?: () => Promise<boolean>;
   }): Promise<{ output: AgentOutput; result: AgentToolExecutionResult }> {
     const request = args.output.actions.find((action) => action.type === "schedule_meeting");
     const output = { ...args.output, actions: args.output.actions.filter((action) => action.type !== "schedule_meeting") };
@@ -1711,8 +1795,10 @@ export function createAgentRuntime(input: {
         contactName: args.conversation.contact?.name ?? null,
         contactPhone: args.conversation.contact?.phone ?? null,
         attendeeEmail: email ?? args.conversation.contact?.email ?? null,
-        notes: firstString(request, ["notes", "summary", "reason"]) ?? null
+        notes: firstString(request, ["notes", "summary", "reason"]) ?? null,
+        stillCurrent: args.stillCurrent
       });
+      if (args.stillCurrent && !await args.stillCurrent()) throw new ConversationResetError();
       if (booking.status === "unavailable") {
         const options = booking.availableSlots.slice(0, 3).map((slot) => slot.label);
         if (options.length === 0) {
@@ -1745,6 +1831,7 @@ export function createAgentRuntime(input: {
         result: { type: "schedule_meeting", status: "completed", conversationId: args.conversation.id }
       };
     } catch (error) {
+      if (error instanceof ConversationResetError) throw error;
       input.logger?.warn({ err: error, conversationId: args.conversation.id }, "Meeting booking failed");
       const reason = "Não consegui marcar a call na agenda Google. Confirme o horário com o contato.";
       return {
@@ -1765,6 +1852,7 @@ export function createAgentRuntime(input: {
         conversationId: args.conversation.id,
         agentId: args.agent.id,
         behaviorConfig: args.agent.behaviorConfig,
+        expectedHistoryResetAt: args.conversation.historyResetAt ?? null,
         meeting
       });
       return scheduled;
@@ -1845,7 +1933,7 @@ export function createAgentRuntime(input: {
     }
   }
 
-  async function createRun(input: {
+  async function persistRun(input: {
     workspaceId: string;
     agentId: string;
     sessionId?: string | null;
@@ -1860,8 +1948,8 @@ export function createAgentRuntime(input: {
     status: AgentRunStatus;
     confidence?: number | null;
     errorMessage?: string | null;
-  }) {
-    return await prisma.aiAgentRun.create({
+  }, db = prisma) {
+    return await db.aiAgentRun.create({
       data: {
         workspaceId: input.workspaceId,
         agentId: input.agentId,
@@ -1958,6 +2046,7 @@ async function evaluateFreshConversation(input: {
       workspaceId: input.workspaceId,
       conversationId: input.conversation.id,
       id: { not: input.message.id },
+      hiddenByReset: false,
       createdAt: { lt: messageCreatedAt }
     }
   });
@@ -1966,6 +2055,7 @@ async function evaluateFreshConversation(input: {
     return { ok: false, reason: FRESH_CONVERSATION_HANDOFF_REASON };
   }
 
+  if (input.conversation.historyResetAt) return { ok: true };
   const provider = input.conversation.channel?.provider;
   const instanceName = input.conversation.channel?.providerKey;
   const remoteJid = buildRemoteJid(input.conversation.contact?.phone);
@@ -2292,3 +2382,5 @@ function formatMinutesBefore(minutes: number) {
   if (minutes % 60 === 0) return minutes === 60 ? "1 hora" : `${minutes / 60} horas`;
   return `${minutes} min`;
 }
+
+class ConversationResetError extends Error { constructor() { super("Conversation history was reset."); } }

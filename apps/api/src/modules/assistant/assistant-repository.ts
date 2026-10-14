@@ -11,13 +11,14 @@ export function createAssistantRepository(prisma: PrismaClient) {
         await lockAssistantConversation(tx, input.workspaceId, input.conversationId);
         const conversation = await tx.conversation.findFirst({ where: { workspaceId: input.workspaceId, id: input.conversationId }, include: { channel: true, activeAgentSession: true } });
         if (!conversation) return false;
+        if (input.messageId && !await tx.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, id: input.messageId, hiddenByReset: false }, select: { id: true } })) return false;
         const prospecting = await findProspectingReservation(tx, input.workspaceId, input.conversationId);
         if (prospecting && prospecting.status !== "stopped") return false;
         const {settings,humanSupport}=resolveConversationAssistant(conversation);
         const where = { workspaceId_conversationId: { workspaceId: input.workspaceId, conversationId: input.conversationId } };
         const state = await tx.assistantConversationState.findUnique({ where });
         if (!canGenerateSuggestion({ mode: settings.mode, control: conversation.aiControlStatus, trigger: input.trigger, humanSupport })) return false;
-        const latest = await tx.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, type: { notIn: ['internal_note', 'system'] } }, orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }] });
+        const latest = await tx.message.findFirst({ where: { workspaceId: input.workspaceId, conversationId: input.conversationId, hiddenByReset: false, type: { notIn: ['internal_note', 'system'] } }, orderBy: [{ ingestedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }] });
         // A release never replays an already answered conversation. Duplicate hooks are harmless.
         if (!latest || (input.trigger === 'inbound' && (latest.direction !== 'inbound' || state?.lastMessageId === latest.id))) return false;
         if (input.trigger === 'continuation' && (latest.direction !== 'outbound' || !humanSupport || (state?.lastMessageId === latest.id && state.status !== 'stale'))) return false;
