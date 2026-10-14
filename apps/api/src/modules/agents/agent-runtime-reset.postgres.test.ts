@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createAgentRuntime } from './agent-runtime.js';
 import { createMeetingReminderService } from './meeting-reminders.js';
+import { measureInboxDatabase } from '../../plugins/inbox-timing.js';
 import { createConversationsService, type PrismaLike } from '../conversations/conversations.service.js';
 
 const url = process.env.MESSAGING_TEST_DATABASE_URL;
@@ -34,6 +35,26 @@ describe.skipIf(!url)('agent reset fences with real PostgreSQL', () => {
   }
   const reset = (f: Awaited<ReturnType<typeof fixture>>) => createConversationsService(db as unknown as PrismaLike).resetConversation({ workspaceId: f.workspaceId, conversationId: f.conversationId, actorUserId: null });
   const output = () => ({ confidence: 1, reply: 'Olá! Como posso ajudar?', actions: [], handoff: { required: false, reason: null } });
+
+  it('answers a post-reset external form with the instrumented Prisma client used by the API', async () => {
+    const f = await fixture(); await reset(f);
+    const conversation = await db.conversation.findUniqueOrThrow({ where: { id: f.conversationId } });
+    const fresh = await db.message.create({ data: { workspaceId: f.workspaceId, conversationId: f.conversationId,
+      direction: 'inbound', type: 'system', body: 'Formulário recebido (Webhook externo)', status: 'delivered',
+      metadata: { source: 'automation_webhook' }, createdAt: new Date(conversation.historyResetAt!.getTime() + 1) } });
+    const instrumented = db.$extends({ query: { $allModels: {
+      $allOperations({ args, query }) { return measureInboxDatabase(() => query(args)); }
+    } } });
+    const sendText = vi.fn().mockResolvedValue({ providerMessageId: 'external-form-reply' });
+    const provider = { generate: vi.fn(async () => ({ ...output(), actions: [{ type: 'create_internal_note', body: 'Novo formulário recebido.' }] })) };
+    const runtime = createAgentRuntime({ prisma: instrumented as never, provider, evolution: { mode: 'real', client: { sendText } } });
+    expect((await runtime.activateForMessage({ ...f, messageId: fresh.id })).status).toBe('completed');
+    const result = await runtime.runForMessage({ ...f, messageId: fresh.id, trigger: 'automation' });
+    const runs = await db.aiAgentRun.findMany({ where: { workspaceId: f.workspaceId }, select: { status: true, errorMessage: true } });
+    expect({ result, runs }).toMatchObject({ result: { status: 'completed' }, runs: [{ status: 'completed', errorMessage: null }] });
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(await db.contactNote.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+  });
 
   it('stops a direct generation after reset without sending, actions, session or run resurrection', async () => {
     const f = await fixture();
