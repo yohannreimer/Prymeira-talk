@@ -45,6 +45,6 @@ describe("supervision for a manager", () => {
     expect(container.textContent).toContain("vendas5"); expect(container.textContent).not.toContain("WhatsApp sem número");
     expect(container.querySelector(".supervision-conversation .supervision-wait.is-late")?.textContent).toContain("esperando há 1h35");
     expect(container.querySelector(".supervision-next-action")?.textContent).toContain("Confirme o estoque de chapa xadrez");
-    expect(container.textContent).toContain("1ª resposta em ~");
+    expect(container.textContent).toContain("1ª resposta ~");
   });
 });
