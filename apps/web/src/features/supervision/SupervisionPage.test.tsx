@@ -58,12 +58,13 @@ describe("supervisão somente de leitura", () => {
 
   const weeklyResponse = (kind: "follow_up" | "seller_reminder" = "follow_up") => ({
     weeks: [{ id: "2026-10-05", label: "5 a 11 de outubro de 2026", startDate: "2026-10-05", endDate: "2026-10-11", followupCount: 38, reminderCount: 19 }], selectedWeekId: "2026-10-05",
-    conversations: [conversation("c1", { weeklyFollowup: { weekId: "2026-10-05", kind, suggestion: kind === "follow_up" ? "Conseguiu avaliar aquela peça?" : "Lembrete interno: conferir cotação" } })]
+    conversations: [conversation("c1", { nextActionText: "plan_mismatch", weeklyFollowup: { weekId: "2026-10-05", kind, suggestion: kind === "follow_up" ? "Conseguiu avaliar aquela peça?" : "Lembrete interno: conferir cotação" } })]
   });
   it("opens the manual week, shows the seller number and current history, and fills a draft only after an explicit click", async () => {
     vi.mocked(apiSupervisionFollowupWeeks).mockResolvedValue(weeklyResponse());
     await render(); await click(button("Follow-ups da semana"));
     expect(container.textContent).toContain("38 follow-ups · 19 lembretes");
+    expect(container.textContent).not.toContain("plan_mismatch");
     expect(container.querySelector(".supervision-seller-line")?.textContent).toContain("+5511999999999");
     expect(container.querySelector(".supervision-summary")).toBeNull();
     await open(); expect(container.textContent).toContain("Histórico privado");

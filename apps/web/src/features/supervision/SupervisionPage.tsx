@@ -314,7 +314,7 @@ export function SupervisionPage() {
                   <p className="supervision-seller-line">{sellerLabel(conversation)}{weeklyMode && conversation.channelPhoneNumber ? ` · ${conversation.channelPhoneNumber}` : ""}</p>
                   {conversation.weeklyFollowup ? <span className="supervision-week-kind">{conversation.weeklyFollowup.kind === "follow_up" ? "Follow-up ao cliente" : "Lembrete ao vendedor"}</span> : null}
                   <p className="supervision-preview">{conversation.lastMessagePreview ?? "Conversa sem mensagens"}</p>
-                  <NextAction text={conversation.nextActionText} />
+                  {!weeklyMode ? <NextAction text={conversation.nextActionText} /> : null}
                   <div className="supervision-conversation-flags"><PendingAlert conversation={conversation} />{conversation.unreadCount > 0 ? <span className="supervision-unread">{conversation.unreadCount} não lida{conversation.unreadCount > 1 ? "s" : ""}</span> : null}{conversation.status === "closed" ? <span className="supervision-closed">Encerrada</span> : null}</div>
                 </button>;
               })}
@@ -328,7 +328,7 @@ export function SupervisionPage() {
                   <p>{[displayedConversation.contactPhone, `Atendido por ${sellerLabel(displayedConversation)}`, displayedConversation.channelPhoneNumber].filter(Boolean).join(" · ")}</p>
                   <div className="supervision-thread-flags"><WaitBadge since={displayedConversation.waitingSince} now={now} />
                     <WaitingDismiss conversation={displayedConversation} getToken={getToken} onChanged={view.refresh} /><PendingAlert conversation={displayedConversation} /></div>
-                  <NextAction text={displayedConversation.nextActionText} />
+                  {!weeklyMode ? <NextAction text={displayedConversation.nextActionText} /> : null}
                 </div><button type="button" aria-label="Fechar conversa" onClick={() => view.selectConversation(null)}><X size={20} /></button></header>
                 {view.threadError ? <div className="supervision-error" role="alert">{view.threadError}<button type="button" onClick={view.refresh}>Tentar novamente</button></div> : null}
                 <ThreadHistory lastMessageId={thread?.messages.at(-1)?.id}>{thread?.messages.map(message => <ThreadMessage key={message.id} message={message} getToken={getToken} transport={transport} />)}
