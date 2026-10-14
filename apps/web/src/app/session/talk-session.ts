@@ -316,7 +316,9 @@ export class TalkSession {
     this.resets.set(row.id, row);
     const pending = this.pendingAlerts.get(row.id);
     if (pending && !messageVisibleAfterReset(pending.message, row.historyResetAt)) { clearTimeout(pending.timer); this.pendingAlerts.delete(row.id); }
-    this.client.setQueryData<MessageDto[]>(this.key('messages', row.id), current => this.visibleMessages(row.id, current ?? []));
+    // An unloaded history must still fetch from the server on first opening.
+    // Seeding it with [] would mark it fresh and hide post-reset messages.
+    this.client.setQueryData<MessageDto[]>(this.key('messages', row.id), current => current === undefined ? undefined : this.visibleMessages(row.id, current));
     for (const kind of ['context', 'assistant']) this.client.removeQueries({ queryKey: this.key(kind, row.id), exact: true });
     this.writeUI(`draft:${row.id}`, '', '');
     this.writeUI(`draftOrigin:${row.id}`, null, null);

@@ -17,6 +17,18 @@ describe('conversation reset boundary', () => {
     lastMessagePreview: null, lastMessage: null, sourceCampaign: null, unreadCount: 0
   } as Partial<ConversationDto>);
 
+  it('loads post-reset history on first opening after a page reload', async () => {
+    const cache = session(); const key = cache.key('messages', 'c1');
+    await cache.client.fetchQuery({ queryKey: cache.key('conversations', 'all', 'all', ''),
+      queryFn: () => cache.readConversations(async () => [reset()]) });
+    const fresh = { ...message('form'), type: 'system' as const, createdAt: '2026-10-14T22:00:01.000Z' };
+    const reply = { ...message('reply'), direction: 'outbound' as const, createdAt: '2026-10-14T22:00:02.000Z' };
+    const read = vi.fn(async () => [message('old'), fresh, reply]);
+    const rows = await cache.client.fetchQuery({ queryKey: key, queryFn: () => cache.readMessages('c1', read) });
+    expect(read).toHaveBeenCalledOnce();
+    expect(rows).toEqual([fresh, reply]);
+  });
+
   it('clears another browser session history, context, card and pending alerts for only the reset target', () => {
     const cache = session();
     const list = cache.key('conversations', 'all', 'all', '');
