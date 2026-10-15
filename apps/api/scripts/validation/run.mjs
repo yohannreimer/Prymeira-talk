@@ -19,6 +19,7 @@ const run = (command, args, env = process.env, capture = false) => new Promise((
 const sha = await run('git', ['rev-parse', 'HEAD'], process.env, true);
 const sourceState = (await run('git', ['status', '--porcelain'], process.env, true)) ? 'working-tree' : 'clean-checkout';
 if (process.env.GITHUB_SHA && process.env.GITHUB_SHA !== sha) throw new Error('Checkout does not match GITHUB_SHA');
+await writeFile(join(output, 'validation-started.json'), JSON.stringify({ sha, sourceState, phase, state: 'started', startedAt: new Date().toISOString() }, null, 2));
 const unitEnv = { ...process.env };
 for (const key of [...Object.keys(databaseVariables), 'INGRESS_TEST_AMQP_URL', 'TALK_TEST_POSTGRES_PORT', 'TALK_TEST_AMQP_PORT']) delete unitEnv[key];
 const phases = [];

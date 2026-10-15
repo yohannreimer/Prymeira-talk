@@ -204,11 +204,15 @@ export async function renderVideoPoster(video: Media): Promise<Media> {
   try {
     const source = join(directory, 'video'), target = join(directory, 'poster.jpg');
     await writeFile(source, video.bytes);
-    const frame = (seek: string[]) => run('ffmpeg', ['-v', 'error', '-y', ...seek, '-i', source, '-frames:v', '1', '-vf', "scale='min(480,iw)':-2", '-q:v', '5', target], { timeout: 20_000 });
-    // A clip shorter than the seek point has no frame there; its very first frame is used instead.
-    await frame(['-ss', '0.1']).catch(() => frame([]));
-    const bytes = await readFile(target);
-    if (!bytes.length) throw new Error('POSTER_FAILED');
+    const frame = async (seek: string[]) => {
+      await run('ffmpeg', ['-v', 'error', '-y', ...seek, '-i', source, '-frames:v', '1', '-vf', "scale='min(480,iw)':-2", '-q:v', '5', target], { timeout: 20_000 });
+      // ffmpeg can exit successfully without writing a frame when the seek is
+      // beyond a short clip. Validate the output inside the fallback boundary.
+      const bytes = await readFile(target);
+      if (!bytes.length) throw new Error('POSTER_FAILED');
+      return bytes;
+    };
+    const bytes = await frame(['-ss', '0.1']).catch(() => frame([]));
     return { bytes, mimeType: 'image/jpeg' };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
