@@ -3,6 +3,7 @@ import { EvolutionClientError, createEvolutionClient } from "./evolution.client.
 import { createEvolutionRuntime } from "./evolution-runtime.js";
 import { AgentMediaError } from '../agents/agent-media-resolver.js';
 import { createMessageMediaService } from '../conversations/message-media.js';
+import { evolutionExactPage } from '../../test/evolution-exact-page.js';
 
 describe('Evolution media size handling', () => {
   it('cancels an oversized provider response and reports a permanent size limit', async () => {
@@ -820,17 +821,19 @@ describe('exact canonical media acquisition', () => {
   it('resolves and downloads the full native key despite a native-id collision in another chat', async () => {
     const exact = { key: { id: 'same', remoteJid: key.nativeChatAddress, fromMe: false }, messageTimestamp: 1700000010, message: { imageMessage: { mimetype: 'image/png' } } };
     const foreign = { ...exact, key: { ...exact.key, remoteJid: '15550000002@s.whatsapp.net' } };
-    const fetch = vi.fn(async (url: unknown, init?: RequestInit) => String(url).includes('findMessages') ? Response.json({ messages: { pages: 1, records: [foreign, exact] } }) : Response.json({ base64: 'eA==', mimetype: 'image/png' }));
+    const fetch = vi.fn(async (url: unknown, init?: RequestInit) => String(url).includes('findMessages') ? Response.json(evolutionExactPage([foreign, exact], JSON.parse(String(init?.body)))) : Response.json({ base64: 'eA==', mimetype: 'image/png' }));
     const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
     await expect(client.fetchMedia!({ instanceName: 'inst', id: 'same', key })).resolves.toBe('data:image/png;base64,eA==');
-    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toMatchObject({ message: exact });
+    expect(JSON.parse(String(fetch.mock.calls.at(-1)?.[1]?.body))).toMatchObject({ message: exact });
+    expect(fetch).toHaveBeenCalledTimes(5);
     expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).where.key).toEqual({ id: exact.key.id });
   });
   it('does not download bytes for mismatched direction or group participant', async () => {
-    const fetch = vi.fn(async () => Response.json({ messages: { pages: 1, records: [{ key: { id: 'same', remoteJid: key.nativeChatAddress, fromMe: true }, messageTimestamp: 1700000010, message: {} }] } }));
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => Response.json(evolutionExactPage([{ key: { id: 'same', remoteJid: key.nativeChatAddress, fromMe: true }, messageTimestamp: 1700000010, message: {} }], JSON.parse(String(init?.body)))));
     const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
     await expect(client.fetchMedia!({ instanceName: 'inst', id: 'same', key })).rejects.toThrow('MEDIA_IDENTITY_MISSING');
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch.mock.calls.every(([url]) => String(url).includes('findMessages'))).toBe(true);
   });
 });
 
@@ -838,7 +841,7 @@ it('cancels oversized media while streaming on the canonical exact-key path', as
   const key = { identityFormat: 'whatsapp_stanza', nativeId: 'bounded', rawId: 'bounded', nativeChatAddress: '15550000001@s.whatsapp.net', chatAddress: '15550000001@s.whatsapp.net', direction: 'inbound', senderParticipant: '', nativeSenderParticipant: null } as const;
   const cancel = vi.fn(); let chunks = 0;
   const body = new ReadableStream<Uint8Array>({ pull(controller) { if (chunks++ < 50) controller.enqueue(new Uint8Array(1024 * 1024)); else controller.close(); }, cancel });
-  const fetch = vi.fn(async (url: unknown) => String(url).includes('findMessages') ? Response.json({ messages: { pages: 1, records: [{ key: { id: 'bounded', remoteJid: key.nativeChatAddress, fromMe: false }, messageTimestamp: 1700000010, message: {} }] } }) : new Response(body));
+  const fetch = vi.fn(async (url: unknown, init?: RequestInit) => String(url).includes('findMessages') ? Response.json(evolutionExactPage([{ key: { id: 'bounded', remoteJid: key.nativeChatAddress, fromMe: false }, messageTimestamp: 1700000010, message: {} }], JSON.parse(String(init?.body)))) : new Response(body));
   const client = createEvolutionClient({ baseUrl: 'https://evolution.invalid', apiKey: 'synthetic', fetch });
   await expect(client.fetchMedia!({ instanceName: 'fixture', id: 'bounded', key })).rejects.toMatchObject({ code: 'MEDIA_TOO_LARGE' });
   expect(cancel).toHaveBeenCalledOnce();

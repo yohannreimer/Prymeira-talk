@@ -1,0 +1,13 @@
+# Recuperação exata de mídia da Evolution
+
+Em uma lista de transmissão, `key.id` pode ser compartilhado por vários destinatários. Uma consulta observada retornou 408 linhas físicas, 204 chaves nativas distintas e duas cópias idênticas da mensagem procurada, em páginas diferentes. Considerar a primeira página ambígua impedia recuperar arquivos válidos; escolher pelo ID sozinho poderia recuperar o arquivo de outra conversa.
+
+`findMessageExact` e `mediaExact` consultam esse ID com `offset: 100`, conferem a identidade completa e exigem uma varredura comprovadamente completa. Cada página precisa informar `currentPage`, `pages` e `total` consistentes; a página após a última deve estar vazia. Dois manifestos completos consecutivos precisam coincidir, em no máximo três passagens. Isso vale também para uma única mensagem. Uma resposta sem os metadados necessários não autoriza download.
+
+O ID físico da linha serve apenas para detectar páginas repetidas ou omitidas. A identidade continua incluindo conversa, direção, remetente de grupo e formato do ID. A equivalência PN/LID exige o vínculo alternativo explícito do próprio registro. Duas linhas só representam uma cópia recuperável quando todo o registro histórico normalizado coincide, incluindo chave, timestamp e conteúdo; conflitos continuam ambíguos. `getBase64FromMediaMessage` recebe o registro e a chave nativa originais.
+
+Limites: 50 páginas/5.000 linhas, 8 MiB de metadados retidos, 16 MiB por resposta de consulta e 30 segundos totais para consulta exata e download. Cada requisição também conserva o limite de 15 segundos. O leitor do corpo é cancelado ao atingir o deadline. Os limites de bytes e tipos permitidos para cada finalidade de mídia continuam aplicados.
+
+Após publicar uma correção, a recuperação operacional deve reenfileirar somente `media.prepare` explicitamente delimitados, com fonte/chave completas e demais efeitos da mensagem já concluídos. Preservar tentativas e histórico de erro, limpar `completedAt` ao voltar a `pending` e conceder no máximo uma tentativa adicional. Não reenfileirar disparos, IA, automações, CRM ou entregas incertas. Usar lotes pequenos e conferir armazenamento disponível e resultado terminal antes de avançar. Arquivos removidos pelo provedor podem continuar indisponíveis.
+
+Regressões: `evolution-history.exact-pagination.test.ts`, testes de histórico/cliente Evolution, `provider-exact.test.ts`, `media-prepare-source.test.ts`, aplicação compilada com PostgreSQL/Rabbit e ensaio de produção. As fixtures reproduzem IDs físicos independentes, metadados reais, página terminal e estabilidade; não contêm dados de clientes.

@@ -3,6 +3,7 @@ import { createEvolutionHistorySource } from './evolution-history.js';
 import { fullProviderKeyMatches } from '../messaging/provider-exact.js';
 import type { WhatsAppMessageKey } from '../messaging/whatsapp-identity.js';
 import { createExactEvolutionMediaFixture } from '../../test/evolution-media-fixture.js';
+import { evolutionExactPage } from '../../test/evolution-exact-page.js';
 import type { AddressInfo } from 'node:net';
 
 const jid = '123456789@s.whatsapp.net';
@@ -29,7 +30,8 @@ describe('exact Evolution PN/LID rebound', () => {
       const body = JSON.parse(String(init?.body));
       if (String(url).includes('getBase64')) return Response.json({ base64: 'YQ==', mimetype: 'image/png' });
       // Faithful failing production contract: the provider stores LID; a PN filter misses it.
-      return Response.json({ messages: { records: body.where.key.remoteJid ? [] : records, pages: 1, ...metadata } });
+      const result = evolutionExactPage(body.where.key.remoteJid ? [] : records, body);
+      Object.assign(result.messages, metadata); return Response.json(result);
     });
     return { fetch, source: createEvolutionHistorySource({ baseUrl: 'https://evolution.invalid', apiKey: 'fixture-key', fetch }) };
   }
@@ -37,8 +39,9 @@ describe('exact Evolution PN/LID rebound', () => {
     const { source, fetch } = exact([native]), keyBefore = { ...expected };
     expect(await source.mediaExact({ instanceName: 'owned-instance', key: expected, purpose: 'serve' })).toEqual({ kind: 'resolved', record: native, mediaUrl: 'data:image/png;base64,YQ==' });
     expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({ where: { key: { id: 'NATIVE' } }, page: 1, offset: 100 });
-    expect(fetch.mock.calls.map(([url]) => url)).toEqual(['https://evolution.invalid/chat/findMessages/owned-instance', 'https://evolution.invalid/chat/getBase64FromMediaMessage/owned-instance']);
-    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body)).message.key).toEqual(native.key);
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([...Array(4).fill('https://evolution.invalid/chat/findMessages/owned-instance'), 'https://evolution.invalid/chat/getBase64FromMediaMessage/owned-instance']);
+    expect(fetch.mock.calls.slice(0, 4).map(([, init]) => JSON.parse(String(init?.body)).page)).toEqual([1, 2, 1, 2]);
+    expect(JSON.parse(String(fetch.mock.calls.at(-1)?.[1]?.body)).message.key).toEqual(native.key);
     expect(expected).toEqual(keyBefore);
     expect(fullProviderKeyMatches(expected, { ...expected, nativeChatAddress: lid, chatAddress: lid }, { chat: pn })).toBe(false);
   });
@@ -53,7 +56,8 @@ describe('exact Evolution PN/LID rebound', () => {
       const { createEvolutionClient } = await import('./evolution.client.js');
       const client = createEvolutionClient({ baseUrl: `http://127.0.0.1:${(provider.server.address() as AddressInfo).port}`, apiKey: 'test-only' });
       expect(await client.fetchMedia!({ instanceName: 'owned-instance', id: 'NATIVE', key: expected })).toBe('data:image/png;base64,YQ==');
-      expect(provider.keys).toEqual([{ id: 'NATIVE' }, native.key]);
+      expect(provider.keys).toEqual([...Array(4).fill({ id: 'NATIVE' }), native.key]);
+      expect(provider.queries).toEqual([1, 2, 1, 2].map(page => ({ where: { key: { id: 'NATIVE' } }, page, offset: 100 })));
     } finally { await new Promise<void>(resolve => provider.server.close(() => resolve())); }
   });
   it('rebinds a group sender only through the record participantAlt', async () => {
@@ -61,7 +65,7 @@ describe('exact Evolution PN/LID rebound', () => {
     const item = { ...native, key: { id: 'NATIVE', remoteJid: group, fromMe: false, participant: lid, participantAlt: pn } };
     const { source, fetch } = exact([item]);
     expect(await source.mediaExact({ instanceName: 'owned-instance', key, purpose: 'serve' })).toMatchObject({ kind: 'resolved', record: item });
-    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body)).message.key).toEqual(item.key);
+    expect(JSON.parse(String(fetch.mock.calls.at(-1)?.[1]?.body)).message.key).toEqual(item.key);
   });
   it.each([
     { label: 'missing pair', key: { ...native.key, remoteJidAlt: undefined } },
@@ -74,7 +78,8 @@ describe('exact Evolution PN/LID rebound', () => {
   ])('rejects $label before media I/O', async ({ key }) => {
     const { source, fetch } = exact([{ ...native, key }]);
     expect(await source.mediaExact({ instanceName: 'owned-instance', key: expected, purpose: 'serve' })).toEqual({ kind: 'missing' });
-    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch.mock.calls.every(([url]) => String(url).includes('/findMessages/'))).toBe(true);
   });
   it.each([{ identityFormat: 'provider_native' as const, rawId: null }, { rawId: 'OTHER' }, { chatAddress: '15550002222@s.whatsapp.net' }])('keeps other expected key fields exact: %j', async changed => {
     expect(await exact([native]).source.findMessageExact({ instanceName: 'owned-instance', key: { ...expected, ...changed } })).toEqual({ kind: 'missing' });
@@ -90,8 +95,11 @@ describe('exact Evolution PN/LID rebound', () => {
     expect(await exact([item]).source.findMessageExact({ instanceName: 'owned-instance', key })).toEqual({ kind: 'ambiguous' });
   });
   it('rejects multiple alias candidates and incomplete pagination before requesting bytes', async () => {
-    for (const fixture of [exact([native, { ...native, key: { ...native.key, remoteJid: '700002@lid' } }]), exact([native], { pages: 2 }), exact([native], { total: 2 })]) {
-      expect(await fixture.source.mediaExact({ instanceName: 'owned-instance', key: expected, purpose: 'serve' })).toEqual({ kind: 'ambiguous' });
+    const aliases = exact([native, { ...native, key: { ...native.key, remoteJid: '700002@lid' } }]);
+    expect(await aliases.source.mediaExact({ instanceName: 'owned-instance', key: expected, purpose: 'serve' })).toEqual({ kind: 'ambiguous' });
+    expect(aliases.fetch).toHaveBeenCalledOnce();
+    for (const fixture of [exact([native], { pages: 2 }), exact([native], { total: 2 })]) {
+      await expect(fixture.source.mediaExact({ instanceName: 'owned-instance', key: expected, purpose: 'serve' })).rejects.toThrow('HISTORY_PAGINATION');
       expect(fixture.fetch).toHaveBeenCalledOnce();
     }
   });

@@ -922,8 +922,9 @@ describe.skipIf(!databaseUrl || !brokerUrl)('stage 1B canonical application with
                 const stored = await until(() => db.messageMedia.findFirst({ where: { workspaceId: f.workspaceId } }), v => v?.state === 'stored');
                 expect(stored).toMatchObject({ mimeType: 'image/png', sourceKind: 'evolution', sizeBytes: PNG.length });
                 expect(await until(() => db.ingressEffect.findFirstOrThrow({ where: { workspaceId: f.workspaceId, kind: 'media.prepare' } }), v => v.state === 'done')).toMatchObject({ attempts: 1 });
-                expect(requests).toEqual([`POST /chat/findMessages/${encodeURIComponent(f.evo.sessionName)}`, `POST /chat/getBase64FromMediaMessage/${encodeURIComponent(f.evo.sessionName)}`]);
-                expect(provider.keys).toEqual([{ id: expectedKey.id }, nativeKey]);
+                expect(requests).toEqual([...Array(4).fill(`POST /chat/findMessages/${encodeURIComponent(f.evo.sessionName)}`), `POST /chat/getBase64FromMediaMessage/${encodeURIComponent(f.evo.sessionName)}`]);
+                expect(provider.queries).toEqual([1, 2, 1, 2].map(page => ({ where: { key: { id: expectedKey.id } }, page, offset: 100 })));
+                expect(provider.keys).toEqual([...Array(4).fill({ id: expectedKey.id }), nativeKey]);
                 // Effects without a handler yet stay pending obligations, untouched.
                 expect(await db.ingressEffect.count({ where: { workspaceId: f.workspaceId, state: 'pending' } })).toBeGreaterThan(0);
             } finally {
