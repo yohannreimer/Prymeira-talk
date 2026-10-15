@@ -3,7 +3,7 @@ import { AgentMediaError, resolveAgentMedia } from '../agents/agent-media-resolv
 import type { EvolutionClient, SendContactInput, SendMediaInput, SendMediaResult, SendTextInput, SendTextResult } from '../evolution/evolution.client.js';
 import { parseWahaMessageKey } from '../messaging/whatsapp-identity.js';
 import type { WahaClient } from '../waha/waha.client.js';
-import { resolveWahaDestination } from '../waha/waha-destination.js';
+import { resolveWahaDestination, WahaDestinationError } from '../waha/waha-destination.js';
 import type { DispatchKind, OutboundDispatchJournal } from './outbound-dispatch-journal.js';
 import { classifySendFailure, writerCandidates, type RoutableChannel, type RoutableConnection } from './outbound-routing.js';
 import { sendCanonicalCampaignText, sendCanonicalProspectingText } from '../campaigns/campaign-canonical-send.js';
@@ -169,7 +169,7 @@ export function createOutboundRouter(options: {
           await track(() => journal.markUncertain(dispatchId!, errorCode(error)));
           throw dispatchId ? new OutboundUncertainError(dispatchId, error) : error;
         }
-        options.onNotDelivered?.(connection, error);
+        if (!(error instanceof WahaDestinationError)) options.onNotDelivered?.(connection, error);
       }
     }
     await track(() => journal.fail(dispatchId!, errorCode(lastError)));

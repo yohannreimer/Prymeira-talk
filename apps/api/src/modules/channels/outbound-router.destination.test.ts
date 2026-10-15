@@ -14,9 +14,10 @@ function fixture() {
   const waha = { checkNumber: vi.fn().mockResolvedValue({ numberExists: true, chatId: resolved, pn: '5511988880001@c.us' }),
     sendText: vi.fn(async (_input: { chatId: string }) => sent), sendMedia: vi.fn().mockResolvedValue(sent), sendVoice: vi.fn().mockResolvedValue(sent), sendContact: vi.fn().mockResolvedValue(sent),
     getMessages: vi.fn().mockResolvedValue([]) };
-  const client = createOutboundRouter({ db: db as never, journal: journal as never, base: base as never, waha, probeDelayMs: 0,
+  const onNotDelivered = vi.fn();
+  const client = createOutboundRouter({ onNotDelivered, db: db as never, journal: journal as never, base: base as never, waha, probeDelayMs: 0,
     probe: createDeliveryProbe({ waha, history: null }) });
-  return { client, waha, base, journal };
+  return { client, waha, base, journal, onNotDelivered };
 }
 
 describe('WAHA destination identity', () => {
@@ -38,7 +39,7 @@ describe('WAHA destination identity', () => {
     expect(waha.sendText).toHaveBeenCalledWith(expect.objectContaining({ chatId: resolved, replyTo: `false_${resolved}_Q` }));
     await client.sendMedia({ instanceName: 'evo', number: phone, mediatype: 'image', mimetype: 'image/png', media: 'cG5n', fileName: 'a.png' });
     await client.sendAudio!({ instanceName: 'evo', number: phone, audio: 'b2dn' });
-    await client.sendContact!({ instanceName: 'evo', number: phone, contact: [{ fullName: 'Equipe', phoneNumber: '554700000000' }] });
+    await client.sendContact!({ instanceName: 'evo', number: phone, contact: [{ fullName: 'Equipe', wuid: '554700000000', phoneNumber: '554700000000' }] });
     for (const send of [waha.sendMedia, waha.sendVoice, waha.sendContact]) expect(send).toHaveBeenCalledWith(expect.objectContaining({ chatId: resolved }));
   });
 
@@ -50,7 +51,7 @@ describe('WAHA destination identity', () => {
   });
 
   it.each(['lookup unavailable', 'not registered', 'different phone', 'invalid address'])('does not send or create an uncertain dispatch when %s', async scenario => {
-    const { client, waha, journal, base } = fixture();
+    const { client, waha, journal, base, onNotDelivered } = fixture();
     if (scenario === 'lookup unavailable') waha.checkNumber.mockRejectedValue(Object.assign(new Error('timeout'), { name: 'TimeoutError' }));
     if (scenario === 'not registered') waha.checkNumber.mockResolvedValue({ numberExists: false } as never);
     if (scenario === 'different phone') waha.checkNumber.mockResolvedValue({ numberExists: true, chatId: resolved, pn: '5547999999999@c.us' });
@@ -59,9 +60,16 @@ describe('WAHA destination identity', () => {
     expect(waha.sendText).not.toHaveBeenCalled();
     expect(base.sendText).not.toHaveBeenCalled();
     expect(journal.fail).toHaveBeenCalled();
+    expect(onNotDelivered).not.toHaveBeenCalled();
     expect(journal.markUncertain).not.toHaveBeenCalled();
   });
 
+  it.each(['5511988880001@c.us', '5511988880001@s.whatsapp.net'])('also accepts the verified phone identity %s', async chatId => {
+    const { client, waha } = fixture();
+    waha.checkNumber.mockResolvedValue({ numberExists: true, chatId } as never);
+    await client.sendText({ instanceName: 'evo', number: phone, text: 'resposta' });
+    expect(waha.sendText).toHaveBeenCalledWith(expect.objectContaining({ chatId: '5511988880001@c.us' }));
+  });
   it('probes the resolved chat after a timeout and still never retries the send', async () => {
     const { client, waha, journal } = fixture();
     waha.sendText.mockRejectedValue(Object.assign(new Error('timeout'), { name: 'TimeoutError' }));
