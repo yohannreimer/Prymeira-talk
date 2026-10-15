@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { Prisma } from '@prisma/client';
 import { createCrmService } from './crm.service.js';
 
 const at = new Date('2026-10-15T18:00:00Z');
@@ -67,5 +68,28 @@ describe('durable CRM lead synchronization', () => {
   it('fails before provider I/O when durable claiming is unavailable', async () => {
     const f = fixture(); f.model.updateMany.mockRejectedValue(new Error('DB unavailable'));
     await expect(f.create()).rejects.toThrow('DB unavailable'); expect(f.fetchCrm).not.toHaveBeenCalled();
+  });
+  it('reports a competing scoped anchor insert before acquiring a lease or calling the CRM', async () => {
+    const f = fixture();
+    f.model.upsert.mockRejectedValue(new Prisma.PrismaClientKnownRequestError('Synthetic anchor race', {
+      code: 'P2002', clientVersion: 'test', meta: { modelName: 'CrmLeadSync', target: ['workspace_id', 'contact_id'] }
+    }));
+    await expect(f.create()).rejects.toMatchObject({ code: 'CRM_SYNC_IN_PROGRESS', statusCode: 409 });
+    expect(f.model.upsert).toHaveBeenCalledTimes(1);
+    expect(f.model.updateMany).not.toHaveBeenCalled(); expect(f.fetchCrm).not.toHaveBeenCalled();
+  });
+  it.each([
+    { code: 'P2002', meta: { modelName: 'CrmLeadSync', target: ['id'] } },
+    { code: 'P2002', meta: { modelName: 'CrmLeadSync', target: ['workspace_id', 'id'] } },
+    { code: 'P2002', meta: { modelName: 'Contact', target: ['workspace_id', 'contact_id'] } },
+    { code: 'P2002', meta: { modelName: 'CrmLeadSync' } },
+    { code: 'P2003', meta: { modelName: 'CrmLeadSync', target: ['workspace_id', 'contact_id'] } }
+  ])('preserves an unrelated durable anchor error: $code $meta', async ({ code, meta }) => {
+    const f = fixture();
+    const error = new Prisma.PrismaClientKnownRequestError('Synthetic database failure', { code, clientVersion: 'test', meta });
+    f.model.upsert.mockRejectedValue(error);
+    await expect(f.create()).rejects.toBe(error);
+    expect(f.model.upsert).toHaveBeenCalledTimes(1);
+    expect(f.model.updateMany).not.toHaveBeenCalled(); expect(f.fetchCrm).not.toHaveBeenCalled();
   });
 });

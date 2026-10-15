@@ -56,11 +56,39 @@ describe.skipIf(!url)('durable CRM synchronization on owned PostgreSQL', () => {
   });
   it('creates one remote lead when the initial durable operation is raced by multiple callers', async () => {
     const f = await fixture();
-    const results = await Promise.allSettled([f.create(), f.create(), f.create()]);
+    let locked!: () => void, release!: () => void;
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const barrier = db.$transaction(async tx => {
+      // Allow all three upserts to read the absent anchor, then hold their INSERTs.
+      // The database still enforces the real unique constraint when this lock is released.
+      await tx.$executeRaw`LOCK TABLE crm_lead_syncs IN SHARE MODE`;
+      locked(); await hold;
+    }, { timeout: 10_000 });
+    await acquired;
+    const pending = Promise.allSettled([f.create(), f.create(), f.create()]);
+    let barrierError: unknown;
+    try {
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const [row] = await db.$queryRaw<Array<{ waiting: number }>>`
+          SELECT COUNT(DISTINCT pid)::int AS waiting FROM pg_locks
+          WHERE relation = 'crm_lead_syncs'::regclass AND mode = 'RowExclusiveLock' AND NOT granted`;
+        if (row?.waiting === 3) break;
+        if (Date.now() >= deadline) throw new Error('Expected all three CRM anchor INSERTs to reach the database barrier');
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(f.fetchCrm).not.toHaveBeenCalled();
+    } catch (error) { barrierError = error; }
+    finally { release(); await barrier; }
+    const results = await pending;
+    if (barrierError) throw barrierError;
     expect(results.some(result => result.status === 'fulfilled')).toBe(true);
     for (const result of results) if (result.status === 'rejected') expect(result.reason).toMatchObject({ code: 'CRM_SYNC_IN_PROGRESS' });
     expect(f.fetchCrm.mock.calls.filter(([request]) => String(request).endsWith('/records/leads'))).toHaveLength(1);
     expect(f.fetchCrm.mock.calls.filter(([request]) => String(request).endsWith('/records/contact_notes'))).toHaveLength(1);
+    expect(await db.crmLeadSync.count({ where: { workspaceId: f.workspaceId } })).toBe(1);
+    expect(await f.operation()).toMatchObject({ state: 'completed', remoteLeadId: '77', leaseToken: null });
   });
 
   it('keeps a crash after dispatch uncertain rather than creating another lead', async () => {

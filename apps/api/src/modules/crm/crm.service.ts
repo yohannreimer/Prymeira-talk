@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 
 type DateLike = Date | string;
 
@@ -565,7 +565,16 @@ export function createCrmService(prisma: PrismaLike, options: VinculaServiceOpti
         const remoteId = (value: string | null) => value && /^\d+$/.test(value) ? value : null;
         const operation = await sync.upsert({ where: { workspaceId_contactId: { workspaceId: input.workspaceId, contactId: input.contactId } },
           create: { workspaceId: input.workspaceId, contactId: input.contactId, title, state: remoteId(contact.atomicCrmLeadId) ? 'completed' : 'pending',
-            remoteContactId: remoteId(contact.atomicCrmContactId), remoteLeadId: remoteId(contact.atomicCrmLeadId) }, update: {} });
+            remoteContactId: remoteId(contact.atomicCrmContactId), remoteLeadId: remoteId(contact.atomicCrmLeadId) }, update: {} }).catch((error: unknown) => {
+          // Prisma can read before inserting an empty-update upsert. A concurrent
+          // winner of this scoped anchor is the same conflict as an occupied lease.
+          const target = error instanceof Prisma.PrismaClientKnownRequestError ? error.meta?.target : undefined;
+          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002' && error.meta?.modelName === 'CrmLeadSync'
+            && Array.isArray(target) && target.length === 2 && target[0] === 'workspace_id' && target[1] === 'contact_id') {
+            throw new CrmServiceError('CRM_SYNC_IN_PROGRESS', 'Este contato já está sendo sincronizado com o CRM. Aguarde a conclusão.', 409);
+          }
+          throw error;
+        });
         const leaseToken = randomUUID();
         const claimed = await sync.updateMany({ where: { workspaceId: input.workspaceId, id: operation.id,
           OR: [{ leaseToken: null }, { leaseUntil: { lt: now() } }] }, data: { leaseToken, leaseUntil: new Date(now().getTime() + 5 * 60_000) } });
