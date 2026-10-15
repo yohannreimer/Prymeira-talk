@@ -204,6 +204,46 @@ async def modern_catalog(token):
     assert result["structuredContent"]["activeSubscriptions"] == 0
 
 
+async def diagnostic_projection_gate():
+    """Actual Django JSON-key projection and installed native formatter, fake send."""
+    from datetime import datetime, timezone
+    from dataclasses import asdict
+    from unittest.mock import AsyncMock, patch
+    from types import SimpleNamespace
+    from apps.issue_events.models import Issue, IssueEvent
+    from apps.alerts.webhooks import send_issue_as_webhook
+    from xing_alerts.native import select_snapshot
+    from xing_alerts.privacy import normalize
+
+    issue = await Issue.objects.acreate(project=project, title="PRIVATE_DISPOSABLE_TITLE", metadata={})
+    tags = {"failure_point": "agent_runtime", "failure_code": "PRISMA_PROXY_OWN_KEYS", "service": "api",
+            "release": "a" * 40, "diagnostic_version": "1", "error_type": "TypeError",
+            "correlation_id": "op_" + "a" * 32, "impact": "operation_failed", "recovery": "unknown",
+            "diagnostic_frame_0": "modules/agents/agent-runtime.ts:1539:27"}
+    await IssueEvent.objects.acreate(issue=issue, organization=organization, timestamp=datetime.now(timezone.utc),
+        type=0, level=40, data={"request": "PRIVATE_DISPOSABLE_BODY"}, tags=tags)
+    await asyncio.sleep(0.002)
+    latest = {**tags, "failure_code": "WAHA_HTTP_500", "error_type": "WahaClientError",
+              "release": "b" * 40, "correlation_id": "op_" + "b" * 32}
+    await IssueEvent.objects.acreate(issue=issue, organization=organization, timestamp=datetime.now(timezone.utc),
+        type=0, level=40, data={"request": "PRIVATE_DISPOSABLE_BODY"}, tags=latest)
+    snapshot, _ = await select_snapshot(issue)
+    assert snapshot["correlation_id"] == latest["correlation_id"]
+    assert snapshot["release"] == latest["release"]
+    send = AsyncMock(return_value=SimpleNamespace(status=202))
+    config = application.config
+    with patch("apps.alerts.webhooks.send_webhook", send):
+        await send_issue_as_webhook(config.base_url + "/xing-alerts/webhook/" + config.webhook_token,
+            [issue], tags_to_add=["diagnostic_version"])
+    attachments = [asdict(item) for item in send.call_args.args[2]]
+    clean = normalize({"attachments": attachments}, config, time.time())[0]
+    assert clean["diagnostic"]["code"] == "WAHA_HTTP_500"
+    assert clean["diagnostic"]["correlation_id"] == latest["correlation_id"]
+    assert clean["release"] == latest["release"]
+    assert "PRIVATE_DISPOSABLE" not in json.dumps(attachments)
+    assert clean["context_source"] == "latest_issue_event"
+
+
 async def native_oauth_flow(client, challenge):
     """Exercise the installed native provider through actual SDK HTTP handlers."""
     from django.conf import settings
@@ -527,6 +567,7 @@ async def main():
             status in (302, 303, 307) and b"/oauth/authorize/" in headers[b"location"]
         )
         await native_oauth_flow(client, challenge)
+        await diagnostic_projection_gate()
         status, body, _ = await request("/_health/")
         assert status == 200 and body == b"ok"
         status, body, _ = await request("/")

@@ -5,6 +5,7 @@ from .config import EVENT_NAME
 from .delivery import CallbackError, decode_secret, validate_url
 from .outbox import CapacityError, subscription_id
 from .privacy import POINTS, SERVICES, iso_time
+from .diagnostics import schema as diagnostic_schema
 
 logger = logging.getLogger("xing_alerts.protocol")
 # Native GlitchTip root defaults to WARNING. Enable only these bounded, fixed
@@ -151,6 +152,9 @@ class Protocol:
                         "pattern": "^[a-f0-9]{7,40}$",
                     },
                     "url": {"type": "string", "format": "uri"},
+                    "diagnostic": diagnostic_schema(),
+                    "occurred_at": {"type": "string", "format": "date-time"},
+                    "context_source": {"type": "string", "enum": ["latest_issue_event"]},
                 },
                 "required": [
                     "projectId",

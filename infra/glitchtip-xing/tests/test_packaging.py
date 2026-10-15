@@ -60,6 +60,7 @@ class PackagingTests(unittest.TestCase):
             original = {
                 "glitchtip/asgi.py": "original_startup_and_lifespan\n",
                 "apps/mcp/server.py": "broad_tools\n",
+                "apps/alerts/webhooks.py": "native_alerts\n",
             }
             expected = {}
             for path, body in original.items():
